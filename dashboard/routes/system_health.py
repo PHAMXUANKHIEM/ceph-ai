@@ -5,6 +5,9 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from shared.service_health import status
 from shared.ceph_runner import get_metrics as get_ceph_runner_metrics
+from shared.ceph_query_cache import get_metrics as get_ceph_cache_metrics
+from watcher.cluster_snapshot_collector import get_metrics as get_collector_metrics
+from shared.api_observability import get_metrics as get_api_metrics
 
 router = APIRouter()
 
@@ -24,4 +27,11 @@ def ceph_latency_debug(user: str = Depends(require_login)):
     """Admin-only bounded SSH/command diagnostics; never exposes secrets."""
     if not auth.is_admin_user(user):
         raise HTTPException(status_code=403, detail="Chỉ admin được xem chẩn đoán Ceph")
-    return {"metrics": get_ceph_runner_metrics()}
+    # Keep ``metrics`` backward-compatible for existing admin tooling while
+    # exposing the cache and collector counters as additive fields.
+    return {
+        "metrics": get_ceph_runner_metrics(),
+        "cache": get_ceph_cache_metrics(),
+        "snapshot_collector": get_collector_metrics(),
+        "api": get_api_metrics(),
+    }

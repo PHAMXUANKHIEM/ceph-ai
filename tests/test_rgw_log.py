@@ -47,7 +47,7 @@ class FakeSSHClient:
     def save_host_keys(self, path):
         pass
 
-    def connect(self, hostname, username, key_filename, timeout):
+    def connect(self, hostname, username, key_filename, timeout, **_timeouts):
         self._host = hostname
 
     def exec_command(self, command, timeout=None):

@@ -3132,8 +3132,15 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 }
 
 /* Collapsed desktop rail: do not clip labels into meaningless fragments.
-   Hide the label node and expose all grouped links, including inactive ones. */
+   Hide the label node and expose all grouped links, including inactive ones.
+   A compact legacy block later in this file has the old centered/initial
+   rules, so the shell-qualified selectors below keep the DOM icon contract
+   authoritative when the rail is collapsed. */
 @media (min-width: 901px) {
+  body.app-shell.sidebar-collapsed .topbar-inner { align-items: stretch !important; padding-inline: 0; }
+  body.app-shell.sidebar-collapsed .brand { justify-content: center; padding-inline: 0; }
+  body.app-shell.sidebar-collapsed .bizfly-logo-plate { width: 34px; height: 34px; }
+  body.app-shell.sidebar-collapsed .main-nav { align-self: stretch !important; width: 100% !important; }
   .sidebar-collapsed .nav-section-toggle { display: none; }
   .sidebar-collapsed .nav-section-items[hidden] { display: flex; }
   body.app-shell.sidebar-collapsed .nav-link::before { content: none; }

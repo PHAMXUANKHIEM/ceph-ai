@@ -1,5 +1,6 @@
 import paramiko
 import pytest
+import threading
 
 from shared.ceph_runner import (
     CephCommandRunner,
@@ -111,9 +112,9 @@ def test_pool_passes_separate_connect_banner_and_auth_timeouts_and_reuses_client
         assert runner.run("10.0.0.1", "ceph df", 1) == "ok"
 
     assert len(clients) == 1
-    assert clients[0].connect_args["timeout"] == 5
-    assert clients[0].connect_args["banner_timeout"] == 6
-    assert clients[0].connect_args["auth_timeout"] == 7
+    assert 0 < clients[0].connect_args["timeout"] <= 1
+    assert 0 < clients[0].connect_args["banner_timeout"] <= 1
+    assert 0 < clients[0].connect_args["auth_timeout"] <= 1
     assert clients[0].close_calls == 1
 
 
@@ -123,6 +124,19 @@ def test_pool_close_releases_open_connection_metric():
         CephCommandRunner(pool).run("10.0.0.9", "ceph -s", 1)
         assert get_metrics()["connections_open"] == before + 1
     assert get_metrics()["connections_open"] == before
+
+
+def test_command_metrics_include_safe_command_label_and_duration():
+    with CephConnectionPool(make_config(), client_factory=FakeClient) as pool:
+        CephCommandRunner(pool).run("10.0.0.8", "ceph -s -f json", 1)
+        event = next(
+            event for event in reversed(get_metrics()["recent"])
+            if event["event"] == "command_success_total" and event["node"] == "10.0.0.8"
+        )
+
+    assert event["event"] == "command_success_total"
+    assert event["command"] == "ceph -s"
+    assert event["duration_ms"] >= 0
 
 
 def test_authentication_failure_is_structured_and_not_retried():
@@ -141,6 +155,12 @@ def test_authentication_failure_is_structured_and_not_retried():
     assert caught.value.kind == "auth_failed"
     assert caught.value.stage == "connect"
     assert len(clients) == 1
+    failure = next(
+        event for event in reversed(get_metrics()["recent"])
+        if event["event"] == "connect_failures_total" and event["node"] == "10.0.0.2"
+    )
+    assert failure["event"] == "connect_failures_total"
+    assert failure["duration_ms"] >= 0
 
 
 def test_command_has_total_deadline_and_closes_stalled_connection():
@@ -158,3 +178,23 @@ def test_command_has_total_deadline_and_closes_stalled_connection():
 
     assert caught.value.kind == "timeout"
     assert clients[0].close_calls >= 1
+
+
+def test_host_lease_wait_is_bounded_and_reported_as_queue_timeout():
+    pool = CephConnectionPool(make_config(), client_factory=FakeClient)
+    with pool._lock:
+        host_lock = pool._host_locks.setdefault("10.0.0.4", threading.Lock())
+    host_lock.acquire()
+    try:
+        with pytest.raises(CephRunnerError) as caught:
+            CephCommandRunner(pool).run("10.0.0.4", "ceph -s", 0.02)
+    finally:
+        host_lock.release()
+        pool.close()
+
+    assert caught.value.kind == "pool_wait_timeout"
+    assert any(
+        event["event"] == "queue_wait_timeout_total"
+        and event["node"] == "10.0.0.4"
+        for event in get_metrics()["recent"]
+    )

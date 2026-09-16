@@ -52,6 +52,7 @@
   var topbar = document.querySelector(".topbar");
   var main = document.querySelector("main.page");
   if (!topbar || !main) return;
+  var mainNav = topbar.querySelector(".main-nav");
 
   document.body.classList.add("app-shell");
 
@@ -92,6 +93,10 @@
   menuButton.className = "shell-menu-toggle";
   menuButton.setAttribute("aria-label", "Mở menu điều hướng");
   menuButton.setAttribute("aria-expanded", "false");
+  if (mainNav) {
+    mainNav.id = mainNav.id || "main-navigation";
+    menuButton.setAttribute("aria-controls", mainNav.id);
+  }
   menuButton.innerHTML = "<span></span><span></span><span></span>";
   topbar.querySelector(".topbar-inner").insertBefore(menuButton, topbar.querySelector(".main-nav"));
 
@@ -111,19 +116,52 @@
     account.parentNode.insertBefore(status, account);
   }
 
+  function getDrawerFocusables() {
+    if (!mainNav) return [];
+    return Array.from(mainNav.querySelectorAll("a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex=\"-1\"])")).filter(function (element) {
+      return element.getClientRects().length > 0;
+    });
+  }
+
   function setMenu(open) {
     document.body.classList.toggle("nav-open", open);
     menuButton.setAttribute("aria-expanded", open ? "true" : "false");
     menuButton.setAttribute("aria-label", open ? "Đóng menu điều hướng" : "Mở menu điều hướng");
+    if (!open && window.innerWidth <= 1023 && document.activeElement && mainNav && mainNav.contains(document.activeElement)) {
+      menuButton.focus();
+    }
+    if (open && window.innerWidth <= 1023) {
+      window.requestAnimationFrame(function () {
+        var first = getDrawerFocusables()[0];
+        if (first) first.focus();
+      });
+    }
   }
   menuButton.addEventListener("click", function () {
     setMenu(!document.body.classList.contains("nav-open"));
   });
   document.addEventListener("keydown", function (event) {
-    if (event.key === "Escape") setMenu(false);
+    if (!document.body.classList.contains("nav-open") || window.innerWidth > 1023) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setMenu(false);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    var focusables = getDrawerFocusables();
+    if (!focusables.length) return;
+    var first = focusables[0];
+    var last = focusables[focusables.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   });
   window.addEventListener("resize", function () {
-    if (window.innerWidth >= 1024) setMenu(false);
+    if (window.innerWidth >= 1024 && document.body.classList.contains("nav-open")) setMenu(false);
   });
 
   var iconByPath = {
@@ -136,7 +174,6 @@
     "/openstack/auth-pool": "◈", "/openstack/auth-user/create": "+", "/openstack/config-dump": "▤"
   };
 
-  var mainNav = topbar.querySelector(".main-nav");
   if (mainNav) {
     var linksByPath = {};
     mainNav.querySelectorAll("a").forEach(function (link) {

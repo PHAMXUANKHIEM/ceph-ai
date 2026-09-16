@@ -499,6 +499,11 @@ Record before/after values for:
 - 2026-09-16: Phase 8 completed by verifying bounded log/object/PG/CRUSH/
   backup payload paths and the runner output limit. Payload regression set:
   158 passed.
-- 2026-09-16: Phase 9 is in progress. Added runner connection/command metrics
-  and admin-only `/api/debug/ceph-latency`; cache-hit/miss, API-duration,
-  queue-wait and correlation-ID instrumentation remain for the next increment.
+- 2026-09-16: Phase 9 is in progress. Added bounded runner connection/command
+  metrics with safe command labels, cache hit/miss/load counters, inventory
+  snapshot duration, API duration/status samples, and an `X-Request-ID`
+  correlation header. The admin-only `/api/debug/ceph-latency` endpoint keeps
+  its original `metrics.recent` shape and exposes additive cache, collector
+  and API diagnostics. Queue-wait and retry counters still need explicit
+  production integration; no latency claim is made until benchmark data is
+  collected.

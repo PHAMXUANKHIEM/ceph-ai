@@ -44,6 +44,9 @@ _METRICS = {
     "collector_success_total": 0,
     "collector_failure_total": 0,
     "commands": {},
+    "last_duration_ms": None,
+    "last_cluster_id": None,
+    "last_completed_at": None,
 }
 logger = logging.getLogger(__name__)
 
@@ -109,6 +112,13 @@ def _record_metric(name: str, command: str | None = None) -> None:
                 command, {"success_total": 0, "failure_total": 0}
             )
             command_metrics[name] += 1
+
+
+def _record_collection_duration(cluster_id: str | None, started: float) -> None:
+    with _METRICS_LOCK:
+        _METRICS["last_duration_ms"] = round(max(0.0, monotonic() - started) * 1000, 2)
+        _METRICS["last_cluster_id"] = str(cluster_id) if cluster_id is not None else None
+        _METRICS["last_completed_at"] = _utc_now()
 
 
 def collect_and_publish_health(
@@ -260,6 +270,7 @@ class CephSnapshotCollector:
         publishable.
         """
         started_at = collection_started_at or collection_timestamp()
+        started = monotonic()
         loaders = {
             "pools": (_collect_pool_rows, []),
             "pgs": (_collect_pg_rows, []),
@@ -267,42 +278,45 @@ class CephSnapshotCollector:
             "nodes": (_collect_node_summary, {"nodes": [], "total": 0}),
         }
         published: dict[str, object] = {}
-        with inventory_collection_lock(cluster.id):
-            with ThreadPoolExecutor(
-                max_workers=self.max_workers,
-                thread_name_prefix="ceph-inventory",
-            ) as executor:
-                futures = {
-                    executor.submit(loader, cluster): (section, empty_data)
-                    for section, (loader, empty_data) in loaders.items()
-                }
-                for future in as_completed(futures):
-                    section, empty_data = futures[future]
-                    try:
-                        data = future.result()
-                        published[section] = publish_section_snapshot(
-                            cluster.id,
-                            section,
-                            data,
-                            collected_at=started_at,
-                            source="watcher-inventory",
-                        )
-                        _record_metric("success_total", section)
-                    except Exception as exc:
-                        _record_metric("failure_total", section)
-                        logger.warning(
-                            "inventory(%s): %s collection failed: %s",
-                            cluster.name,
-                            section,
-                            exc,
-                        )
-                        record_section_error(
-                            cluster.id,
-                            section,
-                            exc,
-                            empty_data=empty_data,
-                            source="watcher-inventory",
-                        )
+        try:
+            with inventory_collection_lock(cluster.id):
+                with ThreadPoolExecutor(
+                    max_workers=self.max_workers,
+                    thread_name_prefix="ceph-inventory",
+                ) as executor:
+                    futures = {
+                        executor.submit(loader, cluster): (section, empty_data)
+                        for section, (loader, empty_data) in loaders.items()
+                    }
+                    for future in as_completed(futures):
+                        section, empty_data = futures[future]
+                        try:
+                            data = future.result()
+                            published[section] = publish_section_snapshot(
+                                cluster.id,
+                                section,
+                                data,
+                                collected_at=started_at,
+                                source="watcher-inventory",
+                            )
+                            _record_metric("success_total", section)
+                        except Exception as exc:
+                            _record_metric("failure_total", section)
+                            logger.warning(
+                                "inventory(%s): %s collection failed: %s",
+                                cluster.name,
+                                section,
+                                exc,
+                            )
+                            record_section_error(
+                                cluster.id,
+                                section,
+                                exc,
+                                empty_data=empty_data,
+                                source="watcher-inventory",
+                            )
+        finally:
+            _record_collection_duration(cluster.id, started)
         return published
 
 

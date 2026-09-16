@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import re
+import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -67,9 +70,11 @@ from shared import db
 from shared.codex_app_server import codex_app_server
 from shared.clusters import sync_default_cluster_from_settings
 from shared.logging_redaction import install_logging_redaction
+from shared.api_observability import record_request
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 logger = logging.getLogger(__name__)
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 install_logging_redaction()
 
 
@@ -139,6 +144,35 @@ async def _lifespan(_app: FastAPI):
 def create_app() -> FastAPI:
     _warn_if_using_dev_defaults()
     application = FastAPI(title="Ceph AIOps Dashboard", lifespan=_lifespan)
+    @application.middleware("http")
+    async def observe_api_request(request, call_next):
+        """Attach one correlation ID and bounded timing data to each request."""
+        supplied = request.headers.get("x-request-id", "").strip()
+        request_id = supplied if _REQUEST_ID_RE.fullmatch(supplied) else uuid.uuid4().hex
+        request.state.request_id = request_id
+        started = time.monotonic()
+        try:
+            response = await call_next(request)
+        except Exception:
+            record_request(
+                request.method,
+                request.url.path,
+                500,
+                (time.monotonic() - started) * 1000,
+                request_id,
+            )
+            raise
+        response.headers["X-Request-ID"] = request_id
+        if not request.url.path.startswith("/static/"):
+            record_request(
+                request.method,
+                request.url.path,
+                response.status_code,
+                (time.monotonic() - started) * 1000,
+                request_id,
+            )
+        return response
+
     @application.middleware("http")
     async def isolate_product_namespaces(request, call_next):
         """Keep authenticated Ceph and Vitastor sessions in separate UIs."""

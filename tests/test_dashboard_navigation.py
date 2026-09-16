@@ -243,3 +243,24 @@ def test_tablet_rail_is_static_and_mobile_restores_full_labels():
     assert "position: static;" in css
     assert "@media (max-width: 560px)" in css
     assert ".app-shell .nav-link-label { display: inline; }" in css
+
+
+def test_collapsed_desktop_rail_keeps_a_real_icon_width_and_no_pseudo_fragments():
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+
+    assert "body.app-shell.sidebar-collapsed .main-nav" in css
+    assert "align-self: stretch !important" in css
+    assert "width: 100% !important" in css
+    assert "body.app-shell.sidebar-collapsed .nav-link::before { content: none; }" in css
+    assert ".app-shell .nav-link::before { content: none; }" in css
+
+
+def test_mobile_drawer_exposes_keyboard_and_focus_return_contract():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert 'menuButton.setAttribute("aria-controls", mainNav.id)' in source
+    assert 'event.key === "Escape"' in source
+    assert 'menuButton.focus();' in source
+    assert 'event.key !== "Tab"' in source
+    assert 'event.shiftKey && document.activeElement === first' in source
+    assert 'document.activeElement === last' in source

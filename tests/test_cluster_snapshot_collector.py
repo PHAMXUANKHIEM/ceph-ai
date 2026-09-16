@@ -142,6 +142,9 @@ def test_status_and_inventory_failures_have_named_metrics(monkeypatch):
     metrics = cluster_snapshot_collector.get_metrics()
     assert metrics["commands"]["status"]["failure_total"] == 1
     assert metrics["commands"]["pools"]["failure_total"] == 1
+    assert metrics["last_duration_ms"] is not None
+    assert metrics["last_cluster_id"] == "cluster-a"
+    assert metrics["last_completed_at"]
 
 
 def test_inventory_sections_run_in_parallel_with_a_bounded_worker_count(monkeypatch):

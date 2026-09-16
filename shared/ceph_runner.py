@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -29,8 +30,22 @@ _METRICS = {
     "command_failures_total": 0,
     "command_timeouts_total": 0,
     "output_limit_failures_total": 0,
+    "queue_wait_total": 0,
+    "queue_wait_timeout_total": 0,
     "recent": [],
 }
+_CEPH_COMMAND_RE = re.compile(
+    r"(?:^|[\s;&|])(?:sudo\s+)?(ceph|rbd|rados|radosgw-admin)\s+([A-Za-z0-9_.:-]+)"
+)
+
+
+def _command_label(command: str) -> str:
+    """Extract a bounded command label without exposing arguments or secrets."""
+    matches = _CEPH_COMMAND_RE.findall(command)
+    if matches:
+        executable, subcommand = matches[-1]
+        return f"{executable} {subcommand}"
+    return "unknown"
 
 
 def _record_metric(event: str, **fields: object) -> None:
@@ -106,7 +121,7 @@ class CephConnectionPool:
         transport = client.get_transport() if hasattr(client, "get_transport") else None
         return bool(transport and transport.is_active() and transport.is_authenticated())
 
-    def _connect(self, host: str) -> paramiko.SSHClient:
+    def _connect(self, host: str, timeout: float | None = None) -> paramiko.SSHClient:
         if self._closed:
             raise CephRunnerError(host, "connect", "pool_closed", "SSH connection pool is closed")
         with self._lock:
@@ -127,26 +142,42 @@ class CephConnectionPool:
                 client.load_host_keys(self.config.known_hosts_path)
             client.set_missing_host_key_policy(paramiko.RejectPolicy())
             try:
+                connect_timeout = self.config.connect_timeout
+                banner_timeout = self.config.banner_timeout
+                auth_timeout = self.config.auth_timeout
+                if timeout is not None:
+                    connect_timeout = min(connect_timeout, timeout)
+                    banner_timeout = min(banner_timeout, timeout)
+                    auth_timeout = min(auth_timeout, timeout)
                 client.connect(
                     hostname=host,
                     username=self.config.user,
                     key_filename=self.config.key_path or None,
-                    timeout=self.config.connect_timeout,
-                    banner_timeout=self.config.banner_timeout,
-                    auth_timeout=self.config.auth_timeout,
+                    timeout=connect_timeout,
+                    banner_timeout=banner_timeout,
+                    auth_timeout=auth_timeout,
                 )
             except paramiko.AuthenticationException as exc:
                 client.close()
-                _record_metric("connect_failures_total", node=host, stage="connect", kind="auth_failed")
+                _record_metric(
+                    "connect_failures_total", node=host, stage="connect", kind="auth_failed",
+                    duration_ms=round((time.monotonic() - started) * 1000, 2),
+                )
                 raise CephRunnerError(host, "connect", "auth_failed", "SSH authentication failed", (time.monotonic() - started) * 1000) from exc
             except paramiko.BadHostKeyException as exc:
                 client.close()
-                _record_metric("connect_failures_total", node=host, stage="connect", kind="host_key_failed")
+                _record_metric(
+                    "connect_failures_total", node=host, stage="connect", kind="host_key_failed",
+                    duration_ms=round((time.monotonic() - started) * 1000, 2),
+                )
                 raise CephRunnerError(host, "connect", "host_key_failed", "SSH host key was rejected", (time.monotonic() - started) * 1000) from exc
             except (TimeoutError, OSError, paramiko.SSHException) as exc:
                 client.close()
                 kind = "timeout" if isinstance(exc, TimeoutError) else "unreachable"
-                _record_metric("connect_failures_total", node=host, stage="connect", kind=kind)
+                _record_metric(
+                    "connect_failures_total", node=host, stage="connect", kind=kind,
+                    duration_ms=round((time.monotonic() - started) * 1000, 2),
+                )
                 raise CephRunnerError(host, "connect", kind, str(exc) or type(exc).__name__, (time.monotonic() - started) * 1000) from exc
             self._clients[host] = client
             _record_metric(
@@ -171,19 +202,44 @@ class CephConnectionPool:
             logger.warning("failed to close SSH connection to %s", host, exc_info=True)
 
     @contextmanager
-    def lease(self, host: str) -> Iterator[paramiko.SSHClient]:
+    def lease(self, host: str, *, timeout: float | None = None) -> Iterator[paramiko.SSHClient]:
         """Lease a host connection; concurrent commands on one host serialize."""
         with self._lock:
             host_lock = self._host_locks.setdefault(host, threading.Lock())
-        with host_lock:
+        wait_started = time.monotonic()
+        acquired = host_lock.acquire(timeout=max(0.0, timeout)) if timeout is not None else host_lock.acquire()
+        wait_ms = (time.monotonic() - wait_started) * 1000
+        if acquired:
+            _record_metric(
+                "queue_wait_total", node=host, stage="ssh_lease",
+                duration_ms=round(wait_ms, 2),
+            )
+        else:
+            _record_metric(
+                "queue_wait_timeout_total", node=host, stage="ssh_lease",
+                duration_ms=round(wait_ms, 2),
+            )
+            raise CephRunnerError(
+                host, "connect", "pool_wait_timeout",
+                "SSH host lease wait exceeded command deadline", wait_ms,
+            )
+        try:
             try:
-                yield self._connect(host)
+                remaining = None if timeout is None else timeout - (time.monotonic() - wait_started)
+                if remaining is not None and remaining <= 0:
+                    raise CephRunnerError(
+                        host, "connect", "pool_wait_timeout",
+                        "SSH host lease wait exceeded command deadline", wait_ms,
+                    )
+                yield self._connect(host, remaining)
             except Exception:
                 with self._lock:
                     client = self._clients.get(host)
                     if client is not None:
                         self._close_client(host, client)
                 raise
+        finally:
+            host_lock.release()
 
     def invalidate(self, host: str) -> None:
         with self._lock:
@@ -216,12 +272,13 @@ class CephCommandRunner:
         self.pool = pool
         self.max_output_bytes = max_output_bytes
 
-    def run(self, host: str, command: str, timeout: float) -> str:
+    def run(self, host: str, command: str, timeout: float, *, command_name: str | None = None) -> str:
         if timeout <= 0:
             raise ValueError("command timeout must be positive")
         started = time.monotonic()
+        label = command_name or _command_label(command)
         try:
-            with self.pool.lease(host) as client:
+            with self.pool.lease(host, timeout=timeout) as client:
                 _stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
                 output, error_output, exit_status = self._read_channel(
                     host, stdout, stderr, timeout, started
@@ -237,26 +294,30 @@ class CephCommandRunner:
                     "command_success_total",
                     node=host,
                     stage="command",
+                    command=label,
                     duration_ms=round((time.monotonic() - started) * 1000, 2),
                     response_bytes=len(output),
                 )
                 return result
         except CephRunnerError as exc:
-            event = "command_timeouts_total" if exc.kind == "timeout" else "command_failures_total"
-            if exc.kind == "output_limit":
-                event = "output_limit_failures_total"
-            _record_metric(
-                event,
-                node=host,
-                stage="command",
-                duration_ms=round((time.monotonic() - started) * 1000, 2),
-            )
+            if exc.stage == "command":
+                event = "command_timeouts_total" if exc.kind == "timeout" else "command_failures_total"
+                if exc.kind == "output_limit":
+                    event = "output_limit_failures_total"
+                _record_metric(
+                    event,
+                    node=host,
+                    stage="command",
+                    command=label,
+                    duration_ms=round((time.monotonic() - started) * 1000, 2),
+                )
             raise
         except Exception as exc:
             _record_metric(
                 "command_failures_total",
                 node=host,
                 stage="command",
+                command=label,
                 duration_ms=round((time.monotonic() - started) * 1000, 2),
             )
             raise CephRunnerError(

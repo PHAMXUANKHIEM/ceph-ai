@@ -1384,6 +1384,8 @@ def query_cluster_health_with(
     )
     futures = {executor.submit(collect_from_node, host): host for host in mon_nodes}
     pending = set(futures)
+    selected_host: str | None = None
+    selected_payload: dict | None = None
     try:
         while pending:
             remaining = deadline - time.monotonic()
@@ -1402,9 +1404,9 @@ def query_cluster_health_with(
                     logger.warning("query_cluster_health_with: %s failed: %s", host, exc)
                     errors.append(f"{host}: {exc}")
                     continue
-                if update_sticky_fallback:
-                    last_successful_mon_node = host
-                return payload
+                if selected_payload is None:
+                    selected_host = host
+                    selected_payload = payload
         for future in pending:
             host = futures[future]
             future.cancel()
@@ -1412,12 +1414,17 @@ def query_cluster_health_with(
                 f"{host}: health poll exceeded {settings.ceph_health_timeout:g} seconds"
             )
     finally:
-        # Running Paramiko probes have their own bounded channel/connect
-        # deadlines and close their private pool on completion. Do not wait
-        # here, otherwise a slow peer can still extend this total deadline.
+        # Drain all started probes before returning. They have bounded
+        # connect/channel deadlines and close their private pool on completion;
+        # leaving a probe behind would let it outlive a request/test fixture
+        # and could reuse restored SSH globals after teardown.
         for future in pending:
             future.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
+        executor.shutdown(wait=True, cancel_futures=True)
+    if selected_payload is not None:
+        if update_sticky_fallback and selected_host is not None:
+            last_successful_mon_node = selected_host
+        return selected_payload
     raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
 
 

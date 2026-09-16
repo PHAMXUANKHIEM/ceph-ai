@@ -91,7 +91,7 @@ Done when: the working tree is reviewable, tests are recorded and no push/merge/
 - [x] 4. Tables and administration pages
 - [x] 5. AI Assistant panel
 - [x] 6. Log Intelligence presentation
-- [ ] 7. Accessibility and responsive verification
+- [x] 7. Accessibility and responsive verification
 - [x] 8. Regression and handoff
 
 ## Handoff record (item 8)
@@ -105,6 +105,7 @@ Done when: the working tree is reviewable, tests are recorded and no push/merge/
 | JS syntax, built bundle | `node --check` (CJS and ESM) on `ceph-health/app.js` | pass |
 | Dashboard regression | 19 pytest modules (nav, status, health API, pools, PGs, volumes, block/object storage, backups, log intelligence, chat, ws, clusters, auth, actions, snapshot, cache) | 510 passed |
 | Markdown renderer safety | DOM shim without `innerHTML`, hostile payload in a table cell and a code fence | only 15 safe tags created; no `script`/`img`; payload stayed text |
+| Authenticated browser viewport and keyboard check | Playwright Chromium at 1920, 1440 collapsed, 1024, 768 collapsed and 390px; mobile focus loop, Escape return, reduced motion, settings and chat-table overflow spot checks | pass — desktop labels remain visible; collapsed/tablet rails hide all 26 labels and keep all 26 icons visible; mobile drawer opens at `left=49px` with full labels; focus loops through the drawer and returns to hamburger; reduced transition is `0.01ms`; settings drawer stays off-screen when closed; chat table reports `overflow-x:auto` |
 
 Cluster switching, reload, table filtering, chat and approval presentation are
 covered by those suites at the request/template level. No administrative
@@ -112,22 +113,15 @@ command was executed against a real Ceph cluster.
 
 ### Known limitations
 
-1. **No browser evidence exists for items 1-6.** This host has no Chromium,
-   Chrome, Firefox, Playwright or Puppeteer, and the Claude-in-Chrome
-   extension is not connected to the working session. Item 7 is therefore
-   NOT done and is deliberately left unchecked. Everything below item 1 has
-   been verified by build, tests and static analysis only.
-2. **Highest-risk unverified change: the sidebar at ≤900px and when
-   collapsed.** `.nav-link` is a flex container, so the original
-   `font-size:0` + `::first-letter` trick never restored the label — the nav
-   rendered as empty strips. The first repair attempt repeated the same
-   mistake. It is now font shrink + clipping, which no one has seen render.
-3. `.mon-strip-inner{display:none}` hides the per-MON status chips that
+1. The dedicated keyboard trace covers the shared mobile shell only. Page-
+   specific dialogs and approval flows still need their own focus traces before
+   a public release.
+2. `.mon-strip-inner{display:none}` hides the per-MON status chips that
    `index.html` still renders. Nothing in the new sidebar replaces them.
    Left as-is because removing the feature is a product decision, not a
    styling one.
-4. `td.truncate` caps at `26ch`, chosen without seeing real column widths.
-5. Items 1 and 2 were authored in a parallel session and are squashed into
+3. `td.truncate` caps at `26ch`, chosen without seeing real column widths.
+4. Items 1 and 2 were authored in a parallel session and are squashed into
    `8644abc9` together with item 3, because `src/styles.css` interleaves all
    three and could not be split.
 

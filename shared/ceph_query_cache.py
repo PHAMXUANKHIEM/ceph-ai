@@ -23,6 +23,13 @@ _CACHE_LOCK_POLL_SECONDS = 0.05
 _MISSING = object()
 _refreshing: set[Tuple[str, str]] = set()
 _refresh_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ceph-query-cache")
+_metrics = {
+    "cache_hit_total": 0,
+    "cache_miss_total": 0,
+    "cache_stale_total": 0,
+    "cache_load_total": 0,
+    "cache_refresh_enqueued_total": 0,
+}
 
 
 class CacheLockError(RuntimeError):
@@ -31,6 +38,17 @@ class CacheLockError(RuntimeError):
 
 class CachePersistenceError(RuntimeError):
     """Raised when a versioned cache value cannot be persisted."""
+
+
+def _record_cache_metric(name: str) -> None:
+    with _lock:
+        _metrics[name] += 1
+
+
+def get_metrics() -> dict[str, int]:
+    """Return cache counters for the admin diagnostics endpoint."""
+    with _lock:
+        return dict(_metrics)
 
 
 def _path(namespace: str, key: str) -> Path:
@@ -317,13 +335,15 @@ def _schedule_refresh(
     key: str,
     loader: Callable[[], T],
     ttl_seconds: int,
-) -> None:
+) -> bool:
     cache_key = (namespace, key)
     with _lock:
         if cache_key in _refreshing:
-            return
+            return False
         _refreshing.add(cache_key)
     _refresh_executor.submit(_refresh, namespace, key, loader, ttl_seconds)
+    _record_cache_metric("cache_refresh_enqueued_total")
+    return True
 
 
 def get_or_load(
@@ -343,19 +363,24 @@ def get_or_load(
     cache_key = (namespace, key)
     cached = _fresh_value(namespace, key, ttl_seconds)
     if cached is not _MISSING:
+        _record_cache_metric("cache_hit_total")
         return cached  # type: ignore[return-value]
+    _record_cache_metric("cache_miss_total")
     if stale_ttl_seconds is not None:
         stale = get_cached(namespace, key)
         if stale is not None and ttl_seconds <= stale[1] < stale_ttl_seconds:
             _schedule_refresh(namespace, key, loader, ttl_seconds)
+            _record_cache_metric("cache_stale_total")
             return stale[0]  # type: ignore[return-value]
     try:
         with _loader_lock(namespace, key) as lock_acquired:
             if lock_acquired:
                 cached = _fresh_value(namespace, key, ttl_seconds)
                 if cached is not _MISSING:
+                    _record_cache_metric("cache_hit_total")
                     return cached  # type: ignore[return-value]
                 value = loader()
+                _record_cache_metric("cache_load_total")
                 created_at = time()
                 with _lock:
                     text = _write(namespace, key, created_at, value)
@@ -366,14 +391,17 @@ def get_or_load(
         # The lock owner may have filled the cache just after our timeout.
         cached = _fresh_value(namespace, key, ttl_seconds)
         if cached is not _MISSING:
+            _record_cache_metric("cache_hit_total")
             return cached  # type: ignore[return-value]
         stale = _stale_value(namespace, key)
         if stale is not _MISSING:
+            _record_cache_metric("cache_stale_total")
             return stale  # type: ignore[return-value]
         raise CacheLockError(f"could not acquire cache lock for {namespace}:{key}")
     except Exception:
         cached = _stale_value(namespace, key)
         if cached is not _MISSING:
+            _record_cache_metric("cache_stale_total")
             return cached  # type: ignore[return-value]
         raise
 

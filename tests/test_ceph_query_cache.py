@@ -18,6 +18,19 @@ def test_persistent_cache_survives_memory_reset(monkeypatch, tmp_path):
     assert json.loads(next(tmp_path.iterdir()).read_text())["value"] == [{"id": "a"}]
 
 
+def test_cache_metrics_distinguish_load_and_hit(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    before = ceph_query_cache.get_metrics()
+
+    assert ceph_query_cache.get_or_load("metrics", "cluster", lambda: {"ok": True}) == {"ok": True}
+    assert ceph_query_cache.get_or_load("metrics", "cluster", lambda: {"ok": False}) == {"ok": True}
+
+    after = ceph_query_cache.get_metrics()
+    assert after["cache_load_total"] >= before["cache_load_total"] + 1
+    assert after["cache_hit_total"] >= before["cache_hit_total"] + 1
+
+
 def test_persistent_cache_keeps_recent_value_when_live_query_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
     monkeypatch.setattr(ceph_query_cache, "_memory", {})
