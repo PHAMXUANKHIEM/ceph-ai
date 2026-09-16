@@ -81,3 +81,47 @@ def test_object_storage_quota_editor_is_not_added_to_global_navigation():
     source = APP_JS.read_text(encoding="utf-8")
     assert 'linksByPath["/object-storage/user-settings"]' not in source
     assert 'Quota & Capabilities' not in source
+
+
+def _main_nav_block() -> str:
+    markup = (TEMPLATE_DIR / "_nav.html").read_text(encoding="utf-8")
+    start = markup.index('<nav class="main-nav">')
+    return markup[start:markup.index("</nav>", start)]
+
+
+def test_every_dropdown_toggle_sits_inside_a_nav_dropdown_wrapper():
+    """`app.js` gắn handler bằng `querySelectorAll('.nav-dropdown')` rồi tìm
+    `.nav-dropdown-toggle` bên trong, còn CSS chỉ mở menu qua
+    `.nav-dropdown:hover .nav-dropdown-menu`. Một toggle nằm ngoài wrapper là
+    một menu không bao giờ mở được — nhóm Cluster từng mất wrapper và kéo
+    theo 11 link (Pools, Volumes, Upgrade, Patch…) thành không tới được, mà
+    cả bộ test điều hướng vẫn xanh vì href vẫn có trong HTML."""
+    import re
+
+    block = _main_nav_block()
+    wrappers = re.findall(
+        r'<div class="nav-dropdown">(.*?)</div>\s*</div>', block, re.S
+    )
+    toggles_in_wrappers = sum(chunk.count("nav-dropdown-toggle") for chunk in wrappers)
+
+    assert block.count("nav-dropdown-toggle") == toggles_in_wrappers, (
+        "có nav-dropdown-toggle nằm ngoài .nav-dropdown — menu đó sẽ không mở được"
+    )
+
+
+def test_main_navigation_div_tags_are_balanced():
+    """Một `</div>` thừa sẽ đóng sớm `<nav>` và đẩy các mục còn lại ra ngoài."""
+    import re
+
+    block = _main_nav_block()
+    assert len(re.findall(r"<div\b", block)) == len(re.findall(r"</div>", block))
+
+
+def test_section_titles_are_siblings_not_nested_in_a_dropdown():
+    import re
+
+    block = _main_nav_block()
+    for chunk in re.findall(r'<div class="nav-dropdown">(.*?)</div>\s*</div>', block, re.S):
+        assert "sidebar-section-title" not in chunk, (
+            "tiêu đề nhóm nằm trong .nav-dropdown sẽ render lọt vào bên trong dropdown"
+        )

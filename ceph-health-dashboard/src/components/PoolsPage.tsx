@@ -16,6 +16,9 @@ import {
   TrendingUp,
   X,
 } from "lucide-react";
+import { EmptyState } from "./EmptyState";
+import { ErrorState } from "./ErrorState";
+import { PageHeader } from "./PageHeader";
 import { useClusterSnapshotEvents } from "../useClusterSnapshotEvents";
 
 type PoolRow = {
@@ -151,12 +154,12 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   return (
     <div className="pools-workspace min-h-[620px]">
       <section className="pools-panel overflow-hidden border">
-        <header className="border-b border-slate-200 px-5 pt-5">
-          <div className="flex items-center gap-2 pb-5">
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Pools</h1>
-            {selectedRow && <><span className="text-xl text-slate-300">›</span><span className="text-lg font-normal text-slate-500">{selectedRow.name}</span></>}
-          </div>
-          <nav className="flex gap-7" aria-label="Pool navigation">
+        <div className="border-b border-slate-200 px-5 pt-5">
+          <PageHeader
+            title="Pools"
+            breadcrumb={selectedRow ? <span className="page-header__breadcrumb">› {selectedRow.name}</span> : undefined}
+          />
+          <nav className="mt-4 flex gap-7" aria-label="Pool navigation">
             <a href="/pools" className="relative inline-flex items-center gap-2 pb-3 text-sm font-semibold text-violet-700 after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-violet-600">
               <Layers3 size={17} /> Pools
             </a>
@@ -164,9 +167,13 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
               <Grid3X3 size={17} /> PGs
             </a>
           </nav>
-        </header>
+        </div>
 
-        {(bootstrap.queryError || snapshotError || snapshotMeta.last_error) && <div className="mx-5 mt-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">Không lấy được snapshot Pool: {bootstrap.queryError || snapshotError || snapshotMeta.last_error}</div>}
+        {(bootstrap.queryError || snapshotError || snapshotMeta.last_error) && (
+          <div className="mx-5 mt-4">
+            <ErrorState message={<>Không lấy được snapshot Pool: {bootstrap.queryError || snapshotError || snapshotMeta.last_error}</>} />
+          </div>
+        )}
         {snapshotMeta.collected_at && <div className="px-5 pt-3 text-xs text-slate-500" role="status" aria-live="polite"><RefreshCw size={13} className="mr-1 inline" />Snapshot generation {snapshotMeta.generation ?? 0} · {snapshotMeta.stale ? "stale" : "updated"} {snapshotMeta.age_seconds == null ? "" : `${Math.round(snapshotMeta.age_seconds)}s ago`}</div>}
         {bootstrap.createSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu tạo pool đã được gửi tới Worker.</div>}
         {bootstrap.actionSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu {actionLabels[bootstrap.actionSuccess] || bootstrap.actionSuccess} pool đã được gửi tới Worker.</div>}
@@ -208,8 +215,10 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
             <tbody>
               {filteredRows.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-3 py-12 text-center text-slate-500">
-                    {rows.length === 0 ? "Chưa có pool." : "Không tìm thấy pool phù hợp."}
+                  <td colSpan={9}>
+                    {rows.length === 0
+                      ? <EmptyState icon={Layers3} message="Chưa có pool." hint="Tạo pool đầu tiên bằng nút Create." />
+                      : <EmptyState icon={Search} message="Không tìm thấy pool phù hợp." hint="Thử đổi từ khoá tìm kiếm." />}
                   </td>
                 </tr>
               ) : paginatedRows.map((row, index) => {

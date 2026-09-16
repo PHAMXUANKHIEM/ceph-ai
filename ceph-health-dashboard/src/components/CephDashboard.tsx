@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChartNoAxesCombined, Gauge, HardDrive, PieChart, RefreshCw, Server, SquareTerminal } from "lucide-react";
+import { Activity, ChartNoAxesCombined, Gauge, HardDrive, PieChart, RefreshCw, Server, SquareTerminal, Wifi } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { CephHealthCard } from "./CephHealthCard";
+import { ErrorState } from "./ErrorState";
+import { LoadingState } from "./LoadingState";
 import { MetricPanel } from "./MetricPanel";
+import { PageHeader } from "./PageHeader";
 import { PlacementGroupsCard } from "./PlacementGroupsCard";
+import { StatusBadge } from "./StatusBadge";
 import { StatusCard } from "./StatusCard";
 import { useClusterSnapshotEvents } from "../useClusterSnapshotEvents";
 
-type StatusDatum = { title: string; value: string; subtitle: string; icon: LucideIcon };
+type StatusDatum = { title: string; value: string; subtitle: string; icon: LucideIcon; meter?: number | null };
 type DashboardHealth = {
   health: string;
   osds: { up: number | null; total: number | null };
@@ -138,43 +142,59 @@ export function CephDashboard() {
       title: "Utilization",
       value: health.utilization.percent === null ? "—" : String(health.utilization.percent) + "%",
       subtitle: formatUsed(health.utilization.bytes_used) + " in " + String(health.utilization.pools ?? "—") + " pools",
-      icon: PieChart
+      icon: PieChart, meter: health.utilization.percent
     }
   ], [health]);
 
   return (
     <main className="ceph-dashboard">
+      <PageHeader
+        eyebrow="CEPH OPERATIONS CONSOLE"
+        title="Cluster overview"
+        subtitle="Health, capacity and performance at a glance"
+        actions={
+          <>
+            <StatusBadge
+              tone={health.stale ? "warning" : "healthy"}
+              label={health.stale ? "Dữ liệu cũ" : "Đang kết nối"}
+              icon={Wifi}
+            />
+            <span className="snapshot-time">{formatAge(health.age_seconds)}</span>
+            <button className="dashboard-refresh" type="button" onClick={requestRefresh} disabled={refreshPending} aria-label="Làm mới dữ liệu">
+              <RefreshCw size={15} className={refreshPending ? "dashboard-spin" : ""} aria-hidden="true" /> Làm mới
+            </button>
+          </>
+        }
+      />
       {loadError && (
-        <div className="dashboard-live-error" role="alert">
-          <span><strong>Không tải được dữ liệu cụm đã chọn.</strong> {loadError}</span>
-          <button type="button" onClick={() => setReloadToken((value) => value + 1)}>Thử lại</button>
-        </div>
+        <ErrorState
+          message={<><strong>Không tải được dữ liệu cụm đã chọn.</strong> {loadError}</>}
+          onRetry={() => setReloadToken((value) => value + 1)}
+        />
       )}
-      {health.refreshing && (
-        <div className="dashboard-live-syncing" role="status" aria-live="polite">
-          <RefreshCw size={15} className="dashboard-spin" aria-hidden="true" />
-          <span>Đang đồng bộ dữ liệu cụm…</span>
-        </div>
-      )}
+      {health.refreshing && <LoadingState message="Đang đồng bộ dữ liệu cụm…" />}
       {!health.refreshing && health.stale && (
-        <div className="dashboard-live-stale" role="status" aria-live="polite">
-          <span>
-            Dữ liệu đang cũ — {formatAge(health.age_seconds)}
-            {health.last_error && <><br />Lỗi đồng bộ gần nhất: {health.last_error}</>}
-          </span>
-            <button type="button" onClick={requestRefresh} disabled={refreshPending}>Đồng bộ lại</button>
-        </div>
+        <ErrorState
+          tone="warning"
+          message={<>Dữ liệu đang cũ — {formatAge(health.age_seconds)}{health.last_error && <><br />Lỗi đồng bộ gần nhất: {health.last_error}</>}</>}
+          onRetry={requestRefresh}
+          retryLabel="Đồng bộ lại"
+          retryDisabled={refreshPending}
+        />
       )}
       {!health.refreshing && !health.stale && health.last_error && (
-        <div className="dashboard-live-snapshot-error" role="status" aria-live="polite">
-          <span>Lần đồng bộ gần nhất thất bại: {health.last_error}</span>
-          <button type="button" onClick={requestRefresh} disabled={refreshPending}>Đồng bộ lại</button>
-        </div>
+        <ErrorState
+          message={<>Lần đồng bộ gần nhất thất bại: {health.last_error}</>}
+          onRetry={requestRefresh}
+          retryLabel="Đồng bộ lại"
+          retryDisabled={refreshPending}
+        />
       )}
       <section className="status-grid" aria-label="Ceph status overview">
         <CephHealthCard value={health.health} />
         {statusCards.map((card) => <StatusCard key={card.title} {...card} />)}
       </section>
+      <div className="dashboard-section-label"><Activity size={15} aria-hidden="true" /> Performance snapshot</div>
       <section className="metrics-grid" aria-label="Ceph performance metrics">
         <MetricPanel title="Latency" icon={Gauge} value={health.metrics.latency_ms === null ? "—" : health.metrics.latency_ms.toFixed(2) + " ms"} subtitle="OSD average" />
         <MetricPanel title="Bandwidth" icon={ChartNoAxesCombined} value={formatRate(health.metrics.bandwidth_bps)} subtitle="Read + write" />

@@ -566,3 +566,4 @@
     nav.appendChild(section);
   });
 })();
+(function(){var b=document.querySelector(".sidebar-collapse");if(!b)return;var key="ceph-sidebar-collapsed";var set=function(v){document.body.classList.toggle("sidebar-collapsed",v);b.setAttribute("aria-expanded",String(!v));b.setAttribute("aria-label",v?"Mở rộng thanh điều hướng":"Thu gọn thanh điều hướng");b.textContent=v?"›":"‹";};var saved=window.localStorage.getItem(key)==="1";set(saved);b.addEventListener("click",function(){var v=!document.body.classList.contains("sidebar-collapsed");set(v);window.localStorage.setItem(key,v?"1":"0");});})();
