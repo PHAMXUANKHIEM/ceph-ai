@@ -31,6 +31,7 @@ from worker.code_repair import (
     RepairConfig,
     cleanup_stale_worktrees,
     clean_evidence,
+    cleanup_preserved_candidates,
     reconcile_stale_attempts_file,
     run_repair,
     _provider_command,
@@ -70,6 +71,8 @@ NIGHTLY_REGRESSION_TEST_COMMAND = (
 )
 NIGHTLY_AI_STEP_TIMEOUT_SECONDS = 1200
 NIGHTLY_MAX_REVIEW_ROUNDS = 2
+NIGHTLY_CANDIDATE_MAX_COUNT = 7
+NIGHTLY_CANDIDATE_RETENTION_SECONDS = 14 * 86400
 NIGHTLY_ANALYSIS_REPORT_LIMIT = 4_500
 NIGHTLY_ANALYSIS_TOTAL_LIMIT = 16_000
 _NIGHTLY_SECRET_RE = re.compile(
@@ -443,6 +446,15 @@ def _run_nightly_ai_improvement_locked(
         "status": "RUNNING",
     })
     _save_nightly_state(state_path, state)
+    candidate_root = state_path.parent / "nightly-ai-improvement-candidates"
+    removed_candidates = cleanup_preserved_candidates(
+        repo,
+        candidate_root,
+        keep=NIGHTLY_CANDIDATE_MAX_COUNT,
+        max_age_seconds=NIGHTLY_CANDIDATE_RETENTION_SECONDS,
+    )
+    if removed_candidates:
+        logger.info("nightly candidate cleanup removed %d old candidate(s)", len(removed_candidates))
     send_code_repair_alert(
         "🌙 AI NIGHTLY IMPROVEMENT BẮT ĐẦU\n"
         "Các analyst read-only đang rà soát; sau đó một Planner/Implementer duy nhất mới quyết định và sửa.\n"
@@ -488,7 +500,7 @@ def _run_nightly_ai_improvement_locked(
             full_access=True,
             create_commit=False,
             preserve_candidate=True,
-            candidate_root=state_path.parent / "nightly-ai-improvement-candidates",
+            candidate_root=candidate_root,
             isolate_venv=True,
             require_changed_tests=False,
             test_env_unset=NIGHTLY_TEST_ENV_UNSET,
