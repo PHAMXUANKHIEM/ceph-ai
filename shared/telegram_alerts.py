@@ -197,6 +197,8 @@ _LONG_HEX_ID_RE = re.compile(r"\b[0-9a-f]{32,}\b")
 # watcher/log_analysis.py sinh mã nội bộ dạng LOG_ANOMALY:<hash>; không phải
 # health check của Ceph nên không dùng chung câu diễn giải với chúng.
 _LOG_ANOMALY_PREFIX = "LOG_ANOMALY:"
+# Khối bằng chứng do `watcher/collector.py` dựng từ `ceph health detail`.
+_HEALTH_DETAIL_MARKER = "(ceph health detail) ---"
 
 _MACHINE_LOG_RE = re.compile(
     r"(?:traceback|stack trace|exception|container\s+(?:remove|create)|"
@@ -546,6 +548,16 @@ def _strip_container_label_noise(value: str) -> str:
 def _compact_incident_excerpt(value: str | None, limit: int) -> str:
     marker = "Dung lượng chi tiết:"
     raw = _strip_container_label_noise(value or "")
+    if marker not in raw and _HEALTH_DETAIL_MARKER in raw:
+        # Khối lý do do chính Ceph nêu là một DANH SÁCH ("entity client.X
+        # using insecure key type: aes" × N); ép cả khối về một dòng là mất
+        # hết. Log daemon phía sau vẫn gộp như cũ vì nó chỉ là bối cảnh.
+        head, separator, tail = raw.partition("\n--- ")
+        head_text = _compact_multiline(head, limit)
+        remaining = limit - len(head_text) - 1
+        if not separator or remaining <= 20:
+            return head_text
+        return f"{head_text}\n{_compact(separator.strip() + ' ' + tail, remaining)}"
     if marker not in raw:
         return _compact(raw, limit)
     before, context = raw.split(marker, 1)

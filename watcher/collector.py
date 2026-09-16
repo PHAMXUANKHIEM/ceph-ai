@@ -256,6 +256,44 @@ def _cephadm_relevant_daemon_names(host: str, daemon_prefix: str, cluster: "Clus
     ]
 
 
+_HEALTH_DETAIL_MAX_LINES = 5
+
+
+def _health_check_evidence(ceph_code: str, check_detail: dict | None) -> str:
+    """Lý do đích danh của check, do chính Ceph nêu.
+
+    `watcher/main.py` đọc `ceph health detail --format json`, nên mỗi check
+    đã kèm sẵn `summary.message` và `detail[]` — ví dụ "entity
+    client.bootstrap-rgw using insecure key type: aes". Đó chính là thứ
+    người trực cần, đã nằm trong tay và không tốn thêm lượt SSH nào.
+
+    Trước đây nó bị bỏ qua hoàn toàn: mọi mã không được đặc cách đều đi
+    thẳng tới `tail` mù vào log daemon, mà đuôi log của một MON đang rảnh
+    chỉ có bảng thống kê RocksDB và dòng khởi động từ nhiều ngày trước.
+    """
+    if not isinstance(check_detail, dict):
+        return ""
+    lines: list[str] = []
+    summary = check_detail.get("summary")
+    if isinstance(summary, dict):
+        message = str(summary.get("message") or "").strip()
+        if message:
+            lines.append(message)
+    messages = []
+    for item in check_detail.get("detail") or []:
+        message = item.get("message") if isinstance(item, dict) else item
+        message = str(message or "").strip()
+        if message:
+            messages.append(message)
+    lines.extend(messages[:_HEALTH_DETAIL_MAX_LINES])
+    remaining = len(messages) - _HEALTH_DETAIL_MAX_LINES
+    if remaining > 0:
+        lines.append(f"... và {remaining} mục tương tự")
+    if not lines:
+        return ""
+    return f"--- {ceph_code} (ceph health detail) ---\n" + "\n".join(lines)
+
+
 def _collect_cephadm_log_excerpt(host: str, ceph_code: str, cluster: "Cluster | None" = None) -> str:
     daemon_prefix = _cephadm_daemon_prefix_for_code(ceph_code)
     daemon_names = _cephadm_relevant_daemon_names(host, daemon_prefix, cluster)
@@ -482,6 +520,12 @@ done'''
     nodes = identify_relevant_nodes(ceph_code, check_detail, cluster, osd_host_map)
     exec_mode = cluster.ceph_exec_mode if cluster is not None else settings.ceph_exec_mode
     excerpt_parts = []
+    # Lý do đích danh của check đi TRƯỚC log daemon: nó là thứ trả lời đúng
+    # câu hỏi "vì sao check này kêu", còn log chỉ là bối cảnh. Đặt trước cũng
+    # là để nó sống sót khi Telegram cắt bớt đoạn trích.
+    health_evidence = _health_check_evidence(ceph_code, check_detail)
+    if health_evidence:
+        excerpt_parts.append(health_evidence)
     for host in nodes:
         if exec_mode == "cephadm":
             excerpt_parts.append(_collect_cephadm_log_excerpt(host, ceph_code, cluster))

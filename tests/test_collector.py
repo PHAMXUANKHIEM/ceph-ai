@@ -625,3 +625,57 @@ def test_bluestore_health_code_targets_cephadm_osds():
     from watcher.collector import _cephadm_daemon_prefix_for_code
 
     assert _cephadm_daemon_prefix_for_code("BLUESTORE_SLOW_OP_ALERT") == "osd."
+
+
+_AUTH_CODE_DETAIL = {
+    "severity": "HEALTH_WARN",
+    "summary": {"message": "2 client(s) are using insecure key type"},
+    "detail": [
+        {"message": "entity client.bootstrap-rgw using insecure key type: aes"},
+        {"message": "entity client.admin using insecure key type: aes"},
+    ],
+}
+
+
+def test_health_detail_becomes_the_first_piece_of_evidence(fake_ssh):
+    """`ceph health detail --format json` đã kèm lý do đích danh của check,
+    watcher đọc nó rồi vứt đi và thay bằng `tail` mù vào log daemon — thứ mà
+    trên một MON đang rảnh chỉ có bảng thống kê RocksDB và dòng khởi động từ
+    nhiều ngày trước."""
+    from config.settings import settings
+
+    fake_ssh.log_text_by_host = {h: "RocksDB noise" for h in settings.ceph_mon_nodes.split(",")}
+
+    _nodes, log_excerpt = collect_relevant_logs("AUTH_INSECURE_KEYS_ALLOWED", _AUTH_CODE_DETAIL)
+
+    assert log_excerpt.startswith("--- AUTH_INSECURE_KEYS_ALLOWED (ceph health detail) ---")
+    assert "2 client(s) are using insecure key type" in log_excerpt
+    assert "entity client.bootstrap-rgw using insecure key type: aes" in log_excerpt
+    # Log daemon vẫn được giữ làm bối cảnh, chỉ không còn đứng một mình.
+    assert "RocksDB noise" in log_excerpt
+
+
+def test_health_detail_list_is_capped(fake_ssh):
+    detail = {
+        "summary": {"message": "many clients"},
+        "detail": [{"message": f"entity client.c{i} using insecure key type: aes"} for i in range(9)],
+    }
+
+    _nodes, log_excerpt = collect_relevant_logs("AUTH_INSECURE_KEYS_ALLOWED", detail)
+
+    assert "... và 4 mục tương tự" in log_excerpt
+    assert "client.c4" in log_excerpt
+    assert "client.c5" not in log_excerpt
+
+
+def test_check_without_detail_still_collects_the_daemon_log(fake_ssh):
+    """Không phải check nào cũng có `detail[]`; khi thiếu thì log daemon vẫn
+    là bằng chứng duy nhất, phải giữ nguyên đường cũ."""
+    from config.settings import settings
+
+    fake_ssh.log_text_by_host = {h: "mon log line" for h in settings.ceph_mon_nodes.split(",")}
+
+    _nodes, log_excerpt = collect_relevant_logs("MON_CLOCK_SKEW", {"severity": "HEALTH_WARN"})
+
+    assert "ceph health detail" not in log_excerpt
+    assert "mon log line" in log_excerpt
