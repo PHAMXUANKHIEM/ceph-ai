@@ -600,3 +600,8 @@ Record before/after values for:
   focused Block Storage/chat gate passed 7 tests with one existing
   Starlette/httpx warning; Python compile, JavaScript syntax and Node 20
   frontend build passed. Commit `78a3dfe3` is pushed to `origin/main`.
+- 2026-09-16: Moved Trash restore preflight (Trash and inventory reads) into
+  the worker thread so the async route does not block the event loop, while
+  preserving cluster-specific Ceph connection handling and pool validation.
+  Trash/restore focused gate: 31 passed, 82 deselected and one existing
+  Starlette/httpx warning. Commit `43d74c52` is pushed to `origin/main`.
