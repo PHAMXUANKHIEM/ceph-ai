@@ -1,11 +1,10 @@
-"""Warm Dashboard cluster snapshots after startup.
+"""Warm Dashboard read caches after startup.
 
 The shared cluster snapshot is the source of truth for the realtime path. This
-worker hydrates it from disk without issuing a Ceph command, so a Dashboard
-restart does not turn into another collector or SSH round trip. Page routes
-remain responsible for their own compatibility fallback until RT-05 moves
-them to snapshot read models. The worker is deliberately best-effort and
-daemonized: the web process becomes ready immediately.
+worker hydrates snapshots from disk and schedules a best-effort Block Storage
+inventory refresh. Both operations run outside the web request path; the web
+process becomes ready immediately while page routes retain their compatibility
+fallbacks.
 """
 
 from __future__ import annotations
@@ -81,19 +80,33 @@ def _warm_block_storage(clusters) -> int:
     existing route uses the same cache key and loader, so it immediately sees
     the warmed result when the Ceph query finishes.
     """
-    from dashboard.routes.block_storage import _query_block_storage
+    from dashboard.routes.block_storage import (
+        BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
+        BLOCK_STORAGE_CACHE_TTL_SECONDS,
+        _query_block_storage,
+    )
 
     scheduled = 0
     for cluster in clusters:
         cache_key = f"{cluster.id}:inventory"
-        get_or_load(
-            "block-storage",
-            cache_key,
-            lambda cluster=cluster: _query_block_storage(cluster),
-            stale_ttl_seconds=1800,
-            background_on_miss=True,
-            fallback=[],
-        )
+        try:
+            get_or_load(
+                "block-storage",
+                cache_key,
+                lambda cluster=cluster: _query_block_storage(cluster),
+                ttl_seconds=BLOCK_STORAGE_CACHE_TTL_SECONDS,
+                stale_ttl_seconds=BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
+                background_on_miss=True,
+                fallback=[],
+            )
+        except Exception:
+            # One cache/executor failure must not prevent other clusters from
+            # receiving their warmup request.
+            logger.exception(
+                "Dashboard Block Storage warmup failed to schedule cluster %s",
+                cluster.id,
+            )
+            continue
         scheduled += 1
     return scheduled
 

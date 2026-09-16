@@ -1460,7 +1460,7 @@ async def volume_history_api(
 
         if not rows and _RBD_IMAGE_ID_RE.fullmatch(image):
             try:
-                inventory = _cached_rbd_inventory(cluster, pool)
+                inventory = await asyncio.to_thread(_cached_rbd_inventory, cluster, pool)
             except CephQueryError as exc:
                 logger.warning(
                     "volume_history_api: image-id lookup failed for %s/%s: %s",
