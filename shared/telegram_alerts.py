@@ -653,9 +653,9 @@ def send_volume_forecast_alert(
     )
 
 
-def send_code_repair_alert(text: str) -> None:
+def send_code_repair_alert(text: str) -> bool:
     """Send a status update for the application code-repair supervisor."""
-    _send(
+    return _send(
         settings.telegram_code_repair_bot_token,
         settings.telegram_code_repair_chat_id,
         settings.telegram_code_repair_enabled,

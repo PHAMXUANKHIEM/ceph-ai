@@ -170,6 +170,18 @@ if [ "$SYSTEMD_AVAILABLE" = "true" ] && \
   systemctl enable --now ceph-ai-nightly-ai-improvement.timer
 fi
 
+# Send the completed nightly review to the operator at 08:30 Vietnam time.
+if [ "$SYSTEMD_AVAILABLE" = "true" ] && \
+   [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement-report.service" ] && \
+   [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement-report.timer" ]; then
+  install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement-report.service" \
+    /etc/systemd/system/ceph-ai-nightly-ai-improvement-report.service
+  install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement-report.timer" \
+    /etc/systemd/system/ceph-ai-nightly-ai-improvement-report.timer
+  systemctl daemon-reload
+  systemctl enable --now ceph-ai-nightly-ai-improvement-report.timer
+fi
+
 echo "==> Stopping existing services (if running)"
 USE_SYSTEMD=false
 SYSTEMD_CORE_UNITS=(

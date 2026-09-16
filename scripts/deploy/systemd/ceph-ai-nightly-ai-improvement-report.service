@@ -1,0 +1,15 @@
+[Unit]
+Description=Send the Ceph AI nightly improvement report
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/ceph-ai
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ceph-ai
+EnvironmentFile=-/var/lib/ceph-ai/config/.env
+Environment=CEPH_AI_ENV_FILE=/var/lib/ceph-ai/config/.env
+ExecStart=/root/ceph-ai/.venv/bin/python -m worker.nightly_ai_report
+TimeoutStartSec=5min
+StandardOutput=append:/var/log/ceph-ai-nightly-ai-improvement.log
+StandardError=append:/var/log/ceph-ai-nightly-ai-improvement.log

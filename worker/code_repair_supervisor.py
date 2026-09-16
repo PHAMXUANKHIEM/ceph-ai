@@ -473,6 +473,13 @@ def _run_nightly_ai_improvement_locked(
         ),
         "analysis_reports": len(analysis_reports),
         "analysis_failures": analysis_failures,
+        # Keep a bounded, redacted preview for the 08:30 operator report.
+        # The full analyst output remains in the normal AI transcript; the
+        # state file only needs enough context to explain today's proposal.
+        "analysis_report_previews": [
+            _redact_nightly_text(report).strip()[:1_200]
+            for report in analysis_reports
+        ],
     })
     _save_nightly_state(state_path, state)
     evidence = NIGHTLY_IMPROVEMENT_EVIDENCE + analysis_context
