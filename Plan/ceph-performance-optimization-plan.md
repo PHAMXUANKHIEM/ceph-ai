@@ -504,9 +504,12 @@ Record before/after values for:
   snapshot duration, API duration/status samples, and an `X-Request-ID`
   correlation header. The admin-only `/api/debug/ceph-latency` endpoint keeps
   its original `metrics.recent` shape and exposes additive cache, collector
-  and API diagnostics. Queue-wait and retry counters still need explicit
-  production integration; no latency claim is made until benchmark data is
-  collected.
+  and API diagnostics. Queue-wait metrics are bounded at the SSH lease; retry
+  metrics are now integrated into the read-only health MON fallback with a
+  shared deadline. Authentication, host-key, command and data errors remain
+  non-retryable; mutation paths are unchanged. Current retry/correlation
+  regression gate: 126 passed, 1 warning. No latency claim is made until
+  benchmark data is collected.
 - 2026-09-16: Phase 10 is in progress. Host-level SSH lease acquisition is
   now bounded by the command deadline; queue wait and queue-wait timeout are
   recorded separately. Focused timeout, cache, collector, health and debug
@@ -514,3 +517,8 @@ Record before/after values for:
   97% because unrelated long-running tests exceeded the verification window;
   it had exposed stale test doubles for the new Paramiko timeout signature,
   including `tests/test_rgw_log.py`, which has now been updated and passes.
+- 2026-09-16: Added synchronous bounded retry instrumentation in
+  `shared/retry.py`, exposed it through the admin-only latency diagnostics,
+  and integrated it only into health transport fallback. Commit `c4677731`
+  is pushed to `origin/main`; deployment remains blocked pending runtime
+  ownership approval.
