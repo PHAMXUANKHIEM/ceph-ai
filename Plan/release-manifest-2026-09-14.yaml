@@ -7,15 +7,17 @@ target:
 status: pending_review
 
 application:
-  commit_sha: d2a844788e501de0fd2756d57f2e21f26d4ef638
-  rollback_candidate_sha: c22570ae42f83e3e2f1410b424db84fbefbbc132
-  worktree: clean
-  release_commit: d2a844788e501de0fd2756d57f2e21f26d4ef638
+  commit_sha: ceea4c0a3748608a0974c600e68526d0dcd9aa81
+  rollback_candidate_sha: d2a844788e501de0fd2756d57f2e21f26d4ef638
+  worktree: dirty_uncommitted_concurrent_changes
+  release_commit: ceea4c0a3748608a0974c600e68526d0dcd9aa81
   pushed_to_origin: true
 
 migrations:
   alembic_head: ac17d9e0f5a0
   upgrade_downgrade_tests: passed
+  sqlite_version: 3.26.0
+  full_round_trip: upgrade_head_downgrade_base_upgrade_head_passed
 
 artifacts:
   application_image: localhost/ceph-ai:local
@@ -81,11 +83,13 @@ verification:
   cache_volume_block_storage_gate_current_wave: 123_passed_1_warning
   telegram_block_volume_followup_gate_current_wave: 152_passed_1_warning
   nightly_report_gate: 4_passed
+  migration_unit_gate: 10_passed_11_warnings
+  migration_round_trip_gate: passed_on_disposable_sqlite_database
 
 deployment_gate:
   deterministic_tests: passed
   broker: passed_in_isolated_release_gate_vhost
-  worktree_review: clean_candidate_release_gate_passed_at_d2a84478
+  worktree_review: blocked_dirty_concurrent_changes_after_migration_commit
   runtime_ownership: blocked_pending_operator_decision
   global_autonomy_flags: review_required
   budget_observation: watcher_log_reports_monthly_ai_budget_at_159_5_percent

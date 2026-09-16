@@ -567,3 +567,12 @@ Record before/after values for:
   with the existing Starlette/httpx warning. Commits `e47b45eb`, `c04cf612`,
   `c22570ae`, `6afd3a8b` and `d2a84478` are pushed; rollback candidate is
   `c22570ae`.
+- 2026-09-16: Migration release-gate audit found SQLite 3.26.0 downgrade
+  failures caused by direct column drops and by batch rebuilds losing
+  expression/partial indexes. Converted 52 legacy column-drop downgrades to
+  SQLite-safe batch operations and explicitly preserved the affected incident
+  and backup indexes. The disposable `upgrade head -> downgrade base ->
+  upgrade head` round trip passed at Alembic head `ac17d9e0f5a0`; migration
+  tests passed 10 with 11 expected reflection warnings. Commit `ceea4c0a` is
+  pushed to `origin/main`. Deployment remains blocked by runtime ownership and
+  uncommitted concurrent worktree changes.
