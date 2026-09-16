@@ -121,6 +121,7 @@ def test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline(monkeypatch
     assert captured["config"].preserve_candidate is True
     assert captured["config"].candidate_root == state_path.parent / "nightly-ai-improvement-candidates"
     assert captured["config"].isolate_venv is True
+    assert captured["config"].test_runner_command == ".venv/bin/python -m pytest"
     assert captured["config"].require_changed_tests is False
     assert captured["config"].max_ai_attempts == 1
     assert captured["config"].timeout_seconds == supervisor.NIGHTLY_AI_STEP_TIMEOUT_SECONDS

@@ -124,6 +124,10 @@ def test_prepare_candidate_venv_copies_for_isolated_mode(tmp_path):
     source.mkdir(parents=True)
     worktree.mkdir()
     (source / "marker.txt").write_text("source")
+    (source / "bin").mkdir()
+    (source / "bin" / "pytest").write_text(
+        f"#!{source}/bin/python3.11\nprint('candidate')\n"
+    )
 
     code_repair._prepare_candidate_venv(
         code_repair.RepairConfig(repo=tmp_path / "source", isolate_venv=True), worktree
@@ -131,6 +135,9 @@ def test_prepare_candidate_venv_copies_for_isolated_mode(tmp_path):
 
     copied = worktree / ".venv" / "marker.txt"
     assert copied.read_text() == "source"
+    assert (worktree / ".venv" / "bin" / "pytest").read_text().startswith(
+        f"#!{worktree / '.venv' / 'bin' / 'python3.11'}\n"
+    )
     copied.write_text("candidate")
     assert (source / "marker.txt").read_text() == "source"
 
