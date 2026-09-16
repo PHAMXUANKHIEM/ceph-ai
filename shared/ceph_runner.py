@@ -284,7 +284,16 @@ class CephCommandRunner:
         label = command_name or _command_label(command)
         try:
             with self.pool.lease(host, timeout=timeout) as client:
-                _stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+                remaining = timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise CephRunnerError(
+                        host,
+                        "command",
+                        "timeout",
+                        f"command exceeded {timeout:g} seconds before execution started",
+                        (time.monotonic() - started) * 1000,
+                    )
+                _stdin, stdout, stderr = client.exec_command(command, timeout=remaining)
                 output, error_output, exit_status = self._read_channel(
                     host, stdout, stderr, timeout, started
                 )

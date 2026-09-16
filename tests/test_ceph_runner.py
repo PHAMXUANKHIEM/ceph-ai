@@ -63,6 +63,7 @@ class FakeClient:
         self.stalled = stalled
         self.auth_failed = auth_failed
         self.connect_args = None
+        self.exec_timeouts = []
         self.close_calls = 0
 
     def set_missing_host_key_policy(self, _policy):
@@ -78,6 +79,7 @@ class FakeClient:
 
     def exec_command(self, _command, timeout=None):
         assert timeout is not None
+        self.exec_timeouts.append(timeout)
         channel = FakeChannel(stalled=self.stalled)
         return None, FakeStream(channel), FakeStream(channel)
 
@@ -116,6 +118,7 @@ def test_pool_passes_separate_connect_banner_and_auth_timeouts_and_reuses_client
     assert 0 < clients[0].connect_args["timeout"] <= 1
     assert 0 < clients[0].connect_args["banner_timeout"] <= 1
     assert 0 < clients[0].connect_args["auth_timeout"] <= 1
+    assert all(0 < timeout <= 1 for timeout in clients[0].exec_timeouts)
     assert clients[0].close_calls == 1
 
 
