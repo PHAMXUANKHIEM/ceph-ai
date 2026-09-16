@@ -528,3 +528,8 @@ Record before/after values for:
   focused regression gate: 187 passed, 1 warning; compile, JavaScript syntax,
   Alembic single-head and Node 20 frontend build checks passed. Commit
   `d35beb5e` is pushed to `origin/main`.
+- 2026-09-16: Propagated correlation headers through incident and delegated
+  RabbitMQ publishers and restored them in Worker consumers, with safe header
+  validation and unchanged message payloads/retry behavior. Current focused
+  wave gate: 215 passed, 1 deselected, 1 warning. Commit `d89b1861` is pushed
+  to `origin/main`.
