@@ -201,17 +201,184 @@
     return p;
   }
 
+  // ---- Markdown tối giản cho câu trả lời của AI --------------------------
+  // Mọi node đều dựng bằng createElement + textContent, KHÔNG dùng innerHTML:
+  // nội dung đến từ mô hình ngôn ngữ, coi nó là dữ liệu không tin cậy.
+  // Trước đây cả câu trả lời là một khối textContent, nên bảng và lệnh nhiều
+  // dòng dính liền thành một đoạn chữ không đọc được.
+
+  function appendInline(parent, text) {
+    // `code`, **đậm** — phần còn lại là chữ thường.
+    var pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+    var lastIndex = 0;
+    var match;
+    while ((match = pattern.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        parent.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+      }
+      var token = match[0];
+      if (token.charAt(0) === "`") {
+        var code = document.createElement("code");
+        code.className = "chat-md-code";
+        code.textContent = token.slice(1, -1);
+        parent.appendChild(code);
+      } else {
+        var strong = document.createElement("strong");
+        strong.textContent = token.slice(2, -2);
+        parent.appendChild(strong);
+      }
+      lastIndex = pattern.lastIndex;
+    }
+    if (lastIndex < text.length) {
+      parent.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+  }
+
+  function buildCodeBlock(code, language) {
+    var wrap = document.createElement("div");
+    wrap.className = "chat-md-codeblock";
+    var bar = document.createElement("div");
+    bar.className = "chat-md-codeblock-bar";
+    var label = document.createElement("span");
+    label.textContent = language || "text";
+    bar.appendChild(label);
+    var copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "chat-md-copy";
+    copy.textContent = "Sao chép";
+    copy.addEventListener("click", function () {
+      var done = function () {
+        copy.textContent = "Đã chép";
+        window.setTimeout(function () { copy.textContent = "Sao chép"; }, 1500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code).then(done, function () { copy.textContent = "Không chép được"; });
+      } else {
+        copy.textContent = "Không chép được";
+      }
+    });
+    bar.appendChild(copy);
+    wrap.appendChild(bar);
+    var pre = document.createElement("pre");
+    var codeEl = document.createElement("code");
+    codeEl.textContent = code;
+    pre.appendChild(codeEl);
+    wrap.appendChild(pre);
+    return wrap;
+  }
+
+  function isTableRow(line) { return line.indexOf("|") !== -1 && /^\s*\|?.*\|.*$/.test(line); }
+  function splitRow(line) {
+    return line.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map(function (cell) {
+      return cell.trim();
+    });
+  }
+
+  function buildTable(rows) {
+    var table = document.createElement("table");
+    table.className = "chat-md-table";
+    var head = document.createElement("thead");
+    var headRow = document.createElement("tr");
+    splitRow(rows[0]).forEach(function (cell) {
+      var th = document.createElement("th");
+      appendInline(th, cell);
+      headRow.appendChild(th);
+    });
+    head.appendChild(headRow);
+    table.appendChild(head);
+    var body = document.createElement("tbody");
+    rows.slice(2).forEach(function (line) {
+      var tr = document.createElement("tr");
+      splitRow(line).forEach(function (cell) {
+        var td = document.createElement("td");
+        appendInline(td, cell);
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    table.appendChild(body);
+    var wrap = document.createElement("div");
+    wrap.className = "chat-md-table-wrap";
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  function renderMarkdown(target, text) {
+    var lines = String(text == null ? "" : text).split("\n");
+    var index = 0;
+    var paragraph = null;
+    var flush = function () { paragraph = null; };
+    while (index < lines.length) {
+      var line = lines[index];
+      var fence = /^\s*```(\w*)\s*$/.exec(line);
+      if (fence) {
+        flush();
+        var buffer = [];
+        index += 1;
+        while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+          buffer.push(lines[index]);
+          index += 1;
+        }
+        index += 1;
+        target.appendChild(buildCodeBlock(buffer.join("\n"), fence[1]));
+        continue;
+      }
+      // Bảng cần ít nhất dòng tiêu đề + dòng phân cách.
+      if (isTableRow(line) && index + 1 < lines.length && /^[\s|:-]+$/.test(lines[index + 1]) && lines[index + 1].indexOf("-") !== -1) {
+        flush();
+        var rows = [line, lines[index + 1]];
+        index += 2;
+        while (index < lines.length && isTableRow(lines[index])) {
+          rows.push(lines[index]);
+          index += 1;
+        }
+        target.appendChild(buildTable(rows));
+        continue;
+      }
+      var bullet = /^\s*[-*]\s+(.*)$/.exec(line);
+      if (bullet) {
+        flush();
+        var list = document.createElement("ul");
+        list.className = "chat-md-list";
+        while (index < lines.length) {
+          var item = /^\s*[-*]\s+(.*)$/.exec(lines[index]);
+          if (!item) break;
+          var li = document.createElement("li");
+          appendInline(li, item[1]);
+          list.appendChild(li);
+          index += 1;
+        }
+        target.appendChild(list);
+        continue;
+      }
+      if (!line.trim()) {
+        flush();
+        index += 1;
+        continue;
+      }
+      if (!paragraph) {
+        paragraph = document.createElement("p");
+        paragraph.className = "chat-md-p";
+        target.appendChild(paragraph);
+      } else {
+        paragraph.appendChild(document.createTextNode(" "));
+      }
+      appendInline(paragraph, line);
+      index += 1;
+    }
+  }
+
   function buildAssistantContent(content) {
     var bubble = document.createElement("div");
     bubble.className = "chat-msg-bubble";
     var marker = "\n\nNguồn đã kiểm chứng:\n";
     var markerAt = content.lastIndexOf(marker);
     if (markerAt === -1) {
-      bubble.textContent = content;
+      renderMarkdown(bubble, content);
       return bubble;
     }
     var answer = document.createElement("div");
-    answer.textContent = content.slice(0, markerAt);
+    renderMarkdown(answer, content.slice(0, markerAt));
     bubble.appendChild(answer);
     var sources = document.createElement("section");
     sources.className = "chat-evidence-sources";
@@ -1157,6 +1324,16 @@
     }
     if (!minimized) {
       scrollToBottom();
+      // Mở lại panel thì con trỏ phải ở ô nhập, nếu không người dùng bàn
+      // phím phải Tab qua cả thanh nút mới gõ được.
+      if (inputEl) inputEl.focus();
+    } else if (minimizeBtn) {
+      // Thu nhỏ làm thân panel biến mất; nếu focus đang nằm trong đó thì nó
+      // rơi về <body> và mất dấu. Trả về nút vẫn còn nhìn thấy.
+      var active = document.activeElement;
+      if (!active || active === document.body || bodyEl.contains(active)) {
+        minimizeBtn.focus();
+      }
     }
   }
 

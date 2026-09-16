@@ -146,3 +146,28 @@ def test_shared_table_classes_are_defined_once():
     css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
     assert css.count("th.num, td.num {") == 1
     assert css.count("td.truncate {") == 1
+
+
+CHAT_WIDGET = Path("dashboard/static/chat_widget.js")
+
+
+def test_assistant_markdown_is_built_as_dom_not_html_strings():
+    """Nội dung tin nhắn đến từ mô hình ngôn ngữ — dữ liệu không tin cậy.
+    Bộ render markdown phải dựng node bằng createElement/textContent; một
+    lần `innerHTML = <chuỗi mô hình trả về>` là một lỗ XSS."""
+    source = CHAT_WIDGET.read_text(encoding="utf-8")
+    start = source.index("function appendInline(parent, text)")
+    end = source.index("function buildAssistantContent(content)")
+    renderer = source[start:end]
+
+    assert "innerHTML" not in renderer
+    assert "insertAdjacentHTML" not in renderer
+    assert "createElement" in renderer and "textContent" in renderer
+
+
+def test_chat_panel_no_longer_offsets_for_the_removed_horizontal_topbar():
+    """`.topbar` đã thành sidebar dọc ở mục 1; panel vẫn trừ 53px thì hở một
+    khoảng trên đỉnh và tràn 53px dưới đáy."""
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+    assert "calc(100vh - 53px)" not in css
+    assert "top: 53px" not in css
