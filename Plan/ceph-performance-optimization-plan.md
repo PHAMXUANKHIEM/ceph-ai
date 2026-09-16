@@ -574,5 +574,14 @@ Record before/after values for:
   and backup indexes. The disposable `upgrade head -> downgrade base ->
   upgrade head` round trip passed at Alembic head `ac17d9e0f5a0`; migration
   tests passed 10 with 11 expected reflection warnings. Commit `ceea4c0a` is
-  pushed to `origin/main`. Deployment remains blocked by runtime ownership and
-  uncommitted concurrent worktree changes.
+  pushed to `origin/main`. Deployment remains blocked by runtime ownership
+  approval.
+- 2026-09-16: Completed the dashboard interaction wave: parallelized
+  independent read-only RBD inventory commands, added persistent
+  block-storage fallback, exposed volume used percentage, added dismissible
+  health errors and a responsive chat drawer, and split Performance RCA into
+  its own Telegram settings page. Focused regression gate: 260 passed with
+  one existing Starlette/httpx warning; Python compile, JavaScript syntax and
+  Node 20 frontend build passed. Commit `d588d561` is pushed to
+  `origin/main`; the worktree is clean and deployment remains blocked pending
+  runtime ownership approval.
