@@ -87,6 +87,11 @@ def test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline(monkeypatch
     captured = {}
     monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_hour", 0, raising=False)
     monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_minute", 0, raising=False)
+    # These are enabled for the normal incident-repair pipeline. Nightly
+    # must ignore them because it is review-only.
+    monkeypatch.setattr(supervisor.settings, "code_repair_push", True)
+    monkeypatch.setattr(supervisor.settings, "code_repair_deploy_staging", True)
+    monkeypatch.setattr(supervisor.settings, "code_repair_promote_main", True)
     monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: "")
     monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
 
