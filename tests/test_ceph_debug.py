@@ -19,6 +19,7 @@ def test_ceph_latency_debug_is_admin_only(dashboard_client):
     assert "cache" in response.json()
     assert "snapshot_collector" in response.json()
     assert "api" in response.json()
+    assert "retry" in response.json()
     assert response.json()["api"]["recent"]
 
 

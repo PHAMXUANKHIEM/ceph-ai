@@ -235,6 +235,31 @@ def test_query_cluster_health_with_falls_back_sequentially(monkeypatch):
     assert started == ["10.9.9.1", "10.9.9.2"]
 
 
+def test_query_cluster_health_with_retries_transport_failure_before_success(monkeypatch):
+    calls = []
+
+    def fake_run(host, command, user, key, timeout=None, *, pool=None):
+        calls.append(host)
+        if len(calls) < 3:
+            raise CephQueryError(
+                "mon unavailable",
+                ) from ceph_client.CephRunnerError(
+                    host, "connect", "unreachable", "connection reset"
+                )
+        return json.dumps({"status": "HEALTH_OK", "checks": {}})
+
+    monkeypatch.setattr(ceph_client, "_run_remote_command_with", fake_run)
+    monkeypatch.setattr(ceph_client.settings, "ceph_max_retries", 2)
+    monkeypatch.setattr(ceph_client.settings, "ceph_health_timeout", 8)
+
+    result = query_cluster_health_with(
+        ["10.9.9.1"], "ceph-mon-B", "root", "/root/.ssh/some_key"
+    )
+
+    assert result["status"] == "HEALTH_OK"
+    assert calls == ["10.9.9.1", "10.9.9.1", "10.9.9.1"]
+
+
 def test_query_cluster_health_with_raises_when_all_nodes_fail(fake_ssh):
     fake_ssh.behavior = {"10.9.9.1": "unreachable", "10.9.9.2": "unreachable"}
 

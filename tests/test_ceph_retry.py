@@ -5,7 +5,7 @@ import paramiko
 import pytest
 
 from config.settings import Settings
-from shared.retry import RetryPolicy, is_retryable_error, retry_async
+from shared.retry import RetryPolicy, get_metrics, is_retryable_error, retry_async, retry_sync
 
 
 def test_ceph_collection_defaults_are_bounded():
@@ -74,3 +74,46 @@ def test_retry_async_stops_at_configured_retry_limit():
 
     assert attempts == 3
     assert len(sleeps) == 2
+
+
+def test_retry_sync_retries_transient_failure_and_records_metrics():
+    attempts = 0
+    sleeps = []
+    before = get_metrics()
+
+    def operation():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("connection reset")
+        return "ok"
+
+    result = retry_sync(
+        operation,
+        RetryPolicy(max_retries=2, base_delay_seconds=1),
+        sleep=sleeps.append,
+        random_fn=lambda: 0.5,
+    )
+
+    after = get_metrics()
+    assert result == "ok"
+    assert attempts == 2
+    assert sleeps == [1]
+    assert after["retries_total"] == before["retries_total"] + 1
+    assert after["retry_success_total"] == before["retry_success_total"] + 1
+
+
+def test_retry_sync_does_not_retry_when_backoff_would_miss_deadline():
+    before = get_metrics()
+
+    with pytest.raises(TimeoutError):
+        retry_sync(
+            lambda: (_ for _ in ()).throw(TimeoutError("slow")),
+            RetryPolicy(max_retries=2, base_delay_seconds=1),
+            sleep=lambda _delay: pytest.fail("deadline must prevent sleeping"),
+            random_fn=lambda: 0.5,
+            deadline=0,
+        )
+
+    after = get_metrics()
+    assert after["deadline_exhausted_total"] == before["deadline_exhausted_total"] + 1

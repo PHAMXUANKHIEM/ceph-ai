@@ -17,6 +17,7 @@ from paramiko.hostkeys import HostKeyEntry, InvalidHostKey
 from config.settings import settings
 from shared import ceph_releases
 from shared.ceph_runner import CephCommandRunner, CephConnectionPool, CephRunnerError, CephSSHConfig
+from shared.retry import RetryPolicy, retry_sync
 
 logger = logging.getLogger(__name__)
 
@@ -1346,37 +1347,56 @@ def query_cluster_health_with(
     deadline = time.monotonic() + settings.ceph_health_timeout
     global last_successful_mon_node
     errors: list[str] = []
+
+    def retryable_health_error(exc: BaseException) -> bool:
+        """Retry transport failures, but never auth or command/data errors."""
+        cause = exc.__cause__
+        return isinstance(cause, CephRunnerError) and cause.kind in {
+            "timeout",
+            "unreachable",
+            "pool_wait_timeout",
+        }
+
     for host in ordered_mon_nodes(mon_nodes):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        pool = CephConnectionPool(
-            CephSSHConfig(
-                user=ssh_user,
-                key_path=ssh_key_path,
-                known_hosts_path=KNOWN_HOSTS_PATH,
-                connect_timeout=min(settings.ceph_ssh_connect_timeout, remaining),
-                banner_timeout=min(settings.ceph_ssh_banner_timeout, remaining),
-                auth_timeout=min(settings.ceph_ssh_auth_timeout, remaining),
-                max_connections=1,
-            )
-        )
         try:
-            output = _run_remote_command_with(
-                host,
-                command,
-                ssh_user,
-                ssh_key_path,
-                min(command_timeout, max(0.01, remaining)),
-                pool=pool,
+            def attempt() -> str:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CephQueryError("health collection deadline exceeded")
+                pool = CephConnectionPool(
+                    CephSSHConfig(
+                        user=ssh_user,
+                        key_path=ssh_key_path,
+                        known_hosts_path=KNOWN_HOSTS_PATH,
+                        connect_timeout=min(settings.ceph_ssh_connect_timeout, remaining),
+                        banner_timeout=min(settings.ceph_ssh_banner_timeout, remaining),
+                        auth_timeout=min(settings.ceph_ssh_auth_timeout, remaining),
+                        max_connections=1,
+                    )
+                )
+                try:
+                    return _run_remote_command_with(
+                        host,
+                        command,
+                        ssh_user,
+                        ssh_key_path,
+                        min(command_timeout, max(0.01, remaining)),
+                        pool=pool,
+                    )
+                finally:
+                    pool.close()
+
+            output = retry_sync(
+                attempt,
+                RetryPolicy(max_retries=settings.ceph_max_retries),
+                should_retry=retryable_health_error,
+                deadline=deadline,
             )
             payload = _parse_health_payload(output)
         except Exception as exc:
             logger.warning("query_cluster_health_with: %s failed: %s", host, exc)
             errors.append(f"{host}: {exc}")
             continue
-        finally:
-            pool.close()
 
         if update_sticky_fallback:
             last_successful_mon_node = host

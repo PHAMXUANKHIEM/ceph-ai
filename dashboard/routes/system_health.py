@@ -8,6 +8,7 @@ from shared.ceph_runner import get_metrics as get_ceph_runner_metrics
 from shared.ceph_query_cache import get_metrics as get_ceph_cache_metrics
 from watcher.cluster_snapshot_collector import get_metrics as get_collector_metrics
 from shared.api_observability import get_metrics as get_api_metrics
+from shared.retry import get_metrics as get_retry_metrics
 
 router = APIRouter()
 
@@ -34,4 +35,5 @@ def ceph_latency_debug(user: str = Depends(require_login)):
         "cache": get_ceph_cache_metrics(),
         "snapshot_collector": get_collector_metrics(),
         "api": get_api_metrics(),
+        "retry": get_retry_metrics(),
     }
