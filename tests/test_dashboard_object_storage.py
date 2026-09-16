@@ -58,11 +58,11 @@ def test_inventory_page_shows_empty_state_without_sample_buckets(dashboard_clien
     assert ".mgr" not in response.text
     assert 'href="/object-storage/buckets" class="nav-dropdown-item nav-dropdown-item-active">Buckets</a>' in response.text
     assert '>Object Storage</a>' not in response.text
-    assert 'role="tablist" aria-label="Tính năng Buckets"' in response.text
-    assert 'data-bucket-tab="bucket-overview-panel"' in response.text
-    assert 'data-bucket-tab="bucket-user-settings-panel"' in response.text
+    assert 'role="tablist" aria-label="Tính năng Buckets"' not in response.text
+    assert 'data-bucket-tab="bucket-overview-panel"' not in response.text
+    assert 'id="bucket-overview-panel" class="card bucket-overview-card"' in response.text
     assert 'id="s3-setting-form"' in response.text
-    assert 'id="bucket-create-panel" class="card bucket-feature-panel" role="tabpanel" hidden' in response.text
+    assert 'class="bucket-feature-panel"' not in response.text
 
 
 def test_bucket_inventory_reuses_cluster_cache(dashboard_client, monkeypatch):
@@ -78,11 +78,11 @@ def test_bucket_inventory_reuses_cluster_cache(dashboard_client, monkeypatch):
     assert calls == ["10.20.1.90"]
 
 
-def test_bucket_feature_tabs_only_show_the_selected_panel():
+def test_bucket_inventory_is_not_dependent_on_hidden_feature_tabs():
     source = open("dashboard/static/object_storage_buckets.js", encoding="utf-8").read()
-    assert 'document.querySelectorAll("[data-bucket-tab]")' in source
-    assert "panel.hidden = panel.id !== tab.dataset.bucketTab" in source
-    assert 'item.setAttribute("aria-selected", String(active))' in source
+    assert 'document.querySelectorAll("[data-bucket-tab]")' not in source
+    assert "panel.hidden = panel.id !== tab.dataset.bucketTab" not in source
+    assert 'document.getElementById("bucket-action-drawer")' in source
 
 
 def test_lifecycle_and_policy_use_option_builders_instead_of_raw_json():

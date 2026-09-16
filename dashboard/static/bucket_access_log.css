@@ -1,0 +1,107 @@
+/* Isolated layout for the Bucket Access Log workspace. */
+.bucket-audit-page { max-width: 1440px; }
+.bucket-audit-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
+.bucket-audit-eyebrow { color: var(--accent-hover); font: 700 .66rem/1.2 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; }
+.bucket-audit-header h1 { margin: 7px 0 5px; font-size: clamp(1.35rem, 2vw, 1.8rem); }
+.bucket-audit-header p { margin: 0; color: var(--text-muted); font-size: .8rem; }
+.bucket-audit-purge { color: var(--critical); border-color: var(--critical-border); white-space: nowrap; }
+.bucket-audit-panel { padding: 20px 22px 18px; border: 1px solid rgba(255,255,255,.08); border-radius: 12px; background: var(--bg-surface); box-shadow: 0 14px 36px rgba(0,0,0,.12); }
+.bucket-audit-filter-bar { display: grid; grid-template-columns: minmax(260px, 1fr) 175px 245px max-content; align-items: end; gap: 10px; margin: 0; }
+.bucket-audit-search { position: relative; min-width: 0; }
+.bucket-audit-search-icon { position: absolute; left: 11px; top: 8px; color: var(--text-faint); font-size: 1rem; pointer-events: none; }
+.bucket-audit-search input, .bucket-audit-method select, .bucket-audit-date-trigger { width: 100%; height: 38px; padding: 0 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: rgba(5,11,20,.58); color: var(--text); font: .74rem var(--font-mono); outline: none; }
+.bucket-audit-search input { padding-left: 30px; }
+.bucket-audit-search input:focus, .bucket-audit-method select:focus, .bucket-audit-date-trigger:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.bucket-audit-date-control { position: relative; }
+.bucket-audit-date-trigger { display: flex; align-items: center; gap: 8px; text-align: left; cursor: pointer; }
+.bucket-audit-date-panel { position: absolute; z-index: 5; top: calc(100% + 7px); right: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-width: 430px; padding: 13px; border: 1px solid var(--border-strong); border-radius: 9px; background: #151b28; box-shadow: 0 16px 34px rgba(0,0,0,.38); }
+.bucket-audit-date-panel[hidden] { display: none; }
+.bucket-audit-date-panel label { display: grid; gap: 5px; color: var(--text-muted); font-size: .68rem; }
+.bucket-audit-date-panel input { width: 100%; min-height: 34px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: .68rem var(--font-mono); }
+.bucket-audit-date-panel button { grid-column: 1 / -1; justify-self: end; }
+.bucket-audit-filter-submit { height: 38px; white-space: nowrap; }
+.bucket-audit-separator { height: 1px; margin: 18px 0 12px; background: var(--border); }
+.bucket-audit-status { min-height: 22px; margin: 0 0 14px; }
+.bucket-audit-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.bucket-audit-stat { display: grid; gap: 5px; min-height: 96px; padding: 14px 15px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; background: linear-gradient(135deg, rgba(79,140,255,.08), rgba(255,255,255,.015)); }
+.bucket-audit-stat:nth-child(2) { border-left-color: var(--healthy); }
+.bucket-audit-stat:nth-child(3) { border-left-color: #a78bfa; }
+.bucket-audit-stat:nth-child(4) { border-left-color: var(--warning); }
+.bucket-audit-stat-label { color: var(--text-muted); font-size: .68rem; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; }
+.bucket-audit-stat strong { overflow: hidden; color: var(--text); font: 700 1.18rem/1.25 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.bucket-audit-stat-note { color: var(--text-faint); font-size: .67rem; }
+.bucket-audit-mono { font-family: var(--font-mono) !important; }
+.bucket-audit-status-bar { display: flex; min-height: 8px; overflow: hidden; margin-top: 3px; border-radius: 99px; background: var(--bg-surface-2); }
+.bucket-audit-status-segment { min-width: 3px; }
+.bucket-audit-status-segment.is-2xx { background: var(--healthy); }
+.bucket-audit-status-segment.is-3xx { background: #60a5fa; }
+.bucket-audit-status-segment.is-4xx { background: var(--warning); }
+.bucket-audit-status-segment.is-5xx { background: var(--critical); }
+.bucket-audit-status-bar.is-empty { display: grid; place-items: center; color: var(--text-faint); font-size: .62rem; }
+.bucket-audit-status-legend { display: flex; flex-wrap: wrap; gap: 8px; color: var(--text-faint); font: .62rem var(--font-mono); }
+.bucket-audit-legend-item.is-2xx { color: var(--healthy); }
+.bucket-audit-legend-item.is-3xx { color: #60a5fa; }
+.bucket-audit-legend-item.is-4xx { color: var(--warning); }
+.bucket-audit-legend-item.is-5xx { color: var(--critical); }
+.bucket-audit-table-frame { overflow: hidden; border: 1px solid var(--border); border-radius: 9px; }
+.bucket-audit-table-scroll { overflow-x: auto; }
+.bucket-audit-table { width: 100%; min-width: 920px; table-layout: fixed; }
+.bucket-audit-table th { position: sticky; top: 0; z-index: 2; padding: 11px 13px; border-bottom: 1px solid var(--border-strong); background: #1e293b; color: var(--text-muted); font: 700 .64rem var(--font-mono); letter-spacing: .07em; white-space: nowrap; }
+.bucket-audit-table th:nth-child(1) { width: 155px; }
+.bucket-audit-table th:nth-child(2) { width: 150px; }
+.bucket-audit-table th:nth-child(3) { width: 160px; }
+.bucket-audit-table th:nth-child(4) { width: 165px; }
+.bucket-audit-table th:nth-child(6) { width: 78px; }
+.bucket-audit-table td { padding: 11px 13px; border-bottom: 1px solid rgba(255,255,255,.055); color: var(--text); font-size: .74rem; vertical-align: middle; }
+.bucket-audit-table tbody tr.bucket-audit-data-row { cursor: pointer; transition: background 160ms ease; }
+.bucket-audit-table tbody tr.bucket-audit-data-row:hover td, .bucket-audit-table tbody tr.bucket-audit-data-row.is-expanded td { background: rgba(255,255,255,.04); }
+.bucket-audit-table time, .bucket-audit-table td:nth-child(2), .bucket-audit-table .bah-col-user { overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.bucket-audit-table .bah-col-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bucket-audit-info-icon { display: inline-grid; width: 15px; height: 15px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--text-muted); font-size: .6rem; cursor: help; }
+.bucket-audit-action { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bucket-audit-method-badge, .bucket-audit-http-badge { display: inline-block; flex: 0 0 auto; padding: 3px 6px; border: 1px solid; border-radius: 4px; font: 700 .61rem var(--font-mono); }
+.bucket-audit-method-badge { border-color: rgba(96,165,250,.3); color: #93c5fd; background: rgba(96,165,250,.1); }
+.bucket-audit-method-badge.is-delete { border-color: var(--critical-border); color: var(--critical); background: var(--critical-bg); }
+.bucket-audit-method-badge.is-put, .bucket-audit-method-badge.is-post { border-color: rgba(167,139,250,.35); color: #c4b5fd; background: rgba(167,139,250,.1); }
+.bucket-audit-method-badge.is-get, .bucket-audit-method-badge.is-head { border-color: var(--healthy-border); color: var(--healthy); background: var(--healthy-bg); }
+.bucket-audit-http-badge.is-2xx { border-color: var(--healthy-border); color: var(--healthy); background: var(--healthy-bg); }
+.bucket-audit-http-badge.is-3xx { border-color: rgba(96,165,250,.3); color: #93c5fd; background: rgba(96,165,250,.1); }
+.bucket-audit-http-badge.is-4xx { border-color: var(--warning-border); color: var(--warning); background: var(--warning-bg); }
+.bucket-audit-http-badge.is-5xx { border-color: var(--critical-border); color: var(--critical); background: var(--critical-bg); }
+.bucket-audit-detail-row[hidden] { display: none; }
+.bucket-audit-detail-row td { padding: 0; background: rgba(5,11,20,.3); }
+.bucket-audit-detail-panel { display: grid; gap: 14px; padding: 15px 18px; border-top: 1px solid var(--border); }
+.bucket-audit-detail-request { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: .7rem; }
+.bucket-audit-detail-request code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bucket-audit-detail-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 18px; margin: 0; }
+.bucket-audit-detail-grid div { min-width: 0; }
+.bucket-audit-detail-grid dt { color: var(--text-faint); font-size: .64rem; }
+.bucket-audit-detail-grid dd { overflow: hidden; margin: 3px 0 0; color: var(--text); font: .69rem var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.bucket-audit-empty { padding: 42px 16px; color: var(--text-muted); text-align: center; }
+.bucket-audit-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 15px; color: var(--text-muted); font-size: .7rem; }
+.bucket-audit-page-size, .bucket-audit-pagination { display: flex; align-items: center; gap: 8px; }
+.bucket-audit-page-size select { height: 30px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: .7rem var(--font-mono); }
+.bucket-audit-page-numbers { display: flex; gap: 4px; }
+.bucket-audit-page-number { min-width: 28px; height: 28px; border: 1px solid transparent; border-radius: 5px; color: var(--text-muted); background: transparent; cursor: pointer; }
+.bucket-audit-page-number:hover, .bucket-audit-page-number.is-active { border-color: var(--accent); color: var(--text); background: var(--accent-bg); }
+.bucket-audit-page-number:disabled { cursor: default; }
+.bucket-audit-page-label { margin-left: 4px; font-family: var(--font-mono); white-space: nowrap; }
+@media (max-width: 980px) {
+  .bucket-audit-filter-bar { grid-template-columns: minmax(0, 1fr) 170px; }
+  .bucket-audit-date-control, .bucket-audit-filter-submit { grid-column: auto; }
+  .bucket-audit-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bucket-audit-detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 620px) {
+  .bucket-audit-header { flex-direction: column; gap: 12px; }
+  .bucket-audit-purge { align-self: flex-start; }
+  .bucket-audit-panel { padding: 15px 12px; }
+  .bucket-audit-filter-bar, .bucket-audit-summary { grid-template-columns: 1fr; }
+  .bucket-audit-date-panel { position: fixed; top: 50%; left: 12px; right: 12px; min-width: 0; transform: translateY(-50%); }
+  .bucket-audit-date-panel { grid-template-columns: 1fr; }
+  .bucket-audit-date-panel button { grid-column: auto; justify-self: stretch; }
+  .bucket-audit-footer { align-items: stretch; flex-direction: column; }
+  .bucket-audit-pagination { justify-content: center; flex-wrap: wrap; }
+  .bucket-audit-page-size { justify-content: space-between; }
+  .bucket-audit-detail-grid { grid-template-columns: 1fr; }
+}
