@@ -27,4 +27,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("chat_preferences", "female_address")
+    with op.batch_alter_table("chat_preferences") as batch_op:
+        batch_op.drop_column("female_address")

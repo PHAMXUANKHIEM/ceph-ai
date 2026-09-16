@@ -17,4 +17,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_rgw_access_audit_events_transaction_id", table_name="rgw_access_audit_events")
-    op.drop_column("rgw_access_audit_events", "transaction_id")
+    with op.batch_alter_table("rgw_access_audit_events") as batch_op:
+        batch_op.drop_column("transaction_id")

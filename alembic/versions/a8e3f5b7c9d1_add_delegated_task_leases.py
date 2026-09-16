@@ -21,8 +21,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_delegated_ai_subtasks_lease_until", table_name="delegated_ai_subtasks")
-    op.drop_column("delegated_ai_subtasks", "lease_until")
-    op.drop_column("delegated_ai_subtasks", "execution_owner")
+    with op.batch_alter_table("delegated_ai_subtasks") as batch_op:
+        batch_op.drop_column("lease_until")
+        batch_op.drop_column("execution_owner")
     op.drop_index("ix_delegated_ai_tasks_lease_until", table_name="delegated_ai_tasks")
-    op.drop_column("delegated_ai_tasks", "lease_until")
-    op.drop_column("delegated_ai_tasks", "execution_owner")
+    with op.batch_alter_table("delegated_ai_tasks") as batch_op:
+        batch_op.drop_column("lease_until")
+        batch_op.drop_column("execution_owner")

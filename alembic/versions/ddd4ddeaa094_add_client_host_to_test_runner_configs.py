@@ -21,4 +21,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column('test_runner_configs', 'client_host')
+    with op.batch_alter_table("test_runner_configs") as batch_op:
+        batch_op.drop_column("client_host")

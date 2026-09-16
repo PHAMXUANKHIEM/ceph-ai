@@ -42,4 +42,5 @@ def downgrade() -> None:
     with op.batch_alter_table('backup_jobs') as batch_op:
         batch_op.alter_column('backup_target_slot', type_=sa.String(length=1), existing_type=sa.String(length=16))
         batch_op.drop_constraint('fk_backup_jobs_cluster_id', type_='foreignkey')
-    op.drop_column('backup_jobs', 'cluster_id')
+    with op.batch_alter_table("backup_jobs") as batch_op:
+        batch_op.drop_column("cluster_id")

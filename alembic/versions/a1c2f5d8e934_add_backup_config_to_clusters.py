@@ -50,17 +50,31 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_column('clusters', 'backup_immutable_lock_days')
-    op.drop_column('clusters', 'backup_immutable_enabled')
-    op.drop_column('clusters', 'backup_s3_bucket')
-    op.drop_column('clusters', 'backup_s3_secret_key')
-    op.drop_column('clusters', 'backup_s3_access_key')
-    op.drop_column('clusters', 'backup_s3_endpoint')
-    op.drop_column('clusters', 'backup_ssh_landing_dir')
-    op.drop_column('clusters', 'backup_ssh_key_path')
-    op.drop_column('clusters', 'backup_ssh_user')
-    op.drop_column('clusters', 'backup_ssh_host')
-    op.drop_column('clusters', 'backup_transport')
-    op.drop_column('clusters', 'backup_full_refresh_days')
-    op.drop_column('clusters', 'backup_tracked_images')
-    op.drop_column('clusters', 'backup_enabled')
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_immutable_lock_days")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_immutable_enabled")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_s3_bucket")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_s3_secret_key")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_s3_access_key")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_s3_endpoint")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_ssh_landing_dir")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_ssh_key_path")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_ssh_user")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_ssh_host")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_transport")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_full_refresh_days")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_tracked_images")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("backup_enabled")

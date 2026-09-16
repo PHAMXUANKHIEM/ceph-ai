@@ -13,6 +13,11 @@ down_revision = "d2e3f4a5b6c7"
 branch_labels = None
 depends_on = None
 
+_IN_FLIGHT = (
+    "status IN ('NEW','DIAGNOSING','PENDING_APPROVAL','APPROVED',"
+    "'EXECUTING','VERIFYING')"
+)
+
 
 def upgrade() -> None:
     op.add_column("incidents", sa.Column("failed_at", sa.DateTime(), nullable=True))
@@ -23,5 +28,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # The active-incident index is expression-based and is not reflected by
+    # SQLite's inspector during a batch table rebuild. Preserve it explicitly
+    # while removing the column on SQLite versions without DROP COLUMN.
+    op.drop_index("uq_incidents_inflight_cluster_code", table_name="incidents")
     op.drop_index("ix_incidents_failed_at", table_name="incidents")
-    op.drop_column("incidents", "failed_at")
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_column("failed_at")
+    op.create_index(
+        "uq_incidents_inflight_cluster_code",
+        "incidents",
+        [sa.text("COALESCE(cluster_id, '')"), "ceph_code"],
+        unique=True,
+        postgresql_where=sa.text(_IN_FLIGHT),
+        sqlite_where=sa.text(_IN_FLIGHT),
+    )

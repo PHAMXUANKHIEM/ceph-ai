@@ -38,7 +38,11 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_column('clusters', 'ceph_rgw_container_name')
-    op.drop_column('clusters', 'ceph_rgw_nodes')
-    op.drop_column('clusters', 'ceph_osd_nodes')
-    op.drop_column('clusters', 'ceph_mgr_nodes')
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("ceph_rgw_container_name")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("ceph_rgw_nodes")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("ceph_osd_nodes")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("ceph_mgr_nodes")

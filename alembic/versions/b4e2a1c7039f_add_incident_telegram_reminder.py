@@ -22,4 +22,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("incidents", "telegram_reminded_at")
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_column("telegram_reminded_at")

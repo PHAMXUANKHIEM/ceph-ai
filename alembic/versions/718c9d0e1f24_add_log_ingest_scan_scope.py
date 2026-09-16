@@ -24,4 +24,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("log_ingest_runs", "scan_scope")
+    with op.batch_alter_table("log_ingest_runs") as batch_op:
+        batch_op.drop_column("scan_scope")

@@ -37,6 +37,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_column('clusters', 'telegram_enabled')
-    op.drop_column('clusters', 'telegram_chat_id')
-    op.drop_column('clusters', 'telegram_bot_token')
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("telegram_enabled")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("telegram_chat_id")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("telegram_bot_token")

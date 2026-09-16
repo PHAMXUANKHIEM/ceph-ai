@@ -31,5 +31,7 @@ def upgrade():
 
 def downgrade():
     op.drop_table("autopilot_cluster_config_audit")
-    op.drop_column("clusters", "autopilot_enabled")
-    op.drop_column("clusters", "autonomy_environment")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("autopilot_enabled")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("autonomy_environment")

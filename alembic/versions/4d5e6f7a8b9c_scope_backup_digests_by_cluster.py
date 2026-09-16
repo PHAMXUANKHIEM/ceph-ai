@@ -31,4 +31,5 @@ def downgrade() -> None:
     op.drop_index("ix_backup_digest_logs_cluster_created_at", table_name="backup_digest_logs")
     with op.batch_alter_table("backup_digest_logs") as batch_op:
         batch_op.drop_constraint("fk_backup_digest_logs_cluster_id", type_="foreignkey")
-    op.drop_column("backup_digest_logs", "cluster_id")
+    with op.batch_alter_table("backup_digest_logs") as batch_op:
+        batch_op.drop_column("cluster_id")

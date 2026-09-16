@@ -25,4 +25,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_column('incidents', 'severity')
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_column("severity")

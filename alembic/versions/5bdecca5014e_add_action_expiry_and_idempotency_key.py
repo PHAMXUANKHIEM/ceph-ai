@@ -55,5 +55,7 @@ def downgrade() -> None:
             "classification IN ('SAFE','RISKY')",
         )
     op.drop_index("uq_actions_idempotency_key_inflight", table_name="actions")
-    op.drop_column("actions", "idempotency_key")
-    op.drop_column("actions", "expires_at")
+    with op.batch_alter_table("actions") as batch_op:
+        batch_op.drop_column("idempotency_key")
+    with op.batch_alter_table("actions") as batch_op:
+        batch_op.drop_column("expires_at")

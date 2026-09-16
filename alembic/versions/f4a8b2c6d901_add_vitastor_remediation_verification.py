@@ -30,6 +30,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("vitastor_remediation_actions", "verified_at")
-    op.drop_column("vitastor_remediation_actions", "verification_error")
-    op.drop_column("vitastor_remediation_actions", "verification_attempts")
+    with op.batch_alter_table("vitastor_remediation_actions") as batch_op:
+        batch_op.drop_column("verified_at")
+    with op.batch_alter_table("vitastor_remediation_actions") as batch_op:
+        batch_op.drop_column("verification_error")
+    with op.batch_alter_table("vitastor_remediation_actions") as batch_op:
+        batch_op.drop_column("verification_attempts")

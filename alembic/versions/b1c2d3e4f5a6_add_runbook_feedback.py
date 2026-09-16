@@ -18,7 +18,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("ai_runbooks", "feedback_at")
-    op.drop_column("ai_runbooks", "feedback_by")
-    op.drop_column("ai_runbooks", "feedback_note")
-    op.drop_column("ai_runbooks", "feedback_rating")
+    with op.batch_alter_table("ai_runbooks") as batch_op:
+        batch_op.drop_column("feedback_at")
+    with op.batch_alter_table("ai_runbooks") as batch_op:
+        batch_op.drop_column("feedback_by")
+    with op.batch_alter_table("ai_runbooks") as batch_op:
+        batch_op.drop_column("feedback_note")
+    with op.batch_alter_table("ai_runbooks") as batch_op:
+        batch_op.drop_column("feedback_rating")

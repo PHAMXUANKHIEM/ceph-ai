@@ -21,8 +21,13 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_column("remediation_cases", "shadow_recorded_at")
-    op.drop_column("remediation_cases", "shadow_sample_count")
-    op.drop_column("remediation_cases", "shadow_trust_score")
-    op.drop_column("remediation_cases", "shadow_reason")
-    op.drop_column("remediation_cases", "shadow_decision")
+    with op.batch_alter_table("remediation_cases") as batch_op:
+        batch_op.drop_column("shadow_recorded_at")
+    with op.batch_alter_table("remediation_cases") as batch_op:
+        batch_op.drop_column("shadow_sample_count")
+    with op.batch_alter_table("remediation_cases") as batch_op:
+        batch_op.drop_column("shadow_trust_score")
+    with op.batch_alter_table("remediation_cases") as batch_op:
+        batch_op.drop_column("shadow_reason")
+    with op.batch_alter_table("remediation_cases") as batch_op:
+        batch_op.drop_column("shadow_decision")

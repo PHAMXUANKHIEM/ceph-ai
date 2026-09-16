@@ -20,7 +20,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("log_findings", "recovery_notified_at")
-    op.drop_column("log_findings", "recovery_checked_at")
-    op.drop_column("log_findings", "recovery_check_summary")
-    op.drop_column("log_findings", "recovery_check_code")
+    with op.batch_alter_table("log_findings") as batch_op:
+        batch_op.drop_column("recovery_notified_at")
+    with op.batch_alter_table("log_findings") as batch_op:
+        batch_op.drop_column("recovery_checked_at")
+    with op.batch_alter_table("log_findings") as batch_op:
+        batch_op.drop_column("recovery_check_summary")
+    with op.batch_alter_table("log_findings") as batch_op:
+        batch_op.drop_column("recovery_check_code")

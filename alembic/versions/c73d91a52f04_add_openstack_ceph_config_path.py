@@ -27,4 +27,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("clusters", "openstack_ceph_config_path")
+    with op.batch_alter_table("clusters") as batch_op:
+        batch_op.drop_column("openstack_ceph_config_path")

@@ -37,7 +37,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("volume_osd_mappings", "mapping_scope")
-    op.drop_column("volume_osd_mappings", "data_object_count")
-    op.drop_column("volume_osd_mappings", "sampled_objects_json")
-    op.drop_column("volume_osd_mappings", "pgids_json")
+    with op.batch_alter_table("volume_osd_mappings") as batch_op:
+        batch_op.drop_column("mapping_scope")
+    with op.batch_alter_table("volume_osd_mappings") as batch_op:
+        batch_op.drop_column("data_object_count")
+    with op.batch_alter_table("volume_osd_mappings") as batch_op:
+        batch_op.drop_column("sampled_objects_json")
+    with op.batch_alter_table("volume_osd_mappings") as batch_op:
+        batch_op.drop_column("pgids_json")

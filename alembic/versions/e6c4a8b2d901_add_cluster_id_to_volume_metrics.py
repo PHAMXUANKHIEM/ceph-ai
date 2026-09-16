@@ -29,4 +29,5 @@ def downgrade() -> None:
     op.drop_index("ix_volume_metrics_cluster_id", table_name="volume_metrics")
     with op.batch_alter_table("volume_metrics") as batch_op:
         batch_op.drop_constraint("fk_volume_metrics_cluster_id", type_="foreignkey")
-    op.drop_column("volume_metrics", "cluster_id")
+    with op.batch_alter_table("volume_metrics") as batch_op:
+        batch_op.drop_column("cluster_id")

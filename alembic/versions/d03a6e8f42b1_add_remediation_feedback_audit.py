@@ -28,5 +28,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_remediation_cases_operator_verdict_at", table_name="remediation_cases")
-    op.drop_column("remediation_cases", "operator_verdict_at")
-    op.drop_column("remediation_cases", "operator_verdict_by")
+    with op.batch_alter_table("remediation_cases") as batch_op:
+        batch_op.drop_column("operator_verdict_at")
+    with op.batch_alter_table("remediation_cases") as batch_op:
+        batch_op.drop_column("operator_verdict_by")
