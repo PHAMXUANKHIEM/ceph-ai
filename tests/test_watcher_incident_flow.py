@@ -982,3 +982,52 @@ def _record_async(sink: list):
         sink.append(envelope)
 
     return _fake_publish
+
+
+def test_ceph_muted_check_still_creates_an_incident_but_sends_no_reminder(
+    isolated_db, monkeypatch
+):
+    """`ceph health mute <CODE>` là cách chuẩn để operator tắt một cảnh báo
+    đã biết và đã chấp nhận. Trước đây ceph-aiops không đọc cờ đó nên vẫn
+    nhắc lại đều đặn qua Telegram — nút mute của Ceph thành vô nghĩa.
+
+    Incident vẫn phải được tạo: mute nghĩa là "đừng làm phiền tôi", không
+    phải "vấn đề này không tồn tại", nên Dashboard vẫn phải thấy nó."""
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        muted = Incident(
+            ceph_code="AUTH_INSECURE_KEYS_ALLOWED",
+            status=IncidentStatus.FAILED.value,
+            severity="HEALTH_WARN",
+            log_excerpt="insecure cipher aes allowed for auth",
+            detected_at=now - timedelta(hours=2),
+            created_at=now - timedelta(hours=2),
+        )
+        session.add(muted)
+        session.commit()
+
+    calls = []
+    monkeypatch.setattr(
+        watcher_main.telegram_alerts,
+        "send_incident_alert",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        watcher_main.settings, "telegram_incident_reminder_interval_seconds", 3600
+    )
+
+    sent = watcher_main.send_due_incident_reminders(
+        now, muted_ceph_codes=frozenset({"AUTH_INSECURE_KEYS_ALLOWED"})
+    )
+
+    assert sent == 0
+    assert calls == []
+    # Bỏ mute trong Ceph thì nhắc lại phải hoạt động trở lại ngay.
+    assert watcher_main.send_due_incident_reminders(now) == 1
+
+
+def test_ceph_mute_flag_is_read_from_health_detail():
+    assert watcher_main._ceph_check_is_muted({"severity": "HEALTH_WARN", "muted": True})
+    assert not watcher_main._ceph_check_is_muted({"severity": "HEALTH_WARN"})
+    assert not watcher_main._ceph_check_is_muted({"muted": False})
+    assert not watcher_main._ceph_check_is_muted(None)

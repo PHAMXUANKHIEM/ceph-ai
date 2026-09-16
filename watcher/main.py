@@ -240,8 +240,19 @@ def _is_inflight_incident_duplicate(error: IntegrityError) -> bool:
     return getattr(diagnostic, "constraint_name", None) == _INFLIGHT_INCIDENT_UNIQUE_INDEX
 
 
-def send_due_incident_reminders(now: datetime | None = None) -> int:
-    """Re-send every still-open Incident to Telegram once per configured interval."""
+def send_due_incident_reminders(
+    now: datetime | None = None,
+    *,
+    muted_ceph_codes: frozenset[str] = frozenset(),
+) -> int:
+    """Re-send every still-open Incident to Telegram once per configured interval.
+
+    `muted_ceph_codes` là các mã đang bị mute trong CHÍNH Ceph ở lần poll
+    health gần nhất. Vòng nhắc lại này đọc từ bảng Incident chứ không thấy
+    `ceph health detail`, nên nếu không truyền vào đây thì việc bỏ gửi lúc
+    tạo Incident là vô ích: cứ mỗi chu kỳ nhắc, cảnh báo đã mute lại được
+    bắn tiếp.
+    """
     now = now or datetime.utcnow()
     interval = max(60, settings.telegram_incident_reminder_interval_seconds)
     cutoff = now - timedelta(seconds=interval)
@@ -289,6 +300,9 @@ def send_due_incident_reminders(now: datetime | None = None) -> int:
             # the cluster is activated and observed again.
             if cluster is not None and not cluster.is_active:
                 continue
+            if incident.ceph_code in muted_ceph_codes:
+                # Vẫn giữ Incident cho Dashboard; chỉ không làm phiền nữa.
+                continue
             action = actions.get(incident.id)
             has_cluster_channel = bool(cluster and cluster.telegram_bot_token and cluster.telegram_chat_id)
             telegram_alerts.send_incident_alert(
@@ -326,6 +340,20 @@ async def _publish_all(envelopes: list[dict]) -> None:
     instead of a full connect+declare per incident."""
     for envelope in envelopes:
         await publisher.publish_incident(envelope)
+
+
+def _ceph_check_is_muted(check_detail: dict | None) -> bool:
+    """Ceph có cơ chế im lặng riêng: `ceph health mute <CODE>`.
+
+    `ceph health detail --format json` đánh dấu check đó `"muted": true`.
+    Đấy là operator đã biết vấn đề, đã chấp nhận, và đã bảo Ceph đừng nhắc
+    nữa — nhưng ceph-aiops vẫn nhắc lại đều đặn qua Telegram, khiến nút mute
+    của Ceph thành vô nghĩa với hệ thống này.
+
+    Incident vẫn được tạo: mute nghĩa là "đừng làm phiền tôi", không phải
+    "vấn đề này không tồn tại", nên Dashboard vẫn phải thấy nó.
+    """
+    return isinstance(check_detail, dict) and bool(check_detail.get("muted"))
 
 
 def _append_capacity_context(log_excerpt: str | None, signal_evidence_json: str | None) -> str | None:
@@ -773,6 +801,13 @@ def build_and_publish_incident(
             )
             session.commit()
 
+        if _ceph_check_is_muted(check_detail):
+            notification_muted = True
+            logger.info(
+                "build_and_publish_incident: %s bị mute trong Ceph; tạo Incident nhưng không gửi Telegram",
+                ceph_code,
+            )
+
         # Alert immediately; AI diagnosis is an enrichment and must never be
         # a delivery dependency. send_incident_alert is best-effort and
         # swallows Telegram failures, so RabbitMQ publishing still proceeds.
@@ -887,6 +922,10 @@ def run(
     last_database_size_scan_at: Optional[datetime] = None
     last_trash_capacity_scan_at: Optional[datetime] = None
     last_incident_reminder_scan_at: Optional[datetime] = None
+    # Giữ lại giữa các vòng: khi một lần poll health thất bại, dùng tiếp tập
+    # mute của lần thành công gần nhất còn hơn là coi như không có gì bị mute
+    # rồi bắn lại đúng những cảnh báo operator đã tắt.
+    muted_ceph_codes: frozenset[str] = frozenset()
     last_capability_scan_at: Optional[datetime] = None
     last_log_intel_scan_at: Optional[datetime] = None
     last_inventory_scan_at: Optional[datetime] = None
@@ -931,6 +970,11 @@ def run(
             heartbeat_recorded = True
             current_status = health.get("status")
             current_checks = frozenset(health.get("checks", {}).keys())
+            muted_ceph_codes = frozenset(
+                code
+                for code, detail in health.get("checks", {}).items()
+                if _ceph_check_is_muted(detail)
+            )
             status_now = datetime.utcnow()
             if (
                 last_health_status_sent_at is None
@@ -1115,7 +1159,7 @@ def run(
             or (now - last_incident_reminder_scan_at).total_seconds() >= 60
         ):
             try:
-                send_due_incident_reminders(now)
+                send_due_incident_reminders(now, muted_ceph_codes=muted_ceph_codes)
             except Exception:
                 logger.exception("run: Telegram incident reminder scan failed")
             last_incident_reminder_scan_at = now
@@ -1469,6 +1513,14 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
                 session, incident, now=detected_at,
             )
             session.commit()
+
+        if _ceph_check_is_muted(check_detail):
+            notification_muted = True
+            logger.info(
+                "cluster %s: %s bị mute trong Ceph; tạo Incident nhưng không gửi Telegram",
+                cluster.id,
+                ceph_code,
+            )
 
         has_cluster_channel = bool(cluster.telegram_bot_token and cluster.telegram_chat_id)
         if not notification_muted:
