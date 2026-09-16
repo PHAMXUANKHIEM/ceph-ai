@@ -16,6 +16,7 @@ install -m 0644 "$REPO_DIR/scripts/deploy/logrotate/ceph-ai" /etc/logrotate.d/ce
 systemctl daemon-reload
 systemctl enable ceph-ai-watcher ceph-ai-worker ceph-ai-dashboard ceph-ai-ai-pricing.timer ceph-ai-ai-task-cleanup.timer ceph-ai-nightly-ai-improvement.timer ceph-ai-nightly-ai-improvement-report.timer
 systemctl start ceph-ai-ai-task-cleanup.timer
+systemctl start ceph-ai-nightly-ai-improvement.timer ceph-ai-nightly-ai-improvement-report.timer
 # Retire the legacy nohup processes before systemd takes ownership. Anchored
 # command patterns cannot match this installer shell itself.
 pkill -TERM -f '^/root/ceph-ai/.venv/bin/python -m watcher.main$' || true

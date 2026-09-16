@@ -32,6 +32,11 @@ def _save_state(path: Path, value: dict) -> None:
     os.replace(temporary, path)
 
 
+def _report_state_path(nightly_state_path: Path) -> Path:
+    """Keep delivery bookkeeping separate from the writer's nightly state."""
+    return nightly_state_path.with_name("nightly-ai-improvement-report.json")
+
+
 def _clip(value: object, limit: int) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
@@ -113,14 +118,27 @@ def build_morning_report(state: dict, *, now: datetime | None = None) -> str:
     if state.get("error"):
         lines.append(f"Lỗi: {_clip(state['error'], 700)}")
 
+    recommendation = _recommendation(state)
+    recommendation_lines = ["Đề xuất nên làm hôm nay:", recommendation]
+    # Reserve space for the recommendation first. Analyst previews are useful
+    # context, but must never push the operator's next action out of Telegram.
+    mandatory = "\n".join(lines + recommendation_lines)
+    remaining = MAX_TELEGRAM_CHARS - len(mandatory)
     previews = state.get("analysis_report_previews") or []
-    if previews:
-        lines.append("Đề xuất từ analyst:")
+    if previews and remaining > len("\nĐề xuất từ analyst:\n") + 40:
+        preview_lines = ["Đề xuất từ analyst:"]
+        remaining -= len("\n".join(preview_lines)) + 1
         for index, preview in enumerate(previews[:3], 1):
-            lines.append(f"{index}. {_clip(preview, 650)}")
-    lines.append("Đề xuất nên làm hôm nay:")
-    lines.append(_recommendation(state))
-    return "\n".join(lines)[:MAX_TELEGRAM_CHARS]
+            label = f"{index}. "
+            budget = min(650, remaining - len(label) - 1)
+            if budget < 40:
+                break
+            item = f"{label}{_clip(preview, budget)}"
+            preview_lines.append(item)
+            remaining -= len(item) + 1
+        lines.extend(preview_lines)
+    lines.extend(recommendation_lines)
+    return "\n".join(lines)
 
 
 def _notify_bootstrap_failure(exc: Exception) -> None:
@@ -148,15 +166,17 @@ def main() -> int:
         now = datetime.now(timezone.utc)
         state_path = Path(settings.ai_nightly_improvement_state_file)
         state = _load_state(state_path)
+        report_state_path = _report_state_path(state_path)
+        delivery_state = _load_state(report_state_path)
         report_date = now.astimezone(NIGHTLY_TIMEZONE).date().isoformat()
-        if state.get("morning_report_date") == report_date:
+        if delivery_state.get("morning_report_date") == report_date:
             logger.info("morning nightly report already sent for %s", report_date)
             return 0
         sent = send_code_repair_alert(build_morning_report(state, now=now))
         if sent:
-            state["morning_report_date"] = report_date
-            state["morning_report_sent_at"] = now.isoformat()
-            _save_state(state_path, state)
+            delivery_state["morning_report_date"] = report_date
+            delivery_state["morning_report_sent_at"] = now.isoformat()
+            _save_state(report_state_path, delivery_state)
             logger.info("morning nightly report sent for %s", report_date)
         else:
             logger.warning("morning nightly report was not sent; Telegram channel is unavailable or disabled")
