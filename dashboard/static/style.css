@@ -3986,6 +3986,76 @@ body > .page { flex: 1 1 auto; min-width: 0; }
 /* Cột phải chứa nhiều phần tử (nút Sau + nhãn "N mỗi trang"). */
 .pagination-end { display: flex; align-items: center; gap: 12px; }
 
+/* ===== Volume Performance workspace =======================================
+   Keep read-only volume telemetry compact and visually separate from the
+   fio benchmark action. These selectors are scoped to this page so shared
+   dashboard cards keep their existing layout. */
+.performance-tabbed-page { width: 100%; flex-direction: column; gap: 14px; }
+.performance-tabbed-page .tabbed-sidebar { width: 100%; flex: 0 0 auto; flex-direction: row; align-items: center; gap: 6px; overflow-x: auto; position: static; padding: 7px; }
+.performance-pool-selector .node-sidebar-header { flex: 0 0 auto; padding: 0 8px; }
+.performance-pool-selector .tabbed-nav-item { flex: 0 0 auto; min-width: 104px; text-align: center; }
+.performance-tabbed-page .tabbed-content { width: 100%; }
+.performance-card-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.performance-card-header h1,
+.performance-card-header h2 { margin: 3px 0 4px; color: #f8fafc; letter-spacing: -.03em; }
+.performance-card-header h1 { font-size: clamp(1.35rem, 2vw, 1.8rem); }
+.performance-card-header h2 { font-size: 1.15rem; }
+.performance-card-header p { margin: 0; color: var(--text-muted); font-size: .78rem; }
+.performance-eyebrow,
+.performance-pool-badge span,
+.performance-step-label { color: var(--accent-hover); font: 700 .63rem/1.2 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+.performance-pool-badge { display: grid; gap: 4px; min-width: 120px; padding: 9px 12px; border: 1px solid rgba(var(--brand-primary-rgb), .28); border-radius: var(--radius-md); background: rgba(var(--brand-primary-rgb), .07); text-align: right; }
+.performance-pool-badge strong { color: #e2e8f0; font: 700 .82rem/1.2 var(--font-mono); }
+.performance-monitor-body { display: grid; gap: 16px; }
+.performance-selector { display: grid; grid-template-columns: minmax(130px, .35fr) minmax(260px, 1fr) auto auto; align-items: end; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: rgba(5, 11, 20, .34); }
+.performance-step { display: grid; gap: 6px; min-width: 0; color: var(--text-muted); font-size: .72rem; font-weight: 600; }
+.performance-pool-step { min-height: 40px; align-content: center; padding: 0 10px; border-right: 1px solid var(--border); }
+.performance-pool-step strong { overflow: hidden; color: var(--text); font: 600 .84rem/1.2 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.performance-selector input { width: 100%; min-height: 40px; padding: .55rem .7rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: rgba(5, 11, 20, .72); color: var(--text); font: .84rem var(--font-mono); }
+.performance-selector input:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.performance-clear-btn[hidden] { display: none; }
+.performance-selected-volume { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-muted); font-size: .74rem; }
+.performance-selected-volume code { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.performance-selected-volume[hidden] { display: none; }
+#volumes-panel .metrics-stack { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+#volumes-panel .metric-section { min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: rgba(5, 11, 20, .27); }
+#volumes-panel .metric-section:first-child,
+#volumes-panel .metric-section:last-child { padding-top: 14px; padding-bottom: 14px; }
+#volumes-panel .metric-section + .metric-section { border-top: 1px solid var(--border); }
+#volumes-panel .metric-section-head { flex-wrap: wrap; min-height: 42px; margin-bottom: 7px; }
+#volumes-panel .metric-chart-wrap { height: 142px; }
+#volumes-panel .chart-empty-overlay { font-size: .72rem; }
+.performance-benchmark-card { border-color: rgba(148, 163, 184, .22); }
+.performance-benchmark-header { align-items: flex-start; }
+.performance-benchmark-body { display: grid; gap: 14px; }
+.benchmark-warning { border: 1px solid rgba(69, 202, 174, .22); border-radius: var(--radius-sm); background: rgba(43, 197, 165, .06); }
+.benchmark-warning summary { padding: 9px 12px; cursor: pointer; color: #8aefd9; font-size: .76rem; font-weight: 650; }
+.benchmark-warning p { margin: 0; padding: 0 12px 10px; color: var(--text-muted); font-size: .75rem; line-height: 1.5; }
+.benchmark-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; max-width: none; }
+.benchmark-form label { min-width: 0; }
+.benchmark-form button { grid-column: 1 / -1; }
+.performance-monitor-card .metrics-error-footer { margin-top: 0; }
+@media (max-width: 900px) {
+  #volumes-panel .metrics-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .performance-selector { grid-template-columns: minmax(130px, .45fr) minmax(220px, 1fr) auto; }
+  .performance-clear-btn { grid-column: 3; grid-row: 1; }
+}
+@media (max-width: 640px) {
+  html { overflow-x: hidden; }
+  body.app-shell { overflow-x: hidden; }
+  .performance-card-header { align-items: flex-start; flex-wrap: wrap; }
+  .performance-pool-badge { order: 3; width: 100%; text-align: left; }
+  .performance-selector { grid-template-columns: 1fr auto; }
+  .performance-pool-step { grid-column: 1 / -1; border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 9px; }
+  .performance-volume-step { grid-column: 1 / -1; }
+  .performance-selector > button[type="submit"] { grid-column: 1; }
+  .performance-clear-btn { grid-column: 2; grid-row: auto; }
+  #volumes-panel .metrics-stack { grid-template-columns: 1fr; }
+  #volumes-panel .metric-chart-wrap { height: 128px; }
+  .benchmark-form { grid-template-columns: 1fr; }
+  .benchmark-form button { grid-column: auto; }
+}
+
 /* ===== Trash & Restore workspace ======================================= */
 .trash-page { max-width: 1440px; gap: 20px; }
 .trash-page-header,

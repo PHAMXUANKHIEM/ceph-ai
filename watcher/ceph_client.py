@@ -380,6 +380,26 @@ def query_rbd_inventory_with(
     return _normalize_rbd_inventory(payload)
 
 
+def query_rbd_image_usage(pool: str, image: str) -> RbdInventoryEntry | None:
+    """Return the latest provisioned/used byte counts for one live image."""
+    _, payload = run_ceph_json_command(
+        f"rbd du {shlex.quote(pool)}/{shlex.quote(image)} --format json"
+    )
+    return next((row for row in _normalize_rbd_inventory(payload) if row["name"] == image), None)
+
+
+def query_rbd_image_usage_with(
+    pool: str, image: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> RbdInventoryEntry | None:
+    """Cluster-scoped counterpart to :func:`query_rbd_image_usage`."""
+    _, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd du {shlex.quote(pool)}/{shlex.quote(image)} --format json",
+    )
+    return next((row for row in _normalize_rbd_inventory(payload) if row["name"] == image), None)
+
+
 def _normalize_rbd_image_detail(
     pool: str, image: str, info: dict | list, snapshots: dict | list,
     status: dict | list, children: dict | list, errors: dict | None = None,
@@ -1282,6 +1302,7 @@ def run_ceph_json_command_with(
 
 JSON_BATCH_MAX_PARALLEL = 8
 
+
 def _build_json_batch_script(inner_commands: list[str], *, parallel: bool = False) -> str:
     """Build the bounded remote script used by JSON batch queries.
 
@@ -1387,6 +1408,8 @@ def run_ceph_json_batch_command_with(
                 logger.warning("run_ceph_json_batch_command_with: invalid response frame %s from %s", index, host)
         return host, parsed
     raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
+
+
 def _parse_health_payload(raw_output: str) -> dict:
     payload = json.loads(raw_output)
     if not isinstance(payload, dict) or payload.get("status") not in VALID_STATUSES:

@@ -1085,6 +1085,20 @@ def test_normalize_rbd_inventory_includes_idle_images_and_snapshot_count():
     ]
 
 
+def test_query_rbd_image_usage_returns_one_image(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": {
+            "images": [{"name": "vm-01", "provisioned_size": 10 * 1024, "used_size": 2048}]
+        }
+    }
+
+    assert ceph_client.query_rbd_image_usage("vms", "vm-01") == {
+        "name": "vm-01", "image_id": None, "provisioned_size": 10240,
+        "used_size": 2048, "used_percent": 20.0, "snapshot_count": 0,
+    }
+
+
 def test_normalize_rbd_image_detail_exposes_dependencies_and_watchers():
     detail = ceph_client._normalize_rbd_image_detail(
         "vms", "clone",

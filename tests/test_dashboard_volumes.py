@@ -1153,6 +1153,44 @@ def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
     assert "bỏ qua TTL" in response.text
 
 
+def test_trash_page_uses_saved_usage_snapshot_when_ceph_trash_has_no_usage(
+    dashboard_client, monkeypatch
+):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash",
+        lambda pool: [{**_fake_trash_entry(), "used_size_bytes": None}],
+    )
+    with db_module.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        incident = Incident(
+            cluster_id=cluster.id,
+            ceph_code="RBD_VOLUME_TRASH_MOVE",
+            status=IncidentStatus.RESOLVED.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        session.add(Action(
+            incident_id=incident.id,
+            action_id="rbd_trash_move_volume",
+            classification="RISKY",
+            status=ActionStatus.EXECUTED.value,
+            action_params=json.dumps({
+                "pool_name": "vms", "image": "old-disk",
+                "trash_usage": {"used_size_bytes": 268435456},
+            }),
+            executed_at=datetime.utcnow(),
+        ))
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/trash?pool=vms")
+
+    assert response.status_code == 200
+    assert "256.0 MiB" in response.text
+
+
 def test_trash_landing_page_does_not_scan_every_pool(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     calls = []
@@ -1898,6 +1936,13 @@ def test_volume_inventory_rejects_inactive_cluster_without_default_fallback(dash
 def _stub_volume_mutation_preflight(monkeypatch, *, current_size=10 * 1024 ** 3, max_available=100 * 1024 ** 3):
     monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [])
     monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_usage",
+        lambda pool, image: {
+            "name": image, "image_id": "image-id", "provisioned_size": current_size,
+            "used_size": 3 * 1024 ** 3, "used_percent": 30.0, "snapshot_count": 0,
+        },
+    )
+    monkeypatch.setattr(
         volumes_route.ceph_client, "query_rbd_image_detail",
         lambda pool, image: {"pool": pool, "name": image, "size": current_size},
     )
@@ -2132,9 +2177,12 @@ def test_propose_trash_move_accepts_ceph_scratch_image_with_leading_underscore(
     assert response.status_code == 201
     with db_module.SessionLocal() as session:
         action = session.get(Action, response.json()["action_id"])
-        assert json.loads(action.action_params) == {
-            "pool_name": "vms", "image": "_ceph_aiops_perf_probe"
-        }
+        params = json.loads(action.action_params)
+        assert params["pool_name"] == "vms"
+        assert params["image"] == "_ceph_aiops_perf_probe"
+        assert params["trash_usage"]["provisioned_size_bytes"] == 10 * 1024 ** 3
+        assert params["trash_usage"]["used_size_bytes"] == 3 * 1024 ** 3
+        assert params["trash_usage"]["used_percent"] == 30.0
 
 
 def test_propose_trash_move_blocks_running_backup(dashboard_client, monkeypatch):

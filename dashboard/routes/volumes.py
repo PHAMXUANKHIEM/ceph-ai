@@ -355,6 +355,41 @@ def _latest_vm_perf_action() -> Action | None:
         )
 
 
+def _trash_usage_snapshots(cluster, pool: str) -> dict[str, dict]:
+    """Return usage captured when each volume was proposed for Trash.
+
+    RBD Trash keeps the original image name for display, but the live image
+    is no longer in the normal image directory. The move Action is therefore
+    the durable local record that can be joined back to a Trash entry without
+    rescanning its objects.
+    """
+    snapshots: dict[str, dict] = {}
+    with db.SessionLocal() as session:
+        actions = (
+            session.query(Action)
+            .join(Incident, Incident.id == Action.incident_id)
+            .filter(
+                Incident.cluster_id == cluster.id,
+                Action.action_id == "rbd_trash_move_volume",
+                Action.status == ActionStatus.EXECUTED.value,
+            )
+            .order_by(Action.executed_at.desc(), Action.created_at.desc())
+            .all()
+        )
+    for action in actions:
+        try:
+            params = json.loads(action.action_params or "{}")
+            snapshot = params.get("trash_usage") if isinstance(params, dict) else None
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(params, dict) or params.get("pool_name") != pool:
+            continue
+        image = params.get("image")
+        if isinstance(image, str) and image and isinstance(snapshot, dict) and image not in snapshots:
+            snapshots[image] = snapshot
+    return snapshots
+
+
 def _volumes_page_context(
     request: Request,
     user: str,
@@ -440,6 +475,11 @@ def _volumes_page_context(
                 continue
             rows = result
             try:
+                usage_snapshots = _trash_usage_snapshots(cluster, trash_pool)
+                for row in rows:
+                    snapshot = usage_snapshots.get(row.get("name"))
+                    if row.get("used_size_bytes") is None and isinstance(snapshot, dict):
+                        row["used_size_bytes"] = snapshot.get("used_size_bytes")
                 retention_rows = [_trash_retention(dict(row)) for row in rows]
                 protected_count = sum(1 for retention in retention_rows if retention["retention_kind"] == "ceph_protected")
                 expiring_count = sum(1 for retention in retention_rows if retention.get("expiring_soon"))
@@ -1179,8 +1219,15 @@ async def propose_volume_trash_move(
             if cluster.is_default
             else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
         )
+        usage = (
+            ceph_client.query_rbd_image_usage(pool, image)
+            if cluster.is_default
+            else ceph_client.query_rbd_image_usage_with(pool, image, *cluster_connection(cluster))
+        )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không chạy được preflight chuyển Trash: {exc}")
+    if usage is None:
+        raise HTTPException(status_code=502, detail="Không xác định được dung lượng đã dùng của Volume trước khi chuyển Trash")
     blockers = []
     if detail.get("watchers"):
         blockers.append("watcher/attachment")
@@ -1203,8 +1250,15 @@ async def propose_volume_trash_move(
         blockers.append("backup đang chạy")
     if blockers:
         raise HTTPException(status_code=409, detail="Không thể chuyển Trash khi còn dependency: " + ", ".join(blockers))
+    trash_usage = {
+        "provisioned_size_bytes": int(usage["provisioned_size"]),
+        "used_size_bytes": int(usage["used_size"]),
+        "used_percent": float(usage["used_percent"]),
+        "observed_at": datetime.utcnow().isoformat() + "Z",
+    }
     action_pk = _propose_rbd_volume_mutation(
         cluster=cluster, pool=pool, image=image, action_id="rbd_trash_move_volume",
+        extra_params={"trash_usage": trash_usage},
         ceph_code=RBD_VOLUME_TRASH_MOVE_CEPH_CODE, user=user,
         idempotency_key=idempotency_key,
         rationale=f"Chuyển mềm Volume {pool}/{image} vào RBD Trash để có thể khôi phục",
