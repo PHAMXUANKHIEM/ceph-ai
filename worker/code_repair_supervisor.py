@@ -493,9 +493,13 @@ def _run_nightly_ai_improvement_locked(
             test_env_unset=NIGHTLY_TEST_ENV_UNSET,
             test_env_file="/dev/null",
             timeout_seconds=min(settings.code_repair_timeout_seconds, NIGHTLY_AI_STEP_TIMEOUT_SECONDS),
-            push=settings.code_repair_push,
-            deploy_staging=settings.code_repair_deploy_staging,
-            promote_main=settings.code_repair_promote_main,
+            # Nightly produces an uncommitted candidate for human review.
+            # Do not inherit the production repair pipeline's promotion
+            # settings: those settings may intentionally be enabled for
+            # incident repair and must not make this review-only job fail.
+            push=False,
+            deploy_staging=False,
+            promote_main=False,
             state_file=repair_state,
             task_kind="nightly-ai-improvement",
             task_instructions=NIGHTLY_IMPROVEMENT_INSTRUCTIONS,
