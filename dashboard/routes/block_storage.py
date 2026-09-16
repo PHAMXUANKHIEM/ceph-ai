@@ -192,7 +192,8 @@ async def block_storage_page(
             "block-storage",
             cache_key,
             lambda: _query_block_storage(cluster),
-            stale_ttl_seconds=1800,
+            ttl_seconds=BLOCK_STORAGE_CACHE_TTL_SECONDS,
+            stale_ttl_seconds=BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
             background_on_miss=not _uses_mocked_ceph_client(),
             fallback=BlockStorageInventory(pools=[]),
         )

@@ -288,6 +288,8 @@ def test_volumes_page_shows_hint_when_no_pools_configured_and_none_discovered(da
     monkeypatch.setattr(
         volumes_route,
         "get_cached_ceph_query",
+        lambda _namespace, _key, loader, **_kwargs: loader(),
+    )
     _login(dashboard_client)
 
     response = dashboard_client.get("/volumes")

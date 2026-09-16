@@ -69,7 +69,8 @@ def test_get_telegram_alerts_shows_compact_overview_for_admin(dashboard_client):
     assert 'href="/telegram-alerts/incident"' in response.text
     assert 'href="/telegram-alerts/node"' in response.text
     assert 'href="/telegram-alerts/code-repair"' in response.text
-    assert 'href="/telegram-alerts/rgw"' in response.text
+    for channel in ("backup", "incident", "rbd-forecast", "node", "code-repair", "rgw", "vault", "chatbox-ai"):
+        assert f'href="/telegram-alerts/{channel}"' in response.text
     assert response.text.count('class="telegram-overview-item') == 8
     assert '<details class="telegram-channel"' not in response.text
     assert 'class="telegram-history-details"' not in response.text
