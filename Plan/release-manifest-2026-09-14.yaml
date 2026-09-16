@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: b41b16b1acfdc870dc4aeab7cc768b5a493885b9
-  rollback_candidate_sha: 62ed53ff1d8a035f7e86a5c10f89216267da93dd
+  commit_sha: d2a844788e501de0fd2756d57f2e21f26d4ef638
+  rollback_candidate_sha: c22570ae42f83e3e2f1410b424db84fbefbbc132
   worktree: clean
-  release_commit: b41b16b1acfdc870dc4aeab7cc768b5a493885b9
+  release_commit: d2a844788e501de0fd2756d57f2e21f26d4ef638
   pushed_to_origin: true
 
 migrations:
@@ -77,12 +77,15 @@ verification:
   backup_restore_gate_current_wave: 21_engine_3_integrity_11_restore_6_restore_drill_3_ssh_executor_11_s3_13_ssh_storage_passed
   dashboard_wave_gate_current_wave: 6_block_storage_28_navigation_150_settings_8_alerts_8_pgs_24_crush_passed
   restore_telegram_regression_gate_current_wave: 177_passed_1_warning
+  telegram_volume_ui_gate_current_wave: 180_passed_1_warning
+  cache_volume_block_storage_gate_current_wave: 123_passed_1_warning
+  telegram_block_volume_followup_gate_current_wave: 152_passed_1_warning
   nightly_report_gate: 4_passed
 
 deployment_gate:
   deterministic_tests: passed
   broker: passed_in_isolated_release_gate_vhost
-  worktree_review: clean_candidate_release_gate_passed_at_b41b16b1
+  worktree_review: clean_candidate_release_gate_passed_at_d2a84478
   runtime_ownership: blocked_pending_operator_decision
   global_autonomy_flags: review_required
   budget_observation: watcher_log_reports_monthly_ai_budget_at_159_5_percent

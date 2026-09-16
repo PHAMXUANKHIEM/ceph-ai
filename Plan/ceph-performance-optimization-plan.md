@@ -558,3 +558,12 @@ Record before/after values for:
   added regression coverage for both waves. The combined current-wave gate
   passed 177 tests with one existing Starlette/httpx warning. Commit
   `b41b16b1` is pushed to `origin/main`; rollback candidate is `62ed53ff`.
+- 2026-09-16: Isolated finite Watcher transition tests from slow secondary
+  collectors so they do not open SSH connections to fixture MON addresses;
+  the targeted transition test passed. Refined the Telegram overview/detail
+  navigation and Volume Performance layout, then moved RBD image-ID lookup
+  off the event loop and made Block Storage warmup/cache TTL handling
+  consistent. Current gates passed 180, 123 and 152 tests respectively, each
+  with the existing Starlette/httpx warning. Commits `e47b45eb`, `c04cf612`,
+  `c22570ae`, `6afd3a8b` and `d2a84478` are pushed; rollback candidate is
+  `c22570ae`.
