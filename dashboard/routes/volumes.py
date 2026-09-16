@@ -1212,12 +1212,27 @@ async def propose_volume_trash_move(
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
 
 
+def _query_trash_restore_preflight(cluster, pool: str):
+    trash = (
+        ceph_client.query_rbd_trash(pool)
+        if cluster.is_default
+        else ceph_client.query_rbd_trash_with(pool, *cluster_connection(cluster))
+    )
+    inventory = (
+        ceph_client.query_rbd_inventory(pool)
+        if cluster.is_default
+        else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+    )
+    return trash, inventory
+
+
 @router.post("/api/volumes/{pool}/trash/{trash_id}/restore")
 async def propose_volume_trash_restore(
     request: Request, pool: str, trash_id: str, user: str = Depends(require_login)
 ):
     _require_admin_privilege(user)
-    cluster, allowed_pools = _allowed_pools_for_request(request)
+    cluster = _cluster_for_request(request)
+    allowed_pools = set(await asyncio.to_thread(_rbd_pools_for_request, request))
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     body = await request.json()
@@ -1231,15 +1246,8 @@ async def propose_volume_trash_restore(
     if replay:
         return replay
     try:
-        trash = (
-            ceph_client.query_rbd_trash(pool)
-            if cluster.is_default
-            else ceph_client.query_rbd_trash_with(pool, *cluster_connection(cluster))
-        )
-        inventory = (
-            ceph_client.query_rbd_inventory(pool)
-            if cluster.is_default
-            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+        trash, inventory = await asyncio.to_thread(
+            _query_trash_restore_preflight, cluster, pool
         )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không chạy được preflight restore Trash: {exc}")
