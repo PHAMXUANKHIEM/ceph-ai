@@ -610,3 +610,10 @@ Record before/after values for:
   the only scrolling region and long assistant output collapses at 200px.
   Focused gate: 8 passed with one existing Starlette/httpx warning; Node 20
   frontend build passed. Commit `1046ffe9` is pushed to `origin/main`.
+- 2026-09-16: Added durable Trash usage telemetry: the risky Trash-move
+  proposal records provisioned/used bytes and percentage in action parameters,
+  and the Trash page restores that snapshot when Ceph no longer reports usage
+  for the deleted image. The current ordering defers the expensive usage scan
+  until dependency checks pass. Focused usage/snapshot gate: 4 passed, 224
+  deselected and one existing Starlette/httpx warning. Commits `3ad0ca62` and
+  `2330c8a8` are pushed to `origin/main`.
