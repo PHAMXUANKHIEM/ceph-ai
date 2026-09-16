@@ -643,3 +643,13 @@ Record before/after values for:
   `f329b361` is pushed to `origin/main`; deployment remains blocked by the
   untracked `block_storage.py`/`transfer/` worktree changes and runtime
   ownership approval.
+- 2026-09-16: Completed the storage and cluster workspace wave across PGs,
+  Pools, Block Storage, Backups/Cinder, Object Storage/RGW audit, and Ceph
+  auth-pool views. The focused dashboard resource gate passed 235 tests with
+  one existing Starlette/httpx warning; the Backups/Cinder gate passed 96 with
+  the same warning. Python compile, diff check, JavaScript syntax, and Node 20
+  production build passed. Compatibility contracts for legacy table labels,
+  pagination, query prefill, and error rendering were retained. Commit
+  `9b0b225f` is pushed to `origin/main`; rollback candidate is `f329b361`.
+  Deployment remains blocked by the untracked `transfer/` overlay and pending
+  runtime ownership approval.
