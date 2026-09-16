@@ -34,6 +34,15 @@
     return (i === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[i];
   }
 
+  function percent(used, provisioned, explicit) {
+    var value = Number(explicit);
+    if (!Number.isFinite(value)) {
+      var denominator = Number(provisioned || 0);
+      value = denominator > 0 ? Number(used || 0) * 100 / denominator : 0;
+    }
+    return value.toFixed(1) + "%";
+  }
+
   function requestJson(url, options) {
     var cluster = new URLSearchParams(window.location.search).get("cluster");
     if (cluster) {
@@ -69,7 +78,7 @@
     tbody.innerHTML = "";
     if (!data.items.length) {
       var emptyRow = document.createElement("tr");
-      cell(emptyRow, "Không có Volume phù hợp trong pool này.", "hint").colSpan = 6;
+      cell(emptyRow, "Không có Volume phù hợp trong pool này.", "hint").colSpan = 7;
       tbody.appendChild(emptyRow);
     }
     data.items.forEach(function (item) {
@@ -83,6 +92,7 @@
       cell(row, item.image_id || "—", "truncate").title = item.image_id || "";
       cell(row, bytes(item.used_size), "num");
       cell(row, bytes(item.provisioned_size), "num");
+      cell(row, percent(item.used_size, item.provisioned_size, item.used_percent), "num");
       cell(row, String(item.snapshot_count || 0), "num");
       var action = cell(row, "");
       var button = document.createElement("button");
@@ -100,7 +110,8 @@
     prev.disabled = data.page <= 1;
     next.disabled = data.page >= data.pages;
     freshness.textContent = "Cập nhật live: " + new Date(data.collected_at).toLocaleString("vi-VN") +
-      " · Used " + bytes(data.summary.used_size) + " / " + bytes(data.summary.provisioned_size);
+      " · Used " + bytes(data.summary.used_size) + " / " + bytes(data.summary.provisioned_size) +
+      " (" + percent(data.summary.used_size, data.summary.provisioned_size, data.summary.used_percent) + ")";
   }
 
   function loadInventory() {

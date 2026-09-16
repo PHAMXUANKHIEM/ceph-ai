@@ -65,13 +65,16 @@ export function CephDashboard() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [refreshPending, setRefreshPending] = useState(false);
+  const [dismissedIssue, setDismissedIssue] = useState<string | null>(null);
   const selectedCluster = new URLSearchParams(window.location.search).get("cluster") || "";
+  const clusterName = document.getElementById("ceph-dashboard-root")?.getAttribute("data-cluster-name") || selectedCluster || "Cluster";
   const eventVersion = useClusterSnapshotEvents(selectedCluster);
 
   const requestRefresh = () => {
     if (refreshPending) return;
     setRefreshPending(true);
     setLoadError(null);
+    setDismissedIssue(null);
     const url = selectedCluster
       ? "/api/dashboard/health/refresh?cluster=" + encodeURIComponent(selectedCluster)
       : "/api/dashboard/health/refresh";
@@ -146,11 +149,18 @@ export function CephDashboard() {
     }
   ], [health]);
 
+  const issueKey = loadError
+    ? `load:${loadError}`
+    : health.refreshing ? null
+      : health.stale ? `stale:${health.last_error || "snapshot"}`
+        : health.last_error ? `sync:${health.last_error}` : null;
+
   return (
     <main className="ceph-dashboard">
       <PageHeader
         eyebrow="CEPH OPERATIONS CONSOLE"
         title="Cluster overview"
+        breadcrumb={<span className="page-header__breadcrumb">› {clusterName}</span>}
         subtitle="Health, capacity and performance at a glance"
         actions={
           <>
@@ -166,28 +176,31 @@ export function CephDashboard() {
           </>
         }
       />
-      {loadError && (
+      {loadError && dismissedIssue !== issueKey && (
         <ErrorState
           message={<><strong>Không tải được dữ liệu cụm đã chọn.</strong> {loadError}</>}
           onRetry={() => setReloadToken((value) => value + 1)}
+          onDismiss={() => setDismissedIssue(issueKey)}
         />
       )}
       {health.refreshing && <LoadingState message="Đang đồng bộ dữ liệu cụm…" />}
-      {!health.refreshing && health.stale && (
+      {!health.refreshing && health.stale && dismissedIssue !== issueKey && (
         <ErrorState
           tone="warning"
           message={<>Dữ liệu đang cũ — {formatAge(health.age_seconds)}{health.last_error && <><br />Lỗi đồng bộ gần nhất: {health.last_error}</>}</>}
           onRetry={requestRefresh}
           retryLabel="Đồng bộ lại"
           retryDisabled={refreshPending}
+          onDismiss={() => setDismissedIssue(issueKey)}
         />
       )}
-      {!health.refreshing && !health.stale && health.last_error && (
+      {!health.refreshing && !health.stale && health.last_error && dismissedIssue !== issueKey && (
         <ErrorState
           message={<>Lần đồng bộ gần nhất thất bại: {health.last_error}</>}
           onRetry={requestRefresh}
           retryLabel="Đồng bộ lại"
           retryDisabled={refreshPending}
+          onDismiss={() => setDismissedIssue(issueKey)}
         />
       )}
       <section className="status-grid" aria-label="Ceph status overview">
@@ -196,7 +209,7 @@ export function CephDashboard() {
       </section>
       <div className="dashboard-section-label"><Activity size={15} aria-hidden="true" /> Performance snapshot</div>
       <section className="metrics-grid" aria-label="Ceph performance metrics">
-        <MetricPanel title="Latency" icon={Gauge} value={health.metrics.latency_ms === null ? "—" : health.metrics.latency_ms.toFixed(2) + " ms"} subtitle="OSD average" />
+        <MetricPanel title="Latency" icon={Gauge} value={health.metrics.latency_ms === null ? "N/A" : health.metrics.latency_ms.toFixed(2) + " ms"} subtitle="OSD average" />
         <MetricPanel title="Bandwidth" icon={ChartNoAxesCombined} value={formatRate(health.metrics.bandwidth_bps)} subtitle="Read + write" />
         <MetricPanel title="IOPS" icon={ChartNoAxesCombined} value={formatIops(health.metrics.iops)} subtitle="Read + write ops/s" />
         <PlacementGroupsCard value={health.placement_groups} />

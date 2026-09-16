@@ -1078,8 +1078,10 @@ def test_normalize_rbd_inventory_includes_idle_images_and_snapshot_count():
     rows = ceph_client._normalize_rbd_inventory(payload)
 
     assert rows == [
-        {"name": "vm-01", "image_id": "abc", "provisioned_size": 10240, "used_size": 2048, "snapshot_count": 1},
-        {"name": "idle", "image_id": None, "provisioned_size": 4096, "used_size": 0, "snapshot_count": 0},
+        {"name": "vm-01", "image_id": "abc", "provisioned_size": 10240, "used_size": 2048,
+         "used_percent": 20.0, "snapshot_count": 1},
+        {"name": "idle", "image_id": None, "provisioned_size": 4096, "used_size": 0,
+         "used_percent": 0.0, "snapshot_count": 0},
     ]
 
 

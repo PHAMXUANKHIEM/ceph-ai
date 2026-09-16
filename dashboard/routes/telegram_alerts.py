@@ -251,6 +251,22 @@ async def telegram_alerts_help(request: Request, user: str = Depends(require_log
     )
 
 
+@router.get("/telegram-alerts/performance-rca", response_class=HTMLResponse)
+async def telegram_performance_rca_page(request: Request, user: str = Depends(require_login)):
+    """Render the focused settings page for the ninth, derived RCA channel.
+
+    Performance RCA deliberately reuses the Incident channel credentials, so
+    this page exposes its own lifecycle toggle and links to Incident for the
+    shared Bot Token/Chat ID configuration.
+    """
+    _require_admin_privilege(user)
+    return templates.TemplateResponse(
+        request,
+        "telegram_performance_rca.html",
+        _context(user),
+    )
+
+
 @router.get("/telegram-alerts/{channel}", response_class=HTMLResponse)
 async def telegram_alert_channel_page(request: Request, channel: str, user: str = Depends(require_login)):
     """Render the focused configuration page for one Telegram channel.
@@ -423,10 +439,9 @@ async def performance_rca_toggle(
         logger.exception("performance_rca_toggle: failed to persist setting to .env")
         return templates.TemplateResponse(
             request,
-            "telegram_alert_channel.html",
+            "telegram_alerts.html",
             _context(
                 user,
-                detail_channel=channel,
                 performance_rca_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server",
             ),
         )

@@ -324,6 +324,7 @@ class RbdInventoryEntry(TypedDict):
     image_id: str | None
     provisioned_size: int
     used_size: int
+    used_percent: float
     snapshot_count: int
 
 
@@ -347,12 +348,15 @@ def _normalize_rbd_inventory(payload: dict | list) -> list[RbdInventoryEntry]:
         if not name:
             continue
         snapshots = row.get("snapshots")
+        provisioned_size = _as_int(row.get("provisioned_size") or row.get("size"))
+        used_size = _as_int(row.get("used_size"))
         result.append(
             RbdInventoryEntry(
                 name=str(name),
                 image_id=str(row.get("id")) if row.get("id") is not None else None,
-                provisioned_size=_as_int(row.get("provisioned_size") or row.get("size")),
-                used_size=_as_int(row.get("used_size")),
+                provisioned_size=provisioned_size,
+                used_size=used_size,
+                used_percent=round((used_size * 100.0 / provisioned_size), 2) if provisioned_size else 0.0,
                 snapshot_count=len(snapshots) if isinstance(snapshots, list) else _as_int(row.get("snapshot_count")),
             )
         )
@@ -1277,6 +1281,54 @@ def run_ceph_json_command_with(
     raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
 
 
+def _build_json_batch_script(inner_commands: list[str], *, parallel: bool = False) -> str:
+    """Build the bounded remote script used by JSON batch queries.
+
+    Parallel mode is safe for independent read-only RBD commands: every
+    command writes its own framed output, then the parent shell waits and
+    concatenates frames in the original order. This preserves the parser
+    contract while avoiding serial Ceph client startup and request latency.
+    """
+    frames = []
+    if parallel:
+        frames.extend((
+            "batch_dir=$(mktemp -d)",
+            "trap 'rm -rf \"$batch_dir\"' EXIT",
+        ))
+    for index, inner_command in enumerate(inner_commands):
+        begin = f"__CEPH_AI_BATCH_{index}_BEGIN__"
+        status = f"__CEPH_AI_BATCH_{index}_STATUS__"
+        end = f"__CEPH_AI_BATCH_{index}_END__"
+        if parallel:
+            output_path = f'"$batch_dir/{index}"'
+            frames.extend((
+                "(",
+                f"printf '%s\\n' {shlex.quote(begin)} > {output_path}",
+                f"{inner_command} 2>/dev/null >> {output_path}",
+                "command_status=$?",
+                f"printf '\\n' >> {output_path}",
+                f"printf '%s:%s\\n' {shlex.quote(status)} $command_status >> {output_path}",
+                f"printf '%s\\n' {shlex.quote(end)} >> {output_path}",
+                ") &",
+                f"batch_pid_{index}=$!",
+            ))
+        else:
+            frames.extend((
+                f"printf '%s\\n' {shlex.quote(begin)}",
+                f"{inner_command} 2>/dev/null",
+                "command_status=$?",
+                "printf '\\n'",
+                f"printf '%s:%s\\n' {shlex.quote(status)} $command_status",
+                f"printf '%s\\n' {shlex.quote(end)}",
+            ))
+    if parallel:
+        for index in range(len(inner_commands)):
+            frames.append(f"wait \"$batch_pid_{index}\"")
+        for index in range(len(inner_commands)):
+            frames.append(f"cat \"$batch_dir/{index}\"")
+    return chr(10).join(frames)
+
+
 def run_ceph_json_batch_command_with(
     mon_nodes: list[str],
     container_name: str,
@@ -1284,27 +1336,21 @@ def run_ceph_json_batch_command_with(
     ssh_key_path: str,
     exec_mode: str,
     inner_commands: list[str],
+    *,
+    parallel: bool = False,
 ) -> tuple[str, list[dict | list | None]]:
-    """Run bounded JSON commands in one remote Ceph shell."""
+    """Run bounded JSON commands in one remote Ceph shell.
+
+    parallel should only be used for independent read-only commands.
+    Results are returned in the same order as inner_commands.
+    """
     if not mon_nodes:
         raise CephQueryError("no MON nodes configured for this cluster")
     query_nodes = _balanced_query_mon_nodes(mon_nodes, "\n".join(inner_commands), exec_mode)
     if not inner_commands:
         return query_nodes[0], []
-    frames = []
-    for index, inner_command in enumerate(inner_commands):
-        begin = f"__CEPH_AI_BATCH_{index}_BEGIN__"
-        status = f"__CEPH_AI_BATCH_{index}_STATUS__"
-        end = f"__CEPH_AI_BATCH_{index}_END__"
-        frames.extend((
-            f"printf '%s\\n' {shlex.quote(begin)}",
-            f"{inner_command} 2>/dev/null",
-            "command_status=$?",
-            "printf '\n'",
-            f"printf '%s:%s\\n' {shlex.quote(status)} $command_status",
-            f"printf '%s\\n' {shlex.quote(end)}",
-        ))
-    batch_inner_command = f"bash -lc {shlex.quote(chr(10).join(frames))}"
+    batch_script = _build_json_batch_script(inner_commands, parallel=parallel)
+    batch_inner_command = f"bash -lc {shlex.quote(batch_script)}"
     command = build_exec_command(exec_mode, container_name, batch_inner_command)
     command_timeout = CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else MCP_COMMAND_TIMEOUT_SECONDS
     errors = []

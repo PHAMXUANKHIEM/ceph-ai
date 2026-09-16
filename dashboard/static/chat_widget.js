@@ -6,6 +6,7 @@
   var newSessionBtn = document.getElementById("chat-panel-new-session");
   var minimizeBtn = document.getElementById("chat-panel-minimize");
   var closeBtn = document.getElementById("chat-panel-close");
+  var chatFab = document.getElementById("chat-fab");
   var messagesEl = document.getElementById("chat-messages");
   var formEl = document.getElementById("chat-form");
   var historyListViewEl = document.getElementById("chat-history-list-view");
@@ -1311,6 +1312,11 @@
 
   function setMinimized(minimized) {
     panelEl.classList.toggle("is-minimized", minimized);
+    panelEl.setAttribute("aria-hidden", minimized ? "true" : "false");
+    if (chatFab) {
+      chatFab.hidden = !minimized;
+      chatFab.setAttribute("aria-expanded", minimized ? "false" : "true");
+    }
     if (minimizeBtn) {
       minimizeBtn.textContent = minimized ? RESTORE_ICON : MINIMIZE_ICON;
       minimizeBtn.setAttribute("aria-label", minimized ? "Phóng to" : "Thu nhỏ");
@@ -1343,17 +1349,20 @@
     });
   }
   if (closeBtn) {
-    // No separate "fully closed" state exists — this panel is part of the
-    // page layout, not a floating widget with its own reopen affordance
-    // elsewhere on the page, so × collapses it the same way − does. Two
-    // buttons are kept (matches the header mockup) since some operators
-    // reach for × out of habit.
     closeBtn.addEventListener("click", function () { setMinimized(true); });
+  }
+  if (chatFab) {
+    chatFab.addEventListener("click", function () {
+      setMinimized(false);
+    });
   }
 
   var startMinimized = false;
   try {
-    startMinimized = localStorage.getItem(MINIMIZED_STORAGE_KEY) === "1";
+    var storedMinimized = localStorage.getItem(MINIMIZED_STORAGE_KEY);
+    // The assistant is an on-demand drawer on first visit.  Preserve an
+    // operator's explicit preference on later visits.
+    startMinimized = storedMinimized === null ? true : storedMinimized === "1";
   } catch (e) {
     startMinimized = false;
   }

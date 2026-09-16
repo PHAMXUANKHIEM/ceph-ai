@@ -1570,7 +1570,7 @@ def test_volume_inventory_api_searches_sorts_and_pages(dashboard_client, monkeyp
     assert body["pages"] == 2
     assert [item["name"] for item in body["items"]] == ["web-02"]
     assert body["cluster_id"]
-    assert body["summary"] == {"image_count": 2, "provisioned_size": 30, "used_size": 12}
+    assert body["summary"] == {"image_count": 2, "provisioned_size": 30, "used_size": 12, "used_percent": 40.0}
 
 
 def test_volume_inventory_defaults_to_ten_rows_and_rejects_larger_pages(dashboard_client, monkeypatch):

@@ -1,6 +1,7 @@
 """Read-only RBD inventory for the selected Ceph cluster."""
 
 import asyncio
+import logging
 import shlex
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -11,6 +12,7 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared.object_storage_cache import get_or_load, is_refreshing as cache_is_refreshing
+from shared.ceph_query_cache import get_cached as get_persisted_cache, store as store_persisted_cache
 from watcher.ceph_client import (
     CephQueryError,
     run_ceph_json_batch_command_with,
@@ -20,6 +22,7 @@ from watcher.ceph_client import (
 
 router = APIRouter()
 templates = make_templates()
+logger = logging.getLogger(__name__)
 BLOCK_STORAGE_OVERVIEW_LIMIT = 10
 # Serve the inventory from cache for 30 minutes, then keep serving the last
 # value while one background refresh is running for up to another 30 minutes.
@@ -31,6 +34,54 @@ class BlockStorageInventory(list):
     def __init__(self, rows=(), *, pools=()):
         super().__init__(rows)
         self.pools = list(pools)
+
+
+def _block_storage_cache_key(cluster) -> str:
+    return f"{cluster.id}:inventory"
+
+
+def _load_block_storage(cluster) -> BlockStorageInventory:
+    """Load the live inventory and persist the successful result."""
+    inventory = _query_block_storage(cluster)
+    if _uses_mocked_ceph_client():
+        return inventory
+    try:
+        # The persistent cache stores only JSON-compatible rows. The
+        # process-local BlockStorageInventory wrapper is reconstructed when
+        # it is read back.
+        store_persisted_cache(
+            "block-storage",
+            _block_storage_cache_key(cluster),
+            list(inventory),
+        )
+    except Exception:
+        # Cache persistence must never turn a successful Ceph read into a
+        # failed page response.
+        logger.exception("Block Storage persistent cache write failed for cluster %s", cluster.id)
+    return inventory
+
+
+def _persistent_block_storage_fallback(cluster) -> BlockStorageInventory:
+    """Return recent disk-backed inventory without contacting Ceph."""
+    if _uses_mocked_ceph_client():
+        return BlockStorageInventory(pools=[])
+    try:
+        cached = get_persisted_cache(
+            "block-storage",
+            _block_storage_cache_key(cluster),
+            max_age_seconds=BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
+        )
+    except Exception:
+        logger.exception("Block Storage persistent cache read failed for cluster %s", cluster.id)
+        return BlockStorageInventory(pools=[])
+    if cached is None:
+        return BlockStorageInventory(pools=[])
+    value, _age_seconds = cached
+    if not isinstance(value, list):
+        return BlockStorageInventory(pools=[])
+    rows = [item for item in value if isinstance(item, dict)]
+    pools = sorted({str(item["pool"]) for item in rows if item.get("pool")})
+    return BlockStorageInventory(rows, pools=pools)
 
 
 def _uses_mocked_ceph_client() -> bool:
@@ -135,7 +186,7 @@ def _query_block_storage(cluster) -> list[dict]:
         f"rbd namespace list --pool {shlex.quote(pool)} --format json"
         for pool in pool_names
     ]
-    _host, namespace_frames = run_ceph_json_batch_command_with(*connection, namespace_commands)
+    _host, namespace_frames = run_ceph_json_batch_command_with(*connection, namespace_commands, parallel=True)
     pool_namespaces: list[tuple[str, list[str]]] = []
     for pool, namespace_payload in zip(pool_names, namespace_frames):
         if namespace_payload is None:
@@ -153,7 +204,7 @@ def _query_block_storage(cluster) -> list[dict]:
                 f"rbd ls --long --pool {quoted_pool}{namespace_arg} --format json"
             )
     if image_commands:
-        _host, image_frames = run_ceph_json_batch_command_with(*connection, image_commands)
+        _host, image_frames = run_ceph_json_batch_command_with(*connection, image_commands, parallel=True)
         for (pool, namespace), image_payload in zip(image_requests, image_frames):
             if image_payload is None:
                 raise CephQueryError(f"Không lấy được inventory của pool {pool}")
@@ -167,8 +218,8 @@ def _query_block_storage(cluster) -> list[dict]:
 def _cached_block_storage(cluster) -> list[dict]:
     return get_or_load(
         "block-storage",
-        f"{cluster.id}:inventory",
-        lambda: _query_block_storage(cluster),
+        _block_storage_cache_key(cluster),
+        lambda: _load_block_storage(cluster),
         ttl_seconds=BLOCK_STORAGE_CACHE_TTL_SECONDS,
         stale_ttl_seconds=BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
     )
@@ -191,11 +242,11 @@ async def block_storage_page(
             get_or_load,
             "block-storage",
             cache_key,
-            lambda: _query_block_storage(cluster),
+            lambda: _load_block_storage(cluster),
             ttl_seconds=BLOCK_STORAGE_CACHE_TTL_SECONDS,
             stale_ttl_seconds=BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
             background_on_miss=not _uses_mocked_ceph_client(),
-            fallback=BlockStorageInventory(pools=[]),
+            fallback=_persistent_block_storage_fallback(cluster),
         )
         cache_loading = cache_is_refreshing("block-storage", cache_key)
         total_images = len(images)

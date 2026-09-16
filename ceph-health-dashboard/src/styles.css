@@ -5,6 +5,7 @@
 :root { font-family: Inter, Arial, ui-sans-serif, system-ui, sans-serif; font-synthesis: none; }
 * { box-sizing: border-box; }
 html, body { min-width: 320px; margin: 0; }
+html { overflow-x: hidden; }
 #ceph-dashboard-root { width: 100%; min-width: 0; }
 #pools-dashboard-root { width: 100%; min-width: 0; font-family: inherit; }
 
@@ -163,4 +164,121 @@ html, body { min-width: 320px; margin: 0; }
 @media (max-width: 760px) {
   .page-header { align-items: flex-start; flex-direction: column; padding: 16px; }
   .page-header__actions { width: 100%; }
+}
+
+/* Dashboard overview: keep the first viewport operational.  The page header
+ * is context, not a hero banner; cards are compact comparison tiles and the
+ * assistant is an on-demand drawer so it never steals dashboard width. */
+.ceph-dashboard {
+  gap: 11px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.dashboard-page-shell { overflow-x: hidden; }
+.ceph-dashboard .page-header {
+  align-items: center;
+  min-height: 58px;
+  padding: 10px 14px;
+  border-radius: 10px;
+}
+.ceph-dashboard .page-header__eyebrow,
+.ceph-dashboard .page-header__subtitle { display: none; }
+.ceph-dashboard .page-header__headline { align-items: center; gap: 7px; }
+.ceph-dashboard .page-header__headline h1 { margin: 0; font-size: 18px; }
+.ceph-dashboard .page-header__breadcrumb { font-size: 12px; }
+.ceph-dashboard .page-header__actions { gap: 8px; }
+.ceph-dashboard .snapshot-time { color: var(--text-faint, #6b7280); font-size: 11px; }
+.ceph-dashboard .status-grid,
+.ceph-dashboard .metrics-grid { gap: 10px; }
+.ceph-dashboard .metric-card { min-height: 0; height: 104px; border-radius: 10px; }
+.ceph-dashboard .panel-header { height: 32px; padding-inline: 10px; }
+.ceph-dashboard .panel-title { gap: 6px; font-size: 11px; }
+.ceph-dashboard .metric-card__body { height: calc(100% - 32px); padding: 7px 9px 9px; gap: 6px; }
+.ceph-dashboard .metric-card__body--lg strong,
+.ceph-dashboard .metric-card__body--md strong { font-size: clamp(1.15rem, 2.2vw, 1.7rem); }
+.ceph-dashboard .metric-card--warning .metric-card__body--lg strong { font-size: clamp(.95rem, 1.8vw, 1.35rem); letter-spacing: -.02em; white-space: nowrap; }
+.ceph-dashboard .metric-card__subtitle { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.ceph-dashboard .metric-card__meter { width: min(120px, 82%); height: 4px; }
+.ceph-dashboard .dashboard-section-label { margin: 3px 1px -2px; font-size: 10px; }
+.ceph-dashboard .metrics-grid .metric-card { height: 90px; }
+.ceph-dashboard .metrics-grid .metric-card__body { height: calc(100% - 32px); }
+.ceph-dashboard .metrics-grid .metric-card__body strong { font-size: clamp(1rem, 1.8vw, 1.35rem); }
+.ceph-dashboard .metrics-grid .panel-actions { display: none; }
+.ceph-dashboard .state-banner { padding: 7px 10px; gap: 8px; border-radius: 8px; font-size: 11px; }
+.ceph-dashboard .state-banner button { padding: 4px 7px; font-size: 11px; }
+.ceph-dashboard .state-banner__dismiss { width: 22px; height: 22px; padding: 0 !important; justify-content: center; font-size: 17px !important; line-height: 1; }
+
+@media (max-width: 1199px) {
+  .ceph-dashboard .metric-card { height: 100px; }
+}
+@media (max-width: 760px) {
+  .ceph-dashboard .page-header { align-items: flex-start; }
+  .ceph-dashboard .page-header__actions { width: 100%; }
+  .ceph-dashboard .status-grid,
+  .ceph-dashboard .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ceph-dashboard .metric-card,
+  .ceph-dashboard .metrics-grid .metric-card { height: 94px; min-height: 0; }
+}
+@media (max-width: 460px) {
+  .ceph-dashboard .status-grid,
+  .ceph-dashboard .metrics-grid { grid-template-columns: 1fr; }
+  .ceph-dashboard .page-header__actions { flex-wrap: wrap; }
+}
+
+/* The dashboard chat is a drawer.  The server keeps the panel markup in the
+ * page for accessibility and history, while the closed state removes it from
+ * layout and exposes one obvious floating trigger. */
+.dashboard-page-shell .chat-panel {
+  position: fixed;
+  z-index: 100;
+  top: 16px;
+  right: 16px;
+  bottom: 16px;
+  width: min(380px, calc(100vw - 32px));
+  height: auto;
+  flex: none;
+  border: 1px solid var(--border-strong, #343b4c);
+  border-radius: 14px;
+  box-shadow: -20px 20px 60px rgba(0,0,0,.42);
+  transform: translateX(calc(100% + 24px));
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 180ms ease, opacity 180ms ease, visibility 180ms ease;
+}
+.dashboard-page-shell .chat-panel:not(.is-minimized) {
+  transform: translateX(0);
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+.dashboard-page-shell .chat-panel.is-minimized { display: flex; width: min(380px, calc(100vw - 32px)); height: auto; }
+.dashboard-page-shell .chat-panel.is-minimized { display: none; transform: none; }
+.dashboard-page-shell .chat-fab {
+  position: fixed;
+  z-index: 90;
+  right: 22px;
+  bottom: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid rgba(85,167,255,.48);
+  border-radius: 999px;
+  background: #1d4ed8;
+  color: #fff;
+  box-shadow: 0 10px 28px rgba(0,0,0,.32), 0 0 0 4px rgba(29,78,216,.12);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dashboard-page-shell .chat-fab:hover { background: #3f7efe; }
+.dashboard-page-shell .chat-fab-icon { font-size: 15px; line-height: 1; }
+.dashboard-page-shell .chat-fab[hidden] { display: none; }
+.dashboard-page-shell .app-body .page { width: 100%; }
+@media (max-width: 680px) {
+  .dashboard-page-shell .chat-panel { inset: auto 10px 10px; width: calc(100vw - 20px); height: min(78vh, 620px); }
+  .dashboard-page-shell .chat-fab { right: 16px; bottom: 16px; }
 }

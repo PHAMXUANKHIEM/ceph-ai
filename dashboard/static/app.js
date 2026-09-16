@@ -348,7 +348,37 @@
     var label = document.createElement("span");
     label.className = "nav-link-label";
     label.textContent = labelText;
+    // The collapsed rail deliberately removes text from layout. Keep the
+    // accessible name in the DOM and expose the same label to the CSS hover
+    // tooltip, so an icon-only link never becomes guesswork.
+    link.dataset.tooltip = labelText;
+    link.setAttribute("aria-label", labelText);
+    link.removeAttribute("title");
     link.replaceChildren(icon, label);
+
+    var showRailTooltip = function () {
+      if (!document.body.classList.contains("sidebar-collapsed") || window.innerWidth < 901) return;
+      var tip = document.getElementById("nav-rail-tooltip");
+      if (!tip) {
+        tip = document.createElement("div");
+        tip.id = "nav-rail-tooltip";
+        tip.className = "nav-rail-tooltip";
+        document.body.appendChild(tip);
+      }
+      var rect = link.getBoundingClientRect();
+      tip.textContent = labelText;
+      tip.style.left = (rect.right + 9) + "px";
+      tip.style.top = Math.max(8, Math.min(window.innerHeight - 40, rect.top + rect.height / 2 - 16)) + "px";
+      tip.hidden = false;
+    };
+    var hideRailTooltip = function () {
+      var tip = document.getElementById("nav-rail-tooltip");
+      if (tip) tip.hidden = true;
+    };
+    link.addEventListener("mouseenter", showRailTooltip);
+    link.addEventListener("mouseleave", hideRailTooltip);
+    link.addEventListener("focus", showRailTooltip);
+    link.addEventListener("blur", hideRailTooltip);
   });
 })();
 

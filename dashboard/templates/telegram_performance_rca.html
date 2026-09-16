@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cảnh báo Performance RCA — Alert Telegram</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&telegram_layout=3">
+</head>
+<body>
+  {% include "_nav.html" %}
+
+  <main class="page telegram-alerts-page telegram-detail-page">
+    <nav class="telegram-breadcrumb" aria-label="Breadcrumb">
+      <a href="/telegram-alerts">Alert Telegram</a>
+      <span aria-hidden="true">/</span>
+      <span aria-current="page">Cảnh báo Performance RCA</span>
+    </nav>
+
+    <header class="telegram-page-header telegram-detail-header">
+      <div class="telegram-page-title-row">
+        <div>
+          <div class="telegram-eyebrow">CHANNEL CONFIGURATION</div>
+          <h1>Cảnh báo Performance RCA</h1>
+          <p>Kênh phân tích nguyên nhân hiệu năng, sử dụng Bot Token và Chat ID của kênh Cảnh báo lỗi cụm.</p>
+        </div>
+        <div class="telegram-detail-header-actions">
+          <span class="telegram-status-badge {{ 'is-on' if performance_rca_enabled else 'is-off' }}"><span class="telegram-status-dot" aria-hidden="true"></span>{{ "Đang bật" if performance_rca_enabled else "Đã tắt" }}</span>
+          <form method="post" action="/telegram-alerts/performance-rca/toggle">
+            <input type="hidden" name="enabled" value="{{ 'false' if performance_rca_enabled else 'true' }}">
+            <button type="submit" class="btn {{ 'btn-danger-outline' if performance_rca_enabled else 'btn-primary' }}">{{ 'Tắt kênh' if performance_rca_enabled else 'Bật kênh' }}</button>
+          </form>
+          <a class="btn btn-ghost" href="/telegram-alerts">← Tổng quan</a>
+        </div>
+      </div>
+    </header>
+
+    <section class="telegram-panel telegram-detail-panel" aria-labelledby="telegram-rca-config-title">
+      <div class="telegram-section-heading">
+        <div>
+          <div class="telegram-eyebrow">SHARED CONNECTION</div>
+          <h2 id="telegram-rca-config-title">Cấu hình kênh gửi</h2>
+          <p>Performance RCA không có Bot Token hoặc Chat ID riêng. Cấu hình được quản lý trong kênh Cảnh báo lỗi cụm.</p>
+        </div>
+      </div>
+      <div class="telegram-feedback-stack">
+        {% if performance_rca_error %}<p class="error telegram-feedback" role="alert">{{ performance_rca_error }}</p>{% endif %}
+        {% if performance_rca_success %}<p class="success telegram-feedback" role="status">{{ performance_rca_success }}</p>{% endif %}
+      </div>
+      <div class="telegram-rca-source-row">
+        <span class="telegram-muted-note">Nguồn Bot Token / Chat ID: <strong>Cảnh báo lỗi cụm</strong></span>
+        <a class="btn btn-primary" href="/telegram-alerts/incident">Cấu hình kênh lỗi cụm</a>
+      </div>
+    </section>
+
+    <section class="telegram-panel telegram-detail-panel">
+      <details class="telegram-more-details telegram-detail-disclosure" open>
+        <summary>Xem thêm về Performance RCA</summary>
+        <div class="telegram-more-content">
+          <p>Công tắc này chỉ bật/tắt các cảnh báo Performance RCA; không ảnh hưởng đến cảnh báo lỗi cụm thông thường.</p>
+          <p>Khi bật, Watcher dùng cấu hình của kênh Cảnh báo lỗi cụm để gửi phân tích nguyên nhân hiệu năng.</p>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

@@ -83,7 +83,7 @@ def _warm_block_storage(clusters) -> int:
     from dashboard.routes.block_storage import (
         BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
         BLOCK_STORAGE_CACHE_TTL_SECONDS,
-        _query_block_storage,
+        _load_block_storage,
     )
 
     scheduled = 0
@@ -93,7 +93,7 @@ def _warm_block_storage(clusters) -> int:
             get_or_load(
                 "block-storage",
                 cache_key,
-                lambda cluster=cluster: _query_block_storage(cluster),
+                lambda cluster=cluster: _load_block_storage(cluster),
                 ttl_seconds=BLOCK_STORAGE_CACHE_TTL_SECONDS,
                 stale_ttl_seconds=BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
                 background_on_miss=True,

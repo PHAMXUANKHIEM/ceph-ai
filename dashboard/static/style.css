@@ -3798,6 +3798,38 @@ body{display:flex;min-height:100vh;background:#0f1117}.app-body{flex:1;min-width
 :focus-visible{outline:2px solid var(--ops-brand-hover);outline-offset:2px}@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important}}
 .sidebar-section-title{margin:10px 10px 3px;color:#6f7b90;font:700 10px/1.2 Inter,system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase}.topbar-context{display:grid;gap:4px;padding:0 10px 10px;border-bottom:1px solid var(--ops-border)}.topbar-breadcrumb{overflow:hidden;color:var(--ops-muted);font:11px ui-monospace,monospace;text-overflow:ellipsis;white-space:nowrap}.topbar-cluster-name{overflow:hidden;color:var(--ops-text);font-size:13px;font-weight:700;text-overflow:ellipsis;white-space:nowrap}.sidebar-collapsed .topbar-context{display:none}@media(max-width:560px){.sidebar-section-title{display:none}.topbar-context{display:flex;align-items:center;justify-content:space-between;padding:0 6px;border:0}.topbar-breadcrumb{max-width:48%}.topbar-cluster-name{max-width:45%}}
 
+/* Collapsed rail groups remain visually separated.  Tooltips are positioned
+   by app.js on <body> because the scrollable sidebar clips pseudo-elements. */
+@media (min-width: 901px) {
+  body.app-shell.sidebar-collapsed .main-nav { overflow-y: auto; overflow-x: visible; }
+  body.app-shell.sidebar-collapsed .nav-section + .nav-section { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+  body.app-shell.sidebar-collapsed .nav-link { position: relative; color: var(--text-muted); }
+  body.app-shell.sidebar-collapsed .nav-link:hover .nav-icon,
+  body.app-shell.sidebar-collapsed .nav-link.active .nav-icon { color: var(--accent); }
+}
+.nav-rail-tooltip[hidden] { display: none; }
+.nav-rail-tooltip {
+  position: fixed;
+  z-index: 200;
+  max-width: 220px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: #1b2433;
+  color: var(--text);
+  box-shadow: 0 10px 28px rgba(0,0,0,.35);
+  font-size: 12px;
+  line-height: 1.25;
+  pointer-events: none;
+  white-space: nowrap;
+}
+@media (min-width: 901px) {
+  /* The fixed sidebar changes width when collapsed; the content offset must
+     follow it or a hidden 252px gutter remains beside the 64px rail. */
+  body.app-shell.sidebar-collapsed > .app-body { margin-left: 64px; }
+  body.app-shell.sidebar-collapsed > .mon-strip { margin-left: 64px; }
+}
+
 /* ---- Table system (frontend roadmap item 4) --------------------------
    Chín lớp phân trang khác nhau từng lặp lại gần như cùng một khai báo.
    Gom phần chung về đây; `justify-content` KHÔNG gom vì vài chỗ cố ý dùng
@@ -4032,6 +4064,7 @@ body > .page { flex: 1 1 auto; min-width: 0; }
 .telegram-more-content { display: grid; gap: 8px; max-width: 920px; padding: 10px 0 0 16px; color: var(--text-muted); font-size: .8rem; }
 .telegram-more-content p { margin: 0; }
 .telegram-common-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.telegram-common-grid > :only-child { max-width: 760px; }
 .telegram-common-card { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: rgba(255, 255, 255, .018); }
 .telegram-card-title-row h3 { font-size: .98rem; }
 .telegram-card-title-row p { max-width: 540px; margin: 4px 0 0; color: var(--text-muted); font-size: .78rem; }
@@ -4085,6 +4118,8 @@ body > .page { flex: 1 1 auto; min-width: 0; }
 .telegram-detail-panel .telegram-section-heading { margin-bottom: 0; }
 .telegram-detail-disclosure { border-top: 0; padding-top: 0; }
 .telegram-detail-disclosure .telegram-more-content { padding-left: 16px; }
+.telegram-channel-feedback { margin: 0 0 14px; }
+.telegram-rca-source-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: rgba(255, 255, 255, .018); }
 
 @media (max-width: 1100px) {
   .telegram-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -4097,6 +4132,7 @@ body > .page { flex: 1 1 auto; min-width: 0; }
   .telegram-common-action-row { align-items: flex-start; flex-direction: column; }
   .telegram-help-link { align-self: flex-start; }
   .telegram-overview-actions { gap: 6px; }
+  .telegram-rca-source-row { align-items: flex-start; flex-direction: column; }
   .telegram-overview-grid,
   .telegram-common-grid { grid-template-columns: 1fr; }
   .telegram-form-layout,

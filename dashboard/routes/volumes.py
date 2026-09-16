@@ -710,6 +710,7 @@ async def volume_inventory_api(
     start = (page - 1) * page_size
     all_provisioned = sum(int(row["provisioned_size"]) for row in rows)
     all_used = sum(int(row["used_size"]) for row in rows)
+    all_used_percent = round((all_used * 100.0 / all_provisioned), 2) if all_provisioned else 0.0
     return {
         "cluster_id": cluster.id,
         "pool": pool,
@@ -721,6 +722,7 @@ async def volume_inventory_api(
             "image_count": total,
             "provisioned_size": all_provisioned,
             "used_size": all_used,
+            "used_percent": all_used_percent,
         },
         "pages": max(1, (total + page_size - 1) // page_size),
         "collected_at": datetime.utcnow().isoformat() + "Z",

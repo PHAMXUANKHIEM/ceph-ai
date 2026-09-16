@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
   <link rel="stylesheet" href="/static/ceph-health/style.css?v={{ static_version }}">
 </head>
-<body>
+<body class="dashboard-page-shell">
   <div class="mon-strip">
     <div class="mon-strip-inner">
       <span class="mon-strip-label">MON</span>
@@ -30,7 +30,7 @@
 
   <div class="app-body">
   <main class="page">
-    <div id="ceph-dashboard-root"></div>
+    <div id="ceph-dashboard-root" data-cluster-name="{{ selected_cluster.name if selected_cluster else '' }}"></div>
     <div hidden>
     <section class="connection-status {% if heartbeat_stale %}connection-lost{% else %}connection-ok{% endif %}">
       {% if heartbeat_stale %}
@@ -298,6 +298,10 @@
       </form>
     </div>
   </aside>
+  <button type="button" class="chat-fab" id="chat-fab" aria-controls="chat-panel" aria-expanded="false">
+    <span class="chat-fab-icon" aria-hidden="true">&#129302;</span>
+    <span>Chat với AI</span>
+  </button>
   </div>
 
   <script src="/static/app.js?v={{ static_version }}"></script>

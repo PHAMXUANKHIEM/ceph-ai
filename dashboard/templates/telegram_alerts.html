@@ -15,7 +15,7 @@
         <div>
           <div class="telegram-eyebrow">NOTIFICATION CONTROL PLANE</div>
           <h1>Alert Telegram</h1>
-          <p>Tổng quan nhanh về 8 kênh cảnh báo Telegram. Chọn một kênh để chỉnh cấu hình chi tiết.</p>
+          <p>Tổng quan nhanh về 9 kênh cảnh báo Telegram. Chọn một kênh để chỉnh cấu hình chi tiết.</p>
         </div>
         <a class="btn btn-ghost telegram-help-link" href="/telegram-alerts/help" target="_blank" rel="noopener">Xem hướng dẫn ↗</a>
       </div>
@@ -34,7 +34,7 @@
         <div>
           <div class="telegram-eyebrow">GLOBAL SETTINGS</div>
           <h2 id="telegram-common-title">Cấu hình chung</h2>
-          <p>Nhận diện cluster và cảnh báo Performance RCA.</p>
+          <p>Nhận diện cluster cho các tin nhắn cảnh báo.</p>
         </div>
       </div>
       <div class="telegram-common-grid">
@@ -56,28 +56,6 @@
           </form>
         </article>
 
-        <article class="telegram-common-card telegram-common-card-compact">
-          <div class="telegram-card-title-row">
-            <div>
-              <h3>Cảnh báo Performance RCA</h3>
-              <p>Dùng cấu hình của kênh Cảnh báo lỗi cụm.</p>
-            </div>
-            <span class="telegram-status-badge {{ 'is-on' if performance_rca_enabled else 'is-off' }}"><span class="telegram-status-dot" aria-hidden="true"></span>{{ "Đang bật" if performance_rca_enabled else "Đã tắt" }}</span>
-          </div>
-          {% if performance_rca_error %}<p class="error telegram-feedback" role="alert">{{ performance_rca_error }}</p>{% endif %}
-          {% if performance_rca_success %}<p class="success telegram-feedback" role="status">{{ performance_rca_success }}</p>{% endif %}
-          <div class="telegram-common-action-row">
-            <span class="telegram-muted-note">Không ảnh hưởng cảnh báo lỗi cụm thường.</span>
-            <form method="post" action="/telegram-alerts/performance-rca/toggle">
-              <input type="hidden" name="enabled" value="{{ 'false' if performance_rca_enabled else 'true' }}">
-              {% if performance_rca_enabled %}
-                <button type="submit" class="btn btn-danger-outline">Tắt cảnh báo</button>
-              {% else %}
-                <button type="submit" class="btn btn-danger">Bật cảnh báo</button>
-              {% endif %}
-            </form>
-          </div>
-        </article>
       </div>
     </section>
 
@@ -88,8 +66,11 @@
           <h2 id="telegram-channels-title">Các kênh Telegram</h2>
           <p>Mở cấu hình của kênh cần chỉnh. Công tắc thay đổi trạng thái mà không xóa thông tin đã lưu.</p>
         </div>
-        <span class="telegram-section-meta">{{ channels|length }} kênh</span>
+        <span class="telegram-section-meta">{{ channels|length + 1 }} kênh</span>
       </div>
+
+      {% if performance_rca_error %}<p class="error telegram-channel-feedback" role="alert">{{ performance_rca_error }}</p>{% endif %}
+      {% if performance_rca_success %}<p class="success telegram-channel-feedback" role="status">{{ performance_rca_success }}</p>{% endif %}
 
       <div class="telegram-overview-grid">
         {% for ch in channels.values() %}
@@ -115,6 +96,23 @@
           </span>
         </article>
         {% endfor %}
+        {% set rca_status_class = 'is-on' if performance_rca_enabled else 'is-off' %}
+        <article class="telegram-overview-item telegram-overview-item-rca {{ rca_status_class }}">
+          <a class="telegram-overview-main" href="/telegram-alerts/performance-rca" aria-label="Cấu hình Cảnh báo Performance RCA">
+            <span class="telegram-channel-index">09</span>
+            <span class="telegram-overview-copy">
+              <strong>Cảnh báo Performance RCA</strong>
+              <span class="telegram-status-badge {{ rca_status_class }}"><span class="telegram-status-dot" aria-hidden="true"></span>{{ "Đang bật" if performance_rca_enabled else "Đã tắt" }}</span>
+            </span>
+          </a>
+          <span class="telegram-overview-actions">
+            <form class="telegram-quick-toggle" method="post" action="/telegram-alerts/performance-rca/toggle">
+              <input type="hidden" name="enabled" value="{{ 'false' if performance_rca_enabled else 'true' }}">
+              <button class="telegram-switch {{ rca_status_class }}" type="submit" role="switch" aria-checked="{{ 'true' if performance_rca_enabled else 'false' }}" aria-label="{{ 'Tắt' if performance_rca_enabled else 'Bật' }} Cảnh báo Performance RCA"><span aria-hidden="true"></span></button>
+            </form>
+            <a class="btn btn-ghost telegram-configure-link" href="/telegram-alerts/performance-rca">Cấu hình</a>
+          </span>
+        </article>
       </div>
     </section>
   </main>
