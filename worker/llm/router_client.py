@@ -67,8 +67,19 @@ INCIDENT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN = 2
 
 
 def _live_action_target_safety_reason(cluster: Cluster | None, nodes: list[str], ssh_key_path: str | None) -> str | None:
-    """Reject test/stale action targets before opening a production SSH session."""
-    if os.environ.get("CEPH_AI_CONTAINERIZED", "").lower() != "true":
+    """Reject test/stale action targets before opening a production SSH session.
+
+    Cổng này từng là `CEPH_AI_CONTAINERIZED != "true"`, tức chốt an toàn chỉ
+    bật khi chạy trong container. Trên máy đang vận hành thì đúng — production
+    chạy bằng podman-compose còn test chạy bare-metal — nhưng đó là đặc điểm
+    của MỘT máy, không phải của phần mềm: README hướng dẫn người mới chạy
+    bằng venv (`python -m worker.main`), và deployment đó vẫn thực thi lệnh
+    khắc phục thật lên node thật mà không có chốt nào.
+
+    Điều kiện thật sự cần loại trừ là test, nên nói thẳng ra như vậy — cùng
+    cách `dashboard/cache_warmup.py::start` đã làm với warmup SSH.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
         return None
     allowed_hosts = {row["host"] for row in configured_nodes(cluster)}
     unexpected = [host for host in nodes if host not in allowed_hosts]

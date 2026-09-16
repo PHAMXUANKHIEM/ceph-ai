@@ -3785,3 +3785,43 @@ def test_playbook_contract_ceiling_routes_safe_candidate_to_approval_with_audit(
         assert action.status == ActionStatus.PENDING_APPROVAL.value
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
         assert events == [(audit.EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED,)]
+
+
+def test_action_target_guard_is_not_limited_to_container_deployments(monkeypatch):
+    """Chốt an toàn từng chỉ bật khi `CEPH_AI_CONTAINERIZED == "true"`. Trên
+    máy đang vận hành thì đúng — production chạy container, test chạy
+    bare-metal — nhưng README hướng dẫn người mới chạy bằng venv, và
+    deployment đó vẫn thực thi lệnh khắc phục thật lên node thật.
+
+    Ở đây bỏ PYTEST_CURRENT_TEST để mô phỏng tiến trình Worker thật."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("CEPH_AI_CONTAINERIZED", raising=False)
+
+    reason = router_client._live_action_target_safety_reason(
+        None, ["203.0.113.9"], "/root/.ssh/ceph_aiops"
+    )
+
+    assert reason is not None
+    assert "không thuộc cấu hình cluster hiện tại" in reason
+    assert "203.0.113.9" in reason
+
+
+def test_action_target_guard_rejects_a_test_fixture_ssh_key(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    allowed = settings.ceph_mon_nodes.split(",")[0]
+
+    assert router_client._live_action_target_safety_reason(None, [allowed], "") == (
+        "cluster chưa cấu hình SSH key"
+    )
+    reason = router_client._live_action_target_safety_reason(
+        None, [allowed], "/tmp/pytest-fixture/id_ed25519"
+    )
+    assert reason is not None and "không hợp lệ cho production" in reason
+
+
+def test_action_target_guard_stays_out_of_the_way_under_pytest():
+    """Test dùng host giả có chủ đích; chốt phải im trong pytest, nếu không
+    27 test đường thực thi sẽ vỡ."""
+    assert router_client._live_action_target_safety_reason(
+        None, ["203.0.113.9"], "/tmp/x"
+    ) is None
