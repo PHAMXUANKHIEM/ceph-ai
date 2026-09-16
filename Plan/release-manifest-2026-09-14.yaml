@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 0a3b5a122ffff20ccea2a21dca5343229986e6a8
-  rollback_candidate_sha: 0ef851ecfee2d62c1bbb3428650b249d453a15ac
+  commit_sha: 522e0f8ab9465af3a65c57280c1b79fd0111f9f9
+  rollback_candidate_sha: 83e0367d6766063681844c6667f063667820c3db
   worktree: clean
-  release_commit: 0a3b5a122ffff20ccea2a21dca5343229986e6a8
+  release_commit: 522e0f8ab9465af3a65c57280c1b79fd0111f9f9
   pushed_to_origin: true
 
 migrations:
@@ -51,8 +51,9 @@ message_broker:
     production_vhost: not_run_to_completion_shared_queue_has_live_consumers
 
 verification:
-  focused_feature_gate: 290_passed_1_warning
-  broad_deterministic_gate: 3261_passed_4_deselected_23_warnings
+  focused_feature_gate: 50_passed_1_warning
+  broad_deterministic_gate: 3312_passed_9_deselected_29_warnings_segmented_7_groups
+  broad_gate_note: single_process_gate_was_interrupted_by_remote_session_loss_without_summary; segmented_gate_completed_with_exit_code_zero_for_each_group
   broad_gate_environment: production_code_repair_lock_isolated_to_temporary_gate_lock
   final_openstack_module_after_template_fix: 20_passed
   python_compile: passed
@@ -68,6 +69,10 @@ verification:
     combined_current_snapshot_gate: 24_passed
   vitastor_snapshot_alert_gate: 175_passed_1_warning
   rbd_inventory_gate: 115_passed_1_warning
+  python_compile_current_sha: passed
+  javascript_syntax_current_sha: passed
+  frontend_build_current_sha: passed_with_node_20
+  current_runtime_health_observed: watcher_healthy_after_external_container_restart
 
 deployment_gate:
   deterministic_tests: passed
