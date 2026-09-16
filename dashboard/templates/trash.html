@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trash &amp; Restore — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&trash_layout=2">
+</head>
+<body>
+  {% include "_nav.html" %}
+
+  <main class="page trash-page">
+    <header class="trash-page-header">
+      <div>
+        <div class="trash-eyebrow">RBD LIFECYCLE</div>
+        <h1>Trash &amp; Restore</h1>
+        <p>Khôi phục hoặc xoá vĩnh viễn các RBD volume đang nằm trong Trash.</p>
+      </div>
+      <a class="btn btn-ghost" href="/volumes">← Volume Inventory</a>
+    </header>
+
+    {% if not selected_pool %}
+    <section class="trash-panel trash-pool-picker" aria-label="Trash theo Pool">
+      <div class="trash-section-heading">
+        <div>
+          <div class="trash-eyebrow">POOL SELECTION</div>
+          <h2>Trash theo Pool</h2>
+          <p>Chọn một pool để xem các volume đang được Ceph bảo vệ hoặc chờ xoá.</p>
+        </div>
+        <span class="trash-muted-meta">{{ trash_pool_summaries|length }} pool RBD</span>
+      </div>
+      {% if trash_pool_summaries %}
+      <p class="hint">Chọn “Xem Trash” để tải dữ liệu của pool này</p>
+      <div class="trash-pool-options">
+        {% for summary in trash_pool_summaries %}
+        <a class="trash-pool-option" href="/trash?pool={{ summary.pool }}">
+          <span><code>{{ summary.pool }}</code><small>Pool RBD</small></span>
+          <strong>{{ summary.entry_count if summary.entry_count is not none else '—' }} <small>volume</small></strong>
+          <span class="trash-pool-arrow" aria-hidden="true">→</span>
+        </a>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="trash-empty-state">Không tìm thấy RBD pool nào.</p>
+      {% endif %}
+    </section>
+    {% else %}
+    {% set summary = trash_selected_summary %}
+    <section class="trash-summary-bar" aria-labelledby="trash-summary-title">
+      <div class="trash-summary-pool">
+        <span class="trash-eyebrow">POOL</span>
+        <h2 id="trash-summary-title"><code>{{ selected_pool }}</code></h2>
+      </div>
+      <div class="trash-summary-stat"><span>Volume</span><strong>{{ summary.entry_count if summary and summary.entry_count is not none else '—' }}</strong></div>
+      <div class="trash-summary-stat"><span>Dung lượng</span><strong>{{ summary.total_used_size_human if summary else '—' }}</strong></div>
+      <div class="trash-summary-stat"><span>Sắp hết TTL <small>≤ 7 ngày</small></span><strong class="{% if summary and summary.expiring_count %}is-warning{% endif %}">{{ summary.expiring_count if summary and summary.expiring_count is not none else '—' }}</strong></div>
+      <div class="trash-summary-stat"><span>Đang bảo vệ</span><strong>{{ summary.protected_count if summary and summary.protected_count is not none else '—' }}</strong></div>
+      <div class="trash-summary-actions">
+        <a class="btn btn-ghost btn-sm" href="/trash{% if selected_cluster %}?cluster={{ selected_cluster.id }}{% endif %}">Chọn pool khác</a>
+        {% if is_admin and selected_cluster.is_default and trash_entries %}
+        <form method="post" action="/volumes/{{ selected_pool }}/trash/purge-all" class="inline-form trash-force-purge-form" data-confirm-target="pool {{ selected_pool }}">
+          <input type="hidden" name="confirmation" value="">
+          <button type="submit" class="btn btn-reject btn-sm">Xoá tất cả ({{ trash_entries|length }})</button>
+        </form>
+        {% elif is_admin and trash_entries %}
+        <button type="button" class="btn btn-reject btn-sm" disabled title="Chỉ hỗ trợ xoá trên cluster mặc định">Xoá tất cả</button>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="trash-panel trash-volume-panel" aria-labelledby="trash-volume-title">
+      <div class="trash-section-heading trash-volume-heading">
+        <div>
+          <div class="trash-eyebrow">VOLUME INVENTORY</div>
+          <h2 id="trash-volume-title">Trash — {{ selected_pool }}</h2>
+        </div>
+        <span class="trash-muted-meta">{{ trash_entries|length }} volume hiện tại</span>
+      </div>
+
+      <div class="trash-retention-banner" role="note">
+        <span class="trash-info-icon" aria-hidden="true">i</span>
+        <span>Volume được giữ tối thiểu <strong>{{ trash_retention_days }} ngày</strong> để khôi phục. Xoá cưỡng bức bỏ qua TTL và watcher protection, không thể hoàn tác.</span>
+      </div>
+      {% if purge_error %}<p class="error trash-feedback" role="alert">{{ purge_error }}</p>{% endif %}
+      {% if purge_success %}<p class="success trash-feedback" role="status">{{ purge_success }}</p>{% endif %}
+      {% if trash_error %}<p class="error trash-feedback" role="alert">Một số pool không đọc được Trash: {{ trash_error }}</p>{% endif %}
+
+      {% if trash_entries %}
+      <div class="trash-toolbar" aria-label="Thao tác hàng loạt Trash">
+        <label class="trash-select-all"><input id="trash-select-all" type="checkbox"> <span>Chọn tất cả</span></label>
+        {% if is_admin %}
+        <div class="trash-batch-actions">
+          <button id="trash-restore-selected" type="button" class="btn btn-approve btn-sm" disabled>↶ Khôi phục đã chọn</button>
+          <button id="trash-delete-selected" type="button" class="btn btn-reject btn-sm" disabled>× Xoá đã chọn</button>
+        </div>
+        {% endif %}
+        <label class="trash-search-field" for="trash-id-filter"><span class="sr-only">Tìm kiếm Trash</span><input id="trash-id-filter" type="search" placeholder="Tìm Volume ID…" autocomplete="off"></label>
+        <button id="trash-filter-reset" type="button" class="btn btn-ghost btn-sm">Xoá lọc</button>
+        <span id="trash-filter-result" class="trash-toolbar-result" role="status" aria-live="polite">Hiển thị 1-{{ [trash_entries|length, 10]|min }} / {{ trash_entries|length }}</span>
+      </div>
+
+      <div class="table-wrap trash-table-wrap">
+        <table id="trash-entry-list" class="trash-table">
+          <thead>
+            <tr><th class="trash-select-column"><span class="sr-only">Chọn</span></th><th>Volume</th><th class="num">Đã dùng</th><th>Ngày xoá</th><th>TTL</th><th>Trạng thái</th><th class="trash-actions-column">Thao tác</th></tr>
+          </thead>
+          <tbody>
+          {% for entry in trash_entries %}
+          <tr id="trash-{{ entry.id }}" data-trash-id="{{ entry.id }}"{% if loop.index > 10 %} hidden{% endif %} data-trash-pool="{{ entry.pool }}">
+            <td class="trash-select-column"><input class="trash-row-select" type="checkbox" value="{{ entry.id }}" aria-label="Chọn {{ entry.name }}"></td>
+            <td class="trash-volume-cell">
+              <strong class="trash-volume-name" title="{{ entry.name }}">{{ entry.name }}</strong>
+              <button type="button" class="trash-copy-id" data-copy-value="{{ entry.id }}" title="Sao chép Volume ID đầy đủ" aria-label="Sao chép Volume ID {{ entry.id }}"><code>{{ entry.trash_id_short }}</code><span aria-hidden="true">⧉</span></button>
+            </td>
+            <td class="num trash-size-cell">{{ entry.used_size_human }}</td>
+            <td class="trash-date-cell" title="{{ entry.deletion_time or '—' }}">{{ entry.deletion_time_display }}</td>
+            <td class="trash-ttl-cell" title="{{ entry.retention_label }}"><strong>{{ entry.expires_at_display }}</strong><small>{{ entry.retention_label }}{% if entry.retention_kind == 'ttl_computed' and not entry.purge_eligible %} · Chưa hết TTL{% endif %}</small></td>
+            <td><span class="trash-status-badge {% if entry.purge_eligible %}is-eligible{% elif entry.retention_kind == 'ceph_protected' %}is-protected{% else %}is-neutral{% endif %}"><span aria-hidden="true"></span>{% if entry.purge_eligible %}Có thể xoá{% elif entry.retention_kind == 'ceph_protected' %}Đang bảo vệ{% else %}{{ entry.status or 'Chưa xác định' }}{% endif %}</span></td>
+            <td class="trash-actions-cell">
+              {% set pending_action = trash_pending.get(entry.pool ~ '/' ~ entry.id) %}
+              {% if is_admin %}
+              <form class="inline-form trash-restore-form" data-pool="{{ entry.pool }}" data-trash-id="{{ entry.id }}" data-image="{{ entry.name }}">
+                <input type="hidden" name="image" value="{{ entry.name }}">
+                <button type="submit" class="trash-icon-button trash-restore-button" title="Đề xuất khôi phục" aria-label="Đề xuất khôi phục {{ entry.name }}">↶</button>
+              </form>
+              {% if not pending_action and entry.purge_eligible %}
+              <form method="post" action="/volumes/{{ entry.pool }}/trash/{{ entry.id }}/propose" class="inline-form trash-propose-form">
+                <button type="submit" class="trash-icon-button trash-propose-button" title="Đề xuất xoá, chờ phê duyệt" aria-label="Đề xuất xoá {{ entry.name }}">⇢</button>
+              </form>
+              {% endif %}
+              <form method="post" action="/volumes/{{ entry.pool }}/trash/{{ entry.id }}/force-remove" class="inline-form trash-force-remove-form" data-confirm-target="{{ entry.id }}">
+                <input type="hidden" name="confirmation" value="">
+                <button type="submit" class="trash-icon-button trash-delete-button" title="Xoá cưỡng bức" aria-label="Xoá cưỡng bức {{ entry.name }}">×</button>
+              </form>
+              {% endif %}
+              {% if pending_action and pending_action.status == "PENDING_APPROVAL" and is_admin %}
+              <span class="trash-pending-actions">
+                <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form"><button class="trash-icon-button trash-approve-button" title="Duyệt xoá" aria-label="Duyệt xoá">✓</button></form>
+                <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form"><button class="trash-icon-button trash-reject-button" title="Từ chối xoá" aria-label="Từ chối xoá">×</button></form>
+              </span>
+              {% elif pending_action %}<span class="trash-action-note">Đang chờ xử lý</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div id="trash-filter-empty" class="empty-state trash-filter-empty" hidden>Không tìm thấy Trash phù hợp.</div>
+      <div id="trash-pagination" class="trash-pagination" aria-label="Phân trang Trash">
+        <button id="trash-page-prev" type="button" class="btn btn-ghost btn-sm" aria-label="Trang trước">← Trang trước</button>
+        <span id="trash-page-status" class="pagination-status" role="status" aria-live="polite">Trang 1 / {{ ((trash_entries|length + 9) // 10) }}</span>
+        <div class="pagination-end"><button id="trash-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Trang sau →</button><span class="trash-page-size">10 volume mỗi trang</span></div>
+      </div>
+      {% else %}
+      <p class="trash-empty-state">Trash của pool <code>{{ selected_pool }}</code> đang trống.</p>
+      {% endif %}
+    </section>
+    {% endif %}
+  </main>
+
+  {% if selected_pool %}<script src="/static/trash.js?v={{ static_version }}&trash_layout=2"></script>{% endif %}
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

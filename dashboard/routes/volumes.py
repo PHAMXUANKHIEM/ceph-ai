@@ -390,6 +390,8 @@ def _volumes_page_context(
                 {
                     "pool": trash_pool,
                     "entry_count": None,
+                    "protected_count": None,
+                    "expiring_count": None,
                     "total_used_size_bytes": None,
                     "total_used_size_human": "—",
                     "total_provisioned_size_bytes": None,
@@ -426,6 +428,8 @@ def _volumes_page_context(
                     {
                         "pool": trash_pool,
                         "entry_count": None,
+                        "protected_count": None,
+                        "expiring_count": None,
                         "total_used_size_bytes": None,
                         "total_used_size_human": "—",
                         "total_provisioned_size_bytes": None,
@@ -437,6 +441,8 @@ def _volumes_page_context(
             rows = result
             try:
                 retention_rows = [_trash_retention(dict(row)) for row in rows]
+                protected_count = sum(1 for retention in retention_rows if retention["retention_kind"] == "ceph_protected")
+                expiring_count = sum(1 for retention in retention_rows if retention.get("expiring_soon"))
                 used_sizes = [row.get("used_size_bytes") for row in rows]
                 total_used_size_bytes = (
                     sum(max(0, int(value)) for value in used_sizes)
@@ -449,6 +455,8 @@ def _volumes_page_context(
                         "pool": trash_pool,
                         "entry_count": len(rows),
                         "eligible_count": sum(1 for retention in retention_rows if retention["purge_eligible"]),
+                        "protected_count": protected_count,
+                        "expiring_count": expiring_count,
                         "total_used_size_bytes": total_used_size_bytes,
                         "total_used_size_human": _format_optional_bytes(total_used_size_bytes),
                         "total_provisioned_size_bytes": total_provisioned_size_bytes,
@@ -464,6 +472,8 @@ def _volumes_page_context(
                     item["size_human"] = _format_bytes(item.get("size_bytes", 0))
                     item["used_size_human"] = _format_optional_bytes(item.get("used_size_bytes"))
                     item.update(_trash_retention(item))
+                    item["trash_id_short"] = _short_trash_id(item.get("id"))
+                    item["deletion_time_display"] = _trash_date_display(item.get("deletion_time"))
                     trash_entries.append(item)
             except (TypeError, ValueError) as exc:
                 logger.warning("_volumes_page_context: invalid trash response for pool %r: %s", trash_pool, exc)
@@ -486,6 +496,10 @@ def _volumes_page_context(
         "selected_view": selected_view,
         "trash_entries": trash_entries,
         "trash_pool_summaries": trash_pool_summaries,
+        "trash_selected_summary": next(
+            (summary for summary in trash_pool_summaries if summary.get("pool") == pool),
+            None,
+        ),
         "trash_error": trash_error,
         "trash_pending": trash_pending,
         "trash_bulk_pending": trash_bulk_pending,
@@ -519,17 +533,22 @@ def _trash_retention(entry: dict, *, now: datetime | None = None) -> dict:
         return {
             "purge_eligible": True, "expires_at": None,
             "retention_label": "Đã hết TTL", "retention_days": ttl_days,
+            "retention_kind": "ceph_expired", "expiring_soon": False,
+            "expires_at_display": "Đã hết TTL",
         }
     if ttl_status["kind"] == "ceph_protected":
         return {
             "purge_eligible": False, "expires_at": None,
             "retention_label": "Ceph còn bảo vệ: " + ttl_status["detail"],
-            "retention_days": ttl_days,
+            "retention_days": ttl_days, "retention_kind": "ceph_protected",
+            "expiring_soon": False, "expires_at_display": "Đang bảo vệ",
         }
     if ttl_status["kind"] == "unknown":
         return {
             "purge_eligible": False, "expires_at": None,
             "retention_label": "Không xác định TTL từ Ceph", "retention_days": ttl_days,
+            "retention_kind": "unknown", "expiring_soon": False,
+            "expires_at_display": "Không rõ",
         }
     expires_at = ttl_status["expires_at"]
     remaining_seconds = ttl_status["remaining_seconds"]
@@ -538,8 +557,27 @@ def _trash_retention(entry: dict, *, now: datetime | None = None) -> dict:
         "purge_eligible": ttl_status["purge_eligible"],
         "expires_at": expires_at.isoformat() + "Z",
         "retention_label": "Đã hết TTL" if remaining_seconds <= 0 else f"Còn {remaining_days} ngày",
-        "retention_days": ttl_days,
+        "retention_days": ttl_days, "retention_kind": "ttl_computed",
+        "remaining_days": remaining_days,
+        "expiring_soon": 0 < remaining_seconds <= 7 * 86400,
+        "expires_at_display": expires_at.strftime("%d/%m/%Y"),
     }
+
+
+def _short_trash_id(value: object) -> str:
+    """Keep the table dense while retaining the full ID in the DOM/title."""
+    raw = str(value or "")
+    return raw if len(raw) <= 18 else f"{raw[:10]}…{raw[-4:]}"
+
+
+def _trash_date_display(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "—"
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%d/%m/%Y")
+    except ValueError:
+        return raw[:10] if len(raw) >= 10 else raw
 
 
 @router.get("/volumes", response_class=HTMLResponse)
@@ -583,7 +621,7 @@ async def trash_page(request: Request, user: str = Depends(require_login)):
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     return templates.TemplateResponse(
         request,
-        "volumes.html",
+        "trash.html",
         _volumes_page_context(
             request,
             user,
@@ -2069,7 +2107,7 @@ async def purge_all_rbd_trash(
         invalidate_ceph_query_cache("rbd-trash", f"{cluster.id}:{pool}")
         clusters, selected = cluster_selection(request)
         return templates.TemplateResponse(
-            request, "volumes.html", _volumes_page_context(
+            request, "trash.html", _volumes_page_context(
                 request, user, pool, pools, clusters=clusters, selected_cluster=selected,
                 selected_view="trash", purge_error=message,
             )
@@ -2079,7 +2117,7 @@ async def purge_all_rbd_trash(
     invalidate_ceph_query_cache("rbd-trash", f"{cluster.id}:{pool}")
     clusters, selected = cluster_selection(request)
     return templates.TemplateResponse(
-        request, "volumes.html", _volumes_page_context(
+        request, "trash.html", _volumes_page_context(
             request, user, pool, pools, clusters=clusters, selected_cluster=selected,
             selected_view="trash", purge_success=f"Đã xoá cưỡng bức {succeeded} Trash item.",
         )
@@ -2122,7 +2160,7 @@ async def force_remove_rbd_trash(
     if result["error"]:
         _finish_trash_force_audit(audit_id, "failed", result["error"])
         return templates.TemplateResponse(
-            request, "volumes.html", _volumes_page_context(
+            request, "trash.html", _volumes_page_context(
                 request, user, pool, pools, clusters=cluster_selection(request)[0],
                 selected_cluster=cluster, selected_view="trash",
                 purge_error=f"Không xoá được {pool}/{trash_id}: {result['error']}",
@@ -2130,7 +2168,7 @@ async def force_remove_rbd_trash(
         )
     _finish_trash_force_audit(audit_id, "succeeded")
     return templates.TemplateResponse(
-        request, "volumes.html", _volumes_page_context(
+        request, "trash.html", _volumes_page_context(
             request, user, pool, pools, clusters=cluster_selection(request)[0],
             selected_cluster=cluster, selected_view="trash",
             purge_success=f"Đã xoá cưỡng bức {pool}/{trash_id}.",
