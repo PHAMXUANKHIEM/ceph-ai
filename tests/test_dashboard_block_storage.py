@@ -141,3 +141,41 @@ def test_block_storage_shows_cluster_error(dashboard_client, monkeypatch):
     assert response.status_code == 200
     assert "Không tải được Block Storage" in response.text
     assert "MON unavailable" in response.text
+
+
+def test_persistent_block_storage_fallback_preserves_empty_pools(monkeypatch):
+    cluster = SimpleNamespace(id="cluster-a")
+    monkeypatch.setattr(block_storage_route, "_uses_mocked_ceph_client", lambda: False)
+    monkeypatch.setattr(
+        block_storage_route,
+        "get_persisted_cache",
+        lambda *args, **kwargs: ({
+            "rows": [{"name": "disk", "pool": "volumes"}],
+            "pools": ["empty-pool", "volumes"],
+        }, 1.0),
+    )
+
+    inventory = block_storage_route._persistent_block_storage_fallback(cluster)
+
+    assert inventory.pools == ["empty-pool", "volumes"]
+    assert inventory[0]["name"] == "disk"
+
+
+def test_load_block_storage_persists_pool_metadata(monkeypatch):
+    cluster = SimpleNamespace(id="cluster-a")
+    inventory = block_storage_route.BlockStorageInventory(
+        [{"name": "disk", "pool": "volumes"}], pools=["empty-pool", "volumes"]
+    )
+    stored = {}
+    monkeypatch.setattr(block_storage_route, "_query_block_storage", lambda _cluster: inventory)
+    monkeypatch.setattr(block_storage_route, "_uses_mocked_ceph_client", lambda: False)
+    monkeypatch.setattr(
+        block_storage_route,
+        "store_persisted_cache",
+        lambda namespace, key, value: stored.update({"namespace": namespace, "key": key, "value": value}),
+    )
+
+    result = block_storage_route._load_block_storage(cluster)
+
+    assert result is inventory
+    assert stored["value"]["pools"] == ["empty-pool", "volumes"]

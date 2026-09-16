@@ -106,7 +106,7 @@ def test_trash_is_top_level_page_not_pool_sidebar_item(dashboard_client, monkeyp
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert "Chọn pool" in response.text
+    assert "Chọn một pool để xem các volume" in response.text
     assert 'id="pool-selector"' not in response.text
     assert 'href="/volumes?view=trash"' not in response.text
 

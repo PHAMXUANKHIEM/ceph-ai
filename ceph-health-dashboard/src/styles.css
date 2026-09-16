@@ -386,3 +386,80 @@ html { overflow-x: hidden; }
   .dashboard-page-shell .chat-panel { inset: 10px 10px auto auto; width: calc(100vw - 20px); height: calc(100dvh - 20px); max-height: calc(100dvh - 20px); }
   .dashboard-page-shell .chat-messages { padding: 12px; }
 }
+
+/* Final chat layout pass: CSS-only geometry. Keep the drawer inside the
+ * viewport, make the message list the only scrolling region, and give every
+ * assistant bubble the same compact treatment. */
+.dashboard-page-shell .chat-panel:not(.is-minimized) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dashboard-page-shell .chat-panel-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.dashboard-page-shell .chat-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: scroll;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,.32) transparent;
+}
+.dashboard-page-shell .chat-messages::-webkit-scrollbar { width: 7px; }
+.dashboard-page-shell .chat-messages::-webkit-scrollbar-track { background: transparent; }
+.dashboard-page-shell .chat-messages::-webkit-scrollbar-thumb { background: rgba(255,255,255,.32); border: 2px solid transparent; border-radius: 999px; background-clip: content-box; }
+.dashboard-page-shell .chat-messages::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.52); background-clip: content-box; }
+.dashboard-page-shell .chat-input-bar {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 3;
+  margin: 0;
+}
+.dashboard-page-shell .chat-msg {
+  position: relative;
+  gap: 3px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+.dashboard-page-shell .chat-msg-user { align-self: flex-end; align-items: flex-end; }
+.dashboard-page-shell .chat-msg-assistant { align-self: flex-start; align-items: flex-start; }
+.dashboard-page-shell .chat-msg-bubble {
+  max-width: 100%;
+  margin: 0;
+  padding: 8px 11px 22px;
+}
+/* The widget applies .chat-msg-collapsible consistently after measuring the
+ * rendered output. Keep unclassified bubbles natural until that measurement,
+ * otherwise CSS max-height would hide the content before the expand control
+ * can be attached. */
+.dashboard-page-shell .chat-msg-assistant .chat-msg-bubble {
+  overflow: visible;
+}
+.dashboard-page-shell .chat-msg-assistant .chat-msg-bubble::-webkit-scrollbar { width: 5px; }
+.dashboard-page-shell .chat-msg-assistant .chat-msg-bubble::-webkit-scrollbar-thumb { background: rgba(255,255,255,.26); border-radius: 999px; }
+.dashboard-page-shell .chat-msg-collapsible .chat-msg-bubble--collapsible { max-height: 200px; overflow: hidden; }
+.dashboard-page-shell .chat-msg-collapsible:not(.is-collapsed) .chat-msg-bubble--collapsible { max-height: none; overflow: visible; }
+.dashboard-page-shell .chat-msg-meta {
+  position: absolute;
+  right: 9px;
+  bottom: 5px;
+  z-index: 1;
+  margin: 0;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(15,23,42,.72);
+  color: rgba(226,232,240,.62);
+  font-size: 9px;
+  line-height: 1.15;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.dashboard-page-shell .chat-msg-assistant .chat-msg-meta { left: 9px; right: auto; }
+.dashboard-page-shell .chat-msg-expand { margin-top: 0; }
+.dashboard-page-shell .chat-msg-user .chat-msg-bubble { background: #3b82f6; }
+.dashboard-page-shell .chat-msg-assistant .chat-msg-bubble { background: #1e293b; }

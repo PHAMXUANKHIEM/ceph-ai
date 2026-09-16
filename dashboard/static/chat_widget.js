@@ -102,7 +102,7 @@
     var d = new Date(iso);
     if (isNaN(d.getTime())) return iso;
     var p = _vnParts(d);
-    return p.hour + ":" + p.minute + ":" + p.second;
+    return p.hour + ":" + p.minute;
   }
   function formatDateTime(iso) {
     var d = new Date(iso);
@@ -423,7 +423,7 @@
     root.querySelectorAll(".chat-msg-assistant").forEach(function (container) {
       if (container.classList.contains("chat-msg-collapsible")) return;
       var bubble = container.querySelector(":scope > .chat-msg-bubble");
-      if (!bubble || bubble.scrollHeight <= 300) return;
+      if (!bubble || bubble.scrollHeight <= 200) return;
       container.classList.add("chat-msg-collapsible", "is-collapsed");
       bubble.classList.add("chat-msg-bubble--collapsible");
       var toggle = document.createElement("button");
@@ -507,9 +507,11 @@
     var meta = document.createElement("div");
     meta.className = "chat-msg-meta";
     var dualRole = dualSpeaker === "Implementer" ? "Trả lời" : "Hỏi";
-    meta.textContent = isUser
-      ? "Bạn · " + (message.actor || "?") + " · " + formatTimestamp(message.created_at)
-      : (dualSpeaker ? "🤖 " + dualRole + " · " + dualSpeaker + " · " + dualProvider : "🤖 " + aiName) + " · " + formatTimestamp(message.created_at);
+    var messageTime = formatTimestamp(message.created_at);
+    meta.textContent = messageTime;
+    meta.title = isUser
+      ? "Bạn · " + (message.actor || "?") + " · " + messageTime
+      : (dualSpeaker ? "🤖 " + dualRole + " · " + dualSpeaker + " · " + dualProvider : "🤖 " + aiName) + " · " + messageTime;
     container.appendChild(meta);
 
     var bubble;
