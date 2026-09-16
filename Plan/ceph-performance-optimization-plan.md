@@ -585,3 +585,11 @@ Record before/after values for:
   Node 20 frontend build passed. Commit `d588d561` is pushed to
   `origin/main`; the worktree is clean and deployment remains blocked pending
   runtime ownership approval.
+- 2026-09-16: Completed the Trash lifecycle interaction wave: dedicated the
+  Trash page, added pool summaries and retention states, copyable IDs,
+  pagination/filtering, batch restore and guarded batch force-delete while
+  preserving approval, TTL and watcher-protection semantics. Focused gate:
+  113 passed with one existing Starlette/httpx warning; Python compile,
+  JavaScript syntax and diff checks passed. Commit `10a7ea43` is pushed to
+  `origin/main`; deployment remains blocked by runtime ownership approval and
+  concurrent uncommitted worktree changes.

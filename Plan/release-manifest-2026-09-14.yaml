@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: d588d561dd81d2dae8fecfd138b6f849ef540143
-  rollback_candidate_sha: 66abc7c7efc00fb7a478a001e0a19644897d6665
-  worktree: clean
-  release_commit: d588d561dd81d2dae8fecfd138b6f849ef540143
+  commit_sha: 10a7ea43fc30aac9f63951a4d8dd6e1cd513d4ed
+  rollback_candidate_sha: d588d561dd81d2dae8fecfd138b6f849ef540143
+  worktree: dirty_uncommitted_concurrent_changes
+  release_commit: 10a7ea43fc30aac9f63951a4d8dd6e1cd513d4ed
   pushed_to_origin: true
 
 migrations:
@@ -86,11 +86,12 @@ verification:
   migration_unit_gate: 10_passed_11_warnings
   migration_round_trip_gate: passed_on_disposable_sqlite_database
   dashboard_inventory_interaction_gate: 260_passed_1_warning
+  trash_lifecycle_gate: 113_passed_1_warning
 
 deployment_gate:
   deterministic_tests: passed
   broker: passed_in_isolated_release_gate_vhost
-  worktree_review: clean_candidate_release_gate_passed_at_d588d561
+  worktree_review: blocked_dirty_concurrent_changes_after_trash_commit
   runtime_ownership: blocked_pending_operator_decision
   global_autonomy_flags: review_required
   budget_observation: watcher_log_reports_monthly_ai_budget_at_159_5_percent
