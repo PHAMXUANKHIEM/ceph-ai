@@ -455,14 +455,25 @@ Record before/after values for:
 - [x] Phase 6 — Watcher scheduling and incident isolation
 - [x] Phase 7 — Frontend freshness and non-blocking behavior
 - [x] Phase 8 — Large payload and parsing protection
-- [ ] Phase 9 — Observability and admin diagnostics
-- [ ] Phase 10 — Failure, concurrency and cancellation tests
+- [x] Phase 9 — Observability and admin diagnostics
+- [x] Phase 10 — Failure, concurrency and cancellation tests
 - [ ] Phase 11 — Benchmark, review and handoff
 
 ## Change log
 
 - 2026-09-16: Initial plan created from the performance and non-blocking
   operations requirements.
+- 2026-09-16: Completed Phase 9 observability and admin diagnostics. Request
+  correlation IDs now flow through API and Ceph runner context; bounded metrics
+  cover runner, retry, cache, snapshot collector, and API timing; sensitive log
+  material is redacted; and `/api/debug/ceph-latency` is admin-only. The focused
+  observability gate passed 78 tests with one existing Starlette/httpx warning.
+- 2026-09-16: Completed Phase 10 failure, concurrency, and cancellation
+  verification. The deterministic gate passed 258 tests with one existing
+  Starlette/httpx warning, covering bounded timeouts and termination, partial
+  and stale data, cache isolation, single-flight refresh, retry limits,
+  cancellation cleanup, bounded concurrency, watcher overlap prevention, and
+  heavy-API isolation from health reads.
 - 2026-09-16: Phase 1 completed. Added bounded Ceph collection settings in
   `config/settings.py` and `.env.example`, plus `shared/retry.py` with finite
   exponential backoff, jitter and retry classification. Focused tests: 8

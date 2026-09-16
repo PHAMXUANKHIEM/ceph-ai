@@ -103,6 +103,7 @@ verification:
   dashboard_resource_frontend_build: passed_with_node_20
   cluster_user_restore_settings_gate: 322_passed_2_warnings
   settings_navigation_javascript_syntax: passed
+  phase10_failure_concurrency_cancellation_gate: 258_passed_1_warning
   broad_current_candidate_gate: not_counted_concurrent_transfer_overlay_invalidated_run
   broad_segmented_current_candidate_gate:
     non_migration_suite: 3338_passed_3_broker_environment_failures_reproduced_then_isolated
