@@ -553,3 +553,8 @@ Record before/after values for:
   Block Storage 6, dashboard navigation 28, and settings 150 tests; all
   reported exit code zero. The combined candidate gate was terminated by the
   remote runner at 37% without a summary and is not counted as passing.
+- 2026-09-16: Added bounded remote timeout and node-local lock serialization to
+  RBD restore commands, refreshed the Telegram Alerts control-plane page, and
+  added regression coverage for both waves. The combined current-wave gate
+  passed 177 tests with one existing Starlette/httpx warning. Commit
+  `b41b16b1` is pushed to `origin/main`; rollback candidate is `62ed53ff`.

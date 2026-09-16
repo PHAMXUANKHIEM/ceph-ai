@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: e2a7e4bb49bf59ac831492187e24801a5a7001ae
-  rollback_candidate_sha: 4c506a18ab6252161b323511e2f38c07554d1506
+  commit_sha: b41b16b1acfdc870dc4aeab7cc768b5a493885b9
+  rollback_candidate_sha: 62ed53ff1d8a035f7e86a5c10f89216267da93dd
   worktree: clean
-  release_commit: e2a7e4bb49bf59ac831492187e24801a5a7001ae
+  release_commit: b41b16b1acfdc870dc4aeab7cc768b5a493885b9
   pushed_to_origin: true
 
 migrations:
@@ -76,12 +76,13 @@ verification:
   retry_correlation_gate_current_sha: 342_passed_1_deselected_1_warning_prior_candidate_plus_targeted_current_wave_modules
   backup_restore_gate_current_wave: 21_engine_3_integrity_11_restore_6_restore_drill_3_ssh_executor_11_s3_13_ssh_storage_passed
   dashboard_wave_gate_current_wave: 6_block_storage_28_navigation_150_settings_8_alerts_8_pgs_24_crush_passed
+  restore_telegram_regression_gate_current_wave: 177_passed_1_warning
   nightly_report_gate: 4_passed
 
 deployment_gate:
   deterministic_tests: passed
   broker: passed_in_isolated_release_gate_vhost
-  worktree_review: clean_candidate_release_gate_passed
+  worktree_review: clean_candidate_release_gate_passed_at_b41b16b1
   runtime_ownership: blocked_pending_operator_decision
   global_autonomy_flags: review_required
   budget_observation: watcher_log_reports_monthly_ai_budget_at_159_5_percent
