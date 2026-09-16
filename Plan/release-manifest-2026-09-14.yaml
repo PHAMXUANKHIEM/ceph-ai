@@ -7,14 +7,14 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 2330c8a840c26fb87b60aea77c68fc52f2d882cf
-  rollback_candidate_sha: 1046ffe9990f6bfffb615a63288ba16bd9446e38
+  commit_sha: 1920828ca789b76a7d40ebb378f93d03af428867
+  rollback_candidate_sha: 2330c8a840c26fb87b60aea77c68fc52f2d882cf
   worktree: untracked_transfer_directory
-  release_commit: 2330c8a840c26fb87b60aea77c68fc52f2d882cf
+  release_commit: 1920828ca789b76a7d40ebb378f93d03af428867
   pushed_to_origin: true
 
 migrations:
-  alembic_head: ac17d9e0f5a0
+  alembic_head: ad18e0f1a2b3
   upgrade_downgrade_tests: passed
   sqlite_version: 3.26.0
   full_round_trip: upgrade_head_downgrade_base_upgrade_head_passed
@@ -91,6 +91,9 @@ verification:
   trash_restore_preflight_gate: 31_passed_82_deselected_1_warning
   cache_metadata_chat_layout_gate: 8_passed_1_warning
   trash_usage_telemetry_gate: 4_passed_224_deselected_1_warning
+  trash_usage_and_monitoring_wave_gate: 474_passed_11_warnings
+  migration_round_trip_current_wave: passed_upgrade_head_downgrade_base_upgrade_head
+  frontend_build_current_wave: passed_with_node_20
   broad_current_candidate_gate: not_counted_concurrent_transfer_overlay_invalidated_run
   broad_segmented_current_candidate_gate:
     non_migration_suite: 3338_passed_3_broker_environment_failures_reproduced_then_isolated
@@ -99,6 +102,7 @@ verification:
     result: all_code_tests_passed_when_rabbitmq_gate_used_isolated_runtime_vhost
     deselected: 13
     non_migration_elapsed: 1306.45_seconds
+  current_wave_expanded_gate: 474_passed_11_warnings
 
 deployment_gate:
   deterministic_tests: passed

@@ -626,3 +626,12 @@ Record before/after values for:
   deselected tests; no application code was changed for the broker-environment
   mismatch. Deployment remains blocked by the untracked `transfer/` directory
   and pending runtime ownership approval.
+- 2026-09-16: Added durable RBD Trash usage snapshots keyed by immutable Ceph
+  Trash IDs, fast no-capacity Trash listing, cleanup on restore/remove/purge,
+  delegated chat-session cleanup, node monitoring range/summary UI, and
+  snapshot filtering in Block Storage. The expanded current-wave gate passed
+  474 tests with 11 warnings; the Alembic upgrade/downgrade/upgrade round trip
+  passed at head `ad18e0f1a2b3`, and the Node 20 frontend build passed. Commit
+  `1920828c` is pushed to `origin/main`; rollback candidate is `2330c8a8`.
+  Deployment remains blocked by the untracked `transfer/` directory and
+  pending runtime ownership approval.
