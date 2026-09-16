@@ -4,6 +4,7 @@ import aio_pika
 from aio_pika.abc import AbstractChannel, AbstractConnection
 
 from config.settings import settings
+from shared.request_context import REQUEST_ID_HEADER, get_request_id
 
 QUEUE_NAME = "incidents"
 DLX_NAME = "incidents.dlx"
@@ -15,6 +16,12 @@ DELEGATED_DLQ_NAME = "ai.delegated.tasks.dlq"
 
 
 CONNECT_TIMEOUT_SECONDS = 10
+
+
+def request_headers() -> dict[str, str]:
+    """Return safe AMQP headers for the current request context."""
+    request_id = get_request_id()
+    return {REQUEST_ID_HEADER: request_id} if request_id else {}
 
 
 async def get_connection() -> AbstractConnection:
@@ -83,6 +90,7 @@ async def publish_delegated_task(task_id: str) -> None:
             await exchange.publish(
                 aio_pika.Message(
                     body=json.dumps({"task_id": task_id}).encode(),
+                    headers=request_headers(),
                     delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                 ),
                 routing_key=queue.name,

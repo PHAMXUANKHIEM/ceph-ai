@@ -4,6 +4,7 @@ import json
 import pytest
 
 from shared.mq import QUEUE_NAME, declare_topology, get_connection
+from shared.request_context import reset_request_id, set_request_id
 from watcher.publisher import SCHEMA_VERSION, build_envelope, publish_incident
 
 
@@ -52,6 +53,16 @@ def test_build_envelope_has_exact_ac2_fields():
     # Multi-cluster observability Phase 1: omitted cluster_id means "the
     # default cluster" (see build_envelope's own docstring), not an error.
     assert envelope["cluster_id"] is None
+
+
+def test_request_context_is_encoded_as_a_message_header():
+    import shared.mq as mq
+
+    token = set_request_id("publisher-trace")
+    try:
+        assert mq.request_headers() == {"x-request-id": "publisher-trace"}
+    finally:
+        reset_request_id(token)
 
 
 @pytest.mark.live

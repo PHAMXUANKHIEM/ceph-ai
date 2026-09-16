@@ -51,6 +51,7 @@ def test_supervise_restarts_a_failed_auxiliary_service(monkeypatch):
 from shared import db as db_module
 from shared.db import Base
 from shared.models import Incident, IncidentStatus
+from shared.request_context import REQUEST_ID_HEADER, get_request_id
 
 ENVELOPE = {
     "schema_version": "1.0",
@@ -103,9 +104,16 @@ def isolated_db(monkeypatch):
     yield engine
 
 
-def _make_message(incident_id: str, retry_count: int | None = None) -> FakeMessage:
+def _make_message(
+    incident_id: str,
+    retry_count: int | None = None,
+    request_id: str | None = None,
+) -> FakeMessage:
     envelope = dict(ENVELOPE, incident_id=incident_id)
     headers = {worker_main.RETRY_HEADER: retry_count} if retry_count is not None else None
+    if request_id is not None:
+        headers = dict(headers or {})
+        headers[REQUEST_ID_HEADER] = request_id
     return FakeMessage(body=json.dumps(envelope).encode(), headers=headers)
 
 
@@ -143,6 +151,19 @@ def test_handle_message_success_acks_and_sets_diagnosing(isolated_db):
     with db_module.SessionLocal() as session:
         incident = session.get(Incident, "incident-1")
         assert incident.status == IncidentStatus.DIAGNOSING.value
+
+
+def test_handle_message_restores_request_correlation_for_processor(isolated_db):
+    _create_incident(db_module.SessionLocal, "incident-correlation")
+    message = _make_message("incident-correlation", request_id="worker-trace")
+    received = []
+
+    async def process(incident_id, envelope):
+        received.append(get_request_id())
+
+    asyncio.run(worker_main._handle_message(message, FakeChannel(), process, max_retries=3))
+
+    assert received == ["worker-trace"]
 
 
 def test_handle_message_for_resolved_incident_acks_without_reopening_or_processing(isolated_db):

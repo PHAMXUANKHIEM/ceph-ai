@@ -2,7 +2,7 @@ import json
 
 import aio_pika
 
-from shared.mq import QUEUE_NAME, declare_topology, get_connection
+from shared.mq import QUEUE_NAME, declare_topology, get_connection, request_headers
 
 SCHEMA_VERSION = "1.0"
 
@@ -87,6 +87,7 @@ async def publish_incident(envelope: dict) -> None:
         await channel.default_exchange.publish(
             aio_pika.Message(
                 body=json.dumps(envelope).encode(),
+                headers=request_headers(),
                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             ),
             routing_key=QUEUE_NAME,

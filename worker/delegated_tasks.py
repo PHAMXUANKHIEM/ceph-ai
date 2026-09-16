@@ -9,6 +9,7 @@ import logging
 from shared.mq import declare_delegated_topology, get_connection, publish_delegated_task
 from shared.ai_delegation import claim_tasks_for_dispatch, execute_task
 from config.settings import settings
+from shared.request_context import request_id_from_headers, reset_request_id, set_request_id
 
 logger = logging.getLogger(__name__)
 WATCHDOG_INTERVAL_SECONDS = 30
@@ -33,7 +34,7 @@ async def _dispatch_watchdog() -> None:
             logger.exception("delegated task watchdog failed")
 
 
-async def _process_message(message) -> None:
+async def _process_message_without_context(message) -> None:
     """Execute and acknowledge one delivery without blocking other deliveries."""
     try:
         payload = json.loads(message.body)
@@ -46,6 +47,15 @@ async def _process_message(message) -> None:
         await message.reject(requeue=False)
     else:
         await message.ack()
+
+
+async def _process_message(message) -> None:
+    """Restore the producer correlation ID for delegated AI work."""
+    token = set_request_id(request_id_from_headers(message.headers))
+    try:
+        await _process_message_without_context(message)
+    finally:
+        reset_request_id(token)
 
 
 async def run(max_messages: int | None = None) -> None:

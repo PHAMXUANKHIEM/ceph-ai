@@ -12,6 +12,7 @@ from shared.mq import QUEUE_NAME, declare_topology, get_connection
 from shared.models import Cluster, Incident, IncidentStatus
 from shared.logging_redaction import install_logging_redaction
 from shared.telegram_alerts import send_ai_unavailable_alert
+from shared.request_context import request_id_from_headers, reset_request_id, set_request_id
 from watcher import incident_grouping
 
 logger = logging.getLogger(__name__)
@@ -135,7 +136,7 @@ async def _republish_with_incremented_retry(
     )
 
 
-async def _handle_message(
+async def _handle_message_without_context(
     message: AbstractIncomingMessage,
     channel: Any,
     process_incident: ProcessIncident,
@@ -269,6 +270,20 @@ async def _handle_message(
         await message.ack()
     except Exception:
         logger.exception("_handle_message: ack() failed for incident %s after successful processing", incident_id)
+
+
+async def _handle_message(
+    message: AbstractIncomingMessage,
+    channel: Any,
+    process_incident: ProcessIncident,
+    max_retries: int,
+) -> None:
+    """Restore the producer correlation ID while processing one message."""
+    token = set_request_id(request_id_from_headers(message.headers))
+    try:
+        await _handle_message_without_context(message, channel, process_incident, max_retries)
+    finally:
+        reset_request_id(token)
 
 
 def _effective_max_retries(configured: int) -> int:
