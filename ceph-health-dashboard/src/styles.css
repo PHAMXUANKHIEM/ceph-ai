@@ -282,3 +282,107 @@ html { overflow-x: hidden; }
   .dashboard-page-shell .chat-panel { inset: auto 10px 10px; width: calc(100vw - 20px); height: min(78vh, 620px); }
   .dashboard-page-shell .chat-fab { right: 16px; bottom: 16px; }
 }
+
+/* Chat drawer details. The composer is a flex child with a fixed footprint;
+ * long assistant output can scroll or collapse without ever hiding it. */
+.dashboard-page-shell .chat-panel {
+  width: min(420px, calc(100vw - 32px));
+  inset: 16px 16px auto auto;
+  height: calc(100dvh - 32px);
+  max-height: calc(100dvh - 32px);
+  background: #0f172a;
+}
+.dashboard-page-shell .chat-panel-header {
+  height: 52px;
+  padding: 0 13px;
+  background: #172033;
+}
+.dashboard-page-shell .chat-panel-controls { gap: 6px; }
+.dashboard-page-shell .chat-panel-controls .chat-panel-btn { display: none; }
+.dashboard-page-shell .chat-panel-controls #chat-panel-settings,
+.dashboard-page-shell .chat-panel-controls #chat-panel-close { display: inline-flex; }
+.dashboard-page-shell .chat-panel-controls #chat-panel-close { color: #aebbd0; font-size: 21px; }
+.dashboard-page-shell .chat-panel-controls #chat-panel-close:hover { color: #fff; background: rgba(248,113,113,.14); }
+.dashboard-page-shell .chat-mode-bar { display: none; }
+.dashboard-page-shell .chat-panel-body { min-height: 0; height: auto; flex: 1 1 auto; }
+.dashboard-page-shell .chat-messages {
+  min-height: 0;
+  flex: 1 1 auto;
+  padding: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #0f172a;
+}
+.dashboard-page-shell .chat-input-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  flex: 0 0 auto;
+  padding: 10px 12px 12px;
+  background: #172033;
+  border-top: 1px solid #2b3a51;
+  box-shadow: 0 -8px 18px rgba(15,23,42,.55);
+}
+.dashboard-page-shell .chat-textarea {
+  min-height: 42px;
+  max-height: 110px;
+  padding: 10px 11px;
+  border-radius: 9px;
+  background: #0b1220;
+  font-size: 13px;
+}
+.dashboard-page-shell .chat-send-btn { width: 42px; height: 42px; border-radius: 9px; }
+.dashboard-page-shell .chat-send-btn svg { width: 19px; height: 19px; }
+.dashboard-page-shell .chat-msg-user .chat-msg-bubble { background: #2563eb; color: #eff6ff; }
+.dashboard-page-shell .chat-msg-assistant .chat-msg-bubble { background: #1e293b; border: 1px solid #334155; color: #dbe5f3; }
+.dashboard-page-shell .chat-msg-bubble--collapsible { position: relative; max-height: 300px; overflow: hidden; }
+.dashboard-page-shell .chat-msg-bubble--collapsible::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 42px;
+  pointer-events: none;
+  background: linear-gradient(transparent, #1e293b);
+}
+.dashboard-page-shell .chat-msg-expand {
+  align-self: flex-start;
+  margin-top: 5px;
+  padding: 3px 8px;
+  border: 1px solid #3b82f6;
+  border-radius: 6px;
+  background: transparent;
+  color: #93c5fd;
+  font-size: 11px;
+  cursor: pointer;
+}
+.dashboard-page-shell .chat-msg-expand:hover { background: rgba(59,130,246,.14); color: #dbeafe; }
+.dashboard-page-shell .chat-msg-collapsible:not(.is-collapsed) .chat-msg-bubble--collapsible { max-height: none; overflow: visible; }
+.dashboard-page-shell .chat-msg-collapsible:not(.is-collapsed) .chat-msg-bubble--collapsible::after { display: none; }
+.dashboard-page-shell .chat-md-codeblock pre { max-height: 160px; overflow: auto; }
+.dashboard-page-shell .chat-md-list { max-height: 180px; overflow-y: auto; }
+.dashboard-page-shell .chat-evidence-sources { max-height: 180px; overflow: auto; }
+.dashboard-page-shell .chat-settings-quick-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.dashboard-page-shell .chat-settings-quick-actions .btn { font-size: 11px; }
+.dashboard-page-shell .chat-history-back { margin-left: auto; flex: none; font-size: 11px; }
+.dashboard-page-shell .chat-fab { position: fixed; }
+.dashboard-page-shell .chat-fab-badge {
+  position: absolute;
+  top: -5px;
+  right: -4px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  display: grid;
+  place-items: center;
+  border: 2px solid #0f172a;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font: 800 9px/1 var(--font-mono, monospace);
+}
+@media (max-width: 680px) {
+  .dashboard-page-shell .chat-panel { inset: 10px 10px auto auto; width: calc(100vw - 20px); height: calc(100dvh - 20px); max-height: calc(100dvh - 20px); }
+  .dashboard-page-shell .chat-messages { padding: 12px; }
+}

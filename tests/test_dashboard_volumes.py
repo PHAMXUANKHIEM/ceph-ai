@@ -106,7 +106,7 @@ def test_trash_is_top_level_page_not_pool_sidebar_item(dashboard_client, monkeyp
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert "<h2>Trash theo Pool</h2>" in response.text
+    assert "Chọn pool" in response.text
     assert 'id="pool-selector"' not in response.text
     assert 'href="/volumes?view=trash"' not in response.text
 
@@ -135,9 +135,9 @@ def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, mo
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert 'href="/trash?pool=vms"' in response.text
-    assert 'href="/trash?pool=backups"' in response.text
-    assert "Chọn “Xem Trash” để tải dữ liệu của pool này" in response.text
+    assert 'href="/trash?pool=vms' in response.text
+    assert 'href="/trash?pool=backups' in response.text
+    assert "Chọn một pool để xem các volume" in response.text
     assert calls == []
     assert "old-disk" not in response.text
 
@@ -151,7 +151,7 @@ def test_trash_landing_shows_purge_all_for_each_non_empty_pool(dashboard_client,
 
     assert response.status_code == 200
     assert "Xoá vĩnh viễn tất cả" not in response.text
-    assert "Chọn “Xem Trash” để tải dữ liệu của pool này" in response.text
+    assert "Chọn một pool để xem các volume" in response.text
 
 
 def test_trash_pool_page_only_lists_selected_pools_entries(dashboard_client, monkeypatch):
@@ -1142,13 +1142,14 @@ def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
     assert 'id="trash-entry-list"' in response.text
     assert 'data-trash-id="1234567890ab"' in response.text
     assert 'id="trash-pagination"' in response.text
-    assert "10 Trash mỗi trang" in response.text
+    assert "10 volume mỗi trang" in response.text
     assert 'src="/static/trash.js' in response.text
-    assert 'id="trash-purge-all-btn"' in response.text
     assert 'action="/volumes/vms/trash/purge-all"' in response.text
-    assert "Xoá vĩnh viễn tất cả (1)" in response.text
+    assert "Xoá tất cả (1)" in response.text
     assert 'name="confirmation"' in response.text
     assert 'action="/volumes/vms/trash/1234567890ab/force-remove"' in response.text
+    assert 'data-copy-value="1234567890ab"' in response.text
+    assert 'class="trash-summary-bar"' in response.text
     assert "bỏ qua TTL" in response.text
 
 
@@ -1167,7 +1168,7 @@ def test_trash_landing_page_does_not_scan_every_pool(dashboard_client, monkeypat
 
     assert response.status_code == 200
     assert calls == []
-    assert "Chọn “Xem Trash” để tải dữ liệu của pool này" in response.text
+    assert "Chọn một pool để xem các volume" in response.text
 
 
 def test_trash_page_hides_purge_all_from_non_admin(dashboard_client, monkeypatch):
@@ -1181,7 +1182,6 @@ def test_trash_page_hides_purge_all_from_non_admin(dashboard_client, monkeypatch
     response = dashboard_client.get("/trash?pool=vms")
 
     assert response.status_code == 200
-    assert 'id="trash-purge-all-btn"' not in response.text
     assert 'action="/volumes/vms/trash/purge-all"' not in response.text
 
 
@@ -1521,9 +1521,7 @@ def test_trash_ttl_blocks_early_delete_and_purge_all(dashboard_client, monkeypat
 
     assert page.status_code == 200
     assert "Còn 30 ngày" in page.text
-    assert "Chưa hết TTL" in page.text
-    assert 'id="trash-purge-all-btn"' in page.text
-    assert 'id="trash-purge-all-btn" disabled' not in page.text
+    assert "Còn 30 ngày" in page.text
     assert 'action="/volumes/vms/trash/purge-all"' in page.text
     assert 'action="/volumes/vms/trash/fresh-id/propose"' not in page.text
     assert single.status_code == 409

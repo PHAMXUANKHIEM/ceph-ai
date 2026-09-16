@@ -2,6 +2,7 @@
   var panelEl = document.getElementById("chat-panel");
   var bodyEl = document.getElementById("chat-panel-body");
   var historyBtn = document.getElementById("chat-panel-history");
+  var historyBackBtn = document.getElementById("chat-history-back");
   var settingsBtn = document.getElementById("chat-panel-settings");
   var newSessionBtn = document.getElementById("chat-panel-new-session");
   var minimizeBtn = document.getElementById("chat-panel-minimize");
@@ -60,6 +61,23 @@
   var activeDualSessionId = null;
   var dualStopRequestedSessionId = null;
   var activeDelegatedTasks = {};
+  var unreadCount = 0;
+
+  function updateChatFabBadge() {
+    if (!chatFab) return;
+    var badge = chatFab.querySelector(".chat-fab-badge");
+    if (!unreadCount) {
+      if (badge) badge.remove();
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "chat-fab-badge";
+      badge.setAttribute("aria-label", "Tin nhắn mới chưa đọc");
+      chatFab.appendChild(badge);
+    }
+    badge.textContent = unreadCount > 9 ? "9+" : String(unreadCount);
+  }
 
   // Always renders in Asia/Ho_Chi_Minh regardless of the viewing browser's
   // own OS timezone — deliberately NOT getHours()/getMinutes() etc. (those
@@ -397,6 +415,32 @@
     return bubble;
   }
 
+  // Long operational answers are useful, but they must not push the composer
+  // below the viewport. Measure the rendered bubble after it is attached so
+  // short answers stay compact while log-heavy answers get a controlled
+  // preview with an explicit expand action.
+  function enhanceLongMessages(root) {
+    root.querySelectorAll(".chat-msg-assistant").forEach(function (container) {
+      if (container.classList.contains("chat-msg-collapsible")) return;
+      var bubble = container.querySelector(":scope > .chat-msg-bubble");
+      if (!bubble || bubble.scrollHeight <= 300) return;
+      container.classList.add("chat-msg-collapsible", "is-collapsed");
+      bubble.classList.add("chat-msg-bubble--collapsible");
+      var toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "chat-msg-expand";
+      toggle.textContent = "Xem thêm";
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.addEventListener("click", function () {
+        var expanded = !container.classList.contains("is-collapsed");
+        container.classList.toggle("is-collapsed", expanded);
+        toggle.textContent = expanded ? "Xem thêm" : "Thu gọn";
+        toggle.setAttribute("aria-expanded", expanded ? "false" : "true");
+      });
+      container.appendChild(toggle);
+    });
+  }
+
   // Click toggles a small tooltip listing the same tools again, in the
   // exact order they were called (tools_used is append-only, in call
   // order — see dashboard/chat_client.py::run_chat_turn) — the badge text
@@ -445,6 +489,12 @@
       displayContent = displayContent.slice(dualMatch[0].length);
       messagesEl.classList.add("has-dual-messages");
     }
+    if (!isUser) {
+      // A personalised greeting can be prepended more than once by the
+      // provider. Remove only consecutive duplicates; the actual answer and
+      // all technical identifiers remain untouched.
+      displayContent = displayContent.replace(/(Mình yêu ơi, em là AI\.\s*){2,}/g, "$1");
+    }
     var container = document.createElement("div");
     container.className = "chat-msg " + (isUser ? "chat-msg-user" : "chat-msg-assistant");
     if (dualSpeaker) {
@@ -487,6 +537,11 @@
   function appendMessage(message) {
     clearEmptyState();
     messagesEl.appendChild(buildMessage(message));
+    enhanceLongMessages(messagesEl);
+    if (message && message.role !== "user" && panelEl.classList.contains("is-minimized")) {
+      unreadCount += 1;
+      updateChatFabBadge();
+    }
     scrollToBottom();
   }
 
@@ -534,6 +589,7 @@
     } else {
       messagesEl.appendChild(rebuilt);
     }
+    enhanceLongMessages(messagesEl);
   }
 
   // --- typing indicator ------------------------------------------------------
@@ -849,6 +905,7 @@
         }
         clearEmptyState();
         messages.forEach(function (message) { messagesEl.appendChild(buildMessage(message)); });
+        enhanceLongMessages(messagesEl);
         scrollToBottom();
         setDualProcessing(false);
         resumeDelegatedTasks();
@@ -896,6 +953,7 @@
             addedAny = true;
           } else if (existing.dataset.content !== (message.content || "")) {
             existing.replaceWith(buildMessage(message));
+            enhanceLongMessages(messagesEl);
             addedAny = true;
           }
         });
@@ -1223,6 +1281,9 @@
       }
     });
   }
+  if (historyBackBtn) {
+    historyBackBtn.addEventListener("click", closeHistoryView);
+  }
   if (settingsBtn) {
     settingsBtn.addEventListener("click", function () {
       clearError();
@@ -1313,6 +1374,10 @@
   function setMinimized(minimized) {
     panelEl.classList.toggle("is-minimized", minimized);
     panelEl.setAttribute("aria-hidden", minimized ? "true" : "false");
+    if (!minimized) {
+      unreadCount = 0;
+      updateChatFabBadge();
+    }
     if (chatFab) {
       chatFab.hidden = !minimized;
       chatFab.setAttribute("aria-expanded", minimized ? "false" : "true");
@@ -1330,16 +1395,19 @@
     }
     if (!minimized) {
       scrollToBottom();
+      window.requestAnimationFrame(function () { enhanceLongMessages(messagesEl); });
       // Mở lại panel thì con trỏ phải ở ô nhập, nếu không người dùng bàn
       // phím phải Tab qua cả thanh nút mới gõ được.
       if (inputEl) inputEl.focus();
-    } else if (minimizeBtn) {
+    } else if (chatFab) {
       // Thu nhỏ làm thân panel biến mất; nếu focus đang nằm trong đó thì nó
       // rơi về <body> và mất dấu. Trả về nút vẫn còn nhìn thấy.
       var active = document.activeElement;
       if (!active || active === document.body || bodyEl.contains(active)) {
-        minimizeBtn.focus();
+        chatFab.focus();
       }
+    } else if (minimizeBtn) {
+      minimizeBtn.focus();
     }
   }
 
@@ -1360,9 +1428,12 @@
   var startMinimized = false;
   try {
     var storedMinimized = localStorage.getItem(MINIMIZED_STORAGE_KEY);
-    // The assistant is an on-demand drawer on first visit.  Preserve an
-    // operator's explicit preference on later visits.
-    startMinimized = storedMinimized === null ? true : storedMinimized === "1";
+    // The Ceph Dashboard has a floating trigger, so its drawer starts closed
+    // on first visit. Other products may still use the inline chat layout and
+    // have no trigger; preserve their historical open-by-default behavior.
+    startMinimized = chatFab
+      ? (storedMinimized === null ? true : storedMinimized === "1")
+      : storedMinimized === "1";
   } catch (e) {
     startMinimized = false;
   }

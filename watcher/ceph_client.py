@@ -1280,6 +1280,7 @@ def run_ceph_json_command_with(
         return host, parsed
     raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
 
+JSON_BATCH_MAX_PARALLEL = 8
 
 def _build_json_batch_script(inner_commands: list[str], *, parallel: bool = False) -> str:
     """Build the bounded remote script used by JSON batch queries.
@@ -1290,6 +1291,7 @@ def _build_json_batch_script(inner_commands: list[str], *, parallel: bool = Fals
     contract while avoiding serial Ceph client startup and request latency.
     """
     frames = []
+    active_indices = []
     if parallel:
         frames.extend((
             "batch_dir=$(mktemp -d)",
@@ -1312,6 +1314,11 @@ def _build_json_batch_script(inner_commands: list[str], *, parallel: bool = Fals
                 ") &",
                 f"batch_pid_{index}=$!",
             ))
+            active_indices.append(index)
+            if len(active_indices) >= JSON_BATCH_MAX_PARALLEL:
+                for active_index in active_indices:
+                    frames.append(f"wait \"$batch_pid_{active_index}\"")
+                active_indices = []
         else:
             frames.extend((
                 f"printf '%s\\n' {shlex.quote(begin)}",
@@ -1322,8 +1329,8 @@ def _build_json_batch_script(inner_commands: list[str], *, parallel: bool = Fals
                 f"printf '%s\\n' {shlex.quote(end)}",
             ))
     if parallel:
-        for index in range(len(inner_commands)):
-            frames.append(f"wait \"$batch_pid_{index}\"")
+        for active_index in active_indices:
+            frames.append(f"wait \"$batch_pid_{active_index}\"")
         for index in range(len(inner_commands)):
             frames.append(f"cat \"$batch_dir/{index}\"")
     return chr(10).join(frames)

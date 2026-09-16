@@ -52,7 +52,10 @@ def _load_block_storage(cluster) -> BlockStorageInventory:
         store_persisted_cache(
             "block-storage",
             _block_storage_cache_key(cluster),
-            list(inventory),
+            {
+                "rows": list(inventory),
+                "pools": list(getattr(inventory, "pools", ())),
+            },
         )
     except Exception:
         # Cache persistence must never turn a successful Ceph read into a
@@ -77,10 +80,18 @@ def _persistent_block_storage_fallback(cluster) -> BlockStorageInventory:
     if cached is None:
         return BlockStorageInventory(pools=[])
     value, _age_seconds = cached
-    if not isinstance(value, list):
+    if isinstance(value, dict):
+        raw_rows = value.get("rows", [])
+        raw_pools = value.get("pools", [])
+        pools = [str(pool) for pool in raw_pools if pool]
+    elif isinstance(value, list):
+        # Backward-compatible read of the pre-envelope cache format.
+        raw_rows = value
+        pools = []
+    else:
         return BlockStorageInventory(pools=[])
-    rows = [item for item in value if isinstance(item, dict)]
-    pools = sorted({str(item["pool"]) for item in rows if item.get("pool")})
+    rows = [item for item in raw_rows if isinstance(item, dict)] if isinstance(raw_rows, list) else []
+    pools = sorted(set(pools) | {str(item["pool"]) for item in rows if item.get("pool")})
     return BlockStorageInventory(rows, pools=pools)
 
 
@@ -113,7 +124,32 @@ def _namespace_names(payload: dict | list) -> list[str]:
     return sorted(set(names))
 
 
-def _image_rows(payload: dict | list, pool: str, namespace: str) -> list[dict]:
+def _usage_by_image(payload: dict | list) -> dict[str, dict[str, int]]:
+    """Index one namespace-scoped ``rbd du`` response by image name."""
+    rows = payload if isinstance(payload, list) else payload.get("images", []) if isinstance(payload, dict) else []
+    usage: dict[str, dict[str, int]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name") or row.get("image")
+        if not name:
+            continue
+        try:
+            provisioned = max(0, int(row.get("provisioned_size") or row.get("size") or 0))
+            used = max(0, int(row.get("used_size") or 0))
+        except (TypeError, ValueError):
+            continue
+        usage[str(name)] = {
+            "provisioned_size_bytes": provisioned,
+            "used_size_bytes": used,
+        }
+    return usage
+
+
+def _image_rows(
+    payload: dict | list, pool: str, namespace: str,
+    usage_by_name: dict[str, dict[str, int]] | None = None,
+) -> list[dict]:
     rows = payload if isinstance(payload, list) else payload.get("images", []) if isinstance(payload, dict) else []
     result = []
     for row in rows:
@@ -133,12 +169,23 @@ def _image_rows(payload: dict | list, pool: str, namespace: str) -> list[dict]:
             size_bytes = int(size)
         except (TypeError, ValueError):
             size_bytes = 0
+        usage = (usage_by_name or {}).get(str(image_name), {})
+        provisioned_size_bytes = usage.get("provisioned_size_bytes", size_bytes)
+        used_size_bytes = usage.get("used_size_bytes")
+        used_percent = (
+            round(used_size_bytes * 100.0 / provisioned_size_bytes, 2)
+            if used_size_bytes is not None and provisioned_size_bytes > 0
+            else None
+        )
         result.append({
             "name": str(image_name),
             "pool": pool,
             "namespace": namespace,
-            "size_bytes": size_bytes,
-            "size": _format_size(size_bytes),
+            "size_bytes": provisioned_size_bytes,
+            "size": _format_size(provisioned_size_bytes),
+            "used_size_bytes": used_size_bytes,
+            "used_size": _format_size(used_size_bytes) if used_size_bytes is not None else "—",
+            "used_percent": used_percent,
         })
     return result
 
@@ -168,7 +215,10 @@ def _query_block_storage(cluster) -> list[dict]:
                 _host, image_payload = run_ceph_json_command_with(
                     *connection, f"rbd ls --long --pool {quoted_pool}{namespace_arg}"
                 )
-                images.extend(_image_rows(image_payload, pool, namespace))
+                _host, usage_payload = run_ceph_json_command_with(
+                    *connection, f"rbd du --pool {quoted_pool}{namespace_arg}"
+                )
+                images.extend(_image_rows(image_payload, pool, namespace, _usage_by_image(usage_payload)))
         return BlockStorageInventory(
             sorted(images, key=lambda item: (item["pool"], item["namespace"], item["name"])),
             pools=pool_names,
@@ -205,10 +255,22 @@ def _query_block_storage(cluster) -> list[dict]:
             )
     if image_commands:
         _host, image_frames = run_ceph_json_batch_command_with(*connection, image_commands, parallel=True)
-        for (pool, namespace), image_payload in zip(image_requests, image_frames):
+        usage_commands = [
+            f"rbd du --pool {shlex.quote(pool)}"
+            f"{(' --namespace ' + shlex.quote(namespace)) if namespace else ''} --format json"
+            for pool, namespace in image_requests
+        ]
+        # Keep rbd du sequential: without fast-diff it may inspect every
+        # potential object, so parallel usage scans would create an avoidable
+        # OSD/CPU burst when the overview is refreshed.
+        _host, usage_frames = run_ceph_json_batch_command_with(
+            *connection, usage_commands, parallel=False
+        )
+        for index, ((pool, namespace), image_payload) in enumerate(zip(image_requests, image_frames)):
             if image_payload is None:
                 raise CephQueryError(f"Không lấy được inventory của pool {pool}")
-            images.extend(_image_rows(image_payload, pool, namespace))
+            usage_payload = usage_frames[index] if index < len(usage_frames) else None
+            images.extend(_image_rows(image_payload, pool, namespace, _usage_by_image(usage_payload or {})))
     return BlockStorageInventory(
         sorted(images, key=lambda item: (item["pool"], item["namespace"], item["name"])),
         pools=pool_names,

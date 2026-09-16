@@ -25,7 +25,7 @@
         <div>
           <div class="trash-eyebrow">POOL SELECTION</div>
           <h2>Trash theo Pool</h2>
-          <p>Chọn một pool để xem các volume đang được Ceph bảo vệ hoặc chờ xoá.</p>
+          <p><span class="sr-only">Chọn pool</span>Chọn một pool để xem các volume đang được Ceph bảo vệ hoặc chờ xoá.</p>
         </div>
         <span class="trash-muted-meta">{{ trash_pool_summaries|length }} pool RBD</span>
       </div>
@@ -150,7 +150,7 @@
       <div id="trash-pagination" class="trash-pagination" aria-label="Phân trang Trash">
         <button id="trash-page-prev" type="button" class="btn btn-ghost btn-sm" aria-label="Trang trước">← Trang trước</button>
         <span id="trash-page-status" class="pagination-status" role="status" aria-live="polite">Trang 1 / {{ ((trash_entries|length + 9) // 10) }}</span>
-        <div class="pagination-end"><button id="trash-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Trang sau →</button><span class="trash-page-size">10 volume mỗi trang</span></div>
+        <div class="pagination-end"><button id="trash-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">10 Trash mỗi trang (10 volume mỗi trang)</button></div>
       </div>
       {% else %}
       <p class="trash-empty-state">Trash của pool <code>{{ selected_pool }}</code> đang trống.</p>

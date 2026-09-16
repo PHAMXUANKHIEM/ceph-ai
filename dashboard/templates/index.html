@@ -223,10 +223,7 @@
         <span>Chat với <span id="chat-panel-ai-name">AI</span></span>
       </div>
       <div class="chat-panel-controls">
-        <button type="button" class="chat-panel-btn" id="chat-panel-history" aria-label="Lịch sử đoạn chat" title="Lịch sử đoạn chat">&#128337;</button>
         <button type="button" class="chat-panel-btn" id="chat-panel-settings" aria-label="Cấu hình AI" title="Cấu hình AI">&#9881;</button>
-        <button type="button" class="chat-panel-btn" id="chat-panel-new-session" aria-label="Đoạn chat mới" title="Đoạn chat mới">&#43;</button>
-        <button type="button" class="chat-panel-btn" id="chat-panel-minimize" aria-label="Thu nhỏ" title="Thu nhỏ">&#8722;</button>
         <button type="button" class="chat-panel-btn" id="chat-panel-close" aria-label="Đóng" title="Đóng">&#215;</button>
       </div>
     </header>
@@ -244,6 +241,7 @@
         <div class="chat-view-header">
           <span class="chat-view-icon" aria-hidden="true">↶</span>
           <div><span class="chat-view-eyebrow">Chat / Lịch sử</span><h3>Lịch sử đoạn chat</h3></div>
+          <button type="button" class="btn btn-ghost btn-sm chat-history-back" id="chat-history-back">Quay lại</button>
         </div>
         <div class="chat-history-toolbar">
           <label class="chat-history-select-all"><input type="checkbox" id="chat-history-select-all"> Chọn tất cả</label>
@@ -266,6 +264,10 @@
             <div class="chat-persona-note"><span aria-hidden="true">♡</span><p class="chat-settings-hint">AI sẽ dùng cách xưng hô này trước tên hiển thị trong mọi câu trả lời.</p></div>
           </div>
           <div class="chat-settings-actions"><button type="submit" class="btn btn-sm">Lưu thay đổi</button></div>
+          <div class="chat-settings-quick-actions" aria-label="Thao tác chat">
+            <button type="button" class="btn btn-ghost btn-sm" id="chat-panel-history">Lịch sử chat</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="chat-panel-new-session">Đoạn chat mới</button>
+          </div>
           <p class="chat-settings-success" id="chat-settings-success" hidden></p>
         </form>
       </div>

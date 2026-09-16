@@ -16,8 +16,8 @@ def test_unauthenticated_block_storage_redirects_to_login(dashboard_client):
 
 def test_block_storage_lists_name_pool_namespace_and_size(dashboard_client, monkeypatch):
     monkeypatch.setattr(block_storage_route, "_query_block_storage", lambda cluster: [
-        {"name": "volume-a", "pool": "volumes", "namespace": "openstack", "size_bytes": 10737418240, "size": "10.0 GiB"},
-        {"name": "image-b", "pool": "images", "namespace": "", "size_bytes": 1073741824, "size": "1.0 GiB"},
+        {"name": "volume-a", "pool": "volumes", "namespace": "openstack", "size_bytes": 10737418240, "size": "10.0 GiB", "used_size_bytes": 3221225472, "used_size": "3.0 GiB", "used_percent": 30.0},
+        {"name": "image-b", "pool": "images", "namespace": "", "size_bytes": 1073741824, "size": "1.0 GiB", "used_size_bytes": 0, "used_size": "0 B", "used_percent": 0.0},
     ])
     _login(dashboard_client)
 
@@ -32,11 +32,13 @@ def test_block_storage_lists_name_pool_namespace_and_size(dashboard_client, monk
     assert "/static/block_storage.js" in response.text
     assert 'id="block-storage-create-form"' in response.text
     assert 'name="pool"' in response.text
-    for heading in ("Name", "Pool", "Namespace", "Size"):
+    for heading in ("Name", "Pool", "Namespace", "Cấp phát", "Đã dùng", "Tỷ lệ dùng"):
         assert f">{heading}<" in response.text
     assert "volume-a" in response.text
     assert "openstack" in response.text
     assert "10.0 GiB" in response.text
+    assert "3.0 GiB" in response.text
+    assert "30.0%" in response.text
     assert "Default" in response.text
     assert response.text.count("block-storage-trash-btn") == 1
     assert "Namespace riêng — chưa hỗ trợ" in response.text
@@ -45,7 +47,8 @@ def test_block_storage_lists_name_pool_namespace_and_size(dashboard_client, monk
 def test_block_storage_overview_paginates_ten_volumes_per_page(dashboard_client, monkeypatch):
     monkeypatch.setattr(block_storage_route, "_query_block_storage", lambda cluster: [
         {"name": f"volume-{index:02d}", "pool": "volumes", "namespace": "",
-         "size_bytes": 1024, "size": "1.0 KiB"}
+         "size_bytes": 1024, "size": "1.0 KiB", "used_size_bytes": 512,
+         "used_size": "512 B", "used_percent": 50.0}
         for index in range(12)
     ])
     _login(dashboard_client)
@@ -77,7 +80,8 @@ def test_block_storage_reuses_cluster_inventory_cache(dashboard_client, monkeypa
         "_query_block_storage",
         lambda cluster: calls.append(cluster.id) or [{
             "name": "cached-volume", "pool": "volumes", "namespace": "",
-            "size_bytes": 1024, "size": "1.0 KiB",
+            "size_bytes": 1024, "size": "1.0 KiB", "used_size_bytes": 512,
+            "used_size": "512 B", "used_percent": 50.0,
         }],
     )
     _login(dashboard_client)
@@ -107,6 +111,10 @@ def test_query_block_storage_discovers_rbd_pools_and_namespaces(monkeypatch):
             return "mon1", [{"image": "base", "id": "abc123", "size": 1024, "format": 2}]
         if command == "rbd ls --long --pool volumes --namespace openstack":
             return "mon1", [{"name": "vm-1", "size": 2147483648}]
+        if command == "rbd du --pool volumes":
+            return "mon1", {"images": [{"name": "base", "provisioned_size": 1024, "used_size": 512}]}
+        if command == "rbd du --pool volumes --namespace openstack":
+            return "mon1", {"images": [{"name": "vm-1", "provisioned_size": 2147483648, "used_size": 1073741824}]}
         raise AssertionError(command)
 
     monkeypatch.setattr(block_storage_route, "cluster_connection", lambda cluster: (["mon1"], "", "root", "/key", "none"))
@@ -114,9 +122,9 @@ def test_query_block_storage_discovers_rbd_pools_and_namespaces(monkeypatch):
 
     rows = block_storage_route._query_block_storage(SimpleNamespace())
 
-    assert [(row["name"], row["pool"], row["namespace"], row["size"]) for row in rows] == [
-        ("base", "volumes", "", "1.0 KiB"),
-        ("vm-1", "volumes", "openstack", "2.0 GiB"),
+    assert [(row["name"], row["pool"], row["namespace"], row["size"], row["used_size"], row["used_percent"]) for row in rows] == [
+        ("base", "volumes", "", "1.0 KiB", "512 B", 50.0),
+        ("vm-1", "volumes", "openstack", "2.0 GiB", "1.0 GiB", 50.0),
     ]
     assert not any("logs" in command for command in commands[1:])
 
