@@ -83,15 +83,21 @@
       panel.appendChild(unavailable);
     }
     limits.forEach(function (limit) {
+      var remaining = Math.max(0, Math.min(100, Number(limit.remaining_percent) || 0));
+      var severity = remaining > 50 ? "ok" : (remaining >= 20 ? "warning" : "danger");
       var row = document.createElement("div");
-      row.className = "ai-limit-row" + (limit.remaining_percent <= 15 ? " ai-limit-low" : "");
+      row.className = "ai-limit-row ai-limit-" + severity;
+      row.title = limit.resets_at ? "Reset: " + limit.resets_at : "Thời gian reset chưa được provider cung cấp";
       var label = document.createElement("span");
       label.textContent = limit.label;
       var value = document.createElement("strong");
-      value.textContent = limit.remaining_percent + "% còn lại";
-      var meter = document.createElement("progress");
-      meter.max = 100;
-      meter.value = limit.remaining_percent;
+      var used = Number(limit.used_percent);
+      value.textContent = remaining + "% còn" + (Number.isFinite(used) ? " · đã dùng " + used + "%" : "");
+      var meter = document.createElement("div");
+      meter.className = "ai-limit-meter";
+      var fill = document.createElement("span");
+      fill.style.width = remaining + "%";
+      meter.appendChild(fill);
       row.appendChild(label); row.appendChild(value); row.appendChild(meter);
       panel.appendChild(row);
     });
@@ -734,6 +740,7 @@
     });
   });
   if (settingsNavItems.length && settingsPanels.length) {
+    window.__settingsNavigationReady = true;
     settingsNavItems.forEach(function (item) {
       item.addEventListener("click", function () {
         var section = item.getAttribute("data-section");
@@ -826,6 +833,28 @@
       form.submit();
     });
   }
+})();
+
+(function () {
+  var groupLink = document.getElementById("settings-breadcrumb-group");
+  var currentLabel = document.getElementById("settings-breadcrumb-current");
+  var items = Array.prototype.slice.call(document.querySelectorAll(".settings-nav-item[data-section]"));
+  if (!groupLink || !currentLabel || !items.length) return;
+  var labels = {
+    "restart-controls": ["Hệ thống", "System Processes"], "action-policy": ["Hệ thống", "AI Action Policy"],
+    database: ["Hệ thống", "Database Connection"], "server-log": ["Hệ thống", "Server Logs"],
+    "patch-pipeline": ["Pipeline & lưu trữ", "Pipeline"], "log-intel": ["Pipeline & lưu trữ", "Log Intelligence"],
+    "dual-ai": ["Pipeline & lưu trữ", "Hai AI trao đổi"], "code-repair": ["Pipeline & lưu trữ", "AI Code Repair"],
+    "backup-targets": ["Pipeline & lưu trữ", "Storage Configuration"], router: ["Kết nối", "AI API"],
+    cost: ["Kết nối", "Chi phí"], cluster: ["Kết nối", "Ceph Cluster"], "ceph-host-keys": ["Kết nối", "Ceph Node SSH Keys"],
+    openstack: ["Kết nối", "OpenStack"], cleanup: ["Bảo trì", "System Maintenance"]
+  };
+  function update(item) {
+    var data = labels[item.getAttribute("data-section")] || ["Settings", item.textContent.trim()];
+    groupLink.textContent = data[0]; groupLink.href = "#" + item.getAttribute("data-section"); currentLabel.textContent = data[1];
+  }
+  items.forEach(function (item) { item.addEventListener("click", function () { update(item); }); });
+  update(items.filter(function (item) { return item.classList.contains("active"); })[0] || items[0]);
 })();
 
 // --- AI Code Repair role model catalog ------------------------------------

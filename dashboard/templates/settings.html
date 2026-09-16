@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Settings — Ceph AIOps</title>
-  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}-settings-v2">
 </head>
-<body>
+<body class="settings-redesign">
   {% include "_nav.html" %}
   <main class="page settings-page">
     <nav class="settings-sidebar">
@@ -58,11 +58,14 @@
       </section>
     </nav>
     <div class="settings-content">
+    <nav class="settings-breadcrumb-bar" id="settings-breadcrumb-bar" aria-label="Breadcrumb">
+      <a href="/settings">Settings</a><span aria-hidden="true">›</span><a href="#" id="settings-breadcrumb-group">Hệ thống</a><span aria-hidden="true">›</span><strong id="settings-breadcrumb-current">System Processes</strong>
+    </nav>
     {% if containerized_deployment %}
-    <div class="settings-toast is-error">
-      Chế độ container: cấu hình đã lưu chỉ được các dịch vụ nền nhận sau khi operator chạy
-      <code>systemctl restart ceph-ai-containers</code>. Các nút restart từng service bị vô hiệu trong chế độ này.
-    </div>
+    <details class="settings-container-banner" id="settings-container-banner">
+      <summary><span>⚠️ Chế độ container — restart service qua systemctl</span><a href="#settings-container-mode-guide">Xem hướng dẫn</a></summary>
+      <p id="settings-container-mode-guide">Cấu hình đã lưu chỉ được các dịch vụ nền nhận sau khi operator chạy <code>systemctl restart ceph-ai-containers</code>. Các nút restart từng service bị vô hiệu trong chế độ này.</p>
+    </details>
     {% endif %}
     {% if is_admin %}
     <section class="settings-panel process-panel" data-panel="restart-controls" {% if active_section != 'restart-controls' %}hidden{% endif %}>
@@ -99,17 +102,15 @@
           <div class="service-card-footer"><span class="service-meta">AI remediation · 10s</span><button type="button" class="service-restart-button" data-restart-service="Remediation-Watcher" data-restart-action="/settings/restart-remediation-watcher" data-restart-warning="Automatic remediation detection will pause briefly while this watcher restarts."><span>↻</span> Restart</button></div>
         </article>
       </div>
-      <article class="card" style="margin-top:1rem">
-        <div class="card-header"><h2>Autopilot</h2></div>
-        <div class="card-body">
+      <article class="settings-autopilot-card {{ 'is-enabled' if autopilot_enabled else 'is-disabled' }}">
+        <div class="settings-autopilot-main"><div class="settings-autopilot-icon" aria-hidden="true">✦</div><div><p class="settings-eyebrow">Automation control</p><h2>Autopilot: {{ "ĐANG BẬT" if autopilot_enabled else "ĐANG TẮT" }}</h2><p class="hint">Áp dụng cho toàn bộ cluster đang hoạt động.</p></div></div>
+        <div class="settings-autopilot-action">
           {% if autopilot_error %}<p class="error">{{ autopilot_error }}</p>{% endif %}
           {% if autopilot_success %}<p class="success">{{ autopilot_success }}</p>{% endif %}
-          <p>Trạng thái: <strong>{{ "ĐANG BẬT" if autopilot_enabled else "ĐANG TẮT" }}</strong></p>
-          <p class="hint">Áp dụng cho toàn bộ cluster đang hoạt động.</p>
           <form method="post" action="/settings/autopilot">
             <input type="hidden" name="enabled" value="{{ '0' if autopilot_enabled else '1' }}">
-            <button class="btn {{ 'btn-danger' if autopilot_enabled else 'btn-primary' }}" type="submit">
-              {{ "TẮT AUTOPILOT" if autopilot_enabled else "BẬT AUTOPILOT" }}
+            <button class="settings-toggle-switch" type="submit" aria-pressed="{{ 'true' if autopilot_enabled else 'false' }}" title="{{ 'Tắt Autopilot' if autopilot_enabled else 'Bật Autopilot' }}">
+              <span aria-hidden="true"></span><span class="sr-only">{{ "TẮT AUTOPILOT" if autopilot_enabled else "BẬT AUTOPILOT" }}</span>
             </button>
           </form>
         </div>
@@ -870,7 +871,8 @@
         {% if worker_restart_error %}
           <p class="error">{{ worker_restart_error }}</p>
         {% endif %}
-        <div class="login-box" id="codex-account-box">
+        <div class="settings-api-layout">
+        <div class="login-box settings-api-account-card" id="codex-account-box">
           <h3>Tài khoản Codex</h3>
           <p class="hint">
             Dùng quyền lợi Codex trong gói ChatGPT cho Chat-with-AI. Token được Codex CLI
@@ -908,7 +910,7 @@
           {% endif %}
         </div>
 
-        <div class="login-box" id="claude-account-box">
+        <div class="login-box settings-api-account-card" id="claude-account-box">
           <h3>Tài khoản Claude</h3>
           <p class="hint">
             Dùng Claude Code với tài khoản Claude Pro/Max hoặc Anthropic Console. Credential OAuth
@@ -956,7 +958,7 @@
 
         <hr>
 
-        <div id="router-connected-view" {% if not router_connected %}hidden{% endif %}>
+        <div id="router-connected-view" class="settings-api-connection-card" {% if not router_connected %}hidden{% endif %}>
           <p class="success">✅ {{ router_provider_label }} đã kết nối</p>
           <p class="hint">Base URL: <code id="router-connected-base-url">{{ router_base_url }}</code></p>
           <p class="hint">Model: <code id="router-connected-model">{{ router_model }}</code></p>
@@ -974,7 +976,7 @@
           </div>
         </div>
 
-        <div id="router-wizard-view" {% if router_connected %}hidden{% endif %}>
+        <div id="router-wizard-view" class="settings-api-connection-card" {% if router_connected %}hidden{% endif %}>
           <p class="hint">Chọn nơi gửi yêu cầu AI (chẩn đoán sự cố &amp; Chat-with-AI dùng chung một kết nối này).</p>
           <form class="login-box" id="router-step1-form">
             <div class="ai-provider-field">
@@ -990,7 +992,7 @@
                       data-base-url-placeholder="{{ p.base_url_placeholder }}"
                       {% if p.id == router_provider %}checked{% endif %}
                     >
-                    {{ p.label }}
+                    <span class="ai-provider-logo" aria-hidden="true">{{ "9R" if p.id == "9router" else ("CL" if p.id == "anthropic" else ("◎" if p.id == "openai" else "OR")) }}</span><span>{{ p.label }}</span>
                   </label>
                 {% endfor %}
               </div>
@@ -1044,6 +1046,7 @@
             </label>
             <button type="submit" class="btn btn-primary">Lưu cấu hình</button>
           </form>
+        </div>
         </div>
       </div>
     </section>
@@ -1288,7 +1291,8 @@
     </section>
     </div>
   </main>
-  <script src="/static/settings.js?v={{ static_version }}"></script>
+  <script src="/static/settings.js?v={{ static_version }}-settings-v2"></script>
+  <script src="/static/settings_navigation.js?v={{ static_version }}"></script>
   <script src="/static/settings_logs.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script>
