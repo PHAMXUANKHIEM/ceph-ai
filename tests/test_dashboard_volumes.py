@@ -278,10 +278,16 @@ def test_volumes_page_rejects_pool_not_in_configured_list(dashboard_client, monk
 
 def test_volumes_page_shows_hint_when_no_pools_configured_and_none_discovered(dashboard_client, monkeypatch):
     monkeypatch.setattr(settings, "ceph_rbd_pools", "")
-    # CEPH_RBD_POOLS blank now means "auto-discover" (watcher/ceph_client.py
-    # ::configured_rbd_pools), not "disabled" — mock discovery itself
-    # finding nothing rather than letting this test attempt a real SSH call.
-    monkeypatch.setattr(volumes_route.ceph_client, "discover_rbd_pools", lambda: [])
+    # The dashboard route performs its own live pool query; keep this test
+    # fully offline instead of mocking the watcher's older discovery helper.
+    monkeypatch.setattr(
+        volumes_route,
+        "run_ceph_json_command_with",
+        lambda *_args: ("test-host", []),
+    )
+    monkeypatch.setattr(
+        volumes_route,
+        "get_cached_ceph_query",
     _login(dashboard_client)
 
     response = dashboard_client.get("/volumes")
@@ -672,6 +678,22 @@ def test_vm_perf_form_prompts_for_ip_key_and_suggested_disks(dashboard_client, m
     assert "READ-ONLY" in response.text
     assert "Mỗi mức tải được đo đúng 3 lần" in response.text
     assert 'id="perf-sweep-panel"' not in response.text
+
+
+def test_volume_performance_uses_compact_monitoring_and_benchmark_layout(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/volume-performance?pool=vms")
+
+    assert response.status_code == 200
+    assert "performance-tabbed-page" in response.text
+    assert 'class="performance-selector"' in response.text
+    assert 'id="volume-selected-volume"' in response.text
+    assert 'id="volume-clear-btn"' in response.text
+    assert "benchmark-form" in response.text
+    assert 'class="benchmark-warning"' in response.text
+    assert 'id="volume-suggestions"' not in response.text
 
 
 def test_propose_vm_perf_creates_risky_pending_action(dashboard_client):

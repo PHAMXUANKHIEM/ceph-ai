@@ -21,6 +21,10 @@ from watcher.ceph_client import (
 router = APIRouter()
 templates = make_templates()
 BLOCK_STORAGE_OVERVIEW_LIMIT = 10
+# Serve the inventory from cache for 30 minutes, then keep serving the last
+# value while one background refresh is running for up to another 30 minutes.
+BLOCK_STORAGE_CACHE_TTL_SECONDS = 1800
+BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS = 3600
 
 
 class BlockStorageInventory(list):
@@ -165,7 +169,8 @@ def _cached_block_storage(cluster) -> list[dict]:
         "block-storage",
         f"{cluster.id}:inventory",
         lambda: _query_block_storage(cluster),
-        stale_ttl_seconds=1800,
+        ttl_seconds=BLOCK_STORAGE_CACHE_TTL_SECONDS,
+        stale_ttl_seconds=BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
     )
 
 

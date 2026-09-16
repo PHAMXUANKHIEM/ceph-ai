@@ -156,18 +156,19 @@ def _record_channel_config_change(channel: str, chat_id: str, bot_token: str, ac
 def _channel_history() -> dict[str, list[TelegramChannelConfigChange]]:
     """{channel_key: [most-recent-first rows]} for every channel — admin-only
     (this whole page requires `_require_admin_privilege`), used to answer
-    "kênh này ai từng cấu hình, đổi lúc nào" on `/telegram-alerts`."""
+    "kênh này ai từng cấu hình, đổi lúc nào" on `/telegram-alerts/{channel}`."""
     result: dict[str, list[TelegramChannelConfigChange]] = {key: [] for key in _CHANNELS}
     with db.SessionLocal() as session:
-        rows = (
-            session.query(TelegramChannelConfigChange)
-            .order_by(TelegramChannelConfigChange.created_at.desc())
-            .all()
-        )
-    for row in rows:
-        bucket = result.get(row.channel)
-        if bucket is not None and len(bucket) < _HISTORY_ROWS_PER_CHANNEL:
-            bucket.append(row)
+        # Query each known channel independently so the database never loads
+        # the full history table just to render ten rows per channel.
+        for channel in _CHANNELS:
+            result[channel] = (
+                session.query(TelegramChannelConfigChange)
+                .filter(TelegramChannelConfigChange.channel == channel)
+                .order_by(TelegramChannelConfigChange.created_at.desc())
+                .limit(_HISTORY_ROWS_PER_CHANNEL)
+                .all()
+            )
     return result
 
 
@@ -182,13 +183,13 @@ def _context(
     cluster_name_success: str | None = None,
     performance_rca_error: str | None = None,
     performance_rca_success: str | None = None,
+    detail_channel: str | None = None,
 ) -> dict:
-    """Every one of the 3 channel forms renders from this single
-    telegram_alerts.html — every response must carry every channel's
-    current values, or Jinja2 silently renders the missing ones blank
-    instead of showing the OTHER channels' saved state. `errors`/
+    """Build the shared overview/detail context from one source of truth.
+    The overview carries summary state for every channel, while a detail
+    response selects one channel through `detail_channel`. `errors`/
     `successes`/`test_errors`/`test_successes` are keyed by channel so one
-    channel's result is never mistakenly shown on another's card."""
+    channel's result is never mistakenly shown on another channel's page."""
     errors = errors or {}
     successes = successes or {}
     test_errors = test_errors or {}
@@ -232,6 +233,7 @@ def _context(
         "performance_rca_enabled": settings.telegram_performance_rca_enabled,
         "performance_rca_error": performance_rca_error,
         "performance_rca_success": performance_rca_success,
+        "detail_channel": channels.get(detail_channel) if detail_channel else None,
     }
 
 
@@ -246,6 +248,23 @@ async def telegram_alerts_help(request: Request, user: str = Depends(require_log
     _require_admin_privilege(user)
     return templates.TemplateResponse(
         request, "telegram_alerts_help.html", {"user": user, "is_admin": auth.is_admin_user(user)}
+    )
+
+
+@router.get("/telegram-alerts/{channel}", response_class=HTMLResponse)
+async def telegram_alert_channel_page(request: Request, channel: str, user: str = Depends(require_login)):
+    """Render the focused configuration page for one Telegram channel.
+
+    The overview intentionally contains no per-channel credential form. The
+    existing POST routes remain unchanged; this GET route only changes where
+    operators edit a channel.
+    """
+    _channel_or_404(channel)
+    _require_admin_privilege(user)
+    return templates.TemplateResponse(
+        request,
+        "telegram_alert_channel.html",
+        _context(user, detail_channel=channel),
     )
 
 
@@ -320,8 +339,8 @@ async def telegram_channel_submit(
         if not values or any(not re.fullmatch(r"[0-9]{1,20}", item) for item in values):
             return templates.TemplateResponse(
                 request,
-                "telegram_alerts.html",
-                _context(user, errors={channel: "Allowed User ID phải là các số Telegram, ngăn cách bằng dấu phẩy"}),
+                "telegram_alert_channel.html",
+                _context(user, errors={channel: "Allowed User ID phải là các số Telegram, ngăn cách bằng dấu phẩy"}, detail_channel=channel),
             )
         new_allowed_user_ids = ",".join(dict.fromkeys(values))
     if info.get("chatbox") and new_full_access_user_ids:
@@ -329,8 +348,8 @@ async def telegram_channel_submit(
         if not values or any(not re.fullmatch(r"[0-9]{1,20}", item) for item in values):
             return templates.TemplateResponse(
                 request,
-                "telegram_alerts.html",
-                _context(user, errors={channel: "Full Access User ID phải là các số Telegram, ngăn cách bằng dấu phẩy"}),
+                "telegram_alert_channel.html",
+                _context(user, errors={channel: "Full Access User ID phải là các số Telegram, ngăn cách bằng dấu phẩy"}, detail_channel=channel),
             )
         new_full_access_user_ids = ",".join(dict.fromkeys(values))
 
@@ -354,8 +373,8 @@ async def telegram_channel_submit(
         logger.exception("telegram_channel_submit: failed to persist config to .env for channel %s", channel)
         return templates.TemplateResponse(
             request,
-            "telegram_alerts.html",
-            _context(user, errors={channel: "Không ghi được file cấu hình — kiểm tra quyền ghi trên server"}),
+            "telegram_alert_channel.html",
+            _context(user, errors={channel: "Không ghi được file cấu hình — kiểm tra quyền ghi trên server"}, detail_channel=channel),
         )
 
     _record_channel_config_change(channel, new_chat_id, new_bot_token, user)
@@ -371,8 +390,8 @@ async def telegram_channel_submit(
 
     return templates.TemplateResponse(
         request,
-        "telegram_alerts.html",
-        _context(user, successes={channel: (
+        "telegram_alert_channel.html",
+        _context(user, detail_channel=channel, successes={channel: (
             f"Đã lưu — {restart_label} đã khởi động lại để áp dụng ngay."
             if info["restart"] != "none" else
             "Đã lưu — lượt Code Repair kế tiếp sẽ dùng cấu hình này."
@@ -404,9 +423,10 @@ async def performance_rca_toggle(
         logger.exception("performance_rca_toggle: failed to persist setting to .env")
         return templates.TemplateResponse(
             request,
-            "telegram_alerts.html",
+            "telegram_alert_channel.html",
             _context(
                 user,
+                detail_channel=channel,
                 performance_rca_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server",
             ),
         )
@@ -453,8 +473,8 @@ async def telegram_channel_toggle(
         logger.exception("telegram_channel_toggle: failed to persist config to .env for channel %s", channel)
         return templates.TemplateResponse(
             request,
-            "telegram_alerts.html",
-            _context(user, errors={channel: "Không ghi được file cấu hình — kiểm tra quyền ghi trên server"}),
+            "telegram_alert_channel.html",
+            _context(user, errors={channel: "Không ghi được file cấu hình — kiểm tra quyền ghi trên server"}, detail_channel=channel),
         )
 
     if info["restart"] == "worker":
@@ -469,8 +489,8 @@ async def telegram_channel_toggle(
     state_label = "Đã bật" if new_enabled else "Đã tắt"
     return templates.TemplateResponse(
         request,
-        "telegram_alerts.html",
-        _context(user, successes={channel: (
+        "telegram_alert_channel.html",
+        _context(user, detail_channel=channel, successes={channel: (
             f"{state_label} kênh này — {restart_label} đã khởi động lại để áp dụng ngay."
             if info["restart"] != "none" else
             f"{state_label} kênh này — lượt Code Repair kế tiếp sẽ áp dụng."
@@ -493,8 +513,8 @@ async def telegram_channel_test(request: Request, channel: str, user: str = Depe
     if not bot_token or not chat_id:
         return templates.TemplateResponse(
             request,
-            "telegram_alerts.html",
-            _context(user, test_errors={channel: "Chưa lưu Bot token / Chat ID — lưu cấu hình trước khi gửi thử"}),
+            "telegram_alert_channel.html",
+            _context(user, test_errors={channel: "Chưa lưu Bot token / Chat ID — lưu cấu hình trước khi gửi thử"}, detail_channel=channel),
         )
 
     try:
@@ -506,11 +526,11 @@ async def telegram_channel_test(request: Request, channel: str, user: str = Depe
         )
     except TelegramSendError as exc:
         return templates.TemplateResponse(
-            request, "telegram_alerts.html", _context(user, test_errors={channel: str(exc)})
+            request, "telegram_alert_channel.html", _context(user, test_errors={channel: str(exc)}, detail_channel=channel)
         )
 
     return templates.TemplateResponse(
         request,
-        "telegram_alerts.html",
-        _context(user, test_successes={channel: "Đã gửi tin nhắn thử — kiểm tra Telegram."}),
+        "telegram_alert_channel.html",
+        _context(user, test_successes={channel: "Đã gửi tin nhắn thử — kiểm tra Telegram."}, detail_channel=channel),
     )

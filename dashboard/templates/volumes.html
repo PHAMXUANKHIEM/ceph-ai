@@ -10,9 +10,9 @@
   {% include "_nav.html" %}
 
   <main class="page">
-    <div class="tabbed-page">
+    <div class="tabbed-page{% if selected_view == 'performance' %} performance-tabbed-page{% endif %}">
     {% if selected_view in ["volumes", "performance"] %}
-    <nav class="tabbed-sidebar" id="pool-selector">
+    <nav class="tabbed-sidebar{% if selected_view == 'performance' %} performance-pool-selector{% endif %}" id="pool-selector">
       <div class="node-sidebar-header">
         <span class="hint">Pool</span>
       </div>
@@ -97,33 +97,43 @@
     </section>
 
     {% else %}
-    <section class="card" id="volumes-panel" data-pool="{{ selected_pool }}">
-      <div class="card-header">
-        <div class="metrics-panel-title">
-          <span class="node-ip">{{ selected_pool }}</span>
-          <span class="header-spinner" id="header-spinner" hidden aria-hidden="true"></span>
+    <section class="card performance-monitor-card" id="volumes-panel" data-pool="{{ selected_pool }}">
+      <div class="card-header performance-card-header">
+        <div>
+          <span class="performance-eyebrow">PERFORMANCE MONITORING</span>
+          <h1>Volume Performance</h1>
+          <p>Theo dõi IOPS và độ trễ từ lịch sử Watcher của cluster.</p>
         </div>
+        <div class="performance-pool-badge"><span>POOL</span><strong>{{ selected_pool }}</strong></div>
+        <span class="header-spinner" id="header-spinner" hidden aria-hidden="true"></span>
       </div>
-      <div class="card-body">
-        <form class="audit-filters" id="volume-search-form">
-          <label>ID / tên Volume
+      <div class="card-body performance-monitor-body">
+        <form class="performance-selector" id="volume-search-form">
+          <div class="performance-step performance-pool-step">
+            <span class="performance-step-label">POOL</span>
+            <strong>{{ selected_pool }}</strong>
+          </div>
+          <label class="performance-step performance-volume-step">
+            <span class="performance-step-label">VOLUME</span>
             <input
               type="text"
               id="volume-search-input"
               list="volume-datalist"
-              placeholder="vd: vm-disk-01"
+              placeholder="Tìm theo tên hoặc ID"
               autocomplete="off"
             >
           </label>
           <datalist id="volume-datalist"></datalist>
           <button type="submit" class="btn btn-primary btn-sm">Xem hiệu năng</button>
+          <button type="button" class="btn btn-ghost btn-sm performance-clear-btn" id="volume-clear-btn" hidden>Xoá</button>
         </form>
 
-        <div class="cli-buttons" id="volume-suggestions"></div>
-
-        <div class="empty-node-state" id="volume-chart-empty" hidden>
+        <div class="performance-selected-volume" id="volume-selected-volume" hidden>
+          <span>Đang hiển thị</span>
+          <code id="volume-selected-name"></code>
         </div>
 
+        <div class="empty-node-state" id="volume-chart-empty" hidden></div>
         <div class="metrics-stack" id="volume-chart-stack" hidden></div>
 
         <div class="metrics-error-footer" id="volumes-error-footer" hidden>
@@ -133,23 +143,19 @@
       </div>
     </section>
 
-    <section class="card" id="vm-perf-panel" data-status="{{ vm_perf_action.status if vm_perf_action else '' }}">
-      <div class="card-header">
-        <h2>Hiệu năng tối đa của Volume — đo từ trong VM</h2>
-      </div>
-      <div class="card-body">
-        <p class="hint metrics-panel-desc">
-          Worker SSH vào OpenStack Controller đã cấu hình, từ Controller SSH tiếp vào VM và chạy
-          <code>fio</code> READ-ONLY trên ổ đã chọn. Mỗi mức tải được đo đúng 3 lần và lấy median
-          để loại nhiễu. Kết quả
-          bao gồm toàn bộ đường đi guest → virtio/QEMU → network → Ceph. Private key phải tồn tại
-          trên OpenStack Controller; hệ thống chỉ lưu đường dẫn, không nhận nội dung key qua trình duyệt.
-        </p>
-        <div class="vitastor-live-notice">
-          <strong>Cảnh báo:</strong> phép đo không ghi dữ liệu nhưng tạo tải đọc thật và có thể làm
-          chậm VM/cluster. Không chọn <code>/dev/vda</code> theo thói quen; hãy kiểm tra bằng
-          <code>lsblk</code>. Các data disk thường là <code>/dev/vdb</code>, <code>/dev/vdc</code>…
+    <section class="card performance-benchmark-card" id="vm-perf-panel" data-status="{{ vm_perf_action.status if vm_perf_action else '' }}">
+      <div class="card-header performance-card-header performance-benchmark-header">
+        <div>
+          <span class="performance-eyebrow">ACTIVE BENCHMARK</span>
+          <h2>Đo hiệu năng tối đa (fio)</h2>
+          <p>Benchmark READ-ONLY trong VM, tách biệt khỏi monitoring.</p>
         </div>
+      </div>
+      <div class="card-body performance-benchmark-body">
+        <details class="benchmark-warning">
+          <summary>Cảnh báo trước khi đo</summary>
+          <p>Worker SSH vào OpenStack Controller rồi vào VM để chạy <code>fio</code> READ-ONLY. Mỗi mức tải được đo đúng 3 lần và lấy median. Phép đo tạo tải đọc thật; không chọn <code>/dev/vda</code> theo thói quen, hãy kiểm tra bằng <code>lsblk</code>.</p>
+        </details>
 
         {% if vm_perf_action and vm_perf_action.status == "PENDING_APPROVAL" %}
         <pre class="upgrade-plan-text">{{ vm_perf_action.proposed_command }}</pre>
@@ -165,7 +171,7 @@
         {% elif vm_perf_action and vm_perf_action.status == "APPROVED" %}
         <p class="hint">● Đang SSH vào VM và đo hiệu năng...</p>
         {% elif is_admin and selected_cluster.is_default %}
-        <form id="vm-perf-form" class="login-box">
+        <form id="vm-perf-form" class="login-box benchmark-form">
           <label>IP của VM
             <input name="vm_ip" required inputmode="decimal" placeholder="vd: 10.20.1.50">
           </label>

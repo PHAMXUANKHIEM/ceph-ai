@@ -16,6 +16,9 @@
   var searchInput = document.getElementById("volume-search-input");
   var datalist = document.getElementById("volume-datalist");
   var suggestionsEl = document.getElementById("volume-suggestions");
+  var clearBtn = document.getElementById("volume-clear-btn");
+  var selectedVolumeEl = document.getElementById("volume-selected-volume");
+  var selectedNameEl = document.getElementById("volume-selected-name");
   var emptyState = document.getElementById("volume-chart-empty");
   var chartStack = document.getElementById("volume-chart-stack");
   var spinner = document.getElementById("header-spinner");
@@ -131,9 +134,20 @@
     App.currentImage = image;
     App.hoverIndex = null;
     App.hoverSection = null;
+    // Do not show the previous volume's values while the new history request
+    // is in flight. An empty chart is less misleading than stale telemetry.
+    App.timestamps = [];
+    App.buffers = {};
+    App.peak = {};
+    App.saturatedNow = false;
     emptyState.hidden = true;
     chartStack.hidden = false;
+    if (clearBtn) clearBtn.hidden = false;
+    if (selectedVolumeEl) selectedVolumeEl.hidden = false;
+    if (selectedNameEl) selectedNameEl.textContent = image;
     METRICS.forEach(function (cfg) { sections[cfg.key].hasDrawnOnce = false; });
+    drawAllCharts();
+    setErrorUI(false);
     renderSuggestions(searchInput.value);
     fetchHistory();
     App.pollTimer = setInterval(fetchHistory, REFRESH_INTERVAL_MS);
@@ -214,6 +228,15 @@
     if (spinner) spinner.hidden = true;
     setErrorUI(false);
 
+    // The API may canonicalize a UUID/RBD Image ID to its RBD image name.
+    // Keep that canonical value for the 15-second refresh loop so an alias
+    // lookup does not trigger another live inventory lookup every cycle.
+    if (data.image && data.image !== App.currentImage) {
+      App.currentImage = data.image;
+      if (searchInput) searchInput.value = data.image;
+      if (selectedNameEl) selectedNameEl.textContent = data.image;
+    }
+
     App.timestamps = data.samples.map(function (s) { return new Date(s.polled_at); });
     METRICS.forEach(function (cfg) {
       App.buffers[cfg.field] = data.samples.map(function (s) { return s[cfg.field]; });
@@ -248,8 +271,29 @@
     });
   }
 
+  if (clearBtn) {
+    clearBtn.addEventListener("click", function () {
+      if (App.pollTimer) { clearInterval(App.pollTimer); App.pollTimer = null; }
+      App.currentImage = null;
+      App.timestamps = [];
+      App.buffers = {};
+      App.peak = {};
+      App.saturatedNow = false;
+      if (searchInput) searchInput.value = "";
+      if (clearBtn) clearBtn.hidden = true;
+      if (selectedVolumeEl) selectedVolumeEl.hidden = true;
+      if (chartStack) chartStack.hidden = true;
+      if (emptyState) emptyState.hidden = true;
+      setErrorUI(false);
+    });
+  }
+
   if (searchInput) {
     searchInput.addEventListener("input", function () { renderSuggestions(searchInput.value); });
+    searchInput.addEventListener("change", function () {
+      var value = (searchInput.value || "").trim();
+      if (value) selectImage(value);
+    });
   }
 
   function loadKnownImages() {
