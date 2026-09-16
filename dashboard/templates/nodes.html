@@ -4,72 +4,91 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Node Monitoring — Ceph AIOps</title>
-  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&amp;nodes_layout=2">
 </head>
 <body>
   {% include "_nav.html" %}
 
-  <main class="page">
-    <div class="tabbed-page">
-    <nav class="tabbed-sidebar node-sidebar" id="node-selector" data-cluster-id="{{ selected_cluster.id }}">
-      <div class="node-sidebar-header">
-        <span class="hint">Chọn node</span>
-        <span class="hint" id="node-snapshot-meta">{% if snapshot_meta.last_error %}Snapshot error: {{ snapshot_meta.last_error }}{% elif snapshot_meta.collected_at %}Snapshot generation {{ snapshot_meta.generation }} · {{ snapshot_meta.age_seconds|round(0) }}s{% if snapshot_meta.stale %} · stale{% endif %}{% endif %}</span>
-        <span class="metrics-status" id="metrics-status">
-          <span class="dot" aria-hidden="true"></span>
-          <span id="metrics-status-text">—</span>
-        </span>
+  <main class="page node-monitor-page">
+    <header class="node-monitor-header">
+      <div>
+        <div class="node-eyebrow">CLUSTER METRICS</div>
+        <h1>Node Monitoring</h1>
+        <p>Theo dõi tài nguyên máy chủ và phát hiện node có dấu hiệu quá tải.</p>
       </div>
-      {% if nodes %}
+      <div class="node-monitor-header-actions">
+        <label class="node-range-picker" for="node-time-range">
+          <span>Khoảng thời gian</span>
+          <select id="node-time-range" aria-label="Khoảng thời gian biểu đồ">
+            <option value="120">2 phút</option>
+            <option value="300" selected>5 phút</option>
+            <option value="900">15 phút</option>
+            <option value="3600">1 giờ</option>
+            <option value="86400">24 giờ</option>
+          </select>
+        </label>
+        <span class="node-snapshot-meta" id="node-snapshot-meta">{% if snapshot_meta.last_error %}Snapshot error: {{ snapshot_meta.last_error }}{% elif snapshot_meta.collected_at %}Snapshot {{ snapshot_meta.generation }} · {{ snapshot_meta.age_seconds|round(0) }}s{% if snapshot_meta.stale %} · stale{% endif %}{% else %}Chưa có snapshot{% endif %}</span>
+      </div>
+    </header>
+
+    <section class="node-panel node-selector-panel" id="node-selector" data-cluster-id="{{ selected_cluster.id }}" aria-labelledby="node-selector-title">
+      <div class="node-section-heading">
+        <div>
+          <div class="node-eyebrow">NODE INVENTORY</div>
+          <h2 id="node-selector-title">Nodes</h2>
+        </div>
+        {% set ns = namespace(mon=0, osd=0, rgw=0, mgr=0) %}
         {% for node in nodes %}
-        <a
-          href="/nodes?cluster={{ selected_cluster.id }}&amp;host={{ node.host }}"
-          class="tabbed-nav-item node-sidebar-item {% if node.host == selected_host %}active{% endif %}"
-          data-host="{{ node.host }}"
-        >
-          <span class="node-chip-ip">{{ node.host }}</span>
-          {% for role in node.roles %}
-          <span class="role-badge role-badge-{{ role|lower }}">{{ role }}</span>
-          {% endfor %}
-        </a>
+          {% if 'MON' in node.roles %}{% set ns.mon = ns.mon + 1 %}{% endif %}
+          {% if 'OSD' in node.roles %}{% set ns.osd = ns.osd + 1 %}{% endif %}
+          {% if 'RGW' in node.roles %}{% set ns.rgw = ns.rgw + 1 %}{% endif %}
+          {% if 'MGR' in node.roles %}{% set ns.mgr = ns.mgr + 1 %}{% endif %}
         {% endfor %}
-      {% else %}
-        <p class="hint">Chưa cấu hình MON/OSD node nào — thêm ở <a href="/settings">Settings</a>.</p>
-      {% endif %}
+        <div class="node-inventory-summary" id="node-inventory-summary" aria-live="polite">
+          <span><strong>{{ nodes|length }}</strong> node</span><span><strong>{{ ns.mon }}</strong> MON</span><span><strong>{{ ns.osd }}</strong> OSD</span><span><strong>{{ ns.rgw }}</strong> RGW</span>
+        </div>
       </div>
-    </nav>
+      <div class="node-selector-grid" id="node-list">
+        {% if nodes %}
+          {% for node in nodes %}
+          <div class="node-selector-card {% if node.host == selected_host %}is-selected{% endif %}" data-host="{{ node.host }}">
+            <a href="/nodes?cluster={{ selected_cluster.id }}&amp;host={{ node.host }}" class="node-selector-link {% if node.host == selected_host %}active{% endif %}" data-host="{{ node.host }}">
+              <span class="node-health-indicator" aria-hidden="true"></span>
+              <span class="node-selector-copy"><strong class="node-chip-ip">{{ node.host }}</strong><span class="node-role-badges">{% for role in node.roles %}<span class="role-badge role-badge-{{ role|lower }}">{{ role }}</span>{% endfor %}</span></span>
+            </a>
+          </div>
+          {% endfor %}
+        {% else %}
+          <p class="hint">Chưa cấu hình MON/OSD node nào — thêm ở <a href="/settings">Settings</a>.</p>
+        {% endif %}
+      </div>
+      <div class="node-selector-footer"><span id="node-compare-status">Đang xem {{ selected_host or '—' }} · Chọn thêm tối đa 2 node để so sánh</span><span class="metrics-status" id="metrics-status"><span class="dot" aria-hidden="true"></span><span id="metrics-status-text">—</span></span></div>
+    </section>
 
-    <div class="tabbed-content">
     {% if selected_host %}
-    <section class="card metrics-panel" id="metrics-panel">
-      <div class="card-header">
-        <div class="metrics-panel-title">
-          <span class="node-ip">{{ selected_host }}</span>
-          <span class="header-spinner" id="header-spinner" hidden aria-hidden="true"></span>
-          <span class="header-loading-text" id="header-loading-text" hidden>Đang tải dữ liệu...</span>
-        </div>
+    <section class="node-summary-grid" aria-label="Tóm tắt metrics node">
+      <article class="node-summary-tile node-summary-cpu"><div><span class="node-summary-label">CPU</span><strong id="summary-cpu">—</strong><span>%</span></div><div class="node-summary-meter"><span id="summary-cpu-meter"></span></div></article>
+      <article class="node-summary-tile node-summary-ram"><div><span class="node-summary-label">RAM</span><strong id="summary-ram">—</strong><span>%</span></div><div class="node-summary-meter"><span id="summary-ram-meter"></span></div></article>
+      <article class="node-summary-tile node-summary-iops"><div><span class="node-summary-label">Disk IOPS</span><strong id="summary-iops">—</strong><span>ops/s</span></div><div class="node-summary-split"><span>R <b id="summary-read-iops">—</b></span><span>W <b id="summary-write-iops">—</b></span></div></article>
+      <article class="node-summary-tile node-summary-latency"><div><span class="node-summary-label">Disk Latency</span><strong id="summary-latency">—</strong><span>ms</span></div><div class="node-summary-meter"><span id="summary-latency-meter"></span></div></article>
+    </section>
+
+    <section class="node-panel metrics-panel" id="metrics-panel" aria-labelledby="metrics-panel-title">
+      <div class="node-panel-heading">
+        <div><div class="node-eyebrow">LIVE TELEMETRY</div><h2 id="metrics-panel-title"><span class="node-ip">{{ selected_host }}</span></h2></div>
+        <div class="node-live-state"><span class="header-spinner" id="header-spinner" hidden aria-hidden="true"></span><span class="header-loading-text" id="header-loading-text" hidden>Đang tải dữ liệu...</span></div>
       </div>
-      <div class="card-body">
+      <div class="node-panel-body">
         <div class="metrics-stack" id="metrics-stack" data-host="{{ selected_host }}"></div>
-
-        <div class="metrics-error-footer" id="metrics-error-footer" hidden>
-          <p class="metrics-error-timestamp" id="metrics-error-timestamp"></p>
-          <button type="button" class="btn btn-primary btn-sm" id="retry-btn">Thử lại</button>
-        </div>
+        <div class="metrics-error-footer" id="metrics-error-footer" hidden><p class="metrics-error-timestamp" id="metrics-error-timestamp"></p><button type="button" class="btn btn-primary btn-sm" id="retry-btn">Thử lại</button></div>
       </div>
     </section>
-
     {% else %}
-    <section class="empty-node-state">
-      <span class="empty-node-icon" aria-hidden="true">&#128421;</span>
-      <p class="empty-node-text">Chọn một node để xem thông số</p>
-    </section>
+    <section class="node-empty-state"><span aria-hidden="true">⌁</span><p>Chọn một node để xem thông số.</p></section>
     {% endif %}
-    </div>
-    </div>
   </main>
 
   <script src="/static/app.js?v={{ static_version }}"></script>
-  <script src="/static/nodes.js?v={{ static_version }}"></script>
+  <script src="/static/nodes.js?v={{ static_version }}&amp;nodes_layout=2"></script>
 </body>
 </html>

@@ -5,6 +5,7 @@
   var nodeSnapshotMeta = document.getElementById("node-snapshot-meta");
   var clusterId = nodeSelector ? nodeSelector.dataset.clusterId : "";
   var inventoryRequestInFlight = false;
+  var rangeSelect = document.getElementById("node-time-range");
 
   function refreshNodeInventory() {
     if (!nodeSelector || !clusterId || document.hidden || inventoryRequestInFlight) return;
@@ -22,21 +23,34 @@
           var selectedHost = stack ? stack.dataset.host : "";
           data.nodes.forEach(function (node) {
             if (!node || !node.host) return;
+            var card = document.createElement("div");
+            card.className = "node-selector-card" + (node.host === selectedHost ? " is-selected" : "");
+            card.dataset.host = node.host;
             var link = document.createElement("a");
-            link.className = "tabbed-nav-item node-sidebar-item" + (node.host === selectedHost ? " active" : "");
-            link.dataset.host = node.host;
+            link.className = "node-selector-link" + (node.host === selectedHost ? " active" : "");
             link.href = "/nodes?cluster=" + encodeURIComponent(clusterId) + "&host=" + encodeURIComponent(node.host);
+            var indicator = document.createElement("span");
+            indicator.className = "node-health-indicator";
+            indicator.setAttribute("aria-hidden", "true");
             var ip = document.createElement("span");
-            ip.className = "node-chip-ip";
-            ip.textContent = node.host;
-            link.appendChild(ip);
+            ip.className = "node-selector-copy";
+            var ipText = document.createElement("strong");
+            ipText.className = "node-chip-ip";
+            ipText.textContent = node.host;
+            var roles = document.createElement("small");
+            roles.className = "node-role-badges";
             (Array.isArray(node.roles) ? node.roles : []).forEach(function (role) {
               var badge = document.createElement("span");
               badge.className = "role-badge role-badge-" + String(role).toLowerCase();
               badge.textContent = role;
-              link.appendChild(badge);
+              roles.appendChild(badge);
             });
-            nodeList.appendChild(link);
+            ip.appendChild(ipText);
+            ip.appendChild(roles);
+            link.appendChild(indicator);
+            link.appendChild(ip);
+            card.appendChild(link);
+            nodeList.appendChild(card);
           });
         }
         if (nodeSnapshotMeta) {
@@ -64,7 +78,7 @@
   var POLL_INTERVAL_MS = 3000;
   // Real cadence is one SSH round trip per poll (~3s), not the 1s a mock
   // dashboard could fake — "last 2 minutes" at that cadence is 40 points.
-  var WINDOW_SECONDS = 120;
+  var WINDOW_SECONDS = rangeSelect ? Number(rangeSelect.value) : 300;
   var MAX_POINTS = Math.round((WINDOW_SECONDS * 1000) / POLL_INTERVAL_MS);
 
   var TOOLTIP_BG = "#0f172a";
@@ -74,22 +88,22 @@
   var METRICS = [
     {
       key: "cpu_percent", name: "CPU", unit: "%", fixedMax: 100,
-      series: [{ field: "cpu_percent", color: "#4ade80" }]
+      series: [{ field: "cpu_percent", color: "#22c55e" }]
     },
     {
       key: "mem_percent", name: "RAM", unit: "%", fixedMax: 100,
-      series: [{ field: "mem_percent", color: "#38bdf8" }]
+      series: [{ field: "mem_percent", color: "#3b82f6" }]
     },
     {
       key: "disk_iops", name: "Disk IOPS", unit: "ops/s",
       series: [
-        { field: "disk_read_iops", label: "read", color: "#4ade80" },
-        { field: "disk_write_iops", label: "write", color: "#fb923c" }
+        { field: "disk_read_iops", label: "read", color: "#f97316" },
+        { field: "disk_write_iops", label: "write", color: "#fdba74" }
       ]
     },
     {
       key: "disk_latency_ms", name: "Disk Latency", unit: "ms",
-      series: [{ field: "disk_latency_ms", color: "#fbbf24" }]
+      series: [{ field: "disk_latency_ms", color: "#eab308" }]
     }
   ];
 
@@ -284,6 +298,7 @@
       this.setLoadingUI(false);
       this.setErrorUI(false);
       this.updateValueBadges(data);
+      this.updateSummary(data);
       drawAllCharts(true);
     },
 
@@ -335,8 +350,51 @@
           if (el) el.textContent = formatValue(cfg, data[s.field]);
         });
       });
+    },
+
+    updateSummary: function (data) {
+      function setText(id, value, digits) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = value == null ? "—" : Number(value).toFixed(digits);
+      }
+      function setMeter(id, value, max) {
+        var el = document.getElementById(id);
+        if (el) el.style.width = value == null ? "0%" : clamp(Number(value) / max * 100, 0, 100) + "%";
+      }
+      setText("summary-cpu", data.cpu_percent, 1);
+      setMeter("summary-cpu-meter", data.cpu_percent, 100);
+      setText("summary-ram", data.mem_percent, 1);
+      setMeter("summary-ram-meter", data.mem_percent, 100);
+      var read = data.disk_read_iops;
+      var write = data.disk_write_iops;
+      setText("summary-read-iops", read, 0);
+      setText("summary-write-iops", write, 0);
+      setText("summary-iops", read == null || write == null ? null : Number(read) + Number(write), 0);
+      setText("summary-latency", data.disk_latency_ms, 2);
+      setMeter("summary-latency-meter", data.disk_latency_ms, 20);
+      var selectedCard = document.querySelector('.node-selector-card[data-host="' + cssEscape(host) + '"]');
+      if (selectedCard) selectedCard.classList.add("is-healthy");
     }
   };
+
+  function trimHistory() {
+    if (App.timestamps.length > MAX_POINTS) App.timestamps.splice(0, App.timestamps.length - MAX_POINTS);
+    METRICS.forEach(function (cfg) {
+      cfg.series.forEach(function (s) {
+        var buffer = App.buffers[s.field];
+        if (buffer && buffer.length > MAX_POINTS) buffer.splice(0, buffer.length - MAX_POINTS);
+      });
+    });
+  }
+
+  if (rangeSelect) {
+    rangeSelect.addEventListener("change", function () {
+      WINDOW_SECONDS = Math.max(120, Number(rangeSelect.value) || 300);
+      MAX_POINTS = Math.max(1, Math.round((WINDOW_SECONDS * 1000) / POLL_INTERVAL_MS));
+      trimHistory();
+      drawAllCharts();
+    });
+  }
 
   /* ---------- drawing ---------- */
   function drawAllCharts(firstPaint) {

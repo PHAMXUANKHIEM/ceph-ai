@@ -27,6 +27,7 @@ from shared.models import (
     Cluster,
     Incident,
     IncidentStatus,
+    RbdTrashUsage,
     RemediationCase,
     PlaybookStat,
 )
@@ -2927,13 +2928,17 @@ def _reconcile_stuck_rbd_actions_once(
                 "host": item["host"], "status": "failed", "phase": "reconciliation",
                 "command": command, "error": str(exc), "finished_at": datetime.utcnow().isoformat(),
             }])
-            _record_approved_execution_result(item["action_pk"], command=command, succeeded=False)
+            _record_approved_execution_result(
+                item["action_pk"], command=command, command_output=output, succeeded=False
+            )
         else:
             _write_action_progress(item["action_pk"], [{
                 "host": item["host"], "status": "done", "phase": "reconciliation",
                 "command": command, "finished_at": datetime.utcnow().isoformat(),
             }])
-            _record_approved_execution_result(item["action_pk"], command=command, succeeded=True)
+            _record_approved_execution_result(
+                item["action_pk"], command=command, command_output=output, succeeded=True
+            )
         resolved.append(item["action_pk"])
     return resolved
 
@@ -3315,6 +3320,7 @@ def _execute_approved_action(action_pk: str) -> None:
     # discovered (see worker/executor/commands.py::get_command). Every
     # other action_id's command is identical regardless of host.
     last_command: str | None = None
+    last_command_output: str | None = None
     update_failures: list[str] = []
     update_rollback_summary: str | None = None
     total_nodes = len(nodes)
@@ -3381,6 +3387,7 @@ def _execute_approved_action(action_pk: str) -> None:
             executed_any = True
             rbd_reconciliation.reconcile(action_id_str, action_params or {}, command_output)
             cinder_reconciliation.reconcile(action_id_str, action_params or {}, command_output)
+            last_command_output = command_output
         except ExecutorError as exc:
             logger.exception(
                 "_execute_approved_action: execution of action_id=%s failed on node %s "
@@ -3450,7 +3457,8 @@ def _execute_approved_action(action_pk: str) -> None:
         )
 
     _record_approved_execution_result(
-        action_pk, command=last_command, succeeded=all_succeeded and executed_any
+        action_pk, command=last_command, command_output=last_command_output,
+        succeeded=all_succeeded and executed_any,
     )
     if update_failures:
         _notify_update_failure(
@@ -3505,8 +3513,105 @@ def _write_action_progress(action_pk: str, progress: list[dict]) -> None:
         )
 
 
+def _persist_rbd_trash_usage(session, action: Action, incident: Incident | None, command_output: str | None) -> None:
+    """Persist usage against the Trash ID returned by a successful move.
+
+    ``rbd trash mv`` allocates the authoritative Trash ID only after the
+    mutation succeeds. The proposal snapshot remains in action_params as the
+    input, but this table is the durable display record keyed by that ID.
+    """
+    if action.action_id != "rbd_trash_move_volume" or incident is None or not incident.cluster_id:
+        return
+    try:
+        params = json.loads(action.action_params or "{}")
+        snapshot = params.get("trash_usage") if isinstance(params, dict) else None
+        payload = json.loads(command_output or "")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("Could not persist RBD Trash usage for action %s: malformed snapshot/output", action.id)
+        return
+    if not isinstance(params, dict) or not isinstance(snapshot, dict):
+        logger.warning("Could not persist RBD Trash usage for action %s: snapshot is missing", action.id)
+        return
+    rows = payload if isinstance(payload, list) else payload.get("images", []) if isinstance(payload, dict) else []
+    image = params.get("image")
+    if not isinstance(image, str):
+        return
+    entry = next((row for row in rows if isinstance(row, dict) and row.get("name") == image), None)
+    if entry is None or not entry.get("id"):
+        logger.warning("Could not persist RBD Trash usage for action %s: moved image was not returned", action.id)
+        return
+    pool = params.get("pool_name")
+    if not isinstance(pool, str) or not pool:
+        logger.warning("Could not persist RBD Trash usage for action %s: pool is missing", action.id)
+        return
+    try:
+        provisioned = max(0, int(snapshot["provisioned_size_bytes"]))
+        used = max(0, int(snapshot["used_size_bytes"]))
+        observed_at = datetime.fromisoformat(str(snapshot["observed_at"]).replace("Z", "+00:00"))
+        observed_at = observed_at.replace(tzinfo=None)
+    except (KeyError, TypeError, ValueError):
+        logger.warning("Could not persist RBD Trash usage for action %s: invalid snapshot", action.id)
+        return
+    percent = round(used * 100.0 / provisioned, 2) if provisioned else 0.0
+    trash_id = str(entry["id"])
+    stored = (
+        session.query(RbdTrashUsage)
+        .filter_by(cluster_id=str(incident.cluster_id), pool=pool, trash_id=trash_id)
+        .one_or_none()
+    )
+    values = {
+        "image": image,
+        "provisioned_size_bytes": provisioned,
+        "used_size_bytes": used,
+        "used_percent": percent,
+        "observed_at": observed_at,
+    }
+    if stored is None:
+        session.add(RbdTrashUsage(
+            cluster_id=str(incident.cluster_id),
+            pool=pool,
+            trash_id=trash_id,
+            **values,
+        ))
+    else:
+        for key, value in values.items():
+            setattr(stored, key, value)
+
+
+def _delete_rbd_trash_usage(session, action: Action, incident: Incident | None) -> None:
+    """Remove durable snapshots after Ceph removes or restores the Trash item."""
+    if incident is None or not incident.cluster_id:
+        return
+    if action.action_id in {"rbd_trash_remove", "rbd_trash_restore_volume"}:
+        trash_ids_value = None
+        try:
+            params = json.loads(action.action_params or "{}")
+            trash_ids_value = params.get("trash_id") if isinstance(params, dict) else None
+        except (TypeError, ValueError):
+            return
+        trash_ids = [trash_ids_value] if isinstance(trash_ids_value, str) and trash_ids_value else []
+        pool = params.get("pool_name") if isinstance(params, dict) else None
+    elif action.action_id == "rbd_trash_purge_all":
+        try:
+            params = json.loads(action.action_params or "{}")
+        except (TypeError, ValueError):
+            return
+        trash_ids_value = params.get("trash_ids") if isinstance(params, dict) else None
+        trash_ids = [str(value) for value in trash_ids_value] if isinstance(trash_ids_value, list) else []
+        pool = params.get("pool_name") if isinstance(params, dict) else None
+    else:
+        return
+    if not isinstance(pool, str) or not pool or not trash_ids:
+        return
+    session.query(RbdTrashUsage).filter(
+        RbdTrashUsage.cluster_id == str(incident.cluster_id),
+        RbdTrashUsage.pool == pool,
+        RbdTrashUsage.trash_id.in_(trash_ids),
+    ).delete(synchronize_session=False)
+
+
 def _record_approved_execution_result(
-    action_pk: str, command: str | None, succeeded: bool
+    action_pk: str, command: str | None, succeeded: bool, command_output: str | None = None
 ) -> None:
     notify: dict | None = None
     cache_invalidation: tuple[str, str] | None = None
@@ -3520,17 +3625,21 @@ def _record_approved_execution_result(
             )
             return
         incident_id = action.incident_id
+        incident = session.get(Incident, incident_id)
         if command is not None:
             action.proposed_command = command
         action.status = ActionStatus.EXECUTED.value if succeeded else ActionStatus.FAILED.value
         if succeeded:
             action.executed_at = datetime.utcnow()
+            if action.action_id == "rbd_trash_move_volume":
+                _persist_rbd_trash_usage(session, action, incident, command_output)
+            else:
+                _delete_rbd_trash_usage(session, action, incident)
         remediation_cases.record_execution(
             session, action_id=action.id, succeeded=succeeded,
             executed_at=action.executed_at if succeeded else datetime.utcnow(),
         )
 
-        incident = session.get(Incident, incident_id)
         if incident is None:
             logger.warning(
                 "_record_approved_execution_result: no Incident row for id=%s — "

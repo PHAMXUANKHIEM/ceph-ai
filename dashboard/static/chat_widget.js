@@ -1219,7 +1219,7 @@
     if (!skipConfirm && !window.confirm("Xoá vĩnh viễn đoạn chat này? Không thể hoàn tác.")) return Promise.resolve(false);
     var deleteBtn = rowEl && rowEl.querySelector(".chat-history-delete-btn");
     if (deleteBtn) deleteBtn.disabled = true;
-    fetch(apiPrefix + "/sessions/" + encodeURIComponent(sessionId), {
+    return fetch(apiPrefix + "/sessions/" + encodeURIComponent(sessionId), {
       method: "DELETE",
       credentials: "same-origin",
     })

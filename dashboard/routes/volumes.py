@@ -36,6 +36,7 @@ from shared.models import (
     Incident,
     IncidentStatus,
     ObjectStorageAuditEntry,
+    RbdTrashUsage,
     VolumeMetric,
     VolumePerfSweep,
 )
@@ -107,17 +108,32 @@ def _rbd_pools_for_request(request: Request) -> list[str]:
 
 def _cached_rbd_trash(cluster, pool: str) -> list[dict]:
     def load_trash() -> list[dict]:
-        return (
-            ceph_client.query_rbd_trash(pool)
-            if cluster.is_default
-            else ceph_client.query_rbd_trash_with(pool, *cluster_connection(cluster))
-        )
+        return _query_rbd_trash_fast(cluster, pool)
 
     return get_cached_ceph_query(
         "rbd-trash", f"{cluster.id}:{pool}", load_trash,
         ttl_seconds=_CEPH_PAGE_CACHE_TTL_SECONDS,
         stale_ttl_seconds=900,
     )
+
+
+def _query_rbd_trash_fast(cluster, pool: str) -> list[dict]:
+    """Read only the Trash listing for page/preflight paths.
+
+    Capacity enrichment calls one additional ``rbd info`` command per entry.
+    The page already gets saved usage snapshots from the database, so it must
+    not pay that N+1 SSH cost just to render the table. The TypeError fallback
+    keeps existing test doubles and older plugin clients compatible while the
+    production client uses ``include_capacity=False``.
+    """
+    query = ceph_client.query_rbd_trash if cluster.is_default else ceph_client.query_rbd_trash_with
+    args = (pool,) if cluster.is_default else (pool, *cluster_connection(cluster))
+    try:
+        return query(*args, include_capacity=False)
+    except TypeError as exc:
+        if "include_capacity" not in str(exc):
+            raise
+        return query(*args)
 
 
 def _cached_rbd_iostat(cluster, pool: str) -> list[dict]:
@@ -355,39 +371,21 @@ def _latest_vm_perf_action() -> Action | None:
         )
 
 
-def _trash_usage_snapshots(cluster, pool: str) -> dict[str, dict]:
-    """Return usage captured when each volume was proposed for Trash.
-
-    RBD Trash keeps the original image name for display, but the live image
-    is no longer in the normal image directory. The move Action is therefore
-    the durable local record that can be joined back to a Trash entry without
-    rescanning its objects.
-    """
-    snapshots: dict[str, dict] = {}
+def _trash_usage_by_id(cluster, pool: str, trash_ids: list[str]) -> dict[str, RbdTrashUsage]:
+    """Load durable usage snapshots keyed by Ceph's immutable Trash ID."""
+    if not trash_ids:
+        return {}
     with db.SessionLocal() as session:
-        actions = (
-            session.query(Action)
-            .join(Incident, Incident.id == Action.incident_id)
+        rows = (
+            session.query(RbdTrashUsage)
             .filter(
-                Incident.cluster_id == cluster.id,
-                Action.action_id == "rbd_trash_move_volume",
-                Action.status == ActionStatus.EXECUTED.value,
+                RbdTrashUsage.cluster_id == cluster.id,
+                RbdTrashUsage.pool == pool,
+                RbdTrashUsage.trash_id.in_(trash_ids),
             )
-            .order_by(Action.executed_at.desc(), Action.created_at.desc())
             .all()
         )
-    for action in actions:
-        try:
-            params = json.loads(action.action_params or "{}")
-            snapshot = params.get("trash_usage") if isinstance(params, dict) else None
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(params, dict) or params.get("pool_name") != pool:
-            continue
-        image = params.get("image")
-        if isinstance(image, str) and image and isinstance(snapshot, dict) and image not in snapshots:
-            snapshots[image] = snapshot
-    return snapshots
+    return {str(row.trash_id): row for row in rows}
 
 
 def _volumes_page_context(
@@ -475,11 +473,13 @@ def _volumes_page_context(
                 continue
             rows = result
             try:
-                usage_snapshots = _trash_usage_snapshots(cluster, trash_pool)
+                usage_by_id = _trash_usage_by_id(
+                    cluster, trash_pool, [str(row.get("id")) for row in rows if row.get("id")]
+                )
                 for row in rows:
-                    snapshot = usage_snapshots.get(row.get("name"))
-                    if row.get("used_size_bytes") is None and isinstance(snapshot, dict):
-                        row["used_size_bytes"] = snapshot.get("used_size_bytes")
+                    usage = usage_by_id.get(str(row.get("id")))
+                    if row.get("used_size_bytes") is None and usage is not None:
+                        row["used_size_bytes"] = usage.used_size_bytes
                 retention_rows = [_trash_retention(dict(row)) for row in rows]
                 protected_count = sum(1 for retention in retention_rows if retention["retention_kind"] == "ceph_protected")
                 expiring_count = sum(1 for retention in retention_rows if retention.get("expiring_soon"))
@@ -489,7 +489,12 @@ def _volumes_page_context(
                     if all(value is not None for value in used_sizes)
                     else None
                 )
-                total_provisioned_size_bytes = sum(max(0, int(row.get("size_bytes") or 0)) for row in rows)
+                provisioned_sizes = [row.get("size_bytes") for row in rows]
+                total_provisioned_size_bytes = (
+                    sum(max(0, int(value)) for value in provisioned_sizes)
+                    if all(value is not None for value in provisioned_sizes)
+                    else None
+                )
                 trash_pool_summaries.append(
                     {
                         "pool": trash_pool,
@@ -500,7 +505,7 @@ def _volumes_page_context(
                         "total_used_size_bytes": total_used_size_bytes,
                         "total_used_size_human": _format_optional_bytes(total_used_size_bytes),
                         "total_provisioned_size_bytes": total_provisioned_size_bytes,
-                        "total_provisioned_size_human": _format_bytes(total_provisioned_size_bytes),
+                        "total_provisioned_size_human": _format_optional_bytes(total_provisioned_size_bytes),
                         "error": None,
                     }
                 )
@@ -509,7 +514,7 @@ def _volumes_page_context(
                         continue
                     item = dict(row)
                     item["pool"] = trash_pool
-                    item["size_human"] = _format_bytes(item.get("size_bytes", 0))
+                    item["size_human"] = _format_optional_bytes(item.get("size_bytes"))
                     item["used_size_human"] = _format_optional_bytes(item.get("used_size_bytes"))
                     item.update(_trash_retention(item))
                     item["trash_id_short"] = _short_trash_id(item.get("id"))
@@ -1273,11 +1278,7 @@ async def propose_volume_trash_move(
 
 
 def _query_trash_restore_preflight(cluster, pool: str):
-    trash = (
-        ceph_client.query_rbd_trash(pool)
-        if cluster.is_default
-        else ceph_client.query_rbd_trash_with(pool, *cluster_connection(cluster))
-    )
+    trash = _query_rbd_trash_fast(cluster, pool)
     inventory = (
         ceph_client.query_rbd_inventory(pool)
         if cluster.is_default
@@ -2029,7 +2030,7 @@ async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, u
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
-        entries = ceph_client.query_rbd_trash(pool)
+        entries = _query_rbd_trash_fast(cluster, pool)
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không kiểm tra được TTL Trash: {exc}")
     entry = next((row for row in entries if str(row.get("id")) == trash_id), None)
@@ -2150,7 +2151,7 @@ async def purge_all_rbd_trash(
     if confirmation.strip() != "OK":
         raise HTTPException(status_code=400, detail="Phải nhập chính xác OK để xoá cưỡng bức")
     try:
-        entries = await asyncio.to_thread(ceph_client.query_rbd_trash, pool)
+        entries = await asyncio.to_thread(_query_rbd_trash_fast, cluster, pool)
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không lấy được danh sách trash: {exc}")
     if not entries:
@@ -2208,8 +2209,9 @@ async def force_remove_rbd_trash(
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     if confirmation.strip() != "OK":
         raise HTTPException(status_code=400, detail="Phải nhập chính xác OK để xoá cưỡng bức")
+    wants_json = "application/json" in request.headers.get("accept", "").lower()
     try:
-        entries = await asyncio.to_thread(ceph_client.query_rbd_trash, pool)
+        entries = await asyncio.to_thread(_query_rbd_trash_fast, cluster, pool)
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không kiểm tra được Trash: {exc}")
     if not any(str(row.get("id")) == trash_id for row in entries):
@@ -2227,6 +2229,11 @@ async def force_remove_rbd_trash(
     invalidate_ceph_query_cache("rbd-trash", f"{cluster.id}:{pool}")
     if result["error"]:
         _finish_trash_force_audit(audit_id, "failed", result["error"])
+        if wants_json:
+            return JSONResponse(
+                {"status": "failed", "pool": pool, "trash_id": trash_id, "detail": result["error"]},
+                status_code=502,
+            )
         return templates.TemplateResponse(
             request, "trash.html", _volumes_page_context(
                 request, user, pool, pools, clusters=cluster_selection(request)[0],
@@ -2235,6 +2242,8 @@ async def force_remove_rbd_trash(
             )
         )
     _finish_trash_force_audit(audit_id, "succeeded")
+    if wants_json:
+        return JSONResponse({"status": "succeeded", "pool": pool, "trash_id": trash_id})
     return templates.TemplateResponse(
         request, "trash.html", _volumes_page_context(
             request, user, pool, pools, clusters=cluster_selection(request)[0],

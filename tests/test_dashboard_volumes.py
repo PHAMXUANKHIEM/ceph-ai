@@ -14,6 +14,7 @@ from shared.models import (
     Incident,
     IncidentStatus,
     Cluster,
+    RbdTrashUsage,
     User,
     VolumeMetric,
     VolumePerfSweep,
@@ -1181,6 +1182,16 @@ def test_trash_page_uses_saved_usage_snapshot_when_ceph_trash_has_no_usage(
                 "trash_usage": {"used_size_bytes": 268435456},
             }),
             executed_at=datetime.utcnow(),
+        ))
+        session.add(RbdTrashUsage(
+            cluster_id=cluster.id,
+            pool="vms",
+            trash_id="1234567890ab",
+            image="old-disk",
+            provisioned_size_bytes=10 * 1024 ** 3,
+            used_size_bytes=268435456,
+            used_percent=2.5,
+            observed_at=datetime.utcnow(),
         ))
         session.commit()
     _login(dashboard_client)

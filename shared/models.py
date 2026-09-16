@@ -455,6 +455,29 @@ class Action(Base):
     )
 
 
+class RbdTrashUsage(Base):
+    """Durable usage snapshot keyed by the concrete Ceph Trash ID."""
+
+    __tablename__ = "rbd_trash_usages"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_id", "pool", "trash_id", name="uq_rbd_trash_usages_cluster_pool_id"
+        ),
+        Index("ix_rbd_trash_usages_cluster_pool", "cluster_id", "pool"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    trash_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    image: Mapped[str] = mapped_column(String(128), nullable=False)
+    provisioned_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    used_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    used_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class AuditEntry(Base):
     """Append-only (AD-7) — `shared/audit.py::record()` is the only place
     that ever inserts a row here, and nothing in this codebase ever

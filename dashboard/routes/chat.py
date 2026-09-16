@@ -534,19 +534,93 @@ async def delete_chat_session(session_id: str, request: Request, user: str = Dep
     this session may have created — those are independent, real
     infrastructure state (Story 6.1's confirm-action already copied
     everything the Worker/approval pipeline needs into their own rows), and
-    nothing in this schema has a foreign key pointing AT ChatMessage.id, so
-    deleting these rows can never leave anything else dangling.
+    nothing in this schema has a foreign key pointing AT ChatMessage.id
+    except the delegated-task assistant-message link. Active delegated tasks
+    are first marked CANCELLED so the Worker can observe the cancellation;
+    delegated task and subtask rows are then removed before the messages.
+    Otherwise PostgreSQL correctly rejects the message delete with a
+    ForeignKeyViolation and the UI reports HTTP 500. Confirmed Incidents and
+    Actions remain untouched.
     """
     cluster = selected_cluster(request)
     with db.SessionLocal() as session:
-        deleted = (
-            session.query(ChatMessage)
-            .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user, _message_cluster_filter(cluster))
-            .delete()
+        message_filter = (
+            ChatMessage.session_id == session_id,
+            ChatMessage.actor == user,
+            _message_cluster_filter(cluster),
+        )
+        message_ids = [
+            row.id for row in session.query(ChatMessage.id).filter(*message_filter).all()
+        ]
+        if not message_ids:
+            raise HTTPException(status_code=404, detail="Không tìm thấy đoạn chat")
+
+        # DelegatedAITask.assistant_message_id is a non-nullable FK to
+        # ChatMessage. Delete children explicitly for SQLite compatibility;
+        # PostgreSQL would cascade subtasks through task_id, but relying on
+        # database-specific FK settings would make this endpoint fragile in
+        # tests and operator recovery databases.
+        task_filter = (
+            DelegatedAITask.session_id == session_id,
+            DelegatedAITask.actor == user,
+            DelegatedAITask.cluster_id == cluster.id,
+        )
+        task_rows = session.query(
+            DelegatedAITask.id, DelegatedAITask.status
+        ).filter(*task_filter).all()
+        task_ids = [row.id for row in task_rows]
+        active_task_ids = [
+            row.id for row in task_rows if row.status in _DELEGATED_ACTIVE_STATUSES
+        ]
+        if task_ids:
+            if active_task_ids:
+                # Publish cancellation before removing the rows. The Worker
+                # watches this status and can stop an in-flight provider call;
+                # deleting the task in the same transaction would hide the
+                # cancellation signal from that watcher.
+                now = datetime.utcnow()
+                session.query(DelegatedAISubtask).filter(
+                    DelegatedAISubtask.task_id.in_(active_task_ids),
+                    DelegatedAISubtask.status.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+                ).update(
+                    {
+                        "status": "CANCELLED",
+                        "error": "Sub-agent bị hủy vì operator xoá lịch sử chat",
+                        "lease_until": None,
+                        "finished_at": now,
+                        "updated_at": now,
+                    },
+                    synchronize_session=False,
+                )
+                session.query(DelegatedAITask).filter(
+                    DelegatedAITask.id.in_(active_task_ids),
+                    DelegatedAITask.status.in_(_DELEGATED_ACTIVE_STATUSES),
+                ).update(
+                    {
+                        "status": "CANCELLED",
+                        "error": "Đã hủy vì operator xoá lịch sử chat",
+                        "lease_until": None,
+                        "finished_at": now,
+                        "updated_at": now,
+                    },
+                    synchronize_session=False,
+                )
+                # This is intentionally a small first transaction: the
+                # Worker must be able to observe CANCELLED before the FK
+                # rows are removed in the cleanup transaction below.
+                session.commit()
+
+            session.query(DelegatedAISubtask).filter(
+                DelegatedAISubtask.task_id.in_(task_ids)
+            ).delete(synchronize_session=False)
+            session.query(DelegatedAITask).filter(
+                DelegatedAITask.id.in_(task_ids)
+            ).delete(synchronize_session=False)
+
+        deleted = session.query(ChatMessage).filter(*message_filter).delete(
+            synchronize_session=False
         )
         session.commit()
-    if deleted == 0:
-        raise HTTPException(status_code=404, detail="Không tìm thấy đoạn chat")
     return {"deleted": deleted}
 
 

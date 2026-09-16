@@ -45,6 +45,7 @@
           <h2 id="trash-confirm-title">${title}</h2>
           <p>${description}</p>
           <strong class="trash-confirm-target"></strong>
+          <p class="trash-confirm-progress" data-trash-confirm-progress aria-live="polite"></p>
           <label class="trash-confirm-input-label" for="trash-confirm-input">${label}</label>
           <input id="trash-confirm-input" class="trash-confirm-input" type="text" autocomplete="off" spellcheck="false">
           <div class="trash-confirm-actions">
@@ -55,7 +56,22 @@
       </div>`;
     dialog.querySelector(".trash-confirm-target").textContent = target;
     document.body.appendChild(dialog);
-    return { dialog, input: dialog.querySelector(".trash-confirm-input"), cancel: dialog.querySelector("[data-trash-confirm-cancel]"), confirm: dialog.querySelector("[data-trash-confirm-submit]"), expected };
+    return { dialog, input: dialog.querySelector(".trash-confirm-input"), cancel: dialog.querySelector("[data-trash-confirm-cancel]"), confirm: dialog.querySelector("[data-trash-confirm-submit]"), progress: dialog.querySelector("[data-trash-confirm-progress]"), expected };
+  }
+
+  function showTrashDialog(dialog) {
+    if (typeof dialog.showModal === "function") {
+      dialog.showModal();
+      return;
+    }
+    dialog.setAttribute("open", "");
+    dialog.classList.add("is-open");
+  }
+
+  function closeTrashDialog(dialog) {
+    if (typeof dialog.close === "function" && dialog.open) dialog.close();
+    dialog.removeAttribute("open");
+    dialog.classList.remove("is-open");
   }
 
   function openTrashConfirmation(form) {
@@ -76,7 +92,7 @@
       if (closed) return;
       closed = true;
       form.dataset.confirmOpen = "false";
-      if (modal.dialog.open) modal.dialog.close();
+      closeTrashDialog(modal.dialog);
       modal.dialog.remove();
       const originalButton = form.querySelector('button[type="submit"]');
       if (originalButton) originalButton.focus();
@@ -92,7 +108,7 @@
       close();
       HTMLFormElement.prototype.submit.call(form);
     });
-    modal.dialog.showModal();
+    showTrashDialog(modal.dialog);
     modal.input.focus();
   }
 
@@ -113,6 +129,7 @@
   }
 
   async function restoreBatch(rows) {
+    const completed = [];
     for (const row of rows) {
       const form = row.querySelector(".trash-restore-form");
       const url = new URL(`/api/volumes/${encodeURIComponent(form.dataset.pool)}/trash/${encodeURIComponent(form.dataset.trashId)}/restore`, window.location.origin);
@@ -125,18 +142,51 @@
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+      completed.push(row);
     }
-    window.location.reload();
+    completed.forEach((row) => {
+      const restoreButton = row.querySelector(".trash-restore-button");
+      if (restoreButton) {
+        restoreButton.disabled = true;
+        restoreButton.title = "Đã gửi đề xuất khôi phục — chờ phê duyệt";
+        restoreButton.setAttribute("aria-label", "Đã gửi đề xuất khôi phục — chờ phê duyệt");
+      }
+      const note = row.querySelector(".trash-action-note") || document.createElement("span");
+      note.className = "trash-action-note trash-action-success";
+      note.textContent = "Đã gửi đề xuất khôi phục — chờ phê duyệt";
+      if (!note.parentElement) row.querySelector(".trash-actions-cell")?.appendChild(note);
+    });
+    updateBatchState();
+    return completed;
   }
 
-  async function deleteBatch(rows) {
-    for (const row of rows) {
-      const form = row.querySelector(".trash-force-remove-form");
-      const body = new URLSearchParams({ confirmation: "OK" });
-      const response = await fetch(form.action, { method: "POST", credentials: "same-origin", body });
-      if (!response.ok) throw new Error(`Không xoá được ${row.dataset.trashId} (HTTP ${response.status})`);
-    }
-    window.location.reload();
+  async function deleteBatch(rows, onProgress) {
+    let nextIndex = 0;
+    let completed = 0;
+    const errors = [];
+    const worker = async function () {
+      while (nextIndex < rows.length) {
+        const row = rows[nextIndex++];
+        const form = row.querySelector(".trash-force-remove-form");
+        const body = new URLSearchParams({ confirmation: "OK" });
+        try {
+          const response = await fetch(form.action, {
+            method: "POST", credentials: "same-origin", body,
+            headers: { Accept: "application/json" },
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+          completed += 1;
+          if (onProgress) onProgress(completed, rows.length, row, null);
+        } catch (error) {
+          completed += 1;
+          errors.push(`${row.dataset.trashId}: ${error.message}`);
+          if (onProgress) onProgress(completed, rows.length, row, error);
+        }
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    if (errors.length) throw new Error(`Một số Volume chưa xoá được:\n${errors.join("\n")}`);
   }
 
   function openBatchDeleteConfirmation(rows) {
@@ -153,16 +203,29 @@
     list.textContent = ids.join(", ");
     dialog.dialog.querySelector(".trash-confirm-target").after(list);
     let closed = false;
-    const close = () => { if (closed) return; closed = true; if (dialog.dialog.open) dialog.dialog.close(); dialog.dialog.remove(); };
+    const close = () => { if (closed) return; closed = true; closeTrashDialog(dialog.dialog); dialog.dialog.remove(); };
     dialog.input.addEventListener("input", () => { dialog.confirm.disabled = dialog.input.value.trim() !== "OK"; });
     dialog.cancel.addEventListener("click", close);
     dialog.dialog.addEventListener("cancel", (event) => { event.preventDefault(); close(); });
     dialog.confirm.addEventListener("click", async () => {
       if (dialog.input.value.trim() !== "OK") return;
       dialog.confirm.disabled = true;
-      try { await deleteBatch(rows); } catch (error) { close(); window.alert(error.message); }
+      dialog.cancel.disabled = true;
+      if (dialog.progress) dialog.progress.textContent = `Đang xoá 0/${rows.length} Volume…`;
+      try {
+        await deleteBatch(rows, (done, total, _row, error) => {
+          if (dialog.progress) dialog.progress.textContent = error ? `Đã xử lý ${done}/${total}; có lỗi ở một Volume.` : `Đang xoá ${done}/${total} Volume…`;
+        });
+        if (dialog.progress) dialog.progress.textContent = `Đã xoá ${rows.length}/${rows.length} Volume.`;
+        close();
+        window.location.reload();
+      } catch (error) {
+        close();
+        window.alert(error.message);
+        window.location.reload();
+      }
     });
-    dialog.dialog.showModal();
+    showTrashDialog(dialog.dialog);
     dialog.input.focus();
   }
 

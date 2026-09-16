@@ -157,6 +157,11 @@ def _image_rows(
             row = {"name": row}
         if not isinstance(row, dict):
             continue
+        # `rbd ls --long` includes one row for the image and one row for
+        # every snapshot. Overview is an image inventory, so snapshot rows
+        # must not become duplicate volumes.
+        if row.get("snapshot") is not None:
+            continue
         # `rbd ls --long --format json` uses `image` on Ceph Reef (the
         # production payload), while some older/newer CLI builds and test
         # fixtures expose `name`. Accept both instead of silently dropping

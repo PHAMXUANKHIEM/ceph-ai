@@ -697,11 +697,11 @@ class TrashEntry(TypedDict):
     name: str
     deletion_time: str
     status: str
-    size_bytes: int
+    size_bytes: int | None
     used_size_bytes: int | None
 
 
-def query_rbd_trash(pool: str) -> list[TrashEntry]:
+def query_rbd_trash(pool: str, *, include_capacity: bool = True) -> list[TrashEntry]:
     """Runs `rbd trash ls <pool> --format json` — lists RBD images an
     operator already soft-deleted (`rbd trash mv`) in this pool, which Ceph
     keeps recoverable (`rbd trash restore`) until explicitly purged
@@ -717,12 +717,13 @@ def query_rbd_trash(pool: str) -> list[TrashEntry]:
         pool,
         payload,
         lambda command: run_ceph_json_command(command)[1],
+        include_capacity=include_capacity,
     )
 
 
 def query_rbd_trash_with(
     pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
-    ssh_key_path: str, exec_mode: str,
+    ssh_key_path: str, exec_mode: str, *, include_capacity: bool = True,
 ) -> list[TrashEntry]:
     """Cluster-scoped counterpart to :func:`query_rbd_trash`."""
     connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
@@ -734,6 +735,7 @@ def query_rbd_trash_with(
         pool,
         payload,
         lambda command: run_ceph_json_command_with(*connection, command)[1],
+        include_capacity=include_capacity,
     )
 
 
@@ -741,6 +743,8 @@ def _normalize_rbd_trash(
     pool: str,
     payload: dict | list,
     query_json: Callable[[str], dict | list],
+    *,
+    include_capacity: bool = True,
 ) -> list[TrashEntry]:
     if not isinstance(payload, list):
         logger.warning(
@@ -762,6 +766,18 @@ def _normalize_rbd_trash(
         # object count by object_size: RBD is thin-provisioned and the final
         # object can be partial, while `rados ls` does not support the object
         # prefix filter this code previously assumed.
+        if not include_capacity:
+            entries.append(
+                TrashEntry(
+                    id=str(trash_id),
+                    name=str(entry.get("name") or "?"),
+                    deletion_time=str(entry.get("deleted_at") or ""),
+                    status=str(entry.get("status") or ""),
+                    size_bytes=None,
+                    used_size_bytes=None,
+                )
+            )
+            continue
         try:
             info = query_json(
                 f"rbd info --pool {shlex.quote(pool)} --image-id {shlex.quote(str(trash_id))}"
@@ -823,6 +839,16 @@ class TrashPurgeResult(TypedDict):
 RBD_TRASH_PURGE_TIMEOUT_SECONDS = 600
 
 
+def _query_rbd_trash_for_purge(pool: str) -> list[TrashEntry]:
+    """Validate purge targets without the per-entry capacity N+1 scan."""
+    try:
+        return query_rbd_trash(pool, include_capacity=False)
+    except TypeError as exc:
+        if "include_capacity" not in str(exc):
+            raise
+        return query_rbd_trash(pool)
+
+
 def force_purge_rbd_trash(pool: str) -> list[TrashPurgeResult]:
     """Force-removes EVERY entry currently in `pool`'s RBD trash — one
     `rbd trash rm <pool>/<id> --force` per id returned by query_rbd_trash
@@ -851,7 +877,7 @@ def force_purge_rbd_trash(pool: str) -> list[TrashPurgeResult]:
     if the trash listing itself can't be fetched at all — nothing was
     attempted in that case, so there's nothing per-item to report.
     """
-    entries = query_rbd_trash(pool)
+    entries = _query_rbd_trash_for_purge(pool)
     mon_nodes = get_mon_nodes()
     if not mon_nodes:
         raise CephQueryError("no MON nodes configured (settings.ceph_mon_nodes is empty)")
@@ -876,7 +902,7 @@ def force_purge_rbd_trash(pool: str) -> list[TrashPurgeResult]:
 
 def force_purge_rbd_trash_item(pool: str, trash_id: str) -> TrashPurgeResult:
     """Force-remove one named entry from RBD trash, ignoring retention rules."""
-    entries = query_rbd_trash(pool)
+    entries = _query_rbd_trash_for_purge(pool)
     entry = next((row for row in entries if str(row.get("id")) == str(trash_id)), None)
     if entry is None:
         raise CephQueryError(f"Trash ID không còn tồn tại trong pool: {pool}/{trash_id}")
