@@ -653,3 +653,11 @@ Record before/after values for:
   `9b0b225f` is pushed to `origin/main`; rollback candidate is `f329b361`.
   Deployment remains blocked by the untracked `transfer/` overlay and pending
   runtime ownership approval.
+- 2026-09-16: Refined the Clusters, Users, Restore Cluster, Settings, Object
+  Storage, and OpenStack auth-pool workspaces, including resilient Settings
+  navigation bootstrap and preserved Autopilot action labels. The focused gate
+  passed 322 tests with two existing warnings; Python compile, diff check,
+  JavaScript syntax, and Node 20 production build passed. Commits `b3ef2303`
+  and `581693b3` are pushed to `origin/main`; rollback candidate is `9b0b225f`.
+  Deployment remains blocked by the untracked `transfer/` overlay and pending
+  runtime ownership approval.
