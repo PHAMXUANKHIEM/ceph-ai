@@ -9,6 +9,7 @@ from shared.ceph_runner import (
     CephSSHConfig,
     get_metrics,
 )
+from shared.request_context import reset_request_id, set_request_id
 
 
 class FakeTransport:
@@ -137,6 +138,22 @@ def test_command_metrics_include_safe_command_label_and_duration():
     assert event["event"] == "command_success_total"
     assert event["command"] == "ceph -s"
     assert event["duration_ms"] >= 0
+
+
+def test_command_metrics_carry_request_correlation_without_credentials():
+    token = set_request_id("trace-123")
+    try:
+        with CephConnectionPool(make_config(), client_factory=FakeClient) as pool:
+            CephCommandRunner(pool).run("10.0.0.7", "ceph -s", 1)
+    finally:
+        reset_request_id(token)
+
+    event = next(
+        event for event in reversed(get_metrics()["recent"])
+        if event["event"] == "command_success_total" and event["node"] == "10.0.0.7"
+    )
+    assert event["request_id"] == "trace-123"
+    assert "key_path" not in repr(event)
 
 
 def test_authentication_failure_is_structured_and_not_retried():

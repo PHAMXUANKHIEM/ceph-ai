@@ -71,6 +71,7 @@ from shared.codex_app_server import codex_app_server
 from shared.clusters import sync_default_cluster_from_settings
 from shared.logging_redaction import install_logging_redaction
 from shared.api_observability import record_request
+from shared.request_context import reset_request_id, set_request_id
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 logger = logging.getLogger(__name__)
@@ -150,6 +151,7 @@ def create_app() -> FastAPI:
         supplied = request.headers.get("x-request-id", "").strip()
         request_id = supplied if _REQUEST_ID_RE.fullmatch(supplied) else uuid.uuid4().hex
         request.state.request_id = request_id
+        request_context_token = set_request_id(request_id)
         started = time.monotonic()
         try:
             response = await call_next(request)
@@ -162,6 +164,8 @@ def create_app() -> FastAPI:
                 request_id,
             )
             raise
+        finally:
+            reset_request_id(request_context_token)
         response.headers["X-Request-ID"] = request_id
         if not request.url.path.startswith("/static/"):
             record_request(

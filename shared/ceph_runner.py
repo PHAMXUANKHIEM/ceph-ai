@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Iterator
 
 import paramiko
+from shared.request_context import get_request_id
 
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,11 @@ def _record_metric(event: str, **fields: object) -> None:
         _METRICS[event] += 1
         if fields:
             recent = _METRICS["recent"]
-            recent.append({"event": event, **fields})
+            item = {"event": event, **fields}
+            request_id = get_request_id()
+            if request_id:
+                item["request_id"] = request_id
+            recent.append(item)
             del recent[:-200]
 
 
