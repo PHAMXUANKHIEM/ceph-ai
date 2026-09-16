@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     ceph_command_timeout: int = Field(default=15, gt=0, le=3600)
     ceph_health_timeout: int = Field(default=8, gt=0, le=300)
     ceph_inventory_timeout: int = Field(default=20, gt=0, le=3600)
+    # Hard wall-clock bound for backup/restore SSH streaming. Large transfers
+    # need a longer budget than read-only Ceph commands, but must still fail
+    # instead of leaving a Worker task blocked forever.
+    ceph_backup_operation_timeout: int = Field(default=3600, gt=0, le=86400)
+    # Approved Worker remediation commands can legitimately run longer than
+    # read-only collection, but their channel timeout must remain explicit.
+    ceph_worker_command_timeout: int = Field(default=1800, gt=0, le=86400)
     ceph_log_query_timeout: int = Field(default=20, gt=0, le=3600)
     ceph_refresh_interval: int = Field(default=5, gt=0, le=3600)
     ceph_snapshot_max_age: int = Field(default=30, gt=0, le=86400)

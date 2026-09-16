@@ -89,10 +89,10 @@ class FakeSSHClient:
     def save_host_keys(self, path):
         pass
 
-    def connect(self, hostname, username, key_filename, timeout):
+    def connect(self, hostname, username, key_filename, timeout, **_timeouts):
         pass
 
-    def exec_command(self, cmd):
+    def exec_command(self, cmd, timeout=None):
         if cmd.startswith("rbd import"):
             FakeSSHClient.imported_bytes = bytearray()
             stdin = _FakeStdinCapture(FakeSSHClient.imported_bytes)

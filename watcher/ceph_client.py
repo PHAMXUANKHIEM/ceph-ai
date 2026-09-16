@@ -1,3 +1,4 @@
+import atexit
 import fcntl
 import base64
 import hashlib
@@ -7,6 +8,7 @@ import os
 import re
 import shlex
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from typing import Callable, TypedDict
@@ -25,6 +27,9 @@ CEPH_HEALTH_INNER_COMMAND = "ceph health detail --format json"
 CONNECT_TIMEOUT_SECONDS = settings.ceph_ssh_connect_timeout
 COMMAND_TIMEOUT_SECONDS = settings.ceph_command_timeout
 HEALTH_COMMAND_TIMEOUT_SECONDS = settings.ceph_health_timeout
+# Health is queried from alternate MONs, so retrying the same MON repeatedly
+# only amplifies cephadm/SSH load while that MON is already unhealthy.
+CEPH_HEALTH_MAX_RETRIES_PER_MON = 1
 # cephadm shell spins up a fresh container per invocation (infers fsid/config/
 # keyring itself) rather than exec-ing into an already-running one — measured
 # ~2.5s against a real cephadm/reef cluster, comfortably under this but with
@@ -80,6 +85,53 @@ CEPHADM_KEYRING_TARGET = "/etc/ceph/ceph.client.admin.keyring"
 CEPHADM_LOCK_WAIT_SECONDS = 30
 CEPHADM_REMOTE_LOCK_PATH = "/run/ceph-ai-cephadm.lock"
 CEPHADM_REMOTE_TIMEOUT_GRACE_SECONDS = 2
+
+_HEALTH_POOL_LOCK = threading.RLock()
+_HEALTH_POOLS: dict[tuple[object, ...], CephConnectionPool] = {}
+
+
+def _get_shared_health_pool(
+    ssh_user: str,
+    ssh_key_path: str,
+) -> CephConnectionPool:
+    """Return one reusable SSH pool for a credential/timeout profile."""
+    max_connections = max(1, settings.ceph_max_concurrency)
+    config = CephSSHConfig(
+        user=ssh_user,
+        key_path=ssh_key_path,
+        known_hosts_path=KNOWN_HOSTS_PATH,
+        connect_timeout=settings.ceph_ssh_connect_timeout,
+        banner_timeout=settings.ceph_ssh_banner_timeout,
+        auth_timeout=settings.ceph_ssh_auth_timeout,
+        max_connections=max_connections,
+    )
+    key = (
+        config.user,
+        config.key_path,
+        config.known_hosts_path,
+        config.connect_timeout,
+        config.banner_timeout,
+        config.auth_timeout,
+        config.max_connections,
+    )
+    with _HEALTH_POOL_LOCK:
+        pool = _HEALTH_POOLS.get(key)
+        if pool is None:
+            pool = CephConnectionPool(config)
+            _HEALTH_POOLS[key] = pool
+        return pool
+
+
+def _close_shared_health_pools() -> None:
+    """Close reusable health pools during orderly process shutdown."""
+    with _HEALTH_POOL_LOCK:
+        pools = list(_HEALTH_POOLS.values())
+        _HEALTH_POOLS.clear()
+    for pool in pools:
+        pool.close()
+
+
+atexit.register(_close_shared_health_pools)
 
 
 def _rbd_iostat_base_command(pool: str, keyring_path: str) -> str:
@@ -1338,10 +1390,10 @@ def query_cluster_health_with(
     Dashboard's own "test connection before saving" forms for the default
     cluster) keeps its exact original behavior unchanged.
 
-    Query one MON at a time and use sequential fallback on failure. Fan-out
-    to every MON makes each health poll start several cephadm shells. That is
-    unnecessarily expensive on the small Ceph nodes and can amplify CPU
-    stalls. The total deadline still bounds a failed health query."""
+    Probe MONs sequentially with one global deadline. A failed MON falls back
+    to the next configured peer, while a normal poll starts only one cephadm
+    shell. This avoids background probes continuing after the first result and
+    keeps MON CPU bounded during an incident."""
     if not mon_nodes:
         raise CephQueryError("no MON nodes configured")
 
@@ -1349,8 +1401,6 @@ def query_cluster_health_with(
     command_timeout = HEALTH_COMMAND_TIMEOUT_SECONDS
     deadline = time.monotonic() + settings.ceph_health_timeout
     global last_successful_mon_node
-    errors: list[str] = []
-
     def retryable_health_error(exc: BaseException) -> bool:
         """Retry transport failures, but never auth or command/data errors."""
         cause = exc.__cause__
@@ -1360,38 +1410,33 @@ def query_cluster_health_with(
             "pool_wait_timeout",
         }
 
+    pool = _get_shared_health_pool(ssh_user, ssh_key_path)
+    errors: list[str] = []
     for host in ordered_mon_nodes(mon_nodes):
         try:
             def attempt() -> str:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise CephQueryError("health collection deadline exceeded")
-                pool = CephConnectionPool(
-                    CephSSHConfig(
-                        user=ssh_user,
-                        key_path=ssh_key_path,
-                        known_hosts_path=KNOWN_HOSTS_PATH,
-                        connect_timeout=min(settings.ceph_ssh_connect_timeout, remaining),
-                        banner_timeout=min(settings.ceph_ssh_banner_timeout, remaining),
-                        auth_timeout=min(settings.ceph_ssh_auth_timeout, remaining),
-                        max_connections=1,
-                    )
+                return _run_remote_command_with(
+                    host,
+                    command,
+                    ssh_user,
+                    ssh_key_path,
+                    min(command_timeout, max(0.01, remaining)),
+                    pool=pool,
                 )
-                try:
-                    return _run_remote_command_with(
-                        host,
-                        command,
-                        ssh_user,
-                        ssh_key_path,
-                        min(command_timeout, max(0.01, remaining)),
-                        pool=pool,
-                    )
-                finally:
-                    pool.close()
 
             output = retry_sync(
                 attempt,
-                RetryPolicy(max_retries=settings.ceph_max_retries),
+                RetryPolicy(
+                    max_retries=min(
+                        settings.ceph_max_retries,
+                        CEPH_HEALTH_MAX_RETRIES_PER_MON,
+                    ),
+                    base_delay_seconds=settings.ceph_retry_base_delay_seconds,
+                    max_delay_seconds=settings.ceph_retry_max_delay_seconds,
+                ),
                 should_retry=retryable_health_error,
                 deadline=deadline,
             )
@@ -1400,7 +1445,6 @@ def query_cluster_health_with(
             logger.warning("query_cluster_health_with: %s failed: %s", host, exc)
             errors.append(f"{host}: {exc}")
             continue
-
         if update_sticky_fallback:
             last_successful_mon_node = host
         return payload

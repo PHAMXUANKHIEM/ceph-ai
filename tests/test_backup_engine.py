@@ -138,11 +138,11 @@ class FakeSSHClient:
     def save_host_keys(self, path):
         pass
 
-    def connect(self, hostname, username, key_filename, timeout):
+    def connect(self, hostname, username, key_filename, timeout, **_timeouts):
         if FakeSSHClient.connect_error is not None:
             raise FakeSSHClient.connect_error
 
-    def exec_command(self, cmd):
+    def exec_command(self, cmd, timeout=None):
         FakeSSHClient.last_cmd = cmd
         sink = bytearray()
         FakeSSHClient.imported_calls.append([cmd, sink])

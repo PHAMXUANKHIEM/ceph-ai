@@ -34,8 +34,6 @@
             <input type="search" id="block-storage-search" placeholder="Tên image, pool hoặc namespace" autocomplete="off">
           </label>
           <button type="button" class="btn btn-ghost btn-sm" id="block-storage-filter-reset" disabled>Xóa bộ lọc</button>
-          <span class="hint" id="block-storage-filter-result" role="status" aria-live="polite">{{ images|length }} kết quả</span>
-          {% if total_pages > 1 %}<span class="hint">Trang {{ page }} / {{ total_pages }} · tối đa {{ overview_limit }} volume mỗi trang.</span>{% endif %}
         </form>
         {% if is_admin %}<p id="block-storage-mutation-result" class="hint" hidden></p>{% endif %}
       </div>
@@ -54,7 +52,7 @@
       {% if total_pages > 1 %}
       <div class="pagination" aria-label="Phân trang Block Storage">
         {% if page > 1 %}<a class="btn btn-ghost btn-sm" href="/block-storage?cluster={{ selected_cluster.id }}&page={{ page - 1 }}">← Trước</a>{% endif %}
-        <span class="hint">Trang {{ page }} / {{ total_pages }}</span>
+        <span class="hint pagination-status">Trang {{ page }} / {{ total_pages }}</span>
         {% if page < total_pages %}<a class="btn btn-ghost btn-sm" href="/block-storage?cluster={{ selected_cluster.id }}&page={{ page + 1 }}">Sau →</a>{% endif %}
       </div>
       {% endif %}

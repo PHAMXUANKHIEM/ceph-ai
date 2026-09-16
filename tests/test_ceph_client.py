@@ -90,11 +90,13 @@ class FakeSSHClient:
 def fake_ssh(monkeypatch):
     FakeSSHClient.behavior = {}
     FakeSSHClient.calls = []
+    ceph_client._close_shared_health_pools()
     ceph_client.last_successful_mon_node = None
     FakeSSHClient.host_key_policies = []
     FakeSSHClient.saved_host_key_paths = []
     monkeypatch.setattr(ceph_client.paramiko, "SSHClient", FakeSSHClient)
     yield FakeSSHClient
+    ceph_client._close_shared_health_pools()
 
 
 def test_remote_commands_reject_unprovisioned_host_keys(fake_ssh):
@@ -204,6 +206,24 @@ def test_query_cluster_health_with_returns_parsed_json_from_first_node(fake_ssh)
     assert "10.9.9.1" in fake_ssh.calls
 
 
+def test_query_cluster_health_reuses_shared_ssh_connection(monkeypatch, fake_ssh):
+    fake_ssh.behavior = {"10.9.9.1": {"status": "HEALTH_OK", "checks": {}}}
+    monkeypatch.setattr(
+        ceph_client.CephConnectionPool,
+        "_is_healthy",
+        lambda _pool, _client: True,
+    )
+
+    query_cluster_health_with(
+        ["10.9.9.1"], "ceph-mon-B", "root", "/root/.ssh/some_key"
+    )
+    query_cluster_health_with(
+        ["10.9.9.1"], "ceph-mon-B", "root", "/root/.ssh/some_key"
+    )
+
+    assert fake_ssh.calls == ["10.9.9.1"]
+
+
 def test_query_cluster_health_with_falls_back_to_next_node(fake_ssh):
     fake_ssh.behavior = {
         "10.9.9.1": "unreachable",
@@ -240,7 +260,7 @@ def test_query_cluster_health_with_retries_transport_failure_before_success(monk
 
     def fake_run(host, command, user, key, timeout=None, *, pool=None):
         calls.append(host)
-        if len(calls) < 3:
+        if len(calls) < 2:
             raise CephQueryError(
                 "mon unavailable",
                 ) from ceph_client.CephRunnerError(
@@ -257,7 +277,7 @@ def test_query_cluster_health_with_retries_transport_failure_before_success(monk
     )
 
     assert result["status"] == "HEALTH_OK"
-    assert calls == ["10.9.9.1", "10.9.9.1", "10.9.9.1"]
+    assert calls == ["10.9.9.1", "10.9.9.1"]
 
 
 def test_query_cluster_health_with_raises_when_all_nodes_fail(fake_ssh):
@@ -560,14 +580,19 @@ def test_query_cluster_health_with_cephadm_mode_uses_shell_and_longer_timeout(fa
     )
 
     assert result["status"] == "HEALTH_OK"
-    assert captured_commands == [
-        "timeout --signal=TERM "
-        f"--kill-after={ceph_client.CEPHADM_REMOTE_TIMEOUT_GRACE_SECONDS}s "
-        f"{captured_timeouts[0]:g}s "
+    assert len(captured_commands) == 1
+    command_parts = captured_commands[0].split(maxsplit=3)
+    assert command_parts[:3] == [
+        "timeout",
+        "--signal=TERM",
+        f"--kill-after={ceph_client.CEPHADM_REMOTE_TIMEOUT_GRACE_SECONDS}s",
+    ]
+    assert 0 < float(command_parts[3].split("s", 1)[0]) <= ceph_client.HEALTH_COMMAND_TIMEOUT_SECONDS
+    assert command_parts[3].endswith(
         f"flock -w {ceph_client.CEPHADM_LOCK_WAIT_SECONDS} "
         f"{ceph_client.CEPHADM_REMOTE_LOCK_PATH} "
         "cephadm shell -- ceph health detail --format json"
-    ]
+    )
     # cephadm shell spins up a fresh container per call — needs more headroom
     # than the docker/podman default (see CEPHADM_COMMAND_TIMEOUT_SECONDS).
     from watcher.ceph_client import CEPHADM_COMMAND_TIMEOUT_SECONDS, COMMAND_TIMEOUT_SECONDS

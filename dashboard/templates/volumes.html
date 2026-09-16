@@ -103,12 +103,6 @@
           <span class="node-ip">{{ selected_pool }}</span>
           <span class="header-spinner" id="header-spinner" hidden aria-hidden="true"></span>
         </div>
-        <p class="hint metrics-panel-desc">
-          Tìm một Volume (RBD image) trong pool này theo ID/tên để xem biểu đồ IOPS / độ trễ theo
-          thời gian, kèm hiệu năng tối đa từng đạt được — dữ liệu lấy từ lịch sử Watcher đã ghi lại
-          (<code>rbd perf image iostat</code> mỗi vài giây). Nhãn "⚠ Bão hoà" khớp với Incident hệ
-          thống đã tự phát hiện (xem <a href="/">Dashboard</a>/Audit Trail để duyệt xử lý).
-        </p>
       </div>
       <div class="card-body">
         <form class="audit-filters" id="volume-search-form">
@@ -128,8 +122,6 @@
         <div class="cli-buttons" id="volume-suggestions"></div>
 
         <div class="empty-node-state" id="volume-chart-empty">
-          <span class="empty-node-icon" aria-hidden="true">&#128200;</span>
-          <p class="empty-node-text">Nhập ID Volume rồi bấm "Xem hiệu năng" để xem biểu đồ.</p>
         </div>
 
         <div class="metrics-stack" id="volume-chart-stack" hidden></div>

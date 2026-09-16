@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import bcrypt
 
@@ -2140,3 +2141,18 @@ def test_propose_trash_restore_validates_entry_and_destination(dashboard_client,
         assert json.loads(action.action_params) == {
             "pool_name": "vms", "image": "vm-restored", "trash_id": "123abc"
         }
+def test_volume_history_panel_omits_redundant_explanatory_copy():
+    markup = (Path("dashboard/templates/volumes.html")).read_text(encoding="utf-8")
+
+    assert "Tìm một Volume (RBD image)" not in markup
+    assert "rbd perf image iostat" not in markup
+    assert "Audit Trail để duyệt xử lý" not in markup
+
+
+def test_volume_history_empty_state_omits_instruction_copy():
+    markup = Path("dashboard/templates/volumes.html").read_text(encoding="utf-8")
+
+    assert "Nhập ID Volume rồi bấm" not in markup
+    assert 'id="volume-chart-empty"' in markup
+    assert 'id="volume-chart-empty">\n          <span' not in markup
+    assert "Xem hiệu năng" in markup

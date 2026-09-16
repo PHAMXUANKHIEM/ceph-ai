@@ -9,7 +9,7 @@ does not add another SSH/Ceph round trip.
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from contextvars import copy_context
 from copy import deepcopy
@@ -91,8 +91,18 @@ def inventory_collection_lock(cluster_id: str | None):
     if not cluster_id:
         yield
         return
-    with ceph_query_cache.key_lock(INVENTORY_LOCK_NAMESPACE, cluster_id):
-        yield
+    lock_timeout = min(max(float(settings.ceph_inventory_timeout), 1.0), 60.0)
+    try:
+        with ceph_query_cache.key_lock(
+            INVENTORY_LOCK_NAMESPACE,
+            cluster_id,
+            timeout_seconds=lock_timeout,
+        ):
+            yield
+    except ceph_query_cache.CacheLockError as exc:
+        raise TimeoutError(
+            f"inventory collection lock acquisition exceeded {lock_timeout:g}s"
+        ) from exc
 
 
 @contextmanager
@@ -286,6 +296,7 @@ class CephSnapshotCollector:
         """
         started_at = collection_started_at or collection_timestamp()
         started = monotonic()
+        deadline = started + float(settings.ceph_inventory_timeout)
         loaders = {
             "pools": (_collect_pool_rows, []),
             "pgs": (_collect_pg_rows, []),
@@ -293,44 +304,68 @@ class CephSnapshotCollector:
             "nodes": (_collect_node_summary, {"nodes": [], "total": 0}),
         }
         published: dict[str, object] = {}
+        executor = None
+        futures = {}
         try:
             with inventory_collection_lock(cluster.id):
-                with ThreadPoolExecutor(
+                executor = ThreadPoolExecutor(
                     max_workers=self.max_workers,
                     thread_name_prefix="ceph-inventory",
-                ) as executor:
-                    futures = {
-                        executor.submit(copy_context().run, loader, cluster): (section, empty_data)
-                        for section, (loader, empty_data) in loaders.items()
-                    }
-                    for future in as_completed(futures):
-                        section, empty_data = futures[future]
-                        try:
-                            data = future.result()
-                            published[section] = publish_section_snapshot(
-                                cluster.id,
-                                section,
-                                data,
-                                collected_at=started_at,
-                                source="watcher-inventory",
-                            )
-                            _record_metric("success_total", section)
-                        except Exception as exc:
-                            _record_metric("failure_total", section)
-                            logger.warning(
-                                "inventory(%s): %s collection failed: %s",
-                                cluster.name,
-                                section,
-                                exc,
-                            )
-                            record_section_error(
-                                cluster.id,
-                                section,
-                                exc,
-                                empty_data=empty_data,
-                                source="watcher-inventory",
-                            )
+                )
+                futures = {
+                    executor.submit(copy_context().run, loader, cluster): (section, empty_data)
+                    for section, (loader, empty_data) in loaders.items()
+                }
+                remaining = max(0.0, deadline - monotonic())
+                for future in as_completed(futures, timeout=remaining):
+                    section, empty_data = futures[future]
+                    try:
+                        data = future.result()
+                        published[section] = publish_section_snapshot(
+                            cluster.id,
+                            section,
+                            data,
+                            collected_at=started_at,
+                            source="watcher-inventory",
+                        )
+                        _record_metric("success_total", section)
+                    except Exception as exc:
+                        _record_metric("failure_total", section)
+                        logger.warning(
+                            "inventory(%s): %s collection failed: %s",
+                            cluster.name,
+                            section,
+                            exc,
+                        )
+                        record_section_error(
+                            cluster.id,
+                            section,
+                            exc,
+                            empty_data=empty_data,
+                            source="watcher-inventory",
+                        )
+        except FuturesTimeoutError as exc:
+            logger.warning(
+                "inventory(%s): collection deadline exceeded after %.1fs",
+                cluster.name,
+                float(settings.ceph_inventory_timeout),
+            )
+            for section, empty_data in loaders.items():
+                if section in published:
+                    continue
+                _record_metric("failure_total", section)
+                record_section_error(
+                    cluster.id,
+                    section,
+                    exc,
+                    empty_data=empty_data,
+                    source="watcher-inventory",
+                )
         finally:
+            for future in futures:
+                future.cancel()
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
             _record_collection_duration(cluster.id, started)
         return published
 

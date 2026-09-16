@@ -8,12 +8,12 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-CONNECT_TIMEOUT_SECONDS = 5
+CONNECT_TIMEOUT_SECONDS = settings.ceph_ssh_connect_timeout
 # paramiko's exec_command timeout is a channel READ timeout (no data for
 # this many seconds -> PipeTimeout), not a total-runtime cap — but a real
 # `dnf/apt install ceph` can sit silent for minutes while downloading
 # packages over the network.
-COMMAND_TIMEOUT_SECONDS = 1800
+COMMAND_TIMEOUT_SECONDS = settings.ceph_worker_command_timeout
 # Must match watcher.ceph_client: container filesystems are ephemeral, while
 # this shared volume persists the operator-provisioned host-key pins across a
 # recreate.  Bare-metal deployments keep the legacy local path.
@@ -49,6 +49,8 @@ def execute_command_bytes(
             username=resolved_user,
             key_filename=resolved_key_path,
             timeout=CONNECT_TIMEOUT_SECONDS,
+            banner_timeout=settings.ceph_ssh_banner_timeout,
+            auth_timeout=settings.ceph_ssh_auth_timeout,
         )
         _stdin, stdout, stderr = client.exec_command(command, timeout=COMMAND_TIMEOUT_SECONDS)
         output = stdout.read()

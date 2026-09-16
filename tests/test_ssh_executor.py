@@ -42,7 +42,7 @@ class FakeSSHClient:
     def save_host_keys(self, path):
         pass
 
-    def connect(self, hostname, username, key_filename, timeout):
+    def connect(self, hostname, username, key_filename, timeout, **_timeouts):
         FakeSSHClient.calls.append(hostname)
         outcome = FakeSSHClient.behavior.get(hostname, "unreachable")
         if outcome == "unreachable":

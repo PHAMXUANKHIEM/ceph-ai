@@ -81,10 +81,10 @@ class FakeSSHClient:
     def save_host_keys(self, path):
         pass
 
-    def connect(self, hostname, username, key_filename, timeout):
+    def connect(self, hostname, username, key_filename, timeout, **_timeouts):
         pass
 
-    def exec_command(self, cmd):
+    def exec_command(self, cmd, timeout=None):
         sink = bytearray()
         FakeSSHClient.imported_calls.append([cmd, sink])
         stdin = _FakeStdinCapture(sink)

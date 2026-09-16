@@ -4,7 +4,6 @@
   var table = document.getElementById("block-storage-table");
   var input = document.getElementById("block-storage-search");
   var reset = document.getElementById("block-storage-filter-reset");
-  var result = document.getElementById("block-storage-filter-result");
   var empty = document.getElementById("block-storage-filter-empty");
   var createForm = document.getElementById("block-storage-create-form");
   var createResult = document.getElementById("block-storage-create-result");
@@ -27,13 +26,12 @@
       row.hidden = !matches;
       if (matches) visible += 1;
     });
-    result.textContent = visible + " / " + rows.length + " kết quả";
     reset.disabled = !query;
     empty.hidden = visible !== 0;
     table.hidden = visible === 0;
   }
 
-  if (input && reset && result && empty) {
+  if (input && reset && empty) {
     input.addEventListener("input", applyFilter);
     reset.addEventListener("click", function () {
       input.value = "";

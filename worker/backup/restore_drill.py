@@ -23,6 +23,7 @@ import logging
 import os
 import shlex
 import tempfile
+import time
 from datetime import datetime
 
 import paramiko
@@ -33,12 +34,13 @@ from shared.models import BackupJob
 from worker.backup import alerting
 from worker.backup.cluster_scope import is_valid_rbd_name
 from worker.backup.policy_config import load_backup_policy
+from worker.backup.ssh_io import read_all, read_chunk, wait_exit_status, write_chunk
 from worker.backup.storage.factory import get_backend
 from worker.executor.ssh_executor import KNOWN_HOSTS_PATH, execute_command
 
 logger = logging.getLogger(__name__)
 
-CONNECT_TIMEOUT_SECONDS = 10
+CONNECT_TIMEOUT_SECONDS = settings.ceph_ssh_connect_timeout
 CHUNK_SIZE = 4 * 1024 * 1024
 
 
@@ -83,23 +85,30 @@ def _import_backup_to_scratch(mon_ip: str, local_path: str, scratch_pool: str, s
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    deadline = time.monotonic() + float(settings.ceph_backup_operation_timeout)
     client.connect(
-        hostname=mon_ip, username=settings.ssh_user, key_filename=settings.ssh_key_path, timeout=CONNECT_TIMEOUT_SECONDS
+        hostname=mon_ip,
+        username=settings.ssh_user,
+        key_filename=settings.ssh_key_path,
+        timeout=min(CONNECT_TIMEOUT_SECONDS, max(0.1, deadline - time.monotonic())),
+        banner_timeout=min(settings.ceph_ssh_banner_timeout, max(0.1, deadline - time.monotonic())),
+        auth_timeout=min(settings.ceph_ssh_auth_timeout, max(0.1, deadline - time.monotonic())),
     )
     try:
         stdin, stdout, stderr = client.exec_command(
-            f"rbd import - {shlex.quote(scratch_pool)}/{shlex.quote(scratch_image)}"
+            f"rbd import - {shlex.quote(scratch_pool)}/{shlex.quote(scratch_image)}",
+            timeout=max(0.1, deadline - time.monotonic()),
         )
         with open(local_path, "rb") as f:
             while True:
                 chunk = f.read(CHUNK_SIZE)
                 if not chunk:
                     break
-                stdin.write(chunk)
+                write_chunk(stdin, chunk, deadline)
         stdin.close()
-        exit_status = stdout.channel.recv_exit_status()
+        exit_status = wait_exit_status(stdout.channel, deadline)
         if exit_status != 0:
-            error_output = stderr.read().decode(errors="replace")
+            error_output = read_all(stderr, deadline).decode(errors="replace")
             raise RestoreDrillError(f"rbd import exited {exit_status}: {error_output}")
     finally:
         client.close()
@@ -113,22 +122,29 @@ def _export_scratch_sha256(mon_ip: str, scratch_pool: str, scratch_image: str) -
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    deadline = time.monotonic() + float(settings.ceph_backup_operation_timeout)
     client.connect(
-        hostname=mon_ip, username=settings.ssh_user, key_filename=settings.ssh_key_path, timeout=CONNECT_TIMEOUT_SECONDS
+        hostname=mon_ip,
+        username=settings.ssh_user,
+        key_filename=settings.ssh_key_path,
+        timeout=min(CONNECT_TIMEOUT_SECONDS, max(0.1, deadline - time.monotonic())),
+        banner_timeout=min(settings.ceph_ssh_banner_timeout, max(0.1, deadline - time.monotonic())),
+        auth_timeout=min(settings.ceph_ssh_auth_timeout, max(0.1, deadline - time.monotonic())),
     )
     try:
         _stdin, stdout, stderr = client.exec_command(
-            f"rbd export {shlex.quote(scratch_pool)}/{shlex.quote(scratch_image)} -"
+            f"rbd export {shlex.quote(scratch_pool)}/{shlex.quote(scratch_image)} -",
+            timeout=max(0.1, deadline - time.monotonic()),
         )
         digest = hashlib.sha256()
         while True:
-            chunk = stdout.read(CHUNK_SIZE)
+            chunk = read_chunk(stdout, CHUNK_SIZE, deadline)
             if not chunk:
                 break
             digest.update(chunk)
-        exit_status = stdout.channel.recv_exit_status()
+        exit_status = wait_exit_status(stdout.channel, deadline)
         if exit_status != 0:
-            error_output = stderr.read().decode(errors="replace")
+            error_output = read_all(stderr, deadline).decode(errors="replace")
             raise RestoreDrillError(f"rbd export (verify) exited {exit_status}: {error_output}")
         return digest.hexdigest()
     finally:

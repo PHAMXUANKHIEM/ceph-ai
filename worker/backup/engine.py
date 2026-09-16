@@ -47,6 +47,7 @@ from worker.backup.cluster_scope import first_mon_node, get_cluster, is_valid_rb
 from worker.backup.policy_config import load_backup_policy
 from worker.backup.storage.base import RetentionPolicyLike
 from worker.backup.storage.factory import get_backend, get_backend_for_cluster
+from worker.backup.ssh_io import read_all, read_chunk, wait_exit_status
 from worker.executor.ssh_executor import KNOWN_HOSTS_PATH, execute_command
 from worker.policy.gate import VALID_BACKUP_ACTION_IDS
 from watcher import ceph_client
@@ -65,7 +66,7 @@ BACKUP_ACTION_IDS = VALID_BACKUP_ACTION_IDS
 
 CHUNK_SIZE = 4 * 1024 * 1024  # 4 MiB — matches Story 9.2's storage backends
 PROGRESS_WRITE_INTERVAL_SECONDS = 3
-CONNECT_TIMEOUT_SECONDS = 10
+CONNECT_TIMEOUT_SECONDS = settings.ceph_ssh_connect_timeout
 # A BackupJob stuck RUNNING longer than this is presumed crashed (Worker
 # died mid-export) rather than genuinely still in progress — the next
 # scheduled trigger for the same (pool, image) supersedes it instead of
@@ -104,19 +105,20 @@ class _ProgressTrackingReader:
     here so Story 9.2's already-tested storage backends need no progress-
     callback parameter of their own (AD-12)."""
 
-    def __init__(self, source, total_bytes: int, action_pk: str, write_progress, progress: list[dict]):
+    def __init__(self, source, total_bytes: int, action_pk: str, write_progress, progress: list[dict], deadline: float):
         self._source = source
         self._total_bytes = total_bytes
         self._action_pk = action_pk
         self._write_progress = write_progress
         self._progress = progress
+        self._deadline = deadline
         self._bytes_read = 0
         self._started_at = time.monotonic()
         self._last_write_at = 0.0
         self.sha256 = hashlib.sha256()
 
     def read(self, size: int = -1) -> bytes:
-        chunk = self._source.read(size if size and size > 0 else CHUNK_SIZE)
+        chunk = read_chunk(self._source, size if size and size > 0 else CHUNK_SIZE, self._deadline)
         if chunk:
             self._bytes_read += len(chunk)
             self.sha256.update(chunk)
@@ -455,6 +457,7 @@ def _run_rbd_backup(
     uploaded_targets: list[tuple[str, str, object]] = []
     backup_succeeded = False
     try:
+        deadline = time.monotonic() + float(settings.ceph_backup_operation_timeout)
         client = paramiko.SSHClient()
         if os.path.exists(KNOWN_HOSTS_PATH):
             client.load_host_keys(KNOWN_HOSTS_PATH)
@@ -463,15 +466,21 @@ def _run_rbd_backup(
             hostname=mon_ip,
             username=ssh_user,
             key_filename=ssh_key_path,
-            timeout=CONNECT_TIMEOUT_SECONDS,
+            timeout=min(CONNECT_TIMEOUT_SECONDS, max(0.1, deadline - time.monotonic())),
+            banner_timeout=min(settings.ceph_ssh_banner_timeout, max(0.1, deadline - time.monotonic())),
+            auth_timeout=min(settings.ceph_ssh_auth_timeout, max(0.1, deadline - time.monotonic())),
         )
         try:
-            _stdin, stdout, stderr = client.exec_command(export_cmd)
+            _stdin, stdout, stderr = client.exec_command(
+                export_cmd, timeout=max(0.1, deadline - time.monotonic())
+            )
             progress[0]["status"] = "running"
             progress[0]["started_at"] = datetime.utcnow().isoformat()
             write_progress(action_pk, progress)
 
-            tracked_stream = _ProgressTrackingReader(stdout, total_bytes, action_pk, write_progress, progress)
+            tracked_stream = _ProgressTrackingReader(
+                stdout, total_bytes, action_pk, write_progress, progress, deadline
+            )
             with tempfile.NamedTemporaryFile(delete=False) as tmp:
                 tmp_path = tmp.name
                 while True:
@@ -480,9 +489,9 @@ def _run_rbd_backup(
                         break
                     tmp.write(chunk)
 
-            exit_status = stdout.channel.recv_exit_status()
+            exit_status = wait_exit_status(stdout.channel, deadline)
             if exit_status != 0:
-                error_output = stderr.read().decode(errors="replace")
+                error_output = read_all(stderr, deadline).decode(errors="replace")
                 raise BackupEngineError(f"{export_cmd} exited {exit_status}: {error_output}")
         finally:
             client.close()
