@@ -54,6 +54,22 @@ class Settings(BaseSettings):
     # and "none" modes.
     ceph_exec_mode: str = "docker"
     watcher_poll_interval_seconds: int = 15
+    # Central bounds for read-only Ceph collection. Keep these separate from
+    # Worker mutation-command settings so a slow MON cannot hold an HTTP
+    # request or a remediation job indefinitely.
+    ceph_ssh_connect_timeout: int = Field(default=5, gt=0, le=120)
+    ceph_ssh_banner_timeout: int = Field(default=5, gt=0, le=120)
+    ceph_ssh_auth_timeout: int = Field(default=5, gt=0, le=120)
+    ceph_command_timeout: int = Field(default=15, gt=0, le=3600)
+    ceph_health_timeout: int = Field(default=8, gt=0, le=300)
+    ceph_inventory_timeout: int = Field(default=20, gt=0, le=3600)
+    ceph_log_query_timeout: int = Field(default=20, gt=0, le=3600)
+    ceph_refresh_interval: int = Field(default=5, gt=0, le=3600)
+    ceph_snapshot_max_age: int = Field(default=30, gt=0, le=86400)
+    ceph_max_concurrency: int = Field(default=8, gt=0, le=128)
+    ceph_max_retries: int = Field(default=2, ge=0, le=10)
+    ceph_retry_base_delay_seconds: float = Field(default=0.25, gt=0, le=60)
+    ceph_retry_max_delay_seconds: float = Field(default=5.0, gt=0, le=300)
     # Slow read models for Pools/PGs/CRUSH/Nodes. Browser requests read the
     # persisted section snapshots instead of starting their own Ceph queries.
     dashboard_inventory_poll_interval_seconds: int = Field(default=60, gt=0)

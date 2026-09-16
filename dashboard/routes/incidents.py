@@ -34,6 +34,7 @@ from shared.models import (
 )
 from shared.cluster_snapshot import (
     DEFAULT_MAX_STALE_SECONDS,
+    claim_refresh,
     is_refreshing,
     mark_refreshing,
     read_section_snapshot,
@@ -161,7 +162,9 @@ def _schedule_dashboard_health_refresh(selected_cluster: Cluster) -> bool:
         lock = _DASHBOARD_HEALTH_REFRESH_LOCKS.setdefault(selected_cluster.id, threading.Lock())
     if not lock.acquire(blocking=False):
         return True
-    mark_refreshing(selected_cluster.id, True)
+    if not claim_refresh(selected_cluster.id):
+        lock.release()
+        return True
 
     async def refresh() -> None:
         started = monotonic()

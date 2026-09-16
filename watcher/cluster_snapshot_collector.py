@@ -9,6 +9,7 @@ does not add another SSH/Ceph round trip.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,7 @@ from threading import Lock
 from typing import Mapping
 
 from shared import ceph_query_cache
+from config.settings import settings
 from shared.cluster_snapshot import (
     DEFAULT_MAX_STALE_SECONDS,
     SNAPSHOT_NAMESPACE,
@@ -230,54 +232,90 @@ def _collect_node_summary(cluster) -> dict:
     return {"nodes": nodes, "total": len(nodes)}
 
 
+class CephSnapshotCollector:
+    """Collect independent inventory sections with bounded parallelism.
+
+    Each loader owns its Ceph batch query and publishes independently. A
+    failed pool/PG query therefore cannot discard a successful nodes or CRUSH
+    section, and the worker count is capped by the central Ceph concurrency
+    setting rather than the number of inventory sections.
+    """
+
+    def __init__(self, *, max_workers: int | None = None):
+        requested = settings.ceph_max_concurrency if max_workers is None else max_workers
+        self.max_workers = max(1, min(int(requested), len(INVENTORY_SECTIONS)))
+
+    def collect_inventory(
+        self,
+        cluster,
+        *,
+        collection_started_at: str | None = None,
+    ) -> dict[str, object]:
+        """Collect the slow inventory tier once and publish each section.
+
+        Pools and PGs are the only Ceph/SSH-backed sections here. CRUSH is read
+        from the Watcher's persisted structure snapshot and Nodes are derived
+        from the cluster configuration, so browser requests never start a
+        remote query. A failure in one section leaves the other sections
+        publishable.
+        """
+        started_at = collection_started_at or collection_timestamp()
+        loaders = {
+            "pools": (_collect_pool_rows, []),
+            "pgs": (_collect_pg_rows, []),
+            "crush": (_collect_crush_tree, {"state": "no_snapshot_yet"}),
+            "nodes": (_collect_node_summary, {"nodes": [], "total": 0}),
+        }
+        published: dict[str, object] = {}
+        with inventory_collection_lock(cluster.id):
+            with ThreadPoolExecutor(
+                max_workers=self.max_workers,
+                thread_name_prefix="ceph-inventory",
+            ) as executor:
+                futures = {
+                    executor.submit(loader, cluster): (section, empty_data)
+                    for section, (loader, empty_data) in loaders.items()
+                }
+                for future in as_completed(futures):
+                    section, empty_data = futures[future]
+                    try:
+                        data = future.result()
+                        published[section] = publish_section_snapshot(
+                            cluster.id,
+                            section,
+                            data,
+                            collected_at=started_at,
+                            source="watcher-inventory",
+                        )
+                        _record_metric("success_total", section)
+                    except Exception as exc:
+                        _record_metric("failure_total", section)
+                        logger.warning(
+                            "inventory(%s): %s collection failed: %s",
+                            cluster.name,
+                            section,
+                            exc,
+                        )
+                        record_section_error(
+                            cluster.id,
+                            section,
+                            exc,
+                            empty_data=empty_data,
+                            source="watcher-inventory",
+                        )
+        return published
+
+
 def collect_and_publish_inventory(
     cluster,
     *,
     collection_started_at: str | None = None,
 ) -> dict[str, object]:
-    """Collect the slow inventory tier once and publish each section.
-
-    Pools and PGs are the only Ceph/SSH-backed sections here. CRUSH is read
-    from the Watcher's persisted structure snapshot and Nodes are derived from
-    the cluster configuration, so browser requests never start a remote query.
-    A failure in one section leaves the other sections publishable.
-    """
-    started_at = collection_started_at or collection_timestamp()
-    loaders = {
-        "pools": (_collect_pool_rows, []),
-        "pgs": (_collect_pg_rows, []),
-        "crush": (_collect_crush_tree, {"state": "no_snapshot_yet"}),
-        "nodes": (_collect_node_summary, {"nodes": [], "total": 0}),
-    }
-    published: dict[str, object] = {}
-    with inventory_collection_lock(cluster.id):
-        for section, (loader, empty_data) in loaders.items():
-            try:
-                data = loader(cluster)
-                published[section] = publish_section_snapshot(
-                    cluster.id,
-                    section,
-                    data,
-                    collected_at=started_at,
-                    source="watcher-inventory",
-                )
-                _record_metric("success_total", section)
-            except Exception as exc:
-                _record_metric("failure_total", section)
-                logger.warning(
-                    "inventory(%s): %s collection failed: %s",
-                    cluster.name,
-                    section,
-                    exc,
-                )
-                record_section_error(
-                    cluster.id,
-                    section,
-                    exc,
-                    empty_data=empty_data,
-                    source="watcher-inventory",
-                )
-    return published
+    """Compatibility wrapper for the existing Watcher and refresh callers."""
+    return CephSnapshotCollector().collect_inventory(
+        cluster,
+        collection_started_at=collection_started_at,
+    )
 
 
 def _sections_from_health(health: Mapping[str, object], duration_ms: float | None) -> dict:

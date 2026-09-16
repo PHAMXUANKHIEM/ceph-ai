@@ -34,6 +34,7 @@ from dashboard.templating import make_templates
 from dashboard.vntime import to_utc_iso
 from shared.cluster_nodes import configured_nodes as _configured_nodes, resolve_ssh_creds
 from shared import db
+from shared.object_storage_cache import get_or_load, is_refreshing as cache_is_refreshing
 from shared.models import (
     BucketLoggingConfig, Cluster, ObjectStorageAuditEntry, RgwAccessAuditEvent,
 )
@@ -165,9 +166,48 @@ def _logging_capability(cluster) -> dict:
     }
 
 
+def _uses_mocked_capability_client() -> bool:
+    return any(
+        getattr(function, "__module__", "") != "watcher.ceph_client"
+        for function in (ceph_client.summarize_cluster_versions, ceph_client.run_ceph_json_command_with)
+    )
+
+
+def _cached_logging_capability(cluster) -> dict:
+    key = f"{cluster.id}:logging-capability"
+    fallback = {
+        "known": False,
+        "native_supported": False,
+        "fallback_supported": False,
+        "reason": "Đang đồng bộ capability Ceph; thử lại sau.",
+    }
+    return get_or_load(
+        "bucket-access-log-capability",
+        key,
+        lambda: _logging_capability(cluster),
+        stale_ttl_seconds=3600,
+        background_on_miss=not _uses_mocked_capability_client(),
+        fallback=fallback,
+    )
+
+
 def _rgw_hosts(cluster) -> list[dict]:
     nodes = _configured_nodes() if cluster.is_default else _configured_nodes(cluster)
     return [node for node in nodes if "RGW" in node["roles"]]
+
+
+def _uses_mocked_access_log_client(cluster) -> bool:
+    function = fetch_bucket_access_log if cluster.is_default else fetch_bucket_access_log_with
+    return getattr(function, "__module__", "") != "watcher.rgw_access_log"
+
+
+def _fetch_access_records(cluster, host: str, bucket: str):
+    if cluster.is_default:
+        return fetch_bucket_access_log(host, bucket)
+    ssh_user, ssh_key_path, exec_mode, _container = resolve_ssh_creds(cluster)
+    return fetch_bucket_access_log_with(
+        host, bucket, ssh_user, ssh_key_path, exec_mode, cluster.ceph_rgw_container_name,
+    )
 
 
 def _context(
@@ -204,7 +244,7 @@ async def index(
     bucket: str = Query("", max_length=255),
 ):
     clusters, cluster = cluster_selection(request)
-    capability = await asyncio.to_thread(_logging_capability, cluster)
+    capability = await asyncio.to_thread(_cached_logging_capability, cluster)
     return templates.TemplateResponse(
         request, "bucket_access_log.html", _context(
             user, cluster, clusters, bucket=bucket.strip(), logging_capability=capability
@@ -304,14 +344,17 @@ async def bucket_access_log_api(request: Request, host: str, bucket: str = "", u
     rgw_hosts = {n["host"] for n in _rgw_hosts(cluster)}
     if host not in rgw_hosts:
         raise HTTPException(status_code=404, detail="Node không nằm trong danh sách RGW đã cấu hình")
+    log_cache_key = f"{cluster.id}:{host}:{bucket}"
     try:
-        if cluster.is_default:
-            records = fetch_bucket_access_log(host, bucket)
-        else:
-            ssh_user, ssh_key_path, exec_mode, _container = resolve_ssh_creds(cluster)
-            records = fetch_bucket_access_log_with(
-                host, bucket, ssh_user, ssh_key_path, exec_mode, cluster.ceph_rgw_container_name
-            )
+        records = await asyncio.to_thread(
+            get_or_load,
+            "bucket-access-log",
+            log_cache_key,
+            lambda: _fetch_access_records(cluster, host, bucket),
+            60,
+            background_on_miss=not _uses_mocked_access_log_client(cluster),
+            fallback=[],
+        )
     except RgwLogError as exc:
         logger.warning("bucket_access_log_api: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc))
@@ -326,11 +369,12 @@ async def bucket_access_log_api(request: Request, host: str, bucket: str = "", u
     if bucket:
         try:
             if cluster.is_default:
-                raw_stats = fetch_bucket_stats(host, bucket)
+                raw_stats = await asyncio.to_thread(fetch_bucket_stats, host, bucket)
             else:
                 ssh_user, ssh_key_path, exec_mode, _container = resolve_ssh_creds(cluster)
-                raw_stats = fetch_bucket_stats_with(
-                    host, bucket, ssh_user, ssh_key_path, exec_mode, cluster.ceph_rgw_container_name
+                raw_stats = await asyncio.to_thread(
+                    fetch_bucket_stats_with,
+                    host, bucket, ssh_user, ssh_key_path, exec_mode, cluster.ceph_rgw_container_name,
                 )
             if raw_stats:
                 bucket_stats = summarize_bucket_stats(raw_stats)
@@ -343,6 +387,10 @@ async def bucket_access_log_api(request: Request, host: str, bucket: str = "", u
     return {
         "host": host,
         "bucket": bucket,
+        "refreshing": (
+            cache_is_refreshing("bucket-access-log-capability", f"{cluster.id}:logging-capability")
+            or cache_is_refreshing("bucket-access-log", log_cache_key)
+        ),
         "bucket_stats": bucket_stats,
         "logging_capability": capability,
         "records": [

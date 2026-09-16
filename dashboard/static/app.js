@@ -292,13 +292,26 @@
   }
 
   topbar.querySelectorAll(".main-nav a").forEach(function (link) {
-    if (link.querySelector(".nav-icon")) return;
     var path = new URL(link.href, window.location.origin).pathname;
+    var labelText = Array.from(link.childNodes)
+      .filter(function (node) { return node.nodeType === Node.TEXT_NODE; })
+      .map(function (node) { return node.textContent; })
+      .join(" ")
+      .trim();
+    if (!labelText) labelText = link.getAttribute("aria-label") || path;
+    var initial = link.getAttribute("data-initial");
+    if (!initial) {
+      initial = iconByPath[path] || labelText.split(/\s+/).map(function (word) { return word.charAt(0); }).join("").slice(0, 2);
+      link.setAttribute("data-initial", initial || "·");
+    }
     var icon = document.createElement("span");
     icon.className = "nav-icon";
     icon.setAttribute("aria-hidden", "true");
     icon.textContent = iconByPath[path] || "·";
-    link.insertBefore(icon, link.firstChild);
+    var label = document.createElement("span");
+    label.className = "nav-link-label";
+    label.textContent = labelText;
+    link.replaceChildren(icon, label);
   });
 })();
 

@@ -2862,6 +2862,7 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   font-family: var(--font-mono);
   font-size: .82rem;
 }
+.nav-link-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-link.active .nav-icon, .nav-dropdown-item-active .nav-icon { color: var(--accent); }
 .nav-section { display: flex; flex-direction: column; gap: 3px; }
 .nav-section-toggle {
@@ -3070,6 +3071,78 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 
 @media (prefers-reduced-motion: reduce) {
   .app-shell .main-nav { transition: none; }
+}
+
+/* A tablet-width Ceph shell uses the same 64px rail as an intentionally
+   collapsed desktop shell.  Keep the rail usable: labels are removed from
+   layout, every group is expanded, and the icon remains the only visible
+   navigation target.  The drawer remains the mobile pattern below 561px. */
+@media (min-width: 561px) and (max-width: 900px) {
+  .app-shell .topbar {
+    width: 64px;
+    min-height: 100vh;
+    height: 100vh;
+    padding: 12px 8px;
+  }
+  .app-shell .topbar-inner {
+    height: auto;
+    min-height: 100%;
+    padding: 0;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .app-shell .brand { min-height: 44px; padding: 0 0 10px; justify-content: center; }
+  .app-shell .bizfly-logo-plate { width: 34px; height: 34px; }
+  .app-shell .shell-menu-toggle,
+  .app-shell .bizfly-module-label,
+  .app-shell .topbar-cluster-switcher,
+  .app-shell .topbar-user .user-chip { display: none; }
+  .app-shell .main-nav {
+    position: static;
+    inset: auto;
+    width: 100%;
+    height: auto;
+    max-height: none;
+    flex: 1;
+    padding: 14px 0;
+    gap: 5px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    transform: none;
+  }
+  .app-shell .nav-section { gap: 2px; }
+  .app-shell .nav-section-toggle { display: none; }
+  .app-shell .nav-section-items[hidden] { display: flex; }
+  .app-shell .nav-link {
+    justify-content: center;
+    min-height: 40px;
+    height: 40px;
+    padding: 8px 4px;
+    font-size: 0;
+  }
+  .app-shell .nav-link::before { content: none; }
+  .app-shell .nav-link-label { display: none; }
+  .app-shell .nav-icon { margin: 0; }
+  .app-shell .topbar-user { justify-content: center; padding-top: 8px; }
+  .app-shell .topbar-user .btn { font-size: 0; padding: 8px; }
+  .app-shell .topbar-user .btn::before { content: "↪"; font-size: 16px; }
+}
+
+/* Collapsed desktop rail: do not clip labels into meaningless fragments.
+   Hide the label node and expose all grouped links, including inactive ones. */
+@media (min-width: 901px) {
+  .sidebar-collapsed .nav-section-toggle { display: none; }
+  .sidebar-collapsed .nav-section-items[hidden] { display: flex; }
+  body.app-shell.sidebar-collapsed .nav-link::before { content: none; }
+  .sidebar-collapsed .nav-link-label { display: none; }
+}
+
+@media (max-width: 560px) {
+  .app-shell .nav-link-label { display: inline; }
+  .app-shell .nav-link::before { content: none; }
 }
 
 /* Vitastor live monitoring dashboard */

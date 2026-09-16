@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 
@@ -68,7 +69,7 @@ class FakeSSHClient:
     def save_host_keys(self, path):
         FakeSSHClient.saved_host_key_paths.append(path)
 
-    def connect(self, hostname, username, key_filename, timeout):
+    def connect(self, hostname, username, key_filename, timeout, **_timeouts):
         FakeSSHClient.calls.append(hostname)
         outcome = FakeSSHClient.behavior.get(hostname, "unreachable")
         if outcome == "unreachable":
@@ -118,7 +119,7 @@ def test_query_cluster_health_returns_parsed_json_from_first_node(fake_ssh, monk
     result = query_cluster_health()
 
     assert result == {"status": "HEALTH_OK", "checks": {}}
-    assert fake_ssh.calls == ["10.20.1.150"]
+    assert "10.20.1.150" in fake_ssh.calls
 
 
 def test_query_cluster_health_falls_back_to_next_node_when_first_unreachable(fake_ssh, monkeypatch):
@@ -131,7 +132,7 @@ def test_query_cluster_health_falls_back_to_next_node_when_first_unreachable(fak
     result = query_cluster_health()
 
     assert result["status"] == "HEALTH_WARN"
-    assert fake_ssh.calls == ["10.20.1.150", "10.20.1.249"]
+    assert "10.20.1.249" in fake_ssh.calls
 
 
 def test_query_cluster_health_falls_back_past_command_failure(fake_ssh, monkeypatch):
@@ -175,7 +176,7 @@ def test_query_cluster_health_falls_back_when_response_is_malformed(fake_ssh, mo
     result = query_cluster_health()
 
     assert result["status"] == "HEALTH_OK"
-    assert fake_ssh.calls == ["10.20.1.150", "10.20.1.249"]
+    assert "10.20.1.249" in fake_ssh.calls
 
 
 def test_query_cluster_health_rejects_response_with_invalid_status_value(fake_ssh, monkeypatch):
@@ -200,7 +201,7 @@ def test_query_cluster_health_with_returns_parsed_json_from_first_node(fake_ssh)
     )
 
     assert result == {"status": "HEALTH_OK", "checks": {}}
-    assert fake_ssh.calls == ["10.9.9.1"]
+    assert "10.9.9.1" in fake_ssh.calls
 
 
 def test_query_cluster_health_with_falls_back_to_next_node(fake_ssh):
@@ -214,6 +215,26 @@ def test_query_cluster_health_with_falls_back_to_next_node(fake_ssh):
     )
 
     assert result["status"] == "HEALTH_WARN"
+
+
+def test_query_cluster_health_with_probes_mons_in_parallel(monkeypatch):
+    started = []
+    barrier = threading.Barrier(2)
+
+    def fake_run(host, command, user, key, timeout=None, *, pool=None):
+        started.append(host)
+        barrier.wait(timeout=1)
+        if host == "10.9.9.1":
+            raise CephQueryError("first MON unavailable")
+        return json.dumps({"status": "HEALTH_OK", "checks": {}})
+
+    monkeypatch.setattr(ceph_client, "_run_remote_command_with", fake_run)
+    result = query_cluster_health_with(
+        ["10.9.9.1", "10.9.9.2"], "ceph-mon-B", "root", "/root/.ssh/some_key"
+    )
+
+    assert result["status"] == "HEALTH_OK"
+    assert set(started) == {"10.9.9.1", "10.9.9.2"}
 
 
 def test_query_cluster_health_with_raises_when_all_nodes_fail(fake_ssh):
@@ -242,7 +263,7 @@ def test_query_cluster_health_with_uses_given_container_and_credentials_not_sett
     captured_users = []
     original_connect = fake_ssh.connect
 
-    def spy_connect(self, hostname, username, key_filename, timeout):
+    def spy_connect(self, hostname, username, key_filename, timeout, **_timeouts):
         captured_users.append((username, key_filename))
         return original_connect(self, hostname, username, key_filename, timeout=timeout)
 
@@ -521,7 +542,8 @@ def test_query_cluster_health_with_cephadm_mode_uses_shell_and_longer_timeout(fa
     # than the docker/podman default (see CEPHADM_COMMAND_TIMEOUT_SECONDS).
     from watcher.ceph_client import CEPHADM_COMMAND_TIMEOUT_SECONDS, COMMAND_TIMEOUT_SECONDS
 
-    assert captured_timeouts == [CEPHADM_COMMAND_TIMEOUT_SECONDS + ceph_client.CEPHADM_LOCK_WAIT_SECONDS]
+    assert len(captured_timeouts) == 1
+    assert 0 < captured_timeouts[0] <= ceph_client.HEALTH_COMMAND_TIMEOUT_SECONDS
     assert CEPHADM_COMMAND_TIMEOUT_SECONDS > COMMAND_TIMEOUT_SECONDS
 
 

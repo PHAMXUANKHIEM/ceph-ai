@@ -1,5 +1,6 @@
 import fcntl
 import base64
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import hashlib
 import json
 import logging
@@ -7,6 +8,7 @@ import os
 import re
 import shlex
 import tempfile
+import time
 from contextlib import contextmanager
 from typing import Callable, TypedDict
 
@@ -15,17 +17,19 @@ from paramiko.hostkeys import HostKeyEntry, InvalidHostKey
 
 from config.settings import settings
 from shared import ceph_releases
+from shared.ceph_runner import CephCommandRunner, CephConnectionPool, CephRunnerError, CephSSHConfig
 
 logger = logging.getLogger(__name__)
 
 CEPH_HEALTH_INNER_COMMAND = "ceph health detail --format json"
-CONNECT_TIMEOUT_SECONDS = 2
-COMMAND_TIMEOUT_SECONDS = 5
+CONNECT_TIMEOUT_SECONDS = settings.ceph_ssh_connect_timeout
+COMMAND_TIMEOUT_SECONDS = settings.ceph_command_timeout
+HEALTH_COMMAND_TIMEOUT_SECONDS = settings.ceph_health_timeout
 # cephadm shell spins up a fresh container per invocation (infers fsid/config/
 # keyring itself) rather than exec-ing into an already-running one — measured
 # ~2.5s against a real cephadm/reef cluster, comfortably under this but with
 # headroom for a cold image pull or a slower link.
-CEPHADM_COMMAND_TIMEOUT_SECONDS = 15
+CEPHADM_COMMAND_TIMEOUT_SECONDS = settings.ceph_inventory_timeout
 # Container layers are replaced on every deploy, so a host-key pin file in
 # `/root/.ssh` would disappear with the container.  Keep it under the shared
 # persistent application volume instead; bare-metal installs retain the
@@ -62,7 +66,7 @@ DIAGNOSTIC_OUTPUT_MAX_CHARS = 8000
 # CEPHADM_COMMAND_TIMEOUT_SECONDS above, just a slightly longer default
 # (these are chat-triggered, on-demand queries, not the Watcher's tight
 # poll loop, so a couple more seconds of headroom costs nothing real).
-MCP_COMMAND_TIMEOUT_SECONDS = 10
+MCP_COMMAND_TIMEOUT_SECONDS = settings.ceph_command_timeout
 
 # `rbd perf image iostat` is a streaming command unless an iteration count is
 # supplied.  Keep the collection finite at the Ceph CLI level and also put a
@@ -1003,6 +1007,7 @@ def _run_remote_command_with(
     ssh_user: str,
     ssh_key_path: str,
     command_timeout: int = COMMAND_TIMEOUT_SECONDS,
+    pool: CephConnectionPool | None = None,
 ) -> str:
     """Story 5.1: parameterized core so a Dashboard form's not-yet-saved
     values can be tested for real before being written to `.env` —
@@ -1014,25 +1019,22 @@ def _run_remote_command_with(
     existing caller) but is overridable — watcher/node_metrics.py's
     /proc sampling script sleeps ~1s on the remote end, which the fixed
     5s default leaves too little headroom for over a slow link."""
-    client = paramiko.SSHClient()
-    if os.path.exists(KNOWN_HOSTS_PATH):
-        client.load_host_keys(KNOWN_HOSTS_PATH)
-    # Never accept a first-seen key implicitly: accepting it here makes the
-    # bootstrap connection vulnerable to a MITM which would then be persisted
-    # as trusted.  Provision each node key in KNOWN_HOSTS_PATH before adding
-    # it to CEPH_*_NODES; changed keys remain blocked as well.
-    client.set_missing_host_key_policy(paramiko.RejectPolicy())
-    try:
-        client.connect(
-            hostname=host,
-            username=ssh_user,
-            key_filename=ssh_key_path,
-            timeout=CONNECT_TIMEOUT_SECONDS,
+    active_pool = pool or CephConnectionPool(
+        CephSSHConfig(
+            user=ssh_user,
+            key_path=ssh_key_path,
+            known_hosts_path=KNOWN_HOSTS_PATH,
+            connect_timeout=settings.ceph_ssh_connect_timeout,
+            banner_timeout=settings.ceph_ssh_banner_timeout,
+            auth_timeout=settings.ceph_ssh_auth_timeout,
+            max_connections=settings.ceph_max_concurrency,
         )
-        # cephadm creates a transient Podman container per call. A
-        # bounded host lock prevents concurrent app processes from
-        # stampeding one MON without turning brief contention into a
-        # false MON failure.
+    )
+    owns_pool = pool is None
+    try:
+        # cephadm creates a transient Podman container per call. A bounded
+        # host lock prevents concurrent app processes from stampeding one MON
+        # without turning brief contention into a false MON failure.
         remote_command = command
         remote_timeout = command_timeout
         if command.lstrip().startswith("cephadm shell"):
@@ -1041,25 +1043,15 @@ def _run_remote_command_with(
                 f"{shlex.quote(CEPHADM_REMOTE_LOCK_PATH)} {command}"
             )
             # Waiting for a host-local cephadm lock is part of the command
-            # budget; do not let Paramiko time out while flock is waiting.
-            remote_timeout += CEPHADM_LOCK_WAIT_SECONDS
-        _stdin, stdout, stderr = client.exec_command(remote_command, timeout=remote_timeout)
-        # Read output fully BEFORE checking exit status: if the remote command
-        # writes more than the channel buffer holds, it blocks on write until
-        # someone drains stdout — calling recv_exit_status() first would wait
-        # for a process exit that can't happen until stdout is read. Classic
-        # SSH deadlock.
-        output = stdout.read().decode()
-        error_output = stderr.read().decode()
-        exit_status = stdout.channel.recv_exit_status()
-        if exit_status != 0:
-            raise CephQueryError(f"{host}: command exited {exit_status}: {error_output}")
-        return output
+            # budget: the runner's total deadline includes time waiting for
+            # the host-local cephadm lock, so a contended MON cannot extend a
+            # health poll beyond its configured deadline.
+        return CephCommandRunner(active_pool).run(host, remote_command, remote_timeout)
+    except CephRunnerError as exc:
+        raise CephQueryError(str(exc)) from exc
     finally:
-        try:
-            client.close()
-        except Exception:
-            logger.warning("_run_remote_command: error closing SSH connection to %s", host)
+        if owns_pool:
+            active_pool.close()
 
 
 def run_command_on_node(host: str, command: str, timeout: int = COMMAND_TIMEOUT_SECONDS) -> str:
@@ -1346,21 +1338,86 @@ def query_cluster_health_with(
         raise CephQueryError("no MON nodes configured")
 
     command = build_exec_command(exec_mode, container_name, CEPH_HEALTH_INNER_COMMAND)
-    command_timeout = (
-        CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else COMMAND_TIMEOUT_SECONDS
-    )
+    command_timeout = HEALTH_COMMAND_TIMEOUT_SECONDS
+    deadline = time.monotonic() + settings.ceph_health_timeout
     global last_successful_mon_node
-    errors = []
-    for host in mon_nodes:
+    errors: list[str] = []
+
+    def collect_from_node(host: str) -> dict:
+        """Run one bounded health probe without extending the total deadline."""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CephQueryError(
+                f"{host}: health poll exceeded {settings.ceph_health_timeout:g} seconds"
+            )
+        # A dedicated one-host pool lets Paramiko's connect/banner/auth
+        # deadlines shrink with the remaining health budget. The previous
+        # sequential fallback could spend the full budget on each MON and
+        # leave the Watcher heartbeat stale while a healthy peer was available.
+        pool = CephConnectionPool(
+            CephSSHConfig(
+                user=ssh_user,
+                key_path=ssh_key_path,
+                known_hosts_path=KNOWN_HOSTS_PATH,
+                connect_timeout=min(settings.ceph_ssh_connect_timeout, remaining),
+                banner_timeout=min(settings.ceph_ssh_banner_timeout, remaining),
+                auth_timeout=min(settings.ceph_ssh_auth_timeout, remaining),
+                max_connections=1,
+            )
+        )
         try:
-            output = _run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout)
-            payload = _parse_health_payload(output)
-            if update_sticky_fallback:
-                last_successful_mon_node = host
-            return payload
-        except Exception as exc:
-            logger.warning("query_cluster_health_with: %s failed: %s", host, exc)
-            errors.append(f"{host}: {exc}")
+            output = _run_remote_command_with(
+                host,
+                command,
+                ssh_user,
+                ssh_key_path,
+                min(command_timeout, max(0.01, remaining)),
+                pool=pool,
+            )
+            return _parse_health_payload(output)
+        finally:
+            pool.close()
+
+    executor = ThreadPoolExecutor(
+        max_workers=min(settings.ceph_max_concurrency, len(mon_nodes)),
+        thread_name_prefix="ceph-health",
+    )
+    futures = {executor.submit(collect_from_node, host): host for host in mon_nodes}
+    pending = set(futures)
+    try:
+        while pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done, pending = wait(
+                pending,
+                timeout=remaining,
+                return_when=FIRST_COMPLETED,
+            )
+            for future in done:
+                host = futures[future]
+                try:
+                    payload = future.result()
+                except Exception as exc:
+                    logger.warning("query_cluster_health_with: %s failed: %s", host, exc)
+                    errors.append(f"{host}: {exc}")
+                    continue
+                if update_sticky_fallback:
+                    last_successful_mon_node = host
+                return payload
+        for future in pending:
+            host = futures[future]
+            future.cancel()
+            errors.append(
+                f"{host}: health poll exceeded {settings.ceph_health_timeout:g} seconds"
+            )
+    finally:
+        # Running Paramiko probes have their own bounded channel/connect
+        # deadlines and close their private pool on completion. Do not wait
+        # here, otherwise a slow peer can still extend this total deadline.
+        for future in pending:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
     raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
 
 

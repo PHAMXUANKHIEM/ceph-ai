@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from shared import ceph_query_cache
@@ -140,3 +142,35 @@ def test_status_and_inventory_failures_have_named_metrics(monkeypatch):
     metrics = cluster_snapshot_collector.get_metrics()
     assert metrics["commands"]["status"]["failure_total"] == 1
     assert metrics["commands"]["pools"]["failure_total"] == 1
+
+
+def test_inventory_sections_run_in_parallel_with_a_bounded_worker_count(monkeypatch):
+    cluster = type("ClusterConfig", (), {"id": "cluster-a", "name": "lab"})()
+    barrier = threading.Barrier(2)
+    started = []
+
+    def loader(section, result):
+        def collect(_cluster):
+            started.append(section)
+            barrier.wait(timeout=2)
+            return result
+
+        return collect
+
+    monkeypatch.setattr(cluster_snapshot_collector, "_collect_pool_rows", loader("pools", []))
+    monkeypatch.setattr(cluster_snapshot_collector, "_collect_pg_rows", loader("pgs", []))
+    monkeypatch.setattr(
+        cluster_snapshot_collector,
+        "_collect_crush_tree",
+        lambda _cluster: {"state": "no_snapshot_yet"},
+    )
+    monkeypatch.setattr(
+        cluster_snapshot_collector,
+        "_collect_node_summary",
+        lambda _cluster: {"nodes": [], "total": 0},
+    )
+
+    result = cluster_snapshot_collector.CephSnapshotCollector(max_workers=2).collect_inventory(cluster)
+
+    assert set(started) == {"pools", "pgs"}
+    assert set(result) == {"pools", "pgs", "crush", "nodes"}

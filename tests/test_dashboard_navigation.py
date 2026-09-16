@@ -225,3 +225,21 @@ def test_narrow_rail_uses_generated_content_not_first_letter():
     css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
     assert "nav-link::first-letter" not in css
     assert "content:attr(data-initial)" in css
+
+
+def test_dynamic_navigation_labels_have_a_real_hideable_element():
+    source = APP_JS.read_text(encoding="utf-8")
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+
+    assert 'className = "nav-link-label"' in source
+    assert ".nav-link-label { display: none; }" in css or ".nav-link-label{display:none}" in css
+    assert ".nav-section-items[hidden] { display: flex; }" in css or ".nav-section-items[hidden]{display:flex}" in css
+
+
+def test_tablet_rail_is_static_and_mobile_restores_full_labels():
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+
+    assert "@media (min-width: 561px) and (max-width: 900px)" in css
+    assert "position: static;" in css
+    assert "@media (max-width: 560px)" in css
+    assert ".app-shell .nav-link-label { display: inline; }" in css

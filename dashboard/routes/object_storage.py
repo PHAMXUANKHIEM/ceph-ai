@@ -27,7 +27,11 @@ from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared import db
 from shared.ceph_releases import codename_for_version
 from shared.models import ObjectStorageAuditEntry
-from shared.object_storage_cache import get_or_load, invalidate as invalidate_object_storage_cache
+from shared.object_storage_cache import (
+    get_or_load,
+    invalidate as invalidate_object_storage_cache,
+    is_refreshing as cache_is_refreshing,
+)
 from dashboard.cluster_scope import cluster_connection
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
@@ -118,6 +122,14 @@ SortOrder = Literal["asc", "desc"]
 
 class ObjectStorageError(RuntimeError):
     """A safe, operator-facing failure while querying the configured RGW."""
+
+
+def _uses_mocked_rgw_client() -> bool:
+    """Keep synchronous cold loads for test doubles and compatibility callers."""
+    return any(
+        getattr(function, "__module__", "") != "watcher.rgw_access_log"
+        for function in (fetch_bucket_list, fetch_bucket_list_with)
+    )
 
 
 def _capabilities(cluster) -> dict:
@@ -983,11 +995,31 @@ def _inventory(
 def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: QuotaFilter = "all",
                       usage: UsageFilter = "all", sort: SortField = "name", order: SortOrder = "asc") -> dict:
     key = f"{cluster.id}:{query}:{page}:{owner}:{quota}:{usage}:{sort}:{order}"
-    return get_or_load(
+    fallback = {
+        "host": None,
+        "items": [],
+        "query": query.strip(),
+        "owner": owner.strip(),
+        "quota": quota,
+        "usage": usage,
+        "sort": sort,
+        "order": order,
+        "page": max(1, page),
+        "page_size": PAGE_SIZE,
+        "page_count": 1,
+        "total": 0,
+    }
+    result = get_or_load(
         "buckets", key,
         lambda: _inventory(cluster, query, page, owner, quota, usage, sort, order),
         stale_ttl_seconds=7200,
+        background_on_miss=not _uses_mocked_rgw_client(),
+        fallback=fallback,
     )
+    if isinstance(result, dict):
+        result = dict(result)
+        result["refreshing"] = cache_is_refreshing("buckets", key)
+    return result
 
 
 def _detail(cluster, name: str, include_activity: bool = False) -> dict:

@@ -11,13 +11,15 @@ from datetime import datetime, timezone
 from time import time
 from typing import Mapping
 
+from config.settings import settings
 from shared import ceph_query_cache
 from shared.cluster_events import publish_event
 
 SNAPSHOT_NAMESPACE = "cluster-snapshot"
 SECTION_SNAPSHOT_NAMESPACE = "cluster-section-snapshot"
 REFRESH_STATE_NAMESPACE = "cluster-snapshot-refresh-state"
-DEFAULT_STALE_AFTER_SECONDS = 30
+REFRESH_CLAIM_NAMESPACE = "cluster-snapshot-refresh-claim"
+DEFAULT_STALE_AFTER_SECONDS = settings.ceph_snapshot_max_age
 DEFAULT_MAX_STALE_SECONDS = 900
 REFRESH_STATE_MAX_AGE_SECONDS = DEFAULT_MAX_STALE_SECONDS
 
@@ -148,6 +150,32 @@ def mark_refreshing(cluster_id: str, refreshing: bool = True) -> bool:
         return True
     ceph_query_cache.invalidate(REFRESH_STATE_NAMESPACE, normalized_id)
     return False
+
+
+def claim_refresh(cluster_id: str) -> bool:
+    """Atomically claim one cluster refresh across dashboard processes.
+
+    The in-process lock in the route protects one Uvicorn worker. This cache
+    lock closes the multi-worker race: only the process that wins the key lock
+    may write the refreshing marker and enqueue the Ceph job.
+    """
+    normalized_id = _key(cluster_id)
+    try:
+        with ceph_query_cache.key_lock(
+            REFRESH_CLAIM_NAMESPACE,
+            normalized_id,
+            timeout_seconds=0,
+        ):
+            if is_refreshing(normalized_id):
+                return False
+            ceph_query_cache.store(
+                REFRESH_STATE_NAMESPACE,
+                normalized_id,
+                {"refreshing": True, "marked_at": _utc_now()},
+            )
+            return True
+    except ceph_query_cache.CacheLockError:
+        return False
 
 
 def is_refreshing(cluster_id: str) -> bool:

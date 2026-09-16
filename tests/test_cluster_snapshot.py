@@ -124,6 +124,17 @@ def test_successful_publish_clears_refresh_marker(monkeypatch, tmp_path):
     assert cluster_snapshot.read_snapshot("cluster-a")["refreshing"] is False
 
 
+def test_refresh_claim_is_single_flight_and_cluster_scoped(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+
+    assert cluster_snapshot.claim_refresh("cluster-a") is True
+    assert cluster_snapshot.claim_refresh("cluster-a") is False
+    assert cluster_snapshot.claim_refresh("cluster-b") is True
+
+    cluster_snapshot.mark_refreshing("cluster-a", False)
+    assert cluster_snapshot.claim_refresh("cluster-a") is True
+
+
 def test_persisted_snapshot_is_readable_after_process_restart(monkeypatch, tmp_path):
     _isolate_cache(monkeypatch, tmp_path)
     cluster_snapshot.publish_snapshot("cluster-a", {"health": "HEALTH_WARN"})

@@ -64,7 +64,7 @@ class FakeSSHClient:
     def save_host_keys(self, path):
         pass
 
-    def connect(self, hostname, username, key_filename, timeout):
+    def connect(self, hostname, username, key_filename, timeout, **_timeouts):
         self._host = hostname
 
     def exec_command(self, command, timeout=None):
@@ -201,7 +201,7 @@ def test_collect_relevant_logs_survives_unreachable_node(fake_ssh, monkeypatch):
     # connect() itself unreachable for one host.
     original_connect = fake_ssh.connect
 
-    def flaky_connect(self, hostname, username, key_filename, timeout):
+    def flaky_connect(self, hostname, username, key_filename, timeout, **_timeouts):
         if hostname == name_to_ip["khiempx-mon3"]:
             raise OSError("no route to host")
         return original_connect(self, hostname, username, key_filename, timeout)
@@ -460,7 +460,7 @@ def test_collect_relevant_logs_for_recent_crash_with_no_entries(fake_ssh, monkey
 def test_collect_relevant_logs_for_recent_crash_survives_all_mon_nodes_unreachable(
     fake_ssh, monkeypatch
 ):
-    def always_fail_connect(self, hostname, username, key_filename, timeout):
+    def always_fail_connect(self, hostname, username, key_filename, timeout, **_timeouts):
         raise OSError("no route to host")
 
     monkeypatch.setattr(fake_ssh, "connect", always_fail_connect)
@@ -536,7 +536,7 @@ def test_collect_relevant_logs_for_device_health_toomany_variant_also_routed(fak
 def test_collect_relevant_logs_for_device_health_survives_all_mon_nodes_unreachable(
     fake_ssh, monkeypatch
 ):
-    def always_fail_connect(self, hostname, username, key_filename, timeout):
+    def always_fail_connect(self, hostname, username, key_filename, timeout, **_timeouts):
         raise OSError("no route to host")
 
     monkeypatch.setattr(fake_ssh, "connect", always_fail_connect)
