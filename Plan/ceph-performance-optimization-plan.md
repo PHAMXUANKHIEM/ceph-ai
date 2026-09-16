@@ -474,6 +474,12 @@ Record before/after values for:
   and stale data, cache isolation, single-flight refresh, retry limits,
   cancellation cleanup, bounded concurrency, watcher overlap prevention, and
   heavy-API isolation from health reads.
+- 2026-09-16: Refined the Object Storage bucket and Bucket Access Log
+  workspaces, including isolated audit styling, simplified bucket navigation,
+  and retained bounded inventory/filter contracts. The focused gate passed 152
+  tests with one existing Starlette/httpx warning; JavaScript syntax passed.
+  Commit `1535b9f6` is pushed to `origin/main`; rollback candidate is
+  `581693b3`.
 - 2026-09-16: Phase 1 completed. Added bounded Ceph collection settings in
   `config/settings.py` and `.env.example`, plus `shared/retry.py` with finite
   exponential backoff, jitter and retry classification. Focused tests: 8

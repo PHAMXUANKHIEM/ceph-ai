@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 581693b339bab2a1222f6ce2379d74f056f62cdc
-  rollback_candidate_sha: 9b0b225f162f33b4121d1fd4f8bdcb8e4f3cc7fa
+  commit_sha: 1535b9f63f892b4c94b444e57bc8faca8b48111f
+  rollback_candidate_sha: 581693b339bab2a1222f6ce2379d74f056f62cdc
   worktree: untracked_transfer_directory
-  release_commit: 581693b339bab2a1222f6ce2379d74f056f62cdc
+  release_commit: 1535b9f63f892b4c94b444e57bc8faca8b48111f
   pushed_to_origin: true
 
 migrations:
@@ -104,6 +104,7 @@ verification:
   cluster_user_restore_settings_gate: 322_passed_2_warnings
   settings_navigation_javascript_syntax: passed
   phase10_failure_concurrency_cancellation_gate: 258_passed_1_warning
+  object_storage_audit_workspace_gate: 152_passed_1_warning
   broad_current_candidate_gate: not_counted_concurrent_transfer_overlay_invalidated_run
   broad_segmented_current_candidate_gate:
     non_migration_suite: 3338_passed_3_broker_environment_failures_reproduced_then_isolated
