@@ -545,3 +545,11 @@ Record before/after values for:
   regression gate: 342 passed, 1 deselected, 1 warning; candidate commit
   `179480c5` is pushed to `origin/main`. The broad segmented gate remains
   recorded against the earlier release SHA until rerun end-to-end.
+- 2026-09-16: Candidate wave extended bounded I/O to backup export/restore and
+  restore-drill SSH streams, shared health-pool reuse, inventory/health
+  deadlines, pagination centering, approval copy, and the scheduled nightly
+  AI morning report. Verified module gates include backup engine 21, integrity
+  3, restore 11, restore drill 6, SSH executor 3, S3 11, SSH storage 13,
+  Block Storage 6, dashboard navigation 28, and settings 150 tests; all
+  reported exit code zero. The combined candidate gate was terminated by the
+  remote runner at 37% without a summary and is not counted as passing.
