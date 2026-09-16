@@ -508,7 +508,7 @@ Record before/after values for:
   metrics are now integrated into the read-only health MON fallback with a
   shared deadline. Authentication, host-key, command and data errors remain
   non-retryable; mutation paths are unchanged. Current retry/correlation
-  regression gate: 126 passed, 1 warning. No latency claim is made until
+  regression gate: 187 passed, 1 warning. No latency claim is made until
   benchmark data is collected.
 - 2026-09-16: Phase 10 is in progress. Host-level SSH lease acquisition is
   now bounded by the command deadline; queue wait and queue-wait timeout are
@@ -522,3 +522,9 @@ Record before/after values for:
   and integrated it only into health transport fallback. Commit `c4677731`
   is pushed to `origin/main`; deployment remains blocked pending runtime
   ownership approval.
+- 2026-09-16: Propagated the request context through snapshot inventory,
+  persistent Ceph-query-cache and object-storage-cache thread executors so
+  API-triggered background Ceph work retains its correlation ID. Current
+  focused regression gate: 187 passed, 1 warning; compile, JavaScript syntax,
+  Alembic single-head and Node 20 frontend build checks passed. Commit
+  `d35beb5e` is pushed to `origin/main`.
