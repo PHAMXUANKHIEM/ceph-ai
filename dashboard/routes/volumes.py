@@ -1219,15 +1219,8 @@ async def propose_volume_trash_move(
             if cluster.is_default
             else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
         )
-        usage = (
-            ceph_client.query_rbd_image_usage(pool, image)
-            if cluster.is_default
-            else ceph_client.query_rbd_image_usage_with(pool, image, *cluster_connection(cluster))
-        )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không chạy được preflight chuyển Trash: {exc}")
-    if usage is None:
-        raise HTTPException(status_code=502, detail="Không xác định được dung lượng đã dùng của Volume trước khi chuyển Trash")
     blockers = []
     if detail.get("watchers"):
         blockers.append("watcher/attachment")
@@ -1250,6 +1243,19 @@ async def propose_volume_trash_move(
         blockers.append("backup đang chạy")
     if blockers:
         raise HTTPException(status_code=409, detail="Không thể chuyển Trash khi còn dependency: " + ", ".join(blockers))
+    # Run the potentially expensive object-usage scan only after all cheap
+    # dependency checks pass. A blocked Trash proposal must not add an OSD
+    # scan to the soft-lockup risk we are explicitly trying to avoid.
+    try:
+        usage = (
+            ceph_client.query_rbd_image_usage(pool, image)
+            if cluster.is_default
+            else ceph_client.query_rbd_image_usage_with(pool, image, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không đọc được dung lượng đã dùng của Volume: {exc}")
+    if usage is None:
+        raise HTTPException(status_code=502, detail="Không xác định được dung lượng đã dùng của Volume trước khi chuyển Trash")
     trash_usage = {
         "provisioned_size_bytes": int(usage["provisioned_size"]),
         "used_size_bytes": int(usage["used_size"]),
