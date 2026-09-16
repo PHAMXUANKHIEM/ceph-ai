@@ -79,6 +79,7 @@ CEPHADM_KEYRING_TARGET = "/etc/ceph/ceph.client.admin.keyring"
 # fail with exit 1 and caused false "Trash is below threshold" readings.
 CEPHADM_LOCK_WAIT_SECONDS = 30
 CEPHADM_REMOTE_LOCK_PATH = "/run/ceph-ai-cephadm.lock"
+CEPHADM_REMOTE_TIMEOUT_GRACE_SECONDS = 2
 
 
 def _rbd_iostat_base_command(pool: str, keyring_path: str) -> str:
@@ -1039,13 +1040,15 @@ def _run_remote_command_with(
         remote_timeout = command_timeout
         if command.lstrip().startswith("cephadm shell"):
             remote_command = (
+                "timeout --signal=TERM "
+                f"--kill-after={CEPHADM_REMOTE_TIMEOUT_GRACE_SECONDS}s "
+                f"{float(command_timeout):g}s "
                 f"flock -w {CEPHADM_LOCK_WAIT_SECONDS} "
                 f"{shlex.quote(CEPHADM_REMOTE_LOCK_PATH)} {command}"
             )
-            # Waiting for a host-local cephadm lock is part of the command
-            # budget: the runner's total deadline includes time waiting for
-            # the host-local cephadm lock, so a contended MON cannot extend a
-            # health poll beyond its configured deadline.
+            # The remote timeout owns the process group, so TERM/KILL reaches
+            # flock and its cephadm/Podman descendants. Closing a Paramiko
+            # channel alone does not reliably terminate those remote children.
         return CephCommandRunner(active_pool).run(host, remote_command, remote_timeout)
     except CephRunnerError as exc:
         raise CephQueryError(str(exc)) from exc

@@ -560,7 +560,14 @@ def test_query_cluster_health_with_cephadm_mode_uses_shell_and_longer_timeout(fa
     )
 
     assert result["status"] == "HEALTH_OK"
-    assert captured_commands == [f"flock -w {ceph_client.CEPHADM_LOCK_WAIT_SECONDS} {ceph_client.CEPHADM_REMOTE_LOCK_PATH} cephadm shell -- ceph health detail --format json"]
+    assert captured_commands == [
+        "timeout --signal=TERM "
+        f"--kill-after={ceph_client.CEPHADM_REMOTE_TIMEOUT_GRACE_SECONDS}s "
+        f"{captured_timeouts[0]:g}s "
+        f"flock -w {ceph_client.CEPHADM_LOCK_WAIT_SECONDS} "
+        f"{ceph_client.CEPHADM_REMOTE_LOCK_PATH} "
+        "cephadm shell -- ceph health detail --format json"
+    ]
     # cephadm shell spins up a fresh container per call — needs more headroom
     # than the docker/podman default (see CEPHADM_COMMAND_TIMEOUT_SECONDS).
     from watcher.ceph_client import CEPHADM_COMMAND_TIMEOUT_SECONDS, COMMAND_TIMEOUT_SECONDS

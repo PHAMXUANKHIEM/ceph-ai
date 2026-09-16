@@ -408,7 +408,7 @@
 })();
 
 (function () {
-  // "Tự động mở tab này khi có Risky Action mới" checkbox (Dashboard home
+  // "Tự động mở khi có yêu cầu duyệt mới" checkbox (Dashboard home
   // page only, 2026-07-28). dashboard/routes/incidents.py::index always
   // defaults active_tab to "pending" on a plain GET / — combined with the
   // Incident/Action changes system-wide (not just ones the operator is
@@ -476,7 +476,7 @@
 })();
 
 (function () {
-  // "Chờ duyệt — Risky Action" card (Dashboard home page only): pure
+  // "Chờ duyệt" card (Dashboard home page only): pure
   // in localStorage so it survives normal navigation and manual refreshes.
   var STORAGE_KEY = "pendingActionsCollapsed";
   var toggleBtn = document.getElementById("pending-actions-toggle");

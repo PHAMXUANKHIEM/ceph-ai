@@ -820,7 +820,7 @@ code {
 
 .inline-form { display: inline-block; }
 
-/* ===== Pending Risky Action cards ===== */
+/* ===== Pending approval cards ===== */
 .pending-actions { display: flex; flex-direction: column; gap: var(--space-3); }
 /* Same `[hidden]` vs. author `display:flex` specificity tie as
    .chat-messages/.login-box label above — the collapse toggle sets the

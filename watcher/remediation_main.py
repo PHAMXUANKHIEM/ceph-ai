@@ -20,7 +20,7 @@ from shared import db
 from shared.clusters import get_default_cluster_id
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.models import Cluster
-from watcher import ceph_client, verify
+from watcher import ceph_client, cluster_snapshot_collector, verify
 from watcher.ceph_client import CephQueryError
 from watcher.main import (
     _reconcile_terminal_actions,
@@ -101,10 +101,14 @@ def _run(max_iterations: Optional[int] = None) -> None:
                         refreshed_cluster.ceph_mon_nodes.split(",")
                     )
                     ssh_user, ssh_key, exec_mode, container = resolve_ssh_creds(refreshed_cluster)
-            health = ceph_client.query_cluster_health_with(
-                mon_nodes, container, ssh_user, ssh_key, exec_mode,
-                update_sticky_fallback=True,
-            )
+            # Main Watcher and this safety loop share one cross-process lock.
+            # Without it, enabling this service creates a second concurrent
+            # cephadm health poller against the same MON set.
+            with cluster_snapshot_collector.health_collection_lock(cluster_id):
+                health = ceph_client.query_cluster_health_with(
+                    mon_nodes, container, ssh_user, ssh_key, exec_mode,
+                    update_sticky_fallback=True,
+                )
             current_checks = set((health.get("checks") or {}).keys())
             _resolve_recovered_incidents(current_checks, cluster_id=cluster_id)
             _reconcile_terminal_actions()
