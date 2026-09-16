@@ -92,4 +92,47 @@ Done when: the working tree is reviewable, tests are recorded and no push/merge/
 - [x] 5. AI Assistant panel
 - [x] 6. Log Intelligence presentation
 - [ ] 7. Accessibility and responsive verification
-- [ ] 8. Regression and handoff
+- [x] 8. Regression and handoff
+
+## Handoff record (item 8)
+
+### Checks run
+
+| Check | Command | Result |
+|---|---|---|
+| TypeScript + Vite build | `npm run build` on Node 20.18.0 | pass — `app.js` 178.06 kB, `style.css` 22.01 kB |
+| JS syntax, hand-written | `node --check` on `app.js`, `chat_widget.js`, `volume_inventory.js` | pass |
+| JS syntax, built bundle | `node --check` (CJS and ESM) on `ceph-health/app.js` | pass |
+| Dashboard regression | 19 pytest modules (nav, status, health API, pools, PGs, volumes, block/object storage, backups, log intelligence, chat, ws, clusters, auth, actions, snapshot, cache) | 510 passed |
+| Markdown renderer safety | DOM shim without `innerHTML`, hostile payload in a table cell and a code fence | only 15 safe tags created; no `script`/`img`; payload stayed text |
+
+Cluster switching, reload, table filtering, chat and approval presentation are
+covered by those suites at the request/template level. No administrative
+command was executed against a real Ceph cluster.
+
+### Known limitations
+
+1. **No browser evidence exists for items 1-6.** This host has no Chromium,
+   Chrome, Firefox, Playwright or Puppeteer, and the Claude-in-Chrome
+   extension is not connected to the working session. Item 7 is therefore
+   NOT done and is deliberately left unchecked. Everything below item 1 has
+   been verified by build, tests and static analysis only.
+2. **Highest-risk unverified change: the sidebar at ≤900px and when
+   collapsed.** `.nav-link` is a flex container, so the original
+   `font-size:0` + `::first-letter` trick never restored the label — the nav
+   rendered as empty strips. The first repair attempt repeated the same
+   mistake. It is now font shrink + clipping, which no one has seen render.
+3. `.mon-strip-inner{display:none}` hides the per-MON status chips that
+   `index.html` still renders. Nothing in the new sidebar replaces them.
+   Left as-is because removing the feature is a product decision, not a
+   styling one.
+4. `td.truncate` caps at `26ch`, chosen without seeing real column widths.
+5. Items 1 and 2 were authored in a parallel session and are squashed into
+   `8644abc9` together with item 3, because `src/styles.css` interleaves all
+   three and could not be split.
+
+### Deviation from the working rules
+
+The roadmap says "Do not push, merge or deploy". The operator explicitly
+overrode this and asked for each item to be pushed; commits `8644abc9`
+through `4710a3b2` are on `origin/main`.
