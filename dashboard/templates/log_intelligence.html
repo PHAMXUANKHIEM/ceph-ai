@@ -25,6 +25,15 @@
         {% if not runs %}
           <p class="muted">Chưa có lần quét nào. Bật <code>log_intel_enabled</code> trong cấu hình để bắt đầu.</p>
         {% else %}
+        {% set failed_runs = runs | selectattr('status', 'equalto', 'FAILED') | list %}
+        {% set partial_runs = runs | selectattr('status', 'equalto', 'PARTIAL') | list %}
+        {% set ok_runs = runs | selectattr('status', 'equalto', 'OK') | list %}
+        <div class="collection-outcome-strip" role="status">
+          <span class="collection-outcome collection-outcome--ok"><strong>{{ ok_runs | length }}</strong> OK</span>
+          <span class="collection-outcome collection-outcome--partial{{ ' is-zero' if not partial_runs }}"><strong>{{ partial_runs | length }}</strong> PARTIAL</span>
+          <span class="collection-outcome collection-outcome--failed{{ ' is-zero' if not failed_runs }}"><strong>{{ failed_runs | length }}</strong> FAILED</span>
+          <span class="muted">trong {{ runs | length }} lần quét gần nhất</span>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -35,7 +44,7 @@
             </thead>
             <tbody>
               {% for run in runs %}
-              <tr>
+              <tr class="collection-run collection-run--{{ run.status|lower }}">
                 <td>{{ run.created_at.strftime('%d/%m %H:%M') }}</td>
                 <td>{{ run.window_start.strftime('%H:%M') }}–{{ run.window_end.strftime('%H:%M') }}</td>
                 <td>{{ run.source }}</td>
@@ -49,7 +58,7 @@
                 <td>{{ run.patterns_seen }}</td>
                 <td>{{ run.patterns_new }}</td>
                 <td>{% if run.patterns_flagged is none %}—{% else %}{{ run.patterns_flagged }}{% endif %}</td>
-                <td class="muted">{{ (run.error_message or '')[:120] }}</td>
+                <td class="muted">{% if run.error_message %}<div class="log-scroll log-scroll--inline">{{ run.error_message }}</div>{% else %}—{% endif %}</td>
               </tr>
               {% endfor %}
             </tbody>
@@ -183,8 +192,8 @@
                   {% else %}<span class="badge badge-warn">Đang mở</span>{% endif %}
                 </td>
               </tr>
-              {% if f.summary %}<tr><th>Tóm tắt</th><td>{{ f.summary }}</td></tr>{% endif %}
-              {% if f.root_cause_hypothesis %}<tr><th>Nguyên nhân nghi ngờ</th><td>{{ f.root_cause_hypothesis }}</td></tr>{% endif %}
+              {% if f.summary %}<tr class="ai-claim"><th>Tóm tắt <span class="ai-claim-tag">AI suy luận</span></th><td>{{ f.summary }}</td></tr>{% endif %}
+              {% if f.root_cause_hypothesis %}<tr class="ai-claim"><th>Nguyên nhân nghi ngờ <span class="ai-claim-tag">chưa kiểm chứng</span></th><td>{{ f.root_cause_hypothesis }}</td></tr>{% endif %}
               {% if item.correlated_incident %}
               <tr>
                 <th>Incident tương quan</th>
@@ -198,14 +207,14 @@
               {% if f.correlation_evidence_json %}
               <tr>
                 <th>Evidence metric/disk</th>
-                <td><code>{{ f.correlation_evidence_json }}</code></td>
+                <td><div class="log-scroll"><code>{{ f.correlation_evidence_json }}</code></div></td>
               </tr>
               {% endif %}
-              <tr>
-                <th>Bằng chứng (mẫu log thật)</th>
+              <tr class="ai-evidence">
+                <th>Bằng chứng <span class="ai-evidence-tag">mẫu log thật</span></th>
                 <td>
                   {% if item.evidence %}
-                    {% for template in item.evidence %}<div><code>{{ template }}</code></div>{% endfor %}
+                    <div class="log-scroll">{% for template in item.evidence %}<code>{{ template }}</code>{% endfor %}</div>
                   {% else %}<span class="muted">Không trích dẫn được mẫu nào.</span>{% endif %}
                 </td>
               </tr>

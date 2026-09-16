@@ -171,3 +171,34 @@ def test_chat_panel_no_longer_offsets_for_the_removed_horizontal_topbar():
     css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
     assert "calc(100vh - 53px)" not in css
     assert "top: 53px" not in css
+
+
+LOG_INTEL = TEMPLATE_DIR / "log_intelligence.html"
+
+
+def test_collection_failure_message_is_not_truncated():
+    """Tiêu chí của mục 6: không được giấu bất kỳ lần thu thập lỗi hay kết
+    quả một phần nào. Cắt error_message ở 120 ký tự có thể cắt mất đúng lý
+    do một lần quét FAILED."""
+    markup = LOG_INTEL.read_text(encoding="utf-8")
+    assert "run.error_message or '')[:120]" not in markup
+    assert "log-scroll" in markup
+
+
+def test_collection_outcomes_are_summarised_above_the_table():
+    """Badge nằm ở cột 4 của bảng 10 cột thì phải dò cả bảng mới biết có lần
+    quét nào hỏng."""
+    markup = LOG_INTEL.read_text(encoding="utf-8")
+    assert "collection-outcome-strip" in markup
+    for status in ("OK", "PARTIAL", "FAILED"):
+        assert f"'{status}')" in markup or f'"{status}")' in markup
+
+
+def test_ai_hypotheses_are_marked_apart_from_measured_evidence():
+    """Kết luận chưa kiểm chứng của AI và mẫu log thật đo được từng là hai
+    hàng giống hệt nhau trong cùng một bảng."""
+    markup = LOG_INTEL.read_text(encoding="utf-8")
+    assert 'class="ai-claim"' in markup
+    assert 'class="ai-evidence"' in markup
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+    assert ".ai-claim td {" in css and ".ai-evidence th {" in css

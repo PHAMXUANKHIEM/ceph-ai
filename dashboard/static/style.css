@@ -3776,3 +3776,30 @@ td.truncate { max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-
    nếu không, Settings/Restore hiện thành một cột hẹp giữa hai lề trống
    trong khi Dashboard lại đầy khung — trông như hai sản phẩm khác nhau. */
 body > .page { flex: 1 1 auto; min-width: 0; }
+
+/* ---- Log Intelligence (frontend roadmap item 6) ---------------------
+   Kết quả thu thập từng là một badge nằm ở cột 4 của bảng 10 cột: muốn biết
+   có lần quét nào FAILED thì phải dò cả bảng. */
+.collection-outcome-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+.collection-outcome { display: inline-flex; align-items: baseline; gap: 6px; padding: 5px 11px; border: 1px solid var(--border-strong, var(--border)); border-radius: 999px; font-size: .74rem; font-weight: 600; }
+.collection-outcome strong { font-size: .95rem; font-variant-numeric: tabular-nums; }
+.collection-outcome--ok { border-color: rgba(58,190,102,.34); background: rgba(58,190,102,.1); color: #78d79a; }
+.collection-outcome--partial { border-color: rgba(240,167,46,.38); background: rgba(240,167,46,.12); color: #f4c15d; }
+.collection-outcome--failed { border-color: rgba(247,86,103,.42); background: rgba(247,86,103,.14); color: #ff7887; }
+/* Đếm bằng 0 thì làm nhạt đi, nhưng KHÔNG ẩn: "0 FAILED" là một thông tin. */
+.collection-outcome.is-zero { border-color: var(--border); background: transparent; color: var(--text-faint); }
+.collection-run--partial td:first-child { box-shadow: inset 3px 0 rgba(240,167,46,.75); }
+.collection-run--failed td:first-child { box-shadow: inset 3px 0 rgba(247,86,103,.85); }
+
+/* Log dài cuộn TRONG khung của nó, không kéo giãn bảng cha. */
+.log-scroll { max-height: 190px; overflow: auto; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm, 8px); background: rgba(3,9,17,.4); font-family: var(--font-mono); font-size: .74rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-scroll code { display: block; color: var(--text-muted); font: inherit; }
+.log-scroll--inline { max-height: 92px; }
+
+/* Suy luận của AI phải nhìn ra ngay là chưa kiểm chứng — trước đây nó nằm
+   cùng một kiểu hàng với mẫu log thật đo được. */
+.ai-claim th { border-left: 3px solid rgba(240,167,46,.6); }
+.ai-claim td { background: rgba(240,167,46,.045); }
+.ai-claim-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: rgba(240,167,46,.16); color: #f4c15d; font-size: .6rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.ai-evidence th { border-left: 3px solid rgba(58,190,102,.55); }
+.ai-evidence-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: rgba(58,190,102,.14); color: #78d79a; font-size: .6rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }

@@ -90,6 +90,6 @@ Done when: the working tree is reviewable, tests are recorded and no push/merge/
 - [x] 3. Shared UI primitives
 - [x] 4. Tables and administration pages
 - [x] 5. AI Assistant panel
-- [ ] 6. Log Intelligence presentation
+- [x] 6. Log Intelligence presentation
 - [ ] 7. Accessibility and responsive verification
 - [ ] 8. Regression and handoff
