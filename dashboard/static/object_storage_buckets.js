@@ -102,6 +102,10 @@ function bucketHighlightJSON(value) {
     if (!form) return;
     form.querySelectorAll("button, input, select, textarea").forEach(function (control) { control.disabled = true; control.title = reason; });
   }
+  function setTitle(id, title) {
+    var element = document.getElementById(id);
+    if (element) element.title = title || "";
+  }
   fetch("/api/object-storage/capabilities?cluster=" + encodeURIComponent(source.dataset.cluster))
     .then(function (response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Không đọc được capability"); }); })
     .then(function (data) {
@@ -111,12 +115,12 @@ function bucketHighlightJSON(value) {
       var lifecycle = data.lifecycle;
       if (!create.placement_supported) {
         ["bucket-create-api-name", "bucket-create-placement"].forEach(function (id) { document.getElementById(id).disabled = true; });
-        document.getElementById("bucket-create-placement-label").title = create.placement_unavailable_reason;
-        document.getElementById("bucket-create-api-name-label").title = create.placement_unavailable_reason;
+        setTitle("bucket-create-placement-label", create.placement_unavailable_reason);
+        setTitle("bucket-create-api-name-label", create.placement_unavailable_reason);
       }
       if (!governance.object_lock_at_create) {
         document.getElementById("bucket-create-object-lock").disabled = true;
-        document.getElementById("bucket-create-object-lock-label").title = governance.object_lock_unavailable_reason;
+        setTitle("bucket-create-object-lock-label", governance.object_lock_unavailable_reason);
       }
       document.querySelectorAll("#bucket-governance-action option[data-capability='versioning']").forEach(function (option) { option.disabled = !governance.versioning; option.title = governance.versioning_unavailable_reason || ""; });
       document.querySelectorAll("#bucket-governance-action option[data-capability='object-lock']").forEach(function (option) { option.disabled = !governance.default_retention; option.title = governance.object_lock_unavailable_reason || ""; });

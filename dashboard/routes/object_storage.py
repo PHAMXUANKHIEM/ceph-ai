@@ -1746,7 +1746,7 @@ async def bucket_inventory_page(
         inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page, owner, quota, usage, sort, order)
     except ObjectStorageError as exc:
         error = str(exc)
-    return templates.TemplateResponse(request, "object_storage_buckets.html", {
+    response = templates.TemplateResponse(request, "object_storage_buckets.html", {
         "user": user,
         "is_admin": auth.is_admin_user(user),
         "clusters": clusters,
@@ -1756,6 +1756,8 @@ async def bucket_inventory_page(
         "quote_bucket": lambda value: quote(value, safe=""),
         "quote_query": lambda value: quote(value, safe=""),
     })
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
 
 
 @router.get("/object-storage/buckets/{bucket}", response_class=HTMLResponse)

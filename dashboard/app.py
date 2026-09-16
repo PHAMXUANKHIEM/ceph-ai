@@ -180,6 +180,14 @@ def create_app() -> FastAPI:
     @application.middleware("http")
     async def isolate_product_namespaces(request, call_next):
         """Keep authenticated Ceph and Vitastor sessions in separate UIs."""
+        # A stale client-side navigation state once generated protocol-relative
+        # paths such as ``//object-storage/buckets``. Starlette treats that as
+        # a different route and returns 404, which made the Buckets screen look
+        # like it had disappeared. Normalize only this application namespace;
+        # do not rewrite arbitrary paths or external-style URLs.
+        raw_path = request.scope.get("path", "")
+        if raw_path.startswith("//object-storage/"):
+            request.scope["path"] = raw_path[1:]
         user = request.session.get("user")
         product = request.session.get("product")
         path = request.url.path

@@ -61,6 +61,8 @@ def test_inventory_page_shows_empty_state_without_sample_buckets(dashboard_clien
     assert 'role="tablist" aria-label="Tính năng Buckets"' not in response.text
     assert 'data-bucket-tab="bucket-overview-panel"' not in response.text
     assert 'id="bucket-overview-panel" class="card bucket-overview-card"' in response.text
+    assert '<div class="app-body">' in response.text
+    assert 'id="bucket-render-guard"' in response.text
     assert 'id="s3-setting-form"' in response.text
     assert 'class="bucket-feature-panel"' not in response.text
 
