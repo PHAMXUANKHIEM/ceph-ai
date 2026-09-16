@@ -87,9 +87,6 @@ def test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline(monkeypatch
     captured = {}
     monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_hour", 0, raising=False)
     monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_minute", 0, raising=False)
-    monkeypatch.setattr(supervisor.settings, "code_repair_push", True)
-    monkeypatch.setattr(supervisor.settings, "code_repair_deploy_staging", True)
-    monkeypatch.setattr(supervisor.settings, "code_repair_promote_main", True)
     monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: "")
     monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
 
@@ -114,12 +111,16 @@ def test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline(monkeypatch
     assert "-k 'not (" in supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
     assert "direct_nightly_call" in supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
     assert "nightly_dirty_checkout" in supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
-    assert captured["config"].require_changed_tests is True
+    assert captured["config"].full_access is True
+    assert captured["config"].create_commit is False
+    assert captured["config"].preserve_candidate is True
+    assert captured["config"].candidate_root == state_path.parent / "nightly-ai-improvement-candidates"
+    assert captured["config"].require_changed_tests is False
     assert captured["config"].max_ai_attempts == 1
     assert captured["config"].timeout_seconds == supervisor.NIGHTLY_AI_STEP_TIMEOUT_SECONDS
-    assert captured["config"].push is True
-    assert captured["config"].deploy_staging is True
-    assert captured["config"].promote_main is True
+    assert captured["config"].push is False
+    assert captured["config"].deploy_staging is False
+    assert captured["config"].promote_main is False
     assert json.loads(state_path.read_text())["status"] == "PROMOTED"
     assert len(notifications) == 2
 

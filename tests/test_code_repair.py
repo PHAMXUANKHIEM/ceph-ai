@@ -93,6 +93,31 @@ def test_validate_changes_rejects_non_deploy_script(monkeypatch, tmp_path):
         code_repair._validate_changes(tmp_path)
 
 
+def test_validate_changes_full_access_allows_repo_path_outside_normal_allowlist(monkeypatch, tmp_path):
+    outputs = iter([
+        " M scripts/update_ai_pricing.py\n",
+        "diff --git a/scripts/update_ai_pricing.py b/scripts/update_ai_pricing.py\n",
+    ])
+    monkeypatch.setattr(
+        code_repair, "_run",
+        lambda *args, **kwargs: type("R", (), {"stdout": next(outputs), "returncode": 0})(),
+    )
+
+    assert code_repair._validate_changes(tmp_path, full_access=True) == [
+        "scripts/update_ai_pricing.py"
+    ]
+
+
+def test_review_only_candidate_rejects_ai_created_commit(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        code_repair, "_run",
+        lambda *args, **kwargs: type("R", (), {"stdout": "new-revision\n", "returncode": 0})(),
+    )
+
+    with pytest.raises(code_repair.RepairError, match="must not create a commit"):
+        code_repair._ensure_uncommitted_candidate(tmp_path, "base-revision")
+
+
 def test_repair_config_has_separate_candidate_test_gate():
     config = code_repair.RepairConfig(repo=Path("/tmp/repo"), candidate_test_command="pytest tests/test_ai.py")
 

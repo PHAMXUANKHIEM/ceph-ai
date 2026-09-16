@@ -92,14 +92,13 @@ NIGHTLY_ANALYSTS = (
 )
 NIGHTLY_IMPROVEMENT_INSTRUCTIONS = """This is a proactive nightly AI improvement task, not an incident repair.
 
-Review only the ceph-ai AI product surface: provider routing, Codex/Claude integration, Chat-with-AI,
-two-agent workflows, rate-limit/budget safeguards, AI observability, learning, and regression tests.
-Identify at most ONE smallest useful, testable improvement. Do not modify credentials, OAuth/account handling,
-.env, Telegram configuration, deployment scripts, database migrations, Ceph commands, or safety policy.
-Never create a cosmetic-only change. If no bounded improvement is justified, finish the plan with exactly:
+The Implementer has full write access to the isolated candidate worktree. Make whatever repository changes
+are needed for the selected improvement, including tests, configuration, scripts, and documentation. Do not
+commit, push, deploy, or modify anything outside the candidate worktree. The supervisor will preserve the
+uncommitted candidate for human review after the tests finish. Do not create cosmetic-only changes. If no
+bounded improvement is justified, finish the plan with exactly:
 VERDICT: NO_CHANGE_NEEDED
-Otherwise give the Implementer an exact, low-risk plan and tests. The Implementer must keep the same scope
-and add or update at least one regression test under tests/ in the candidate diff.
+Otherwise give the Implementer an exact plan and tests, then implement it fully in the candidate worktree.
 """
 
 
@@ -486,7 +485,11 @@ def _run_nightly_ai_improvement_locked(
             max_review_rounds=min(settings.code_repair_max_review_rounds, NIGHTLY_MAX_REVIEW_ROUNDS),
             test_command=NIGHTLY_REGRESSION_TEST_COMMAND,
             candidate_test_command=NIGHTLY_REGRESSION_TEST_COMMAND,
-            require_changed_tests=True,
+            full_access=True,
+            create_commit=False,
+            preserve_candidate=True,
+            candidate_root=state_path.parent / "nightly-ai-improvement-candidates",
+            require_changed_tests=False,
             test_env_unset=NIGHTLY_TEST_ENV_UNSET,
             test_env_file="/dev/null",
             timeout_seconds=min(settings.code_repair_timeout_seconds, NIGHTLY_AI_STEP_TIMEOUT_SECONDS),
@@ -510,17 +513,19 @@ def _run_nightly_ai_improvement_locked(
         "branch": result.branch,
         "commit": result.commit,
         "changed_files": result.changed_files or [],
+        "candidate_worktree": getattr(result, "candidate_worktree", None),
         "error": result.error,
     })
     _save_nightly_state(state_path, state)
     if result.status == "NO_CHANGE":
         message = "🌙 AI NIGHTLY IMPROVEMENT\nKết quả: chưa có nâng cấp AI nào đủ nhỏ và an toàn để triển khai hôm nay."
-    elif result.status in {"PUSHED", "STAGING_VERIFIED", "PROMOTED", "COMMITTED"}:
+    elif result.status in {"PUSHED", "STAGING_VERIFIED", "PROMOTED", "COMMITTED", "PATCH_READY"}:
         files = ", ".join(result.changed_files or []) or "—"
         message = (
-            "✅ AI NIGHTLY IMPROVEMENT HOÀN TẤT\n"
+            "✅ AI NIGHTLY IMPROVEMENT ĐÃ TẠO CANDIDATE\n"
             f"Kết quả: {result.status}\nBranch: {result.branch or '—'}\n"
-            f"Files: {files}\nReview rounds: {result.review_rounds}"
+            f"Files: {files}\nCandidate: {getattr(result, 'candidate_worktree', None) or '—'}\n"
+            f"Review rounds: {result.review_rounds}\nChưa commit/chưa push."
         )
     else:
         message = (
