@@ -605,3 +605,8 @@ Record before/after values for:
   preserving cluster-specific Ceph connection handling and pool validation.
   Trash/restore focused gate: 31 passed, 82 deselected and one existing
   Starlette/httpx warning. Commit `43d74c52` is pushed to `origin/main`.
+- 2026-09-16: Added regression coverage for persistent Block Storage pool
+  metadata and completed the chat drawer geometry pass so the message list is
+  the only scrolling region and long assistant output collapses at 200px.
+  Focused gate: 8 passed with one existing Starlette/httpx warning; Node 20
+  frontend build passed. Commit `1046ffe9` is pushed to `origin/main`.
