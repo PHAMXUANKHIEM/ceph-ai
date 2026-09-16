@@ -1109,6 +1109,7 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 
 /* ===== Stacked metric sections ===== */
 .metrics-stack { display: flex; flex-direction: column; }
+.empty-node-state[hidden], .metrics-stack[hidden] { display: none; }
 .metric-section { padding: var(--space-4) 0; }
 .metric-section:first-child { padding-top: 0; }
 .metric-section:last-child { padding-bottom: 0; }

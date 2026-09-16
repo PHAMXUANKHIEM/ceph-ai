@@ -242,6 +242,7 @@ _VM_DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._+-]+$")
 # intentionally named `_ceph_aiops_perf_probe`). Keep the first-character
 # guard so an empty name or a leading CLI-like dash is still rejected.
 _RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+_RBD_IMAGE_ID_RE = re.compile(r"^[0-9a-fA-F]{8,64}$")
 _OPENSTACK_UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
@@ -1428,14 +1429,52 @@ async def volume_history_api(
     hours = max(1, min(hours, _MAX_HISTORY_HOURS))
     since = datetime.utcnow() - timedelta(hours=hours)
 
+    # Operators commonly copy either the RBD image name
+    # (``volume-<uuid>``) or the short hexadecimal Image ID shown by
+    # ``rbd du``. History is stored by image name, so resolve those aliases
+    # before querying it. The live inventory fallback is only attempted for
+    # inputs that look like a real UUID/RBD ID; arbitrary typo-like names do
+    # not cause an extra SSH round trip.
+    history_image = image
+    candidate_names = [image]
+    if _OPENSTACK_UUID_RE.fullmatch(image) and not image.startswith("volume-"):
+        candidate_names.append(f"volume-{image}")
+
     with db.SessionLocal() as session:
-        rows = (
-            session.query(VolumeMetric)
-            .filter(_cluster_row_filter(VolumeMetric.cluster_id, cluster), VolumeMetric.pool == pool, VolumeMetric.image == image)
-            .filter(VolumeMetric.polled_at >= since)
-            .order_by(VolumeMetric.polled_at.asc())
-            .all()
-        )
+        def rows_for(candidate: str):
+            return (
+                session.query(VolumeMetric)
+                .filter(_cluster_row_filter(VolumeMetric.cluster_id, cluster), VolumeMetric.pool == pool, VolumeMetric.image == candidate)
+                .filter(VolumeMetric.polled_at >= since)
+                .order_by(VolumeMetric.polled_at.asc())
+                .all()
+            )
+
+        rows = rows_for(history_image)
+        for candidate in candidate_names[1:]:
+            if rows:
+                break
+            rows = rows_for(candidate)
+            if rows:
+                history_image = candidate
+
+        if not rows and _RBD_IMAGE_ID_RE.fullmatch(image):
+            try:
+                inventory = _cached_rbd_inventory(cluster, pool)
+            except CephQueryError as exc:
+                logger.warning(
+                    "volume_history_api: image-id lookup failed for %s/%s: %s",
+                    pool, image, exc,
+                )
+            else:
+                matched = next(
+                    (entry for entry in inventory if str(entry.get("image_id") or "").casefold() == image.casefold()),
+                    None,
+                )
+                if matched and matched.get("name"):
+                    history_image = str(matched["name"])
+                    rows = rows_for(history_image)
+
         samples = [
             {
                 # "Z" appended (2026-07-29): polled_at is stored naive-UTC
@@ -1457,7 +1496,7 @@ async def volume_history_api(
         def _peak(field: str) -> dict | None:
             row = (
                 session.query(VolumeMetric)
-                .filter(_cluster_row_filter(VolumeMetric.cluster_id, cluster), VolumeMetric.pool == pool, VolumeMetric.image == image)
+                .filter(_cluster_row_filter(VolumeMetric.cluster_id, cluster), VolumeMetric.pool == pool, VolumeMetric.image == history_image)
                 .order_by(getattr(VolumeMetric, field).desc())
                 .first()
             )
@@ -1477,7 +1516,7 @@ async def volume_history_api(
         # a close-but-not-authoritative proxy).
         saturated_now = (
             session.query(Incident)
-            .filter(_cluster_row_filter(Incident.cluster_id, cluster), Incident.ceph_code == ceph_code_for(pool, image))
+            .filter(_cluster_row_filter(Incident.cluster_id, cluster), Incident.ceph_code == ceph_code_for(pool, history_image))
             .filter(Incident.status.in_(OPEN_STATUSES))
             .first()
             is not None
@@ -1485,7 +1524,7 @@ async def volume_history_api(
 
     return {
         "pool": pool,
-        "image": image,
+        "image": history_image,
         "hours": hours,
         "samples": samples,
         "peak": peak,

@@ -371,6 +371,15 @@
     if (!hasAnyValue) return;
 
     drawLine(ctx, values, xAt, yAt, cfg.color);
+    // A one-sample history has no line segment, so a normal stroked path is
+    // mathematically invisible. Keep the chart honest while making that
+    // valid (and common after a fresh Watcher start) sample visible.
+    if (n === 1 && values[0] != null) {
+      ctx.beginPath();
+      ctx.arc(xAt(0), yAt(values[0]), 3, 0, Math.PI * 2);
+      ctx.fillStyle = cfg.color;
+      ctx.fill();
+    }
 
     // crosshair + tooltip
     if (App.hoverIndex != null && App.hoverIndex < n) {

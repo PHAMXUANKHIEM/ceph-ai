@@ -560,6 +560,25 @@ def test_history_api_returns_samples_within_window_ordered_by_time(dashboard_cli
     assert [s["iops"] for s in body["samples"]] == [100, 200]
 
 
+def test_history_api_resolves_rbd_image_id_to_image_name(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    image_name = "volume-1547aa30-3ba1-458d-9f9b-481a1daf431e"
+    _add_metric("vms", image_name, iops=137.4, read_ms=13.3, write_ms=14.1, polled_at=datetime.utcnow())
+    monkeypatch.setattr(
+        volumes_route,
+        "_cached_rbd_inventory",
+        lambda cluster, pool: [{"name": image_name, "image_id": "455c7efdc2878f"}],
+    )
+
+    response = dashboard_client.get("/api/volumes/vms/455c7efdc2878f/history")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["image"] == image_name
+    assert body["samples"][0]["iops"] == 137.4
+
+
 def test_history_api_computes_peak_over_full_history_not_just_window(dashboard_client, monkeypatch):
     # The whole point of this endpoint per the operator's own request: the
     # all-time best a volume has done must still show up even if it fell
@@ -2153,6 +2172,15 @@ def test_volume_history_empty_state_omits_instruction_copy():
     markup = Path("dashboard/templates/volumes.html").read_text(encoding="utf-8")
 
     assert "Nhập ID Volume rồi bấm" not in markup
-    assert 'id="volume-chart-empty"' in markup
+    assert 'id="volume-chart-empty" hidden' in markup
     assert 'id="volume-chart-empty">\n          <span' not in markup
     assert "Xem hiệu năng" in markup
+
+
+def test_volume_history_chart_hides_empty_state_until_a_volume_is_selected():
+    markup = Path("dashboard/templates/volumes.html").read_text(encoding="utf-8")
+    stylesheet = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+
+    assert 'id="volume-chart-empty"' in markup
+    assert 'id="volume-chart-stack" hidden' in markup
+    assert ".empty-node-state[hidden], .metrics-stack[hidden] { display: none; }" in stylesheet
