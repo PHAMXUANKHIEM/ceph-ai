@@ -169,6 +169,12 @@ def _normalize_pool_rows(
                 "pgs": pool.get("pg_num") if pool.get("pg_num") is not None else pool.get("pg_num_target", "—"),
                 "crush_rule": rule_names.get(str(rule_id), str(rule_id) if rule_id is not None else "—"),
                 "used_bytes": df_stats.get("stored", df_stats.get("bytes_used", 0)) or 0,
+                "total_bytes": (
+                    (df_stats.get("stored") or df_stats.get("bytes_used") or 0)
+                    + (df_stats.get("max_avail") or 0)
+                    if isinstance(df_stats.get("max_avail"), (int, float))
+                    else None
+                ),
                 "objects": df_stats.get("objects", 0) or 0,
                 "read_iops": io_stats.get("read_op_per_sec", io_stats.get("read_iops", 0)) or 0,
                 "write_iops": io_stats.get("write_op_per_sec", io_stats.get("write_iops", 0)) or 0,
@@ -206,7 +212,7 @@ def _query_pool_rows(cluster) -> list[dict]:
             payloads = list(executor.map(fetch, commands))
         rows = _normalize_pool_rows(*payloads)
         for row in rows:
-            row["used"] = _format_bytes(row.pop("used_bytes"))
+            row["used"] = _format_bytes(row["used_bytes"])
         return rows
 
     commands = (
@@ -221,7 +227,7 @@ def _query_pool_rows(cluster) -> list[dict]:
         raise CephQueryError("Một hoặc nhiều truy vấn Pool thất bại")
     rows = _normalize_pool_rows(*payloads)
     for row in rows:
-        row["used"] = _format_bytes(row.pop("used_bytes"))
+        row["used"] = _format_bytes(row["used_bytes"])
     return rows
 
 
@@ -286,9 +292,53 @@ def _normalize_pg_rows(payload: dict | list, pool_names: dict[str, str] | None =
                 "primary": primary,
                 "last_scrub": pg.get("last_scrub_stamp") or "—",
                 "last_deep_scrub": pg.get("last_deep_scrub_stamp") or "—",
+                "objects": pg.get("stat_sum", {}).get("num_objects") if isinstance(pg.get("stat_sum"), dict) else pg.get("objects"),
+                "bytes": pg.get("stat_sum", {}).get("num_bytes") if isinstance(pg.get("stat_sum"), dict) else pg.get("bytes"),
             }
         )
     return sorted(rows, key=lambda row: str(row["pgid"]))
+
+
+def _pg_summary(rows: list[dict]) -> dict:
+    """Build compact, bounded overview data for the PG dashboard."""
+    total = len(rows)
+    state_counter = Counter(str(row.get("state") or "unknown") for row in rows)
+    state_distribution = [
+        {
+            "state": state,
+            "count": count,
+            "percent": round(count * 100.0 / total, 1) if total else 0.0,
+        }
+        for state, count in sorted(state_counter.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    pool_counter = Counter(
+        str(row.get("pool") or "—") for row in rows if row.get("pool") not in (None, "—")
+    )
+    pool_distribution = [
+        {"pool": pool, "count": count}
+        for pool, count in sorted(pool_counter.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    osd_pg_counts: Counter[str] = Counter()
+    replica_count = 0
+    for row in rows:
+        acting = row.get("acting") if isinstance(row.get("acting"), list) else []
+        for osd_id in acting:
+            osd_pg_counts[str(osd_id)] += 1
+            replica_count += 1
+    quick_filters = {
+        "active+clean": sum(state == "active+clean" for state in state_counter.elements()),
+        "degraded": sum("degraded" in state for state in state_counter.elements()),
+        "stale": sum("stale" in state for state in state_counter.elements()),
+        "undersized": sum("undersized" in state for state in state_counter.elements()),
+    }
+    return {
+        "total": total,
+        "state_distribution": state_distribution,
+        "pool_distribution": pool_distribution,
+        "quick_filters": quick_filters,
+        "osd_count": len(osd_pg_counts),
+        "pgs_per_osd": round(replica_count / len(osd_pg_counts), 1) if osd_pg_counts else None,
+    }
 
 
 @router.get("/api/pools")
@@ -312,7 +362,9 @@ async def pgs_snapshot_api(request: Request, user: str = Depends(require_login))
         stale_after_seconds=INVENTORY_STALE_SECONDS,
         max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
     )
-    return _inventory_api_response(snapshot, "pgs", cluster.id, [])
+    response = _inventory_api_response(snapshot, "pgs", cluster.id, [])
+    response["summary"] = _pg_summary(response["items"])
+    return response
 
 
 @router.get("/pgs", response_class=HTMLResponse)
@@ -359,6 +411,7 @@ async def pgs_page(request: Request, user: str = Depends(require_login)):
             "pgs": rows,
             "pool_names": pool_names,
             "state_counts": sorted(state_counts.items()),
+            "pg_summary": _pg_summary(rows),
             "query_error": query_error,
             "cache_loading": cache_loading,
             "snapshot_meta": _inventory_meta(snapshot, cluster.id),

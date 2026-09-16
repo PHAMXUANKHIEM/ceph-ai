@@ -63,6 +63,60 @@ html { overflow-x: hidden; }
 .pools-create-form button[type="submit"] { border-color: var(--accent, #1d4ed8) !important; background: var(--accent, #1d4ed8) !important; color: white !important; }
 .pools-create-form button[type="submit"]:hover { background: var(--accent-hover, #3f7efe) !important; }
 
+/* Pools workspace redesign: keep the inventory table scannable while
+   retaining the detailed CRUSH rule inside the Details dialog. */
+.pools-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 16px 20px 4px; }
+.pool-summary-card { min-width: 0; display: flex; align-items: center; gap: 10px; padding: 13px 14px; border: 1px solid var(--border, #2b3241); border-left: 3px solid var(--accent-hover, #3f7efe); border-radius: 10px; background: linear-gradient(135deg, rgba(255,255,255,.035), rgba(255,255,255,.012)); }
+.pool-summary-card.is-cyan { border-left-color: #22d3ee; }
+.pool-summary-card.is-violet { border-left-color: #a78bfa; }
+.pool-summary-card.is-green { border-left-color: #4ade80; }
+.pool-summary-icon { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 30px; border: 1px solid currentColor; border-radius: 8px; color: var(--accent-hover, #3f7efe); }
+.pool-summary-card.is-cyan .pool-summary-icon { color: #22d3ee; }
+.pool-summary-card.is-violet .pool-summary-icon { color: #a78bfa; }
+.pool-summary-card.is-green .pool-summary-icon { color: #4ade80; }
+.pool-summary-card div { display: grid; gap: 3px; min-width: 0; }
+.pool-summary-card strong { overflow: hidden; color: var(--text, #e7e9ee); font: 700 1.05rem/1.1 var(--font-mono, ui-monospace, monospace); text-overflow: ellipsis; white-space: nowrap; }
+.pool-summary-card span:not(.pool-summary-icon) { color: var(--text-muted, #99a1b3); font-size: .7rem; }
+.pools-toolbar { display: flex; align-items: center; gap: 12px; padding: 13px 20px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.pools-toolbar-primary, .pools-toolbar-secondary, .pools-toolbar > .flex { display: flex; align-items: center; gap: 8px; }
+.pools-toolbar-primary { min-width: 0; flex: 1; }
+.pools-toolbar-secondary { flex: 0 0 auto; }
+.pools-selection-hint { overflow: hidden; color: var(--text-faint, #6b7280); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+.pools-actions-menu { position: absolute; top: calc(100% + 7px); right: 0; z-index: 30; display: grid; min-width: 170px; padding: 5px; border: 1px solid var(--border-strong); border-radius: 9px; background: #111b2b; box-shadow: 0 16px 36px rgba(0,0,0,.4); }
+.pools-actions-menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 9px; border: 0; border-radius: 6px !important; background: transparent; color: var(--text-muted); cursor: pointer; font-size: .76rem; text-align: left; }
+.pools-actions-menu button:hover { background: var(--bg-surface-2); color: var(--text); }
+.pools-actions-menu button.is-danger { color: var(--critical); }
+.pool-table { table-layout: auto; }
+.pool-table thead th { white-space: nowrap; }
+.pool-status-column { width: 92px; }
+.pool-status-cell { display: flex; align-items: center; gap: 7px; padding: 12px; color: var(--healthy, #4ade80) !important; font-size: .72rem; font-weight: 650; white-space: nowrap; }
+.pool-status-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent); }
+.pool-status-dot.is-active { color: var(--healthy, #4ade80); }
+.pool-row { cursor: pointer; transition: background .14s ease, box-shadow .14s ease; }
+.pools-panel tbody tr.pool-row { background: var(--bg-surface, #161922) !important; }
+.pools-panel tbody tr.pool-row:hover { background: var(--bg-surface-hover, #20242f) !important; }
+.pools-panel tbody tr.pool-row-selected { background: rgba(63,126,254,.14) !important; box-shadow: inset 3px 0 var(--accent-hover, #3f7efe); }
+.pools-panel tbody tr.pool-row-selected:hover { background: rgba(63,126,254,.2) !important; }
+.pool-used-cell { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px; color: var(--text-muted, #99a1b3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pool-used-meter { display: block; width: 58px; height: 5px; overflow: hidden; border-radius: 99px; background: #2a3040; }
+.pool-used-meter i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #22d3ee, #3f7efe); }
+.pools-panel .pool-table td.text-right { padding-inline: 12px; }
+
+@media (max-width: 900px) {
+  .pools-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pools-toolbar { align-items: flex-start; flex-wrap: wrap; }
+  .pools-toolbar-primary { flex: 1 1 100%; }
+  .pools-toolbar-secondary { order: 2; }
+  .pools-toolbar > .flex { order: 3; margin-left: auto; }
+}
+@media (max-width: 560px) {
+  .pools-summary-grid { grid-template-columns: 1fr 1fr; padding: 12px 14px 2px; }
+  .pool-summary-card { padding: 10px; }
+  .pool-summary-card strong { font-size: .88rem; }
+  .pools-toolbar { padding-inline: 14px; }
+  .pools-selection-hint { max-width: 180px; }
+}
+
 .ceph-dashboard { position: relative; width: 100%; padding: 20px; display: grid; grid-template-rows: auto auto auto; gap: 14px; border: 1px solid #262b38; border-radius: 13px; background: #11151d; }
 .dashboard-live-freshness { position: absolute; z-index: 2; top: 16px; right: 16px; display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 11px; border: 1px solid rgba(148,163,184,.28); border-radius: 8px; background: rgba(22,25,34,.94); color: #99a1b3; font-size: 11px; }
 .dashboard-live-freshness { display: none !important; }

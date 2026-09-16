@@ -535,6 +535,7 @@ def _digests(cluster=None) -> list[dict]:
         rows = query.order_by(BackupDigestLog.created_at.desc()).limit(DIGEST_LIMIT).all()
         return [
             {
+                "id": row.id,
                 "period_start": row.period_start,
                 "period_end": row.period_end,
                 "succeeded_count": row.succeeded_count,
@@ -590,6 +591,16 @@ async def index(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
     tracked = _tracked_images(cluster)
     protection = _protection_overview(tracked, cluster)
+    latest_backup_at = max(
+        (row["latest_at"] for row in protection["rows"] if row.get("latest_at")),
+        default=None,
+    )
+    if not tracked:
+        backup_summary = {"latest_at": None, "status": "unknown", "status_note": "Chưa cấu hình image"}
+    elif protection["counts"]["breached"] or protection["counts"]["at_risk"] or protection["counts"]["never"]:
+        backup_summary = {"latest_at": latest_backup_at, "status": "warning", "status_note": "Kiểm tra RPO/RTO"}
+    else:
+        backup_summary = {"latest_at": latest_backup_at, "status": "healthy", "status_note": "Trong ngưỡng RPO"}
     return templates.TemplateResponse(
         request,
         "backups.html",
@@ -605,6 +616,7 @@ async def index(request: Request, user: str = Depends(require_login)):
             "pending_restore_action": _pending_restore_action(cluster),
             "clusters": clusters,
             "selected_cluster": cluster,
+            "backup_summary": backup_summary,
         },
     )
 
@@ -895,6 +907,21 @@ async def delete_all_digests(request: Request, user: str = Depends(require_login
     except Exception as exc:
         logger.exception("delete_all_digests: failed to delete digest notifications")
         raise HTTPException(status_code=500, detail="Không thể xóa các thông báo Digest.") from exc
+    return {"ok": True, "deleted_count": deleted}
+
+
+@router.post("/backups/digests/{digest_id}/delete")
+async def delete_digest(digest_id: str, request: Request, user: str = Depends(require_login)):
+    """Delete one Backup Digest notification in the selected cluster."""
+    _require_admin_privilege(user)
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        query = session.query(BackupDigestLog).filter(BackupDigestLog.id == digest_id)
+        query = query.filter(_job_scope(BackupDigestLog.cluster_id, cluster))
+        deleted = query.delete(synchronize_session=False)
+        session.commit()
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Không tìm thấy digest trong cluster đang chọn")
     return {"ok": True, "deleted_count": deleted}
 
 

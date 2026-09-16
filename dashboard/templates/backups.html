@@ -10,14 +10,27 @@
   {% include "_nav.html" %}
 
   <main class="page backup-page">
-    <p class="hint">Đang xem backup của cụm <strong>{{ selected_cluster.name }}</strong>.</p>
+    <header class="backup-page-header">
+      <div>
+        <div class="backup-eyebrow">Data Protection / Backup</div>
+        <h1>Backup <span>— {{ selected_cluster.name }}</span></h1>
+        <p>Theo dõi RPO/RTO, tiến trình, lịch sử và bất thường backup của cluster.</p>
+      </div>
+      <span class="backup-cluster-context">Cluster <strong>{{ selected_cluster.name }}</strong></span>
+    </header>
+    <section class="backup-summary-bar" aria-label="Tổng quan backup">
+      <article class="backup-summary-card"><span class="backup-summary-icon" aria-hidden="true">▣</span><div><small>Images tracked</small><strong>{{ tracked_images|length }}</strong><em>đối tượng đang theo dõi</em></div></article>
+      <article class="backup-summary-card"><span class="backup-summary-icon" aria-hidden="true">◷</span><div><small>Lần backup gần nhất</small><strong id="backup-summary-latest" data-latest-at="{% if backup_summary.latest_at %}{{ backup_summary.latest_at.isoformat() }}{% endif %}">{% if backup_summary.latest_at %}Đang tính…{% else %}Chưa có{% endif %}</strong><em id="backup-summary-latest-absolute">{% if backup_summary.latest_at %}{{ backup_summary.latest_at|vntime }}{% else %}Chưa có dữ liệu{% endif %}</em></div></article>
+      <article class="backup-summary-card"><span class="backup-summary-icon" aria-hidden="true">{% if backup_summary.status == 'healthy' %}✓{% elif backup_summary.status == 'warning' %}⚠{% else %}—{% endif %}</span><div><small>Trạng thái</small><strong class="backup-summary-status backup-summary-status--{{ backup_summary.status }}">{% if backup_summary.status == 'healthy' %}Healthy{% elif backup_summary.status == 'warning' %}Warning{% else %}Chưa có dữ liệu{% endif %}</strong><em>{{ backup_summary.status_note }}</em></div></article>
+      <article class="backup-summary-card"><span class="backup-summary-icon" aria-hidden="true">◎</span><div><small>RPO target</small><strong>{{ protection.rpo_hours }} giờ</strong><em>mục tiêu recovery point</em></div></article>
+    </section>
     <nav class="backup-tabs" aria-label="Các khu vực Backup" role="tablist">
-      <button type="button" class="backup-tab is-active" role="tab" aria-selected="true" aria-controls="backup-panel-protection" data-backup-tab="protection">RPO / RTO</button>
-      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-progress" data-backup-tab="progress">Đang chạy</button>
-      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-queue" data-backup-tab="queue">Hàng đợi</button>
-      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-history" data-backup-tab="history">Lịch sử</button>
-      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-anomalies" data-backup-tab="anomalies">Bất thường</button>
-      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-digests" data-backup-tab="digests">Digest</button>
+      <button type="button" class="backup-tab is-active" role="tab" aria-selected="true" aria-controls="backup-panel-protection" data-backup-tab="protection"><span aria-hidden="true">◎</span>RPO / RTO <b>{{ protection.total }}</b></button>
+      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-progress" data-backup-tab="progress"><span aria-hidden="true">↻</span>Đang chạy <b id="backup-tab-progress-count">0</b></button>
+      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-queue" data-backup-tab="queue"><span aria-hidden="true">≡</span>Hàng đợi <b>{{ queue|length }}</b></button>
+      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-history" data-backup-tab="history"><span aria-hidden="true">◷</span>Lịch sử <b>{{ history|length }}</b></button>
+      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-anomalies" data-backup-tab="anomalies"><span aria-hidden="true">△</span>Bất thường <b>{{ anomalies|length }}</b></button>
+      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-digests" data-backup-tab="digests"><span aria-hidden="true">▤</span>Digest <b>{{ digests|length }}</b></button>
     </nav>
     {% if pending_restore_action %}
     <section class="card">
@@ -46,33 +59,22 @@
     {% endif %}
 
     <section class="card backup-tab-panel" id="backup-panel-protection" data-backup-panel="protection" role="tabpanel">
-      <div class="card-header"><h2>RPO / RTO</h2><span class="hint">Mục tiêu RPO: {{ protection.rpo_hours }} giờ</span></div>
+      <div class="card-header backup-panel-header"><div><div class="backup-panel-kicker">Protection posture</div><h2>RPO / RTO</h2></div><span class="backup-panel-meta">Mục tiêu RPO: {{ protection.rpo_hours }} giờ</span></div>
       <div class="card-body">
-        <div class="node-summary-grid">
-          <div class="summary-item"><span>Healthy</span><strong>{{ protection.counts.healthy }}/{{ protection.total }}</strong></div>
-          <div class="summary-item"><span>RPO có nguy cơ</span><strong>{{ protection.counts.at_risk }}</strong></div>
-          <div class="summary-item"><span>Vi phạm RPO</span><strong>{{ protection.counts.breached }}</strong></div>
-          <div class="summary-item"><span>Chưa từng backup</span><strong>{{ protection.counts.never }}</strong></div>
-          <div class="summary-item"><span>Không đủ bản sao</span><strong>{{ protection.copy_counts.degraded + protection.copy_counts.missing }}</strong></div>
+        <div class="backup-rpo-grid">
+          <article class="backup-rpo-card is-healthy"><span class="backup-rpo-icon" aria-hidden="true">✓</span><strong>{{ protection.counts.healthy }}/{{ protection.total }}</strong><span>Healthy</span></article>
+          <article class="backup-rpo-card is-warning"><span class="backup-rpo-icon" aria-hidden="true">⚠</span><strong>{{ protection.counts.at_risk }}</strong><span>RPO có nguy cơ</span></article>
+          <article class="backup-rpo-card is-critical"><span class="backup-rpo-icon" aria-hidden="true">×</span><strong>{{ protection.counts.breached }}</strong><span>Vi phạm RPO</span></article>
+          <article class="backup-rpo-card is-neutral"><span class="backup-rpo-icon" aria-hidden="true">□</span><strong>{{ protection.counts.never }}</strong><span>Chưa từng backup</span></article>
         </div>
-        {% if protection.latest_drill %}
-        <p class="hint">Restore drill gần nhất: <strong>{{ protection.latest_drill.status }}</strong>
-          lúc {{ protection.latest_drill.created_at|vntime }} · RTO thực tế
-          {% if protection.latest_drill.duration_seconds is not none %}{{ "%.1f"|format(protection.latest_drill.duration_seconds) }} giây{% else %}chưa có{% endif %}.
-        </p>
-        {% else %}<p class="hint">Chưa có RestoreDrill để xác nhận RTO thực tế.</p>{% endif %}
-        <p class="hint">RTO dự kiến lớn nhất nếu restore ngay:
-          <strong>{% if protection.estimated_rto_seconds is not none %}{{ "%.1f"|format(protection.estimated_rto_seconds) }} giây{% else %}Chưa thể ước tính{% endif %}</strong>
-          {% if protection.restore_bytes_per_second %}· tốc độ đo từ RestoreDrill gần nhất {{ "%.1f"|format(protection.restore_bytes_per_second / 1048576) }} MiB/s{% else %}· cần một RestoreDrill thành công có dữ liệu kích thước{% endif %}.
-        </p>
-        <p class="hint">Metadata backup:
-          <strong>{% if protection.metadata.status == 'healthy' %}Healthy{% elif protection.metadata.status == 'overdue' %}Quá hạn{% elif protection.metadata.status == 'failed' %}Thất bại{% else %}Chưa từng chạy{% endif %}</strong>
-          · ngưỡng {{ protection.metadata.threshold_hours }} giờ
-          {% if protection.metadata.age_hours is not none %}· tuổi {{ "%.1f"|format(protection.metadata.age_hours) }} giờ{% endif %}.
-          {% if protection.drill_freshness %} RestoreDrill:
-          <strong>{% if protection.drill_freshness.status == 'healthy' %}Healthy{% elif protection.drill_freshness.status == 'overdue' %}Quá hạn{% elif protection.drill_freshness.status == 'failed' %}Thất bại{% else %}Chưa từng chạy{% endif %}</strong>
-          · ngưỡng {{ protection.drill_freshness.threshold_hours }} giờ.{% endif %}
-        </p>
+        <section class="backup-detail-section"><h3>Chi tiết RTO &amp; Metadata</h3><dl class="backup-key-values">
+          <div><dt>RestoreDrill gần nhất</dt><dd>{% if protection.latest_drill %}{{ protection.latest_drill.status }} · {{ protection.latest_drill.created_at|vntime }}{% else %}Chưa có dữ liệu{% endif %}</dd></div>
+          <div><dt>RTO thực tế</dt><dd>{% if protection.latest_drill and protection.latest_drill.duration_seconds is not none %}{{ "%.1f"|format(protection.latest_drill.duration_seconds) }} giây{% else %}Chưa có dữ liệu{% endif %}</dd></div>
+          <div><dt>RTO dự kiến lớn nhất</dt><dd>{% if protection.estimated_rto_seconds is not none %}{{ "%.1f"|format(protection.estimated_rto_seconds) }} giây{% else %}Chưa thể ước tính{% endif %}</dd></div>
+          <div><dt>Metadata backup</dt><dd>{% if protection.metadata.status == 'healthy' %}Healthy{% elif protection.metadata.status == 'overdue' %}Quá hạn{% elif protection.metadata.status == 'failed' %}Thất bại{% else %}Chưa từng chạy{% endif %}</dd></div>
+          <div><dt>Ngưỡng metadata</dt><dd>{{ protection.metadata.threshold_hours }} giờ{% if protection.metadata.age_hours is not none %} · tuổi {{ "%.1f"|format(protection.metadata.age_hours) }} giờ{% endif %}</dd></div>
+          <div><dt>Bản sao không đủ</dt><dd>{{ protection.copy_counts.degraded + protection.copy_counts.missing }}</dd></div>
+        </dl></section>
         {% if protection.rows %}
         <div class="table-wrap backup-table-scroll"><table>
           <thead><tr><th>Pool/Image</th><th>Trạng thái</th><th class="num">RPO mục tiêu</th><th class="num">Bản sao</th><th class="num">Tuổi recovery point</th><th class="num">Còn lại trước RPO</th><th class="num">RTO dự kiến</th></tr></thead>
@@ -93,7 +95,7 @@
     <section class="card backup-tab-panel" id="backup-panel-progress" data-backup-panel="progress" role="tabpanel" hidden>
       <div class="card-header"><h2>Đang chạy</h2></div>
       <div class="card-body">
-        <p class="hint" id="backup-progress-idle">Không có job backup nào đang chạy.</p>
+        <div class="backup-empty-state" id="backup-progress-idle"><span class="backup-empty-icon" aria-hidden="true">↻</span><h3>Không có job đang chạy</h3><p>Không có job backup nào đang chạy. Các tiến trình mới sẽ xuất hiện tại đây.</p><button type="button" class="btn btn-ghost btn-sm" data-backup-open-tab="queue">Mở Hàng đợi →</button></div>
         <div id="backup-progress-detail" hidden>
           <p><strong id="backup-progress-title"></strong></p>
           <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="backup-progress-bar">
@@ -111,7 +113,6 @@
     <section class="card backup-tab-panel" id="backup-panel-queue" data-backup-panel="queue" role="tabpanel" hidden>
       <div class="card-header">
         <h2>Hàng đợi</h2>
-        {% if is_admin %}<button type="button" class="btn btn-sm" id="btn-backup-metadata-now">Backup metadata ngay</button>{% endif %}
       </div>
       <div class="card-body">
         {% if queue %}
@@ -137,8 +138,9 @@
         </div>
         <p class="hint">Khôi phục cho phép chọn recovery point, hiển thị full/incremental chain và tạo một volume mới mà không thay đổi volume nguồn. Xem trang <a href="/restore-cluster">Restore Cluster</a> khi cần dựng lại cả cụm.</p>
         {% else %}
-        <p class="hint">Chưa cấu hình <code>tracked_images</code> nào trong <code>worker/policy/backup_policy.yaml</code>.</p>
+        <div class="backup-config-alert"><span class="backup-alert-icon" aria-hidden="true">⚠</span><div><strong>Chưa có image nào được cấu hình để backup.</strong><p>Thêm <code>tracked_images</code> trong file cấu hình backup policy.</p></div><a class="btn btn-ghost btn-sm" href="/settings#backup-policy">Mở hướng dẫn</a></div>
         {% endif %}
+        {% if is_admin %}<button type="button" class="btn btn-ghost btn-sm backup-metadata-action" id="btn-backup-metadata-now">Backup metadata ngay</button>{% endif %}
       </div>
     </section>
 
@@ -174,7 +176,7 @@
           </div>
         </details>
         {% else %}
-        <p class="hint">Chưa có lịch sử backup nào.</p>
+        <div class="backup-empty-state"><span class="backup-empty-icon" aria-hidden="true">◷</span><h3>Chưa có lịch sử backup</h3><p>Chưa có lịch sử backup nào. Hãy chạy backup đầu tiên từ Hàng đợi.</p><button type="button" class="btn btn-ghost btn-sm" data-backup-open-tab="queue">Chạy backup đầu tiên →</button></div>
         {% endif %}
       </div>
     </section>
@@ -210,20 +212,13 @@
           </div>
         </details>
         {% else %}
-        <p class="hint">Chưa phát hiện bất thường nào.</p>
+        <div class="backup-empty-state backup-empty-state--healthy"><span class="backup-empty-icon" aria-hidden="true">✓</span><h3>Hệ thống đang hoạt động bình thường</h3><p>Chưa phát hiện bất thường nào.</p></div>
         {% endif %}
       </div>
     </section>
 
-    <section class="card backup-tab-panel" id="backup-panel-digests" data-backup-panel="digests" role="tabpanel" hidden>
-      <div class="card-header">
-        <h2>Digest</h2>
-        {% if is_admin %}
-        <button id="btn-delete-all-backup-digests" class="btn btn-danger btn-sm" type="button"{% if not digests %} disabled{% endif %}>
-          Xóa tất cả
-        </button>
-        {% endif %}
-      </div>
+    <section class="card backup-tab-panel backup-panel-digests" id="backup-panel-digests" data-backup-panel="digests" role="tabpanel" hidden>
+      <div class="card-header backup-panel-header"><div><div class="backup-panel-kicker">Periodic report</div><h2>Digest <span class="backup-header-count">{{ digests|length }}</span></h2></div></div>
       <div class="card-body">
         {% if digests %}
         <details class="backup-section-details">
@@ -233,19 +228,20 @@
             <thead><tr><th>Thời gian</th><th>Kỳ báo cáo</th><th class="num">Thành công</th><th class="num">Thất bại</th><th class="num">Bất thường</th><th>Tóm tắt (AI)</th></tr></thead>
             <tbody>
               {% for d in digests %}
-              <tr>
-                <td>{{ d.created_at|vntime if d.created_at else "—" }}</td>
-                <td>{{ d.period_start|vntime if d.period_start else "—" }} &ndash; {{ d.period_end|vntime if d.period_end else "—" }}</td>
-                <td class="num">{{ d.succeeded_count }}</td>
-                <td class="num">{{ d.failed_count }}</td>
-                <td class="num">{{ d.anomaly_count }}</td>
+              <tr data-report-id="{{ d.id }}">
+                <td><time class="backup-report-time" datetime="{% if d.created_at %}{{ d.created_at.isoformat() }}{% endif %}">{{ d.created_at|vntime if d.created_at else "—" }}</time></td>
+                <td><span class="backup-report-period" title="{{ d.period_start|vntime if d.period_start else '—' }} – {{ d.period_end|vntime if d.period_end else '—' }}">{{ d.period_start.strftime('%d/%m') if d.period_start else '—' }} – {{ d.period_end.strftime('%d/%m') if d.period_end else '—' }}</span></td>
+                <td class="num"><span class="backup-report-count is-success">{{ d.succeeded_count }}</span></td>
+                <td class="num"><span class="backup-report-count is-failed">{{ d.failed_count }}</span></td>
+                <td class="num"><span class="backup-report-count is-anomaly">{{ d.anomaly_count }}</span></td>
                 <td>
                   {% if d.summary_text %}
                   <details class="backup-inline-details">
-                    <summary>Xem tóm tắt AI</summary>
+                    <summary class="backup-ai-summary-button">Xem AI</summary>
                     <div class="backup-long-text">{{ d.summary_text }}</div>
                   </details>
-                  {% else %}—{% endif %}
+                  {% else %}<span class="hint">—</span>{% endif %}
+                  {% if is_admin %}<button type="button" class="backup-report-delete" data-report-delete="{{ d.id }}" title="Xóa digest này" aria-label="Xóa digest này">×</button>{% endif %}
                 </td>
               </tr>
               {% endfor %}
@@ -254,8 +250,9 @@
           </div>
         </details>
         {% else %}
-        <p class="hint">Chưa có digest nào được tạo.</p>
+        <div class="backup-empty-state"><span class="backup-empty-icon" aria-hidden="true">▤</span><h3>Chưa có digest</h3><p>Chưa có digest nào được tạo.</p><button type="button" class="btn btn-ghost btn-sm" data-backup-open-tab="queue">Mở Hàng đợi →</button></div>
         {% endif %}
+        {% if is_admin %}<div class="backup-report-footer"><button id="btn-delete-all-backup-digests" class="btn btn-danger-outline btn-sm" type="button"{% if not digests %} disabled{% endif %}><span aria-hidden="true">⌫</span> Xóa tất cả</button></div>{% endif %}
       </div>
     </section>
   </main>

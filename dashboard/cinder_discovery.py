@@ -312,6 +312,7 @@ def discover_cinder_volume_backups(cluster, limit: int | None = 100) -> dict:
                 "source": source,
                 "source_label": source_label,
                 "container": _field(row, "container") or "—",
+                "created_at": _field(row, "created_at", "created at", "created") or "—",
             })
         return {"status": "ok", "items": items, "count": len(items)}
     except (ExecutorError, json.JSONDecodeError, ValueError) as exc:

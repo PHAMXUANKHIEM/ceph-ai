@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
+from sqlalchemy import func, or_
 
 from config.settings import settings
 from dashboard.routes import auth
@@ -420,6 +421,7 @@ async def bucket_access_history_api(
     ip: str = Query("", max_length=255),
     requester: str = Query("", max_length=255),
     bucket: str = Query("", max_length=255),
+    search: str = Query("", max_length=255),
     method: str = Query("", max_length=16),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
@@ -440,6 +442,15 @@ async def bucket_access_history_api(
             query = query.filter(RgwAccessAuditEvent.requester.ilike(f"%{requester.strip()}%"))
         if bucket.strip():
             query = query.filter(RgwAccessAuditEvent.bucket.ilike(f"%{bucket.strip()}%"))
+        if search.strip():
+            term = f"%{search.strip()}%"
+            query = query.filter(or_(
+                RgwAccessAuditEvent.remote_addr.ilike(term),
+                RgwAccessAuditEvent.requester.ilike(term),
+                RgwAccessAuditEvent.bucket.ilike(term),
+                RgwAccessAuditEvent.object_key.ilike(term),
+                RgwAccessAuditEvent.transaction_id.ilike(term),
+            ))
         if method:
             query = query.filter(RgwAccessAuditEvent.method == method)
         if date_from:
@@ -452,6 +463,19 @@ async def bucket_access_history_api(
         rows = query.order_by(RgwAccessAuditEvent.event_at.desc()).offset(
             (page - 1) * page_size
         ).limit(page_size).all()
+        status_rows = query.with_entities(
+            RgwAccessAuditEvent.http_status,
+            func.count(RgwAccessAuditEvent.id),
+        ).group_by(RgwAccessAuditEvent.http_status).all()
+        ip_row = query.with_entities(
+            RgwAccessAuditEvent.remote_addr,
+            func.count(RgwAccessAuditEvent.id),
+        ).filter(RgwAccessAuditEvent.remote_addr.isnot(None)).group_by(
+            RgwAccessAuditEvent.remote_addr
+        ).order_by(func.count(RgwAccessAuditEvent.id).desc()).first()
+        latest_row = query.with_entities(RgwAccessAuditEvent.event_at).order_by(
+            RgwAccessAuditEvent.event_at.desc()
+        ).first()
         items = [{
             "id": row.id, "request_id": row.transaction_id,
             "timestamp": to_utc_iso(row.event_at), "ip": row.remote_addr,
@@ -460,7 +484,12 @@ async def bucket_access_history_api(
             "size": row.bytes_sent, "encryption": row.encryption, "rgw_host": row.rgw_host,
         } for row in rows]
     return {"items": items, "total": total, "page": page, "page_size": page_size,
-            "pages": max(1, (total + page_size - 1) // page_size)}
+            "pages": max(1, (total + page_size - 1) // page_size),
+            "summary": {
+                "status_counts": {str(status): count for status, count in status_rows},
+                "top_ip": {"value": ip_row[0], "count": ip_row[1]} if ip_row else None,
+                "latest_at": to_utc_iso(latest_row[0]) if latest_row else None,
+            }}
 
 
 @router.post("/api/bucket-access-history/purge")

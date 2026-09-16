@@ -27,6 +27,8 @@ from watcher.rgw_access_log import (
     fetch_s3_user_info_with,
     fetch_s3_user_list,
     fetch_s3_user_list_with,
+    fetch_s3_user_bucket_list,
+    fetch_s3_user_bucket_list_with,
     summarize_s3_user,
     build_s3_user_action_command,
     execute_s3_user_action,
@@ -45,7 +47,7 @@ templates = make_templates()
 PAGE_SIZE = 25
 MAX_QUERY_LENGTH = 120
 logger = logging.getLogger(__name__)
-USER_ACTIONS = {"create", "modify", "suspend", "enable"}
+USER_ACTIONS = {"create", "modify", "suspend", "enable", "delete"}
 
 
 def _host(cluster) -> str:
@@ -220,12 +222,16 @@ def _inventory(cluster, query: str, page: int) -> dict:
     total = len(users)
     page_count = max(1, ceil(total / PAGE_SIZE))
     page = min(max(page, 1), page_count)
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(users)))) as executor:
+        all_details = list(executor.map(lambda uid: _info(cluster, host, uid), users))
     page_users = users[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
-    with ThreadPoolExecutor(max_workers=min(4, max(1, len(page_users)))) as executor:
-        details = list(executor.map(lambda uid: _info(cluster, host, uid), page_users))
+    details = all_details[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
     items = [detail or {"uid": uid, "unavailable": True} for uid, detail in zip(page_users, details)]
+    available = [detail for detail in all_details if detail]
     return {"host": host, "items": items, "query": query.strip(), "page": page,
-            "page_count": page_count, "total": total}
+            "page_count": page_count, "total": total,
+            "active_count": sum(1 for detail in available if not detail["suspended"]),
+            "key_count_total": sum(detail["key_count"] for detail in available)}
 
 
 def _cached_inventory(cluster, query: str, page: int) -> dict:
@@ -245,6 +251,16 @@ def _detail(cluster, uid: str) -> dict:
     if detail is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy S3 user")
     return {"host": host, **detail}
+
+def _buckets(cluster, uid: str) -> list[str]:
+    uid = _valid_uid(uid)
+    host = _host(cluster)
+    if cluster.is_default:
+        return fetch_s3_user_bucket_list(host, uid)
+    ssh_user, ssh_key, mode, _container = resolve_ssh_creds(cluster)
+    return fetch_s3_user_bucket_list_with(
+        host, uid, ssh_user, ssh_key, mode, cluster.ceph_rgw_container_name
+    )
 
 
 @router.get("/api/object-storage/users")
@@ -266,6 +282,15 @@ async def user_api(request: Request, uid: str, user: str = Depends(require_login
         raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
 
 
+@router.get("/api/object-storage/users/{uid}/buckets")
+async def user_buckets_api(request: Request, uid: str, user: str = Depends(require_login)):
+    del user
+    try:
+        return {"uid": _valid_uid(uid), "buckets": await asyncio.to_thread(_buckets, selected_cluster(request), uid)}
+    except RgwLogError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+
+
 @router.post("/api/object-storage/users/actions/preview")
 async def user_action_preview(request: Request, user: str = Depends(require_login)):
     _require_admin(user)
@@ -275,7 +300,7 @@ async def user_action_preview(request: Request, user: str = Depends(require_logi
     inner = build_s3_user_action_command(action, uid, params)
     return {
         "action": action, "uid": uid, "cluster_id": cluster.id,
-        "cluster_name": cluster.name, "risk": "medium" if action in {"suspend", "modify"} else "low",
+        "cluster_name": cluster.name, "risk": "high" if action == "delete" else ("medium" if action in {"suspend", "modify"} else "low"),
         "confirmation_required": uid,
         "preview": inner,
         "generates_access_key": None,
@@ -432,7 +457,7 @@ async def users_page(request: Request, user: str = Depends(require_login),
         "user": user, "is_admin": auth.is_admin_user(user), "clusters": clusters,
         "selected_cluster": cluster, "inventory": inventory, "error": error,
         "quote_value": lambda value: quote(value, safe=""),
-        "audit_entries": _audit_rows(cluster.id) if auth.is_admin_user(user) else [],
+        "audit_entries": await asyncio.to_thread(_audit_rows, cluster.id) if auth.is_admin_user(user) else [],
     })
 
 

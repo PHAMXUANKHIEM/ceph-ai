@@ -838,6 +838,11 @@ def _format_bytes(value: object) -> str:
     return "—"
 
 
+def _default_s3_endpoint(host: str) -> str:
+    """Build the S3 endpoint from the configured RGW node."""
+    return f"http://{host}:7480"
+
+
 def _rgw_hosts(cluster) -> list[str]:
     nodes = configured_nodes() if cluster.is_default else configured_nodes(cluster)
     return [str(node["host"]) for node in nodes if "RGW" in node["roles"]]
@@ -978,6 +983,8 @@ def _inventory(
             rows = list(executor.map(lambda name: _bucket_summary(cluster, host, name), page_names))
     return {
         "host": host,
+        "rgw_endpoint": _default_s3_endpoint(host),
+        "zonegroup_api_name": "default",
         "items": rows,
         "query": query.strip(),
         "owner": owner.strip(),
@@ -997,6 +1004,8 @@ def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: Qu
     key = f"{cluster.id}:{query}:{page}:{owner}:{quota}:{usage}:{sort}:{order}"
     fallback = {
         "host": None,
+        "rgw_endpoint": "",
+        "zonegroup_api_name": "default",
         "items": [],
         "query": query.strip(),
         "owner": owner.strip(),
@@ -1729,7 +1738,9 @@ async def bucket_inventory_page(
     order: SortOrder = "asc",
 ):
     clusters, cluster = cluster_selection(request)
-    inventory = {"items": [], "query": query.strip(), "page": page, "page_count": 1, "total": 0}
+    inventory = {"items": [], "query": query.strip(), "owner": owner.strip(), "quota": quota,
+                 "usage": usage, "sort": sort, "order": order, "page": page, "page_count": 1,
+                 "total": 0, "rgw_endpoint": "", "zonegroup_api_name": "default"}
     error = None
     try:
         inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page, owner, quota, usage, sort, order)

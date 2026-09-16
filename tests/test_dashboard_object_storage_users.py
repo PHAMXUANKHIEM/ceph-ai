@@ -63,6 +63,31 @@ def test_user_detail_is_secret_safe_in_api_and_html(dashboard_client, monkeypatc
     assert "SUPER-SECRET" not in api.text + page.text
 
 
+def test_user_detail_exposes_only_masked_key_metadata(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "fetch_s3_user_info", lambda host, uid: _raw(uid))
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/object-storage/users/alice")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["access_keys"][0]["access_key_masked"].endswith("LEAK")
+    assert "AKIA-DO-NOT-LEAK" not in response.text
+    assert "SUPER-SECRET" not in response.text
+
+
+def test_user_buckets_are_loaded_through_a_separate_scoped_endpoint(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "fetch_s3_user_bucket_list", lambda host, uid: ["photos", "backups"])
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/object-storage/users/alice/buckets")
+
+    assert response.status_code == 200
+    assert response.json() == {"uid": "alice", "buckets": ["photos", "backups"]}
+
+
 def test_users_page_search_and_empty_state(dashboard_client, monkeypatch):
     _configure(monkeypatch)
     monkeypatch.setattr(route, "fetch_s3_user_list", lambda host: ["alice", "bob"])
@@ -146,28 +171,32 @@ def test_admin_page_exposes_two_step_action_form(dashboard_client, monkeypatch):
     assert response.status_code == 200
     assert 'id="s3-user-action-form"' in response.text
     assert 'id="s3-execute"' in response.text
-    assert 'id="s3-key-action-form"' in response.text
-    assert 'id="s3-one-time-secret"' in response.text
-    assert "Access-key lifecycle" in response.text
+    assert 'id="s3-open-create"' in response.text
+    assert 'id="s3-user-drawer"' in response.text
+    assert 'id="s3-key-wizard"' not in response.text
+    assert 'id="s3-user-modal"' in response.text
+    assert "detail drawer" in response.text
 
 
-def test_s3_user_features_are_presented_as_single_visible_tab():
+def test_s3_user_features_keep_users_and_audit_as_two_tabs():
     source = open("dashboard/static/object_storage_users.js", encoding="utf-8").read()
-    assert 'tabs.setAttribute("role", "tablist")' in source
-    assert '["Danh sách S3 user", "Quản lý S3 user", "Access-key lifecycle", "Object Storage Audit"]' in source
-    assert "panel.hidden = panel.id !== selected.dataset.s3UserTab" in source
-    assert 'tab.setAttribute("aria-selected", String(active))' in source
+    assert "data-s3-tab" in source
+    assert "s3-user-action-form" in source
+    assert "s3-key-action-form" not in source
+    template = open("dashboard/templates/object_storage_users.html", encoding="utf-8").read()
+    assert 'data-s3-tab="s3-users-panel"' in template
+    assert 'data-s3-tab="s3-audit-panel"' in template
 
 
-def test_object_storage_audit_filters_and_paginates_ten_rows_client_side():
+def test_object_storage_audit_filters_and_paginates_25_rows_client_side():
     source = open("dashboard/static/object_storage_users.js", encoding="utf-8").read()
-    assert 'var pageSize = 10;' in source
-    assert 'placeholder="Actor, action, target hoặc request ID"' in source
-    assert 'Tất cả action' in source
-    assert 'Tất cả kết quả' in source
-    assert "filtered.slice((page - 1) * pageSize, page * pageSize)" in source
-    assert '10 dòng/trang' in source
-    assert "Không có bản ghi audit phù hợp." in source
+    assert 'var auditSize = 25;' in source
+    assert "data-s3-audit-search" in source
+    assert "data-s3-audit-action" in source
+    assert "data-s3-audit-result" in source
+    assert "filtered.slice((auditPage - 1) * auditSize, auditPage * auditSize)" in source
+    assert "25 dòng/trang" in source
+    assert "classifyAction" in source
 
 
 def test_execute_requires_admin_and_exact_uid_confirmation(dashboard_client, monkeypatch):

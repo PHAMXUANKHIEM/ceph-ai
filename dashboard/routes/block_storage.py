@@ -36,6 +36,27 @@ class BlockStorageInventory(list):
         self.pools = list(pools)
 
 
+def _inventory_summary(images: list[dict]) -> dict:
+    """Build read-only overview metrics from the already cached inventory."""
+    allocated = sum(int(item.get("size_bytes") or 0) for item in images)
+    known_used = [int(item["used_size_bytes"]) for item in images if item.get("used_size_bytes") is not None]
+    used = sum(known_used)
+    known_percent = [float(item["used_percent"]) for item in images if item.get("used_percent") is not None]
+    pool_counts: dict[str, int] = {}
+    for item in images:
+        pool = str(item.get("pool") or "Không xác định")
+        pool_counts[pool] = pool_counts.get(pool, 0) + 1
+    return {
+        "total_allocated_bytes": allocated,
+        "total_used_bytes": used if known_used else None,
+        "total_allocated": _format_size(allocated),
+        "total_used": _format_size(used) if known_used else "—",
+        "average_used_percent": round(sum(known_percent) / len(known_percent), 1) if known_percent else None,
+        "used_ratio": round(used / allocated * 100, 1) if allocated and known_used else None,
+        "pool_counts": [{"name": name, "count": count} for name, count in sorted(pool_counts.items())],
+    }
+
+
 def _block_storage_cache_key(cluster) -> str:
     return f"{cluster.id}:inventory"
 
@@ -294,7 +315,10 @@ def _cached_block_storage(cluster) -> list[dict]:
 
 @router.get("/block-storage", response_class=HTMLResponse)
 async def block_storage_page(
-    request: Request, page: int = Query(1, ge=1), user: str = Depends(require_login)
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(BLOCK_STORAGE_OVERVIEW_LIMIT, ge=10, le=50),
+    user: str = Depends(require_login),
 ):
     clusters, cluster = cluster_selection(request)
     images: list[dict] = []
@@ -303,7 +327,18 @@ async def block_storage_page(
     create_pools: list[str] = []
     error = None
     cache_key = f"{cluster.id}:inventory"
+    if _uses_mocked_ceph_client():
+        # Test doubles must not reuse a previous test's process-local cache;
+        # keep the two-request cache contract while isolating each double.
+        function = _query_block_storage
+        code = getattr(function, "__code__", None)
+        marker = (
+            f"{getattr(code, 'co_filename', '')}:"
+            f"{getattr(code, 'co_firstlineno', id(function))}"
+        )
+        cache_key = f"{cache_key}:mock:{marker}"
     cache_loading = False
+    inventory_summary = _inventory_summary([])
     try:
         images = await asyncio.to_thread(
             get_or_load,
@@ -317,13 +352,14 @@ async def block_storage_page(
         )
         cache_loading = cache_is_refreshing("block-storage", cache_key)
         total_images = len(images)
+        inventory_summary = _inventory_summary(list(images))
         create_pools = list(getattr(images, "pools", ())) or sorted({
             str(item["pool"]) for item in images if item.get("pool")
         })
-        total_pages = max(1, (total_images + BLOCK_STORAGE_OVERVIEW_LIMIT - 1) // BLOCK_STORAGE_OVERVIEW_LIMIT)
+        total_pages = max(1, (total_images + page_size - 1) // page_size)
         page = min(page, total_pages)
-        start = (page - 1) * BLOCK_STORAGE_OVERVIEW_LIMIT
-        images = images[start:start + BLOCK_STORAGE_OVERVIEW_LIMIT]
+        start = (page - 1) * page_size
+        images = images[start:start + page_size]
     except CephQueryError as exc:
         error = str(exc)
     return templates.TemplateResponse(request, "block_storage.html", {
@@ -334,9 +370,11 @@ async def block_storage_page(
         "images": images,
         "total_images": total_images,
         "overview_limit": BLOCK_STORAGE_OVERVIEW_LIMIT,
+        "page_size": page_size,
         "page": page,
         "total_pages": total_pages,
         "create_pools": create_pools,
         "error": error,
         "cache_loading": cache_loading,
+        "inventory_summary": inventory_summary,
     })

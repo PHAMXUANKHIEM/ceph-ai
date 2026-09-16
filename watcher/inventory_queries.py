@@ -112,6 +112,12 @@ def _normalize_pool_rows(
             "pgs": pool.get("pg_num") if pool.get("pg_num") is not None else pool.get("pg_num_target", "—"),
             "crush_rule": rule_names.get(str(rule_id), str(rule_id) if rule_id is not None else "—"),
             "used_bytes": df_stats.get("stored", df_stats.get("bytes_used", 0)) or 0,
+            "total_bytes": (
+                (df_stats.get("stored") or df_stats.get("bytes_used") or 0)
+                + (df_stats.get("max_avail") or 0)
+                if isinstance(df_stats.get("max_avail"), (int, float))
+                else None
+            ),
             "objects": df_stats.get("objects", 0) or 0,
             "read_iops": io_stats.get("read_op_per_sec", io_stats.get("read_iops", 0)) or 0,
             "write_iops": io_stats.get("write_op_per_sec", io_stats.get("write_iops", 0)) or 0,
@@ -157,7 +163,7 @@ def collect_pool_rows(cluster) -> list[dict]:
             raise CephQueryError("One or more Pool queries failed")
     rows = _normalize_pool_rows(*payloads)
     for row in rows:
-        row["used"] = _format_bytes(row.pop("used_bytes"))
+        row["used"] = _format_bytes(row["used_bytes"])
     return rows
 
 

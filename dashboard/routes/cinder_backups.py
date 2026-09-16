@@ -35,6 +35,7 @@ def _list_query(request: Request, cluster) -> str:
         "backend": request.query_params.get("backend", "").strip(),
         "volume_type": request.query_params.get("volume_type", "").strip(),
         "page": request.query_params.get("page", "1").strip() or "1",
+        "page_size": request.query_params.get("page_size", "").strip(),
     }
     if cluster:
         values["cluster"] = str(cluster.id)
@@ -42,7 +43,7 @@ def _list_query(request: Request, cluster) -> str:
 
 
 def _message_redirect(request: Request, path: str, *, success: str = "", error: str = "") -> RedirectResponse:
-    allowed = {"cluster", "id", "backend", "volume_type", "page"}
+    allowed = {"cluster", "id", "backend", "volume_type", "page", "page_size"}
     values = {key: value for key, value in request.query_params.items() if key in allowed and value}
     if success:
         values["success"] = success
@@ -93,7 +94,12 @@ async def _backup_context(request: Request, user: str, cluster, *, product: str,
         for item in all_items
         if item.get("volume_type")
     }, key=str.casefold)
-    page_size = 10
+    default_page_size = 25 if product == "ceph" else 10
+    try:
+        requested_page_size = int(request.query_params.get("page_size", str(default_page_size)))
+    except (TypeError, ValueError):
+        requested_page_size = default_page_size
+    page_size = requested_page_size if requested_page_size in {10, 25, 50} else default_page_size
     try:
         requested_page = max(1, int(request.query_params.get("page", "1")))
     except (TypeError, ValueError):
@@ -123,6 +129,7 @@ async def _backup_context(request: Request, user: str, cluster, *, product: str,
         "cinder_backup_total": len(all_items),
         "cinder_backup_filtered": len(filtered_items),
         "cinder_backup_page": page,
+        "cinder_backup_page_size": page_size,
         "cinder_backup_page_count": page_count,
         "cinder_backup_page_queries": page_queries,
         "cinder_backup_volume_types": volume_types,

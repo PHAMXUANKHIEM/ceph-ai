@@ -24,6 +24,45 @@
   });
   if (backupTabs.length) activateBackupTab("protection");
 
+  Array.prototype.forEach.call(document.querySelectorAll("[data-backup-open-tab]"), function (button) {
+    button.addEventListener("click", function () {
+      var target = button.getAttribute("data-backup-open-tab");
+      if (target) activateBackupTab(target);
+    });
+  });
+
+  var latestBackupEl = document.getElementById("backup-summary-latest");
+  var latestBackupAbsoluteEl = document.getElementById("backup-summary-latest-absolute");
+
+  function formatRelativeBackupTime(value) {
+    if (!value) return "Chưa có";
+    var timestamp = new Date(value).getTime();
+    if (!Number.isFinite(timestamp)) return "Chưa có dữ liệu";
+    var seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+    if (seconds < 60) return "Vừa xong";
+    var minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + " phút trước";
+    var hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + " giờ trước";
+    var days = Math.floor(hours / 24);
+    return days + " ngày trước";
+  }
+
+  function updateLatestBackup() {
+    if (!latestBackupEl) return;
+    var value = latestBackupEl.getAttribute("data-latest-at");
+    latestBackupEl.textContent = formatRelativeBackupTime(value);
+    if (latestBackupAbsoluteEl && value) {
+      var date = new Date(value);
+      if (Number.isFinite(date.getTime())) {
+        latestBackupAbsoluteEl.textContent = date.toLocaleString("vi-VN");
+      }
+    }
+  }
+
+  updateLatestBackup();
+  window.setInterval(updateLatestBackup, 60000);
+
   var idleEl = document.getElementById("backup-progress-idle");
   var detailEl = document.getElementById("backup-progress-detail");
   var titleEl = document.getElementById("backup-progress-title");
@@ -55,11 +94,15 @@
   function renderIdle() {
     if (idleEl) idleEl.hidden = false;
     if (detailEl) detailEl.hidden = true;
+    var progressCountEl = document.getElementById("backup-tab-progress-count");
+    if (progressCountEl) progressCountEl.textContent = "0";
   }
 
   function renderRunning(actionId, step) {
     if (idleEl) idleEl.hidden = true;
     if (detailEl) detailEl.hidden = false;
+    var progressCountEl = document.getElementById("backup-tab-progress-count");
+    if (progressCountEl) progressCountEl.textContent = "1";
     if (titleEl) titleEl.textContent = ACTION_LABEL[actionId] || actionId;
 
     var pct = typeof step.pct === "number" ? step.pct : 0;
@@ -137,7 +180,8 @@
   var deleteAllDigestsBtn = document.getElementById("btn-delete-all-backup-digests");
   if (deleteAllDigestsBtn) {
     deleteAllDigestsBtn.addEventListener("click", function () {
-      if (!window.confirm("Xóa vĩnh viễn toàn bộ thông báo Digest của cluster đang chọn?")) return;
+      var digestCount = document.querySelectorAll("[data-report-delete]").length;
+      if (!window.confirm("Bạn có chắc muốn xóa tất cả " + digestCount + " bản digest?")) return;
       deleteAllDigestsBtn.disabled = true;
       fetch("/backups/digests/delete-all", {
         method: "POST",
@@ -160,6 +204,32 @@
         });
     });
   }
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-report-delete]"), function (button) {
+    button.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      var digestId = button.getAttribute("data-report-delete");
+      if (!digestId || !window.confirm("Xóa bản digest này khỏi cluster đang chọn?")) return;
+      button.disabled = true;
+      fetch("/backups/digests/" + encodeURIComponent(digestId) + "/delete", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error(data.detail || "HTTP " + response.status);
+            return data;
+          });
+        })
+        .then(function () { window.location.reload(); })
+        .catch(function (err) {
+          button.disabled = false;
+          window.alert(err.message || "Không thể xóa bản digest");
+        });
+    });
+  });
 
   // Safe default: restore into a new image and leave production untouched.
 

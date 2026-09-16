@@ -4,34 +4,69 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% if active_view == 'config-dump' %}Ceph Config Dump{% elif active_view == 'create-user' %}Create Auth User{% else %}OpenStack Auth-Pool{% endif %} — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  {% if active_view == 'create-user' %}<link rel="stylesheet" href="/static/auth_user_create.css?v={{ static_version }}">{% endif %}
 </head>
 <body>
   {% include "_nav.html" %}
+  {% if active_view == 'create-user' %}
+  <main class="page auth-user-create-page">
+    <section class="auth-user-create-shell">
+      <header class="auth-user-page-header">
+        <div>
+          <span class="auth-user-eyebrow">CEPH AUTHENTICATION</span>
+          <h1>Tạo Auth User mới</h1>
+          <p>Tạo identity Ceph và cấp ngay quyền RBD trên pool của cụm <strong>{{ selected_cluster.name }}</strong>.</p>
+        </div>
+        <span class="auth-user-cluster-badge">{{ auth_users|length }} users hiện có</span>
+      </header>
+      {% if created %}<p class="success auth-user-notice">Đã tạo auth user, cấp quyền pool và chuyển các file Ceph sang OpenStack thành công.</p>{% endif %}
+      {% if deleted %}<p class="success auth-user-notice">Đã xóa auth user khỏi cụm Ceph.</p>{% endif %}
+      {% if error %}<p class="error auth-user-notice">Không tải được dữ liệu: {{ error }}</p>{% endif %}
+      {% if is_admin and not error %}
+      <section class="auth-create-card" aria-labelledby="auth-create-title">
+        <div class="auth-card-heading"><div><h2 id="auth-create-title">Tạo Auth User mới</h2><p>Thông tin đăng nhập dùng cho client Ceph và dịch vụ OpenStack.</p></div><span class="auth-card-icon">+</span></div>
+        <form method="post" action="/openstack/auth-user/create?cluster={{ selected_cluster.id }}" class="auth-create-form">
+          <label class="auth-form-field"><span>Tên auth user</span><input type="text" name="entity_name" required maxlength="128" pattern="(?:client\.)?[A-Za-z0-9_.-]+" placeholder="cinder hoặc client.cinder" autocomplete="off"><small>Nhập tên user (vd: cinder) hoặc tên đầy đủ (vd: client.cinder)</small></label>
+          <label class="auth-form-field"><span>Pool</span><select name="pool" required>{% for name in pools %}<option value="{{ name }}">{{ name }}</option>{% endfor %}</select></label>
+          <label class="auth-form-field"><span>Quyền</span><select name="access"><option value="write">Đọc/Ghi</option><option value="read">Chỉ đọc</option></select></label>
+          <button type="submit" class="btn btn-primary auth-create-submit"><span aria-hidden="true">+</span> Tạo Auth User</button>
+        </form>
+      </section>
+      {% endif %}
+
+      <section class="auth-users-reference" aria-labelledby="auth-users-title">
+        <header class="auth-reference-heading"><div><h2 id="auth-users-title">Danh sách Auth User hiện có</h2><p>Danh sách để tham khảo, tránh tạo trùng tên user đã tồn tại.</p></div><span class="auth-users-count">{{ auth_users|length }} users</span></header>
+        <div class="auth-users-toolbar"><label class="auth-users-search"><span aria-hidden="true">⌕</span><input id="auth-user-search" type="search" placeholder="Tìm user..." autocomplete="off"></label><label class="auth-users-type-filter"><span>Loại</span><select id="auth-user-type"><option value="">Tất cả</option><option value="admin">Admin</option><option value="bootstrap">Bootstrap</option><option value="service">Service</option><option value="application">Application</option></select></label><span id="auth-user-result" class="auth-user-result" role="status" aria-live="polite">Hiển thị {{ auth_users|length }} users</span></div>
+        {% if auth_users %}
+        <div class="auth-users-table-wrap">
+          <table id="auth-user-table" class="auth-users-table"><thead><tr><th>USER</th><th>MON CAPS</th><th>OSD CAPS</th><th class="auth-actions-column">ACTIONS</th></tr></thead><tbody>
+            {% for item in auth_users %}
+            {% set entity_lower = item.entity|lower %}{% set mon_cap = item.caps.mon or '' %}{% set osd_cap = item.caps.osd or '' %}
+            {% if item.entity == 'client.admin' or 'allow *' in mon_cap|lower %}{% set user_kind = 'admin' %}{% set user_label = 'Admin' %}{% elif 'bootstrap' in entity_lower %}{% set user_kind = 'bootstrap' %}{% set user_label = 'Bootstrap' %}{% elif 'health' in entity_lower or 'csi' in entity_lower or 'provision' in entity_lower or 'rbd-mirror' in entity_lower %}{% set user_kind = 'service' %}{% set user_label = 'Service' %}{% else %}{% set user_kind = 'application' %}{% set user_label = 'Application' %}{% endif %}
+            <tr data-auth-user="{{ item.entity|lower }}" data-auth-kind="{{ user_kind }}"><td class="auth-user-identity"><code title="{{ item.entity }}"><span class="auth-user-prefix">client.</span><strong>{{ item.entity[7:] if item.entity.startswith('client.') else item.entity }}</strong></code><span class="auth-user-badge auth-user-badge-{{ user_kind }}">{{ user_label }}</span></td><td class="auth-caps-cell"><div class="auth-cap-list"><span class="auth-cap-chip" title="{{ mon_cap or '—' }}">{{ mon_cap or '—' }}</span></div></td><td class="auth-caps-cell"><div class="auth-cap-list auth-cap-list-expandable">{% for cap in osd_cap.split(',') if cap.strip() %}<span class="auth-cap-chip" title="{{ cap.strip() }}">{{ cap.strip() }}</span>{% else %}<span class="auth-cap-chip">—</span>{% endfor %}</div>{% if osd_cap|length > 90 %}<button type="button" class="auth-cap-expand" data-auth-expand>Xem thêm</button>{% endif %}</td><td class="auth-user-actions"><a href="/openstack/auth-pool?cluster={{ selected_cluster.id }}&amp;entity={{ item.entity|urlencode }}" class="auth-user-action" title="Sửa caps" aria-label="Sửa caps cho {{ item.entity }}">✏️</a><form method="post" action="/openstack/auth-user/delete?cluster={{ selected_cluster.id }}"><input type="hidden" name="entity" value="{{ item.entity }}"><button type="submit" class="auth-user-action auth-user-delete" title="Xóa user" aria-label="Xóa {{ item.entity }}" data-auth-delete>🗑️</button></form></td></tr>
+            {% endfor %}
+          </tbody></table>
+          <div id="auth-user-empty" class="auth-user-empty" hidden>Không tìm thấy Auth User phù hợp.</div>
+        </div>
+        <footer class="auth-users-footer"><span id="auth-user-page-status" role="status" aria-live="polite">Trang 1 / 1</span><label>Rows <select id="auth-user-page-size" aria-label="Số user mỗi trang"><option value="15" selected>15</option><option value="30">30</option><option value="50">50</option></select></label><button type="button" class="btn btn-ghost btn-sm" id="auth-user-prev" aria-label="Trang trước">← Trước</button><button type="button" class="btn btn-ghost btn-sm" id="auth-user-next" aria-label="Trang sau">Sau →</button></footer>
+        {% else %}<div class="auth-user-empty">Cụm chưa có Auth User nào.</div>{% endif %}
+      </section>
+    </section>
+  </main>
+  {% else %}
   <main class="page">
     <section class="card">
-      <div class="card-header"><h2>{% if active_view == 'create-user' %}Tạo Ceph Auth User{% elif active_view == 'config-dump' %}Ceph Config Dump{% else %}OpenStack Auth-Pool{% endif %} — {{ selected_cluster.name }}</h2></div>
+      <div class="card-header"><h2>{% if active_view == 'config-dump' %}Ceph Config Dump{% else %}OpenStack Auth-Pool{% endif %} — {{ selected_cluster.name }}</h2></div>
       <div class="card-body">
         {% if active_view == 'config-dump' %}
         <p class="hint">Xem cấu hình runtime của cụm đang chọn. Các giá trị token, secret, password và key được che trước khi hiển thị.</p>
-        {% elif active_view == 'create-user' %}
-        <p class="hint">Tạo mới Ceph auth user và cấp ngay quyền RBD trên pool đã chọn.</p>
-        {% if created %}<p class="success">Đã tạo auth user, cấp quyền pool và chuyển các file Ceph sang OpenStack thành công.</p>{% endif %}
-        {% if error %}<p class="error">Không tải được dữ liệu: {{ error }}</p>{% endif %}
-        {% if is_admin and not error %}
-        <form method="post" action="/openstack/auth-user/create?cluster={{ selected_cluster.id }}" class="audit-filters">
-          <label>Tên auth user<input type="text" name="entity_name" required maxlength="128" pattern="(?:client\.)?[A-Za-z0-9_.-]+" placeholder="cinder hoặc client.cinder"></label>
-          <label>Pool<select name="pool" required>{% for name in pools %}<option value="{{ name }}">{{ name }}</option>{% endfor %}</select></label>
-          <label>Quyền<select name="access"><option value="write">Đọc/Ghi</option><option value="read">Chỉ đọc</option></select></label>
-          <button type="submit" class="btn btn-primary">Tạo Auth User</button>
-        </form>
-        {% endif %}
         {% else %}
         <p class="hint">Cấp capability RBD của một Ceph auth user cho pool. Các capability hiện có của user được giữ nguyên.</p>
         {% if error %}<p class="error">Không tải được dữ liệu: {{ error }}</p>{% endif %}
         {% if success %}<p class="success">Đã cấp quyền pool thành công.</p>{% endif %}
         {% if is_admin and not error %}
         <form method="post" action="/openstack/auth-pool?cluster={{ selected_cluster.id }}" class="audit-filters">
-          <label>Ceph auth user<select name="entity" required>{% for item in auth_users %}<option value="{{ item.entity }}">{{ item.entity }}</option>{% endfor %}</select></label>
+          <label>Ceph auth user<select name="entity" required>{% for item in auth_users %}<option value="{{ item.entity }}"{% if request.query_params.get('entity') == item.entity %} selected{% endif %}>{{ item.entity }}</option>{% endfor %}</select></label>
           <label>Pool<select name="pool" required>{% for name in pools %}<option value="{{ name }}">{{ name }}</option>{% endfor %}</select></label>
           <label>Quyền<select name="access"><option value="write">Đọc/Ghi</option><option value="read">Chỉ đọc</option></select></label>
           <button type="submit" class="btn btn-primary">Cấp quyền</button>
@@ -39,7 +74,7 @@
         {% endif %}
         {% endif %}
       </div>
-      {% if auth_users %}<div class="card-body table-wrap"><table><thead><tr><th>User</th><th>MON caps</th><th>OSD caps</th></tr></thead><tbody>{% for item in auth_users %}<tr><td><code>{{ item.entity }}</code></td><td><code>{{ item.caps.mon or '—' }}</code></td><td><code>{{ item.caps.osd or '—' }}</code></td></tr>{% endfor %}</tbody></table></div>{% endif %}
+      {% if active_view != 'config-dump' and auth_users %}<div class="card-body table-wrap"><table><thead><tr><th>User</th><th>MON caps</th><th>OSD caps</th></tr></thead><tbody>{% for item in auth_users %}<tr><td><code>{{ item.entity }}</code></td><td><code>{{ item.caps.mon or '—' }}</code></td><td><code>{{ item.caps.osd or '—' }}</code></td></tr>{% endfor %}</tbody></table></div>{% endif %}
       {% if active_view == 'config-dump' and is_admin %}
       <div class="card-body ceph-config-dump" id="ceph-config-dump-panel" data-cluster="{{ selected_cluster.id }}">
         <div class="card-header"><h3>Ceph config dump</h3></div>
@@ -73,7 +108,9 @@
       </div>
       {% endif %}
     </section>
-  </main>
+      </main>
+  {% endif %}
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script src="/static/openstack_auth_pool.js?v={{ static_version }}"></script>
+  {% if active_view == 'create-user' %}<script src="/static/auth_user_create.js?v={{ static_version }}"></script>{% endif %}
 </body></html>

@@ -2,6 +2,8 @@
   var panel = document.getElementById("ceph-config-dump-panel");
   var loadButton = document.getElementById("ceph-config-dump-load");
   var filterInput = document.getElementById("ceph-config-dump-filter-input");
+  var levelFilter = document.getElementById("ceph-config-dump-level-filter");
+  var countBadge = document.getElementById("ceph-config-dump-count");
   var tableWrap = document.getElementById("ceph-config-dump-table-wrap");
   var tableBody = document.querySelector("#ceph-config-dump-table tbody");
   var status = document.getElementById("ceph-config-dump-status");
@@ -13,97 +15,244 @@
   var valueInput = document.getElementById("ceph-config-dump-value");
   var submitButton = document.getElementById("ceph-config-dump-submit");
   var resetButton = document.getElementById("ceph-config-dump-reset");
+  var editorToggle = document.getElementById("ceph-config-editor-toggle");
+  var editorContent = document.getElementById("ceph-config-editor-content");
   var pagination = document.getElementById("ceph-config-dump-pagination");
-  var previousButton = document.getElementById("ceph-config-dump-prev");
-  var nextButton = document.getElementById("ceph-config-dump-next");
   var pageStatus = document.getElementById("ceph-config-dump-page-status");
-  if (!panel || !loadButton || !filterInput || !tableWrap || !tableBody || !status || !error ||
-      !form || !actionInput || !sectionInput || !nameInput || !valueInput || !submitButton || !resetButton ||
-      !pagination || !previousButton || !nextButton || !pageStatus) return;
+  var pageSizeSelect = document.getElementById("ceph-config-dump-page-size");
+  var pageButtons = document.getElementById("ceph-config-dump-page-buttons");
+  if (!panel || !loadButton || !filterInput || !levelFilter || !countBadge || !tableWrap || !tableBody ||
+      !status || !error || !form || !actionInput || !sectionInput || !nameInput || !valueInput ||
+      !submitButton || !resetButton || !editorToggle || !editorContent || !pagination || !pageStatus ||
+      !pageSizeSelect || !pageButtons) return;
 
   var rows = [];
   var currentPage = 1;
-  var pageSize = 10;
+  var expandedSections = Object.create(null);
+
+  function text(value) {
+    return value == null ? "" : String(value);
+  }
+
+  function setEditorOpen(open) {
+    editorContent.hidden = !open;
+    editorToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    editorToggle.querySelector(".config-editor-chevron").textContent = open ? "▼" : "▶";
+  }
+
+  function makeLevelBadge(level) {
+    var badge = document.createElement("span");
+    var normalized = text(level).toLowerCase();
+    badge.className = "config-level-badge" + (normalized ? " is-" + normalized : "");
+    badge.textContent = text(level) || "—";
+    return badge;
+  }
+
+  function makeValueCell(row) {
+    var cell = document.createElement("td");
+    cell.className = "config-value-cell";
+    var value = text(row.value);
+    cell.title = row.redacted ? "Giá trị nhạy cảm đã được che" : (value || "Không có giá trị");
+    if (value.indexOf(",") !== -1 && value.split(",").filter(function (part) { return part.trim(); }).length > 1) {
+      var chips = document.createElement("div");
+      chips.className = "config-value-chips";
+      value.split(",").forEach(function (part) {
+        var item = part.trim();
+        if (!item) return;
+        var chip = document.createElement("span");
+        chip.className = "config-value-chip";
+        chip.textContent = item;
+        chips.appendChild(chip);
+      });
+      cell.appendChild(chips);
+    } else {
+      var preview = document.createElement("span");
+      preview.className = "config-value-truncate";
+      preview.textContent = value || "—";
+      cell.appendChild(preview);
+    }
+    return cell;
+  }
+
+  function makeActionButton(icon, label, callback) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "config-row-action";
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    button.textContent = icon;
+    button.addEventListener("click", function (event) {
+      event.stopPropagation();
+      callback();
+    });
+    return button;
+  }
+
+  function startEdit(row) {
+    actionInput.value = "set";
+    sectionInput.value = text(row.section);
+    nameInput.value = text(row.name);
+    valueInput.value = row.redacted ? "" : text(row.value);
+    valueInput.required = Boolean(row.redacted);
+    submitButton.textContent = "Cập nhật";
+    resetButton.hidden = false;
+    setEditorOpen(true);
+    status.textContent = row.redacted
+      ? "Option nhạy cảm đã được che; nhập giá trị mới rồi bấm Cập nhật."
+      : "Đang sửa " + row.section + "." + row.name + ".";
+    window.setTimeout(function () { valueInput.focus(); }, 0);
+  }
+
+  function deleteRow(row) {
+    if (!window.confirm("Xóa option " + row.section + "." + row.name + " và restart RGW?")) return;
+    var deleteForm = document.createElement("form");
+    deleteForm.method = "post";
+    deleteForm.action = "/openstack/config-dump?cluster=" + encodeURIComponent(panel.dataset.cluster || "");
+    [["action", "rm"], ["section", row.section], ["name", row.name]].forEach(function (entry) {
+      var input = document.createElement("input");
+      input.type = "hidden";
+      input.name = entry[0];
+      input.value = entry[1];
+      deleteForm.appendChild(input);
+    });
+    document.body.appendChild(deleteForm);
+    deleteForm.submit();
+  }
+
+  function pageItems(pageCount) {
+    if (pageCount <= 7) {
+      return Array.from({ length: pageCount }, function (_unused, index) { return index + 1; });
+    }
+    if (currentPage <= 4) return [1, 2, 3, 4, 5, "…", pageCount];
+    if (currentPage >= pageCount - 3) return [1, "…", pageCount - 4, pageCount - 3, pageCount - 2, pageCount - 1, pageCount];
+    return [1, "…", currentPage - 1, currentPage, currentPage + 1, "…", pageCount];
+  }
+
+  function appendPageButton(label, page, disabled, active, ariaLabel) {
+    if (label === "…") {
+      var ellipsis = document.createElement("span");
+      ellipsis.className = "config-page-ellipsis";
+      ellipsis.textContent = label;
+      pageButtons.appendChild(ellipsis);
+      return;
+    }
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "config-page-button" + (active ? " is-active" : "");
+    button.textContent = label;
+    button.disabled = Boolean(disabled);
+    button.setAttribute("aria-label", ariaLabel || ("Trang " + page));
+    if (active) button.setAttribute("aria-current", "page");
+    button.addEventListener("click", function () {
+      currentPage = page;
+      render();
+    });
+    pageButtons.appendChild(button);
+  }
+
+  function renderPagination(pageCount) {
+    pageButtons.replaceChildren();
+    if (pageCount <= 1) return;
+    appendPageButton("◀", Math.max(1, currentPage - 1), currentPage <= 1, false, "Trang trước");
+    pageItems(pageCount).forEach(function (page) {
+      appendPageButton(page, page, false, page === currentPage);
+    });
+    appendPageButton("▶", Math.min(pageCount, currentPage + 1), currentPage >= pageCount, false, "Trang sau");
+  }
 
   function render() {
     var query = filterInput.value.trim().toLowerCase();
-    tableBody.replaceChildren();
+    var selectedLevel = levelFilter.value.toLowerCase();
     var visible = rows.filter(function (row) {
-      return !query || (row.section + " " + row.name + " " + row.value).toLowerCase().indexOf(query) !== -1;
+      var searchable = (text(row.section) + " " + text(row.name)).toLowerCase();
+      var levelMatches = !selectedLevel || text(row.level).toLowerCase() === selectedLevel;
+      return (!query || searchable.indexOf(query) !== -1) && levelMatches;
     });
+    var pageSize = pageSizeSelect.value === "all" ? Math.max(visible.length, 1) : Number(pageSizeSelect.value) || 25;
     var pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
     currentPage = Math.min(currentPage, pageCount);
     var first = (currentPage - 1) * pageSize;
     var pageRows = visible.slice(first, first + pageSize);
+    tableBody.replaceChildren();
+
     if (!visible.length) {
       var empty = document.createElement("tr");
-      empty.className = "empty-row";
-      var cell = document.createElement("td");
-      cell.colSpan = 6;
-      cell.textContent = query ? "Không có option phù hợp." : "Cụm không trả về option nào.";
-      empty.appendChild(cell);
+      empty.className = "config-empty-row";
+      var emptyCell = document.createElement("td");
+      emptyCell.colSpan = 4;
+      emptyCell.textContent = query || selectedLevel ? "Không có option phù hợp." : "Cụm không trả về option nào.";
+      empty.appendChild(emptyCell);
       tableBody.appendChild(empty);
     } else {
+      var groups = [];
+      var bySection = Object.create(null);
       pageRows.forEach(function (row) {
-        var tr = document.createElement("tr");
-        [row.section, row.name, row.value, row.level, row.can_update_at_runtime ? "Có" : "Không"].forEach(function (value) {
-          var td = document.createElement("td");
-          td.textContent = value == null ? "" : String(value);
-          tr.appendChild(td);
+        var key = text(row.section) || "unknown";
+        if (!bySection[key]) {
+          bySection[key] = { section: key, rows: [] };
+          groups.push(bySection[key]);
+        }
+        bySection[key].rows.push(row);
+      });
+      groups.forEach(function (group) {
+        var collapsed = expandedSections[group.section] === false;
+        var sectionRow = document.createElement("tr");
+        sectionRow.className = "config-section-row" + (collapsed ? " is-collapsed" : "");
+        var sectionCell = document.createElement("th");
+        sectionCell.colSpan = 4;
+        sectionCell.scope = "rowgroup";
+        var sectionButton = document.createElement("button");
+        sectionButton.type = "button";
+        sectionButton.className = "config-section-toggle";
+        sectionButton.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        sectionButton.innerHTML = '<span class="config-section-chevron" aria-hidden="true">' + (collapsed ? "▶" : "▼") + '</span>';
+        var sectionName = document.createElement("span");
+        sectionName.className = "config-section-name";
+        sectionName.textContent = group.section;
+        sectionButton.appendChild(sectionName);
+        var sectionCount = document.createElement("span");
+        sectionCount.className = "config-section-count";
+        sectionCount.textContent = group.rows.length + " options";
+        sectionButton.appendChild(sectionCount);
+        sectionButton.addEventListener("click", function () {
+          expandedSections[group.section] = collapsed;
+          render();
         });
-        var actions = document.createElement("td");
-        var edit = document.createElement("button");
-        edit.type = "button";
-        edit.className = "btn";
-        edit.textContent = "Sửa";
-        edit.addEventListener("click", function () {
-          actionInput.value = "set";
-          sectionInput.value = row.section;
-          nameInput.value = row.name;
-          valueInput.value = row.redacted ? "" : (row.value || "");
-          valueInput.required = Boolean(row.redacted);
-          submitButton.textContent = "Cập nhật";
-          resetButton.hidden = false;
-          valueInput.focus();
-          status.textContent = row.redacted
-            ? "Option nhạy cảm đã được che; nhập giá trị mới rồi bấm Cập nhật."
-            : "Đang sửa " + row.section + "." + row.name + ".";
+        sectionCell.appendChild(sectionButton);
+        sectionRow.appendChild(sectionCell);
+        tableBody.appendChild(sectionRow);
+
+        if (collapsed) return;
+        group.rows.forEach(function (row) {
+          var tr = document.createElement("tr");
+          tr.className = "config-option-row";
+          var option = document.createElement("td");
+          option.className = "config-option-cell";
+          option.textContent = text(row.name);
+          tr.appendChild(option);
+          tr.appendChild(makeValueCell(row));
+          var level = document.createElement("td");
+          level.className = "config-level-cell";
+          level.appendChild(makeLevelBadge(row.level));
+          tr.appendChild(level);
+          var actions = document.createElement("td");
+          actions.className = "config-actions-cell";
+          actions.appendChild(makeActionButton("✏️", "Sửa " + row.section + "." + row.name, function () { startEdit(row); }));
+          actions.appendChild(makeActionButton("🗑️", "Xóa " + row.section + "." + row.name, function () { deleteRow(row); }));
+          tr.appendChild(actions);
+          tableBody.appendChild(tr);
         });
-        actions.appendChild(edit);
-        var remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "btn";
-        remove.textContent = "Xóa";
-        remove.addEventListener("click", function () {
-          if (!window.confirm("Xóa option " + row.section + "." + row.name + " và restart RGW?")) return;
-          var deleteForm = document.createElement("form");
-          deleteForm.method = "post";
-          deleteForm.action = "/openstack/config-dump?cluster=" + encodeURIComponent(panel.dataset.cluster || "");
-          [["action", "rm"], ["section", row.section], ["name", row.name]].forEach(function (entry) {
-            var input = document.createElement("input");
-            input.type = "hidden";
-            input.name = entry[0];
-            input.value = entry[1];
-            deleteForm.appendChild(input);
-          });
-          document.body.appendChild(deleteForm);
-          deleteForm.submit();
-        });
-        actions.appendChild(document.createTextNode(" "));
-        actions.appendChild(remove);
-        tr.appendChild(actions);
-        tableBody.appendChild(tr);
       });
     }
+
     tableWrap.hidden = false;
-    pagination.hidden = visible.length <= pageSize;
-    previousButton.disabled = currentPage <= 1;
-    nextButton.disabled = currentPage >= pageCount;
-    pageStatus.textContent = "Trang " + currentPage + "/" + pageCount;
+    pagination.hidden = !visible.length;
+    countBadge.textContent = rows.length + " options";
     var last = Math.min(first + pageRows.length, visible.length);
-    status.textContent = visible.length
-      ? "Hiển thị " + (first + 1) + "–" + last + "/" + visible.length + " option (tổng " + rows.length + ")."
-      : "Không có option phù hợp.";
+    pageStatus.textContent = "Hiển thị " + (visible.length ? first + 1 : 0) + "–" + last + " / " + visible.length + " options";
+    renderPagination(pageCount);
+    if (visible.length) status.textContent = "Đang hiển thị " + visible.length + " option phù hợp.";
+    else status.textContent = query || selectedLevel ? "Không có option phù hợp." : "Cụm không trả về option nào.";
   }
 
   function loadConfig() {
@@ -122,10 +271,12 @@
         rows = Array.isArray(body.rows) ? body.rows : [];
         currentPage = 1;
         render();
-        status.textContent = "Cụm " + ((body.cluster && body.cluster.name) || "đang chọn") + ": " + rows.length + " option.";
+        status.textContent = "Cụm " + ((body.cluster && body.cluster.name) || "đang chọn") + ": " + rows.length + " options.";
       })
       .catch(function (reason) {
         tableWrap.hidden = true;
+        pagination.hidden = true;
+        countBadge.textContent = "0 options";
         error.textContent = reason.message || "Không tải được cấu hình Ceph";
         error.hidden = false;
         status.textContent = "Chưa tải dữ liệu.";
@@ -133,20 +284,13 @@
       .finally(function () { loadButton.disabled = false; });
   }
 
+  editorToggle.addEventListener("click", function () {
+    setEditorOpen(editorContent.hidden);
+  });
   loadButton.addEventListener("click", loadConfig);
-
-  previousButton.addEventListener("click", function () {
-    if (currentPage > 1) { currentPage -= 1; render(); }
-  });
-  nextButton.addEventListener("click", function () {
-    var pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
-    if (currentPage < pageCount) { currentPage += 1; render(); }
-  });
-
-  filterInput.addEventListener("input", function () {
-    currentPage = 1;
-    if (rows.length) render();
-  });
+  filterInput.addEventListener("input", function () { currentPage = 1; render(); });
+  levelFilter.addEventListener("change", function () { currentPage = 1; render(); });
+  pageSizeSelect.addEventListener("change", function () { currentPage = 1; render(); });
 
   resetButton.addEventListener("click", function () {
     form.reset();
@@ -154,15 +298,14 @@
     valueInput.required = false;
     submitButton.textContent = "Tạo / Cập nhật";
     resetButton.hidden = true;
+    setEditorOpen(false);
     status.textContent = rows.length ? "Đã hủy chỉnh sửa." : "Chưa tải dữ liệu.";
   });
 
   form.addEventListener("submit", function (event) {
-    if (!window.confirm("Lưu thay đổi và restart toàn bộ RGW của cụm này?")) {
-      event.preventDefault();
-    }
+    if (!window.confirm("Lưu thay đổi và restart toàn bộ RGW của cụm này?")) event.preventDefault();
   });
 
-  // Load immediately so operators see the first page without an extra click.
+  setEditorOpen(false);
   loadConfig();
 })();

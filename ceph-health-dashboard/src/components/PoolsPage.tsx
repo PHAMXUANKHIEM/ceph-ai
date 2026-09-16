@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Brush,
+  Activity,
+  Database,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Grid3X3,
+  HardDrive,
   Info,
   Layers3,
   Pencil,
@@ -27,6 +30,8 @@ type PoolRow = {
   pgs: number;
   crush_rule: string;
   used: string;
+  used_bytes?: number | null;
+  total_bytes?: number | null;
   objects: number;
   read_iops: number;
   write_iops: number;
@@ -55,7 +60,7 @@ type SnapshotMeta = {
   last_error?: string | null;
 };
 
-const POOLS_PER_PAGE = 10;
+const POOLS_PER_PAGE = 25;
 
 function ToolbarButton({ icon: Icon, label, danger = false, disabled = false, onClick }: { icon: React.ElementType; label: string; danger?: boolean; disabled?: boolean; onClick?: () => void }) {
   return (
@@ -87,9 +92,16 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [columnsOpen, setColumnsOpen] = useState(false);
-  const [visible, setVisible] = useState<Record<string, boolean>>({ redundancy: true, pgs: true, crush_rule: true, used: true, objects: true, read_iops: true, write_iops: true });
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [visible, setVisible] = useState<Record<string, boolean>>({ redundancy: true, pgs: true, used: true, objects: true, read_iops: true, write_iops: true });
   const selectedRow = useMemo(() => rows.find((row) => row.name === selected), [rows, selected]);
   const filteredRows = useMemo(() => rows.filter((row) => `${row.name} ${row.redundancy} ${row.crush_rule}`.toLowerCase().includes(search.toLowerCase())), [rows, search]);
+  const usedBytes = useMemo(() => rows.map((row) => Number(row.used_bytes)).filter((value) => Number.isFinite(value) && value >= 0), [rows]);
+  const maxUsedBytes = Math.max(1, ...usedBytes);
+  const totalUsedBytes = usedBytes.reduce((total, value) => total + value, 0);
+  const totalObjects = useMemo(() => rows.reduce((total, row) => total + (Number(row.objects) || 0), 0), [rows]);
+  const totalReadIops = useMemo(() => rows.reduce((total, row) => total + (Number(row.read_iops) || 0), 0), [rows]);
+  const totalWriteIops = useMemo(() => rows.reduce((total, row) => total + (Number(row.write_iops) || 0), 0), [rows]);
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / POOLS_PER_PAGE));
   const currentPage = Math.min(page, totalPages);
   const paginatedRows = useMemo(
@@ -98,6 +110,14 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   );
   const actionLabels: Record<string, string> = { edit_pool: "cập nhật", scrub_pool: "scrub", delete_pool: "xóa", set_pool_protection: "đổi trạng thái bảo vệ" };
   const openSelected = (value: typeof modal) => { if (selectedRow) setModal(value); };
+  const formatBytes = (value: number) => {
+    if (!Number.isFinite(value)) return "—";
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let amount = Math.max(0, value);
+    let unit = 0;
+    while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
+    return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+  };
 
   useEffect(() => {
     let activeController: AbortController | null = null;
@@ -155,10 +175,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
     <div className="pools-workspace min-h-[620px]">
       <section className="pools-panel overflow-hidden border">
         <div className="border-b border-slate-200 px-5 pt-5">
-          <PageHeader
-            title="Pools"
-            breadcrumb={selectedRow ? <span className="page-header__breadcrumb">› {selectedRow.name}</span> : undefined}
-          />
+          <PageHeader title="Pools" />
           <nav className="mt-4 flex gap-7" aria-label="Pool navigation">
             <a href="/pools" className="relative inline-flex items-center gap-2 pb-3 text-sm font-semibold text-violet-700 after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-violet-600">
               <Layers3 size={17} /> Pools
@@ -178,15 +195,30 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
         {bootstrap.createSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu tạo pool đã được gửi tới Worker.</div>}
         {bootstrap.actionSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu {actionLabels[bootstrap.actionSuccess] || bootstrap.actionSuccess} pool đã được gửi tới Worker.</div>}
 
-        <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex flex-wrap gap-2">
-            <ToolbarButton icon={TrendingUp} label="Metrics" disabled={!selectedRow} onClick={() => openSelected("metrics")} />
+        <div className="pools-summary-grid" aria-label="Tổng quan Pools">
+          <article className="pool-summary-card is-blue"><span className="pool-summary-icon"><Database size={16} /></span><div><strong>{rows.length}</strong><span>Tổng Pools</span></div></article>
+          <article className="pool-summary-card is-cyan"><span className="pool-summary-icon"><HardDrive size={16} /></span><div><strong>{usedBytes.length ? formatBytes(totalUsedBytes) : "—"}</strong><span>Dung lượng đã dùng</span></div></article>
+          <article className="pool-summary-card is-violet"><span className="pool-summary-icon"><Activity size={16} /></span><div><strong>{totalObjects.toLocaleString()}</strong><span>Tổng Objects</span></div></article>
+          <article className="pool-summary-card is-green"><span className="pool-summary-icon"><TrendingUp size={16} /></span><div><strong>{(totalReadIops + totalWriteIops).toLocaleString()}</strong><span>Tổng IOPS</span></div></article>
+        </div>
+
+        <div className="pools-toolbar">
+          <div className="pools-toolbar-primary">
             {bootstrap.isAdmin && <ToolbarButton icon={Plus} label="Create" onClick={() => setCreateOpen(true)} />}
-            {bootstrap.isAdmin && <ToolbarButton icon={Pencil} label="Edit" disabled={!selectedRow} onClick={() => openSelected("edit")} />}
-            {bootstrap.isAdmin && <ToolbarButton icon={Brush} label="Scrub" disabled={!selectedRow} onClick={() => openSelected("scrub")} />}
-            <ToolbarButton icon={Info} label="Details" disabled={!selectedRow} onClick={() => openSelected("details")} />
-            {bootstrap.isAdmin && <ToolbarButton icon={X} label="Delete" danger disabled={!selectedRow} onClick={() => openSelected("delete")} />}
-            {bootstrap.isAdmin && selectedRow && <ToolbarButton icon={selectedRow.protected ? ShieldOff : Shield} label={selectedRow.protected ? "Unprotect" : "Protect"} onClick={() => openSelected("protection")} />}
+            <span className="pools-selection-hint">{selectedRow ? `Đã chọn: ${selectedRow.name}` : "Chọn một pool để xem thao tác"}</span>
+          </div>
+          <div className="pools-toolbar-secondary">
+            <div className="relative">
+              <ToolbarButton icon={ChevronDown} label="Actions" disabled={!selectedRow} onClick={() => setActionsOpen((value) => !value)} />
+              {actionsOpen && selectedRow && <div className="pools-actions-menu" role="menu">
+                <button type="button" role="menuitem" onClick={() => { openSelected("metrics"); setActionsOpen(false); }}><TrendingUp size={15} />Metrics</button>
+                {bootstrap.isAdmin && <button type="button" role="menuitem" onClick={() => { openSelected("edit"); setActionsOpen(false); }}><Pencil size={15} />Edit</button>}
+                {bootstrap.isAdmin && <button type="button" role="menuitem" onClick={() => { openSelected("scrub"); setActionsOpen(false); }}><Brush size={15} />Scrub</button>}
+                <button type="button" role="menuitem" onClick={() => { openSelected("details"); setActionsOpen(false); }}><Info size={15} />Details</button>
+                {bootstrap.isAdmin && <button type="button" role="menuitem" onClick={() => { openSelected("protection"); setActionsOpen(false); }}><Shield size={15} />{selectedRow.protected ? "Unprotect" : "Protect"}</button>}
+                {bootstrap.isAdmin && <button type="button" role="menuitem" className="is-danger" onClick={() => { openSelected("delete"); setActionsOpen(false); }}><X size={15} />Delete</button>}
+              </div>}
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <ToolbarButton icon={Search} label="Search" onClick={() => setSearchOpen((value) => !value)} />
@@ -195,17 +227,16 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
             </div>
           </div>
         </div>
-        {searchOpen && <div className="border-b border-slate-200 px-5 py-3"><label className="relative block max-w-md"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} autoFocus placeholder="Tìm theo tên, redundancy hoặc CRUSH rule..." className="h-9 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-violet-400" /></label></div>}
+        {searchOpen && <div className="border-b border-slate-200 px-5 py-3"><label className="relative block max-w-md"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} autoFocus placeholder="Tìm theo tên hoặc redundancy..." className="h-9 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-violet-400" /></label></div>}
 
         <div className="pools-table-wrap overflow-x-auto px-3 py-4 sm:px-5">
-          <table className="min-w-[1000px] w-full text-sm">
+          <table className="pool-table min-w-[920px] w-full text-sm">
             <thead>
               <tr className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="w-5 px-1 py-3"><span className="sr-only">Health</span></th>
+                <th className="pool-status-column px-3 py-3 text-left">Status</th>
                 <th className="px-3 py-3 text-left">Pool Name</th>
                 {visible.redundancy && <th className="px-3 py-3 text-left">Redundancy</th>}
                 {visible.pgs && <th className="px-3 py-3 text-right">#PGs</th>}
-                {visible.crush_rule && <th className="px-3 py-3 text-left">Crush Rule</th>}
                 {visible.used && <th className="px-3 py-3 text-right">Used disk space</th>}
                 {visible.objects && <th className="px-3 py-3 text-right">Objects</th>}
                 {visible.read_iops && <th className="px-3 py-3 text-right">Read IOPS</th>}
@@ -215,26 +246,25 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
             <tbody>
               {filteredRows.length === 0 ? (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={8}>
                     {rows.length === 0
                       ? <EmptyState icon={Layers3} message="Chưa có pool." hint="Tạo pool đầu tiên bằng nút Create." />
                       : <EmptyState icon={Search} message="Không tìm thấy pool phù hợp." hint="Thử đổi từ khoá tìm kiếm." />}
                   </td>
                 </tr>
-              ) : paginatedRows.map((row, index) => {
+              ) : paginatedRows.map((row) => {
                 const active = row.name === selected;
                 return (
                   <tr
                     key={row.name}
                     onClick={() => setSelected(row.name)}
-                    className={`${active ? "bg-blue-100" : index % 2 ? "bg-amber-50/70" : "bg-white"} cursor-pointer transition hover:bg-violet-50 focus-within:bg-violet-50`}
+                    className={`pool-row ${active ? "pool-row-selected" : ""}`}
                   >
-                    <td className="px-3 py-3"><span className="block h-2.5 w-2.5 rounded-full bg-orange-400 ring-2 ring-orange-100" /></td>
+                    <td className="pool-status-cell"><span className="pool-status-dot is-active" /><span>Active</span></td>
                     <td className="px-3 py-3 font-semibold text-slate-800">{row.name}</td>
                     {visible.redundancy && <td className="px-3 py-3 text-slate-600">{row.redundancy}</td>}
                     {visible.pgs && <td className="px-3 py-3 text-right tabular-nums">{row.pgs}</td>}
-                    {visible.crush_rule && <td className="px-3 py-3"><span className="rounded-full bg-slate-100 px-2.5 py-1 font-mono text-xs text-slate-600">{row.crush_rule}</span></td>}
-                    {visible.used && <td className="px-3 py-3 text-right tabular-nums">{row.used}</td>}
+                    {visible.used && <td className="pool-used-cell"><span>{row.used}</span>{Number.isFinite(Number(row.used_bytes)) && <span className="pool-used-meter" role="progressbar" aria-label={`${row.name} used disk space`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, Math.round((Number(row.used_bytes) / maxUsedBytes) * 100))}><i style={{ width: `${Math.max(3, Math.min(100, (Number(row.used_bytes) / maxUsedBytes) * 100))}%` }} /></span>}</td>}
                     {visible.objects && <td className="px-3 py-3 text-right tabular-nums">{row.objects.toLocaleString()}</td>}
                     {visible.read_iops && <td className="px-3 py-3 text-right tabular-nums">{row.read_iops.toLocaleString()}</td>}
                     {visible.write_iops && <td className="px-3 py-3 text-right tabular-nums">{row.write_iops.toLocaleString()}</td>}

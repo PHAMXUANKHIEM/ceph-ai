@@ -4,79 +4,82 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cinder Volume Backups — Ceph AIOps</title>
-  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}-cinder-backups-v2">
 </head>
 <body>
   {% include "_nav.html" %}
-  <main class="page backup-page">
-    <p class="hint">Đang xem Cinder Volume Backup của cụm <strong>{{ selected_cluster.name }}</strong>.</p>
-    {% if cinder_backup_success %}<p class="connection-status connection-ok">✓ {{ cinder_backup_success }}</p>{% endif %}
-    {% if cinder_backup_message %}<p class="connection-status connection-lost">⚠ {{ cinder_backup_message }}</p>{% endif %}
-    <section class="card">
-      <div class="card-header"><h1>Cinder Volume Backups</h1><span class="hint">Ceph / Vitastor</span></div>
-      <div class="card-body">
-        <p class="hint">Danh sách đọc trực tiếp từ Cinder bằng <code>openstack volume backup list</code>.</p>
-        <form method="get" action="{{ cinder_backup_base_path }}" class="cinder-backup-filters">
-          {% if selected_cluster %}<input type="hidden" name="cluster" value="{{ selected_cluster.id }}">{% endif %}
-          <label>ID backup
-            <input type="search" name="id" value="{{ cinder_backup_id_filter }}" placeholder="Lọc theo ID">
-          </label>
-          <label>Backend
-            <select name="backend">
-              <option value="">Tất cả backend</option>
-              <option value="ceph" {% if cinder_backup_backend_filter == "ceph" %}selected{% endif %}>Ceph</option>
-              <option value="vitastor" {% if cinder_backup_backend_filter == "vitastor" %}selected{% endif %}>Vitastor</option>
-              <option value="unknown" {% if cinder_backup_backend_filter == "unknown" %}selected{% endif %}>Không xác định</option>
-            </select>
-          </label>
-          <label>Volume type
-            <select name="volume_type">
-              <option value="">Tất cả volume type</option>
-              {% for volume_type in cinder_backup_volume_types %}
-              <option value="{{ volume_type }}" {% if cinder_backup_volume_type_filter|lower == volume_type|lower %}selected{% endif %}>{{ volume_type }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <button type="submit" class="btn btn-primary btn-sm">Lọc</button>
-          <a href="/cinder-backups" class="btn btn-ghost btn-sm">Xóa lọc</a>
-        </form>
-        <p class="hint cinder-backup-count">Hiển thị {{ cinder_backups|length }} / {{ cinder_backup_filtered }} backup{% if cinder_backup_filtered != cinder_backup_total %} sau khi lọc{% endif %}; tối đa 10 backup mỗi trang.</p>
-        {% if cinder_backup_error %}
-        <p class="error">Không đọc được Cinder backup: {{ cinder_backup_error }}</p>
-        {% elif cinder_backups %}
-        <div class="table-wrap backup-table-scroll"><table>
-          <thead><tr><th>Backup</th><th>Volume nguồn</th><th>Backend</th><th>Volume type</th><th>Trạng thái</th><th>Dung lượng</th><th>Thao tác</th></tr></thead>
-          <tbody>{% for item in cinder_backups %}<tr>
-            <td><strong>{{ item.name }}</strong><br><code>{{ item.id }}</code></td>
-            <td>{{ item.volume_name }}<br><code>{{ item.volume_id }}</code></td>
-            <td>{{ item.source_label }}</td>
-            <td><code>{{ item.volume_type }}</code></td>
-            <td>{{ item.status }}</td>
-            <td>{{ item.size_gib }} GiB</td>
-            <td>
-              <form method="post" action="{{ cinder_backup_base_path }}/{{ item.id }}/delete{% if cinder_backup_list_query %}?{{ cinder_backup_list_query }}{% endif %}" class="cinder-backup-delete-form">
-                <input type="hidden" name="csrf_token" value="{{ cinder_backup_csrf_token }}">
-                <input type="text" name="confirmation" placeholder="Nhập OK" aria-label="Nhập OK để xóa {{ item.id }}" autocomplete="off" pattern="OK" title="Nhập chính xác OK" required>
-                <button type="submit" class="btn btn-danger btn-sm">Xóa</button>
-              </form>
-            </td>
-          </tr>{% endfor %}</tbody>
-        </table></div>
-        {% if cinder_backup_page_count > 1 %}
-        <nav class="cinder-backup-pagination" aria-label="Phân trang Cinder Volume Backups">
-          {% if cinder_backup_page > 1 %}<a class="btn btn-ghost btn-sm" href="/cinder-backups?{{ cinder_backup_page_queries[cinder_backup_page - 1] }}">← Trước</a>{% endif %}
-          {% for page_number in range(1, cinder_backup_page_count + 1) %}
-          <a class="btn btn-sm {% if page_number == cinder_backup_page %}btn-primary{% else %}btn-ghost{% endif %}" href="/cinder-backups?{{ cinder_backup_page_queries[page_number] }}">{{ page_number }}</a>
-          {% endfor %}
-          {% if cinder_backup_page < cinder_backup_page_count %}<a class="btn btn-ghost btn-sm" href="/cinder-backups?{{ cinder_backup_page_queries[cinder_backup_page + 1] }}">Sau →</a>{% endif %}
-        </nav>
-        {% endif %}
-        {% else %}
-        <p class="hint">Chưa có Cinder Volume Backup nào.</p>
-        {% endif %}
+  {% set effective_page_size = cinder_backup_page_size if cinder_backup_page_size else 10 %}
+  <main class="page backup-page cinder-backups-redesign">
+    <section class="cinder-backups-heading">
+      <div>
+        <h1>Cinder Volume Backups <span class="cinder-backups-backend-chip" title="Storage backend đang sử dụng">Ceph / Vitastor</span></h1>
+        <p class="hint">Danh sách các bản backup volume từ OpenStack Cinder.</p>
       </div>
+      <span class="cinder-backups-cluster">Ceph / {{ selected_cluster.name }}</span>
     </section>
+    {% if cinder_backup_success %}<p class="connection-status connection-ok">✓ {{ cinder_backup_success }}</p>{% endif %}
+
+    {% if cinder_backup_error %}
+    <section class="cinder-backup-alert" role="alert" aria-labelledby="cinder-backup-alert-title">
+      <span class="cinder-backup-alert-icon" aria-hidden="true">✕</span>
+      <div class="cinder-backup-alert-content"><h2 id="cinder-backup-alert-title">Không thể kết nối Cinder</h2><p>{% if "Chưa cấu hình" in cinder_backup_error %}Chưa cấu hình OpenStack Controller và openrc cho cluster này.{% else %}Không đọc được danh sách backup từ Cinder cho cluster này.{% endif %}</p><p class="cinder-backup-alert-detail">{{ cinder_backup_error }}</p></div>
+      <a class="btn btn-ghost btn-sm" href="/settings{% if selected_cluster %}?cluster={{ selected_cluster.id }}{% endif %}">Đi đến Settings</a>
+    </section>
+    {% endif %}
+
+    <section class="cinder-backups-filter-card" aria-labelledby="cinder-backups-filter-title">
+      <div class="sr-only" id="cinder-backups-filter-title">Bộ lọc Cinder backups</div>
+      <form method="get" action="{{ cinder_backup_base_path }}" class="cinder-backups-filter-form">
+        {% if selected_cluster %}<input type="hidden" name="cluster" value="{{ selected_cluster.id }}">{% endif %}
+        <input type="hidden" name="page_size" value="{{ effective_page_size }}">
+        <label><span>Tìm theo ID</span><input type="search" name="id" value="{{ cinder_backup_id_filter }}" placeholder="Nhập ID backup..." autocomplete="off"></label>
+        <label><span>Backend</span><select name="backend"><option value="">Tất cả backend</option><option value="ceph" {% if cinder_backup_backend_filter == "ceph" %}selected{% endif %}>Ceph</option><option value="vitastor" {% if cinder_backup_backend_filter == "vitastor" %}selected{% endif %}>Vitastor</option><option value="unknown" {% if cinder_backup_backend_filter == "unknown" %}selected{% endif %}>Không xác định</option></select></label>
+        <label><span>Volume type</span><select name="volume_type"><option value="">Tất cả volume type</option>{% for volume_type in cinder_backup_volume_types %}<option value="{{ volume_type }}" {% if cinder_backup_volume_type_filter|lower == volume_type|lower %}selected{% endif %}>{{ volume_type }}</option>{% endfor %}</select></label>
+        <button type="submit" class="btn btn-primary cinder-backups-filter-submit"><span aria-hidden="true">⌕</span> Lọc</button>
+        <a href="{{ cinder_backup_base_path }}" class="cinder-backups-clear">Xóa lọc</a>
+      </form>
+    </section>
+
+    {% if cinder_backup_message %}<p class="connection-status connection-lost">⚠ {{ cinder_backup_message }}</p>{% endif %}
+    {% if not cinder_backup_error %}
+    <section class="cinder-backups-table-card" aria-labelledby="cinder-backups-table-title">
+      <div class="cinder-backups-table-heading"><div><h2 id="cinder-backups-table-title">Backup inventory</h2><p class="hint">Chọn một dòng để xem thông tin chi tiết.</p></div><span class="cinder-backup-count">{{ cinder_backup_filtered }} backups</span></div>
+      <div class="table-wrap cinder-backups-table-scroll"><table class="cinder-backups-table"><thead><tr><th>ID</th><th>Volume ID</th><th>Tên</th><th>Backend</th><th>Loại</th><th>Kích thước</th><th>Trạng thái</th><th>Thời gian</th><th>Actions</th></tr></thead><tbody>
+        {% for item in cinder_backups %}
+        <tr class="cinder-backup-row" tabindex="0" data-backup-index="{{ loop.index0 }}">
+          <td><code class="cinder-backup-id" title="{{ item.id }}">{{ item.id }}</code></td>
+          <td><code title="{{ item.volume_id }}">{{ item.volume_id }}</code></td>
+          <td><strong>{{ item.name }}</strong></td>
+          <td><span class="cinder-backup-backend cinder-backup-backend-{{ item.source }}">{{ item.source_label }}</span></td>
+          <td><code>{{ item.volume_type }}</code></td>
+          <td class="num">{{ item.size_gib }} GiB</td>
+          <td><span class="cinder-backup-status">{{ item.status }}</span></td>
+          <td><time title="{{ item.created_at or '—' }}">{{ item.created_at or '—' }}</time></td>
+          <td class="cinder-backup-actions-cell">
+            <div class="cinder-backup-actions">
+              <button type="button" class="btn btn-ghost btn-sm cinder-backup-detail-action" data-action="detail">Xem chi tiết</button>
+              <button type="button" class="btn btn-ghost btn-sm cinder-backup-restore-action" data-action="restore" title="Chưa có endpoint restore Cinder backup">Restore</button>
+              <button type="button" class="btn btn-danger btn-sm cinder-backup-delete-action" data-action="delete">Xóa</button>
+            </div>
+            <form method="post" action="{{ cinder_backup_base_path }}/{{ item.id }}/delete{% if cinder_backup_list_query %}?{{ cinder_backup_list_query }}{% endif %}" class="cinder-backup-delete-form" hidden>
+              <input type="hidden" name="csrf_token" value="{{ cinder_backup_csrf_token }}"><input type="text" name="confirmation" placeholder="Nhập OK" aria-label="Nhập OK để xóa {{ item.id }}" autocomplete="off" pattern="OK" title="Nhập chính xác OK" required><button type="submit" class="btn btn-danger btn-sm">Xác nhận</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody></table>{% if not cinder_backups %}<div class="cinder-backups-empty-state"><span aria-hidden="true">💾</span><h3>{{ "Không tìm thấy backup" if cinder_backup_filtered else "Chưa có backup nào" }}</h3><p>{{ "Thử thay đổi bộ lọc để xem các backup khác." if cinder_backup_filtered else "Các bản backup volume từ Cinder sẽ xuất hiện tại đây." }}</p></div>{% endif %}</div>
+      <nav class="cinder-backups-pagination" aria-label="Phân trang Cinder Volume Backups">
+        <span>Hiển thị {{ cinder_backups|length }} / {{ cinder_backup_filtered }} backups</span>
+        <div class="cinder-backups-pagination-controls"><form method="get" action="{{ cinder_backup_base_path }}"><input type="hidden" name="cluster" value="{{ selected_cluster.id }}"><input type="hidden" name="id" value="{{ cinder_backup_id_filter }}"><input type="hidden" name="backend" value="{{ cinder_backup_backend_filter }}"><input type="hidden" name="volume_type" value="{{ cinder_backup_volume_type_filter }}"><label>Rows/page<select name="page_size" onchange="this.form.submit()"><option value="10" {% if effective_page_size == 10 %}selected{% endif %}>10</option><option value="25" {% if effective_page_size == 25 %}selected{% endif %}>25</option><option value="50" {% if effective_page_size == 50 %}selected{% endif %}>50</option></select></label></form>{% if cinder_backup_page > 1 %}<a class="btn btn-ghost btn-sm" href="{{ cinder_backup_base_path }}?{{ cinder_backup_page_queries[cinder_backup_page - 1] }}">◀</a>{% else %}<button class="btn btn-ghost btn-sm" type="button" disabled>◀</button>{% endif %}<strong>{{ cinder_backup_page }} / {{ cinder_backup_page_count }}</strong>{% if cinder_backup_page < cinder_backup_page_count %}<a class="btn btn-ghost btn-sm" href="{{ cinder_backup_base_path }}?{{ cinder_backup_page_queries[cinder_backup_page + 1] }}">▶</a>{% else %}<button class="btn btn-ghost btn-sm" type="button" disabled>▶</button>{% endif %}</div>
+      </nav>
+    </section>
+    {% endif %}
+
+    <script type="application/json" id="cinder-backups-data">{{ cinder_backups|tojson }}</script>
+    <aside class="cinder-backup-detail-panel" id="cinder-backup-detail-panel" aria-labelledby="cinder-backup-detail-title" hidden><div class="cinder-backup-detail-header"><div><p class="eyebrow">Cinder backup</p><h2 id="cinder-backup-detail-title">Chi tiết backup</h2></div><button type="button" id="cinder-backup-detail-close" class="cinder-backup-detail-close" aria-label="Đóng">×</button></div><div id="cinder-backup-detail-content"></div></aside>
+    <div class="cinder-backup-detail-backdrop" id="cinder-backup-detail-backdrop" hidden></div>
   </main>
-  <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/app.js?v={{ static_version }}-cinder-backups-v2"></script>
+  <script src="/static/cinder_backups.js?v={{ static_version }}-cinder-backups-v2"></script>
 </body>
 </html>

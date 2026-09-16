@@ -426,6 +426,43 @@ def fetch_bucket_list_with(host: str, ssh_user: str, ssh_key_path: str,
         raise RgwLogError(f"RGW {host} trả về danh sách bucket không hợp lệ") from exc
 
 
+def fetch_s3_user_bucket_list(host: str, uid: str) -> list[str]:
+    """List buckets owned by one S3 user without returning object metadata."""
+    if settings.ceph_exec_mode not in ("cephadm", "none") and not settings.ceph_rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW.")
+    command = ceph_client.build_exec_command(
+        settings.ceph_exec_mode,
+        settings.ceph_rgw_container_name,
+        f"radosgw-admin bucket list --uid={shlex.quote(uid)} --format json",
+    )
+    try:
+        output = run_command_on_node(host, command)
+        return _bucket_names(json.loads(output))
+    except (TypeError, ValueError) as exc:
+        raise RgwLogError(f"RGW {host} trả về danh sách bucket của user không hợp lệ") from exc
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được bucket của S3 user trên {host}: {exc}") from exc
+
+
+def fetch_s3_user_bucket_list_with(host: str, uid: str, ssh_user: str, ssh_key_path: str,
+                                   exec_mode: str, rgw_container_name: str) -> list[str]:
+    """Cluster-scoped variant of fetch_s3_user_bucket_list."""
+    if exec_mode not in ("cephadm", "none") and not rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW cho cụm đang chọn.")
+    command = ceph_client.build_exec_command(
+        exec_mode,
+        rgw_container_name,
+        f"radosgw-admin bucket list --uid={shlex.quote(uid)} --format json",
+    )
+    try:
+        output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        return _bucket_names(json.loads(output))
+    except (TypeError, ValueError) as exc:
+        raise RgwLogError(f"RGW {host} trả về danh sách bucket của user không hợp lệ") from exc
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được bucket của S3 user trên {host}: {exc}") from exc
+
+
 def build_purge_bucket_command(bucket: str) -> str:
     """Build the closed command used by the admin-only delete-all flow."""
     # Tenant-qualified RGW bucket names may contain ``tenant/bucket``.
@@ -586,9 +623,35 @@ def fetch_s3_user_info_with(host: str, uid: str, ssh_user: str, ssh_key_path: st
     except Exception as exc:
         raise RgwLogError(f"Không lấy được thông tin S3 user trên {host}: {exc}") from exc
 
+def _mask_s3_access_key(value: object) -> str:
+    access_key = str(value or "").strip()
+    if len(access_key) <= 4:
+        return "••••"
+    return "••••••••" + access_key[-4:]
+
+
+def _summarize_s3_access_keys(raw_keys: object) -> list[dict]:
+    if not isinstance(raw_keys, list):
+        return []
+    result = []
+    for key in raw_keys:
+        if not isinstance(key, dict) or not key.get("access_key"):
+            continue
+        access_key = str(key["access_key"])
+        status = str(key.get("status") or "").strip().lower()
+        if key.get("revoked") or key.get("disabled"):
+            status = "revoked"
+        result.append({
+            "access_key_masked": _mask_s3_access_key(access_key),
+            "access_key_last4": access_key[-4:] if len(access_key) > 4 else "",
+            "created_at": key.get("created_at") or key.get("created") or key.get("create_date"),
+            "status": status or "active",
+        })
+    return result
+
 
 def summarize_s3_user(raw: dict) -> dict:
-    """Allowlist non-secret fields; key objects are deliberately discarded."""
+    """Allowlist metadata and masked key identifiers; never return key material."""
     user_quota = raw.get("user_quota") or {}
     bucket_quota = raw.get("bucket_quota") or {}
     return {
@@ -598,6 +661,7 @@ def summarize_s3_user(raw: dict) -> dict:
         "suspended": bool(raw.get("suspended", False)),
         "max_buckets": raw.get("max_buckets"),
         "key_count": len(raw.get("keys") or []),
+        "access_keys": _summarize_s3_access_keys(raw.get("keys")),
         "subuser_count": len(raw.get("subusers") or []),
         "caps": [str(cap.get("type")) for cap in (raw.get("caps") or []) if isinstance(cap, dict) and cap.get("type")],
         "user_quota_enabled": bool(user_quota.get("enabled", False)),
@@ -622,6 +686,8 @@ def build_s3_user_action_command(action: str, uid: str, params: dict) -> str:
         if params.get("email"):
             command += f" --email={shlex.quote(str(params['email']))}"
         return command + " --format json"
+    if action == "delete":
+        return f"radosgw-admin user rm --uid={quoted_uid}"
     if action in {"suspend", "enable"}:
         return f"radosgw-admin user {action} --uid={quoted_uid}"
     raise ValueError("Unsupported S3 user action")
