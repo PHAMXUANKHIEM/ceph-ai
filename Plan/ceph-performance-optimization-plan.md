@@ -635,3 +635,11 @@ Record before/after values for:
   `1920828c` is pushed to `origin/main`; rollback candidate is `2330c8a8`.
   Deployment remains blocked by the untracked `transfer/` directory and
   pending runtime ownership approval.
+- 2026-09-16: Refined the admin-only CRUSH Map workspace with snapshot status,
+  root selection, utilization bars, rule-step cards, paginated history details,
+  accessible controls, responsive layout, and reduced-motion handling. The
+  focused CRUSH gate passed 44 tests with one existing Starlette/httpx warning;
+  Python compile, JavaScript syntax, and Node 20 frontend build passed. Commit
+  `f329b361` is pushed to `origin/main`; deployment remains blocked by the
+  untracked `block_storage.py`/`transfer/` worktree changes and runtime
+  ownership approval.

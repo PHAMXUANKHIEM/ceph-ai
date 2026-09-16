@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 1920828ca789b76a7d40ebb378f93d03af428867
-  rollback_candidate_sha: 2330c8a840c26fb87b60aea77c68fc52f2d882cf
+  commit_sha: f329b361052aa6d80247e30acaaf9ae3807e37bd
+  rollback_candidate_sha: 1920828ca789b76a7d40ebb378f93d03af428867
   worktree: untracked_transfer_directory
-  release_commit: 1920828ca789b76a7d40ebb378f93d03af428867
+  release_commit: f329b361052aa6d80247e30acaaf9ae3807e37bd
   pushed_to_origin: true
 
 migrations:
@@ -94,6 +94,9 @@ verification:
   trash_usage_and_monitoring_wave_gate: 474_passed_11_warnings
   migration_round_trip_current_wave: passed_upgrade_head_downgrade_base_upgrade_head
   frontend_build_current_wave: passed_with_node_20
+  crush_map_workspace_gate: 44_passed_1_warning
+  crush_map_javascript_syntax: passed
+  crush_map_frontend_build: passed_with_node_20
   broad_current_candidate_gate: not_counted_concurrent_transfer_overlay_invalidated_run
   broad_segmented_current_candidate_gate:
     non_migration_suite: 3338_passed_3_broker_environment_failures_reproduced_then_isolated
