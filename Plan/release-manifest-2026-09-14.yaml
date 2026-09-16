@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: d89b18614de11b7cf67a491efff578a59ef4ef79
-  rollback_candidate_sha: d35beb5e8f5f8cc2cbda7004ac6f8c5b00e3bbda
+  commit_sha: 179480c5fe8d2a02edaa9f5f902d1080c72e485c
+  rollback_candidate_sha: a2747d2c965485b23b0fbb78414ad72f532ed49b
   worktree: clean
-  release_commit: d89b18614de11b7cf67a491efff578a59ef4ef79
+  release_commit: 179480c5fe8d2a02edaa9f5f902d1080c72e485c
   pushed_to_origin: true
 
 migrations:
@@ -51,9 +51,9 @@ message_broker:
     production_vhost: not_run_to_completion_shared_queue_has_live_consumers
 
 verification:
-  focused_feature_gate: 215_passed_1_deselected_1_warning
+  focused_feature_gate: 342_passed_1_deselected_1_warning
   broad_deterministic_gate: 3312_passed_9_deselected_29_warnings_segmented_7_groups_on_522e0f8a
-  broad_gate_note: single_process_gate_was_interrupted_by_remote_session_loss_without_summary; segmented_gate_completed_with_exit_code_zero_for_each_group_on_prior_release_sha; current_candidate_has_focused_regression_gate_only
+  broad_gate_note: single_process_gate_was_interrupted_by_remote_session_loss_without_summary; segmented_gate_completed_with_exit_code_zero_for_each_group_on_prior_release_sha; current_candidate_has_focused_regression_gate_342_passed_1_deselected_1_warning
   broad_gate_environment: production_code_repair_lock_isolated_to_temporary_gate_lock
   final_openstack_module_after_template_fix: 20_passed
   python_compile: passed
@@ -73,7 +73,7 @@ verification:
   javascript_syntax_current_sha: passed
   frontend_build_current_sha: passed_with_node_20
   current_runtime_health_observed: watcher_healthy_after_external_container_restart
-  retry_correlation_gate_current_sha: 215_passed_1_deselected_1_warning
+  retry_correlation_gate_current_sha: 342_passed_1_deselected_1_warning
 
 deployment_gate:
   deterministic_tests: passed

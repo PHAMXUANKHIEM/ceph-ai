@@ -508,7 +508,7 @@ Record before/after values for:
   metrics are now integrated into the read-only health MON fallback with a
   shared deadline. Authentication, host-key, command and data errors remain
   non-retryable; mutation paths are unchanged. Current retry/correlation
-  regression gate: 187 passed, 1 warning. No latency claim is made until
+  regression gate: 342 passed, 1 deselected, 1 warning. No latency claim is made until
   benchmark data is collected.
 - 2026-09-16: Phase 10 is in progress. Host-level SSH lease acquisition is
   now bounded by the command deadline; queue wait and queue-wait timeout are
@@ -539,3 +539,9 @@ Record before/after values for:
   p50 22.01 ms, p95 27.62 ms and max 56.60 ms. This is a local
   application/cache measurement, not a production HTTP or live-Ceph
   benchmark; the unauthenticated curl sample was discarded.
+- 2026-09-16: Added bounded cross-process health-lock acquisition, remote
+  TERM/KILL cleanup for cephadm command descendants, remediation-loop lock
+  sharing, and approval/dashboard copy cleanup. Current candidate focused
+  regression gate: 342 passed, 1 deselected, 1 warning; candidate commit
+  `179480c5` is pushed to `origin/main`. The broad segmented gate remains
+  recorded against the earlier release SHA until rerun end-to-end.
