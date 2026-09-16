@@ -126,6 +126,13 @@ class RepairConfig:
     # focused test can be impractical for an infrastructure-only correction.
     require_changed_tests: bool = False
     timeout_seconds: int = 1800
+    # Opt-in only for an isolated candidate worktree. This changes the AI
+    # provider permission mode, not the primary checkout.
+    full_access: bool = False
+    # Review-only callers can leave an uncommitted candidate for inspection.
+    create_commit: bool = True
+    preserve_candidate: bool = False
+    candidate_root: Path | None = None
     push: bool = False
     deploy_staging: bool = False
     promote_main: bool = False
@@ -161,6 +168,7 @@ class RepairResult:
     implementer_provider: str | None = None
     review_rounds: int = 0
     changed_files: list[str] | None = None
+    candidate_worktree: str | None = None
     test_output: str = ""
     error: str | None = None
 
@@ -216,7 +224,7 @@ class RepairProgressNotifier:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=1)
-        if result.status in {"PUSHED", "COMMITTED", "STAGING_VERIFIED", "PROMOTED"}:
+        if result.status in {"PUSHED", "COMMITTED", "PATCH_READY", "STAGING_VERIFIED", "PROMOTED"}:
             files = ", ".join(result.changed_files or []) or "không có"
             send_code_repair_alert(
                 "✅ AI CODE REPAIR THÀNH CÔNG\n"
@@ -563,16 +571,17 @@ def _role_account_dirs(config: RepairConfig, profile: str) -> tuple[Path, Path]:
     return root / "codex", root / "claude"
 
 
-def _validate_changes(worktree: Path) -> list[str]:
+def _validate_changes(worktree: Path, *, full_access: bool = False) -> list[str]:
     output = _run(["git", "status", "--porcelain"], cwd=worktree).stdout
     # .venv is the supervisor-created symlink to the already provisioned
     # test environment, never an AI-authored candidate change.
     files = [line[3:] for line in output.splitlines() if len(line) > 3 and line[3:] != ".venv"]
     if not files:
         raise RepairError("AI did not produce a patch")
-    invalid = [p for p in files if not p.startswith(ALLOWED_PREFIXES) or p.startswith(FORBIDDEN_PREFIXES)]
-    if invalid:
-        raise RepairError(f"AI changed paths outside the repair allowlist: {invalid}")
+    if not full_access:
+        invalid = [p for p in files if not p.startswith(ALLOWED_PREFIXES) or p.startswith(FORBIDDEN_PREFIXES)]
+        if invalid:
+            raise RepairError(f"AI changed paths outside the repair allowlist: {invalid}")
     diff = _candidate_diff(worktree, files, status_output=output)
     if DIFF_SECRET_RE.search(diff):
         raise RepairError("candidate diff appears to contain a credential")
@@ -601,6 +610,13 @@ def _candidate_diff(worktree: Path, files: list[str], *, status_output: str | No
 
 def _worktree_status(worktree: Path) -> str:
     return _run(["git", "status", "--porcelain"], cwd=worktree).stdout
+
+
+def _ensure_uncommitted_candidate(worktree: Path, base_revision: str) -> None:
+    """Reject an AI-created commit in a review-only candidate worktree."""
+    current_revision = _run(["git", "rev-parse", "HEAD"], cwd=worktree).stdout.strip()
+    if current_revision != base_revision:
+        raise RepairError("AI candidate must not create a commit or push changes")
 
 
 def _review_verdict(output: str) -> str:
@@ -690,7 +706,7 @@ def run_repair(evidence: str, config: RepairConfig, *, force: bool = False) -> R
                 ).total_seconds() > config.running_stale_seconds
             except ValueError:
                 stale_running = True
-        terminal = previous_status in {"PUSHED", "COMMITTED", "STAGING_VERIFIED", "PROMOTED"}
+        terminal = previous_status in {"PUSHED", "COMMITTED", "PATCH_READY", "STAGING_VERIFIED", "PROMOTED"}
         exhausted = previous_attempts >= config.max_pipeline_attempts
         if terminal or exhausted or (previous_status == "RUNNING" and not stale_running):
             return RepairResult(status="SKIPPED_DUPLICATE", fingerprint=fp, branch=previous.get("branch"))
@@ -706,10 +722,20 @@ def run_repair(evidence: str, config: RepairConfig, *, force: bool = False) -> R
         "attempt_count": previous_attempts + 1,
     }
     _save_state(config.state_file, state)
-    worktree_root = Path(tempfile.mkdtemp(prefix="ceph-ai-repair-"))
+    if config.preserve_candidate:
+        candidate_parent = config.candidate_root or config.state_file.parent / "candidates"
+        candidate_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        worktree_root = candidate_parent / branch.replace("/", "-")
+        if worktree_root.exists():
+            raise RepairError(f"candidate worktree already exists: {worktree_root}")
+        worktree_root.mkdir(mode=0o700)
+    else:
+        worktree_root = Path(tempfile.mkdtemp(prefix="ceph-ai-repair-"))
     planner_worktree = worktree_root / "planner"
     worktree = worktree_root / "repo"
     try:
+        if not config.create_commit and (config.push or config.deploy_staging or config.promote_main):
+            raise RepairError("review-only candidate cannot push or deploy without creating a commit")
         if not 0 <= int(config.max_review_rounds) <= 5:
             raise RepairError("max_review_rounds must be between 0 and 5")
         _run(["git", "fetch", config.remote, config.base_branch], cwd=config.repo)
@@ -780,6 +806,7 @@ Additional task constraints:
 
         notifier.update(25, "Đã có kế hoạch; đang tạo worktree Implementer")
         _run(["git", "worktree", "add", "-b", branch, str(worktree), f"{config.remote}/{config.base_branch}"], cwd=config.repo)
+        candidate_base_revision = _run(["git", "rev-parse", "HEAD"], cwd=worktree).stdout.strip()
         # Reuse the tested environment without copying credentials into the worktree.
         os.symlink(config.repo / ".venv", worktree / ".venv", target_is_directory=True)
         default_instructions = """You are repairing the Ceph AIOps application in an isolated Git worktree.
@@ -807,7 +834,8 @@ Observed application failure (credentials already redacted):
                 implementer_provider_spec, worktree, attempt_prompt, config.timeout_seconds,
                 claude_config_dir=implementer_claude_config_dir,
                 codex_home=implementer_codex_home,
-                model=config.implementer_model, mode="implement",
+                model=config.implementer_model,
+                mode="full-access" if config.full_access else "implement",
             )
             result.provider = provider
             result.implementer_provider = provider
@@ -827,7 +855,9 @@ Observed application failure (credentials already redacted):
             )
             if ai.returncode != 0:
                 raise RepairError(f"{provider} failed ({ai.returncode}):\n{ai.stdout[-6000:]}")
-            result.changed_files = _validate_changes(worktree)
+            if not config.create_commit:
+                _ensure_uncommitted_candidate(worktree, candidate_base_revision)
+            result.changed_files = _validate_changes(worktree, full_access=config.full_access)
             if config.require_changed_tests:
                 _validate_proactive_test_changes(worktree, result.changed_files)
             focused_command = _focused_test_command(
@@ -934,7 +964,8 @@ If changes are needed, list precise actionable corrections before that line.
                 implementer_provider_spec, worktree, prompt + feedback, config.timeout_seconds,
                 claude_config_dir=implementer_claude_config_dir,
                 codex_home=implementer_codex_home,
-                model=config.implementer_model, mode="implement",
+                model=config.implementer_model,
+                mode="full-access" if config.full_access else "implement",
             )
             result.provider = provider
             result.implementer_provider = provider
@@ -953,7 +984,9 @@ If changes are needed, list precise actionable corrections before that line.
             )
             if fix.returncode != 0:
                 raise RepairError(f"{provider} reviewer-fix failed ({fix.returncode}):\n{fix.stdout[-6000:]}")
-            result.changed_files = _validate_changes(worktree)
+            if not config.create_commit:
+                _ensure_uncommitted_candidate(worktree, candidate_base_revision)
+            result.changed_files = _validate_changes(worktree, full_access=config.full_access)
             if config.require_changed_tests:
                 _validate_proactive_test_changes(worktree, result.changed_files)
             correction_focused_command = _focused_test_command(
@@ -987,14 +1020,22 @@ If changes are needed, list precise actionable corrections before that line.
                     raise RepairError(f"test infrastructure failed after review fix:\n{correction_tests.stdout[-6000:]}")
                 raise RepairError(f"test gate failed after review fix ({correction_tests.returncode}):\n{correction_tests.stdout[-6000:]}")
 
-        _run(["git", "add", "--", *result.changed_files], cwd=worktree)
-        notifier.update(65, "Test đã đạt; đang tạo commit")
-        _run(["git", "commit", "-m", f"fix(ai-repair): resolve error {fp}"], cwd=worktree)
-        result.commit = _run(["git", "rev-parse", "HEAD"], cwd=worktree).stdout.strip()
-        if config.push:
-            notifier.update(75, "Đã commit; đang push branch sửa lỗi")
-            _run(["git", "push", "-u", config.remote, branch], cwd=worktree, timeout=120)
-        result.status = "PUSHED" if config.push else "COMMITTED"
+        if config.create_commit:
+            _run(["git", "add", "--", *result.changed_files], cwd=worktree)
+            notifier.update(65, "Test đã đạt; đang tạo commit")
+            _run(["git", "commit", "-m", f"fix(ai-repair): resolve error {fp}"], cwd=worktree)
+            result.commit = _run(["git", "rev-parse", "HEAD"], cwd=worktree).stdout.strip()
+            if config.push:
+                notifier.update(75, "Đã commit; đang push branch sửa lỗi")
+                _run(["git", "push", "-u", config.remote, branch], cwd=worktree, timeout=120)
+            result.status = "PUSHED" if config.push else "COMMITTED"
+        else:
+            # The nightly review intentionally stops at an uncommitted
+            # candidate. The candidate worktree is retained for inspection;
+            # no supervisor-side commit or push is performed.
+            result.status = "PATCH_READY"
+            if config.preserve_candidate:
+                result.candidate_worktree = str(worktree)
         if config.deploy_staging:
             if not config.push:
                 raise RepairError("staging deployment requires --push")
@@ -1020,9 +1061,12 @@ If changes are needed, list precise actionable corrections before that line.
     finally:
         if planner_worktree.exists():
             _run(["git", "worktree", "remove", "--force", str(planner_worktree)], cwd=config.repo, check=False)
-        if worktree.exists():
+        if worktree.exists() and not config.preserve_candidate:
             _run(["git", "worktree", "remove", "--force", str(worktree)], cwd=config.repo, check=False)
-        shutil.rmtree(worktree_root, ignore_errors=True)
+        if not config.preserve_candidate or not worktree.exists():
+            shutil.rmtree(worktree_root, ignore_errors=True)
+        elif worktree.exists():
+            result.candidate_worktree = str(worktree)
         state["attempts"][fp] = {
             **asdict(result), "attempt_count": previous_attempts + 1,
             "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -1079,7 +1123,7 @@ def main() -> int:
     result = run_repair(evidence, config, force=args.force)
     print(json.dumps(asdict(result), ensure_ascii=False, default=str))
     return 0 if result.status in {
-        "PUSHED", "COMMITTED", "STAGING_VERIFIED", "PROMOTED", "SKIPPED_DUPLICATE"
+        "PUSHED", "COMMITTED", "PATCH_READY", "STAGING_VERIFIED", "PROMOTED", "SKIPPED_DUPLICATE"
     } else 1
 
 
