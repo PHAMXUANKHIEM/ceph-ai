@@ -155,6 +155,28 @@ def _fast_osd_latency_monitor_default(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _fast_secondary_collectors_default(monkeypatch):
+    """Keep transition/heartbeat tests independent from live Ceph collectors.
+
+    ``run()`` executes several slower read-only scans on the first finite test
+    iteration.  These tests exercise the health transition state machine, not
+    the collectors themselves; allowing the default collector implementations
+    through makes them open SSH connections to the fixture MON addresses and
+    wait for real connect timeouts.  Collector-specific tests should patch
+    these names explicitly when they need to exercise a scan.
+    """
+    monkeypatch.setattr(watcher_main.crush_structure_monitor, "scan_and_store", lambda *_a, **_kw: None)
+    monkeypatch.setattr(watcher_main.crush_distribution_monitor, "sync_distribution", lambda *_a, **_kw: None)
+    monkeypatch.setattr(watcher_main.crush_skew_monitor, "check_crush_skew", lambda *_a, **_kw: {})
+    monkeypatch.setattr(
+        watcher_main.crush_skew_monitor,
+        "create_or_resolve_crush_skew_incidents",
+        lambda *_a, **_kw: None,
+    )
+    monkeypatch.setattr(watcher_main.capability_inventory, "scan_and_store", lambda *_a, **_kw: None)
+
+
 def test_run_calls_on_transition_only_when_status_changes(monkeypatch):
     statuses = [
         {"status": "HEALTH_OK"},
