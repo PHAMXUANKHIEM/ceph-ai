@@ -1558,7 +1558,11 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .chat-msg-assistant { align-self: flex-start; align-items: flex-start; max-width: 85%; }
 .chat-msg-dual-right { justify-self: stretch; align-items: flex-end; }
 .chat-msg-dual-right .chat-msg-meta { text-align: right; }
-.chat-msg-dual-right .chat-msg-bubble { border-radius: 12px 12px 2px 12px; }
+.chat-msg-dual-right /* min-width:0 phá vỡ min-width:auto mặc định của flex item. Thiếu nó,
+   bong bóng không co xuống dưới min-content của bảng bên trong, nên
+   bảng đẩy bong bóng rộng ra thay vì cuộn trong .chat-md-table-wrap. */
+.chat-msg-bubble { min-width: 0; border-radius: 12px 12px 2px 12px; }
+.chat-msg-assistant, .chat-msg-user { min-width: 0; }
 
 .chat-msg-meta { font-size: 10px; color: var(--text-faint); margin-bottom: 4px; }
 
