@@ -58,8 +58,8 @@ _AI_ENV_ALLOWLIST = (
 
 
 @contextmanager
-def _ai_process_environment():
-    """Yield a minimal environment for provider CLIs."""
+def _ai_process_environment(*, block_git_write: bool = False):
+    """Yield a minimal provider environment, optionally blocking Git writes."""
     isolated_home = Path(tempfile.mkdtemp(prefix="ceph-ai-ai-home-"))
     environment = {
         name: os.environ[name]
@@ -68,10 +68,28 @@ def _ai_process_environment():
     }
     environment["HOME"] = str(isolated_home)
     environment["TMPDIR"] = str(isolated_home)
+    git_guard = None
+    if block_git_write:
+        git_guard = Path(tempfile.mkdtemp(prefix="ceph-ai-git-guard-"))
+        real_git = shutil.which("git") or "/usr/bin/git"
+        wrapper = git_guard / "git"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            "for arg in \"$@\"; do\n"
+            "  case \"$arg\" in\n"
+            "    commit|push) echo 'git commit/push is disabled for this candidate' >&2; exit 97;;\n"
+            "  esac\n"
+            "done\n"
+            f"exec {shlex.quote(real_git)} \"$@\"\n"
+        )
+        wrapper.chmod(0o700)
+        environment["PATH"] = f"{git_guard}:{environment.get('PATH', os.defpath)}"
     try:
         yield environment
     finally:
         shutil.rmtree(isolated_home, ignore_errors=True)
+        if git_guard is not None:
+            shutil.rmtree(git_guard, ignore_errors=True)
 
 
 def summarize_evidence(evidence: str, *, max_chars: int = 360) -> str:
@@ -259,7 +277,7 @@ def _run(args: list[str], *, cwd: Path, timeout: int = 300, input_text: str | No
 
 def _run_ai_command(
     command: list[str], *, cwd: Path, prompt: str, provider: str,
-    model: str, timeout: int, task_kind: str,
+    model: str, timeout: int, task_kind: str, block_git_write: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run one CLI AI turn with the shared budget guard and content-free telemetry."""
     feature = "nightly_code_repair" if task_kind == "nightly-ai-improvement" else "code_repair"
@@ -271,7 +289,7 @@ def _run_ai_command(
     try:
         reservation_id = check_ai_budget(provider, model_id, len(prompt))
         budget_checked = True
-        with _ai_process_environment() as ai_env:
+        with _ai_process_environment(block_git_write=block_git_write) as ai_env:
             result = _run(
                 command,
                 cwd=cwd,
@@ -482,6 +500,55 @@ def cleanup_stale_worktrees(repo: Path, branches: list[str]) -> list[str]:
             )
             if result.returncode == 0:
                 removed.append(str(candidate))
+    return removed
+
+
+def cleanup_preserved_candidates(
+    repo: Path, candidate_root: Path, *, keep: int = 7, max_age_seconds: int = 14 * 86400,
+) -> list[str]:
+    """Remove only old nightly candidates under the dedicated candidate root."""
+    if not candidate_root.is_dir():
+        return []
+    listing = _run(["git", "worktree", "list", "--porcelain"], cwd=repo, check=False)
+    if listing.returncode != 0:
+        return []
+    root = candidate_root.resolve()
+    records: list[tuple[Path, str, float]] = []
+    path: Path | None = None
+    branch: str | None = None
+    for line in listing.stdout.splitlines() + [""]:
+        if line.startswith("worktree "):
+            path = Path(line.removeprefix("worktree "))
+        elif line.startswith("branch "):
+            branch = line.removeprefix("branch ")
+        elif not line and path is not None and branch is not None:
+            candidate = path.resolve()
+            try:
+                inside_root = candidate.parent.parent == root and candidate.name == "repo"
+                modified = candidate.parent.stat().st_mtime
+            except OSError:
+                inside_root = False
+                modified = 0.0
+            if inside_root and branch.startswith("refs/heads/ai-repair/"):
+                records.append((path, branch, modified))
+            path = None
+            branch = None
+    records.sort(key=lambda item: item[2], reverse=True)
+    now = time.time()
+    removed: list[str] = []
+    for index, (worktree, branch, modified) in enumerate(records):
+        if index < max(0, keep) and now - modified <= max(0, max_age_seconds):
+            continue
+        result = _run(
+            ["git", "worktree", "remove", "--force", str(worktree)],
+            cwd=repo, check=False,
+        )
+        if result.returncode != 0:
+            continue
+        branch_name = branch.removeprefix("refs/heads/")
+        _run(["git", "branch", "-D", branch_name], cwd=repo, check=False)
+        shutil.rmtree(worktree.parent, ignore_errors=True)
+        removed.append(str(worktree))
     return removed
 
 
@@ -877,6 +944,7 @@ Observed application failure (credentials already redacted):
                 command, cwd=worktree, prompt=attempt_prompt,
                 provider=provider, model=config.implementer_model,
                 timeout=config.timeout_seconds, task_kind=config.task_kind,
+                block_git_write=not config.create_commit,
             )
             _record_transcript(
                 config, speaker="Implementer", event="implementation", direction="from_ai",
@@ -1007,6 +1075,7 @@ If changes are needed, list precise actionable corrections before that line.
                 command, cwd=worktree, prompt=prompt + feedback,
                 provider=provider, model=config.implementer_model,
                 timeout=config.timeout_seconds, task_kind=config.task_kind,
+                block_git_write=not config.create_commit,
             )
             _record_transcript(
                 config, speaker="Implementer", event="review-fix", direction="from_ai",

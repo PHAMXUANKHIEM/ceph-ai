@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -292,6 +293,49 @@ def test_focused_test_command_can_unset_newer_runtime_settings():
         "CEPH_AI_ENV_FILE=/dev/null "
         "PYTHONPATH=. .venv/bin/pytest -q tests/test_code_repair.py"
     )
+
+
+def test_ai_process_environment_blocks_git_commit_and_push():
+    with code_repair._ai_process_environment(block_git_write=True) as environment:
+        blocked = subprocess.run(
+            ["git", "push"], env=environment, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+        )
+
+    assert blocked.returncode == 97
+    assert "disabled" in blocked.stdout
+
+
+def test_cleanup_preserved_candidates_is_scoped_and_retains_recent_entries(monkeypatch, tmp_path):
+    candidate_root = tmp_path / "candidates"
+    old_worktree = candidate_root / "ai-repair-old" / "repo"
+    recent_worktree = candidate_root / "ai-repair-recent" / "repo"
+    old_worktree.mkdir(parents=True)
+    recent_worktree.mkdir(parents=True)
+    os.utime(old_worktree.parent, (1, 1))
+    os.utime(recent_worktree.parent, None)
+    listing = "\n".join((
+        f"worktree {old_worktree}", "HEAD abc", "branch refs/heads/ai-repair/old", "",
+        f"worktree {recent_worktree}", "HEAD def", "branch refs/heads/ai-repair/recent", "",
+    ))
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if args[:4] == ["git", "worktree", "list", "--porcelain"]:
+            return type("Result", (), {"stdout": listing, "returncode": 0})()
+        return type("Result", (), {"stdout": "", "returncode": 0})()
+
+    monkeypatch.setattr(code_repair, "_run", fake_run)
+
+    removed = code_repair.cleanup_preserved_candidates(
+        tmp_path, candidate_root, keep=1, max_age_seconds=1,
+    )
+
+    assert removed == [str(old_worktree)]
+    assert not old_worktree.parent.exists()
+    assert recent_worktree.parent.exists()
+    assert ["git", "branch", "-D", "ai-repair/old"] in calls
 
 
 def test_transcript_records_bounded_jsonl_event(tmp_path):
