@@ -121,25 +121,82 @@ def _cached_rbd_trash(cluster, pool: str) -> list[dict]:
     size, so they must not pay for the scan.
     """
 
-    def load_measured() -> list[dict]:
-        query = ceph_client.query_rbd_trash if cluster.is_default else ceph_client.query_rbd_trash_with
-        args = (pool,) if cluster.is_default else (pool, *cluster_connection(cluster))
-        return query(*args)
-
     namespace, key = "rbd-trash", f"{cluster.id}:{pool}"
     cached = cached_ceph_query_value(namespace, key, max_age_seconds=900)
     if cached is not None:
         value, age_seconds = cached
         if age_seconds > _CEPH_PAGE_CACHE_TTL_SECONDS:
-            schedule_ceph_query_refresh(namespace, key, load_measured, _CEPH_PAGE_CACHE_TTL_SECONDS)
+            schedule_ceph_query_refresh(namespace, key, lambda: _load_rbd_trash_measured(cluster, pool), _CEPH_PAGE_CACHE_TTL_SECONDS)
         return value  # type: ignore[return-value]
     # Cold cache: the capacity scan measured 11s on a healthy cluster and 38s
     # when one MON timed out first. Never make an operator wait that out — and
     # never let a second concurrent request hit the cache's 5s lock wait, which
     # raised CacheLockError and blanked the page. Answer now from the cheap
     # listing and let the next load read the measured one.
-    schedule_ceph_query_refresh(namespace, key, load_measured, _CEPH_PAGE_CACHE_TTL_SECONDS)
+    schedule_ceph_query_refresh(namespace, key, lambda: _load_rbd_trash_measured(cluster, pool), _CEPH_PAGE_CACHE_TTL_SECONDS)
     return _query_rbd_trash_fast(cluster, pool)
+
+
+def _load_rbd_trash_measured(cluster, pool: str) -> list[dict]:
+    query = ceph_client.query_rbd_trash if cluster.is_default else ceph_client.query_rbd_trash_with
+    args = (pool,) if cluster.is_default else (pool, *cluster_connection(cluster))
+    return query(*args)
+
+
+def _prime_rbd_trash_cache(cluster, pool: str) -> None:
+    namespace, key = "rbd-trash", f"{cluster.id}:{pool}"
+    cached = cached_ceph_query_value(namespace, key, max_age_seconds=900)
+    if cached is None or cached[1] > _CEPH_PAGE_CACHE_TTL_SECONDS:
+        schedule_ceph_query_refresh(
+            namespace, key, lambda: _load_rbd_trash_measured(cluster, pool), _CEPH_PAGE_CACHE_TTL_SECONDS
+        )
+
+
+def _rbd_trash_cache_state(cluster, pool: str) -> dict:
+    cached = cached_ceph_query_value("rbd-trash", f"{cluster.id}:{pool}", max_age_seconds=900)
+    if cached is None:
+        return {"ready": False, "refreshing": True, "stale": False, "age_seconds": None}
+    _value, age_seconds = cached
+    return {
+        "ready": True,
+        "refreshing": age_seconds > _CEPH_PAGE_CACHE_TTL_SECONDS,
+        "stale": age_seconds > _CEPH_PAGE_CACHE_TTL_SECONDS,
+        "age_seconds": round(age_seconds, 1),
+    }
+
+
+def _summarize_cached_trash_rows(cluster, pool: str, rows: list[dict]) -> tuple[list[dict], dict]:
+    """Build the two capacity totals from a measured Trash cache snapshot."""
+    normalized_rows = [dict(row) for row in rows if isinstance(row, dict)]
+    usage_by_id = _trash_usage_by_id(
+        cluster, pool, [str(row.get("id")) for row in normalized_rows if row.get("id")]
+    )
+    for row in normalized_rows:
+        usage = usage_by_id.get(str(row.get("id")))
+        if usage is None:
+            continue
+        if row.get("used_size_bytes") is None:
+            row["used_size_bytes"] = usage.used_size_bytes
+        if row.get("size_bytes") is None:
+            row["size_bytes"] = usage.provisioned_size_bytes
+    retention_rows = [_trash_retention(row) for row in normalized_rows]
+    total_used, used_unknown = _partial_total([row.get("used_size_bytes") for row in normalized_rows])
+    total_provisioned, provisioned_unknown = _partial_total([row.get("size_bytes") for row in normalized_rows])
+    summary = {
+        "pool": pool,
+        "entry_count": len(normalized_rows),
+        "eligible_count": sum(1 for row in retention_rows if row["purge_eligible"]),
+        "protected_count": sum(1 for row in retention_rows if row["retention_kind"] == "ceph_protected"),
+        "expiring_count": sum(1 for row in retention_rows if row.get("expiring_soon")),
+        "total_used_size_bytes": total_used,
+        "total_used_size_human": _format_partial_bytes(total_used, used_unknown),
+        "total_used_size_unknown": used_unknown,
+        "total_provisioned_size_bytes": total_provisioned,
+        "total_provisioned_size_human": _format_partial_bytes(total_provisioned, provisioned_unknown),
+        "total_provisioned_size_unknown": provisioned_unknown,
+        "error": None,
+    }
+    return normalized_rows, summary
 
 
 def _query_rbd_trash_fast(cluster, pool: str) -> list[dict]:
@@ -435,16 +492,19 @@ def _volumes_page_context(
     trash_error: str | None = None
     trash_pending: dict[str, Action] = {}
     trash_bulk_pending: Action | None = None
+    trash_cache_state = {"ready": False, "refreshing": False, "stale": False, "age_seconds": None}
     vm_perf_action: Action | None = None
     if selected_view == "trash":
         cluster = _cluster_for_request(request)
-        # The landing page needs a cheap Trash listing so each pool card can
-        # show its real volume count.  The expensive capacity scan (rbd info
-        # and rados ls per entry) still runs only after an operator selects a
-        # pool, through _cached_rbd_trash().
+        # Warm the measured snapshot for every pool in the background. The
+        # first render still uses the cheap listing, while the next render or
+        # API poll can show capacity without opening each pool.
         trash_pools = [pool] if pool else list(pools)
         def fetch_trash(trash_pool: str):
-            return _cached_rbd_trash(cluster, trash_pool) if pool else _query_rbd_trash_fast(cluster, trash_pool)
+            if not pool:
+                _prime_rbd_trash_cache(cluster, trash_pool)
+                return _query_rbd_trash_fast(cluster, trash_pool)
+            return _cached_rbd_trash(cluster, trash_pool)
 
         # A trash listing is one independent RBD command per pool. Bound the
         # fan-out so large installations do not create an unbounded number
@@ -568,6 +628,8 @@ def _volumes_page_context(
             except (TypeError, ValueError) as exc:
                 logger.warning("_volumes_page_context: invalid trash response for pool %r: %s", trash_pool, exc)
                 trash_error = f"{trash_pool}: dữ liệu trash không hợp lệ"
+        if pool:
+            trash_cache_state = _rbd_trash_cache_state(cluster, pool)
         if cluster.is_default:
             if pool:
                 trash_bulk_pending = _in_flight_trash_purge_all_action(pool)
@@ -593,6 +655,7 @@ def _volumes_page_context(
         "trash_error": trash_error,
         "trash_pending": trash_pending,
         "trash_bulk_pending": trash_bulk_pending,
+        "trash_cache_state": trash_cache_state,
         "vm_perf_action": vm_perf_action,
         "purge_error": purge_error,
         "purge_success": purge_success,
@@ -750,6 +813,31 @@ async def trash_page(request: Request, user: str = Depends(require_login)):
             selected_view="trash",
         ),
     )
+
+
+@router.get("/api/volumes/{pool}/trash/summary")
+async def trash_summary_api(request: Request, pool: str, user: str = Depends(require_login)):
+    """Return the cached Trash capacity summary without blocking on Ceph."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        rows = await asyncio.to_thread(_cached_rbd_trash, cluster, pool)
+        cache_state = _rbd_trash_cache_state(cluster, pool)
+        if not cache_state["ready"]:
+            return JSONResponse({"ready": False, "refreshing": True, "pool": pool})
+        _rows, summary = _summarize_cached_trash_rows(cluster, pool, rows)
+        return JSONResponse({
+            "ready": True,
+            "refreshing": cache_state["refreshing"],
+            "stale": cache_state["stale"],
+            "age_seconds": cache_state["age_seconds"],
+            "pool": pool,
+            "summary": summary,
+        })
+    except (CephQueryError, CacheLockError) as exc:
+        logger.warning("trash_summary_api: %s", exc)
+        return JSONResponse({"ready": False, "refreshing": True, "pool": pool}, status_code=200)
 
 
 @router.get("/api/volumes/{pool}/iostat")

@@ -15,6 +15,36 @@
   const pageSummary = document.getElementById("trash-page-summary");
   const selectAll = document.getElementById("trash-select-all");
   const restoreSelected = document.getElementById("trash-restore-selected");
+
+  function applyCachedSummary(target, payload) {
+    const summary = payload && payload.summary;
+    if (!summary) return;
+    const used = target.querySelector('[data-trash-summary-field="used"]') || target.querySelector("[data-trash-used]");
+    const provisioned = target.querySelector('[data-trash-summary-field="provisioned"]') || target.querySelector("[data-trash-provisioned]");
+    const count = target.querySelector('[data-trash-summary-field="count"]') || target.querySelector("[data-trash-volume-count]");
+    if (used) used.textContent = summary.total_used_size_human || "—";
+    if (provisioned) provisioned.textContent = summary.total_provisioned_size_human || "—";
+    if (count && summary.entry_count !== undefined) count.innerHTML = `${summary.entry_count} <small>volume</small>`;
+  }
+
+  function startCapacityPolling() {
+    const targets = Array.from(document.querySelectorAll("[data-trash-summary-url]"));
+    if (!targets.length) return;
+    const poll = (target, attempt = 0) => {
+      if (attempt > 90 || !document.contains(target)) return;
+      fetch(target.dataset.trashSummaryUrl, { headers: { Accept: "application/json" }, credentials: "same-origin" })
+        .then((response) => response.ok ? response.json() : null)
+        .then((payload) => {
+          if (!payload) return;
+          if (payload.ready) applyCachedSummary(target, payload);
+          if (!payload.ready || payload.refreshing) window.setTimeout(() => poll(target, attempt + 1), 2000);
+        })
+        .catch(() => window.setTimeout(() => poll(target, attempt + 1), 5000));
+    };
+    targets.forEach((target) => poll(target));
+  }
+
+  startCapacityPolling();
   const deleteSelected = document.getElementById("trash-delete-selected");
 
   async function copyId(button) {

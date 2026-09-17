@@ -33,9 +33,10 @@
       <p class="hint">Chọn “Xem Trash” để tải dữ liệu của pool này</p>
       <div class="trash-pool-options">
         {% for summary in trash_pool_summaries %}
-        <a class="trash-pool-option" href="/trash?pool={{ summary.pool }}">
+        <a class="trash-pool-option" data-trash-pool-card data-trash-pool="{{ summary.pool }}" data-trash-summary-url="/api/volumes/{{ summary.pool|urlencode }}/trash/summary?cluster={{ selected_cluster.id|urlencode if selected_cluster else '' }}" href="/trash?pool={{ summary.pool }}">
           <span><code>{{ summary.pool }}</code><small>Pool RBD</small></span>
-          <strong>{{ summary.entry_count if summary.entry_count is not none else '—' }} <small>volume</small></strong>
+          <span class="trash-pool-capacity"><small>Đã dùng: <b data-trash-used>{{ summary.total_used_size_human if summary.total_used_size_human else '—' }}</b></small><small>Cấp phát: <b data-trash-provisioned>{{ summary.total_provisioned_size_human if summary.total_provisioned_size_human else '—' }}</b></small></span>
+          <strong data-trash-volume-count>{{ summary.entry_count if summary.entry_count is not none else '—' }} <small>volume</small></strong>
           <span class="trash-pool-arrow" aria-hidden="true">→</span>
         </a>
         {% endfor %}
@@ -46,14 +47,14 @@
     </section>
     {% else %}
     {% set summary = trash_selected_summary %}
-    <section class="trash-summary-bar" aria-labelledby="trash-summary-title">
+    <section class="trash-summary-bar" aria-labelledby="trash-summary-title" data-trash-cluster="{{ selected_cluster.id if selected_cluster else '' }}" data-trash-summary-url="/api/volumes/{{ selected_pool|urlencode }}/trash/summary?cluster={{ selected_cluster.id|urlencode if selected_cluster else '' }}">
       <div class="trash-summary-pool">
         <span class="trash-eyebrow">POOL</span>
         <h2 id="trash-summary-title"><code>{{ selected_pool }}</code></h2>
       </div>
       <div class="trash-summary-stat"><span>Volume</span><strong>{{ summary.entry_count if summary and summary.entry_count is not none else '—' }}</strong></div>
-      <div class="trash-summary-stat"><span>Đã dùng</span><strong>{{ summary.total_used_size_human if summary else '—' }}</strong></div>
-      <div class="trash-summary-stat"><span>Dung lượng cấp phát</span><strong>{{ summary.total_provisioned_size_human if summary else '—' }}</strong></div>
+      <div class="trash-summary-stat"><span>Đã dùng</span><strong data-trash-summary-field="used">{{ summary.total_used_size_human if summary else '—' }}</strong></div>
+      <div class="trash-summary-stat"><span>Dung lượng cấp phát</span><strong data-trash-summary-field="provisioned">{{ summary.total_provisioned_size_human if summary else '—' }}</strong></div>
       <div class="trash-summary-stat"><span>Sắp hết TTL <small>≤ 7 ngày</small></span><strong class="{% if summary and summary.expiring_count %}is-warning{% endif %}">{{ summary.expiring_count if summary and summary.expiring_count is not none else '—' }}</strong></div>
       <div class="trash-summary-stat"><span>Đang bảo vệ</span><strong>{{ summary.protected_count if summary and summary.protected_count is not none else '—' }}</strong></div>
       <div class="trash-summary-actions">
@@ -165,7 +166,7 @@
     {% endif %}
   </main>
 
-  {% if selected_pool %}<script src="/static/pagination.js?v={{ static_version }}"></script><script src="/static/trash.js?v={{ static_version }}&trash_layout=2"></script>{% endif %}
+  {% if selected_pool %}<script src="/static/pagination.js?v={{ static_version }}"></script>{% endif %}<script src="/static/trash.js?v={{ static_version }}&trash_layout=2"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>
 </body>
 </html>
