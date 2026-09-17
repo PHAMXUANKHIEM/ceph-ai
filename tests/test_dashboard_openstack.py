@@ -228,7 +228,7 @@ def test_create_auth_user_page_has_create_form(dashboard_client, monkeypatch):
     assert 'id="auth-create-title"' in response.text
     assert 'id="auth-user-search"' in response.text
     assert 'id="auth-user-type"' in response.text
-    assert 'id="auth-user-page-size"' in response.text
+    assert 'id="auth-user-page-summary"' in response.text
     assert 'class="auth-users-table"' in response.text
     assert "client." in response.text
     assert 'action="/openstack/auth-user/create?' in response.text

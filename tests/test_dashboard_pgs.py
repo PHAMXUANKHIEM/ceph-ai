@@ -27,7 +27,7 @@ def test_pool_name_mapping_supports_ceph_json_key_variants():
 def test_pg_filter_script_builds_pool_options_from_rendered_rows():
     script = (Path(pgs_route.__file__).resolve().parents[1] / "static" / "pgs.js").read_text()
     assert "pgData" in script
-    assert "pageSizeSelect" in script
+    assert "pageSize" in script
     assert "formatShortTimestamp" in script
     assert "stateMatches" in script
     assert "pg-osd-pill" in script
@@ -90,7 +90,7 @@ def test_pgs_page_returns_all_pgs_with_pool_and_scrub_details(dashboard_client, 
     assert 'id="pg-pagination"' in response.text
     assert 'id="pg-page-prev"' in response.text
     assert 'id="pg-page-next"' in response.text
-    assert '<option value="50" selected>50</option>' in response.text
+    assert 'id="pg-filter-result-pagination"' in response.text
     assert "Phân bố state" in response.text
     assert "Theo pool" in response.text
     assert 'data-pg-state="active+clean"' in response.text

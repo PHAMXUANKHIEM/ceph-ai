@@ -1009,12 +1009,18 @@ def test_object_browser_lists_bounded_metadata_and_continuation_marker(dashboard
 
     assert response.status_code == 200
     body = response.json()
+    # ?page_size= is accepted but ignored — the browser serves a fixed page
+    # (bucket_objects_api), so both objects come back, sorted by size desc.
     assert body["items"] == [{
+        "key": "logs/b.json", "size_bytes": 8, "size": "8 B",
+        "content_type": "application/json",
+        "last_modified": "2026-08-17T02:00:00Z", "etag": None, "version_id": None,
+    }, {
         "key": "logs/a.txt", "size_bytes": 4, "size": "4 B", "content_type": "text/plain",
         "last_modified": "2026-08-17T01:00:00Z", "etag": "abc", "version_id": "v1",
     }]
-    assert body["truncated"] is True
-    assert body["next_marker"] == "logs/a.txt"
+    assert body["truncated"] is False
+    assert body["next_marker"] is None
     assert calls == [("10.20.1.90", "archive", "", 101)]
 
 
