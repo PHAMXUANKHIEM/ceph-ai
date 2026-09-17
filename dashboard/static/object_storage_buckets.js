@@ -11,6 +11,25 @@ function bucketHighlightJSON(value) {
 }
 
 (function () {
+  document.querySelectorAll("[data-bucket-filter-select]").forEach(function (select) {
+    var field = select.parentElement;
+    var input = field.querySelector("input[type=hidden]");
+    var label = select.querySelector("[data-filter-label]");
+    if (!input || !label) return;
+    select.querySelectorAll("[data-filter-value]").forEach(function (option) {
+      option.addEventListener("click", function () {
+        input.value = option.dataset.filterValue;
+        label.textContent = option.textContent.trim();
+        select.querySelectorAll("[data-filter-value]").forEach(function (item) {
+          item.setAttribute("aria-selected", item === option ? "true" : "false");
+        });
+        select.removeAttribute("open");
+      });
+    });
+  });
+})();
+
+(function () {
   var drawer = document.getElementById("bucket-action-drawer");
   var backdrop = document.getElementById("bucket-action-backdrop");
   if (!drawer || !backdrop) return;
