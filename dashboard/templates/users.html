@@ -30,12 +30,14 @@
   <main class="page users-page">
     <div class="users-page-heading"><div><p class="users-eyebrow">ACCESS CONTROL</p><h1>Users</h1><p class="users-page-description">Quản lý tài khoản dashboard và quyền truy cập các tính năng vận hành.</p></div></div>
 
-    {% if user_create_error or user_create_success or user_toggle_error or user_chat_scope_success or user_delete_error or user_delete_success %}
+    {% if user_create_error or user_create_success or user_toggle_error or user_chat_scope_success or user_delete_error or user_delete_success or user_edit_error or user_edit_success or user_password_error or user_password_success %}
     <div class="users-feedback-stack">
       {% if user_create_error %}<p class="users-feedback is-error" data-user-toast>⚠️ {{ user_create_error }}<button type="button" class="users-feedback-dismiss" aria-label="Đóng thông báo">✕</button></p>{% endif %}
       {% if user_toggle_error or user_delete_error %}<p class="users-feedback is-error" data-user-toast>⚠️ {{ user_toggle_error or user_delete_error }}<button type="button" class="users-feedback-dismiss" aria-label="Đóng thông báo">✕</button></p>{% endif %}
+      {% if user_edit_error or user_password_error %}<p class="users-feedback is-error" data-user-toast>⚠️ {{ user_edit_error or user_password_error }}<button type="button" class="users-feedback-dismiss" aria-label="Đóng thông báo">✕</button></p>{% endif %}
       {% if user_create_success %}<p class="users-feedback is-success" data-user-toast>✅ {{ user_create_success }}<button type="button" class="users-feedback-dismiss" aria-label="Đóng thông báo">✕</button></p>{% endif %}
       {% if user_chat_scope_success or user_delete_success %}<p class="users-feedback is-success" data-user-toast>✅ {{ user_chat_scope_success or user_delete_success }}<button type="button" class="users-feedback-dismiss" aria-label="Đóng thông báo">✕</button></p>{% endif %}
+      {% if user_edit_success or user_password_success %}<p class="users-feedback is-success" data-user-toast>✅ {{ user_edit_success or user_password_success }}<button type="button" class="users-feedback-dismiss" aria-label="Đóng thông báo">✕</button></p>{% endif %}
     </div>
     {% endif %}
 
@@ -57,12 +59,13 @@
                 <td><span class="user-created-by">{{ u.created_by }}</span></td>
                 <td><time class="user-relative-time" data-created-at="{{ u.created_at.isoformat() }}" title="{{ u.created_at.strftime('%Y-%m-%d %H:%M') }}">{{ u.created_at.strftime("%Y-%m-%d %H:%M") }}</time></td>
                 <td class="user-actions-cell"><details class="user-actions-menu"><summary aria-label="Mở menu thao tác">⋮</summary><div class="user-actions-popover">
-                  <span class="user-menu-label">Thao tác với {{ u.username }}</span>
-                  <span class="user-menu-disabled" title="Chưa có chức năng chỉnh sửa hồ sơ">✏️ Chỉnh sửa</span>
-                  <span class="user-menu-disabled" title="Chưa có chức năng đổi mật khẩu">🔑 Đổi mật khẩu</span>
-                  <form method="post" action="/users/{{ u.id }}/toggle-ceph-chat-scope" class="inline-form">{% if u.is_admin %}<button type="submit" disabled title="Admin luôn không bị giới hạn">🤖 Quyền AI không giới hạn</button>{% else %}<button type="submit">🤖 {{ "Mở rộng quyền AI" if u.ceph_chat_restricted else "Giới hạn quyền AI" }}</button>{% endif %}</form>
-                  <form method="post" action="/users/{{ u.id }}/toggle-active" class="inline-form">{% if u.username == user %}<button type="submit" disabled title="Không thể tự vô hiệu hóa chính mình">⛔ {{ "Vô hiệu hóa" if u.is_active else "Kích hoạt lại" }}</button>{% else %}<button type="submit" class="{{ 'is-warning' if u.is_active else '' }}">{{ "⛔ Vô hiệu hóa" if u.is_active else "✅ Kích hoạt lại" }}</button>{% endif %}</form>
-                  {% if u.username == user %}<form method="post" action="/users/{{ u.id }}/delete" class="inline-form"><button type="submit" disabled title="Không thể tự xóa chính mình">🗑️ Xóa</button></form>{% else %}<form method="post" action="/users/{{ u.id }}/delete" class="inline-form" onsubmit="return confirm('Xóa vĩnh viễn user {{ u.username }}? Không thể hoàn tác.');"><button type="submit" class="is-danger">🗑️ Xóa</button></form>{% endif %}
+                  <span class="user-menu-label">{{ u.username }}</span>
+                  <button type="button" class="user-menu-action" data-user-edit data-user-id="{{ u.id }}" data-user-name="{{ u.username }}" data-user-admin="{{ 'true' if u.is_admin else 'false' }}" data-user-ai="{{ 'true' if u.is_admin or not u.ceph_chat_restricted else 'false' }}">✏️ Chỉnh sửa</button>
+                  <button type="button" class="user-menu-action" data-user-password data-user-id="{{ u.id }}" data-user-name="{{ u.username }}">🔑 Đổi mật khẩu</button>
+                  <form method="post" action="/users/{{ u.id }}/toggle-ceph-chat-scope" class="inline-form">{% if u.is_admin %}<button type="submit" disabled title="Admin luôn không bị giới hạn">🤖 Chat AI luôn bật</button>{% else %}<button type="submit">🤖 {{ "Tắt quyền Chat AI" if not u.ceph_chat_restricted else "Bật quyền Chat AI" }}</button>{% endif %}</form>
+                  <div class="user-menu-divider" role="separator"></div>
+                  <form method="post" action="/users/{{ u.id }}/toggle-active" class="inline-form" data-danger-action="{{ 'disable' if u.is_active else '' }}" data-danger-username="{{ u.username }}">{% if u.username == user %}<button type="submit" disabled title="Không thể tự vô hiệu hóa chính mình">⛔ {{ "Vô hiệu hóa tài khoản" if u.is_active else "Kích hoạt lại" }}</button>{% else %}<button type="submit" class="{{ 'is-warning' if u.is_active else '' }}">{{ "⛔ Vô hiệu hóa tài khoản" if u.is_active else "✅ Kích hoạt lại" }}</button>{% endif %}</form>
+                  {% if u.username == user %}<form method="post" action="/users/{{ u.id }}/delete" class="inline-form" data-danger-action="delete" data-danger-username="{{ u.username }}"><button type="submit" disabled title="Không thể tự xóa chính mình">🗑️ Xóa tài khoản</button></form>{% else %}<form method="post" action="/users/{{ u.id }}/delete" class="inline-form" data-danger-action="delete" data-danger-username="{{ u.username }}"><button type="submit" class="is-danger">🗑️ Xóa tài khoản</button></form>{% endif %}
                 </div></details></td>
               </tr>
               {% else %}
@@ -89,6 +92,43 @@
       </aside>
     </div>
     <div class="users-drawer-backdrop" id="users-drawer-backdrop" hidden></div>
+
+    <div class="users-modal" id="user-edit-modal" hidden>
+      <div class="users-modal-backdrop" data-modal-close></div>
+      <section class="users-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="user-edit-title">
+        <div class="users-modal-header"><div><p class="users-card-kicker">ACCOUNT PROFILE</p><h2 id="user-edit-title">Chỉnh sửa user</h2></div><button type="button" class="users-modal-close" data-modal-close aria-label="Đóng">✕</button></div>
+        <form id="user-edit-form" method="post" action="">
+          <label class="user-form-field">Username<input type="text" name="edit_username" id="edit-username" required autocomplete="off"></label>
+          <fieldset class="user-modal-fieldset"><legend>Vai trò</legend><label><input type="radio" name="edit_is_admin" value=""> User thường</label><label><input type="radio" name="edit_is_admin" value="on"> Admin</label></fieldset>
+          <label class="user-modal-check"><input type="checkbox" name="edit_chat_ai" id="edit-chat-ai"> Cho phép truy cập Chat AI không giới hạn</label>
+          <p class="hint" id="edit-chat-ai-hint">Admin luôn có quyền Chat AI không giới hạn.</p>
+          <div class="users-modal-actions"><button type="button" class="btn btn-ghost" data-modal-close>Hủy</button><button type="submit" class="btn btn-primary">Lưu thay đổi</button></div>
+        </form>
+      </section>
+    </div>
+
+    <div class="users-modal" id="user-password-modal" hidden>
+      <div class="users-modal-backdrop" data-modal-close></div>
+      <section class="users-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="user-password-title">
+        <div class="users-modal-header"><div><p class="users-card-kicker">SECURITY</p><h2 id="user-password-title">Đổi mật khẩu</h2></div><button type="button" class="users-modal-close" data-modal-close aria-label="Đóng">✕</button></div>
+        <form id="user-password-form" method="post" action="">
+          <p class="hint">Đặt mật khẩu mới cho <strong id="password-user-name"></strong>.</p>
+          <label class="user-form-field">Mật khẩu mới<span class="user-input-wrap"><input type="password" id="password-modal-new" name="new_password" autocomplete="new-password" minlength="8" required><button type="button" class="password-toggle" data-password-toggle="password-modal-new">👁️</button></span></label>
+          <label class="user-form-field">Nhập lại mật khẩu<span class="user-input-wrap"><input type="password" id="password-modal-confirm" name="new_password_confirm" autocomplete="new-password" minlength="8" required><button type="button" class="password-toggle" data-password-toggle="password-modal-confirm">👁️</button></span></label>
+          <div class="users-modal-actions"><button type="button" class="btn btn-ghost" data-modal-close>Hủy</button><button type="submit" class="btn btn-primary">Đổi mật khẩu</button></div>
+        </form>
+      </section>
+    </div>
+
+    <div class="users-modal" id="user-danger-modal" hidden>
+      <div class="users-modal-backdrop" data-modal-close></div>
+      <section class="users-modal-dialog users-danger-dialog" role="dialog" aria-modal="true" aria-labelledby="user-danger-title">
+        <div class="users-modal-header"><div><p class="users-card-kicker">CONFIRM ACTION</p><h2 id="user-danger-title">Xác nhận thao tác</h2></div><button type="button" class="users-modal-close" data-modal-close aria-label="Đóng">✕</button></div>
+        <p id="user-danger-message"></p>
+        <label class="user-form-field" id="user-danger-confirm-field" hidden>Nhập lại username để xác nhận<input type="text" id="user-danger-confirm-input" autocomplete="off" spellcheck="false"></label>
+        <div class="users-modal-actions"><button type="button" class="btn btn-ghost" data-modal-close>Hủy</button><button type="button" class="btn" id="user-danger-confirm">Xác nhận</button></div>
+      </section>
+    </div>
   </main>
 
   <script src="/static/users.js?v={{ static_version }}"></script>

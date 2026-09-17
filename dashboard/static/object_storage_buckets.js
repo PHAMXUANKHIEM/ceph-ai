@@ -190,6 +190,36 @@ function bucketHighlightJSON(value) {
 })();
 
 (function () {
+  var page = document.querySelector(".bucket-page");
+  var loading = document.querySelector(".bucket-load-state");
+  if (!page || !loading || loading.textContent.indexOf("Đang tải") === -1) return;
+
+  var attempts = 0;
+  var maxAttempts = 8;
+  function retryDelay() { return Math.min(10000, 1500 * attempts); }
+  function checkInventory() {
+    attempts += 1;
+    var params = new URLSearchParams(window.location.search);
+    params.set("cluster", page.dataset.cluster || "");
+    fetch("/api/object-storage/buckets?" + params.toString(), {cache: "no-store"})
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (data && !data.refreshing) {
+          window.location.reload();
+          return;
+        }
+        if (attempts < maxAttempts) window.setTimeout(checkInventory, retryDelay());
+        else loading.textContent = "RGW đang phản hồi chậm. Bấm tải lại để kiểm tra lại danh sách bucket.";
+      })
+      .catch(function () {
+        if (attempts < maxAttempts) window.setTimeout(checkInventory, retryDelay());
+        else loading.textContent = "Không kiểm tra được trạng thái RGW. Bấm tải lại để thử lại.";
+      });
+  }
+  window.setTimeout(checkInventory, 1500);
+})();
+
+(function () {
   var form = document.getElementById("bucket-delete-form");
   if (!form) return;
   var preview = document.getElementById("bucket-delete-preview");

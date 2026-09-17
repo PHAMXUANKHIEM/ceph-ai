@@ -91,4 +91,97 @@
   document.addEventListener("keydown", function (event) {
     if (event.key === "Escape") setDrawer(false);
   });
+
+  var activeModal = null;
+  var pendingDangerForm = null;
+  function showModal(modal) {
+    if (!modal) return;
+    activeModal = modal;
+    modal.hidden = false;
+    document.body.classList.add("users-modal-is-open");
+    var focusTarget = modal.querySelector("input:not([type=hidden]), button:not([data-modal-close])");
+    if (focusTarget) window.setTimeout(function () { focusTarget.focus(); }, 0);
+  }
+  function hideModal() {
+    if (activeModal) activeModal.hidden = true;
+    activeModal = null;
+    pendingDangerForm = null;
+    document.body.classList.remove("users-modal-is-open");
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-modal-close]"), function (button) {
+    button.addEventListener("click", hideModal);
+  });
+
+  var editModal = byId("user-edit-modal");
+  var editForm = byId("user-edit-form");
+  var editUsername = byId("edit-username");
+  var editChatAi = byId("edit-chat-ai");
+  Array.prototype.forEach.call(document.querySelectorAll("[data-user-edit]"), function (button) {
+    button.addEventListener("click", function () {
+      if (!editModal || !editForm) return;
+      var isAdmin = button.dataset.userAdmin === "true";
+      editForm.action = "/users/" + encodeURIComponent(button.dataset.userId) + "/edit";
+      if (editUsername) editUsername.value = button.dataset.userName || "";
+      var role = editModal.querySelector('input[name="edit_is_admin"][value="' + (isAdmin ? "on" : "") + '"]');
+      if (role) role.checked = true;
+      if (editChatAi) { editChatAi.checked = button.dataset.userAi === "true"; editChatAi.disabled = isAdmin; }
+      showModal(editModal);
+    });
+  });
+
+  var passwordModal = byId("user-password-modal");
+  var passwordForm = byId("user-password-form");
+  var passwordUserName = byId("password-user-name");
+  Array.prototype.forEach.call(document.querySelectorAll("[data-user-password]"), function (button) {
+    button.addEventListener("click", function () {
+      if (!passwordModal || !passwordForm) return;
+      passwordForm.action = "/users/" + encodeURIComponent(button.dataset.userId) + "/change-password";
+      if (passwordUserName) passwordUserName.textContent = button.dataset.userName || "user";
+      Array.prototype.forEach.call(passwordForm.querySelectorAll("input[type=password]"), function (input) { input.value = ""; });
+      showModal(passwordModal);
+    });
+  });
+
+  var dangerModal = byId("user-danger-modal");
+  var dangerMessage = byId("user-danger-message");
+  var dangerTitle = byId("user-danger-title");
+  var dangerField = byId("user-danger-confirm-field");
+  var dangerInput = byId("user-danger-confirm-input");
+  var dangerConfirm = byId("user-danger-confirm");
+  function syncDangerButton() {
+    if (!dangerConfirm) return;
+    dangerConfirm.disabled = !!(dangerField && !dangerField.hidden && (!dangerInput || dangerInput.value !== dangerInput.dataset.expected));
+  }
+  if (dangerInput) dangerInput.addEventListener("input", syncDangerButton);
+  Array.prototype.forEach.call(document.querySelectorAll("form[data-danger-action]"), function (form) {
+    if (!form.dataset.dangerAction) return;
+    form.addEventListener("submit", function (event) {
+      if (!dangerModal) return;
+      event.preventDefault();
+      pendingDangerForm = form;
+      var username = form.dataset.dangerUsername || "user";
+      var deleting = form.dataset.dangerAction === "delete";
+      if (dangerTitle) dangerTitle.textContent = deleting ? "Xóa tài khoản" : "Vô hiệu hóa tài khoản";
+      if (dangerMessage) dangerMessage.textContent = deleting
+        ? "Bạn có chắc muốn xóa vĩnh viễn user " + username + "? Hành động này không thể hoàn tác."
+        : "Bạn có chắc muốn vô hiệu hóa user " + username + "? User này sẽ không thể đăng nhập cho đến khi được kích hoạt lại.";
+      if (dangerField) dangerField.hidden = !deleting;
+      if (dangerInput) { dangerInput.value = ""; dangerInput.dataset.expected = username; }
+      if (dangerConfirm) {
+        dangerConfirm.textContent = deleting ? "Xóa vĩnh viễn" : "Vô hiệu hóa";
+        dangerConfirm.className = "btn " + (deleting ? "is-danger" : "is-warning");
+      }
+      syncDangerButton();
+      showModal(dangerModal);
+    });
+  });
+  if (dangerConfirm) {
+    dangerConfirm.addEventListener("click", function () {
+      if (!pendingDangerForm || dangerConfirm.disabled) return;
+      pendingDangerForm.submit();
+    });
+  }
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && activeModal) hideModal();
+  });
 })();

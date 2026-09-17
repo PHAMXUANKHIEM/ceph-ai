@@ -2,6 +2,7 @@ import dashboard.routes.object_storage as object_storage_route
 from datetime import datetime, timezone
 import json
 import bcrypt
+from types import SimpleNamespace
 from config.settings import settings
 from shared import db
 from shared.models import Cluster, ObjectStorageAuditEntry, User
@@ -65,6 +66,43 @@ def test_inventory_page_shows_empty_state_without_sample_buckets(dashboard_clien
     assert 'id="bucket-render-guard"' in response.text
     assert 'id="s3-setting-form"' in response.text
     assert 'class="bucket-feature-panel"' not in response.text
+
+
+def test_inventory_page_shows_loading_state_instead_of_false_empty_state(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route, "_cached_inventory", lambda *args, **kwargs: {
+        "items": [], "query": "", "owner": "", "quota": "all", "usage": "all",
+        "sort": "name", "order": "asc", "page": 1, "page_count": 1, "page_size": 10,
+        "total": 0, "rgw_endpoint": "", "rgw_endpoints": [], "zonegroup_api_name": "default",
+        "refreshing": True,
+    })
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/object-storage/buckets")
+
+    assert response.status_code == 200
+    assert "bucket-loading-placeholder" in response.text
+    assert "Đang tải danh sách bucket…" in response.text
+    assert ".bucket-empty-state-card:not(.bucket-loading-placeholder)" in response.text
+
+
+def test_bucket_list_cache_is_invalidated_after_cluster_mutation(monkeypatch):
+    calls = []
+    cluster = SimpleNamespace(id="bucket-cache-regression", is_default=True)
+    monkeypatch.setattr(object_storage_route, "_uses_mocked_rgw_client", lambda: False)
+    monkeypatch.setattr(
+        object_storage_route,
+        "_load_bucket_list_from_first_reachable_rgw",
+        lambda current_cluster, hosts: calls.append(hosts) or (hosts[0], ["fresh-bucket"]),
+    )
+    object_storage_route.invalidate_object_storage_cache(cluster.id, "bucket-list")
+
+    first = object_storage_route._list_from_first_reachable_rgw(cluster, ["10.0.0.1"])
+    object_storage_route.invalidate_object_storage_cache(cluster.id, "bucket-list")
+    second = object_storage_route._list_from_first_reachable_rgw(cluster, ["10.0.0.1"])
+
+    assert first == second == ("10.0.0.1", ["fresh-bucket"])
+    assert len(calls) == 2
 
 
 def test_bucket_inventory_reuses_cluster_cache(dashboard_client, monkeypatch):
@@ -959,6 +997,21 @@ def test_bucket_detail_shows_unknown_optional_capabilities_truthfully(dashboard_
     assert "Không có trong bucket stats" in response.text
 
 
+def test_bucket_detail_uses_background_loading_shell(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route, "_cached_detail", lambda *args: {
+        "loading": True, "name": "archive",
+    })
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/object-storage/buckets/archive")
+
+    assert response.status_code == 200
+    assert 'id="bucket-detail-loading"' in response.text
+    assert "Đang tải metadata từ RGW…" in response.text
+    assert 'id="object-browser"' not in response.text
+
+
 def test_bucket_detail_summarizes_request_and_error_trend(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["archive"])
@@ -973,10 +1026,63 @@ def test_bucket_detail_summarizes_request_and_error_trend(dashboard_client, monk
     response = dashboard_client.get("/object-storage/buckets/archive")
 
     assert response.status_code == 200
-    assert "3</strong> request" in response.text
-    assert "2</strong> lỗi HTTP 4xx/5xx" in response.text
-    assert "66.7%" in response.text
-    assert response.text.count("2026-08-17T0") >= 2
+    assert "Đang tải activity…" in response.text
+
+    activity = dashboard_client.get("/api/object-storage/buckets/archive/activity")
+    assert activity.status_code == 200
+    body = activity.json()["activity"]
+    assert body["total"] == 3
+    assert body["errors"] == 2
+    assert body["error_rate"] == 66.7
+    assert len(body["points"]) == 2
+
+
+def test_bucket_activity_cache_reuses_recent_read_and_invalidates(monkeypatch):
+    cluster = SimpleNamespace(id="activity-cache-regression", is_default=True)
+    calls = []
+    monkeypatch.setattr(
+        object_storage_route,
+        "_load_bucket_activity",
+        lambda current_cluster, host, name: calls.append((host, name)) or {
+            "available": True, "error": None, "total": 1, "errors": 0,
+            "error_rate": 0.0, "latest_request": None, "points": [],
+        },
+    )
+    object_storage_route.invalidate_object_storage_cache(cluster.id, "bucket-activity")
+
+    first = object_storage_route._bucket_activity(cluster, "10.0.0.1", "archive")
+    second = object_storage_route._bucket_activity(cluster, "10.0.0.1", "archive")
+
+    assert first == second
+    assert calls == [("10.0.0.1", "archive")]
+
+    object_storage_route.invalidate_object_storage_cache(cluster.id, "bucket-activity")
+    object_storage_route._bucket_activity(cluster, "10.0.0.1", "archive")
+    assert calls == [("10.0.0.1", "archive"), ("10.0.0.1", "archive")]
+
+
+def test_object_browser_default_page_fetches_only_one_probe_entry(monkeypatch):
+    cluster = SimpleNamespace(id="object-browser-regression", is_default=True)
+    monkeypatch.setattr(
+        object_storage_route, "_detail",
+        lambda current_cluster, bucket: {"host": "10.0.0.1"},
+    )
+    calls = []
+
+    def objects(host, bucket, marker, limit):
+        calls.append((host, bucket, marker, limit))
+        return [{"name": f"object-{index:02d}", "instance": "", "meta": {"size": index}}
+                for index in range(11)]
+
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_objects", objects)
+
+    result = object_storage_route._object_browser(
+        cluster, "archive", "", "", "", 10, "key", "asc"
+    )
+
+    assert calls == [("10.0.0.1", "archive", "", 11)]
+    assert len(result["items"]) == 10
+    assert result["truncated"] is True
 
 
 def test_object_browser_lists_bounded_metadata_and_continuation_marker(dashboard_client, monkeypatch):

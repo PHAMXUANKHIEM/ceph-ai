@@ -12,7 +12,8 @@
     <p><a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}">← Bucket Overview</a></p>
     <section class="card">
       <div class="card-header"><div><h2>{{ bucket }}</h2><p class="hint">Metadata read-only trên cụm <strong>{{ selected_cluster.name }}</strong>.</p></div></div>
-      {% if error %}<div class="card-body"><p class="error">Không tải được bucket: {{ error }}</p></div>{% elif detail %}
+      {% if error %}<div class="card-body"><p class="error">Không tải được bucket: {{ error }}</p></div>{% elif detail and detail.loading %}
+      <div class="card-body" id="bucket-detail-loading" data-bucket="{{ bucket }}" data-cluster="{{ selected_cluster.id }}"><p class="hint">Đang tải metadata từ RGW…</p><p class="hint">Trang sẽ tự cập nhật khi dữ liệu sẵn sàng.</p></div>{% elif detail %}
       <div class="table-wrap"><table><tbody>
         <tr><th>Owner</th><td>{{ detail.owner or "—" }}</td></tr><tr><th>Ngày tạo</th><td>{{ detail.creation_time or "—" }}</td></tr>
         <tr><th>Số object</th><td>{{ detail.num_objects }}</td></tr><tr><th>Dung lượng logic</th><td>{{ detail.size }}</td></tr>
@@ -27,7 +28,7 @@
       <div class="card-footer"><a class="btn btn-ghost btn-sm" href="/bucket-access-log?cluster={{ selected_cluster.id }}&amp;bucket={{ quote_bucket(bucket) }}">Mở Access Log của bucket này</a></div>
       {% endif %}
     </section>
-    {% if detail %}
+    {% if detail and not detail.loading and not detail.load_error %}
     <section class="card" id="object-browser" data-bucket="{{ bucket }}" data-owner="{{ detail.owner }}" data-cluster="{{ selected_cluster.id }}">
       <div class="card-header"><div><h2>Object Browser</h2><p class="hint">Read-only từ bucket index RGW; mỗi trang tối đa 100 object, không tải toàn bộ bucket vào bộ nhớ.</p></div></div>
       <div class="card-body">
@@ -61,14 +62,11 @@
       <pre id="presign-preview" class="command-preview" hidden></pre><div id="presign-confirm-wrap" hidden><label>Xác nhận object key<input id="presign-confirm"></label><button id="presign-execute" class="btn btn-danger btn-sm" type="button">Tạo URL</button></div><p id="presign-status" class="hint"></p><div id="presign-result"></div>
     </div></section>{% endif %}
     {% endif %}
-    {% if detail and detail.activity %}
-    <section class="card">
-      <div class="card-header"><div><h2>Request / Error trend</h2><p class="hint">Mẫu tối đa 12 giờ xuất hiện trong đoạn log RGW gần nhất; không phải metric retention dài hạn.</p></div></div>
-      <div class="card-body">
-        {% if not detail.activity.available %}<p class="hint">Không đọc được activity: {{ detail.activity.error }}</p>
-        {% else %}<p><strong>{{ detail.activity.total }}</strong> request · <strong>{{ detail.activity.errors }}</strong> lỗi HTTP 4xx/5xx · tỷ lệ lỗi <strong>{{ detail.activity.error_rate }}%</strong>{% if detail.activity.latest_request %} · gần nhất {{ detail.activity.latest_request }}{% endif %}</p>{% endif %}
-      </div>
-      {% if detail.activity.available and detail.activity.points %}<div class="table-wrap"><table><thead><tr><th>Giờ</th><th>Requests</th><th>Lỗi 4xx/5xx</th></tr></thead><tbody>{% for point in detail.activity.points %}<tr><td><time datetime="{{ point.hour }}">{{ point.hour }}</time></td><td>{{ point.requests }}</td><td>{{ point.errors }}</td></tr>{% endfor %}</tbody></table></div>{% elif detail.activity.available %}<div class="card-body"><p class="hint">Chưa có request nào trong đoạn log hiện tại.</p></div>{% endif %}
+    {% if detail and not detail.loading and not detail.load_error %}
+    <section class="card" id="bucket-activity" data-bucket="{{ bucket }}" data-cluster="{{ selected_cluster.id }}">
+      <div class="card-header"><div><h2>Request / Error trend</h2><p class="hint">Mẫu tối đa 12 giờ trong log RGW gần nhất; tải nền để không chặn trang detail.</p></div></div>
+      <div class="card-body"><p id="bucket-activity-status" class="hint">Đang tải activity…</p></div>
+      <div id="bucket-activity-table" class="table-wrap" hidden><table><thead><tr><th>Giờ</th><th>Requests</th><th>Lỗi 4xx/5xx</th></tr></thead><tbody id="bucket-activity-rows"></tbody></table></div>
     </section>
     {% endif %}
   </main>

@@ -467,8 +467,11 @@
     });
   }
 
-  // Kết nối Database: side-effect-free probe plus UI-only controls for the
-  // Database panel. The Settings sidebar/navigation above remains untouched.
+  // Kết nối Database: "Kiểm tra kết nối" is a side-effect-free SELECT 1
+  // probe (no migration, no .env write — see /settings/database/test in
+  // dashboard/routes/settings.py) so an operator can try a few
+  // host/port/credential combos before the real "Lưu & chuyển database"
+  // submit, which does migrate + restart everything.
   var dbTestBtn = document.getElementById("db-test-btn");
   if (dbTestBtn) {
     var dbHostInput = document.getElementById("db-host-input");
@@ -477,20 +480,15 @@
     var dbUsernameInput = document.getElementById("db-username-input");
     var dbPasswordInput = document.getElementById("db-password-input");
     var dbUrlInput = document.getElementById("db-url-input");
-    var dbSslModeInput = document.getElementById("db-ssl-mode-input");
-    var dbSslLabel = document.getElementById("db-ssl-label");
-    var dbSslMenu = document.getElementById("db-ssl-menu");
-    var dbSslTrigger = document.querySelector("#db-ssl-select .db-select-trigger");
-    var dbTimeoutInput = document.getElementById("db-connect-timeout");
-    var dbPasswordToggle = document.getElementById("db-password-toggle");
     var dbResultEl = document.getElementById("db-test-result");
-    var dbStatusChip = document.getElementById("db-status-chip");
-    var dbStatusText = document.getElementById("db-status-text");
-    var dbStatusMeta = document.getElementById("db-status-meta");
-    var dbCopyBtn = document.getElementById("db-copy-btn");
 
-    // Two input modes for the same underlying DATABASE_URL. Disable hidden
-    // controls so required fields in the inactive mode cannot block submit.
+    // Two input modes for the same underlying DATABASE_URL — "Nhập từng
+    // trường" (5 separate inputs) or "Nhập Database URL" (one pasted
+    // connection string, see _resolve_database_url in
+    // dashboard/routes/settings.py, which prefers the raw URL whenever
+    // it's non-blank). Only toggles which group is VISIBLE — the server
+    // decides which one actually applies, so submitting with the "wrong"
+    // group hidden-but-filled from a previous edit still behaves correctly.
     var dbModeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="db_input_mode"]'));
     var dbModeFields = Array.prototype.slice.call(document.querySelectorAll("[data-db-modes]"));
     if (dbModeRadios.length) {
@@ -499,27 +497,11 @@
         var mode = checked ? checked.value : "fields";
         dbModeFields.forEach(function (field) {
           field.hidden = field.getAttribute("data-db-modes") !== mode;
-          field.querySelectorAll("input, textarea, select").forEach(function (control) { control.disabled = field.hidden; });
         });
       };
       dbModeRadios.forEach(function (r) { r.addEventListener("change", applyDbModeVisibility); });
       applyDbModeVisibility();
     }
-
-    if (dbSslTrigger && dbSslMenu && dbSslModeInput) {
-      dbSslTrigger.addEventListener("click", function () { var open = dbSslMenu.hidden; dbSslMenu.hidden = !open; dbSslTrigger.setAttribute("aria-expanded", open ? "true" : "false"); });
-      dbSslMenu.querySelectorAll("[data-ssl-mode]").forEach(function (option) { option.addEventListener("click", function () { dbSslModeInput.value = option.getAttribute("data-ssl-mode"); dbSslLabel.textContent = dbSslModeInput.value; dbSslMenu.hidden = true; dbSslTrigger.setAttribute("aria-expanded", "false"); }); });
-      document.addEventListener("click", function (event) { if (!event.target.closest("#db-ssl-select")) { dbSslMenu.hidden = true; dbSslTrigger.setAttribute("aria-expanded", "false"); } });
-    }
-    if (dbPasswordToggle && dbPasswordInput) dbPasswordToggle.addEventListener("click", function () { var hidden = dbPasswordInput.type === "password"; dbPasswordInput.type = hidden ? "text" : "password"; dbPasswordToggle.setAttribute("aria-label", hidden ? "Ẩn mật khẩu" : "Hiện mật khẩu"); });
-    if (dbCopyBtn) dbCopyBtn.addEventListener("click", function () { var value = document.getElementById("db-connection-value").textContent.trim(); var copied = function () { dbCopyBtn.classList.add("is-copied"); dbCopyBtn.textContent = "✓ Đã copy!"; setTimeout(function () { dbCopyBtn.classList.remove("is-copied"); dbCopyBtn.textContent = "▣ Copy"; }, 2000); }; if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(value).then(copied).catch(function () { fallback(value); }); else fallback(value); function fallback(text) { var area = document.createElement("textarea"); area.value = text; document.body.appendChild(area); area.select(); try { document.execCommand("copy"); copied(); } finally { area.remove(); } } });
-
-    function refreshDatabaseStatus() {
-      if (!dbStatusChip) return;
-      fetch("/api/settings/database/status", { credentials: "same-origin" }).then(handleAuthRedirect).then(function (response) { if (!response.ok) throw new Error("HTTP " + response.status); return response.json(); }).then(function (data) { var ok = !!data.connected; dbStatusChip.className = "db-status-chip " + (ok ? "is-ok" : "is-error"); dbStatusText.textContent = ok ? "Đang kết nối" : "Mất kết nối"; dbStatusMeta.textContent = ok && data.latency_ms != null ? "~" + data.latency_ms + "ms" : ""; }).catch(function () { dbStatusChip.className = "db-status-chip is-error"; dbStatusText.textContent = "Mất kết nối"; dbStatusMeta.textContent = "Không kiểm tra được"; });
-    }
-    refreshDatabaseStatus();
-    setInterval(refreshDatabaseStatus, 30000);
 
     dbTestBtn.addEventListener("click", function () {
       dbTestBtn.disabled = true;
@@ -533,8 +515,6 @@
       body.set("db_name", dbNameInput.value.trim());
       body.set("db_username", dbUsernameInput.value.trim());
       body.set("db_password", dbPasswordInput.value);
-      body.set("db_ssl_mode", dbSslModeInput ? dbSslModeInput.value : "require");
-      body.set("db_connect_timeout", dbTimeoutInput ? dbTimeoutInput.value : "5");
       body.set("database_url_raw", dbUrlInput.value.trim());
 
       fetch("/settings/database/test", { method: "POST", credentials: "same-origin", body: body })
@@ -594,7 +574,9 @@
       var DB_MIGRATE_CAP = 97;
 
       dbForm.addEventListener("submit", function (event) {
-        if (event.defaultPrevented) return;
+        if (event.defaultPrevented) {
+          return; // the existing confirm() onsubmit handler already vetoed this submit
+        }
         dbSaveBtn.disabled = true;
         if (dbTestBtn) dbTestBtn.disabled = true;
         dbProgressEl.hidden = false;
@@ -627,12 +609,6 @@
         }, 400);
       });
     }
-    var dbResetForm = document.getElementById("db-reset-form");
-    var dbResetBtn = document.getElementById("db-reset-btn");
-    if (dbResetForm && dbResetBtn) dbResetForm.addEventListener("submit", function (event) { if (event.defaultPrevented) return; dbResetBtn.disabled = true; dbResetBtn.textContent = "Đang reset..."; });
-    var dbMigrateForm = document.getElementById("db-migrate-form");
-    var dbMigrateBtn = document.getElementById("db-migrate-btn");
-    if (dbMigrateForm && dbMigrateBtn) dbMigrateForm.addEventListener("submit", function (event) { if (event.defaultPrevented) return; dbMigrateBtn.disabled = true; dbMigrateBtn.textContent = "Đang chạy migration..."; });
   }
 
   // OpenStack settings only contain node addresses; this verifies the
@@ -741,9 +717,9 @@
   // POST always lands on the right panel, not hidden behind whichever one
   // happened to be first) — this just handles CLICKING a different item
   // without a page reload.
-  var settingsNavItems = Array.prototype.slice.call(document.querySelectorAll(".settings-nav-item"));
+  var settingsNavItems = Array.prototype.slice.call(document.querySelectorAll(".settings-tab-item[data-section]"));
   var settingsPanels = Array.prototype.slice.call(document.querySelectorAll(".settings-panel"));
-  var settingsGroups = Array.prototype.slice.call(document.querySelectorAll(".settings-nav-group"));
+  var settingsGroups = [];
   settingsGroups.forEach(function (group) {
     var toggle = group.querySelector(".settings-nav-group-toggle");
     var items = group.querySelector(".settings-nav-group-items");
@@ -806,6 +782,81 @@
     });
   }
 
+  // Settings navigation: top-level groups plus a second row of section tabs.
+  // Keep the section panels and deep-link behavior from the legacy sidebar,
+  // but remove the second vertical navigation rail entirely.
+  var tabGroups = Array.prototype.slice.call(document.querySelectorAll(".settings-tab-group"));
+  var tabSubgroups = Array.prototype.slice.call(document.querySelectorAll(".settings-tab-subgroup"));
+  var mobilePicker = document.getElementById("settings-mobile-select");
+  var sectionLabels = {
+    "restart-controls": "Tiến trình hệ thống", "action-policy": "Chính sách hành động AI",
+    database: "Kết nối cơ sở dữ liệu", "server-log": "Nhật ký máy chủ", "patch-pipeline": "Pipeline",
+    "log-intel": "Phân tích nhật ký", "dual-ai": "Hai AI trao đổi", "code-repair": "Sửa mã bằng AI",
+    "backup-targets": "Cấu hình lưu trữ", router: "API AI", cost: "Chi phí", cluster: "Cụm Ceph",
+    "ceph-host-keys": "Khóa SSH node Ceph", openstack: "OpenStack", cleanup: "Bảo trì hệ thống"
+  };
+  var groupBySection = {
+    "restart-controls": "system", "action-policy": "system", database: "system", "server-log": "system",
+    "patch-pipeline": "storage", "log-intel": "storage", "dual-ai": "storage", "code-repair": "storage", "backup-targets": "storage",
+    router: "connections", cost: "connections", cluster: "connections", "ceph-host-keys": "connections", openstack: "connections", cleanup: "maintenance"
+  };
+  function activateSettingsSection(section, updateHash) {
+    var item = settingsNavItems.filter(function (candidate) { return candidate.getAttribute("data-section") === section; })[0];
+    if (!item) return;
+    settingsNavItems.forEach(function (candidate) { candidate.classList.toggle("active", candidate === item); });
+    settingsPanels.forEach(function (panel) { panel.hidden = panel.getAttribute("data-panel") !== section; });
+    var group = groupBySection[section];
+    tabGroups.forEach(function (candidate) { candidate.classList.toggle("active", candidate.getAttribute("data-tab-group") === group); });
+    tabSubgroups.forEach(function (candidate) { candidate.hidden = candidate.getAttribute("data-tab-panel") !== group; });
+    if (mobilePicker) mobilePicker.value = section;
+    if (updateHash && window.history && window.history.replaceState) window.history.replaceState(null, "", "#" + section);
+  }
+  tabGroups.forEach(function (groupButton) {
+    groupButton.addEventListener("click", function () {
+      var group = groupButton.getAttribute("data-tab-group");
+      var first = settingsNavItems.filter(function (item) { return groupBySection[item.getAttribute("data-section")] === group; })[0];
+      if (first) activateSettingsSection(first.getAttribute("data-section"), true);
+    });
+  });
+  settingsNavItems.forEach(function (item) {
+    item.addEventListener("click", function () { activateSettingsSection(item.getAttribute("data-section"), true); });
+    if (mobilePicker) {
+      var option = document.createElement("option");
+      option.value = item.getAttribute("data-section");
+      option.textContent = sectionLabels[item.getAttribute("data-section")] || item.textContent.trim();
+      mobilePicker.appendChild(option);
+    }
+  });
+  if (mobilePicker) mobilePicker.addEventListener("change", function () {
+    if (mobilePicker.value) activateSettingsSection(mobilePicker.value, true);
+  });
+  var settingsPage = document.querySelector(".settings-page");
+  var activeSettingsItem = settingsNavItems.filter(function (item) { return item.classList.contains("active"); })[0];
+  var serverSection = settingsPage && settingsPage.getAttribute("data-active-section");
+  activateSettingsSection(serverSection || (activeSettingsItem && activeSettingsItem.getAttribute("data-section")) || (settingsNavItems[0] && settingsNavItems[0].getAttribute("data-section")), false);
+
+  // The container notice starts compact, can be expanded for the command,
+  // and stays dismissed until the server's static version changes.
+  var containerBanner = document.getElementById("settings-container-banner");
+  if (containerBanner) {
+    var bannerVersion = containerBanner.getAttribute("data-banner-version") || "current";
+    var bannerKey = "settings-container-banner-dismissed:" + bannerVersion;
+    var bannerGuide = document.getElementById("settings-container-mode-guide");
+    var bannerExpand = document.getElementById("settings-container-banner-expand");
+    var bannerDismiss = document.getElementById("settings-container-banner-dismiss");
+    var dismissed = false;
+    try { dismissed = localStorage.getItem(bannerKey) === "1"; } catch (e) { /* ignore */ }
+    if (dismissed) containerBanner.hidden = true;
+    if (bannerExpand && bannerGuide) bannerExpand.addEventListener("click", function () {
+      bannerGuide.hidden = !bannerGuide.hidden;
+      bannerExpand.textContent = bannerGuide.hidden ? "Xem chi tiết" : "Thu gọn";
+    });
+    if (bannerDismiss) bannerDismiss.addEventListener("click", function () {
+      containerBanner.hidden = true;
+      try { localStorage.setItem(bannerKey, "1"); } catch (e) { /* ignore */ }
+    });
+  }
+
   // Settings control-plane navigation on mobile.
   var controlMenuToggle = document.querySelector(".control-menu-toggle");
   if (controlMenuToggle) {
@@ -862,7 +913,7 @@
 (function () {
   var groupLink = document.getElementById("settings-breadcrumb-group");
   var currentLabel = document.getElementById("settings-breadcrumb-current");
-  var items = Array.prototype.slice.call(document.querySelectorAll(".settings-nav-item[data-section]"));
+  var items = Array.prototype.slice.call(document.querySelectorAll(".settings-tab-item[data-section]"));
   if (!groupLink || !currentLabel || !items.length) return;
   var labels = {
     "restart-controls": ["Hệ thống", "Tiến trình hệ thống"], "action-policy": ["Hệ thống", "Chính sách hành động AI"],
@@ -1088,13 +1139,12 @@
   bindAccount("implementer");
 })();
 
-// AI Action Policy: compact local filtering with custom dark dropdowns.
+// AI Action Policy: compact local filtering plus immediate popover and bulk
+// updates. The server remains authoritative and validates every value.
 (function () {
   var table = document.getElementById("action-policy-table");
   var tableWrap = document.getElementById("action-policy-table-wrap");
   var search = document.getElementById("action-policy-search");
-  var classification = document.getElementById("action-policy-classification-filter");
-  var source = document.getElementById("action-policy-source-filter");
   var reset = document.getElementById("action-policy-filter-reset");
   var result = document.getElementById("action-policy-filter-result");
   var empty = document.getElementById("action-policy-filter-empty");
@@ -1104,131 +1154,99 @@
   var pageStatus = document.getElementById("action-policy-page-status");
   var pageButtons = document.getElementById("action-policy-page-buttons");
   var pageSummary = document.getElementById("action-policy-page-summary");
-  if (!table || !search || !classification || !source || !reset || !result || !empty ||
-      !pagination || !previous || !next || !pageStatus || !pageButtons || !pageSummary) return;
+  var chips = document.getElementById("action-policy-filter-chips");
+  var bulkToolbar = document.getElementById("action-policy-bulk-toolbar");
+  var selectAll = document.getElementById("action-policy-select-all");
+  var selectedCount = document.getElementById("action-policy-selected-count");
+  var bulkApply = document.getElementById("action-policy-bulk-apply");
+  if (!table || !search || !reset || !result || !empty || !pagination || !previous || !next || !pageStatus || !pageButtons || !pageSummary) return;
 
   var rows = Array.prototype.slice.call(table.querySelectorAll("tbody tr"));
   var pageSize = 10;
   var currentPage = 1;
-  rows.sort(function (left, right) {
-    return String(left.getAttribute("data-action-id") || "").localeCompare(
-      String(right.getAttribute("data-action-id") || ""), undefined, { sensitivity: "base" }
-    );
-  });
-  rows.forEach(function (row) { table.tBodies[0].appendChild(row); });
+  var filters = { classification: "", source: "" };
+  var bulkValue = "";
+  var selected = new Set();
   function normalize(value) { return String(value || "").trim().toLowerCase(); }
-  function filterValue(control) { return control.getAttribute("data-filter-value") || ""; }
-  function closeMenus(except) { document.querySelectorAll("[data-filter-menu], [data-policy-menu], [data-bulk-menu]").forEach(function (menu) { if (menu !== except) menu.hidden = true; }); }
-  function bindFilter(control) {
-    var trigger = control.querySelector("[data-filter-trigger]");
-    var menu = control.querySelector("[data-filter-menu]");
-    if (!trigger || !menu) return;
-    trigger.addEventListener("click", function (event) { event.stopPropagation(); var open = menu.hidden; closeMenus(menu); menu.hidden = !open; });
-    menu.querySelectorAll("[data-filter-option]").forEach(function (option) { option.addEventListener("click", function () { control.setAttribute("data-filter-value", option.getAttribute("data-filter-option") || ""); control.querySelector("[data-filter-label]").textContent = option.getAttribute("data-label") || option.textContent.trim(); menu.hidden = true; resetPageAndRender(); }); });
-  }
-  bindFilter(classification); bindFilter(source);
-  document.addEventListener("click", function () { closeMenus(null); });
-  function render() {
-    var query = normalize(search.value);
-    var wantedClassification = filterValue(classification);
-    var wantedSource = filterValue(source);
-    var filtered = rows.filter(function (row) {
-      return (!query || normalize(row.getAttribute("data-action-id")).indexOf(query) !== -1) &&
-        (!wantedClassification || row.getAttribute("data-classification") === wantedClassification) &&
-        (!wantedSource || row.getAttribute("data-policy-source") === wantedSource);
+  function badgeClass(value) { return "policy-badge policy-" + String(value || "").toLowerCase(); }
+  function closeMenus(except) {
+    document.querySelectorAll("[data-filter-menu], [data-bulk-menu], [data-policy-menu]").forEach(function (menu) {
+      if (menu !== except) menu.hidden = true;
     });
+    document.querySelectorAll("[data-policy-trigger]").forEach(function (button) { if (!button.closest(".policy-popover-wrap").querySelector("[data-policy-menu]") || button.closest(".policy-popover-wrap").querySelector("[data-policy-menu]").hidden) button.setAttribute("aria-expanded", "false"); });
+  }
+  function updateChips() {
+    if (!chips) return;
+    chips.replaceChildren();
+    [["classification", "Phân loại", {SAFE: "SAFE", RISKY: "RISKY", DESTRUCTIVE: "DESTRUCTIVE"}], ["source", "Nguồn policy", {override: "Đã tùy chỉnh", default: "Mặc định"}]].forEach(function (entry) {
+      var value = filters[entry[0]];
+      if (!value) return;
+      var chip = document.createElement("button");
+      chip.type = "button"; chip.className = "action-policy-filter-chip";
+      chip.textContent = entry[1] + ": " + (entry[2][value] || value) + " ×";
+      chip.addEventListener("click", function () { filters[entry[0]] = ""; syncFilterLabels(); currentPage = 1; render(); });
+      chips.appendChild(chip);
+    });
+  }
+  function syncFilterLabels() {
+    document.querySelectorAll(".policy-filter-dropdown[data-filter-key]").forEach(function (dropdown) {
+      var key = dropdown.getAttribute("data-filter-key");
+      var active = dropdown.querySelector('[data-filter-option="' + filters[key] + '"]');
+      var label = dropdown.querySelector("[data-filter-label]");
+      if (label) label.textContent = active ? active.getAttribute("data-label") : "Tất cả";
+    });
+    updateChips();
+  }
+  function filteredRows() {
+    var query = normalize(search.value);
+    return rows.filter(function (row) {
+      return (!query || normalize(row.getAttribute("data-action-id")).indexOf(query) !== -1) &&
+        (!filters.classification || row.getAttribute("data-classification") === filters.classification) &&
+        (!filters.source || row.getAttribute("data-policy-source") === filters.source);
+    });
+  }
+  function updateBulkToolbar() {
+    var count = selected.size;
+    if (bulkToolbar) bulkToolbar.hidden = count === 0;
+    if (selectedCount) selectedCount.textContent = "Đã chọn " + count + " hành động";
+    if (bulkApply) bulkApply.disabled = count === 0 || !bulkValue;
+    if (selectAll) selectAll.checked = rows.length > 0 && rows.every(function (row) { return selected.has(row.getAttribute("data-action-id")); });
+  }
+  function render() {
+    var filtered = filteredRows();
     var pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
     currentPage = Math.min(currentPage, pageCount);
     var first = (currentPage - 1) * pageSize;
     var pageRows = filtered.slice(first, first + pageSize);
     rows.forEach(function (row) { row.hidden = pageRows.indexOf(row) === -1; });
     result.textContent = filtered.length + " / " + rows.length + " hành động";
-    var summaryText = "Hiển thị " + (filtered.length ? first + 1 : 0) + "–" + Math.min(first + pageSize, filtered.length) + " / " + filtered.length + " mục";
-    pageSummary.textContent = summaryText;
+    pageSummary.textContent = "Hiển thị " + (filtered.length ? first + 1 : 0) + "–" + Math.min(first + pageSize, filtered.length) + " / " + filtered.length + " mục";
     pageSummary.dataset.mobileSummary = (filtered.length ? first + 1 : 0) + "–" + Math.min(first + pageSize, filtered.length) + " / " + filtered.length;
-    empty.hidden = filtered.length !== 0;
-    if (tableWrap) tableWrap.hidden = filtered.length === 0;
-    pagination.hidden = filtered.length === 0;
-    pageStatus.textContent = "Trang " + currentPage + "/" + pageCount;
-    previous.disabled = currentPage <= 1;
-    next.disabled = currentPage >= pageCount;
+    empty.hidden = filtered.length !== 0; if (tableWrap) tableWrap.hidden = filtered.length === 0; pagination.hidden = filtered.length === 0;
+    pageStatus.textContent = "Trang " + currentPage + "/" + pageCount; previous.disabled = currentPage <= 1; next.disabled = currentPage >= pageCount;
     if (window.DashboardPagination) window.DashboardPagination.renderPages(pageButtons, currentPage, pageCount, function (target) { currentPage = target; render(); });
-    reset.disabled = !query && !wantedClassification && !wantedSource;
+    updateBulkToolbar(); updateChips();
   }
-  function resetPageAndRender() { currentPage = 1; render(); }
-  search.addEventListener("input", resetPageAndRender);
-  classification.addEventListener("change", resetPageAndRender);
-  source.addEventListener("change", resetPageAndRender);
-  previous.addEventListener("click", function () {
-    if (currentPage > 1) { currentPage -= 1; render(); }
-  });
-  next.addEventListener("click", function () {
-    currentPage += 1;
-    render();
-  });
-  reset.addEventListener("click", function () {
-    search.value = "";
-    classification.setAttribute("data-filter-value", "");
-    source.setAttribute("data-filter-value", "");
-    classification.querySelector("[data-filter-label]").textContent = "Tất cả";
-    source.querySelector("[data-filter-label]").textContent = "Tất cả";
-    resetPageAndRender();
-    search.focus();
-  });
-  var selectAll = document.getElementById("action-policy-select-all");
-  var rowChecks = Array.prototype.slice.call(document.querySelectorAll("[data-action-select]"));
-  var bulkToolbar = document.getElementById("action-policy-bulk-toolbar");
-  var selectedCount = document.getElementById("action-policy-selected-count");
-  var bulkApply = document.getElementById("action-policy-bulk-apply");
-  var bulkValue = document.getElementById("action-policy-bulk-value");
-  function selectedRows() { return rowChecks.filter(function (check) { return check.checked; }); }
-  function bulkPolicy() { return bulkValue ? (bulkValue.getAttribute("data-policy-value") || "") : ""; }
-  function updateBulk() { var count = selectedRows().length; if (bulkToolbar) bulkToolbar.hidden = count === 0; if (selectedCount) selectedCount.textContent = "Đã chọn " + count + " action"; if (bulkApply) bulkApply.disabled = count === 0 || !bulkPolicy(); if (selectAll) selectAll.checked = count > 0 && count === rowChecks.length; }
-  rowChecks.forEach(function (check) { check.addEventListener("change", updateBulk); });
-  if (selectAll) selectAll.addEventListener("change", function () { rowChecks.forEach(function (check) { check.checked = selectAll.checked; }); updateBulk(); });
-  if (bulkValue) {
-    var bulkTrigger = bulkValue.querySelector("[data-bulk-trigger]");
-    var bulkMenu = bulkValue.querySelector("[data-bulk-menu]");
-    if (bulkTrigger && bulkMenu) {
-      bulkTrigger.addEventListener("click", function (event) { event.stopPropagation(); bulkMenu.hidden = !bulkMenu.hidden; });
-      bulkMenu.querySelectorAll("[data-bulk-option]").forEach(function (option) { option.addEventListener("click", function () { bulkValue.setAttribute("data-policy-value", option.getAttribute("data-bulk-option")); bulkValue.querySelector("[data-bulk-label]").textContent = "Đổi tất cả thành " + option.getAttribute("data-bulk-option"); bulkMenu.hidden = true; updateBulk(); }); });
-    }
+  document.querySelectorAll("[data-filter-trigger]").forEach(function (trigger) { trigger.addEventListener("click", function () { var menu = trigger.parentElement.querySelector("[data-filter-menu]"); closeMenus(menu); if (menu) menu.hidden = !menu.hidden; }); });
+  document.querySelectorAll("[data-filter-option]").forEach(function (option) { option.addEventListener("click", function () { var dropdown = option.closest("[data-filter-key]"); filters[dropdown.getAttribute("data-filter-key")] = option.getAttribute("data-filter-option"); syncFilterLabels(); closeMenus(); currentPage = 1; render(); }); });
+  document.querySelectorAll("[data-policy-trigger]").forEach(function (trigger) { trigger.addEventListener("click", function () { var menu = trigger.parentElement.querySelector("[data-policy-menu]"); closeMenus(menu); if (menu) { menu.hidden = !menu.hidden; trigger.setAttribute("aria-expanded", menu.hidden ? "false" : "true"); } }); });
+  document.querySelectorAll("[data-policy-option]").forEach(function (option) { option.addEventListener("click", function () { var row = option.closest("tr"); closeMenus(); applyPolicy([row], option.getAttribute("data-policy-option")); }); });
+  document.querySelectorAll("[data-action-select]").forEach(function (checkbox) { checkbox.addEventListener("change", function () { var id = checkbox.closest("tr").getAttribute("data-action-id"); if (checkbox.checked) selected.add(id); else selected.delete(id); updateBulkToolbar(); }); });
+  if (selectAll) selectAll.addEventListener("change", function () { rows.forEach(function (row) { var checkbox = row.querySelector("[data-action-select]"); var id = row.getAttribute("data-action-id"); checkbox.checked = selectAll.checked; if (selectAll.checked) selected.add(id); else selected.delete(id); }); updateBulkToolbar(); });
+  document.querySelectorAll("[data-bulk-option]").forEach(function (option) { option.addEventListener("click", function () { bulkValue = option.getAttribute("data-bulk-option"); var label = document.querySelector("[data-bulk-label]"); if (label) label.textContent = bulkValue; closeMenus(); updateBulkToolbar(); }); });
+  function applyPolicy(targetRows, policy) {
+    var ids = targetRows.map(function (row) { return row.getAttribute("data-action-id"); });
+    fetch("/settings/autopilot/action-policy/bulk", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action_ids: ids, classification: policy, confirmation: "OK" }) })
+      .then(function (response) { if (!response.ok) return response.json().then(function (body) { throw new Error(body.detail || "Không áp dụng được policy"); }); return response.json(); })
+      .then(function () { targetRows.forEach(function (row) { var badge = row.querySelector("[data-effective-badge]"); var trigger = row.querySelector("[data-policy-trigger]"); if (badge) { badge.textContent = policy; badge.className = badgeClass(policy); } if (trigger) { trigger.textContent = policy; trigger.className = badgeClass(policy) + " policy-edit-trigger"; } row.setAttribute("data-classification", policy); row.setAttribute("data-policy-source", policy === row.getAttribute("data-default") ? "default" : "override"); row.classList.add("is-policy-changed"); }); selected.clear(); bulkValue = ""; var bulkLabel = document.querySelector("[data-bulk-label]"); if (bulkLabel) bulkLabel.textContent = "Đổi policy thành…"; render(); })
+      .catch(function (error) { window.alert(error.message); });
   }
-  if (bulkApply) bulkApply.addEventListener("click", function () {
-    var selected = selectedRows(); var policy = bulkPolicy(); if (!selected.length || !policy) return;
-    if (!window.confirm("Đổi policy của " + selected.length + " action thành " + policy + "?")) return;
-    bulkApply.disabled = true; bulkApply.textContent = "Đang áp dụng...";
-    fetch("/settings/autopilot/action-policy/bulk", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action_ids: selected.map(function (check) { return check.closest("tr").getAttribute("data-action-id"); }), classification: policy, confirmation: "OK" }) })
-      .then(function (response) { if (!response.ok) return response.json().then(function (data) { throw new Error(data.detail || "HTTP " + response.status); }); return response.json(); })
-      .then(function () { window.location.reload(); }).catch(function (error) { window.alert("Không thể áp dụng policy: " + error.message); bulkApply.disabled = false; bulkApply.textContent = "Áp dụng"; });
-  });
-  render();
-})();
-
-// Policy changes use a clear confirmation naming both the action and target.
-(function () {
-  var forms = document.querySelectorAll(".action-policy-change-form");
-  Array.prototype.forEach.call(forms, function (form) {
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      var actionName = form.getAttribute("data-action-name") || "action";
-      var value = form.querySelector("[data-policy-value]");
-      var classification = value ? value.value : "";
-      if (!window.confirm("Đổi policy của " + actionName + " thành " + classification + "?")) return;
-      var field = form.querySelector('input[name="confirmation"]');
-      if (!field) return;
-      field.value = "OK";
-      form.submit();
-    });
-    var trigger = form.querySelector("[data-policy-trigger]");
-    var menu = form.querySelector("[data-policy-menu]");
-    var value = form.querySelector("[data-policy-value]");
-    var label = form.querySelector("[data-policy-label]");
-    if (trigger && menu && value && label) {
-      trigger.addEventListener("click", function (event) { event.stopPropagation(); document.querySelectorAll("[data-policy-menu]").forEach(function (item) { if (item !== menu) item.hidden = true; }); menu.hidden = !menu.hidden; });
-      menu.querySelectorAll("[data-policy-option]").forEach(function (option) { option.addEventListener("click", function () { value.value = option.getAttribute("data-policy-option"); label.textContent = value.value; label.className = "policy-" + value.value.toLowerCase(); form.closest("tr").classList.add("is-policy-changed"); menu.hidden = true; }); });
-    }
-  });
+  if (bulkApply) bulkApply.addEventListener("click", function () { if (!bulkValue) return; applyPolicy(rows.filter(function (row) { return selected.has(row.getAttribute("data-action-id")); }), bulkValue); });
+  search.addEventListener("input", function () { currentPage = 1; render(); });
+  previous.addEventListener("click", function () { if (currentPage > 1) { currentPage -= 1; render(); } }); next.addEventListener("click", function () { currentPage += 1; render(); });
+  reset.addEventListener("click", function () { search.value = ""; filters.classification = ""; filters.source = ""; syncFilterLabels(); currentPage = 1; render(); search.focus(); });
+  document.addEventListener("click", function (event) { if (!event.target.closest(".policy-filter-dropdown, .policy-popover-wrap")) closeMenus(); });
+  syncFilterLabels(); render();
 })();
 
 (function () {

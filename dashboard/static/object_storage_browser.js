@@ -1,5 +1,27 @@
 (function () {
   "use strict";
+  const loading = document.getElementById("bucket-detail-loading");
+  if (loading) {
+    const message = loading.querySelector("p");
+    async function pollDetail() {
+      try {
+        const params = new URLSearchParams({cluster: loading.dataset.cluster});
+        const response = await fetch("/api/object-storage/buckets/" + encodeURIComponent(loading.dataset.bucket) + "?" + params, {cache: "no-store"});
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.detail || "Không tải được metadata bucket");
+        if (body.ready) {
+          window.location.reload();
+          return;
+        }
+        setTimeout(pollDetail, 1000);
+      } catch (error) {
+        if (message) message.textContent = "Đang chờ RGW phản hồi: " + error.message;
+        setTimeout(pollDetail, 2000);
+      }
+    }
+    pollDetail();
+    return;
+  }
   const root = document.getElementById("object-browser");
   if (!root) return;
   const form = document.getElementById("object-browser-form");
@@ -7,6 +29,37 @@
   const status = document.getElementById("object-browser-status");
   const next = document.getElementById("object-browser-next");
   let marker = "";
+
+  async function loadActivity() {
+    const activity = document.getElementById("bucket-activity");
+    if (!activity) return;
+    const activityStatus = document.getElementById("bucket-activity-status");
+    const activityTable = document.getElementById("bucket-activity-table");
+    const activityRows = document.getElementById("bucket-activity-rows");
+    try {
+      const params = new URLSearchParams({cluster: activity.dataset.cluster});
+      const response = await fetch("/api/object-storage/buckets/" + encodeURIComponent(activity.dataset.bucket) + "/activity?" + params);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "Không tải được activity");
+      const trend = body.activity || {};
+      if (!trend.available) {
+        activityStatus.textContent = "Không đọc được activity: " + (trend.error || "RGW không cung cấp log");
+        return;
+      }
+      const latest = trend.latest_request ? " · gần nhất " + trend.latest_request : "";
+      activityStatus.textContent = trend.total + " request · " + trend.errors + " lỗi HTTP 4xx/5xx · tỷ lệ lỗi " + trend.error_rate + "%" + latest;
+      activityRows.replaceChildren();
+      (trend.points || []).forEach(function (point) {
+        const row = document.createElement("tr");
+        cell(row, point.hour); cell(row, point.requests); cell(row, point.errors);
+        activityRows.appendChild(row);
+      });
+      activityTable.hidden = !(trend.points || []).length;
+      if (!trend.points || !trend.points.length) activityStatus.textContent += " · Chưa có request nào trong đoạn log hiện tại.";
+    } catch (error) {
+      activityStatus.textContent = "Không tải được activity: " + error.message;
+    }
+  }
 
   function cell(row, value) {
     const td = document.createElement("td");
@@ -88,6 +141,7 @@
   form.addEventListener("submit", function (event) { event.preventDefault(); load(true); });
   next.addEventListener("click", function () { load(false); });
   load(true);
+  loadActivity();
 
   const presignForm = document.getElementById("object-presign-form");
   if (presignForm) {

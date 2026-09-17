@@ -995,10 +995,16 @@ async def volume_inventory_api(
     all_provisioned = sum(int(row["provisioned_size"]) for row in rows)
     all_used = sum(int(row["used_size"]) for row in rows)
     all_used_percent = round((all_used * 100.0 / all_provisioned), 2) if all_provisioned else 0.0
+    uuid_name = re.compile(r"^(?:volume-)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.IGNORECASE)
+    items = []
+    for row in rows[start:start + page_size]:
+        item = dict(row)
+        item["display_name"] = None if uuid_name.fullmatch(str(item.get("name") or "")) else item.get("name")
+        items.append(item)
     return {
         "cluster_id": cluster.id,
         "pool": pool,
-        "items": rows[start:start + page_size],
+        "items": items,
         "page": page,
         "page_size": page_size,
         "total": total,
@@ -2396,6 +2402,26 @@ async def purge_all_rbd_trash(
             selected_view="trash", purge_success=f"Đã xoá cưỡng bức {succeeded} Trash item.",
         )
     )
+
+
+@router.get("/volumes/{pool}/{image}", response_class=HTMLResponse)
+async def volume_detail_page(request: Request, pool: str, image: str, user: str = Depends(require_login)):
+    """Dedicated, navigable detail page for one RBD image."""
+    clusters, cluster = cluster_selection(request)
+    pools = await asyncio.to_thread(_rbd_pools_for_request, request)
+    if pool not in pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if not image or len(image) > 128 or "\x00" in image or "/" in image:
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+    return templates.TemplateResponse(request, "volume_detail.html", {
+        "user": user,
+        "is_admin": auth.is_admin_user(user),
+        "clusters": clusters or [],
+        "selected_cluster": cluster,
+        "pools": pools,
+        "selected_pool": pool,
+        "image": image,
+    })
 
 
 @router.post("/volumes/{pool}/trash/{trash_id}/force-remove", response_class=HTMLResponse)

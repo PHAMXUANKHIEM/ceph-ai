@@ -583,8 +583,6 @@ ALEMBIC_INI_PATH = PROJECT_ROOT / "alembic.ini"
 ALEMBIC_SCRIPT_LOCATION = PROJECT_ROOT / "alembic"
 DEFAULT_POSTGRES_PORT = 5432
 DB_TEST_QUERY = text("SELECT 1")
-DB_SSL_MODES = ("disable", "allow", "prefer", "require", "verify-ca", "verify-full")
-DB_TEST_CONNECT_TIMEOUT_SECONDS = 5
 
 
 # Bare drivername values that mean "PostgreSQL, whatever driver's
@@ -609,10 +607,7 @@ def _normalize_postgres_driver(url):
     return url
 
 
-def _build_postgres_url(
-    host: str, port: int, dbname: str, username: str, password: str,
-    ssl_mode: str = "require", connect_timeout: int = DB_TEST_CONNECT_TIMEOUT_SECONDS,
-) -> str:
+def _build_postgres_url(host: str, port: int, dbname: str, username: str, password: str) -> str:
     return URL.create(
         "postgresql+psycopg",
         username=username,
@@ -620,7 +615,6 @@ def _build_postgres_url(
         host=host,
         port=port,
         database=dbname,
-        query={"sslmode": ssl_mode, "connect_timeout": str(connect_timeout)},
     )
 
 
@@ -631,8 +625,6 @@ def _resolve_database_url(
     db_username: str,
     db_password: str,
     database_url_raw: str,
-    db_ssl_mode: str = "require",
-    db_connect_timeout: str = str(DB_TEST_CONNECT_TIMEOUT_SECONDS),
 ) -> tuple[object | None, str | None]:
     """Backs BOTH input modes the "Kết nối Database" form offers — "Nhập
     từng trường" (host/port/dbname/username/password, built via
@@ -659,16 +651,10 @@ def _resolve_database_url(
         port = int(db_port.strip())
     except ValueError:
         return None, f"Port không hợp lệ: {db_port!r}"
-    ssl_mode = db_ssl_mode.strip().lower() or "require"
-    if ssl_mode not in DB_SSL_MODES:
-        return None, f"SSL mode không hợp lệ: {db_ssl_mode!r}"
-    try:
-        connect_timeout = int(str(db_connect_timeout).strip())
-    except ValueError:
-        return None, f"Connect timeout không hợp lệ: {db_connect_timeout!r}"
-    if not 1 <= connect_timeout <= 60:
-        return None, "Connect timeout phải nằm trong khoảng 1–60 giây."
-    return _build_postgres_url(host, port, name, username, db_password, ssl_mode, connect_timeout), None
+    return _build_postgres_url(host, port, name, username, db_password), None
+
+
+DB_TEST_CONNECT_TIMEOUT_SECONDS = 5
 
 
 def _test_database_connection(url) -> tuple[bool, str]:
@@ -685,12 +671,9 @@ def _test_database_connection(url) -> tuple[bool, str]:
     psycopg's TCP connect against a silently-dropping host/port hangs for
     minutes before failing — a "Kiểm tra kết nối" click has to fail fast
     instead."""
-    timeout = url.query.get("connect_timeout", str(DB_TEST_CONNECT_TIMEOUT_SECONDS))
-    try:
-        timeout = max(1, min(60, int(timeout)))
-    except (TypeError, ValueError):
-        timeout = DB_TEST_CONNECT_TIMEOUT_SECONDS
-    connect_args = {"connect_timeout": timeout} if url.get_backend_name() == "postgresql" else {}
+    connect_args = (
+        {"connect_timeout": DB_TEST_CONNECT_TIMEOUT_SECONDS} if url.get_backend_name() == "postgresql" else {}
+    )
     engine = create_engine(url, connect_args=connect_args)
     try:
         with engine.connect() as conn:
@@ -736,14 +719,12 @@ def _database_form_values() -> dict:
     try:
         parsed = make_url(settings.database_url)
     except Exception:
-        return {"db_host": "", "db_port": "", "db_name": "", "db_username": "", "db_ssl_mode": "require", "db_connect_timeout": str(DB_TEST_CONNECT_TIMEOUT_SECONDS)}
+        return {"db_host": "", "db_port": "", "db_name": "", "db_username": ""}
     return {
         "db_host": parsed.host or "",
         "db_port": str(parsed.port) if parsed.port else "",
         "db_name": parsed.database or "",
         "db_username": parsed.username or "",
-        "db_ssl_mode": parsed.query.get("sslmode", "require"),
-        "db_connect_timeout": parsed.query.get("connect_timeout", str(DB_TEST_CONNECT_TIMEOUT_SECONDS)),
     }
 
 
@@ -2633,8 +2614,6 @@ async def settings_test_database(
     db_name: str = Form(""),
     db_username: str = Form(""),
     db_password: str = Form(""),
-    db_ssl_mode: str = Form("require"),
-    db_connect_timeout: str = Form(str(DB_TEST_CONNECT_TIMEOUT_SECONDS)),
     database_url_raw: str = Form(""),
 ):
     """Backs the "Kiểm tra kết nối" button — raw SELECT 1 only, no
@@ -2646,28 +2625,11 @@ async def settings_test_database(
     settings_save_database below), same privilege boundary as the manual
     restart buttons."""
     _require_admin_privilege(user)
-    url, error = _resolve_database_url(db_host, db_port, db_name, db_username, db_password, database_url_raw, db_ssl_mode, db_connect_timeout)
+    url, error = _resolve_database_url(db_host, db_port, db_name, db_username, db_password, database_url_raw)
     if error:
         return {"valid": False, "message": error}
     valid, message = await asyncio.to_thread(_test_database_connection, url)
     return {"valid": valid, "message": message}
-
-
-@router.get("/api/settings/database/status")
-async def settings_database_status(user: str = Depends(require_login)):
-    """Read-only live probe for the configured database connection."""
-    _require_admin_privilege(user)
-    started = time.perf_counter()
-    try:
-        url = make_url(settings.database_url)
-    except Exception as exc:
-        return {"connected": False, "latency_ms": None, "message": readable_exception_message(exc)}
-    valid, message = await asyncio.to_thread(_test_database_connection, url)
-    return {
-        "connected": valid,
-        "latency_ms": round((time.perf_counter() - started) * 1000, 1) if valid else None,
-        "message": message,
-    }
 
 
 @router.post("/settings/database/save", response_class=HTMLResponse)
@@ -2679,8 +2641,6 @@ async def settings_save_database(
     db_name: str = Form(""),
     db_username: str = Form(""),
     db_password: str = Form(""),
-    db_ssl_mode: str = Form("require"),
-    db_connect_timeout: str = Form(str(DB_TEST_CONNECT_TIMEOUT_SECONDS)),
     database_url_raw: str = Form(""),
 ):
     """Switches the app's storage backend to a PostgreSQL database — the
@@ -2714,11 +2674,9 @@ async def settings_save_database(
         "db_port": db_port.strip(),
         "db_name": db_name.strip(),
         "db_username": db_username.strip(),
-        "db_ssl_mode": db_ssl_mode.strip().lower() or "require",
-        "db_connect_timeout": db_connect_timeout.strip(),
     }
 
-    url, error = _resolve_database_url(db_host, db_port, db_name, db_username, db_password, database_url_raw, db_ssl_mode, db_connect_timeout)
+    url, error = _resolve_database_url(db_host, db_port, db_name, db_username, db_password, database_url_raw)
     if error:
         return templates.TemplateResponse(
             request,

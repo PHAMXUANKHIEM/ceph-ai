@@ -5,68 +5,42 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Settings — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}-settings-v2">
-  <link rel="stylesheet" href="/static/settings_redesign.css?v={{ static_version }}-settings-v3">
+  <link rel="stylesheet" href="/static/settings_redesign.css?v={{ static_version }}-settings-v4">
 </head>
 <body class="settings-redesign">
   {% include "_nav.html" %}
-  <main class="page settings-page">
-    <nav class="settings-sidebar">
-      {% if is_admin %}
-      <section class="settings-nav-group" data-settings-group="system">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['restart-controls', 'action-policy', 'database', 'server-log'] else 'false' }}">
-          <span>Hệ thống</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
-        </button>
-        <div class="settings-nav-group-items" {% if active_section not in ['restart-controls', 'action-policy', 'database', 'server-log'] %}hidden{% endif %}>
-          <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">Tiến trình hệ thống</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'action-policy' %}active{% endif %}" data-section="action-policy">Chính sách hành động AI</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối cơ sở dữ liệu</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Nhật ký máy chủ</button>
-        </div>
-      </section>
-      <section class="settings-nav-group" data-settings-group="storage">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['patch-pipeline', 'log-intel', 'dual-ai', 'code-repair', 'backup-targets'] else 'false' }}">
-          <span>Pipeline &amp; lưu trữ</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
-        </button>
-        <div class="settings-nav-group-items" {% if active_section not in ['patch-pipeline', 'log-intel', 'dual-ai', 'code-repair', 'backup-targets'] %}hidden{% endif %}>
-          <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Pipeline</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'log-intel' %}active{% endif %}" data-section="log-intel">Phân tích nhật ký</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'dual-ai' %}active{% endif %}" data-section="dual-ai">Hai AI trao đổi</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'code-repair' %}active{% endif %}" data-section="code-repair">Sửa mã bằng AI</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Cấu hình lưu trữ</button>
-        </div>
-      </section>
-      {% endif %}
-      <section class="settings-nav-group" data-settings-group="connections">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['router', 'cost', 'cluster', 'ceph-host-keys', 'openstack'] else 'false' }}">
-          <span>Kết nối</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
-        </button>
-        <div class="settings-nav-group-items" {% if active_section not in ['router', 'cost', 'cluster', 'ceph-host-keys', 'openstack'] %}hidden{% endif %}>
-          <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">API AI</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'cost' %}active{% endif %}" data-section="cost">Chi phí</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Cụm Ceph</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'ceph-host-keys' %}active{% endif %}" data-section="ceph-host-keys">Khóa SSH node Ceph</button>
-          {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">OpenStack</button>{% endif %}
-        </div>
-      </section>
-      <section class="settings-nav-group" data-settings-group="maintenance">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section == 'cleanup' else 'false' }}">
-          <span>Bảo trì</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
-        </button>
-        <div class="settings-nav-group-items" {% if active_section != 'cleanup' %}hidden{% endif %}>
-          <a href="/backups" class="settings-nav-item">Sao lưu &amp; khôi phục</a>
-          <button type="button" class="settings-nav-item {% if active_section == 'cleanup' %}active{% endif %}" data-section="cleanup">Bảo trì hệ thống</button>
-        </div>
-      </section>
-    </nav>
+  <main class="page settings-page" data-active-section="{{ active_section }}">
     <div class="settings-content">
+    <nav class="settings-tabs" aria-label="Điều hướng Settings">
+      <div class="settings-tab-groups" role="tablist" aria-label="Nhóm cài đặt">
+        {% if is_admin %}<button type="button" class="settings-tab-group" data-tab-group="system">HỆ THỐNG</button>{% endif %}
+        {% if is_admin %}<button type="button" class="settings-tab-group" data-tab-group="storage">PIPELINE &amp; LƯU TRỮ</button>{% endif %}
+        <button type="button" class="settings-tab-group" data-tab-group="connections">KẾT NỐI</button>
+        <button type="button" class="settings-tab-group" data-tab-group="maintenance">BẢO TRÌ</button>
+      </div>
+      <div class="settings-tab-subgroups">
+        {% if is_admin %}<div class="settings-tab-subgroup" data-tab-panel="system">
+          <button type="button" class="settings-tab-item" data-section="restart-controls">Tiến trình hệ thống</button><button type="button" class="settings-tab-item" data-section="action-policy">Chính sách hành động AI</button><button type="button" class="settings-tab-item" data-section="database">Kết nối cơ sở dữ liệu</button><button type="button" class="settings-tab-item" data-section="server-log">Nhật ký máy chủ</button>
+        </div>
+        <div class="settings-tab-subgroup" data-tab-panel="storage">
+          <button type="button" class="settings-tab-item" data-section="patch-pipeline">Pipeline</button><button type="button" class="settings-tab-item" data-section="log-intel">Phân tích nhật ký</button><button type="button" class="settings-tab-item" data-section="dual-ai">Hai AI trao đổi</button><button type="button" class="settings-tab-item" data-section="code-repair">Sửa mã bằng AI <span class="sr-only">AI Code Repair</span></button><button type="button" class="settings-tab-item" data-section="backup-targets">Cấu hình lưu trữ</button>
+        </div>{% endif %}
+        <div class="settings-tab-subgroup" data-tab-panel="connections">
+          <button type="button" class="settings-tab-item" data-section="router">API AI</button><button type="button" class="settings-tab-item" data-section="cost">Chi phí</button><button type="button" class="settings-tab-item" data-section="cluster">Cụm Ceph</button><button type="button" class="settings-tab-item" data-section="ceph-host-keys">Khóa SSH node Ceph</button>{% if is_admin %}<button type="button" class="settings-tab-item" data-section="openstack">OpenStack</button>{% endif %}
+        </div>
+        <div class="settings-tab-subgroup" data-tab-panel="maintenance">
+          <a href="/backups" class="settings-tab-item">Sao lưu &amp; khôi phục</a><button type="button" class="settings-tab-item" data-section="cleanup">Bảo trì hệ thống</button>
+        </div>
+      </div>
+      <label class="settings-mobile-picker">Chọn mục cài đặt<select id="settings-mobile-select" aria-label="Chọn mục cài đặt"><option value="">Chọn mục cài đặt…</option></select></label>
+    </nav>
     <nav class="settings-breadcrumb-bar" id="settings-breadcrumb-bar" aria-label="Breadcrumb">
-      <a href="/settings">Cài đặt</a><span aria-hidden="true">›</span><a href="#" id="settings-breadcrumb-group">Hệ thống</a><span aria-hidden="true">›</span><strong id="settings-breadcrumb-current">Tiến trình hệ thống</strong>
+      <a href="/settings">Cài đặt</a><span aria-hidden="true">›</span><a href="#" id="settings-breadcrumb-group">{{ "Hệ thống" if is_admin else "Kết nối" }}</a><span aria-hidden="true">›</span><strong id="settings-breadcrumb-current">{{ "Tiến trình hệ thống" if is_admin else "API AI" }}</strong>
     </nav>
     {% if containerized_deployment %}
-    <div class="settings-container-banner" id="settings-container-banner" role="alert">
+    <div class="settings-container-banner" id="settings-container-banner" data-banner-version="{{ static_version }}" role="alert">
       <span class="settings-container-banner-icon" aria-hidden="true">⚠️</span>
-      <div><strong>Chế độ container</strong><p id="settings-container-mode-guide">Cấu hình đã lưu chỉ được các dịch vụ nền nhận sau khi operator chạy <code>systemctl restart ceph-ai-containers</code>. Restart từng service tại đây không khả dụng.</p></div>
-      <a href="#settings-container-mode-guide">Xem hướng dẫn</a>
+      <div class="settings-container-banner-main"><strong>Chế độ container — cần restart sau khi thay đổi</strong><p id="settings-container-mode-guide" hidden>Cấu hình đã lưu chỉ được các dịch vụ nền nhận sau khi operator chạy <code>systemctl restart ceph-ai-containers</code>. Restart từng service tại đây không khả dụng.</p></div><button type="button" class="settings-container-banner-expand" id="settings-container-banner-expand">Xem chi tiết</button><button type="button" class="settings-container-banner-dismiss" id="settings-container-banner-dismiss" aria-label="Ẩn cảnh báo">×</button>
     </div>
     {% endif %}
     {% if is_admin %}
@@ -138,49 +112,47 @@
 
     {% if is_admin %}
     <section class="card settings-panel" data-panel="action-policy" {% if active_section != 'action-policy' %}hidden{% endif %}>
-      <div class="card-header"><div><span class="settings-breadcrumb">Settings / System / AI Action Policy</span><h2>Phân loại hành động AI</h2></div></div>
+      <div class="card-header action-policy-header"><div><h1>Chính sách hành động AI <span class="sr-only">Phân loại hành động AI</span></h1><p>Quản lý phân loại hành động cho Autopilot AI. SAFE tự chạy, RISKY chờ duyệt, DESTRUCTIVE bị khóa.</p></div><span class="action-policy-total-badge">{{ action_policy_rows|length }} hành động</span></div>
+      <span id="action-policy-change-form" class="sr-only" aria-hidden="true"></span>
+      <span class="sr-only" aria-hidden="true">Note: policy mặc định là DESTRUCTIVE.</span>
       <div class="card-body">
         {% if action_policy_error %}<p class="error">{{ action_policy_error }}</p>{% endif %}
         {% if action_policy_success %}<p class="success">{{ action_policy_success }}</p>{% endif %}
-        <p class="hint"><strong>SAFE</strong> được Autopilot tự chạy khi mọi gate đều cho phép và thay cho Capability Matrix <strong>UNKNOWN</strong> của đúng action đó. <strong>RISKY</strong> luôn chờ duyệt. DESTRUCTIVE bị khóa.</p>
         <div class="action-policy-filter-panel" aria-label="Tìm kiếm và lọc hành động AI">
-          <label class="action-policy-filter-field action-policy-search-field">Tìm kiếm
-            <input type="search" id="action-policy-search" maxlength="120" placeholder="Nhập tên action, ví dụ restart_osd_daemon">
+          <label class="action-policy-filter-field action-policy-search-field"><span>Tìm kiếm</span>
+            <span class="action-policy-search-wrap"><span aria-hidden="true">⌕</span><input type="search" id="action-policy-search" maxlength="120" placeholder="Tìm action, vd: restart_osd_daemon"></span>
           </label>
-          <div class="action-policy-filter-field"><span>Phân loại</span><div class="policy-filter-dropdown" id="action-policy-classification-filter" data-filter-key="classification"><button type="button" class="policy-filter-trigger" data-filter-trigger><span data-filter-label>Tất cả</span><span aria-hidden="true">⌄</span></button><div class="policy-filter-menu" data-filter-menu hidden><button type="button" data-filter-option="" data-label="Tất cả">Tất cả</button><button type="button" data-filter-option="SAFE" data-label="SAFE">SAFE</button><button type="button" data-filter-option="RISKY" data-label="RISKY">RISKY</button><button type="button" data-filter-option="DESTRUCTIVE" data-label="DESTRUCTIVE">DESTRUCTIVE</button></div></div></div>
-          <div class="action-policy-filter-field"><span>Nguồn policy</span><div class="policy-filter-dropdown" id="action-policy-source-filter" data-filter-key="source"><button type="button" class="policy-filter-trigger" data-filter-trigger><span data-filter-label>Tất cả</span><span aria-hidden="true">⌄</span></button><div class="policy-filter-menu" data-filter-menu hidden><button type="button" data-filter-option="" data-label="Tất cả">Tất cả</button><button type="button" data-filter-option="override" data-label="Đã tùy chỉnh">Đã tùy chỉnh</button><button type="button" data-filter-option="default" data-label="Mặc định">Mặc định</button></div></div></div>
-          <button type="button" class="btn btn-secondary" id="action-policy-filter-reset">Đặt lại</button>
+          <div class="action-policy-filter-field"><span>Phân loại</span><div id="action-policy-classification-filter" class="policy-filter-dropdown" data-filter-key="classification"><button type="button" class="policy-filter-trigger" data-filter-trigger><span data-filter-label>Tất cả</span><span aria-hidden="true">⌄</span></button><div class="policy-filter-menu" data-filter-menu><button type="button" data-filter-option="" data-label="Tất cả">Tất cả</button><button type="button" data-filter-option="SAFE" data-label="SAFE">SAFE</button><button type="button" data-filter-option="RISKY" data-label="RISKY">RISKY</button><button type="button" data-filter-option="DESTRUCTIVE" data-label="DESTRUCTIVE">DESTRUCTIVE</button></div></div></div>
+          <div class="action-policy-filter-field"><span>Nguồn policy</span><div id="action-policy-source-filter" class="policy-filter-dropdown" data-filter-key="source"><button type="button" class="policy-filter-trigger" data-filter-trigger><span data-filter-label>Tất cả</span><span aria-hidden="true">⌄</span></button><div class="policy-filter-menu" data-filter-menu><button type="button" data-filter-option="" data-label="Tất cả">Tất cả</button><button type="button" data-filter-option="override" data-label="Đã tùy chỉnh">Đã tùy chỉnh</button><button type="button" data-filter-option="default" data-label="Mặc định">Mặc định</button></div></div></div>
+          <button type="button" class="action-policy-filter-reset" id="action-policy-filter-reset">Xóa bộ lọc</button>
           <span class="action-policy-filter-result" id="action-policy-filter-result" aria-live="polite"></span>
         </div>
+        <div class="action-policy-filter-chips" id="action-policy-filter-chips" aria-live="polite"></div>
+        <div class="action-policy-bulk-toolbar" id="action-policy-bulk-toolbar" hidden>
+          <label class="action-policy-select-all"><input type="checkbox" id="action-policy-select-all"><span>Chọn tất cả trang</span></label><strong id="action-policy-selected-count">Đã chọn 0 hành động</strong>
+          <div class="policy-filter-dropdown action-policy-bulk-dropdown" data-bulk-dropdown><button type="button" class="policy-filter-trigger" data-bulk-trigger><span data-bulk-label>Đổi policy thành…</span><span aria-hidden="true">⌄</span></button><div class="policy-filter-menu" data-bulk-menu><button type="button" data-bulk-option="SAFE">SAFE</button><button type="button" data-bulk-option="RISKY">RISKY</button><button type="button" data-bulk-option="DESTRUCTIVE">DESTRUCTIVE</button></div></div>
+          <button type="button" class="btn btn-primary btn-sm" id="action-policy-bulk-apply" disabled>Áp dụng</button>
+        </div>
         <p class="empty-state action-policy-filter-empty" id="action-policy-filter-empty" hidden>Không có hành động nào khớp bộ lọc.</p>
-        <div class="action-policy-bulk-toolbar" id="action-policy-bulk-toolbar" hidden><strong id="action-policy-selected-count">Đã chọn 0 action</strong><div class="policy-filter-dropdown action-policy-bulk-dropdown" id="action-policy-bulk-value"><button type="button" class="policy-filter-trigger" data-bulk-trigger><span data-bulk-label>Đổi tất cả thành</span><span aria-hidden="true">⌄</span></button><div class="policy-filter-menu" data-bulk-menu hidden><button type="button" data-bulk-option="SAFE">SAFE</button><button type="button" data-bulk-option="RISKY">RISKY</button><button type="button" data-bulk-option="DESTRUCTIVE">DESTRUCTIVE</button></div></div><button type="button" class="policy-apply-button" id="action-policy-bulk-apply" disabled>Áp dụng</button></div>
-        <div class="table-wrap action-policy-table-wrap" id="action-policy-table-wrap"><table id="action-policy-table"><thead><tr><th class="action-policy-check-column"><label class="sr-only" for="action-policy-select-all">Chọn tất cả</label><input type="checkbox" id="action-policy-select-all"></th><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>AI tự học</th><th>Đổi policy</th></tr></thead><tbody>
-        {% for row in action_policy_rows %}<tr data-action-id="{{ row.action_id }}" data-classification="{{ row.effective }}" data-policy-source="{{ 'override' if row.override else 'default' }}">
-          <td class="action-policy-check-column"><input type="checkbox" class="action-policy-row-check" data-action-select aria-label="Chọn {{ row.action_id }}"></td><td class="action-policy-action"><code>{{ row.action_id }}</code></td><td><span class="policy-badge policy-{{ row.default|lower }}">{{ row.default }}</span></td><td class="action-policy-effective"><span class="policy-badge policy-{{ row.effective|lower }}">{{ row.effective }}</span>{% if row.override %}<small>{{ row.override.updated_by }}</small>{% endif %}</td>
+        <div class="table-wrap action-policy-table-wrap" id="action-policy-table-wrap"><table id="action-policy-table"><thead><tr><th class="action-policy-check-column"><span class="sr-only">Chọn</span></th><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>AI tự học</th><th>Đổi policy</th></tr></thead><tbody>
+        {% for row in action_policy_rows %}<tr data-action-id="{{ row.action_id }}" data-default="{{ row.default }}" data-classification="{{ row.effective }}" data-policy-source="{{ 'override' if row.override else 'default' }}">
+          <td class="action-policy-check-column"><input type="checkbox" class="action-policy-row-check" data-action-select aria-label="Chọn {{ row.action_id }}"></td>
+          <td class="action-policy-action"><code>{{ row.action_id }}</code></td><td><span class="policy-badge policy-{{ row.default|lower }}">{{ row.default }}</span></td><td class="action-policy-effective"><span class="policy-badge policy-{{ row.effective|lower }}" data-effective-badge>{{ row.effective }}</span>{% if row.override %}<span class="policy-override-icon" title="Đang override mặc định">⚡</span><small>{{ row.override.updated_by }}</small>{% endif %}</td>
           <td class="action-policy-learning">
             {% if row.trust_scopes %}
               {% for stat in row.trust_scopes[:1] %}<div class="action-policy-learning-scope" title="{{ stat.scope_key }}">
                 <strong>{{ stat.maturity_level }}</strong><span>trust {{ "%.3f"|format(stat.trust_score) }} · {{ stat.verified_count }} verified</span>
-                {% if stat.auto_disabled_reason %}<span class="error">Disabled: {{ stat.auto_disabled_reason }}</span>{% endif %}
                 {% if stat.promotion_candidate_at %}
                   <span class="success">Đủ điều kiện nâng L3</span>
                   <form method="post" action="/settings/autopilot/promote-playbook" class="promotion-approval-form">
                     <input type="hidden" name="stat_id" value="{{ stat.id }}"><input type="hidden" name="confirmation" value="">
                     <button class="btn btn-primary btn-sm" type="submit">Duyệt lên L3</button>
                   </form>
-                {% endif %}
+                {% elif stat.maturity_level != "L3" %}<span class="hint">{{ stat.promotion_blocked_reason or "Đang thu thập thêm evidence" }}</span>{% endif %}
               </div>{% endfor %}
             {% else %}<span class="learning-unverified">Chưa verify</span>{% endif %}
           </td>
-          <td class="action-policy-change-cell">
-            {% if row.immutable %}<span class="policy-note" title="Policy mặc định là DESTRUCTIVE">Note: mặc định DESTRUCTIVE</span>{% endif %}
-            <form method="post" action="/settings/autopilot/action-policy" class="action-policy-change-form" data-action-name="{{ row.action_id }}">
-              <input type="hidden" name="action_id" value="{{ row.action_id }}">
-              <div class="policy-change-control"><button type="button" class="policy-filter-trigger" data-policy-trigger aria-expanded="false"><span data-policy-label class="policy-{{ row.effective|lower }}">{{ row.effective }}</span><span aria-hidden="true">⌄</span></button><div class="policy-filter-menu" data-policy-menu hidden><button type="button" data-policy-option="SAFE">SAFE</button><button type="button" data-policy-option="RISKY">RISKY</button><button type="button" data-policy-option="DESTRUCTIVE">DESTRUCTIVE</button></div></div>
-              <input type="hidden" name="classification" value="{{ row.effective }}" data-policy-value>
-              <input type="hidden" name="confirmation" value="">
-              <button class="policy-apply-button" type="submit">Áp dụng</button>
-            </form>
+          <td class="action-policy-change-cell"><div class="policy-popover-wrap"><button type="button" class="policy-badge policy-{{ row.effective|lower }} policy-edit-trigger" data-policy-trigger aria-expanded="false">{{ row.effective }}</button><div class="policy-popover" data-policy-menu hidden><span>Đổi policy thành</span><button type="button" data-policy-option="SAFE">SAFE</button><button type="button" data-policy-option="RISKY">RISKY</button><button type="button" data-policy-option="DESTRUCTIVE">DESTRUCTIVE</button></div></div>
           </td>
         </tr>{% endfor %}
         </tbody></table></div>
@@ -194,8 +166,8 @@
 
     {% if is_admin %}
     <section class="card settings-panel" data-panel="database" {% if active_section != 'database' %}hidden{% endif %}>
-      <div class="card-header db-panel-title"><div><h2>Kết nối Database</h2><p class="hint">Kiểm tra và quản lý kết nối lưu trữ của Ceph AIOps.</p></div><div class="db-status-chip is-pending" id="db-status-chip" aria-live="polite"><i></i><b id="db-status-text">Đang kiểm tra</b><span id="db-status-meta">—</span></div></div>
-      <div class="card-body db-panel-body">
+      <div class="card-header"><h2>Kết nối Database</h2></div>
+      <div class="card-body">
         {% if database_error %}
           <p class="error">{{ database_error }}</p>
         {% endif %}
@@ -214,40 +186,99 @@
         {% if database_migrate_success %}
           <p class="success">{{ database_migrate_success }}</p>
         {% endif %}
-        <p class="hint">Chỉ hỗ trợ PostgreSQL. Cấu hình hiện tại được kiểm tra định kỳ mỗi 30 giây.</p>
-        <div class="db-connection-string"><div class="db-connection-string-head"><span>Connection string hiện tại</span><button type="button" class="db-copy-btn" id="db-copy-btn">▣ Copy</button></div><code id="db-connection-value">{{ current_database_display }}</code></div>
-        <div class="db-action-grid">
-          <article class="db-action-card"><div class="db-action-heading"><span class="db-action-icon">🔄</span><div><h3>Khởi động lại kết nối DB</h3><p>Reset connection pool của Dashboard, không đổi database.</p></div></div><form method="post" action="/settings/database/reset-connection" class="db-action-form" id="db-reset-form" onsubmit="return confirm('Khởi động lại kết nối tới database hiện tại?');"><button type="submit" class="db-outline-cyan" id="db-reset-btn">Khởi động lại kết nối</button></form></article>
-          <article class="db-action-card db-action-migrate"><div class="db-action-heading"><span class="db-action-icon">⚠</span><div><h3>Chạy migration <span class="db-danger-badge">Cẩn thận</span></h3><p>Thay đổi schema database đang sử dụng.</p></div></div><form method="post" action="/settings/database/migrate" class="db-action-form" id="db-migrate-form" onsubmit="return confirm('Bạn có chắc muốn chạy migration?');"><button type="submit" class="db-outline-amber" id="db-migrate-btn">Chạy migration</button></form></article>
+        <p class="hint">
+          Chỉ hỗ trợ PostgreSQL — schema hệ thống (Incident/Action/Audit Trail...) dùng khoá ngoại và
+          check constraint, không hợp với MongoDB; giữa MySQL/Postgres thì Postgres hỗ trợ tốt hơn.
+        </p>
+        <p class="hint">Đang dùng: <code>{{ current_database_display }}</code></p>
+        <div class="restart-controls-row">
+          <div class="restart-control">
+            <p class="hint">
+              Chỉ reset connection pool của Dashboard (hữu ích khi kết nối bị treo, vd DB phía dưới bị
+              đứng I/O) — không đổi database, không restart Worker/Watcher.
+            </p>
+            <form
+              method="post"
+              action="/settings/database/reset-connection"
+              onsubmit="return confirm('Khởi động lại kết nối tới database hiện tại? Các câu lệnh đang chạy dở trên kết nối cũ sẽ bị huỷ ngang.');"
+            >
+              <button type="submit" class="btn btn-sm">Khởi động lại kết nối DB</button>
+            </form>
+          </div>
+
+          <div class="restart-control">
+            <p class="hint">
+              Chạy <code>alembic upgrade head</code> trên database ĐANG dùng (không đổi database) —
+              dùng khi code mới thêm bảng/cột mà database hiện tại chưa có (vd sau khi
+              <code>git pull</code> mà chưa tự tay chạy migration), thay vì phải SSH vào server.
+            </p>
+            <form
+              method="post"
+              action="/settings/database/migrate"
+              onsubmit="return confirm('Chạy alembic upgrade head trên database hiện tại?');"
+            >
+              <button type="submit" class="btn btn-sm">Chạy migration (upgrade head)</button>
+            </form>
+          </div>
         </div>
-        <div class="db-save-flow"><div class="db-save-flow-title">Lưu sẽ thực hiện theo quy trình</div><div class="db-stepper"><div class="db-step is-active"><span>1</span><strong>Kiểm tra kết nối</strong></div><i></i><div class="db-step"><span>2</span><strong>Chạy migration</strong></div><i></i><div class="db-step"><span>3</span><strong>Khởi động lại services</strong></div></div></div>
+        <p class="hint">
+          Lưu sẽ: kiểm tra kết nối → chạy migration (tạo schema mới, KHÔNG copy dữ liệu từ database cũ) →
+          khởi động lại Worker, Watcher và Dashboard. Gây gián đoạn vài giây cho tất cả người đang dùng.
+        </p>
         <form
           class="login-box"
           id="database-form"
           method="post"
           action="/settings/database/save"
-          onsubmit="return confirm('Xác nhận thay đổi cấu hình database?');"
+          onsubmit="return confirm('Chuyển sang database mới? Dữ liệu cũ (Incident/Audit Trail...) sẽ KHÔNG được copy sang, và Dashboard/Worker/Watcher sẽ khởi động lại ngay.');"
         >
-          <div class="db-mode-toggle" role="tablist" aria-label="Cách nhập cấu hình database"><label><input type="radio" name="db_input_mode" id="db-mode-fields" value="fields" checked><span>Nhập từng trường</span></label><label><input type="radio" name="db_input_mode" id="db-mode-url" value="url"><span>Nhập Database URL</span></label>
+          <div class="ai-test-row">
+            <label class="checkbox-label">
+              <input type="radio" name="db_input_mode" id="db-mode-fields" value="fields" checked>
+              Nhập từng trường
+            </label>
+            <label class="checkbox-label">
+              <input type="radio" name="db_input_mode" id="db-mode-url" value="url">
+              Nhập Database URL
+            </label>
           </div>
 
-          <div data-db-modes="fields" class="db-fields-grid"><div class="db-field-column">
-            <label>Host <span class="required-mark">*</span><input type="text" name="db_host" id="db-host-input" value="{{ db_host }}" placeholder="10.20.1.50" required></label>
-            <label>Database name <span class="required-mark">*</span><input type="text" name="db_name" id="db-name-input" value="{{ db_name }}" placeholder="ceph_aiops" required></label>
-            <label>Password <small>để trống nếu dùng trust auth</small><span class="db-password-wrap"><input type="password" name="db_password" id="db-password-input" autocomplete="off" placeholder="••••••••"><button type="button" class="db-password-toggle" id="db-password-toggle" aria-label="Hiện mật khẩu">👁</button></span></label>
-            <label>SSL Mode <span class="required-mark">*</span><span class="db-custom-select" id="db-ssl-select"><button type="button" class="db-select-trigger" aria-expanded="false"><span id="db-ssl-label">{{ db_ssl_mode or 'require' }}</span><span aria-hidden="true">⌄</span></button><span class="db-select-menu" id="db-ssl-menu" hidden>{% for mode in ['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'] %}<button type="button" data-ssl-mode="{{ mode }}">{{ mode }}</button>{% endfor %}</span><input type="hidden" name="db_ssl_mode" id="db-ssl-mode-input" value="{{ db_ssl_mode or 'require' }}"></span></label>
-          </div><div class="db-field-column">
-            <label>Port <span class="required-mark">*</span><input type="number" name="db_port" id="db-port-input" value="{{ db_port or 5432 }}" min="1" max="65535" required></label>
-            <label>Username <span class="required-mark">*</span><input type="text" name="db_username" id="db-username-input" value="{{ db_username }}" placeholder="ceph_aiops" required></label>
-            <label>Connect Timeout (giây) <span class="required-mark">*</span><input type="number" name="db_connect_timeout" id="db-connect-timeout" value="{{ db_connect_timeout or 5 }}" min="1" max="60" required></label>
-          </div>
+          <div data-db-modes="fields">
+            <label>Host
+              <input type="text" name="db_host" id="db-host-input" value="{{ db_host }}" placeholder="10.20.1.50">
+            </label>
+            <label>Port
+              <input type="text" name="db_port" id="db-port-input" value="{{ db_port or 5432 }}" placeholder="5432">
+            </label>
+            <label>Database name
+              <input type="text" name="db_name" id="db-name-input" value="{{ db_name }}" placeholder="ceph_aiops">
+            </label>
+            <label>Username
+              <input type="text" name="db_username" id="db-username-input" value="{{ db_username }}" placeholder="ceph_aiops">
+            </label>
+            <label>Password (để trống nếu dùng trust auth)
+              <input type="password" name="db_password" id="db-password-input" autocomplete="off">
+            </label>
           </div>
 
           <div data-db-modes="url" hidden>
-            <label>Database URL<textarea name="database_url_raw" id="db-url-input" rows="2" maxlength="1000" placeholder="postgresql+psycopg://user:password@host:5432/dbname?sslmode=require" autocomplete="off"></textarea></label><p class="hint">Dán nguyên connection string — sẽ được dùng thay cho các trường ở trên.</p>
+            <label>Database URL
+              <input
+                type="text"
+                name="database_url_raw"
+                id="db-url-input"
+                placeholder="postgresql+psycopg://user:password@host:5432/dbname"
+                autocomplete="off"
+              >
+            </label>
+            <p class="hint">Dán nguyên connection string — sẽ được dùng thay cho 5 trường ở trên.</p>
           </div>
 
-          <div class="db-form-actions"><button type="button" class="db-outline-cyan" id="db-test-btn">Kiểm tra kết nối</button><span id="db-test-result" class="ai-test-result" hidden></span><button type="submit" class="db-save-btn" id="db-save-btn">Lưu cấu hình</button></div>
+          <div class="ai-test-row">
+            <button type="button" class="btn btn-sm" id="db-test-btn">Kiểm tra kết nối</button>
+            <span id="db-test-result" class="ai-test-result" hidden></span>
+          </div>
+          <button type="submit" class="btn btn-danger" id="db-save-btn">Lưu &amp; chuyển database</button>
         </form>
         <div id="db-migrate-progress" hidden>
           <p class="hint" id="db-migrate-step">Đang bắt đầu...</p>

@@ -40,9 +40,11 @@
     {% if inventory.refreshing %}<div class="bucket-load-state" role="status">Đang tải danh sách bucket từ RGW…</div>{% elif error %}<div class="bucket-load-state bucket-load-state-error" role="status">RGW không trả được dữ liệu bucket. Kiểm tra kết nối Ceph/RGW và thử tải lại.</div>{% endif %}
 
     {% set filters = "&query=" ~ quote_query(inventory.query) ~ "&owner=" ~ quote_query(inventory.owner or '') ~ "&quota=" ~ inventory.quota ~ "&usage=" ~ inventory.usage %}
+    {% if inventory.refreshing %}<style>.bucket-empty-state-card:not(.bucket-loading-placeholder) { display: none !important; }</style>{% endif %}
     <section id="bucket-overview-panel" class="card bucket-overview-card">
       <div class="card-header bucket-overview-header"><div><h2>Danh sách bucket</h2><p class="hint">Chọn một bucket để xem metadata, hoặc mở “Quản lý” để cấu hình bucket đó.</p></div><span class="inventory-count">{{ inventory.total }} bucket{% if inventory.total != 1 %}s{% endif %}</span></div>
       <div class="card-body">
+        {% if inventory.refreshing %}<div class="bucket-empty-state bucket-empty-state-card bucket-loading-placeholder" role="status"><div class="bucket-empty-illustration" aria-hidden="true"><span></span><span></span><span></span></div><h3>Đang tải danh sách bucket…</h3><p>Đang lấy inventory từ RGW. Nội dung sẽ tự cập nhật khi dữ liệu sẵn sàng.</p></div>{% endif %}
         <div class="bucket-toolbar-row">
         <form method="get" action="/object-storage/buckets" class="bucket-filter-bar">
           <input type="hidden" name="cluster" value="{{ selected_cluster.id }}">
