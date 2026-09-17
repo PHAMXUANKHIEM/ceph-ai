@@ -10,11 +10,12 @@ Settings trước đây (trang chứa Bot Token — bí mật).
 """
 
 import asyncio
+import json
 import logging
 import re
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from config.settings import settings
 from dashboard.routes import auth
@@ -22,7 +23,7 @@ from dashboard.routes.auth import require_login
 from dashboard.routes.settings import _mask_key, _require_admin_privilege, restart_watcher, restart_worker
 from dashboard.templating import make_templates
 from shared import db, env_config
-from shared.models import TelegramChannelConfigChange
+from shared.models import TelegramChannelConfigChange, TelegramChannelLayout, TelegramManagedChannel
 from shared.telegram_client import TelegramSendError, send_telegram_message
 
 logger = logging.getLogger(__name__)
@@ -113,11 +114,19 @@ _CHANNELS: dict[str, dict] = {
         "chat_id_field": "telegram_chatbox_chat_id",
         "enabled_field": "telegram_chatbox_enabled",
         "env_names": env_config.TELEGRAM_CHATBOX_ENV_NAMES,
-        "restart": "none",
+        "restart": "worker",
         "approval_enabled": False,
         "chatbox": True,
     },
 }
+
+_PERFORMANCE_RCA_KEY = "performance-rca"
+_BUILTIN_CHANNEL_ORDER = [*list(_CHANNELS), _PERFORMANCE_RCA_KEY]
+_LAYOUT_ID = "default"
+
+
+def _wants_json(request: Request) -> bool:
+    return "application/json" in request.headers.get("accept", "").lower()
 
 
 def _channel_or_404(channel: str) -> dict:
@@ -125,6 +134,112 @@ def _channel_or_404(channel: str) -> dict:
     if info is None:
         raise HTTPException(status_code=404, detail="Kênh Telegram không hợp lệ")
     return info
+
+
+def _parse_layout_value(raw: str | None, fallback):
+    try:
+        value = json.loads(raw or "")
+        return value if isinstance(value, type(fallback)) else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _layout_state(session) -> tuple[list[str], set[str], dict[str, str]]:
+    row = session.get(TelegramChannelLayout, _LAYOUT_ID)
+    if row is None:
+        return list(_BUILTIN_CHANNEL_ORDER), set(), {}
+    return (
+        _parse_layout_value(row.order_json, []),
+        set(_parse_layout_value(row.hidden_json, [])),
+        _parse_layout_value(row.display_names_json, {}),
+    )
+
+
+def _save_layout(
+    session,
+    *,
+    order: list[str] | None = None,
+    hidden: set[str] | None = None,
+    display_names: dict[str, str] | None = None,
+    actor: str = "",
+) -> None:
+    row = session.get(TelegramChannelLayout, _LAYOUT_ID)
+    if row is None:
+        row = TelegramChannelLayout(id=_LAYOUT_ID)
+        session.add(row)
+    current_order, current_hidden, current_names = _layout_state(session)
+    row.order_json = json.dumps(order if order is not None else current_order, ensure_ascii=False)
+    row.hidden_json = json.dumps(sorted(hidden if hidden is not None else current_hidden), ensure_ascii=False)
+    row.display_names_json = json.dumps(display_names if display_names is not None else current_names, ensure_ascii=False)
+    row.updated_by = actor
+
+
+def _channel_key_for_managed(row: TelegramManagedChannel) -> str:
+    return f"custom:{row.id}"
+
+
+def _managed_channel_by_key(session, key: str) -> TelegramManagedChannel | None:
+    if not key.startswith("custom:"):
+        return None
+    return session.get(TelegramManagedChannel, key.removeprefix("custom:"))
+
+
+def _public_managed_channel(row: TelegramManagedChannel) -> dict:
+    configured = bool(row.bot_token and row.chat_id)
+    return {
+        "key": _channel_key_for_managed(row),
+        "id": row.id,
+        "label": row.name,
+        "chat_id": row.chat_id,
+        "enabled": row.enabled,
+        "status_label": "Đang bật" if configured and row.enabled else "Đã tắt" if configured else "Chưa cấu hình",
+        "masked_bot_token": _mask_key(row.bot_token) if row.bot_token else None,
+        "custom": True,
+        "approval_enabled": False,
+    }
+
+
+def _fixed_channel_info(key: str) -> dict:
+    if key == _PERFORMANCE_RCA_KEY:
+        return {
+            "key": key,
+            "label": "Cảnh báo Performance RCA",
+            "enabled": settings.telegram_performance_rca_enabled,
+            "chat_id": settings.telegram_incident_chat_id,
+            "masked_bot_token": _mask_key(settings.telegram_incident_bot_token) if settings.telegram_incident_bot_token else None,
+            "status_label": "Đang bật" if settings.telegram_performance_rca_enabled else "Đã tắt",
+            "custom": False,
+            "rca": True,
+            "approval_enabled": False,
+        }
+    info = _CHANNELS[key]
+    bot_token = getattr(settings, info["bot_token_field"])
+    chat_id = getattr(settings, info["chat_id_field"])
+    enabled = getattr(settings, info["enabled_field"])
+    return {
+        "key": key,
+        "label": info["label"],
+        "chat_id": chat_id,
+        "enabled": enabled,
+        "approval_enabled": info["approval_enabled"],
+        "status_label": "Chưa cấu hình" if not bot_token or not chat_id else "Đang bật" if enabled else "Đã tắt",
+        "masked_bot_token": _mask_key(bot_token) if bot_token else None,
+        "custom": False,
+        "rca": False,
+    }
+
+
+def _restart_label_for_channel(key: str) -> str:
+    if key == _PERFORMANCE_RCA_KEY:
+        return "Watcher"
+    return {"worker": "Worker", "watcher": "Watcher"}.get(_CHANNELS[key]["restart"], "không cần restart dịch vụ")
+
+
+async def _restart_channel_process(key: str) -> None:
+    if key == _PERFORMANCE_RCA_KEY or _CHANNELS.get(key, {}).get("restart") == "watcher":
+        await asyncio.to_thread(restart_watcher)
+    elif _CHANNELS.get(key, {}).get("restart") == "worker":
+        await asyncio.to_thread(restart_worker)
 
 
 # Most-recent-first entries shown per channel on the page — this is an
@@ -198,35 +313,51 @@ def _context(
     history = _channel_history()
     channels = {}
     for key, info in _CHANNELS.items():
-        bot_token = getattr(settings, info["bot_token_field"])
-        enabled = getattr(settings, info["enabled_field"])
-        channels[key] = {
-            "key": key,
-            "label": info["label"],
-            "chat_id": getattr(settings, info["chat_id_field"]),
+        channel = _fixed_channel_info(key)
+        channel.update({
             "allowed_user_ids": getattr(settings, "telegram_chatbox_allowed_user_ids", "") if info.get("chatbox") else "",
             "full_access_user_ids": getattr(settings, "telegram_chatbox_full_access_user_ids", "") if info.get("chatbox") else "",
-            "masked_bot_token": _mask_key(bot_token) if bot_token else None,
-            "enabled": enabled,
-            "approval_enabled": info["approval_enabled"],
-            # "Đã tắt" is only meaningful once a channel actually HAS a
-            # token+chat id -- an unconfigured channel is just "chưa cấu
-            # hình", not "tắt", even though `enabled` defaults True either
-            # way.
-            "status_label": (
-                "Chưa cấu hình" if not bot_token or not getattr(settings, info["chat_id_field"]) else "Đang bật" if enabled else "Đã tắt"
-            ),
             "error": errors.get(key),
             "success": successes.get(key),
             "test_error": test_errors.get(key),
             "test_success": test_successes.get(key),
             "history": history.get(key, []),
-        }
+        })
+        channels[key] = channel
+
+    rca = _fixed_channel_info(_PERFORMANCE_RCA_KEY)
+    rca.update({
+        "error": performance_rca_error,
+        "success": performance_rca_success,
+        "history": [],
+    })
+    channels[_PERFORMANCE_RCA_KEY] = rca
+
+    with db.SessionLocal() as session:
+        managed_rows = session.query(TelegramManagedChannel).order_by(TelegramManagedChannel.created_at.asc()).all()
+        stored_order, hidden, display_names = _layout_state(session)
+        for key, label in display_names.items():
+            if key in channels:
+                channels[key]["label"] = label
+        managed = {}
+        for row in managed_rows:
+            channel = _public_managed_channel(row)
+            managed[channel["key"]] = channel
+            channels[channel["key"]] = channel
+
+    all_keys = list(channels)
+    ordered_keys = [key for key in stored_order if key in channels and key not in hidden]
+    ordered_keys.extend(key for key in all_keys if key not in stored_order and key not in hidden)
+    visible_channels = [channels[key] for key in ordered_keys]
 
     return {
         "user": user,
         "is_admin": auth.is_admin_user(user),
         "channels": channels,
+        "visible_channels": visible_channels,
+        "channel_order": ordered_keys,
+        "managed_channel_keys": list(managed),
+        "channel_count": len(visible_channels),
         "cluster_name": settings.cluster_name,
         "cluster_name_error": cluster_name_error,
         "cluster_name_success": cluster_name_success,
@@ -249,6 +380,249 @@ async def telegram_alerts_help(request: Request, user: str = Depends(require_log
     return templates.TemplateResponse(
         request, "telegram_alerts_help.html", {"user": user, "is_admin": auth.is_admin_user(user)}
     )
+
+
+def _source_credentials(source_key: str) -> tuple[str, str, str]:
+    if source_key.startswith("custom:"):
+        with db.SessionLocal() as session:
+            source = _managed_channel_by_key(session, source_key)
+            if source is None:
+                raise HTTPException(status_code=404, detail="Không tìm thấy kênh nguồn")
+            return source.bot_token, source.chat_id, source.template
+    if source_key == _PERFORMANCE_RCA_KEY:
+        return settings.telegram_incident_bot_token, settings.telegram_incident_chat_id, source_key
+    info = _channel_or_404(source_key)
+    return getattr(settings, info["bot_token_field"]), getattr(settings, info["chat_id_field"]), source_key
+
+
+def _valid_channel_name(value: object) -> str:
+    name = str(value or "").strip()
+    if not name or len(name) > 128:
+        raise HTTPException(status_code=400, detail="Tên kênh là bắt buộc và tối đa 128 ký tự")
+    return name
+
+
+def _layout_with_changes(session, actor: str, *, order=None, hidden=None, display_names=None) -> None:
+    current_order, current_hidden, current_names = _layout_state(session)
+    _save_layout(
+        session,
+        order=order if order is not None else current_order,
+        hidden=hidden if hidden is not None else current_hidden,
+        display_names=display_names if display_names is not None else current_names,
+        actor=actor,
+    )
+
+
+@router.post("/telegram-alerts/api/channels")
+async def create_managed_channel(request: Request, user: str = Depends(require_login)):
+    """Create a persistent custom channel without exposing copied secrets."""
+    _require_admin_privilege(user)
+    body = await request.json()
+    name = _valid_channel_name(body.get("name"))
+    source_key = str(body.get("source_id") or "").strip()
+    if source_key:
+        bot_token, source_chat_id, template = _source_credentials(source_key)
+        chat_id = str(body.get("chat_id") or source_chat_id).strip()
+    else:
+        bot_token = str(body.get("bot_token") or "").strip()
+        chat_id = str(body.get("chat_id") or "").strip()
+        template = "custom"
+    if not bot_token or not chat_id:
+        raise HTTPException(status_code=400, detail="Bot Token và Chat ID là bắt buộc")
+
+    with db.SessionLocal() as session:
+        row = TelegramManagedChannel(
+            name=name,
+            bot_token=bot_token,
+            chat_id=chat_id,
+            enabled=bool(body.get("enabled", False)),
+            template=template,
+            created_by=user,
+        )
+        session.add(row)
+        session.flush()
+        order, hidden, names = _layout_state(session)
+        key = _channel_key_for_managed(row)
+        order = [item for item in order if item != key]
+        order.append(key)
+        _save_layout(session, order=order, hidden=hidden, display_names=names, actor=user)
+        session.commit()
+        result = _public_managed_channel(row)
+    logger.info("telegram channel created: key=%s actor=%s", result["key"], user)
+    return JSONResponse({"ok": True, "channel": result}, status_code=201)
+
+
+@router.patch("/telegram-alerts/api/channels/{channel_key:path}")
+async def update_managed_channel(request: Request, channel_key: str, user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    body = await request.json()
+    name = body.get("name")
+    if name is not None:
+        name = _valid_channel_name(name)
+    if channel_key in _BUILTIN_CHANNEL_ORDER:
+        if name is None:
+            raise HTTPException(status_code=400, detail="Kênh hệ thống chỉ hỗ trợ đổi tên hiển thị")
+        with db.SessionLocal() as session:
+            order, hidden, names = _layout_state(session)
+            names[channel_key] = name
+            _save_layout(session, order=order, hidden=hidden, display_names=names, actor=user)
+            session.commit()
+        return {"ok": True, "key": channel_key, "name": name}
+
+    with db.SessionLocal() as session:
+        row = _managed_channel_by_key(session, channel_key)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy kênh Telegram")
+        if name is not None:
+            row.name = name
+        if "chat_id" in body:
+            row.chat_id = str(body.get("chat_id") or "").strip()
+        if "bot_token" in body and str(body.get("bot_token") or "").strip():
+            row.bot_token = str(body["bot_token"]).strip()
+        if "enabled" in body:
+            row.enabled = bool(body["enabled"])
+        if not row.bot_token or not row.chat_id:
+            raise HTTPException(status_code=400, detail="Bot Token và Chat ID không được để trống")
+        session.commit()
+        result = _public_managed_channel(row)
+    return {"ok": True, "channel": result}
+
+
+def _persist_fixed_enabled(channel_key: str, enabled: bool) -> None:
+    if channel_key == _PERFORMANCE_RCA_KEY:
+        env_config.update_env_file(
+            env_config.TELEGRAM_PERFORMANCE_RCA_ENABLED_ENV_NAME,
+            "true" if enabled else "false",
+        )
+        settings.telegram_performance_rca_enabled = enabled
+        return
+    info = _channel_or_404(channel_key)
+    env_config.update_env_file(info["env_names"][info["enabled_field"]], "true" if enabled else "false")
+    setattr(settings, info["enabled_field"], enabled)
+
+
+@router.post("/telegram-alerts/api/channels/{channel_key:path}/toggle")
+async def toggle_managed_channel(request: Request, channel_key: str, user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    if channel_key in _BUILTIN_CHANNEL_ORDER:
+        _persist_fixed_enabled(channel_key, enabled)
+        await _restart_channel_process(channel_key)
+        return {"ok": True, "enabled": enabled}
+    with db.SessionLocal() as session:
+        row = _managed_channel_by_key(session, channel_key)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy kênh Telegram")
+        if not row.bot_token or not row.chat_id:
+            raise HTTPException(status_code=400, detail="Cấu hình Bot Token và Chat ID trước khi bật kênh")
+        row.enabled = enabled
+        session.commit()
+    return {"ok": True, "enabled": enabled}
+
+
+@router.delete("/telegram-alerts/api/channels/{channel_key:path}")
+async def delete_managed_channel(request: Request, channel_key: str, user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    if channel_key in _BUILTIN_CHANNEL_ORDER:
+        if channel_key == _PERFORMANCE_RCA_KEY:
+            _persist_fixed_enabled(channel_key, False)
+        else:
+            info = _channel_or_404(channel_key)
+            env_config.update_env_file_batch({
+                info["env_names"][info["bot_token_field"]]: "",
+                info["env_names"][info["chat_id_field"]]: "",
+                info["env_names"][info["enabled_field"]]: "false",
+            })
+            setattr(settings, info["bot_token_field"], "")
+            setattr(settings, info["chat_id_field"], "")
+            setattr(settings, info["enabled_field"], False)
+        with db.SessionLocal() as session:
+            order, hidden, names = _layout_state(session)
+            hidden.add(channel_key)
+            _save_layout(session, order=order, hidden=hidden, display_names=names, actor=user)
+            session.commit()
+        await _restart_channel_process(channel_key)
+        return {"ok": True, "key": channel_key}
+
+    with db.SessionLocal() as session:
+        row = _managed_channel_by_key(session, channel_key)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy kênh Telegram")
+        session.delete(row)
+        order, hidden, names = _layout_state(session)
+        _save_layout(session, order=[item for item in order if item != channel_key], hidden=hidden, display_names=names, actor=user)
+        session.commit()
+    return {"ok": True, "key": channel_key}
+
+
+@router.post("/telegram-alerts/api/channels/reorder")
+async def reorder_managed_channels(request: Request, user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    body = await request.json()
+    requested = [str(item) for item in body.get("order", [])]
+    with db.SessionLocal() as session:
+        current_order, hidden, names = _layout_state(session)
+        current_keys = set(_BUILTIN_CHANNEL_ORDER)
+        current_keys.update(_channel_key_for_managed(row) for row in session.query(TelegramManagedChannel).all())
+        visible_keys = current_keys - hidden
+        if len(requested) != len(set(requested)) or set(requested) != visible_keys:
+            raise HTTPException(status_code=400, detail="Thứ tự kênh không hợp lệ")
+        hidden_order = [item for item in current_order if item in hidden]
+        _save_layout(session, order=requested + hidden_order, hidden=hidden, display_names=names, actor=user)
+        session.commit()
+    return {"ok": True, "order": requested}
+
+
+@router.post("/telegram-alerts/api/channels/bulk")
+async def bulk_manage_channels(request: Request, user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    body = await request.json()
+    action = str(body.get("action") or "").strip().lower()
+    keys = [str(item) for item in body.get("keys", [])]
+    if action not in {"enable", "disable", "delete"} or not keys:
+        raise HTTPException(status_code=400, detail="Bulk action không hợp lệ")
+    for key in keys:
+        if action == "delete":
+            # Reuse the same safety semantics as a single delete while
+            # keeping one request for the sticky action bar.
+            if key in _BUILTIN_CHANNEL_ORDER:
+                if key == _PERFORMANCE_RCA_KEY:
+                    _persist_fixed_enabled(key, False)
+                else:
+                    info = _channel_or_404(key)
+                    env_config.update_env_file_batch({
+                        info["env_names"][info["bot_token_field"]]: "",
+                        info["env_names"][info["chat_id_field"]]: "",
+                        info["env_names"][info["enabled_field"]]: "false",
+                    })
+                    setattr(settings, info["bot_token_field"], "")
+                    setattr(settings, info["chat_id_field"], "")
+                    setattr(settings, info["enabled_field"], False)
+            else:
+                with db.SessionLocal() as session:
+                    row = _managed_channel_by_key(session, key)
+                    if row:
+                        session.delete(row)
+                        session.commit()
+        elif key in _BUILTIN_CHANNEL_ORDER:
+            _persist_fixed_enabled(key, action == "enable")
+        else:
+            with db.SessionLocal() as session:
+                row = _managed_channel_by_key(session, key)
+                if row:
+                    row.enabled = action == "enable"
+                    session.commit()
+    if action == "delete":
+        with db.SessionLocal() as session:
+            order, hidden, names = _layout_state(session)
+            hidden.update(keys)
+            _save_layout(session, order=order, hidden=hidden, display_names=names, actor=user)
+            session.commit()
+    for key in keys:
+        if key in _BUILTIN_CHANNEL_ORDER:
+            await _restart_channel_process(key)
+    return {"ok": True, "action": action, "count": len(keys)}
 
 
 @router.get("/telegram-alerts/performance-rca", response_class=HTMLResponse)
@@ -437,17 +811,22 @@ async def performance_rca_toggle(
         settings.telegram_performance_rca_enabled = new_enabled
     except Exception:
         logger.exception("performance_rca_toggle: failed to persist setting to .env")
+        message = "Không ghi được file cấu hình — kiểm tra quyền ghi trên server"
+        if _wants_json(request):
+            return JSONResponse({"detail": message}, status_code=500)
         return templates.TemplateResponse(
             request,
             "telegram_alerts.html",
             _context(
                 user,
-                performance_rca_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server",
+                performance_rca_error=message,
             ),
         )
 
     await asyncio.to_thread(restart_watcher)
     state_label = "Đã bật" if new_enabled else "Đã tắt"
+    if _wants_json(request):
+        return JSONResponse({"enabled": new_enabled})
     return templates.TemplateResponse(
         request,
         "telegram_alerts.html",
@@ -486,10 +865,13 @@ async def telegram_channel_toggle(
         setattr(settings, enabled_field, new_enabled)
     except Exception:
         logger.exception("telegram_channel_toggle: failed to persist config to .env for channel %s", channel)
+        message = "Không ghi được file cấu hình — kiểm tra quyền ghi trên server"
+        if _wants_json(request):
+            return JSONResponse({"detail": message}, status_code=500)
         return templates.TemplateResponse(
             request,
             "telegram_alert_channel.html",
-            _context(user, errors={channel: "Không ghi được file cấu hình — kiểm tra quyền ghi trên server"}, detail_channel=channel),
+            _context(user, errors={channel: message}, detail_channel=channel),
         )
 
     if info["restart"] == "worker":
@@ -502,6 +884,8 @@ async def telegram_channel_toggle(
         restart_label = "không cần restart dịch vụ"
 
     state_label = "Đã bật" if new_enabled else "Đã tắt"
+    if _wants_json(request):
+        return JSONResponse({"enabled": new_enabled})
     return templates.TemplateResponse(
         request,
         "telegram_alert_channel.html",

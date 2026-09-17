@@ -40,7 +40,9 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from config.settings import settings
+from shared import db
 from shared.notification_channels import enqueue_external_alert
+from shared.models import TelegramManagedChannel
 from shared.telegram_client import TelegramSendError, send_telegram_message
 from shared.telegram_humanizer import (
     HUMANIZER_CLI_TIMEOUT_SECONDS,
@@ -594,14 +596,56 @@ def _send(
     enqueue_external_alert(
         category=category, severity=severity, message=text, cluster_name=resolved_cluster,
     )
+    managed_sent = send_managed_channel_alert(text, cluster_name=cluster_name, category=category)
     if not enabled or not bot_token or not chat_id:
-        return False
+        return managed_sent
     try:
         send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text, cluster_name))
         return True
     except TelegramSendError:
         logger.exception("shared.telegram_alerts: Telegram delivery failed")
         return False
+
+
+def send_managed_channel_alert(
+    text: str,
+    *,
+    cluster_name: str | None = None,
+    category: str = "incident",
+) -> bool:
+    """Deliver notification-only copies to admin-managed channels.
+
+    A duplicated built-in channel keeps the built-in channel key as its
+    template and therefore receives the same category. A newly created
+    custom channel receives shared alert categories until the operator
+    chooses a more specific source by duplicating an existing channel.
+    Approval keyboards intentionally remain on the built-in channels only.
+    """
+    try:
+        with db.SessionLocal() as session:
+            rows = (
+                session.query(TelegramManagedChannel)
+                .filter(TelegramManagedChannel.enabled.is_(True))
+                .all()
+            )
+            destinations = [
+                (row.bot_token, row.chat_id, row.template)
+                for row in rows
+                if row.bot_token and row.chat_id
+                and (row.template == "custom" or row.template == category)
+            ]
+    except Exception:
+        logger.exception("shared.telegram_alerts: failed to load managed Telegram channels")
+        return False
+
+    sent = False
+    for bot_token, chat_id, _template in destinations:
+        try:
+            send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text, cluster_name))
+            sent = True
+        except TelegramSendError:
+            logger.exception("shared.telegram_alerts: managed Telegram delivery failed")
+    return sent
 
 
 def send_volume_forecast_alert(
@@ -649,7 +693,7 @@ def send_volume_forecast_alert(
         chat_id if chat_id is not None else settings.telegram_rbd_forecast_chat_id,
         enabled if enabled is not None else settings.telegram_rbd_forecast_enabled,
         text, cluster_name,
-        category="incident", severity="warning",
+        category="rbd-forecast", severity="warning",
     )
 
 

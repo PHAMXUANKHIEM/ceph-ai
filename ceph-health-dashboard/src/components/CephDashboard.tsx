@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, ChartNoAxesCombined, Gauge, HardDrive, PieChart, RefreshCw, Server, SquareTerminal, Wifi } from "lucide-react";
+import { Activity, AlertTriangle, ChartNoAxesCombined, Clock3, Database, Gauge, HardDrive, PieChart, RefreshCw, Server, ShieldCheck, SquareTerminal, Wifi } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { CephHealthCard } from "./CephHealthCard";
 import { ErrorState } from "./ErrorState";
@@ -30,6 +30,7 @@ type DashboardHealth = {
   collected_at?: string | null;
   health_available?: boolean;
   last_error?: string | null;
+  partial_errors?: Record<string, unknown>;
 };
 
 const emptyHealth: DashboardHealth = {
@@ -58,6 +59,19 @@ const formatAge = (age: number | null | undefined) => {
   const minutes = Math.floor(age / 60);
   if (minutes < 60) return `${minutes} phút trước`;
   return `${Math.floor(minutes / 60)} giờ trước`;
+};
+
+const formatSnapshotState = (health: DashboardHealth) => {
+  if (health.refreshing) return "Đang đồng bộ";
+  if (health.stale) return "Snapshot cũ";
+  if (health.health_available === false) return "Chưa sẵn sàng";
+  return "Đang cập nhật";
+};
+
+const formatErrorValue = (value: unknown) => {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "message" in value) return String((value as { message?: unknown }).message || "Lỗi thu thập");
+  return "Lỗi thu thập dữ liệu";
 };
 
 export function CephDashboard() {
@@ -154,6 +168,11 @@ export function CephDashboard() {
     : health.refreshing ? null
       : health.stale ? `stale:${health.last_error || "snapshot"}`
         : health.last_error ? `sync:${health.last_error}` : null;
+  const collectionErrors = useMemo(() => {
+    const entries = Object.entries(health.partial_errors || {});
+    if (health.last_error && !entries.some(([key]) => key === "snapshot")) entries.unshift(["snapshot", health.last_error]);
+    return entries.slice(0, 4);
+  }, [health.last_error, health.partial_errors]);
 
   return (
     <main className="ceph-dashboard">
@@ -213,6 +232,72 @@ export function CephDashboard() {
         <MetricPanel title="Bandwidth" icon={ChartNoAxesCombined} value={formatRate(health.metrics.bandwidth_bps)} subtitle="Read + write" />
         <MetricPanel title="IOPS" icon={ChartNoAxesCombined} value={formatIops(health.metrics.iops)} subtitle="Read + write ops/s" />
         <PlacementGroupsCard value={health.placement_groups} />
+      </section>
+      <section className="dashboard-operations" aria-label="Tín hiệu vận hành">
+        <article className="dashboard-operations-panel">
+          <header className="dashboard-operations-header">
+            <div>
+              <span className="dashboard-operations-eyebrow">OPERATIONAL SNAPSHOT</span>
+              <h2>Tín hiệu vận hành</h2>
+            </div>
+            <span className="dashboard-operations-note">Chỉ dùng dữ liệu snapshot hiện có</span>
+          </header>
+          <div className="dashboard-signal-grid">
+            <div className="dashboard-signal-card">
+              <Clock3 size={16} aria-hidden="true" />
+              <span>Snapshot</span>
+              <strong>{formatAge(health.age_seconds)}</strong>
+              <small>{health.generation ? `Generation #${health.generation}` : "Chưa có generation"}</small>
+            </div>
+            <div className="dashboard-signal-card">
+              <Database size={16} aria-hidden="true" />
+              <span>Placement Groups</span>
+              <strong>{health.placement_groups || "—"}</strong>
+              <small>{health.utilization.pools ?? "—"} pools đang được theo dõi</small>
+            </div>
+            <div className="dashboard-signal-card">
+              <ShieldCheck size={16} aria-hidden="true" />
+              <span>Dung lượng đã dùng</span>
+              <strong>{formatUsed(health.utilization.bytes_used)}</strong>
+              <small>{health.utilization.percent === null ? "Chưa có tỷ lệ sử dụng" : `${health.utilization.percent}% capacity`}</small>
+            </div>
+            <div className="dashboard-signal-card">
+              <Activity size={16} aria-hidden="true" />
+              <span>Thu thập dữ liệu</span>
+              <strong>{formatSnapshotState(health)}</strong>
+              <small>{health.health_available === false ? "Health snapshot chưa sẵn sàng" : "Watcher cung cấp snapshot gần nhất"}</small>
+            </div>
+          </div>
+          <div className="dashboard-history-note" role="note">
+            <Activity size={15} aria-hidden="true" />
+            <span>CPU/RAM và Disk trend sẽ xuất hiện khi backend cung cấp dữ liệu chuỗi thời gian. Hiện tại không dựng biểu đồ từ snapshot đơn.</span>
+          </div>
+        </article>
+        <article className="dashboard-operations-panel dashboard-alerts-panel">
+          <header className="dashboard-operations-header">
+            <div>
+              <span className="dashboard-operations-eyebrow">COLLECTION EVENTS</span>
+              <h2>Sự cố thu thập gần đây</h2>
+            </div>
+            <AlertTriangle size={17} aria-hidden="true" />
+          </header>
+          {collectionErrors.length > 0 ? (
+            <ul className="dashboard-alert-list">
+              {collectionErrors.map(([source, error]) => (
+                <li key={source}>
+                  <AlertTriangle size={15} aria-hidden="true" />
+                  <span><strong>{source}</strong><small>{formatErrorValue(error)}</small></span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="dashboard-alerts-empty">
+              <ShieldCheck size={22} aria-hidden="true" />
+              <strong>Chưa ghi nhận lỗi thu thập</strong>
+              <span>Dashboard đang dùng snapshot gần nhất của Watcher.</span>
+            </div>
+          )}
+        </article>
       </section>
     </main>
   );

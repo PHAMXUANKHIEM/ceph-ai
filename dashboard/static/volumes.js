@@ -14,8 +14,10 @@
 
   var searchForm = document.getElementById("volume-search-form");
   var searchInput = document.getElementById("volume-search-input");
-  var datalist = document.getElementById("volume-datalist");
-  var suggestionsEl = document.getElementById("volume-suggestions");
+  var combobox = document.getElementById("volume-combobox");
+  var dropdown = document.getElementById("volume-dropdown");
+  var dropdownOptions = document.getElementById("volume-dropdown-options");
+  var dropdownToggle = document.getElementById("volume-combobox-toggle");
   var clearBtn = document.getElementById("volume-clear-btn");
   var selectedVolumeEl = document.getElementById("volume-selected-volume");
   var selectedNameEl = document.getElementById("volume-selected-name");
@@ -35,6 +37,138 @@
     { key: "read_latency_ms", name: "Read Latency", unit: "ms", field: "read_latency_ms", color: "#38bdf8" },
     { key: "write_latency_ms", name: "Write Latency", unit: "ms", field: "write_latency_ms", color: "#fb923c" }
   ];
+
+  var pickerState = { loaded: false, filtered: [], highlighted: -1, virtualRowHeight: 64 };
+
+  function formatBytes(bytes) {
+    var value = Number(bytes || 0);
+    if (!value) return "—";
+    var units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    var index = 0;
+    while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
+    return (value >= 100 || index === 0 ? value.toFixed(0) : value.toFixed(1)) + " " + units[index];
+  }
+
+  function shortVolumeName(value) {
+    value = String(value || "");
+    var prefix = value.indexOf("volume-") === 0 ? "volume-" : "";
+    var body = prefix ? value.slice(prefix.length) : value;
+    if (body.length <= 16) return value;
+    return prefix + body.slice(0, 8) + "..." + body.slice(-4);
+  }
+
+  function volumeLabel(record) { return record.display_name || shortVolumeName(record.name); }
+  function volumeIdentifier(record) { return record.image_id || record.name; }
+
+  function renderVolumeOption(record, index) {
+    var option = document.createElement("button");
+    option.type = "button";
+    option.className = "volume-dropdown-option";
+    option.id = "volume-dropdown-option-" + index;
+    option.dataset.volumeIndex = String(index);
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", record.name === App.currentImage ? "true" : "false");
+    option.classList.toggle("is-highlighted", index === pickerState.highlighted);
+
+    var name = document.createElement("strong");
+    name.className = "volume-dropdown-name";
+    name.textContent = volumeLabel(record);
+    var meta = document.createElement("span");
+    meta.className = "volume-dropdown-meta";
+    var status = record.status_available === false ? "unknown" : (record.status || "inactive");
+    meta.textContent = volumeIdentifier(record) + " · " + formatBytes(record.size_bytes) + " · " + status;
+    option.appendChild(name);
+    option.appendChild(meta);
+    option.addEventListener("mouseenter", function () { setHighlighted(index, false); });
+    option.addEventListener("click", function () {
+      searchInput.value = record.name;
+      selectImage(record.name);
+    });
+    return option;
+  }
+
+  function setHighlighted(index, rerender) {
+    if (!pickerState.filtered.length) return;
+    pickerState.highlighted = Math.max(0, Math.min(index, pickerState.filtered.length - 1));
+    if (rerender) renderVolumeOptions();
+    dropdownOptions.querySelectorAll("[data-volume-index]").forEach(function (option) {
+      option.classList.toggle("is-highlighted", Number(option.dataset.volumeIndex) === pickerState.highlighted);
+    });
+    var active = document.getElementById("volume-dropdown-option-" + pickerState.highlighted);
+    if (active) {
+      active.scrollIntoView({ block: "nearest" });
+      searchInput.setAttribute("aria-activedescendant", active.id);
+    }
+  }
+
+  function renderVolumeOptions() {
+    if (!dropdownOptions) return;
+    dropdownOptions.innerHTML = "";
+    if (!pickerState.filtered.length) {
+      var empty = document.createElement("div");
+      empty.className = "volume-dropdown-empty";
+      empty.textContent = pickerState.loaded ? "Không tìm thấy volume nào" : "Đang tải danh sách volume…";
+      if (pickerState.loaded && !App.knownImages.length) empty.textContent = "Pool này chưa có volume";
+      dropdownOptions.appendChild(empty);
+      dropdownOptions.classList.remove("is-virtual");
+      dropdownOptions.style.height = "";
+      return;
+    }
+
+    var virtual = pickerState.filtered.length > 50;
+    dropdownOptions.classList.toggle("is-virtual", virtual);
+    if (!virtual) {
+      dropdownOptions.style.height = "";
+      pickerState.filtered.forEach(function (record, index) {
+        dropdownOptions.appendChild(renderVolumeOption(record, index));
+      });
+      return;
+    }
+
+    dropdownOptions.style.height = (pickerState.filtered.length * pickerState.virtualRowHeight) + "px";
+    var start = Math.max(0, Math.floor(dropdownOptions.scrollTop / pickerState.virtualRowHeight) - 5);
+    var end = Math.min(pickerState.filtered.length, start + Math.ceil(320 / pickerState.virtualRowHeight) + 10);
+    for (var index = start; index < end; index += 1) {
+      var option = renderVolumeOption(pickerState.filtered[index], index);
+      option.style.position = "absolute";
+      option.style.top = (index * pickerState.virtualRowHeight) + "px";
+      option.style.left = "0";
+      option.style.right = "0";
+      dropdownOptions.appendChild(option);
+    }
+  }
+
+  function filterVolumeOptions(query) {
+    var q = (query || "").trim().toLowerCase();
+    pickerState.filtered = App.knownImages.filter(function (record) {
+      return !q || [record.name, record.display_name, record.image_id].some(function (value) {
+        return String(value || "").toLowerCase().indexOf(q) !== -1;
+      });
+    });
+    var selectedIndex = pickerState.filtered.findIndex(function (record) { return record.name === App.currentImage; });
+    pickerState.highlighted = selectedIndex >= 0 ? selectedIndex : (pickerState.filtered.length ? 0 : -1);
+    renderVolumeOptions();
+  }
+
+  function openVolumeDropdown() {
+    if (!dropdown) return;
+    filterVolumeOptions(searchInput.value);
+    dropdown.hidden = false;
+    combobox.classList.add("is-open");
+    searchInput.setAttribute("aria-expanded", "true");
+    dropdownToggle.setAttribute("aria-expanded", "true");
+    var rect = combobox.getBoundingClientRect();
+    combobox.classList.toggle("is-flipped", window.innerHeight - rect.bottom < 330 && rect.top > 330);
+  }
+
+  function closeVolumeDropdown() {
+    if (!dropdown) return;
+    dropdown.hidden = true;
+    combobox.classList.remove("is-open", "is-flipped");
+    searchInput.setAttribute("aria-expanded", "false");
+    dropdownToggle.setAttribute("aria-expanded", "false");
+    searchInput.removeAttribute("aria-activedescendant");
+  }
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
   function pad2(n) { return String(n).padStart(2, "0"); }
@@ -131,6 +265,7 @@
 
   function selectImage(image) {
     if (App.pollTimer) { clearInterval(App.pollTimer); App.pollTimer = null; }
+    closeVolumeDropdown();
     App.currentImage = image;
     App.hoverIndex = null;
     App.hoverSection = null;
@@ -153,47 +288,7 @@
     App.pollTimer = setInterval(fetchHistory, REFRESH_INTERVAL_MS);
   }
 
-  // 2026-07-29: the search box's <datalist> alone turned out to be too
-  // easy to miss (its suggestions only show up once the operator clicks
-  // into the field, and on some browsers only after typing a first
-  // character) — this app already persists every volume name it has ever
-  // seen (VolumeMetric), so there's no reason to hide that list behind
-  // typing. Renders every known name as a clickable chip, live-filtered
-  // by whatever's currently in the search box; the box itself still works
-  // for typing an exact name directly (e.g. one not seen yet).
-  function renderSuggestions(filterText) {
-    if (!suggestionsEl) return;
-    var q = (filterText || "").trim().toLowerCase();
-    suggestionsEl.innerHTML = "";
-    if (!App.knownImages.length) {
-      var hint = document.createElement("span");
-      hint.className = "hint";
-      hint.textContent = "Chưa có Volume nào được ghi nhận trong pool này.";
-      suggestionsEl.appendChild(hint);
-      return;
-    }
-    var matches = App.knownImages.filter(function (name) {
-      return !q || name.toLowerCase().indexOf(q) !== -1;
-    });
-    if (!matches.length) {
-      var none = document.createElement("span");
-      none.className = "hint";
-      none.textContent = "Không khớp tên nào.";
-      suggestionsEl.appendChild(none);
-      return;
-    }
-    matches.forEach(function (name) {
-      var btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn btn-sm " + (name === App.currentImage ? "btn-primary" : "btn-ghost");
-      btn.textContent = name;
-      btn.addEventListener("click", function () {
-        searchInput.value = name;
-        selectImage(name);
-      });
-      suggestionsEl.appendChild(btn);
-    });
-  }
+  function renderSuggestions(filterText) { filterVolumeOptions(filterText); }
 
   function fetchHistory() {
     if (!App.currentImage) return;
@@ -289,30 +384,61 @@
   }
 
   if (searchInput) {
-    searchInput.addEventListener("input", function () { renderSuggestions(searchInput.value); });
-    searchInput.addEventListener("change", function () {
-      var value = (searchInput.value || "").trim();
-      if (value) selectImage(value);
+    searchInput.addEventListener("focus", openVolumeDropdown);
+    searchInput.addEventListener("click", openVolumeDropdown);
+    searchInput.addEventListener("input", function () {
+      openVolumeDropdown();
+      filterVolumeOptions(searchInput.value);
+    });
+    searchInput.addEventListener("keydown", function (event) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        openVolumeDropdown();
+        setHighlighted(pickerState.highlighted + (event.key === "ArrowDown" ? 1 : -1), true);
+      } else if (event.key === "Enter" && !dropdown.hidden && pickerState.highlighted >= 0) {
+        event.preventDefault();
+        var record = pickerState.filtered[pickerState.highlighted];
+        searchInput.value = record.name;
+        selectImage(record.name);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        closeVolumeDropdown();
+      }
     });
   }
 
+  if (dropdownToggle) {
+    dropdownToggle.addEventListener("mousedown", function (event) { event.preventDefault(); });
+    dropdownToggle.addEventListener("click", function () {
+      if (dropdown.hidden) { openVolumeDropdown(); searchInput.focus(); }
+      else { closeVolumeDropdown(); }
+    });
+  }
+  if (dropdownOptions) dropdownOptions.addEventListener("scroll", function () {
+    if (pickerState.filtered.length > 50) renderVolumeOptions();
+  });
+  document.addEventListener("click", function (event) {
+    if (combobox && !combobox.contains(event.target)) closeVolumeDropdown();
+  });
+  window.addEventListener("resize", function () {
+    if (dropdown && !dropdown.hidden) openVolumeDropdown();
+  });
+
   function loadKnownImages() {
-    fetch("/api/volumes/" + encodeURIComponent(pool) + "/images", { credentials: "same-origin" })
+    fetch("/api/volumes/" + encodeURIComponent(pool) + "/images?details=1", { credentials: "same-origin" })
       .then(function (response) { return response.ok ? response.json() : null; })
       .then(function (data) {
         if (!data) return;
-        App.knownImages = data.images || [];
+        App.knownImages = (data.images || []).map(function (record) {
+          return typeof record === "string" ? {name: record, display_name: null, image_id: null, size_bytes: 0, status: "inactive", status_available: false} : record;
+        });
+        pickerState.loaded = true;
         renderSuggestions(searchInput.value);
-        if (datalist) {
-          datalist.innerHTML = "";
-          App.knownImages.forEach(function (image) {
-            var option = document.createElement("option");
-            option.value = image;
-            datalist.appendChild(option);
-          });
-        }
       })
-      .catch(function () { /* suggestions are a convenience, not required */ });
+      .catch(function () {
+        pickerState.loaded = true;
+        renderSuggestions(searchInput.value);
+      });
   }
 
   /* ---------- drawing ---------- */

@@ -932,7 +932,9 @@ def _inventory(
     usage: UsageFilter = "all",
     sort: SortField = "name",
     order: SortOrder = "asc",
+    page_size: int = PAGE_SIZE,
 ) -> dict:
+    page_size = page_size if page_size in {10, 20, 50, 100} else PAGE_SIZE
     hosts = _rgw_hosts(cluster)
     if not hosts:
         raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
@@ -970,15 +972,15 @@ def _inventory(
         }
         rows.sort(key=sort_keys[sort], reverse=order == "desc")
         total = len(rows)
-        page_count = max(1, ceil(total / PAGE_SIZE))
+        page_count = max(1, ceil(total / page_size))
         page = min(max(page, 1), page_count)
-        rows = rows[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
+        rows = rows[(page - 1) * page_size:page * page_size]
     else:
         names.sort(key=str.casefold, reverse=order == "desc")
         total = len(names)
-        page_count = max(1, ceil(total / PAGE_SIZE))
+        page_count = max(1, ceil(total / page_size))
         page = min(max(page, 1), page_count)
-        page_names = names[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
+        page_names = names[(page - 1) * page_size:page * page_size]
         with ThreadPoolExecutor(max_workers=min(4, max(1, len(page_names)))) as executor:
             rows = list(executor.map(lambda name: _bucket_summary(cluster, host, name), page_names))
     return {
@@ -993,15 +995,16 @@ def _inventory(
         "sort": sort,
         "order": order,
         "page": page,
-        "page_size": PAGE_SIZE,
+        "page_size": page_size,
         "page_count": page_count,
         "total": total,
     }
 
 
 def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: QuotaFilter = "all",
-                      usage: UsageFilter = "all", sort: SortField = "name", order: SortOrder = "asc") -> dict:
-    key = f"{cluster.id}:{query}:{page}:{owner}:{quota}:{usage}:{sort}:{order}"
+                      usage: UsageFilter = "all", sort: SortField = "name", order: SortOrder = "asc",
+                      page_size: int = PAGE_SIZE) -> dict:
+    key = f"{cluster.id}:{query}:{page}:{owner}:{quota}:{usage}:{sort}:{order}:{page_size}"
     fallback = {
         "host": None,
         "rgw_endpoint": "",
@@ -1014,13 +1017,13 @@ def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: Qu
         "sort": sort,
         "order": order,
         "page": max(1, page),
-        "page_size": PAGE_SIZE,
+        "page_size": page_size,
         "page_count": 1,
         "total": 0,
     }
     result = get_or_load(
         "buckets", key,
-        lambda: _inventory(cluster, query, page, owner, quota, usage, sort, order),
+        lambda: _inventory(cluster, query, page, owner, quota, usage, sort, order, page_size),
         stale_ttl_seconds=7200,
         background_on_miss=not _uses_mocked_rgw_client(),
         fallback=fallback,
@@ -1736,14 +1739,15 @@ async def bucket_inventory_page(
     usage: UsageFilter = "all",
     sort: SortField = "name",
     order: SortOrder = "asc",
+    page_size: int = Query(PAGE_SIZE, ge=1, le=100),
 ):
     clusters, cluster = cluster_selection(request)
     inventory = {"items": [], "query": query.strip(), "owner": owner.strip(), "quota": quota,
                  "usage": usage, "sort": sort, "order": order, "page": page, "page_count": 1,
-                 "total": 0, "rgw_endpoint": "", "zonegroup_api_name": "default"}
+                 "page_size": page_size, "total": 0, "rgw_endpoint": "", "zonegroup_api_name": "default"}
     error = None
     try:
-        inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page, owner, quota, usage, sort, order)
+        inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page, owner, quota, usage, sort, order, page_size)
     except ObjectStorageError as exc:
         error = str(exc)
     response = templates.TemplateResponse(request, "object_storage_buckets.html", {

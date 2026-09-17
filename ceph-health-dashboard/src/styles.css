@@ -517,3 +517,155 @@ html { overflow-x: hidden; }
 .dashboard-page-shell .chat-msg-expand { margin-top: 0; }
 .dashboard-page-shell .chat-msg-user .chat-msg-bubble { background: #3b82f6; }
 .dashboard-page-shell .chat-msg-assistant .chat-msg-bubble { background: #1e293b; }
+
+/* Dashboard operational overview: compact real-snapshot signals fill the
+ * space below performance without inventing time-series data. */
+.ceph-dashboard .dashboard-operations {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr);
+  gap: 10px;
+  min-width: 0;
+}
+.ceph-dashboard .dashboard-operations-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #2b3241;
+  border-radius: 10px;
+  background: #161922;
+}
+.ceph-dashboard .dashboard-operations-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2b3241;
+  background: #1b1f2a;
+}
+.ceph-dashboard .dashboard-operations-header h2 {
+  margin: 2px 0 0;
+  color: #e7e9ee;
+  font-size: 13px;
+  font-weight: 650;
+}
+.ceph-dashboard .dashboard-operations-eyebrow {
+  color: #7896c7;
+  font: 700 9px/1.1 var(--font-mono, ui-monospace, monospace);
+  letter-spacing: .1em;
+}
+.ceph-dashboard .dashboard-operations-note {
+  color: #7f899d;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.ceph-dashboard .dashboard-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px;
+}
+.ceph-dashboard .dashboard-signal-card {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 9px;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  background: #11151d;
+}
+.ceph-dashboard .dashboard-signal-card > svg { color: #3f7efe; }
+.ceph-dashboard .dashboard-signal-card > span {
+  overflow: hidden;
+  color: #a0a9ba;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ceph-dashboard .dashboard-signal-card > strong {
+  overflow: hidden;
+  color: #e7e9ee;
+  font-size: 13px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ceph-dashboard .dashboard-signal-card > small {
+  overflow: hidden;
+  color: #6f7b91;
+  font-size: 10px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ceph-dashboard .dashboard-history-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0 10px 10px;
+  padding: 7px 8px;
+  border-left: 2px solid #3f7efe;
+  background: rgba(63,126,254,.07);
+  color: #9eabc0;
+  font-size: 10px;
+  line-height: 1.35;
+}
+.ceph-dashboard .dashboard-history-note svg { flex: 0 0 auto; color: #6f9cff; }
+.ceph-dashboard .dashboard-alerts-panel > .dashboard-operations-header > svg { color: #f4c15d; }
+.ceph-dashboard .dashboard-alert-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 10px;
+  list-style: none;
+}
+.ceph-dashboard .dashboard-alert-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(240,167,46,.2);
+  border-radius: 8px;
+  background: rgba(240,167,46,.05);
+}
+.ceph-dashboard .dashboard-alert-list li > svg { flex: 0 0 auto; color: #f4c15d; }
+.ceph-dashboard .dashboard-alert-list li > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.ceph-dashboard .dashboard-alert-list strong {
+  color: #e7e9ee;
+  font: 600 11px/1.2 var(--font-mono, ui-monospace, monospace);
+}
+.ceph-dashboard .dashboard-alert-list small {
+  overflow: hidden;
+  color: #a0a9ba;
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ceph-dashboard .dashboard-alerts-empty {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  padding: 25px 14px;
+  color: #6f7b91;
+  text-align: center;
+}
+.ceph-dashboard .dashboard-alerts-empty svg { color: #4ade80; }
+.ceph-dashboard .dashboard-alerts-empty strong { color: #a0a9ba; font-size: 11px; }
+.ceph-dashboard .dashboard-alerts-empty span { font-size: 10px; }
+
+@media (max-width: 980px) {
+  .ceph-dashboard .dashboard-operations { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .ceph-dashboard .dashboard-signal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ceph-dashboard .dashboard-operations-note { display: none; }
+}
+@media (max-width: 460px) {
+  .ceph-dashboard .dashboard-signal-grid { grid-template-columns: 1fr; }
+}

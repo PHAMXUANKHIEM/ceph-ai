@@ -1,0 +1,699 @@
+/*
+ * Placement Groups page overrides.
+ *
+ * PGs is a long, interactive table.  Keep its layout isolated from the
+ * shared table/pagination rules so a change on another page cannot move the
+ * sticky header, open the pager menu, or collapse the summary grid.
+ */
+
+.pg-redesign {
+  width: 100%;
+  max-width: 1500px;
+  min-width: 0;
+}
+
+/* The mobile navigation is an off-canvas fixed rail.  Keep that rail from
+ * becoming a page-level horizontal scrollbar while PGs still scrolls its
+ * table horizontally inside its own wrapper. */
+.app-shell:has(.pg-redesign) {
+  overflow-x: hidden;
+}
+
+.pg-redesign .pg-shell {
+  width: 100%;
+  min-width: 0;
+  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+}
+
+.pg-redesign .pg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-width: 0;
+  padding: 21px 24px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pg-redesign .pg-header-copy,
+.pg-redesign .pg-title-row,
+.pg-redesign .pg-header-meta {
+  min-width: 0;
+}
+
+.pg-redesign .pg-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 11px;
+  margin-top: 5px;
+}
+
+.pg-redesign .pg-title-row h1 {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font: 650 1.15rem/1.2 var(--font-mono);
+  letter-spacing: -.03em;
+}
+
+.pg-redesign .pg-cluster-name {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: .78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-redesign .pg-header-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 8px;
+  color: var(--text-muted);
+  font: .72rem var(--font-mono);
+}
+
+.pg-redesign .pg-header-meta > strong {
+  color: var(--text);
+  font-size: .95rem;
+}
+
+.pg-redesign .pg-header-health {
+  padding: 3px 7px;
+  border: 1px solid rgba(67, 214, 154, .2);
+  border-radius: 999px;
+  background: rgba(67, 214, 154, .08);
+  color: #74d7a7;
+  font-size: .67rem;
+}
+
+.pg-redesign .pg-overview {
+  display: grid;
+  grid-template-columns: 140px minmax(250px, 1.2fr) minmax(240px, 1fr) 180px;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 24px 10px;
+}
+
+.pg-redesign .pg-stat-card {
+  min-width: 0;
+  min-height: 108px;
+  padding: 13px 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(10, 17, 28, .46);
+}
+
+.pg-redesign .pg-stat-card-primary,
+.pg-redesign .pg-osd-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.pg-redesign .pg-stat-card-primary {
+  background: linear-gradient(145deg, rgba(85, 167, 255, .1), rgba(10, 17, 28, .42));
+}
+
+.pg-redesign .pg-stat-label {
+  color: var(--text-muted);
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+
+.pg-redesign .pg-stat-card strong {
+  display: block;
+  margin: 8px 0 3px;
+  color: var(--text);
+  font: 700 1.65rem/1 var(--font-mono);
+}
+
+.pg-redesign .pg-stat-card small {
+  display: block;
+  color: var(--text-faint);
+  font-size: .66rem;
+  line-height: 1.35;
+}
+
+.pg-redesign .pg-stat-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-faint);
+  font-size: .65rem;
+}
+
+.pg-redesign .pg-state-visual {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 12px 0 10px;
+}
+
+.pg-redesign .pg-state-donut {
+  position: relative;
+  display: block;
+  flex: 0 0 58px;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: conic-gradient(var(--healthy) 0 var(--pg-clean-pct), var(--warning) var(--pg-clean-pct) 100%);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .08);
+}
+
+.pg-redesign .pg-state-donut::after {
+  position: absolute;
+  inset: 10px;
+  content: "";
+  border-radius: 50%;
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.pg-redesign .pg-state-bar {
+  display: flex;
+  flex: 1 1 auto;
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .07);
+}
+
+.pg-redesign .pg-state-segment {
+  min-width: 2px;
+  background: #efb84b;
+}
+
+.pg-redesign .pg-state-segment.is-clean {
+  background: #3bd497;
+}
+
+.pg-redesign .pg-state-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 12px;
+  color: var(--text-muted);
+  font-size: .63rem;
+}
+
+.pg-redesign .pg-state-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pg-redesign .pg-state-legend i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #efb84b;
+}
+
+.pg-redesign .pg-state-legend i.is-clean {
+  background: #3bd497;
+}
+
+.pg-redesign .pg-state-legend b {
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.pg-redesign .pg-pool-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 11px;
+}
+
+.pg-redesign .pg-pool-item {
+  display: grid;
+  grid-template-columns: minmax(60px, .75fr) minmax(50px, 1fr) 28px;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-muted);
+  font: .65rem var(--font-mono);
+}
+
+.pg-redesign .pg-pool-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-redesign .pg-pool-item b {
+  color: var(--text);
+  text-align: right;
+}
+
+.pg-redesign .pg-mini-bar {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, .07);
+}
+
+.pg-redesign .pg-mini-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #5caaff;
+}
+
+.pg-redesign .pg-quick-filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 0 24px 13px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pg-redesign .pg-quick-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: .68rem var(--font-mono);
+  cursor: pointer;
+}
+
+.pg-redesign .pg-quick-filter:hover:not(:disabled),
+.pg-redesign .pg-quick-filter.is-active {
+  border-color: rgba(92, 170, 255, .55);
+  background: rgba(92, 170, 255, .1);
+  color: #b9dcff;
+}
+
+.pg-redesign .pg-quick-filter.is-clean:hover:not(:disabled),
+.pg-redesign .pg-quick-filter.is-clean.is-active {
+  border-color: rgba(67, 214, 154, .4);
+  background: rgba(67, 214, 154, .09);
+  color: #8ee2b9;
+}
+
+.pg-redesign .pg-quick-filter b {
+  color: var(--text);
+}
+
+.pg-redesign .pg-quick-filter:disabled {
+  cursor: not-allowed;
+  opacity: .35;
+}
+
+.pg-redesign .pg-quick-filter-hint {
+  margin-left: 4px;
+  color: var(--text-faint);
+  font-size: .64rem;
+}
+
+.pg-redesign .pg-filter-panel {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 13px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pg-redesign .pg-smart-search {
+  position: relative;
+  display: block;
+  flex: 1 1 360px;
+  min-width: 180px;
+}
+
+.pg-redesign .pg-search-icon {
+  position: absolute;
+  top: 8px;
+  left: 11px;
+  color: var(--text-faint);
+  font-size: 1rem;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.pg-redesign .pg-smart-search input {
+  width: 100%;
+  height: 34px;
+  padding: 0 11px 0 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: .75rem var(--font-mono);
+}
+
+.pg-redesign .pg-smart-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.pg-redesign .pg-pool-filter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: .68rem;
+  font-weight: 650;
+}
+
+.pg-redesign .pg-pool-filter select {
+  min-width: 145px;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  color-scheme: dark;
+}
+
+.pg-redesign .pg-filter-result {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-muted);
+  font: 600 .68rem var(--font-mono);
+  white-space: nowrap;
+}
+
+/* Do not create a second vertical scroller around the whole table.  The
+ * document owns vertical scrolling; this wrapper only handles narrow screens.
+ * This also lets the sticky header use the viewport rather than the wrapper as
+ * its scroll container. */
+.pg-redesign .pg-table-wrap {
+  min-width: 0;
+  padding: 0 24px 7px;
+  overflow-x: auto;
+  overflow-y: clip;
+}
+
+.pg-redesign .pg-table {
+  width: 100%;
+  min-width: 820px;
+  table-layout: fixed;
+}
+
+main.pg-redesign .pg-shell .pg-table thead th {
+  position: sticky;
+  /* The table wrapper owns the horizontal overflow and therefore also acts
+   * as the sticky containing block.  A non-zero offset would push the header
+   * down over the first data row. */
+  top: 0;
+  z-index: 20;
+  padding: 10px 11px;
+  border-bottom: 1px solid var(--border-strong);
+  background: #1e293b;
+  color: #94a3b8;
+  vertical-align: middle;
+  font-size: .67rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.pg-redesign .pg-table tbody td {
+  height: 46px;
+  padding: 10px 11px;
+  border-bottom: 1px solid rgba(255, 255, 255, .06);
+  vertical-align: middle;
+}
+
+.pg-redesign .pg-table th:nth-child(1) { width: 12%; }
+.pg-redesign .pg-table th:nth-child(2) { width: 18%; }
+.pg-redesign .pg-table th:nth-child(3) { width: 17%; }
+.pg-redesign .pg-table th:nth-child(4) { width: 18%; }
+.pg-redesign .pg-table th:nth-child(5) { width: 10%; }
+.pg-redesign .pg-table th:nth-child(6) { width: 25%; }
+
+.pg-redesign .pg-data-row {
+  cursor: pointer;
+  outline: none;
+}
+
+.pg-redesign .pg-data-row:hover td {
+  background: rgba(85, 167, 255, .045);
+}
+
+.pg-redesign .pg-data-row:focus-visible td {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.pg-redesign .pg-data-row td:first-child code {
+  color: #b8d9ff;
+  font-weight: 700;
+}
+
+.pg-redesign .pg-osd-cell {
+  white-space: nowrap;
+}
+
+.pg-redesign .pg-osd-set {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pg-redesign .pg-osd-pill {
+  display: inline-grid;
+  min-width: 23px;
+  height: 21px;
+  padding: 0 5px;
+  place-items: center;
+  border: 1px solid rgba(92, 170, 255, .24);
+  border-radius: 999px;
+  background: rgba(92, 170, 255, .1);
+  color: #b9d9ff;
+  font: 700 .67rem var(--font-mono);
+}
+
+.pg-redesign .pg-osd-warning {
+  display: inline-block;
+  margin-left: 7px;
+  color: #f3bd57;
+  cursor: help;
+  font-size: .8rem;
+}
+
+.pg-redesign .pg-scrub-cell {
+  display: grid;
+  gap: 2px;
+  color: var(--text-muted);
+  font: .68rem var(--font-mono);
+}
+
+.pg-redesign .pg-scrub-cell span {
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.pg-redesign .pg-scrub-cell small {
+  width: 38px;
+  flex: 0 0 38px;
+  color: var(--text-faint);
+  font-size: .61rem;
+}
+
+.pg-redesign .pg-scrub-cell time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pg-redesign .pg-pagination {
+  position: relative;
+  z-index: 1;
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between !important;
+  gap: 9px;
+  min-height: 48px;
+  height: 48px;
+  margin-top: 16px;
+  padding: 13px 24px 17px;
+  border-top: 1px solid var(--border);
+}
+
+.pg-redesign .pg-pagination .pagination-summary {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font: .68rem var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-redesign .pg-pagination .pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.pg-redesign .pg-pagination .pagination-page-size {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 1 1 0;
+  margin-left: 0;
+  color: var(--text-muted);
+  font-size: .67rem;
+  white-space: nowrap;
+}
+
+.pg-redesign .pg-pagination .pagination-page-size .custom-select {
+  min-width: 68px;
+}
+
+.pg-redesign .pg-pagination .pagination-mobile-status {
+  display: none;
+}
+
+.pg-redesign .pg-detail-backdrop[hidden],
+.pg-redesign .pg-detail-panel[hidden] {
+  display: none !important;
+}
+
+.pg-redesign .pg-detail-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(1, 5, 10, .5);
+}
+
+.pg-redesign ~ .pg-detail-panel {
+  position: fixed;
+  z-index: 91;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(430px, calc(100vw - 28px));
+  overflow-y: auto;
+  border-left: 1px solid var(--border-strong);
+  background: var(--surface);
+  box-shadow: -24px 0 70px rgba(0, 0, 0, .36);
+  transform: translateX(100%);
+  transition: transform .2s ease;
+}
+
+.pg-redesign ~ .pg-detail-panel.is-open {
+  transform: translateX(0);
+}
+
+@media (max-width: 1100px) {
+  .pg-redesign .pg-overview {
+    grid-template-columns: 140px minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .pg-redesign .pg-osd-card {
+    grid-column: span 3;
+    min-height: 76px;
+  }
+}
+
+@media (max-width: 720px) {
+  .pg-redesign .pg-header,
+  .pg-redesign .pg-filter-panel,
+  .pg-redesign .pg-quick-filter-row,
+  .pg-redesign .pg-table-wrap,
+  .pg-redesign .pg-pagination {
+    padding-right: 15px;
+    padding-left: 15px;
+  }
+
+  .pg-redesign .pg-header {
+    align-items: flex-start;
+  }
+
+  .pg-redesign .pg-overview {
+    grid-template-columns: 1fr 1fr;
+    padding-right: 15px;
+    padding-left: 15px;
+  }
+
+  .pg-redesign .pg-state-card,
+  .pg-redesign .pg-pool-card,
+  .pg-redesign .pg-osd-card {
+    grid-column: span 2;
+  }
+
+  .pg-redesign .pg-filter-panel {
+    flex-wrap: wrap;
+  }
+
+  .pg-redesign .pg-smart-search {
+    flex-basis: 100%;
+  }
+
+  .pg-redesign .pg-pool-filter {
+    flex: 1 1 auto;
+  }
+
+  .pg-redesign .pg-pool-filter select {
+    flex: 1;
+  }
+
+  .pg-redesign .pg-filter-result {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .pg-redesign .pg-table {
+    min-width: 820px;
+  }
+
+  .pg-redesign .pg-pagination {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 48px;
+  }
+
+  .pg-redesign .pg-pagination .pagination-page-size {
+    flex: 0 0 auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .pg-redesign .pg-header {
+    flex-direction: column;
+  }
+
+  .pg-redesign .pg-header .btn {
+    align-self: flex-end;
+  }
+
+  .pg-redesign .pg-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .pg-redesign .pg-state-card,
+  .pg-redesign .pg-pool-card,
+  .pg-redesign .pg-osd-card {
+    grid-column: auto;
+  }
+
+  .pg-redesign .pg-pagination .pagination-summary {
+    flex-basis: 100%;
+    text-align: center;
+  }
+
+  .pg-redesign .pg-pagination .pagination-page-size {
+    display: none;
+  }
+}

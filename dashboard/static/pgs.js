@@ -11,6 +11,7 @@
   const previousButton = document.getElementById("pg-page-prev");
   const nextButton = document.getElementById("pg-page-next");
   const pageStatus = document.getElementById("pg-page-status");
+  const pageButtons = document.getElementById("pg-page-buttons");
   const pageSizeSelect = document.getElementById("pg-page-size");
   const pageInput = document.getElementById("pg-page-input");
   const pageRoot = document.getElementById("pgs-page");
@@ -24,7 +25,7 @@
   const bootstrap = document.getElementById("pg-bootstrap-data");
 
   if (!table || !searchInput || !poolSelect || !resetButton || !result || !pagination
-      || !previousButton || !nextButton || !pageStatus || !pageSizeSelect || !pageInput) return;
+      || !previousButton || !nextButton || !pageStatus || !pageButtons || !pageSizeSelect) return;
 
   let pgData = [];
   try { pgData = bootstrap ? JSON.parse(bootstrap.textContent || "[]") : []; } catch (_error) { pgData = []; }
@@ -277,11 +278,14 @@
     table.querySelectorAll("tbody tr").forEach((row) => { row.hidden = !visibleIds.has(String(row.dataset.pgid)); });
     const shownFrom = data.length ? start + 1 : 0;
     const shownTo = Math.min(start + size, data.length);
-    result.textContent = `Showing ${shownFrom}–${shownTo} of ${data.length}`;
+    const summary = `Hiển thị ${shownFrom}–${shownTo} / ${data.length} mục`;
+    result.textContent = summary;
+    const paginationSummary = document.getElementById("pg-filter-result-pagination");
+    if (paginationSummary) { paginationSummary.textContent = summary; paginationSummary.dataset.mobileSummary = `${shownFrom}–${shownTo} / ${data.length}`; }
     pageStatus.textContent = `Trang ${currentPage} / ${pageCount}`;
-    pageInput.value = String(currentPage);
     previousButton.disabled = currentPage === 1;
     nextButton.disabled = currentPage === pageCount;
+    if (window.DashboardPagination) window.DashboardPagination.renderPages(pageButtons, currentPage, pageCount, (page) => { currentPage = page; render(); });
     pagination.hidden = data.length === 0;
     table.hidden = data.length === 0;
     if (empty) empty.hidden = data.length !== 0;
@@ -336,7 +340,6 @@
   [searchInput].forEach((input) => input.addEventListener("input", () => { currentPage = 1; render(); }));
   poolSelect.addEventListener("change", () => { currentPage = 1; render(); });
   pageSizeSelect.addEventListener("change", () => { pageSize = pageSizeSelect.value; currentPage = 1; render(); });
-  pageInput.addEventListener("change", () => { currentPage = Math.max(1, Number(pageInput.value) || 1); render(); });
   previousButton.addEventListener("click", () => { currentPage -= 1; render(); });
   nextButton.addEventListener("click", () => { currentPage += 1; render(); });
   resetButton.addEventListener("click", () => { searchInput.value = ""; poolSelect.value = ""; activeState = ""; document.querySelectorAll(".pg-quick-filter").forEach((button) => button.classList.remove("is-active")); currentPage = 1; render(); searchInput.focus(); });

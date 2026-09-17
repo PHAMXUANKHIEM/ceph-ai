@@ -29,6 +29,7 @@ from shared.clusters import list_active_clusters
 from shared.models import BackupJob
 from shared.notification_channels import enqueue_external_alert
 from shared.telegram_client import TelegramSendError, send_telegram_message
+from shared.telegram_alerts import send_managed_channel_alert
 from worker.backup.cluster_scope import parse_tracked_images
 from worker.backup.policy_config import load_backup_policy
 
@@ -115,6 +116,8 @@ def _send_telegram_alert(
         send_telegram_message(bot_token, chat_id, text)
     except TelegramSendError:
         logger.exception("send_alert: Telegram delivery failed — alert already logged above")
+    if cluster is None:
+        send_managed_channel_alert(text, cluster_name=cluster_name, category="backup")
 
 
 def send_alert(

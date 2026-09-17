@@ -8,337 +8,111 @@
   <meta http-equiv="refresh" content="5;url=/upgrade{{ upgrade_cluster_query }}{% if upgrade_cluster_query %}&{% else %}?{% endif %}tab=upgrade">
   {% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/upgrade_redesign.css?v={{ static_version }}-v2">
 </head>
 <body>
   {% include "_nav.html" %}
-
-  <main class="page">
-    <div class="tabbed-page">
-    <nav class="tabbed-sidebar">
-      <button type="button" class="tabbed-nav-item {% if active_tab == 'docs' %}active{% endif %}" data-section="docs">Tài liệu quy trình</button>
-      <button type="button" class="tabbed-nav-item {% if active_tab == 'upgrade' %}active{% endif %}" data-section="upgrade">Upgrade Cluster</button>
-    </nav>
-    <div class="tabbed-content">
-    <section class="card tabbed-panel" data-panel="docs" {% if active_tab != 'docs' %}hidden{% endif %}>
-      <div class="card-header"><h2>Tài liệu quy trình nâng cấp</h2></div>
-      <div class="card-body">
-        <p class="hint">
-          Upload quy trình nâng cấp nội bộ của bạn (file .txt/.md) — AI sẽ đọc, hiểu và tóm tắt lại,
-          rồi hiển thị cùng với quy trình nâng cấp mỗi khi bạn bấm đề xuất nâng cấp bên dưới.
-        </p>
-        {% if procedure_document %}
-        <p class="hint">
-          Đã upload: <code>{{ procedure_document.filename }}</code> —
-          bởi {{ procedure_document.uploaded_by }} lúc {{ procedure_document.uploaded_at|vntime }}
-        </p>
-        {% if procedure_document.summary_text %}
-        <p><strong>Tóm tắt bởi AI:</strong></p>
-        <pre class="upgrade-plan-text">{{ procedure_document.summary_text }}</pre>
-        {% elif procedure_document.summary_error %}
-        <p class="error">Tóm tắt bằng AI thất bại: {{ procedure_document.summary_error }}</p>
-        <form method="post" action="/upgrade/procedure/resummarize" class="inline-form">
-          <button type="submit" class="btn btn-sm">Thử tóm tắt lại</button>
-        </form>
-        {% endif %}
-        {% endif %}
-        <form method="post" action="/upgrade/procedure/upload" enctype="multipart/form-data" class="login-box">
-          <label>{% if procedure_document %}Upload file khác để thay thế{% else %}Chọn file quy trình nâng cấp{% endif %} (.txt, .md)
-            <input type="file" name="file" accept=".txt,.md" required>
-          </label>
-          <button type="submit" class="btn btn-primary">Upload &amp; tóm tắt bằng AI</button>
-        </form>
-      </div>
-    </section>
-
-    <div class="tabbed-panel" data-panel="upgrade" {% if active_tab != 'upgrade' %}hidden{% endif %}>
-    {% if upgrade_unsupported %}
-    <section class="card">
-      <div class="card-header"><h2>Upgrade Cluster</h2></div>
-      <div class="card-body">
-        <p class="error">
-          Tính năng này chỉ hỗ trợ cụm dùng <code>ceph_exec_mode=cephadm</code> (nâng cấp qua
-          orchestrator) hoặc <code>ceph_exec_mode=none</code> (ceph-deploy/gói cài đặt trực tiếp) —
-          cụm hiện tại đang cấu hình <code>{{ ceph_exec_mode }}</code>.
-        </p>
-        <p class="hint">Đổi kiểu triển khai tại <a href="/settings">Settings</a> nếu cần.</p>
-      </div>
-    </section>
-
-    {% else %}
-
-    {% if supports_cephadm %}
-    {% set upgrade_is_running = upgrade_progress and upgrade_progress.in_progress %}
+  <main class="page upgrade-page">
+    {% set upgrade_is_running = supports_cephadm and upgrade_progress and upgrade_progress.in_progress %}
     {% set upgrade_is_paused = upgrade_progress and upgrade_progress.is_paused %}
     {% set upgrade_progress_percent = upgrade_progress.get("progress_percent") if upgrade_progress else none %}
     {% set last_upgrade_succeeded = last_action and last_action.status == "EXECUTED" %}
     {% set last_upgrade_failed = last_action and last_action.status == "FAILED" %}
-    <section class="card upgrade-tracker-card" id="cephadm-upgrade-tracker"
-      data-status-url="/upgrade/status{{ upgrade_cluster_query }}" data-poll-interval="5000">
-      <div class="card-header upgrade-tracker-header">
-        <div>
-          <h2>Tiến độ nâng cấp (trực tiếp từ cụm)</h2>
-          <span class="hint">{{ selected_cluster.name }}</span>
-        </div>
-        <span id="upgrade-live-badge" class="upgrade-live-badge {% if progress_error %}is-error{% elif upgrade_is_running %}is-running{% elif last_upgrade_failed %}is-error{% elif last_upgrade_succeeded %}is-success{% else %}is-idle{% endif %}">
-          {% if progress_error %}Mất kết nối{% elif upgrade_is_running %}{% if upgrade_is_paused %}Tạm dừng{% else %}Đang chạy{% endif %}{% elif last_upgrade_failed %}Thất bại{% elif last_upgrade_succeeded %}Hoàn tất{% else %}Sẵn sàng{% endif %}
+
+    <header class="upgrade-page-heading">
+      <div>
+        <span class="upgrade-eyebrow">CLUSTER LIFECYCLE / UPGRADE</span>
+        <h1>Upgrade Cluster</h1>
+        <p>Nâng cấp cụm <strong>{{ selected_cluster.name }}</strong> có kiểm tra, xem trước và duyệt trước khi thực thi.</p>
+      </div>
+      <span class="upgrade-cluster-badge">{{ ceph_exec_mode }}</span>
+    </header>
+
+    {% if upgrade_unsupported %}
+    <section class="card upgrade-unsupported-card">
+      <p class="error">Tính năng này chỉ hỗ trợ cụm dùng <code>ceph_exec_mode=cephadm</code> hoặc <code>ceph_exec_mode=none</code>; cụm hiện tại đang cấu hình <code>{{ ceph_exec_mode }}</code>.</p>
+      <p class="hint">Đổi kiểu triển khai tại <a href="/settings">Settings</a> nếu cần.</p>
+    </section>
+    {% else %}
+    <section class="upgrade-summary-bar" aria-label="Tóm tắt upgrade">
+      <div class="upgrade-summary-item upgrade-summary-version">
+        <span class="upgrade-summary-label">Phiên bản hiện tại</span>
+        <strong>{{ current_versions.current_version if current_versions and current_versions.current_version else '—' }}</strong>
+      </div>
+      <div class="upgrade-summary-item">
+        <span class="upgrade-summary-label">Trạng thái upgrade</span>
+        <span class="upgrade-status-badge {% if progress_error or last_upgrade_failed %}is-error{% elif upgrade_is_running %}is-running{% elif last_upgrade_succeeded %}is-success{% else %}is-idle{% endif %}">
+          {% if progress_error %}Lỗi kết nối{% elif upgrade_is_running %}{% if upgrade_is_paused %}Tạm dừng{% else %}Đang chạy{% endif %}{% elif last_upgrade_failed %}Lỗi{% elif last_upgrade_succeeded %}Hoàn tất{% else %}Sẵn sàng{% endif %}
         </span>
       </div>
-      <div class="card-body">
-        {% if supports_cephadm %}
-        <p id="upgrade-live-error" class="error" {% if not progress_error %}hidden{% endif %}>
-          Không lấy được tiến độ: <span id="upgrade-live-error-text">{{ progress_error or "" }}</span>
-        </p>
-        <div id="upgrade-live-running" {% if not upgrade_is_running %}hidden{% endif %}>
-          <div class="upgrade-tracker-summary">
-            <div><span class="hint">Trạng thái</span><strong id="upgrade-live-state">{% if upgrade_is_paused %}Tạm dừng{% else %}Đang chạy{% endif %}</strong></div>
-            <div><span class="hint">Phiên bản đích</span><code id="upgrade-live-target">{{ (upgrade_progress.get("target_image") or "—") if upgrade_progress else "—" }}</code></div>
-            <div><span class="hint">Cập nhật lần cuối</span><span id="upgrade-live-updated">Vừa tải</span></div>
-          </div>
-          <p><strong>Tiến độ:</strong> <span id="upgrade-live-progress">{{ (upgrade_progress.get("progress") or "—") if upgrade_progress else "—" }}{% if upgrade_progress_percent is not none %} ({{ "%.0f"|format(upgrade_progress_percent) }}%){% endif %}</span></p>
-          <div id="upgrade-live-progress-bar" class="progress-bar" role="progressbar" aria-valuenow="{{ "%.0f"|format(upgrade_progress_percent) if upgrade_progress_percent is not none else "0" }}" aria-valuemin="0" aria-valuemax="100" {% if upgrade_progress_percent is none %}hidden{% endif %}>
-            <div id="upgrade-live-progress-fill" class="progress-bar-fill is-active" style="width: {{ upgrade_progress_percent if upgrade_progress_percent is not none else 0 }}%;"></div>
-          </div>
-          <p id="upgrade-live-message" class="hint" {% if not upgrade_progress or not upgrade_progress.get("message") %}hidden{% endif %}>{{ upgrade_progress.get("message", "") if upgrade_progress else "" }}</p>
-          <p id="upgrade-live-complete" {% if not upgrade_progress or not upgrade_progress.get("services_complete") %}hidden{% endif %}><strong>Đã hoàn tất:</strong> <span>{% if upgrade_progress %}{{ upgrade_progress.get("services_complete", [])|join(", ") }}{% endif %}</span></p>
-          <div id="upgrade-live-controls" class="pending-action-buttons">
-            <form id="upgrade-live-pause-form" method="post" action="/upgrade/pause{{ upgrade_cluster_query }}" class="inline-form" {% if upgrade_is_paused %}hidden{% endif %}>
-              <button type="submit" class="btn btn-reject">Tạm dừng</button>
-            </form>
-            <form id="upgrade-live-resume-form" method="post" action="/upgrade/resume{{ upgrade_cluster_query }}" class="inline-form" {% if not upgrade_is_paused %}hidden{% endif %}>
-              <button type="submit" class="btn btn-approve">Tiếp tục nâng cấp</button>
-            </form>
-          </div>
+      <div class="upgrade-summary-item upgrade-summary-time-item">
+        <span class="upgrade-summary-label">Lần nâng cấp gần nhất</span>
+        {% if last_action %}<time id="upgrade-last-time" datetime="{{ last_action.updated_at.isoformat() if last_action.updated_at else '' }}">Đang tính…</time>{% else %}<strong>Chưa có</strong>{% endif %}
+      </div>
+      {% if last_action %}<a class="btn btn-ghost btn-sm upgrade-download-button" href="/upgrade/log.md?cluster={{ selected_cluster.id }}" download><span aria-hidden="true">⇩</span> Tải nhật ký .md</a>{% endif %}
+
+      {% if supports_cephadm %}
+      <section class="upgrade-live-inline" id="cephadm-upgrade-tracker" data-status-url="/upgrade/status{{ upgrade_cluster_query }}" data-poll-interval="5000">
+        <div id="upgrade-live-error" class="upgrade-live-error" {% if not progress_error %}hidden{% endif %}>{{ progress_error or '' }}</div>
+        <div id="upgrade-live-running" class="upgrade-live-running" {% if not upgrade_is_running %}hidden{% endif %}>
+          <span class="upgrade-live-state" id="upgrade-live-state">{% if upgrade_is_paused %}Tạm dừng{% else %}Đang chạy{% endif %}</span>
+          <code id="upgrade-live-target">{{ (upgrade_progress.get("target_image") or "—") if upgrade_progress else "—" }}</code>
+          <span id="upgrade-live-progress">{{ (upgrade_progress.get("progress") or "—") if upgrade_progress else "—" }}{% if upgrade_progress_percent is not none %} ({{ "%.0f"|format(upgrade_progress_percent) }}%){% endif %}</span>
+          <div id="upgrade-live-progress-bar" class="upgrade-live-progress-bar" role="progressbar" aria-valuenow="{{ "%.0f"|format(upgrade_progress_percent) if upgrade_progress_percent is not none else "0" }}" aria-valuemin="0" aria-valuemax="100" {% if upgrade_progress_percent is none %}hidden{% endif %}><div id="upgrade-live-progress-fill" style="width: {{ upgrade_progress_percent if upgrade_progress_percent is not none else 0 }}%;"></div></div>
+          <span id="upgrade-live-updated" class="upgrade-live-updated">Vừa tải</span>
+          <span id="upgrade-live-message" class="upgrade-live-message" {% if not upgrade_progress or not upgrade_progress.get("message") %}hidden{% endif %}>{{ upgrade_progress.get("message", "") if upgrade_progress else "" }}</span>
+          <span id="upgrade-live-complete" {% if not upgrade_progress or not upgrade_progress.get("services_complete") %}hidden{% endif %}>Đã xong: <span>{% if upgrade_progress %}{{ upgrade_progress.get("services_complete", [])|join(", ") }}{% endif %}</span></span>
+          <form id="upgrade-live-pause-form" method="post" action="/upgrade/pause{{ upgrade_cluster_query }}" {% if upgrade_is_paused %}hidden{% endif %}><button type="submit" class="btn btn-reject btn-sm" data-confirm-pause>Tạm dừng</button></form>
+          <form id="upgrade-live-resume-form" method="post" action="/upgrade/resume{{ upgrade_cluster_query }}" {% if not upgrade_is_paused %}hidden{% endif %}><button type="submit" class="btn btn-approve btn-sm">Tiếp tục</button></form>
         </div>
-        <p id="upgrade-live-empty" class="hint" {% if upgrade_is_running %}hidden{% endif %}><span id="upgrade-live-empty-text">{% if last_upgrade_failed %}Lần nâng cấp gần nhất thất bại — xem nhật ký bên dưới.{% else %}Không có tiến trình nâng cấp nào đang chạy trên cụm hiện tại.{% endif %}</span></p>
+        <span id="upgrade-live-empty" class="upgrade-live-empty" {% if upgrade_is_running %}hidden{% endif %}><span id="upgrade-live-empty-text">{% if last_upgrade_failed %}Lần nâng cấp gần nhất lỗi — xem nhật ký bên dưới.{% else %}Không có tiến trình đang chạy{% endif %}</span></span>
+      </section>
+      {% else %}<span class="upgrade-live-empty">Không có theo dõi trực tiếp cho cụm không dùng cephadm</span>{% endif %}
+    </section>
+
+    <div class="upgrade-main-grid">
+      <div class="upgrade-left-column">
+        <section class="card upgrade-card upgrade-version-card">
+          <header class="upgrade-card-header"><div><span class="upgrade-card-kicker">CURRENT STATE</span><h2>Phiên bản daemon hiện tại</h2><p class="hint">So sánh với phiên bản đích để thấy rõ daemon cần nâng cấp.</p></div><span class="upgrade-card-icon">⌘</span></header>
+          {% if versions_error %}<p class="error">Không lấy được phiên bản cụm: {{ versions_error }}</p>{% elif current_versions %}
+          <div class="upgrade-version-table-wrap"><table class="upgrade-version-table" id="upgrade-daemon-table"><thead><tr><th>Daemon</th><th>Hiện tại</th><th>So sánh</th></tr></thead><tbody>
+            {% for daemon_type, versions in current_versions.per_type.items() %}
+            <tr data-daemon-type="{{ daemon_type }}" data-current-version="{{ versions|join(', ') }}"><td><span class="daemon-icon daemon-{{ daemon_type|lower }}">{% if daemon_type|lower == 'mon' %}◉{% elif daemon_type|lower == 'mgr' %}◆{% elif daemon_type|lower == 'osd' %}◫{% else %}◌{% endif %}</span><strong>{{ daemon_type|upper }}</strong></td><td><span class="upgrade-version-list">{% for v in versions %}<code>{{ v }}</code>{% if not loop.last %}<span class="upgrade-version-separator">,</span>{% endif %}{% endfor %}</span></td><td><span class="upgrade-daemon-scope is-dim">Chưa chọn đích</span><span class="upgrade-daemon-target" hidden>→ <code data-target-version>—</code></span></td></tr>
+            {% else %}<tr><td colspan="3" class="empty-state">Không có dữ liệu daemon.</td></tr>{% endfor %}
+          </tbody></table></div>
+          {% else %}<p class="hint">Đang tải phiên bản daemon…</p>{% endif %}
+          <div class="upgrade-version-legend"><span><i class="is-upgrade"></i>Cần nâng cấp</span><span><i class="is-current"></i>Đã đúng phiên bản</span></div>
+        </section>
+
+        {% if pending_action %}
+        <section class="card upgrade-card upgrade-proposal-card">
+          <header class="upgrade-card-header"><div><span class="upgrade-card-kicker">REVIEW REQUIRED</span><h2>Đề xuất nâng cấp</h2><p class="hint">Kiểm tra preview trước khi duyệt thao tác rủi ro.</p></div><span class="upgrade-status-badge {% if pending_action.status == 'PENDING_APPROVAL' %}is-running{% else %}is-idle{% endif %}">{% if pending_action.status == 'PENDING_APPROVAL' %}Chờ duyệt{% else %}{{ pending_action.status }}{% endif %}</span></header>
+          <div class="upgrade-proposal-meta"><span>Phương thức</span><strong>{% if pending_action.action_id == "upgrade_ceph_cluster" %}cephadm{% elif pending_action.action_id == "upgrade_ceph_cluster_package_download" %}ceph-deploy — tải từ download.ceph.com{% else %}ceph-deploy — gói cục bộ{% endif %}</strong>{% if last_action_target_version %}<span>Đích</span><code>{{ last_action_target_version }}</code>{% endif %}</div>
+          <div class="upgrade-risk-alert is-warning"><strong>Change-risk analyzer</strong><span>Nâng cấp có thể làm daemon lần lượt restart; hệ thống vẫn yêu cầu người quản trị duyệt trước khi chạy.</span></div>
+          <details class="upgrade-collapsible" open><summary>Xem quy trình &amp; lệnh dự kiến</summary><pre class="upgrade-plan-text">{{ pending_action.rationale }}</pre>{% if procedure_document and procedure_document.summary_text %}<p class="upgrade-procedure-summary-label"><strong>Tóm tắt quy trình nâng cấp đã upload (AI)</strong></p><pre class="upgrade-plan-text">{{ procedure_document.summary_text }}</pre>{% endif %}{% if pending_action.proposed_command %}<code class="upgrade-command">{{ pending_action.proposed_command }}</code>{% endif %}</details>
+          {% if package_upgrade_progress %}<p class="upgrade-progress-heading">Tiến trình theo từng node</p><ul class="upgrade-node-list">{% for item in package_upgrade_progress %}<li class="progress-item progress-item-{{ item.status }}"><span class="step-status">{% if item.status == 'done' %}✓{% elif item.status == 'failed' %}×{% else %}•{% endif %}</span><strong>{{ item.host }}</strong><span>{% if item.phase_label %}{{ item.phase_label }} · {% endif %}{% if item.status == 'done' %}Xong{% elif item.status == 'running' %}Đang chạy{% elif item.status == 'failed' %}Lỗi{% elif item.status == 'pending' %}Đang chờ{% else %}{{ item.status }}{% endif %}</span>{% if item.error %}<small class="error">{{ item.error }}</small>{% endif %}</li>{% endfor %}</ul>{% endif %}
+          {% if pending_action.status == 'PENDING_APPROVAL' %}<div class="upgrade-proposal-actions"><form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form"><button type="submit" class="btn btn-approve">Duyệt &amp; bắt đầu</button></form><form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form"><button type="submit" class="btn btn-reject">Từ chối</button></form></div>{% endif %}
+        </section>
         {% else %}
-        <p class="hint">Cụm hiện tại không dùng cephadm nên không có API theo dõi trực tiếp.</p>
+        <section class="card upgrade-card upgrade-form-card">
+          <header class="upgrade-card-header"><div><span class="upgrade-card-kicker">PROPOSAL</span><h2>Đề xuất nâng cấp</h2><p class="hint">Chọn release, xem preview rồi mới tạo yêu cầu chờ duyệt.</p></div><span class="upgrade-card-icon">↑</span></header>
+          {% if supports_cephadm %}<form method="post" action="/upgrade/propose{{ upgrade_cluster_query }}" class="upgrade-version-form version-picker-form"><label>Dòng release<select class="version-picker-codename"><option value="">— Chọn release —</option>{% for codename, label in codenames %}<option value="{{ codename }}">{{ label }}</option>{% endfor %}</select></label><label>Phiên bản<select class="version-picker-version" disabled><option value="">— Chọn release trước —</option></select></label><label>Phiên bản đích<input type="text" name="target_version" class="version-picker-input" value="{{ suggested_target or '' }}" placeholder="Ví dụ: 19.2.0" pattern="\d+\.\d+\.\d+" required><small class="upgrade-validation-hint">Định dạng x.y.z</small></label><button type="submit" class="btn btn-primary">Xem quy trình &amp; Đề xuất</button></form>{% endif %}
+          {% if supports_package %}<div class="upgrade-package-methods"><div><h3>ceph-deploy — tải từ download.ceph.com</h3><p class="hint">Cài gói theo từng node, không có API cephadm để theo dõi.</p><form method="post" action="/upgrade/propose-package-download{{ upgrade_cluster_query }}" class="upgrade-version-form version-picker-form"><label>Dòng release<select class="version-picker-codename"><option value="">— Chọn release —</option>{% for codename, label in codenames %}<option value="{{ codename }}">{{ label }}</option>{% endfor %}</select></label><label>Phiên bản<select class="version-picker-version" disabled><option value="">— Chọn release trước —</option></select></label><label>Phiên bản đích<input type="text" name="target_version" class="version-picker-input" value="{{ suggested_target or '' }}" placeholder="Ví dụ: 19.2.0" pattern="\d+\.\d+\.\d+" required></label><button type="submit" class="btn btn-primary">Xem quy trình</button></form></div><div><h3>Gói đã build sẵn</h3><p class="hint">Dùng thư mục gói có cùng đường dẫn trên mọi node.</p><form method="post" action="/upgrade/propose-package-local{{ upgrade_cluster_query }}" class="upgrade-local-package-form"><label>Đường dẫn thư mục<input type="text" name="package_dir" placeholder="/opt/ceph-packages" required></label><button type="submit" class="btn btn-primary">Xem quy trình</button></form></div></div>{% endif %}
+        </section>
         {% endif %}
       </div>
-    </section>
-    {% endif %}
 
-    {% if pending_action %}
-    <section class="card">
-      <div class="card-header"><h2>Đề xuất nâng cấp — chờ xử lý</h2></div>
-      <div class="card-body">
-        <article class="pending-action-card">
-          <p><strong>Phương thức:</strong>
-            {% if pending_action.action_id == "upgrade_ceph_cluster" %}cephadm (<code>ceph orch upgrade</code>)
-            {% elif pending_action.action_id == "upgrade_ceph_cluster_package_download" %}ceph-deploy — tải từ download.ceph.com
-            {% elif pending_action.action_id == "upgrade_ceph_cluster_package_local" %}ceph-deploy — gói cục bộ trên node
-            {% else %}{{ pending_action.action_id }}{% endif %}
-          </p>
-          {% if last_action_target_version %}<p><strong>Phiên bản đề xuất:</strong> <code>{{ last_action_target_version }}</code></p>{% endif %}
-          {% if last_action_package_dir %}<p><strong>Thư mục gói:</strong> <code>{{ last_action_package_dir }}</code></p>{% endif %}
-          <p><strong>Trạng thái:</strong>
-            {% if pending_action.status == "PENDING_APPROVAL" %}Chờ duyệt
-            {% elif pending_action.status == "APPROVED" %}Đã duyệt — Worker sẽ gửi lệnh trong giây lát
-            {% else %}{{ pending_action.status }}{% endif %}
-          </p>
-          {% if package_upgrade_progress %}
-          {# Story 7.2 only phased the 2 package-based action_ids — cephadm's
-             own progress rendering (action_id == "upgrade_ceph_cluster")
-             stays byte-for-byte the old "theo từng node" text/markup, no
-             phase tag, since its execution_progress never gained a `phase`
-             key (it never went through the new phased executor). #}
-          <p><strong>{% if pending_action.action_id == "upgrade_ceph_cluster" %}Tiến trình theo từng node{% else %}Tiến trình theo từng giai đoạn{% endif %}:</strong></p>
-          <ul class="package-upgrade-progress">
-            {% for item in package_upgrade_progress %}
-            <li class="progress-item progress-item-{{ item.status }}">
-              <code>{{ item.host }}</code>
-              {% if pending_action.action_id != "upgrade_ceph_cluster" %}<span class="phase-tag">({{ item.phase_label }})</span> {% endif %}—
-              {% if item.status == "pending" %}Đang chờ
-              {% elif item.status == "running" %}Đang chạy (có thể mất vài phút)...
-              {% elif item.status == "done" %}Xong
-              {% elif item.status == "failed" %}Lỗi
-              {% elif item.status == "skipped" %}Bỏ qua
-              {% else %}{{ item.status }}{% endif %}
-              {% if item.started_at_display and item.started_at_display != "—" %}
-              <br><span class="hint">
-                Bắt đầu lúc {{ item.started_at_display }}
-                {% if item.finished_at_display and item.finished_at_display != "—" %} — hoàn tất lúc {{ item.finished_at_display }}{% endif %}
-              </span>
-              {% endif %}
-              {% if item.error %}<br><span class="error">{{ item.error }}</span>{% endif %}
-            </li>
-            {% endfor %}
-          </ul>
-          {% endif %}
-          <p><strong>Quy trình nâng cấp:</strong></p>
-          <pre class="upgrade-plan-text">{{ pending_action.rationale }}</pre>
-          {% if procedure_document and procedure_document.summary_text %}
-          <p><strong>Tóm tắt quy trình nâng cấp đã upload (AI):</strong></p>
-          <pre class="upgrade-plan-text">{{ procedure_document.summary_text }}</pre>
-          {% endif %}
-          {% if pending_action.proposed_command %}
-          <p><strong>Xem trước lệnh:</strong></p>
-          <pre class="upgrade-plan-text">{{ pending_action.proposed_command }}</pre>
-          {% endif %}
-          {% if pending_action.status == "PENDING_APPROVAL" %}
-          <div class="pending-action-buttons">
-            <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form">
-              <button type="submit" class="btn btn-approve">Duyệt — bắt đầu nâng cấp</button>
-            </form>
-            <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form">
-              <button type="submit" class="btn btn-reject">Từ chối</button>
-            </form>
-          </div>
-          {% endif %}
-        </article>
-      </div>
-    </section>
-
-    {% else %}
-    <section class="card">
-      <div class="card-header"><h2>Phiên bản hiện tại của cụm</h2></div>
-      <div class="card-body">
-        {% if versions_error %}
-        <p class="error">Không lấy được phiên bản cụm: {{ versions_error }}</p>
-        {% elif current_versions %}
-          {% if current_versions.current_version %}
-          <p><strong>Toàn cụm đang chạy:</strong> <code>{{ current_versions.current_version }}</code></p>
-          {% else %}
-          <p class="error">
-            Các daemon trong cụm đang chạy KHÔNG cùng phiên bản (có thể một lần nâng cấp trước đó
-            chưa hoàn tất) — xem chi tiết bên dưới trước khi đề xuất nâng cấp tiếp.
-          </p>
-          {% endif %}
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Loại daemon</th><th>Phiên bản</th></tr></thead>
-              <tbody>
-                {% for daemon_type, versions in current_versions.per_type.items() %}
-                <tr><td>{{ daemon_type }}</td><td>{% for v in versions %}<code>{{ v }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
-                {% else %}
-                <tr class="empty-row"><td colspan="2" class="empty-state">Không có dữ liệu.</td></tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        {% else %}
-        <p class="hint">Đang tải...</p>
-        {% endif %}
-      </div>
-    </section>
-
-    {% if supports_cephadm %}
-    <section class="card">
-      <div class="card-header"><h2>Đề xuất nâng cấp — cephadm</h2></div>
-      <div class="card-body">
-        <p class="hint">
-          Nhập phiên bản Ceph muốn nâng cấp lên (định dạng x.y.z, vd 19.2.0). Hệ thống sẽ hiển thị
-          quy trình nâng cấp trước khi thực hiện — chỉ tự động gửi lệnh sau khi bạn bấm "Duyệt".
-        </p>
-        <form method="post" action="/upgrade/propose{{ upgrade_cluster_query }}" class="login-box version-picker-form">
-          <label>
-            Dòng release
-            <select class="version-picker-codename">
-              <option value="">— Chọn dòng release —</option>
-              {% for codename, label in codenames %}
-              <option value="{{ codename }}">{{ label }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>
-            Phiên bản
-            <select class="version-picker-version" disabled>
-              <option value="">— Chọn dòng release trước —</option>
-            </select>
-          </label>
-          <label>
-            Phiên bản đích
-            <input type="text" name="target_version" class="version-picker-input" value="{{ suggested_target or '' }}" placeholder="vd 19.2.0" pattern="\d+\.\d+\.\d+" required>
-          </label>
-          <button type="submit" class="btn btn-primary">Xem quy trình nâng cấp &amp; Đề xuất</button>
-        </form>
-      </div>
-    </section>
-    {% endif %}
-
-    {% if supports_package %}
-    <section class="card">
-      <div class="card-header"><h2>Đề xuất nâng cấp — ceph-deploy / gói cài đặt trực tiếp</h2></div>
-      <div class="card-body">
-        <p class="hint">
-          Cụm này không dùng cephadm — nâng cấp qua cập nhật gói hệ điều hành và khởi động lại
-          daemon lần lượt trên {{ package_nodes|length }} node đã cấu hình (thứ tự MON → MGR →
-          OSD → RGW). Không có orchestrator kiểm tra sức khoẻ giữa các bước — xem quy trình chi
-          tiết sau khi bấm đề xuất.
-        </p>
-
-        <div class="upgrade-method-grid">
-          <div class="upgrade-method">
-            <h3>Tải từ download.ceph.com</h3>
-            <p class="hint">Tự thêm repo Ceph chính thức theo phiên bản nhập, rồi cài/nâng cấp gói trên từng node.</p>
-            <form method="post" action="/upgrade/propose-package-download{{ upgrade_cluster_query }}" class="login-box version-picker-form">
-              <label>
-                Dòng release
-                <select class="version-picker-codename">
-                  <option value="">— Chọn dòng release —</option>
-                  {% for codename, label in codenames %}
-                  <option value="{{ codename }}">{{ label }}</option>
-                  {% endfor %}
-                </select>
-              </label>
-              <label>
-                Phiên bản
-                <select class="version-picker-version" disabled>
-                  <option value="">— Chọn dòng release trước —</option>
-                </select>
-              </label>
-              <label>
-                Phiên bản đích
-                <input type="text" name="target_version" class="version-picker-input" value="{{ suggested_target or '' }}" placeholder="vd 19.2.0" pattern="\d+\.\d+\.\d+" required>
-              </label>
-              <button type="submit" class="btn btn-primary">Xem quy trình nâng cấp &amp; Đề xuất</button>
-            </form>
-          </div>
-
-          <div class="upgrade-method">
-            <h3>Dùng gói đã build sẵn trên node</h3>
-            <p class="hint">
-              Cài từ các gói .deb/.rpm đã có sẵn tại CÙNG một đường dẫn trên mọi node — không tải
-              gì từ Internet.
-            </p>
-            <form method="post" action="/upgrade/propose-package-local{{ upgrade_cluster_query }}" class="login-box">
-              <label>
-                Đường dẫn thư mục chứa gói (trên từng node)
-                <input type="text" name="package_dir" placeholder="/opt/ceph-packages" required>
-              </label>
-              <button type="submit" class="btn btn-primary">Xem quy trình nâng cấp &amp; Đề xuất</button>
-            </form>
-          </div>
-        </div>
-      </div>
-    </section>
-    {% endif %}
-    {% endif %}
-
-    {% if upgrade_log_markdown %}
-    <section class="card">
-      <div class="card-header"><h2>Nhật ký nâng cấp gần nhất</h2></div>
-      <div class="card-body">
-        <p class="hint">
-          Ghi lại toàn bộ các bước và lỗi (nếu có) của lần nâng cấp gần nhất, dạng Markdown.
-        </p>
-        <pre class="upgrade-plan-text">{{ upgrade_log_markdown }}</pre>
-        <div class="pending-action-buttons">
-          <a href="/upgrade/log.md?cluster={{ selected_cluster.id }}" class="btn btn-sm" download>Tải nhật ký (.md)</a>
-        </div>
-      </div>
-    </section>
-    {% endif %}
-
-    {% endif %}
+      {% if not pending_action or upgrade_log_markdown %}<section class="card upgrade-card upgrade-log-card">
+        <header class="upgrade-card-header"><div><span class="upgrade-card-kicker">AUDIT TRAIL</span><h2>Nhật ký nâng cấp gần nhất</h2><p class="hint">Tóm tắt trực quan theo trạng thái, node và kết quả sau nâng cấp.</p></div>{% if last_action %}<a class="btn btn-ghost btn-sm" href="/upgrade/log.md?cluster={{ selected_cluster.id }}" download>⇩ .md</a>{% endif %}</header>
+        {% if upgrade_log_markdown %}<div id="upgrade-log-structured" class="upgrade-log-structured" aria-live="polite"></div><script type="application/json" id="upgrade-log-data">{{ upgrade_log_markdown|tojson }}</script><details class="upgrade-raw-log"><summary>Xem Markdown gốc</summary><pre id="upgrade-log-raw">{{ upgrade_log_markdown }}</pre></details>{% else %}<div class="upgrade-log-empty"><span class="upgrade-empty-icon">⌁</span><strong>Chưa có nhật ký hoàn tất</strong><span>Nhật ký sẽ xuất hiện sau khi một lần nâng cấp kết thúc hoặc thất bại.</span></div>{% endif %}
+      </section>{% endif %}
     </div>
-    </div>
-    </div>
+
+    {% endif %}
+    <details class="upgrade-docs-card" {% if active_tab == 'docs' %}open{% endif %}><summary><span><span class="upgrade-docs-icon">↗</span> Tài liệu quy trình</span><span class="hint">Tùy chọn · upload .txt/.md để AI tóm tắt</span></summary><div class="upgrade-docs-content"><p class="hint">Tài liệu được dùng làm ngữ cảnh cho quy trình đề xuất, không tự động thực thi lệnh.</p>{% if procedure_document %}<p class="hint">Đã upload: <code>{{ procedure_document.filename }}</code> — bởi {{ procedure_document.uploaded_by }} lúc {{ procedure_document.uploaded_at|vntime }}</p>{% if procedure_document.summary_text %}<details class="upgrade-collapsible"><summary>Tóm tắt bởi AI</summary><pre class="upgrade-plan-text">{{ procedure_document.summary_text }}</pre></details>{% elif procedure_document.summary_error %}<p class="error">Tóm tắt bằng AI thất bại: {{ procedure_document.summary_error }}</p><form method="post" action="/upgrade/procedure/resummarize" class="inline-form"><button type="submit" class="btn btn-sm">Thử tóm tắt lại</button></form>{% endif %}{% endif %}<form method="post" action="/upgrade/procedure/upload" enctype="multipart/form-data" class="upgrade-doc-upload"><label>{% if procedure_document %}Upload file khác để thay thế{% else %}Chọn file quy trình{% endif %}<input type="file" name="file" accept=".txt,.md" required></label><button type="submit" class="btn btn-ghost btn-sm">Upload &amp; tóm tắt</button></form></div></details>
   </main>
-
-  <script type="application/json" id="versions-by-codename-data">
-    {{ versions_by_codename|tojson }}
-  </script>
-  <script src="/static/upgrade.js?v={{ static_version }}"></script>
+  <script type="application/json" id="versions-by-codename-data">{{ versions_by_codename|tojson }}</script>
+  <script src="/static/upgrade.js?v={{ static_version }}-v2"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>
 </body>
 </html>

@@ -99,7 +99,7 @@ async def _backup_context(request: Request, user: str, cluster, *, product: str,
         requested_page_size = int(request.query_params.get("page_size", str(default_page_size)))
     except (TypeError, ValueError):
         requested_page_size = default_page_size
-    page_size = requested_page_size if requested_page_size in {10, 25, 50} else default_page_size
+    page_size = requested_page_size if requested_page_size in {10, 20, 50, 100} else default_page_size
     try:
         requested_page = max(1, int(request.query_params.get("page", "1")))
     except (TypeError, ValueError):
@@ -112,6 +112,7 @@ async def _backup_context(request: Request, user: str, cluster, *, product: str,
         "id": id_filter,
         "backend": backend_filter,
         "volume_type": request.query_params.get("volume_type", "").strip(),
+        "page_size": page_size,
     }
     if cluster:
         page_filter_values["cluster"] = str(cluster.id)

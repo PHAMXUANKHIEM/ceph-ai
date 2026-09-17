@@ -1,0 +1,1313 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}-settings-v2">
+</head>
+<body class="settings-redesign">
+  {% include "_nav.html" %}
+  <main class="page settings-page">
+    <nav class="settings-sidebar">
+      {% if is_admin %}
+      <section class="settings-nav-group" data-settings-group="system">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['restart-controls', 'action-policy', 'database', 'server-log'] else 'false' }}">
+          <span>Hệ thống</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
+        </button>
+        <div class="settings-nav-group-items" {% if active_section not in ['restart-controls', 'action-policy', 'database', 'server-log'] %}hidden{% endif %}>
+          <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">System Processes</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'action-policy' %}active{% endif %}" data-section="action-policy">AI Action Policy</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Database Connection</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Server Logs</button>
+        </div>
+      </section>
+      <section class="settings-nav-group" data-settings-group="storage">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['patch-pipeline', 'log-intel', 'dual-ai', 'code-repair', 'backup-targets'] else 'false' }}">
+          <span>Pipeline &amp; lưu trữ</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
+        </button>
+        <div class="settings-nav-group-items" {% if active_section not in ['patch-pipeline', 'log-intel', 'dual-ai', 'code-repair', 'backup-targets'] %}hidden{% endif %}>
+          <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Pipeline</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'log-intel' %}active{% endif %}" data-section="log-intel">Log Intelligence</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'dual-ai' %}active{% endif %}" data-section="dual-ai">Hai AI trao đổi</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'code-repair' %}active{% endif %}" data-section="code-repair">AI Code Repair</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Storage Configuration</button>
+        </div>
+      </section>
+      {% endif %}
+      <section class="settings-nav-group" data-settings-group="connections">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['router', 'cost', 'cluster', 'ceph-host-keys', 'openstack'] else 'false' }}">
+          <span>Kết nối</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
+        </button>
+        <div class="settings-nav-group-items" {% if active_section not in ['router', 'cost', 'cluster', 'ceph-host-keys', 'openstack'] %}hidden{% endif %}>
+          <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">AI API</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'cost' %}active{% endif %}" data-section="cost">Chi phí</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Ceph Cluster</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'ceph-host-keys' %}active{% endif %}" data-section="ceph-host-keys">Ceph Node SSH Keys</button>
+          {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">OpenStack</button>{% endif %}
+        </div>
+      </section>
+      <section class="settings-nav-group" data-settings-group="maintenance">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section == 'cleanup' else 'false' }}">
+          <span>Bảo trì</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
+        </button>
+        <div class="settings-nav-group-items" {% if active_section != 'cleanup' %}hidden{% endif %}>
+          <a href="/backups" class="settings-nav-item">Backup &amp; Restore</a>
+          <button type="button" class="settings-nav-item {% if active_section == 'cleanup' %}active{% endif %}" data-section="cleanup">System Maintenance</button>
+        </div>
+      </section>
+    </nav>
+    <div class="settings-content">
+    <nav class="settings-breadcrumb-bar" id="settings-breadcrumb-bar" aria-label="Breadcrumb">
+      <a href="/settings">Settings</a><span aria-hidden="true">›</span><a href="#" id="settings-breadcrumb-group">Hệ thống</a><span aria-hidden="true">›</span><strong id="settings-breadcrumb-current">System Processes</strong>
+    </nav>
+    {% if containerized_deployment %}
+    <details class="settings-container-banner" id="settings-container-banner">
+      <summary><span>⚠️ Chế độ container — restart service qua systemctl</span><a href="#settings-container-mode-guide">Xem hướng dẫn</a></summary>
+      <p id="settings-container-mode-guide">Cấu hình đã lưu chỉ được các dịch vụ nền nhận sau khi operator chạy <code>systemctl restart ceph-ai-containers</code>. Các nút restart từng service bị vô hiệu trong chế độ này.</p>
+    </details>
+    {% endif %}
+    {% if is_admin %}
+    <section class="settings-panel process-panel" data-panel="restart-controls" {% if active_section != 'restart-controls' %}hidden{% endif %}>
+      <div class="settings-content-header">
+        <div><span class="settings-breadcrumb">Settings / System / Processes</span><h1>System Processes</h1><p>Manage and restart core services running the Ceph AI control plane. <span class="sr-only">Tiến trình hệ thống</span></p></div>
+        <span class="system-health-badge"><i></i>All systems operational</span>
+      </div>
+      {% if dashboard_restart_error %}<div class="settings-toast is-error">{{ dashboard_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
+      {% if manual_worker_restart_success %}<div class="settings-toast is-success">{{ manual_worker_restart_success }}</div>{% endif %}
+      {% if manual_worker_restart_error %}<div class="settings-toast is-error">{{ manual_worker_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
+      {% if manual_watcher_restart_success %}<div class="settings-toast is-success">{{ manual_watcher_restart_success }}</div>{% endif %}
+      {% if manual_watcher_restart_error %}<div class="settings-toast is-error">{{ manual_watcher_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
+      {% if manual_remediation_watcher_restart_success %}<div class="settings-toast is-success">{{ manual_remediation_watcher_restart_success }}</div>{% endif %}
+      {% if manual_remediation_watcher_restart_error %}<div class="settings-toast is-error">{{ manual_remediation_watcher_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
+      <div class="service-grid">
+        <article class="service-card">
+          <div class="service-card-top"><span class="service-icon">▦</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>Dashboard</h2><p>Web control plane used by administrators and operators.</p></div>
+          <div class="service-card-footer"><span class="service-meta">Control plane · HTTP</span><button type="button" class="service-restart-button" data-restart-service="Dashboard" data-restart-action="/settings/restart-dashboard" data-restart-warning="The dashboard will be unavailable for approximately 5–10 seconds. Active users may temporarily lose connection."><span>↻</span> Restart</button></div>
+        </article>
+        <article class="service-card">
+          <div class="service-card-top"><span class="service-icon">⌘</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>Worker</h2><p>Executes background jobs and applies configuration changes.</p></div>
+          <div class="service-card-footer"><span class="service-meta">Background executor</span><button type="button" class="service-restart-button" data-restart-service="Worker" data-restart-action="/settings/restart-worker" data-restart-warning="Running jobs may pause briefly while the worker process restarts."><span>↻</span> Restart</button></div>
+        </article>
+        <article class="service-card">
+          <div class="service-card-top"><span class="service-icon">◎</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>Watcher</h2><p>Monitors cluster state and configuration changes.</p></div>
+          <div class="service-card-footer"><span class="service-meta">Cluster monitor</span><button type="button" class="service-restart-button" data-restart-service="Watcher" data-restart-action="/settings/restart-watcher" data-restart-warning="Cluster monitoring will pause briefly while the watcher restarts."><span>↻</span> Restart</button></div>
+        </article>
+        <article class="service-card">
+          <div class="service-card-top"><span class="service-icon">⚕</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>AI Remediation Watcher</h2><p>Polls Ceph health on a fast path and triggers autonomous recovery.</p></div>
+          <div class="service-card-footer"><span class="service-meta">AI remediation · 10s</span><button type="button" class="service-restart-button" data-restart-service="Remediation-Watcher" data-restart-action="/settings/restart-remediation-watcher" data-restart-warning="Automatic remediation detection will pause briefly while this watcher restarts."><span>↻</span> Restart</button></div>
+        </article>
+      </div>
+      <article class="settings-autopilot-card {{ 'is-enabled' if autopilot_enabled else 'is-disabled' }}">
+        <div class="settings-autopilot-main"><div class="settings-autopilot-icon" aria-hidden="true">✦</div><div><p class="settings-eyebrow">Automation control</p><h2>Autopilot: {{ "ĐANG BẬT" if autopilot_enabled else "ĐANG TẮT" }}</h2><p class="hint">Áp dụng cho toàn bộ cluster đang hoạt động.</p></div></div>
+        <div class="settings-autopilot-action">
+          {% if autopilot_error %}<p class="error">{{ autopilot_error }}</p>{% endif %}
+          {% if autopilot_success %}<p class="success">{{ autopilot_success }}</p>{% endif %}
+          <form method="post" action="/settings/autopilot">
+            <input type="hidden" name="enabled" value="{{ '0' if autopilot_enabled else '1' }}">
+            <button class="settings-toggle-switch" type="submit" aria-pressed="{{ 'true' if autopilot_enabled else 'false' }}" title="{{ 'Tắt Autopilot' if autopilot_enabled else 'Bật Autopilot' }}">
+              <span aria-hidden="true"></span><span class="sr-only">{{ "Tắt Autopilot" if autopilot_enabled else "Bật Autopilot" }}</span>
+            </button>
+          </form>
+        </div>
+      </article>
+      <dialog class="restart-dialog" id="restart-service-dialog">
+        <form method="dialog" class="restart-dialog-card">
+          <div class="restart-dialog-icon">!</div><div><h2 id="restart-dialog-title">Restart service?</h2><p id="restart-dialog-description"></p></div>
+          <div class="restart-dialog-actions"><button type="button" class="btn btn-ghost" data-dialog-cancel>Cancel</button><button type="button" class="btn btn-danger" data-dialog-confirm>Restart</button></div>
+        </form>
+      </dialog>
+      <div hidden>
+        <form method="post" action="/settings/restart-dashboard" id="restart-form-dashboard"></form>
+        <form method="post" action="/settings/restart-worker" id="restart-form-worker"></form>
+        <form method="post" action="/settings/restart-watcher" id="restart-form-watcher"></form>
+        <form method="post" action="/settings/restart-remediation-watcher" id="restart-form-remediation-watcher"></form>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if is_admin %}
+    <section class="card settings-panel" data-panel="action-policy" {% if active_section != 'action-policy' %}hidden{% endif %}>
+      <div class="card-header"><div><span class="settings-breadcrumb">Settings / System / AI Action Policy</span><h2>Phân loại hành động AI</h2></div></div>
+      <div class="card-body">
+        {% if action_policy_error %}<p class="error">{{ action_policy_error }}</p>{% endif %}
+        {% if action_policy_success %}<p class="success">{{ action_policy_success }}</p>{% endif %}
+        <p class="hint"><strong>SAFE</strong> được Autopilot tự chạy khi mọi gate đều cho phép và thay cho Capability Matrix <strong>UNKNOWN</strong> của đúng action đó. <strong>RISKY</strong> luôn chờ duyệt. DESTRUCTIVE bị khóa.</p>
+        <div class="action-policy-filter-panel" aria-label="Tìm kiếm và lọc hành động AI">
+          <label class="action-policy-filter-field action-policy-search-field">Tìm kiếm
+            <input type="search" id="action-policy-search" maxlength="120" placeholder="Nhập tên action, ví dụ restart_osd_daemon">
+          </label>
+          <label class="action-policy-filter-field">Phân loại
+            <select id="action-policy-classification-filter">
+              <option value="">Tất cả</option><option value="SAFE">SAFE</option><option value="RISKY">RISKY</option><option value="DESTRUCTIVE">DESTRUCTIVE</option>
+            </select>
+          </label>
+          <label class="action-policy-filter-field">Nguồn policy
+            <select id="action-policy-source-filter">
+              <option value="">Tất cả</option><option value="override">Đã tùy chỉnh</option><option value="default">Mặc định</option>
+            </select>
+          </label>
+          <button type="button" class="btn btn-secondary" id="action-policy-filter-reset">Đặt lại</button>
+          <span class="action-policy-filter-result" id="action-policy-filter-result" aria-live="polite"></span>
+        </div>
+        <p class="empty-state action-policy-filter-empty" id="action-policy-filter-empty" hidden>Không có hành động nào khớp bộ lọc.</p>
+        <div class="table-wrap" id="action-policy-table-wrap"><table id="action-policy-table"><thead><tr><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>AI tự học</th><th>Đổi policy</th></tr></thead><tbody>
+        {% for row in action_policy_rows %}<tr data-action-id="{{ row.action_id }}" data-classification="{{ row.effective }}" data-policy-source="{{ 'override' if row.override else 'default' }}">
+          <td><code>{{ row.action_id }}</code></td><td>{{ row.default }}</td><td><strong>{{ row.effective }}</strong>{% if row.override %}<br><span class="hint">{{ row.override.updated_by }}</span>{% endif %}</td>
+          <td class="action-policy-learning">
+            {% if row.trust_scopes %}
+              {% for stat in row.trust_scopes %}<div class="action-policy-learning-scope">
+                <strong>{{ stat.maturity_level }}</strong> · trust {{ "%.3f"|format(stat.trust_score) }} · {{ stat.verified_count }} verified
+                <br><span class="hint">{{ stat.scope_key }}</span>
+                {% if stat.auto_disabled_reason %}<br><span class="error">Disabled: {{ stat.auto_disabled_reason }}</span>{% endif %}
+                {% if stat.promotion_candidate_at %}
+                  <br><span class="success">Đủ điều kiện nâng L3</span>
+                  <form method="post" action="/settings/autopilot/promote-playbook" class="promotion-approval-form">
+                    <input type="hidden" name="stat_id" value="{{ stat.id }}"><input type="hidden" name="confirmation" value="">
+                    <button class="btn btn-primary btn-sm" type="submit">Duyệt lên L3</button>
+                  </form>
+                {% elif stat.maturity_level != "L3" %}<br><span class="hint">{{ stat.promotion_blocked_reason or "Đang thu thập thêm evidence" }}</span>{% endif %}
+              </div>{% endfor %}
+            {% else %}<span class="hint">Chưa có dữ liệu verify</span>{% endif %}
+          </td>
+          <td>
+            {% if row.immutable %}<span class="hint">Note: policy mặc định là DESTRUCTIVE.</span>{% endif %}
+            <form method="post" action="/settings/autopilot/action-policy" class="login-box action-policy-change-form">
+              <input type="hidden" name="action_id" value="{{ row.action_id }}">
+              <select name="classification"><option value="RISKY" {{ "selected" if row.effective == "RISKY" else "" }}>RISKY</option><option value="SAFE" {{ "selected" if row.effective == "SAFE" else "" }}>SAFE</option><option value="DESTRUCTIVE" {{ "selected" if row.effective == "DESTRUCTIVE" else "" }}>DESTRUCTIVE</option></select>
+              <input type="hidden" name="confirmation" value="">
+              <button class="btn btn-primary" type="submit">Áp dụng</button>
+            </form>
+          </td>
+        </tr>{% endfor %}
+        </tbody></table></div>
+        <nav class="action-policy-pagination" id="action-policy-pagination" aria-label="Phân trang hành động AI">
+          <button type="button" class="btn btn-secondary btn-sm" id="action-policy-page-previous">Trước</button>
+          <span id="action-policy-page-status" class="pagination-status" aria-live="polite">Trang 1 / 1</span>
+          <button type="button" class="btn btn-secondary btn-sm" id="action-policy-page-next">Sau</button>
+        </nav>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if is_admin %}
+    <section class="card settings-panel" data-panel="database" {% if active_section != 'database' %}hidden{% endif %}>
+      <div class="card-header"><h2>Kết nối Database</h2></div>
+      <div class="card-body">
+        {% if database_error %}
+          <p class="error">{{ database_error }}</p>
+        {% endif %}
+        {% if database_success %}
+          <p class="success">{{ database_success }}</p>
+        {% endif %}
+        {% if database_reset_error %}
+          <p class="error">{{ database_reset_error }}</p>
+        {% endif %}
+        {% if database_reset_success %}
+          <p class="success">{{ database_reset_success }}</p>
+        {% endif %}
+        {% if database_migrate_error %}
+          <p class="error">{{ database_migrate_error }}</p>
+        {% endif %}
+        {% if database_migrate_success %}
+          <p class="success">{{ database_migrate_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Chỉ hỗ trợ PostgreSQL — schema hệ thống (Incident/Action/Audit Trail...) dùng khoá ngoại và
+          check constraint, không hợp với MongoDB; giữa MySQL/Postgres thì Postgres hỗ trợ tốt hơn.
+        </p>
+        <p class="hint">Đang dùng: <code>{{ current_database_display }}</code></p>
+        <div class="restart-controls-row">
+          <div class="restart-control">
+            <p class="hint">
+              Chỉ reset connection pool của Dashboard (hữu ích khi kết nối bị treo, vd DB phía dưới bị
+              đứng I/O) — không đổi database, không restart Worker/Watcher.
+            </p>
+            <form
+              method="post"
+              action="/settings/database/reset-connection"
+              onsubmit="return confirm('Khởi động lại kết nối tới database hiện tại? Các câu lệnh đang chạy dở trên kết nối cũ sẽ bị huỷ ngang.');"
+            >
+              <button type="submit" class="btn btn-sm">Khởi động lại kết nối DB</button>
+            </form>
+          </div>
+
+          <div class="restart-control">
+            <p class="hint">
+              Chạy <code>alembic upgrade head</code> trên database ĐANG dùng (không đổi database) —
+              dùng khi code mới thêm bảng/cột mà database hiện tại chưa có (vd sau khi
+              <code>git pull</code> mà chưa tự tay chạy migration), thay vì phải SSH vào server.
+            </p>
+            <form
+              method="post"
+              action="/settings/database/migrate"
+              onsubmit="return confirm('Chạy alembic upgrade head trên database hiện tại?');"
+            >
+              <button type="submit" class="btn btn-sm">Chạy migration (upgrade head)</button>
+            </form>
+          </div>
+        </div>
+        <p class="hint">
+          Lưu sẽ: kiểm tra kết nối → chạy migration (tạo schema mới, KHÔNG copy dữ liệu từ database cũ) →
+          khởi động lại Worker, Watcher và Dashboard. Gây gián đoạn vài giây cho tất cả người đang dùng.
+        </p>
+        <form
+          class="login-box"
+          id="database-form"
+          method="post"
+          action="/settings/database/save"
+          onsubmit="return confirm('Chuyển sang database mới? Dữ liệu cũ (Incident/Audit Trail...) sẽ KHÔNG được copy sang, và Dashboard/Worker/Watcher sẽ khởi động lại ngay.');"
+        >
+          <div class="ai-test-row">
+            <label class="checkbox-label">
+              <input type="radio" name="db_input_mode" id="db-mode-fields" value="fields" checked>
+              Nhập từng trường
+            </label>
+            <label class="checkbox-label">
+              <input type="radio" name="db_input_mode" id="db-mode-url" value="url">
+              Nhập Database URL
+            </label>
+          </div>
+
+          <div data-db-modes="fields">
+            <label>Host
+              <input type="text" name="db_host" id="db-host-input" value="{{ db_host }}" placeholder="10.20.1.50">
+            </label>
+            <label>Port
+              <input type="text" name="db_port" id="db-port-input" value="{{ db_port or 5432 }}" placeholder="5432">
+            </label>
+            <label>Database name
+              <input type="text" name="db_name" id="db-name-input" value="{{ db_name }}" placeholder="ceph_aiops">
+            </label>
+            <label>Username
+              <input type="text" name="db_username" id="db-username-input" value="{{ db_username }}" placeholder="ceph_aiops">
+            </label>
+            <label>Password (để trống nếu dùng trust auth)
+              <input type="password" name="db_password" id="db-password-input" autocomplete="off">
+            </label>
+          </div>
+
+          <div data-db-modes="url" hidden>
+            <label>Database URL
+              <input
+                type="text"
+                name="database_url_raw"
+                id="db-url-input"
+                placeholder="postgresql+psycopg://user:password@host:5432/dbname"
+                autocomplete="off"
+              >
+            </label>
+            <p class="hint">Dán nguyên connection string — sẽ được dùng thay cho 5 trường ở trên.</p>
+          </div>
+
+          <div class="ai-test-row">
+            <button type="button" class="btn btn-sm" id="db-test-btn">Kiểm tra kết nối</button>
+            <span id="db-test-result" class="ai-test-result" hidden></span>
+          </div>
+          <button type="submit" class="btn btn-danger" id="db-save-btn">Lưu &amp; chuyển database</button>
+        </form>
+        <div id="db-migrate-progress" hidden>
+          <p class="hint" id="db-migrate-step">Đang bắt đầu...</p>
+          <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="db-migrate-bar">
+            <div class="progress-bar-fill" id="db-migrate-bar-fill" style="width: 0%;"></div>
+          </div>
+          <p class="hint">Đang chờ Dashboard/Worker/Watcher khởi động lại — trang này sẽ tự chuyển tiếp khi xong.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="log-intel" {% if active_section != 'log-intel' %}hidden{% endif %}>
+      <div class="card-header"><h2>Log Intelligence &amp; AI RCA</h2></div>
+      <div class="card-body">
+        {% if log_intel_error %}<p class="error">{{ log_intel_error }}</p>{% endif %}
+        {% if log_intel_success %}<p class="success">{{ log_intel_success }}</p>{% endif %}
+        <p class="hint">
+          Đọc log mon/mgr/osd/rgw theo chu kỳ, gom thành mẫu, phát hiện bất thường và (tuỳ chọn)
+          nhờ AI đoán nguyên nhân gốc. Kết quả xem ở trang
+          <a href="/log-intelligence">Log Intelligence</a>.
+          <strong>Không có gì tự chạy ra cụm</strong> — mọi đề xuất đều phải Duyệt thủ công.
+        </p>
+        <p class="hint">
+          <strong>Thứ tự bật được khuyến nghị:</strong> bật "Thu thập" trước, chạy 3–7 ngày, xem cột
+          <em>Gắn cờ</em> trên trang Log Intelligence (khoẻ mạnh là 0–5 mẫu mỗi lần quét). Chỉnh
+          nhiễu xong mới bật "Phân tích AI" — chi phí token tỉ lệ thuận đúng con số đó.
+          Chi tiết: <code>docs/runbook-log-intelligence.md</code>.
+        </p>
+
+        <form class="login-box" method="post" action="/settings/log-intel">
+          <label class="settings-checkbox">
+            <input type="checkbox" name="log_intel_enabled" value="1"
+                   {% if log_intel_values.log_intel_enabled %}checked{% endif %}>
+            Bật thu thập log (không tốn token)
+          </label>
+          <label class="settings-checkbox">
+            <input type="checkbox" name="log_intel_ai_enabled" value="1"
+                   {% if log_intel_values.log_intel_ai_enabled %}checked{% endif %}>
+            Bật phân tích AI (tốn token — bật sau khi đã chỉnh nhiễu)
+          </label>
+
+          <label>Nguồn log
+            <select name="log_intel_source">
+              <option value="ssh" {% if log_intel_values.log_intel_source == 'ssh' %}selected{% endif %}>
+                ssh — đọc trực tiếp trên node, không cần hạ tầng thêm
+              </option>
+              <option value="loki" {% if log_intel_values.log_intel_source == 'loki' %}selected{% endif %}>
+                loki — đọc từ kho log tập trung
+              </option>
+            </select>
+          </label>
+
+          <label>Loki URL (chỉ dùng khi chọn nguồn loki)
+            <input type="text" name="log_intel_loki_url" id="log-intel-loki-url"
+                   value="{{ log_intel_values.log_intel_loki_url }}"
+                   placeholder="http://loki.observability:3100">
+          </label>
+          <label>Loki tenant (để trống nếu Loki chạy single-tenant)
+            <input type="text" name="log_intel_loki_tenant" id="log-intel-loki-tenant"
+                   value="{{ log_intel_values.log_intel_loki_tenant }}">
+          </label>
+          <p class="hint">
+            Bên ship log phải gắn nhãn <code>{cluster, host, daemon_type}</code>.
+            <strong>Đừng lưu chunk Loki lên chính cụm Ceph đang giám sát</strong> — Ceph sập thì
+            mất luôn log cần để chẩn đoán tại sao Ceph sập.
+          </p>
+          <p>
+            <button type="button" class="btn btn-ghost btn-sm" id="log-intel-test-loki">Kiểm tra kết nối Loki</button>
+            <span id="log-intel-test-loki-result" class="muted"></span>
+          </p>
+
+          <label>Chu kỳ quét (giây)
+            <input type="number" name="log_intel_scan_interval_seconds" min="60"
+                   value="{{ log_intel_values.log_intel_scan_interval_seconds }}">
+          </label>
+          <label>Cửa sổ thời gian mỗi lần quét (phút) — phải LỚN HƠN chu kỳ quét
+            <input type="number" name="log_intel_window_minutes" min="1"
+                   value="{{ log_intel_values.log_intel_window_minutes }}">
+          </label>
+          <label>Số dòng tối đa mỗi daemon mỗi lần quét
+            <input type="number" name="log_intel_max_lines_per_daemon" min="100"
+                   value="{{ log_intel_values.log_intel_max_lines_per_daemon }}">
+          </label>
+
+          <button type="submit" class="btn btn-primary btn-sm">Lưu &amp; khởi động lại Watcher</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="patch-pipeline" {% if active_section != 'patch-pipeline' %}hidden{% endif %}>
+      <div class="card-header"><h2>Build &amp; Copy Patch Ceph</h2></div>
+      <div class="card-body">
+        {% if patch_pipeline_error %}
+          <p class="error">{{ patch_pipeline_error }}</p>
+        {% endif %}
+        {% if patch_pipeline_success %}
+          <p class="success">{{ patch_pipeline_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Cấu hình cho trang <a href="/patch">Patch Ceph</a> — build server KHÔNG phải node Ceph,
+          là một máy riêng dùng để build RPM từ patch đã upload rồi tự <code>scp</code> sang từng
+          node Ceph. Dùng chung SSH user/key đã cấu hình ở "Kết nối cụm Ceph" — cần copy thêm 1 bản
+          private key đó lên chính build server này (một lần), để nó tự SSH được sang các node Ceph.
+        </p>
+        <form class="login-box" method="post" action="/settings/patch-pipeline">
+          <label>IP/hostname build server
+            <input type="text" name="ceph_patch_build_node" value="{{ ceph_patch_build_node }}" placeholder="10.0.0.20">
+          </label>
+          <label>Thư mục source Ceph trên build server
+            <input type="text" name="ceph_patch_source_dir" value="{{ ceph_patch_source_dir }}" placeholder="/root/ceph">
+          </label>
+          <label>Lệnh build (chạy trong thư mục trên, sau khi patch đã được áp)
+            <textarea name="ceph_patch_build_command" rows="3" placeholder="./make-srpm.sh &amp;&amp; rpmbuild --rebuild ceph.src.rpm">{{ ceph_patch_build_command }}</textarea>
+          </label>
+          <label>Thư mục chứa file .rpm sau khi build xong
+            <input type="text" name="ceph_patch_output_dir" value="{{ ceph_patch_output_dir }}" placeholder="/root/rpmbuild/RPMS/x86_64">
+          </label>
+          <label>Thư mục tạm trên MỖI node Ceph để nhận file .rpm (trước khi cài)
+            <input type="text" name="ceph_patch_node_staging_dir" value="{{ ceph_patch_node_staging_dir }}" placeholder="/opt/ceph-aiops-patch-staging">
+          </label>
+          <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="dual-ai" {% if active_section != 'dual-ai' %}hidden{% endif %}>
+      <div class="card-header"><h2>Hai AI trao đổi</h2></div>
+      <div class="card-body">
+        {% if dual_ai_error %}<p class="error">{{ dual_ai_error }}</p>{% endif %}
+        {% if dual_ai_success %}<p class="success">{{ dual_ai_success }}</p>{% endif %}
+        <p class="hint">Cấu hình riêng cho Telegram Chatbox: Planner/Reviewer phân tích, Implementer có thể sửa code trong workspace cô lập theo lệnh <code>/dual</code>, chờ operator promote. Chatbox web chỉ hỗ trợ một AI. Thay đổi ở đây không tác động đến AI tự động sửa code khi application có log lỗi.</p>
+        <p class="hint"><strong>Muốn thêm tài khoản:</strong> mở <a href="/settings#code-repair">AI tự động sửa code từ log</a>, tại Planner hoặc Implementer chọn <strong>Tài khoản AI khác</strong>, nhập tên profile rồi bấm <strong>Đăng nhập tài khoản riêng</strong>. Lặp lại một lần cho từng tài khoản; không cần logout khi hệ thống tự xoay.</p>
+        <form class="login-box" method="post" action="/settings/dual-ai">
+          <label class="checkbox-label">
+            <input type="checkbox" name="dual_ai_fallback_enabled" value="true" {% if dual_ai_values.dual_ai_fallback_enabled %}checked{% endif %}>
+            <strong>Bật AI dự phòng khi provider hết token/quota</strong>
+          </label>
+          <p class="hint">Chọn mục này nếu muốn hệ thống tự chuyển sang provider/model tiếp theo khi AI hiện tại hết quota.</p>
+          <div class="settings-field-grid">
+            <div>
+              <h3>Planner / Reviewer</h3>
+              <label>Provider
+                <select name="dual_ai_planner_provider">
+                  {% for provider in dual_ai_providers %}<option value="{{ provider }}" {% if dual_ai_values.dual_ai_planner_provider == provider %}selected{% endif %}>{{ provider }}</option>{% endfor %}
+                </select>
+              </label>
+              <label>Model (tuỳ chọn)
+                <input type="text" name="dual_ai_planner_model" value="{{ dual_ai_values.dual_ai_planner_model }}" maxlength="128" placeholder="để trống = model mặc định">
+              </label>
+            </div>
+            <div>
+              <h3>Implementer</h3>
+              <label>Provider
+                <select name="dual_ai_implementer_provider">
+                  {% for provider in dual_ai_providers %}<option value="{{ provider }}" {% if dual_ai_values.dual_ai_implementer_provider == provider %}selected{% endif %}>{{ provider }}</option>{% endfor %}
+                </select>
+              </label>
+              <label>Model (tuỳ chọn)
+                <input type="text" name="dual_ai_implementer_model" value="{{ dual_ai_values.dual_ai_implementer_model }}" maxlength="128" placeholder="để trống = model mặc định">
+              </label>
+            </div>
+          </div>
+          <div id="dual-ai-fallback-config" {% if not dual_ai_values.dual_ai_fallback_enabled %}hidden{% endif %}>
+            <h3>AI dự phòng</h3>
+            <div class="settings-field-grid">
+              <div>
+                <label>Planner / Reviewer — tài khoản dự phòng theo thứ tự
+                  <input type="text" name="dual_ai_planner_fallbacks" value="{{ dual_ai_values.dual_ai_planner_fallbacks }}" maxlength="512" placeholder="codex@acc-2:gpt-5.5, claude@acc-3:claude-sonnet-4-6">
+                </label>
+              </div>
+              <div>
+                <label>Implementer — tài khoản dự phòng theo thứ tự
+                  <input type="text" name="dual_ai_implementer_fallbacks" value="{{ dual_ai_values.dual_ai_implementer_fallbacks }}" maxlength="512" placeholder="codex@acc-2:gpt-5.5, claude@acc-3:claude-sonnet-4-6">
+                </label>
+              </div>
+            </div>
+            <p class="hint">Nhập theo thứ tự: <code>provider@account-profile:model</code>, phân cách bằng dấu phẩy. Ví dụ: <code>codex@acc-2:gpt-5.5,claude@acc-3:claude-sonnet-4-6</code>. Mỗi profile phải được đăng nhập trước một lần trong phần tài khoản AI. Chỉ chuyển khi tài khoản hiện tại hết token/quota.</p>
+          </div>
+          <button type="submit" class="btn btn-primary">Lưu cấu hình hai AI chat</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="code-repair" {% if active_section != 'code-repair' %}hidden{% endif %}>
+      <div class="card-header"><h2>AI tự động sửa code từ log</h2></div>
+      <div class="card-body">
+        {% if code_repair_error %}<p class="error">{{ code_repair_error }}</p>{% endif %}
+        {% if code_repair_success %}<p class="success">{{ code_repair_success }}</p>{% endif %}
+        <p class="hint">
+          Đây là cấu hình riêng cho supervisor <code>worker.code_repair_supervisor</code>, chỉ xử lý khi phát hiện log lỗi:
+          <strong>Planner / Reviewer</strong> là AI hỏi, phân tích, lập kế hoạch và review read-only;
+          <strong>Implementer</strong> là AI thực hiện sửa code, viết test và sửa theo feedback.
+          Quyền push branch, deploy staging và promote main được cấu hình rõ ở bên dưới.
+        </p>
+        <form class="login-box" method="post" action="/settings/code-repair">
+        <label class="code-repair-auto-toggle">
+          <input type="checkbox" name="code_repair_auto_enabled" value="true" {% if code_repair_values.code_repair_auto_enabled %}checked{% endif %}>
+          <strong>Bật tự động sửa khi phát hiện lỗi trong application log</strong>
+        </label>
+        <p class="hint">Khi bật, supervisor sẽ đọc log mới, gửi lỗi cho Planner/Reviewer và Implementer, chạy test gate rồi tạo branch sửa lỗi. Cần đăng nhập và chọn provider Claude hoặc Codex trước.</p>
+        <fieldset class="code-repair-execution-policy">
+          <legend>Quyền sau khi test đạt</legend>
+          <label><input type="checkbox" name="code_repair_push" value="true" {% if code_repair_values.code_repair_push %}checked{% endif %}> Push branch sửa lỗi lên remote</label>
+          <label><input type="checkbox" name="code_repair_deploy_staging" value="true" {% if code_repair_values.code_repair_deploy_staging %}checked{% endif %}> Deploy candidate lên staging và smoke test</label>
+          <label><input type="checkbox" name="code_repair_promote_main" value="true" {% if code_repair_values.code_repair_promote_main %}checked{% endif %}> Promote commit đã verify lên main</label>
+          <p class="hint">Deploy staging cần bật Push; Promote main cần bật cả Push và Deploy staging.</p>
+        </fieldset>
+        <hr>
+          <div class="settings-field-grid">
+            <div>
+              <h3>Planner / Reviewer — hỏi &amp; kiểm tra</h3>
+              <p class="hint">Không được sửa file; dùng cùng role cho lần lập kế hoạch và các vòng review.</p>
+              <label>Nguồn tài khoản
+                <select id="code-repair-planner-account-source" name="code_repair_planner_account_source">
+                  <option value="configured" {% if code_repair_values.code_repair_planner_account_source == 'configured' %}selected{% endif %}>AI trong phần cấu hình API</option>
+                  <option value="separate" {% if code_repair_values.code_repair_planner_account_source == 'separate' %}selected{% endif %}>Tài khoản AI khác</option>
+                </select>
+              </label>
+              <div id="code-repair-planner-configured" class="code-repair-account-configured">
+              <label>Provider
+                <select id="code-repair-planner-provider" name="code_repair_planner_provider">
+                  {% for provider in code_repair_providers %}
+                    <option value="{{ provider }}" {% if code_repair_values.code_repair_planner_provider == provider %}selected{% endif %}>{{ provider }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Model
+                <select id="code-repair-planner-model" name="code_repair_planner_model"
+                        data-current-model="{{ code_repair_values.code_repair_planner_model }}"
+                        data-model-provider="code-repair-planner-provider">
+                  <option value="">Tự động (model mặc định)</option>
+                  {% if code_repair_values.code_repair_planner_model %}
+                    <option value="{{ code_repair_values.code_repair_planner_model }}" selected>{{ code_repair_values.code_repair_planner_model }} · đã lưu</option>
+                  {% endif %}
+                </select>
+                <span id="code-repair-planner-model-status" class="hint">Chọn provider để tải danh sách model.</span>
+              </label>
+              </div>
+              <div id="code-repair-planner-separate" class="code-repair-account-separate" hidden>
+                <label>Provider tài khoản riêng
+                  <select id="code-repair-planner-separate-provider" name="code_repair_planner_separate_provider">
+                    <option value="codex" {% if code_repair_values.code_repair_planner_provider == 'codex' %}selected{% endif %}>Codex</option>
+                    <option value="claude" {% if code_repair_values.code_repair_planner_provider == 'claude' %}selected{% endif %}>Claude</option>
+                  </select>
+                </label>
+                <label>Model (tuỳ chọn)
+                  <input id="code-repair-planner-separate-model" name="code_repair_planner_separate_model" value="{{ code_repair_values.code_repair_planner_model }}" maxlength="128" placeholder="để trống = model mặc định">
+                </label>
+                <label>Tên profile tài khoản
+                  <input id="code-repair-planner-account-profile" name="code_repair_planner_account_profile" value="{{ code_repair_values.code_repair_planner_account_profile }}" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="ví dụ: planner-1">
+                </label>
+                <p class="hint">Credential được lưu riêng tại <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>.</p>
+                <p id="code-repair-planner-separate-status" class="hint">Nhập profile để kiểm tra tài khoản.</p>
+                <div class="ai-test-row">
+                  <button type="button" class="btn btn-primary btn-sm" id="code-repair-planner-separate-login">Đăng nhập tài khoản riêng</button>
+                  <button type="button" class="btn btn-sm btn-danger" id="code-repair-planner-separate-logout" hidden>Đăng xuất</button>
+                </div>
+                <div id="code-repair-planner-separate-flow" hidden>
+                  <p>Mở <a id="code-repair-planner-separate-link" href="#" target="_blank" rel="noopener">trang xác thực</a><span id="code-repair-planner-separate-code-wrap"> và nhập mã <code id="code-repair-planner-separate-code"></code></span>.</p>
+                  <label id="code-repair-planner-separate-auth-wrap" hidden>Authentication code
+                    <input id="code-repair-planner-separate-auth-code" autocomplete="one-time-code">
+                  </label>
+                  <button type="button" class="btn btn-primary btn-sm" id="code-repair-planner-separate-complete" hidden>Nhập mã &amp; kết nối</button>
+                </div>
+              </div>
+            </div>
+            <div>
+              <h3>Implementer — thực hiện</h3>
+              <p class="hint">Được sửa trong worktree cô lập; bắt buộc giữ hoặc thêm regression test.</p>
+              <label>Nguồn tài khoản
+                <select id="code-repair-implementer-account-source" name="code_repair_implementer_account_source">
+                  <option value="configured" {% if code_repair_values.code_repair_implementer_account_source == 'configured' %}selected{% endif %}>AI trong phần cấu hình API</option>
+                  <option value="separate" {% if code_repair_values.code_repair_implementer_account_source == 'separate' %}selected{% endif %}>Tài khoản AI khác</option>
+                </select>
+              </label>
+              <div id="code-repair-implementer-configured" class="code-repair-account-configured">
+              <label>Provider
+                <select id="code-repair-implementer-provider" name="code_repair_implementer_provider">
+                  {% for provider in code_repair_providers %}
+                    <option value="{{ provider }}" {% if code_repair_values.code_repair_implementer_provider == provider %}selected{% endif %}>{{ provider }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Model
+                <select id="code-repair-implementer-model" name="code_repair_implementer_model"
+                        data-current-model="{{ code_repair_values.code_repair_implementer_model }}"
+                        data-model-provider="code-repair-implementer-provider">
+                  <option value="">Tự động (model mặc định)</option>
+                  {% if code_repair_values.code_repair_implementer_model %}
+                    <option value="{{ code_repair_values.code_repair_implementer_model }}" selected>{{ code_repair_values.code_repair_implementer_model }} · đã lưu</option>
+                  {% endif %}
+                </select>
+                <span id="code-repair-implementer-model-status" class="hint">Chọn provider để tải danh sách model.</span>
+              </label>
+              </div>
+              <div id="code-repair-implementer-separate" class="code-repair-account-separate" hidden>
+                <label>Provider tài khoản riêng
+                  <select id="code-repair-implementer-separate-provider" name="code_repair_implementer_separate_provider">
+                    <option value="codex" {% if code_repair_values.code_repair_implementer_provider == 'codex' %}selected{% endif %}>Codex</option>
+                    <option value="claude" {% if code_repair_values.code_repair_implementer_provider == 'claude' %}selected{% endif %}>Claude</option>
+                  </select>
+                </label>
+                <label>Model (tuỳ chọn)
+                  <input id="code-repair-implementer-separate-model" name="code_repair_implementer_separate_model" value="{{ code_repair_values.code_repair_implementer_model }}" maxlength="128" placeholder="để trống = model mặc định">
+                </label>
+                <label>Tên profile tài khoản
+                  <input id="code-repair-implementer-account-profile" name="code_repair_implementer_account_profile" value="{{ code_repair_values.code_repair_implementer_account_profile }}" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="ví dụ: implementer-1">
+                </label>
+                <p class="hint">Credential được lưu riêng tại <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>.</p>
+                <p id="code-repair-implementer-separate-status" class="hint">Nhập profile để kiểm tra tài khoản.</p>
+                <div class="ai-test-row">
+                  <button type="button" class="btn btn-primary btn-sm" id="code-repair-implementer-separate-login">Đăng nhập tài khoản riêng</button>
+                  <button type="button" class="btn btn-sm btn-danger" id="code-repair-implementer-separate-logout" hidden>Đăng xuất</button>
+                </div>
+                <div id="code-repair-implementer-separate-flow" hidden>
+                  <p>Mở <a id="code-repair-implementer-separate-link" href="#" target="_blank" rel="noopener">trang xác thực</a><span id="code-repair-implementer-separate-code-wrap"> và nhập mã <code id="code-repair-implementer-separate-code"></code></span>.</p>
+                  <label id="code-repair-implementer-separate-auth-wrap" hidden>Authentication code
+                    <input id="code-repair-implementer-separate-auth-code" autocomplete="one-time-code">
+                  </label>
+                  <button type="button" class="btn btn-primary btn-sm" id="code-repair-implementer-separate-complete" hidden>Nhập mã &amp; kết nối</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <label>Số vòng review tối đa
+            <input type="number" name="code_repair_max_review_rounds" min="0" max="5" value="{{ code_repair_values.code_repair_max_review_rounds }}">
+          </label>
+          <p class="hint">0 = bỏ review; khuyến nghị 2; tối đa 5 vòng.</p>
+          <button type="submit" class="btn btn-primary">Lưu cấu hình tự động sửa code</button>
+        </form>
+        <hr>
+        <section id="nightly-ai-today-control" class="code-repair-execution-policy">
+          <h3>AI Nightly Job — {{ nightly_ai_today.date }}</h3>
+          {% if nightly_ai_today.mode == 'RUN' %}
+            <p class="success">Đang bật cho hôm nay: job sẽ chạy và được phép bỏ qua checkout bẩn.</p>
+          {% elif nightly_ai_today.mode == 'SKIP' %}
+            <p class="hint">Đang tắt cho hôm nay: timer sẽ bỏ qua job. Sang ngày mai tự về lịch mặc định.</p>
+          {% else %}
+            <p class="hint">Đang theo lịch mặc định. Checkout bẩn sẽ khiến job dừng trước khi gọi AI.</p>
+          {% endif %}
+          <form method="post" action="/settings/nightly-ai/today">
+            <input type="hidden" name="enabled" value="{% if nightly_ai_today.mode == 'RUN' %}false{% else %}true{% endif %}">
+            <button type="submit" class="btn {% if nightly_ai_today.mode == 'RUN' %}btn-danger{% else %}btn-primary{% endif %}">
+              {% if nightly_ai_today.mode == 'RUN' %}Tắt nightly job hôm nay{% else %}Bật nightly job hôm nay{% endif %}
+            </button>
+          </form>
+          <p class="hint">Bật hôm nay sẽ override lịch chung và cho phép chạy dù checkout có thay đổi chưa commit; override tự hết hạn sau 00:00.</p>
+        </section>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="backup-targets" {% if active_section != 'backup-targets' %}hidden{% endif %}>
+      <div class="card-header"><h2>Lưu trữ Backup</h2></div>
+      <div class="card-body">
+        {% if backup_target_error %}
+          <p class="error">{{ backup_target_error }}</p>
+        {% endif %}
+        {% if backup_target_success %}
+          <p class="success">{{ backup_target_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Nơi backup RBD/metadata (Epic 9) thực sự được ghi tới — <strong>KHÁC</strong> cụm Ceph nguồn
+          (mục "Kết nối cụm Ceph") theo thiết kế, không dùng chung SSH user/key với cụm nguồn.
+          Cần cấu hình ít nhất 1 slot (2 slot cho đủ "3-2-1": 1 bản tại chỗ + 1 bản ngoài, một trong
+          hai nên bật immutable qua <code>worker/policy/backup_policy.yaml</code>).
+        </p>
+        <form class="login-box" method="post" action="/settings/backup-targets">
+          <fieldset class="backup-target-slot" data-slot="a">
+            <legend>Slot A</legend>
+            <label>Tên gợi nhớ (tuỳ chọn)
+              <input type="text" name="backup_target_a_label" value="{{ backup_target_a_label }}" placeholder="vd: NAS tại chỗ">
+            </label>
+            <label>Kiểu kết nối
+              <select name="backup_target_a_transport" class="backup-transport-select">
+                <option value="" {% if backup_target_a_transport == "" %}selected{% endif %}>— Chưa dùng —</option>
+                <option value="ssh" {% if backup_target_a_transport == "ssh" %}selected{% endif %}>SSH/SFTP</option>
+                <option value="s3" {% if backup_target_a_transport == "s3" %}selected{% endif %}>S3 (AWS S3 / MinIO)</option>
+              </select>
+            </label>
+            <label data-backup-transport="ssh">Host
+              <input type="text" name="backup_target_a_ssh_host" value="{{ backup_target_a_ssh_host }}" placeholder="10.20.2.50">
+            </label>
+            <label data-backup-transport="ssh">SSH User
+              <input type="text" name="backup_target_a_ssh_user" value="{{ backup_target_a_ssh_user }}" placeholder="backup">
+            </label>
+            <label data-backup-transport="ssh">SSH key path (trên server Dashboard/Worker)
+              <input type="text" name="backup_target_a_ssh_key_path" value="{{ backup_target_a_ssh_key_path }}" placeholder="/root/.ssh/backup_target_a_key">
+            </label>
+            <label data-backup-transport="ssh">Thư mục lưu trữ trên host đích
+              <input type="text" name="backup_target_a_ssh_landing_dir" value="{{ backup_target_a_ssh_landing_dir }}" placeholder="/backup/ceph-aiops">
+            </label>
+            <label data-backup-transport="s3">S3 Endpoint (để trống nếu dùng AWS S3 thật)
+              <input type="text" name="backup_target_a_s3_endpoint" value="{{ backup_target_a_s3_endpoint }}" placeholder="https://minio.example.com:9000">
+            </label>
+            <label data-backup-transport="s3">Access Key
+              <input type="text" name="backup_target_a_s3_access_key" value="{{ backup_target_a_s3_access_key }}">
+            </label>
+            <label data-backup-transport="s3">Secret Key
+              <input type="password" name="backup_target_a_s3_secret_key" autocomplete="off" placeholder="{% if backup_target_a_s3_access_key %}để trống để giữ nguyên secret hiện tại{% else %}chưa cấu hình{% endif %}">
+            </label>
+            <label data-backup-transport="s3">Bucket
+              <input type="text" name="backup_target_a_s3_bucket" value="{{ backup_target_a_s3_bucket }}">
+            </label>
+            <label>Số ngày khoá immutable
+              <input type="number" name="backup_target_a_immutable_lock_days" value="{{ backup_target_a_immutable_lock_days }}" min="1">
+            </label>
+            <p class="hint">Chỉ áp dụng nếu slot này được đánh dấu immutable trong <code>backup_policy.yaml</code>.</p>
+          </fieldset>
+
+          <fieldset class="backup-target-slot" data-slot="b">
+            <legend>Slot B</legend>
+            <label>Tên gợi nhớ (tuỳ chọn)
+              <input type="text" name="backup_target_b_label" value="{{ backup_target_b_label }}" placeholder="vd: S3 ngoài">
+            </label>
+            <label>Kiểu kết nối
+              <select name="backup_target_b_transport" class="backup-transport-select">
+                <option value="" {% if backup_target_b_transport == "" %}selected{% endif %}>— Chưa dùng —</option>
+                <option value="ssh" {% if backup_target_b_transport == "ssh" %}selected{% endif %}>SSH/SFTP</option>
+                <option value="s3" {% if backup_target_b_transport == "s3" %}selected{% endif %}>S3 (AWS S3 / MinIO)</option>
+              </select>
+            </label>
+            <label data-backup-transport="ssh">Host
+              <input type="text" name="backup_target_b_ssh_host" value="{{ backup_target_b_ssh_host }}" placeholder="10.20.2.51">
+            </label>
+            <label data-backup-transport="ssh">SSH User
+              <input type="text" name="backup_target_b_ssh_user" value="{{ backup_target_b_ssh_user }}" placeholder="backup">
+            </label>
+            <label data-backup-transport="ssh">SSH key path (trên server Dashboard/Worker)
+              <input type="text" name="backup_target_b_ssh_key_path" value="{{ backup_target_b_ssh_key_path }}" placeholder="/root/.ssh/backup_target_b_key">
+            </label>
+            <label data-backup-transport="ssh">Thư mục lưu trữ trên host đích
+              <input type="text" name="backup_target_b_ssh_landing_dir" value="{{ backup_target_b_ssh_landing_dir }}" placeholder="/backup/ceph-aiops">
+            </label>
+            <label data-backup-transport="s3">S3 Endpoint (để trống nếu dùng AWS S3 thật)
+              <input type="text" name="backup_target_b_s3_endpoint" value="{{ backup_target_b_s3_endpoint }}" placeholder="https://s3.amazonaws.com">
+            </label>
+            <label data-backup-transport="s3">Access Key
+              <input type="text" name="backup_target_b_s3_access_key" value="{{ backup_target_b_s3_access_key }}">
+            </label>
+            <label data-backup-transport="s3">Secret Key
+              <input type="password" name="backup_target_b_s3_secret_key" autocomplete="off" placeholder="{% if backup_target_b_s3_access_key %}để trống để giữ nguyên secret hiện tại{% else %}chưa cấu hình{% endif %}">
+            </label>
+            <label data-backup-transport="s3">Bucket
+              <input type="text" name="backup_target_b_s3_bucket" value="{{ backup_target_b_s3_bucket }}">
+            </label>
+            <label>Số ngày khoá immutable
+              <input type="number" name="backup_target_b_immutable_lock_days" value="{{ backup_target_b_immutable_lock_days }}" min="1">
+            </label>
+            <p class="hint">Chỉ áp dụng nếu slot này được đánh dấu immutable trong <code>backup_policy.yaml</code>.</p>
+          </fieldset>
+
+          <p class="hint">Ai được ghi vào slot nào (danh sách <code>backup_targets:</code>) và slot nào là bản immutable cấu hình tại <code>worker/policy/backup_policy.yaml</code> — không phải ở đây.</p>
+          <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
+        </form>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if is_admin %}
+    <section class="card settings-panel" data-panel="server-log" {% if active_section != 'server-log' %}hidden{% endif %}>
+      <div class="card-header">
+        <h2>Log Server</h2>
+        <div class="rgw-log-controls">
+          <span class="rgw-log-status" id="server-log-status">
+            <span class="dot" aria-hidden="true"></span>
+            <span id="server-log-status-text">—</span>
+          </span>
+          <button type="button" class="btn btn-sm" id="server-log-live-toggle">Theo dõi trực tiếp</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <p class="hint">
+          Chỉ tài khoản admin thấy mục này — đọc trực tiếp log tiến trình trên chính server này, không
+          cần quyền truy cập SSH/terminal. Hiển thị tối đa 500 dòng cuối mỗi lần tải.
+        </p>
+        <div class="rgw-log-filter-bar">
+          <select id="server-log-name" class="log-viewer-select">
+            <option value="dashboard">Dashboard</option>
+            <option value="watcher">Watcher</option>
+            <option value="worker">Worker</option>
+          </select>
+          <input
+            type="text"
+            id="server-log-filter"
+            class="rgw-log-filter-input"
+            placeholder="Lọc theo từ khoá (VD: ERROR, Traceback, volume_metrics...)"
+            autocomplete="off"
+          >
+          <button type="button" class="btn btn-ghost btn-sm" id="server-log-filter-clear">Xoá lọc</button>
+        </div>
+        <pre class="rgw-log-body" id="server-log-body"><span class="rgw-log-empty">Đang tải log...</span></pre>
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="card settings-panel" data-panel="cost" {% if active_section != 'cost' %}hidden{% endif %}>
+      <div class="card-header"><h2>Chi phí</h2></div>
+      <div class="card-body">
+        <div class="settings-cost-grid">
+          <div class="login-box settings-cost-card">
+            <h3>Tổng chi phí</h3>
+            <div class="settings-cost-toolbar">
+              <label>Khoảng thời gian
+                <select onchange="window.location='/settings?cost_hours='+encodeURIComponent(this.value)+'#cost'">
+                  <option value="24" {% if ai_cost_overview.hours == 24 %}selected{% endif %}>24h</option>
+                  <option value="168" {% if ai_cost_overview.hours == 168 %}selected{% endif %}>7days</option>
+                  <option value="720" {% if ai_cost_overview.hours == 720 %}selected{% endif %}>30days</option>
+                  <option value="8760" {% if ai_cost_overview.hours == 8760 %}selected{% endif %}>1y</option>
+                </select>
+              </label>
+              <a class="btn btn-sm" href="/ai-cost?hours={{ ai_cost_overview.hours }}">Xem chi tiết</a>
+            </div>
+            {% if ai_cost_overview.pricing_configured %}
+              <strong class="settings-cost-total">${{ '%.6f'|format(ai_cost_overview.estimated_cost_usd or 0) }}</strong>
+              <p class="settings-cost-vnd">≈ {{ '%.0f'|format(ai_cost_overview.estimated_cost_vnd or 0) }} ₫</p>
+            {% else %}
+              <strong class="settings-cost-total">—</strong>
+              <p class="hint">Chưa có dữ liệu đủ để tính chi phí.</p>
+            {% endif %}
+            <p class="hint">{{ ai_cost_overview.calls }} lượt gọi · {{ ai_cost_overview.errors }} lỗi</p>
+          </div>
+
+          <div class="login-box settings-cost-card">
+            <h3>Quản lý chi phí AI</h3>
+            {% if is_admin %}
+            {% if ai_budget_error %}<p class="error">{{ ai_budget_error }}</p>{% endif %}
+            {% if ai_budget_success %}<p class="success">{{ ai_budget_success }}</p>{% endif %}
+            <p class="hint">Giới hạn dùng chung cho các tiến trình AI. Để trống/0 để tắt giới hạn tương ứng. Chặn cứng sẽ từ chối model chưa có đơn giá và các lượt vượt ngân sách.</p>
+            <form method="post" action="/settings/ai-budget">
+              <div class="form-grid">
+                <label>Budget ngày (USD)
+                  <input type="number" name="daily_budget" min="0" max="1000000000" step="0.000001" value="{{ ai_budget_values.daily }}">
+                </label>
+                <label>Budget tháng (USD)
+                  <input type="number" name="monthly_budget" min="0" max="1000000000" step="0.000001" value="{{ ai_budget_values.monthly }}">
+                </label>
+                <label>Output dự phòng (tokens)
+                  <input type="number" name="reserve_output_tokens" min="0" max="100000" step="1" value="{{ ai_budget_values.reserve_output }}">
+                </label>
+              </div>
+              <button class="btn btn-primary" type="submit">Lưu Budget Guard</button>
+            </form>
+            {% else %}
+            <p class="hint">Chỉ tài khoản admin được thay đổi cấu hình chi phí AI.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="router" {% if active_section != 'router' %}hidden{% endif %}>
+      <div class="card-header"><h2>Kết nối AI</h2></div>
+      <div class="card-body">
+        {% if error %}
+          <p class="error">{{ error }}</p>
+        {% endif %}
+        {% if success %}
+          <p class="success">{{ success }}</p>
+        {% endif %}
+        {% if worker_restart_error %}
+          <p class="error">{{ worker_restart_error }}</p>
+        {% endif %}
+        <div class="settings-api-layout">
+        <div class="login-box settings-api-account-card" id="codex-account-box">
+          <h3>Tài khoản Codex</h3>
+          <p class="hint">
+            Dùng quyền lợi Codex trong gói ChatGPT cho Chat-with-AI. Token được Codex CLI
+            quản lý riêng trên server, không lưu vào database hay file <code>.env</code>.
+            Worker chẩn đoán nền vẫn dùng API AI bên dưới.
+          </p>
+          <p id="codex-account-status" class="hint">Đang kiểm tra trạng thái...</p>
+          {% if is_admin %}
+          <div id="codex-install-prompt" hidden>
+            <p><strong>Codex CLI chưa được cài trên server. Bạn có muốn cài đặt ngay không?</strong></p>
+            <div class="ai-test-row">
+              <button type="button" class="btn btn-primary btn-sm" id="codex-install-yes-btn">Có, cài đặt</button>
+              <button type="button" class="btn btn-sm" id="codex-install-no-btn">Không</button>
+            </div>
+          </div>
+          <div class="ai-test-row">
+            <button type="button" class="btn btn-primary btn-sm" id="codex-login-btn">Đăng nhập bằng Codex</button>
+            <button type="button" class="btn btn-sm btn-danger" id="codex-logout-btn" hidden>Đăng xuất</button>
+          </div>
+          <div id="codex-model-panel" hidden>
+            <label>Model Codex
+              <select id="codex-model-select"></select>
+            </label>
+            <div class="ai-test-row">
+              <button type="button" class="btn btn-primary btn-sm" id="codex-model-save-btn">Lưu model</button>
+              <span id="codex-model-result" class="ai-test-result" hidden></span>
+            </div>
+          </div>
+          <div id="codex-limit-panel" class="ai-limit-panel" hidden></div>
+          <div id="codex-device-flow" hidden>
+            <p>Codex CLI trên server đã tạo mã. Mở <a id="codex-verification-link" href="#" target="_blank" rel="noopener">trang xác thực Codex</a> và nhập:</p>
+            <p><code id="codex-user-code" style="font-size:1.25rem"></code></p>
+            <p class="hint">Trang này sẽ tự kiểm tra và kích hoạt sau khi bạn đăng nhập xong.</p>
+          </div>
+          {% endif %}
+        </div>
+
+        <div class="login-box settings-api-account-card" id="claude-account-box">
+          <h3>Tài khoản Claude</h3>
+          <p class="hint">
+            Dùng Claude Code với tài khoản Claude Pro/Max hoặc Anthropic Console. Credential OAuth
+            do Claude CLI quản lý trong thư mục riêng trên server, không ghi vào <code>.env</code>.
+          </p>
+          <p id="claude-account-status" class="hint">Đang kiểm tra trạng thái...</p>
+          {% if is_admin %}
+          <div id="claude-install-prompt" hidden>
+            <p><strong>Claude Code CLI chưa được cài trên server. Bạn có muốn cài đặt ngay không?</strong></p>
+            <div class="ai-test-row">
+              <button type="button" class="btn btn-primary btn-sm" id="claude-install-yes-btn">Có, cài đặt</button>
+              <button type="button" class="btn btn-sm" id="claude-install-no-btn">Không</button>
+            </div>
+          </div>
+          <div class="ai-test-row">
+            <button type="button" class="btn btn-primary btn-sm" id="claude-login-btn">Đăng nhập bằng Claude</button>
+            <button type="button" class="btn btn-sm btn-danger" id="claude-logout-btn" hidden>Đăng xuất</button>
+          </div>
+          <div id="claude-model-panel" hidden>
+            <label>Model Claude
+              <select id="claude-model-select"></select>
+            </label>
+            <label>Effort
+              <select id="claude-effort-select"></select>
+            </label>
+            <div class="ai-test-row">
+              <button type="button" class="btn btn-primary btn-sm" id="claude-model-save-btn">Lưu model và effort</button>
+              <span id="claude-model-result" class="ai-test-result" hidden></span>
+            </div>
+          </div>
+          <div id="claude-limit-panel" class="ai-limit-panel" hidden></div>
+          <div id="claude-device-flow" hidden>
+            <p>Mở <a id="claude-verification-link" href="#" target="_blank" rel="noopener">trang xác thực Claude</a>, đăng nhập và sao chép Authentication code.</p>
+            <label>
+              Authentication code
+              <input type="text" id="claude-authentication-code" autocomplete="one-time-code" placeholder="Dán mã Claude trả về" spellcheck="false">
+            </label>
+            <div class="ai-test-row">
+              <button type="button" class="btn btn-primary btn-sm" id="claude-connect-btn">Nhập mã &amp; kết nối</button>
+            </div>
+            <p class="hint">Mã chỉ được chuyển trực tiếp cho Claude CLI và không được lưu vào cấu hình.</p>
+          </div>
+          {% endif %}
+        </div>
+
+        <hr>
+
+        <div id="router-connected-view" class="settings-api-connection-card" {% if not router_connected %}hidden{% endif %}>
+          <p class="success">✅ {{ router_provider_label }} đã kết nối</p>
+          <p class="hint">Base URL: <code id="router-connected-base-url">{{ router_base_url }}</code></p>
+          <p class="hint">Model: <code id="router-connected-model">{{ router_model }}</code></p>
+          <p class="hint">Key hiện tại: <code>{{ masked_key }}</code></p>
+          <div class="ai-test-row">
+            <button type="button" class="btn btn-sm" id="router-change-model-btn">Đổi model</button>
+            <form
+              method="post"
+              action="/settings/9router/disconnect"
+              onsubmit="return confirm('Huỷ kết nối API AI? Chatbox sẽ ngừng hoạt động cho tới khi kết nối lại.');"
+              style="display:inline"
+            >
+              <button type="submit" class="btn btn-sm btn-danger">Huỷ kết nối</button>
+            </form>
+          </div>
+        </div>
+
+        <div id="router-wizard-view" class="settings-api-connection-card" {% if router_connected %}hidden{% endif %}>
+          <p class="hint">Chọn nơi gửi yêu cầu AI (chẩn đoán sự cố &amp; Chat-with-AI dùng chung một kết nối này).</p>
+          <form class="login-box" id="router-step1-form">
+            <div class="ai-provider-field">
+              <span class="ai-provider-field-label">Loại kết nối</span>
+              <div class="ai-provider-options" id="router-provider-options">
+                {% for p in router_providers %}
+                  <label class="ai-provider-option">
+                    <input
+                      type="radio"
+                      name="router_provider"
+                      value="{{ p.id }}"
+                      data-base-url="{{ p.base_url or '' }}"
+                      data-base-url-placeholder="{{ p.base_url_placeholder }}"
+                      {% if p.id == router_provider %}checked{% endif %}
+                    >
+                    <span class="ai-provider-logo" aria-hidden="true">{{ "9R" if p.id == "9router" else ("CL" if p.id == "anthropic" else ("◎" if p.id == "openai" else "OR")) }}</span><span>{{ p.label }}</span>
+                  </label>
+                {% endfor %}
+              </div>
+            </div>
+            <label>Base URL
+              <input
+                type="text"
+                name="router_base_url"
+                id="router-base-url-input"
+                value="{{ router_base_url }}"
+                placeholder="http://localhost:20128"
+                required
+              >
+            </label>
+            <label>API Key
+              <input
+                type="password"
+                name="router_api_key"
+                id="router-api-key-input"
+                placeholder="{% if masked_key %}để trống để giữ nguyên key hiện tại ({{ masked_key }}){% else %}sk-...{% endif %}"
+                autocomplete="off"
+              >
+            </label>
+            <div class="ai-test-row">
+              <button type="button" class="btn btn-primary btn-sm" id="router-verify-btn">Xác nhận kết nối</button>
+              <span id="router-verify-result" class="ai-test-result" hidden></span>
+            </div>
+          </form>
+
+          <form
+            class="login-box"
+            id="router-step2-form"
+            method="post"
+            action="/settings/9router/save"
+            {% if not router_models %}hidden{% endif %}
+          >
+            <input type="hidden" name="router_base_url" id="router-step2-base-url" value="{{ router_base_url }}">
+            <input type="hidden" name="router_api_key" id="router-step2-api-key">
+            <input type="hidden" name="router_provider" id="router-step2-provider" value="{{ router_provider }}">
+            <label>Model
+              <input type="text" id="router-model-filter" placeholder="Lọc model..." autocomplete="off" hidden>
+              <select name="router_model_id" id="router-model-select" required>
+                {% if router_models %}
+                  {% for m in router_models %}
+                    <option value="{{ m }}" {% if m == router_model %}selected{% endif %}>{{ m }}</option>
+                  {% endfor %}
+                {% elif router_model %}
+                  <option value="{{ router_model }}" selected>{{ router_model }}</option>
+                {% endif %}
+              </select>
+            </label>
+            <button type="submit" class="btn btn-primary">Lưu cấu hình</button>
+          </form>
+        </div>
+        </div>
+      </div>
+    </section>
+
+    {% if is_admin %}
+    <section class="card settings-panel" data-panel="openstack" {% if active_section != 'openstack' %}hidden{% endif %}>
+      <div class="card-header settings-panel-header">
+        <div class="settings-panel-title">
+          <span class="settings-panel-icon settings-panel-icon-openstack" aria-hidden="true">OS</span>
+          <div><h2>Cấu hình OpenStack</h2><p>Khai báo các node tích hợp với cụm Ceph mặc định</p></div>
+        </div>
+        <span class="settings-scope-badge">Default cluster</span>
+      </div>
+      <div class="card-body">
+        <div class="openstack-settings-intro">
+          <div>
+            <span class="settings-eyebrow">OpenStack integration</span>
+            <h3>Kết nối hạ tầng compute với Ceph</h3>
+            <p>Danh sách node được lưu theo cụm Ceph mặc định và dùng cho các luồng tích hợp OpenStack.</p>
+          </div>
+          <div class="openstack-node-summary">
+            <span><strong>{{ openstack_controller_nodes.split(',')|reject('equalto', '')|list|length }}</strong> Controller</span>
+            <span><strong>{{ openstack_compute_nodes.split(',')|reject('equalto', '')|list|length }}</strong> Compute</span>
+          </div>
+        </div>
+        {% if openstack_error %}<p class="error">{{ openstack_error }}</p>{% endif %}
+        {% if openstack_success %}<p class="success">{{ openstack_success }}</p>{% endif %}
+        <form method="post" action="/settings/openstack" class="settings-form openstack-settings-form" id="openstack-settings-form">
+          {% if openstack_clusters|length > 1 %}
+          <label class="settings-field">Cụm Ceph
+            <select onchange="window.location='/settings?cluster='+encodeURIComponent(this.value)+'#openstack'">
+              {% for c in openstack_clusters %}<option value="{{ c.id }}" {{ "selected" if openstack_cluster and c.id == openstack_cluster.id else "" }}>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</option>{% endfor %}
+            </select>
+          </label>
+          {% endif %}
+          <input type="hidden" name="cluster_id" value="{{ openstack_cluster.id if openstack_cluster else '' }}">
+          <div class="settings-field-grid">
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>Controller nodes</strong><em>Bắt buộc</em></span>
+              <input type="text" name="controller_nodes" value="{{ openstack_controller_nodes }}" required placeholder="10.0.0.10, 10.0.0.11" autocomplete="off">
+              <small>IP hoặc hostname của các Controller, phân cách bằng dấu phẩy.</small>
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>Compute nodes</strong><em class="is-optional">Tuỳ chọn</em></span>
+              <input type="text" name="compute_nodes" value="{{ openstack_compute_nodes }}" placeholder="10.0.0.20, 10.0.0.21" autocomplete="off">
+              <small>IP hoặc hostname của các Compute cần truy cập storage Ceph.</small>
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>Đường dẫn file Ceph trên OpenStack</strong><em>Bắt buộc</em></span>
+              <input type="text" name="ceph_config_path" value="{{ openstack_ceph_config_path }}" required placeholder="/etc/ceph" autocomplete="off">
+              <small>Sau khi tạo Auth User, keyring của user, admin keyring và ceph.conf sẽ được chuyển tới thư mục này trên tất cả Controller/Compute.</small>
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>OpenStack openrc trên Controller</strong><em class="is-optional">Cinder discovery</em></span>
+              <input type="text" name="openrc_path" value="{{ openstack_openrc_path }}" placeholder="/root/admin-openrc" autocomplete="off">
+              <small>Dashboard chỉ source file này trên Controller để chạy truy vấn Cinder read-only; nội dung credential không được tải về.</small>
+            </label>
+          </div>
+          <div class="settings-form-actions">
+            <p><strong>Lưu ý:</strong> Việc chuyển file chỉ chạy sau khi Create Auth User thành công.</p>
+            <div>
+              <button type="button" class="btn btn-sm" id="openstack-test-btn">Kiểm tra kết nối</button>
+              <button type="submit" class="btn btn-primary">Lưu cấu hình OpenStack</button>
+            </div>
+          </div>
+          <span id="openstack-test-result" class="ai-test-result" hidden></span>
+          <div class="settings-field-grid">
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>IP VM cần kiểm tra</strong><em class="is-optional">Test SSH VM</em></span>
+              <input type="text" name="vm_ip" placeholder="10.20.1.50" inputmode="decimal" autocomplete="off">
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>SSH user của VM</strong></span>
+              <input type="text" name="vm_ssh_user" value="root" placeholder="root hoặc ubuntu" autocomplete="off">
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>Private key path trên Controller</strong></span>
+              <input type="text" name="vm_ssh_key_path" placeholder="/root/.ssh/vm_ed25519" autocomplete="off">
+              <small>Kiểm tra đúng luồng Ceph-AI → Controller → VM. Key phải có sẵn trên Controller và không được tải lên trình duyệt.</small>
+            </label>
+          </div>
+          <div class="ai-test-row">
+            <button type="button" class="btn btn-sm" id="openstack-vm-test-btn">Kiểm tra SSH tới VM</button>
+            <span id="openstack-vm-test-result" class="ai-test-result" hidden></span>
+          </div>
+        </form>
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="card settings-panel" data-panel="cluster" {% if active_section != 'cluster' %}hidden{% endif %}>
+      <div class="card-header"><h2>Kết nối cụm Ceph — cụm mặc định</h2></div>
+      <div class="card-body">
+        <p class="hint">Mục này chỉ sửa cụm mặc định được lưu trong <code>.env</code>.{% if is_admin %} Để thêm, sửa hoặc test cluster phụ, dùng trang <a href="/clusters">Clusters</a>.{% endif %}</p>
+        {% if cluster_error %}
+          <p class="error">{{ cluster_error }}</p>
+        {% endif %}
+        {% if cluster_success %}
+          <p class="success">{{ cluster_success }}</p>
+        {% endif %}
+        {% if watcher_restart_error %}
+          <p class="error">{{ watcher_restart_error }}</p>
+        {% endif %}
+        {% if cluster_worker_restart_error %}
+          <p class="error">{{ cluster_worker_restart_error }}</p>
+        {% endif %}
+        <p class="hint">
+          Watcher và Worker tự động khởi động lại sau khi lưu để áp dụng cấu hình mới ngay.
+        </p>
+        <form class="login-box" method="post" action="/settings/cluster">
+          <label>MON nodes (IP, phân tách dấu phẩy)
+            <input type="text" name="ceph_mon_nodes" value="{{ ceph_mon_nodes }}" placeholder="10.0.0.1,10.0.0.2,10.0.0.3" required>
+          </label>
+          <label>MON hostnames (tương ứng, phân tách dấu phẩy)
+            <input type="text" name="ceph_mon_hostnames" value="{{ ceph_mon_hostnames }}" placeholder="mon1,mon2,mon3">
+          </label>
+          <label>Kiểu deploy
+            <select name="ceph_exec_mode" id="ceph-exec-mode-select">
+              <option value="cephadm" {% if ceph_exec_mode == "cephadm" %}selected{% endif %}>cephadm (khuyến nghị — cephadm shell, không cần tên container)</option>
+              <option value="docker" {% if ceph_exec_mode == "docker" %}selected{% endif %}>docker (docker exec / docker compose, 1 tên container cố định)</option>
+              <option value="podman" {% if ceph_exec_mode == "podman" %}selected{% endif %}>podman thường (không phải cephadm, 1 tên container cố định)</option>
+              <option value="none" {% if ceph_exec_mode == "none" %}selected{% endif %}>Không dùng container (ceph-deploy / cài package trực tiếp)</option>
+            </select>
+          </label>
+          <p class="hint" data-exec-modes="cephadm">
+            Cụm cephadm thật (podman) vẫn cần chọn <strong>cephadm</strong> ở trên, KHÔNG phải "podman thường" —
+            container mon dài hạn của cephadm không có sẵn keyring admin, và tên container tự sinh khác nhau theo từng node.
+            <code>cephadm shell</code> tự lo việc đó, không cần điền tên container.
+          </p>
+          <label data-exec-modes="docker,podman">MON container name
+            <input type="text" name="ceph_container_name" value="{{ ceph_container_name }}" placeholder="ceph-mon-B">
+          </label>
+          <label>MGR nodes (IP, phân tách dấu phẩy, tuỳ chọn)
+            <input type="text" name="ceph_mgr_nodes" value="{{ ceph_mgr_nodes }}" placeholder="10.0.0.6,10.0.0.7">
+          </label>
+          <label>OSD nodes (IP, phân tách dấu phẩy)
+            <input type="text" name="ceph_osd_nodes" value="{{ ceph_osd_nodes }}" placeholder="10.0.0.4,10.0.0.5">
+          </label>
+          <label data-exec-modes="docker,podman">OSD container name
+            <input type="text" name="ceph_osd_container_name" value="{{ ceph_osd_container_name }}" placeholder="ceph-osd-B">
+          </label>
+          <label>RGW nodes (IP, phân tách dấu phẩy, tuỳ chọn)
+            <input type="text" name="ceph_rgw_nodes" value="{{ ceph_rgw_nodes }}" placeholder="10.0.0.8,10.0.0.9">
+          </label>
+          <label data-exec-modes="docker,podman">RGW container name
+            <input type="text" name="ceph_rgw_container_name" value="{{ ceph_rgw_container_name }}" placeholder="ceph-rgw-B">
+          </label>
+          <p class="hint" data-exec-modes="docker,podman">
+            3 ô tên container ở trên chỉ cần khi Kiểu deploy là docker/podman thường.
+          </p>
+          <label>SSH user
+            <input type="text" name="ssh_user" value="{{ ssh_user }}" placeholder="root" required>
+          </label>
+          <label>Ceph keyring path (bắt buộc, trên node/container Ceph)
+            <input type="text" name="ceph_keyring_path" value="{{ ceph_keyring_path }}" placeholder="/etc/ceph/ceph.client.admin.keyring" required>
+          </label>
+          <!-- SSH key path is not part of this form — it's a one-time
+               server-side setting (SSH_KEY_PATH in .env), not something
+               that changes per Ceph cluster the way MON/OSD nodes do. -->
+          {% if ssh_key_path %}
+            <p class="hint">SSH key: <code>{{ ssh_key_path }}</code> (đặt qua <code>SSH_KEY_PATH</code> trong <code>.env</code>).</p>
+            {% if ssh_public_key %}
+              <p class="hint">
+                Public key tương ứng — copy vào <code>~/.ssh/authorized_keys</code> trên các node MON/OSD của cụm Ceph bạn muốn kết nối, TRƯỚC khi bấm Lưu:
+              </p>
+              <textarea readonly rows="3" onclick="this.select()">{{ ssh_public_key }}</textarea>
+            {% else %}
+              <p class="hint">
+                Không tìm thấy file public key tương ứng (<code>&lt;đường dẫn&gt;.pub</code>) — tạo bằng <code>ssh-keygen</code> nếu chưa có.
+              </p>
+            {% endif %}
+          {% else %}
+            <p class="hint">
+              Chưa cấu hình SSH key path — đặt <code>SSH_KEY_PATH</code> trong file <code>.env</code> trên server rồi khởi động lại Dashboard.
+            </p>
+          {% endif %}
+          <button type="submit" class="btn btn-primary">Lưu &amp; kiểm tra kết nối</button>
+        </form>
+
+        <!-- Host-key management is centralized in the Ceph Node SSH Keys
+             panel below; this cluster form only configures Ceph itself. -->
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="ceph-host-keys" {% if active_section != 'ceph-host-keys' %}hidden{% endif %}>
+      <div class="card-header"><h2>SSH host keys của node Ceph</h2></div>
+      <div class="card-body">
+        {% if ceph_host_key_inventory_error %}<p class="error">{{ ceph_host_key_inventory_error }}</p>{% endif %}
+        {% if ceph_host_key_error %}<p class="error">{{ ceph_host_key_error }}</p>{% endif %}
+        {% if ceph_host_key_success %}<p class="success">{{ ceph_host_key_success }}</p>{% endif %}
+        <p class="hint">Đây là host key của các node MON/OSD Ceph, dùng để Dashboard xác minh đúng máy chủ khi SSH. Hãy lấy key từ console node hoặc một máy quản trị đã tin cậy và kiểm tra fingerprint trước khi lưu.</p>
+        <div class="table-wrap"><table><thead><tr><th>Node</th><th>Loại key</th><th>Fingerprint SHA-256</th><th></th></tr></thead><tbody>{% for item in ceph_host_keys %}<tr><td><code>{{ item.host }}</code></td><td>{{ item.key_type }}</td><td><code>{{ item.fingerprint }}</code></td><td><form method="post" action="/settings/ceph-host-keys/delete" class="inline-form" onsubmit="return confirm('Xoá host key của node này?');"><input type="hidden" name="host" value="{{ item.host }}"><button class="btn btn-sm btn-danger">Xoá</button></form></td></tr>{% else %}<tr><td colspan="4" class="empty-state">Chưa có host key Ceph nào được lưu.</td></tr>{% endfor %}</tbody></table></div>
+        <h3>Thêm hoặc thay thế host key</h3>
+        <form class="login-box" method="post" action="/settings/ceph-host-keys/save">
+          <label>Node host / IP<input name="host" value="{{ (ceph_host_key_values or {}).host or '' }}" required placeholder="10.3.54.152"></label>
+          <label>SSH host public key<textarea name="host_key" rows="3" required spellcheck="false" placeholder="ssh-ed25519 AAAA... node-host"></textarea></label>
+          <p class="hint">Không nhập public key của Dashboard và không nhập private key. Sau khi lưu, hãy chạy lại Deploy Ceph.</p>
+          <button class="btn btn-primary">Lưu host key đã xác minh</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="cleanup" {% if active_section != 'cleanup' %}hidden{% endif %}>
+      <div class="card-header"><h2>Dọn dẹp log &amp; dữ liệu cũ</h2></div>
+      <div class="card-body">
+        {% if cleanup_error %}
+          <p class="error">{{ cleanup_error }}</p>
+        {% endif %}
+        {% if cleanup_success %}
+          <p class="success">{{ cleanup_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Xóa vĩnh viễn, không hoàn tác được. File log được xóa TRỰC TIẾP trong file đang dùng (Dashboard/Watcher/Worker vẫn ghi tiếp bình thường, không cần khởi động lại).
+        </p>
+        <form
+          class="login-box"
+          method="post"
+          action="/settings/cleanup"
+          onsubmit="return confirm('Xóa dữ liệu đã chọn? Hành động này KHÔNG thể hoàn tác.');"
+        >
+          <label class="checkbox-label">
+            <input type="checkbox" name="target_files" checked>
+            File log tiến trình (Dashboard, Watcher, Worker)
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="target_db" checked>
+            Lịch sử Incident / Audit Trail / Chẩn đoán CLI / Hiệu năng Volume (database)
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="target_backup_digest">
+            Digest backup (bảng Digest ở trang <a href="/backups">Backup</a>)
+          </label>
+          <label>Xóa dữ liệu trước ngày (để trống = xóa hết)
+            <input type="date" name="cutoff_date">
+          </label>
+          <p class="hint">
+            File log dashboard.log không có mốc thời gian theo từng dòng (định dạng log gốc của uvicorn) — chọn mốc ngày với file này sẽ xóa toàn bộ file, không xóa được từng phần theo ngày.
+          </p>
+          <button type="submit" class="btn btn-danger">Xóa dữ liệu đã chọn</button>
+        </form>
+      </div>
+    </section>
+    </div>
+  </main>
+  <script src="/static/settings.js?v={{ static_version }}-settings-v2"></script>
+  <script src="/static/settings_logs.js?v={{ static_version }}"></script>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+  <script>
+    (function () {
+      var toggle = document.querySelector('input[name="dual_ai_fallback_enabled"]');
+      var config = document.getElementById("dual-ai-fallback-config");
+      if (!toggle || !config) return;
+      function syncFallbackFields() {
+        config.hidden = !toggle.checked;
+        config.querySelectorAll("input, select, textarea").forEach(function (field) {
+          field.disabled = !toggle.checked;
+        });
+      }
+      toggle.addEventListener("change", syncFallbackFields);
+      syncFallbackFields();
+    }());
+  </script>
+</body>
+</html>

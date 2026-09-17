@@ -65,7 +65,17 @@
         {% endfor %}
         </tbody>
       </table></div>
-      <div class="card-footer pagination-footer"><span>{{ inventory.total }} bucket{% if inventory.total != 1 %}s{% endif %} · Trang {{ inventory.page }} / {{ inventory.page_count }}</span>{% set filters = "&query=" ~ quote_query(inventory.query) ~ "&owner=" ~ quote_query(inventory.owner or '') ~ "&quota=" ~ inventory.quota ~ "&usage=" ~ inventory.usage ~ "&sort=" ~ inventory.sort ~ "&order=" ~ inventory.order %}{% if inventory.page_count > 1 %}<span>{% if inventory.page > 1 %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page={{ inventory.page - 1 }}">Trước</a>{% endif %}{% if inventory.page < inventory.page_count %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page={{ inventory.page + 1 }}">Sau</a>{% endif %}</span>{% endif %}</div>
+      {% set filters = "&query=" ~ quote_query(inventory.query) ~ "&owner=" ~ quote_query(inventory.owner or '') ~ "&quota=" ~ inventory.quota ~ "&usage=" ~ inventory.usage ~ "&sort=" ~ inventory.sort ~ "&order=" ~ inventory.order %}
+      <div class="dashboard-pagination card-footer pagination-footer">
+        <span class="pagination-summary" data-mobile-summary="{{ ((inventory.page - 1) * inventory.page_size + 1) if inventory.total else 0 }}–{{ [inventory.page * inventory.page_size, inventory.total]|min }} / {{ inventory.total }}">Hiển thị {{ ((inventory.page - 1) * inventory.page_size + 1) if inventory.total else 0 }}–{{ [inventory.page * inventory.page_size, inventory.total]|min }} / {{ inventory.total }} mục</span>
+        <div class="pagination-controls">
+          {% if inventory.page > 1 %}<a class="pagination-prev" aria-label="Trang trước" href="/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page={{ inventory.page - 1 }}&amp;page_size={{ inventory.page_size }}">‹</a>{% else %}<button class="pagination-prev" disabled aria-label="Trang trước">‹</button>{% endif %}
+          <div class="pagination-pages">{% for number in range(1, inventory.page_count + 1) %}<a class="pagination-page-number{% if number == inventory.page %} is-active{% endif %}"{% if number == inventory.page %} aria-current="page"{% endif %} href="/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page={{ number }}&amp;page_size={{ inventory.page_size }}">{{ number }}</a>{% endfor %}</div>
+          <span class="pagination-mobile-status">Trang {{ inventory.page }}/{{ inventory.page_count }}</span>
+          {% if inventory.page < inventory.page_count %}<a class="pagination-next" aria-label="Trang sau" href="/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page={{ inventory.page + 1 }}&amp;page_size={{ inventory.page_size }}">›</a>{% else %}<button class="pagination-next" disabled aria-label="Trang sau">›</button>{% endif %}
+        </div>
+        <label class="pagination-page-size">Mỗi trang <select onchange="window.location.href='/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page=1&amp;page_size=' + this.value" aria-label="Số bucket mỗi trang">{% for size in [10, 20, 50, 100] %}<option value="{{ size }}"{% if inventory.page_size == size %} selected{% endif %}>{{ size }}</option>{% endfor %}</select></label>
+      </div>
     </section>
 
     {% if is_admin %}<div id="bucket-action-backdrop" class="bucket-action-backdrop" hidden></div>
@@ -86,6 +96,6 @@
     </aside>{% endif %}
   </main>
   </div>
-  <script src="/static/app.js?v={{ static_version }}"></script><script src="/static/object_storage_buckets.js?v={{ static_version }}&bucket_ui=3"></script><script src="/static/object_storage_user_settings.js?v={{ static_version }}"></script>
+  <script src="/static/app.js?v={{ static_version }}"></script><script src="/static/pagination.js?v={{ static_version }}"></script><script src="/static/object_storage_buckets.js?v={{ static_version }}&bucket_ui=3"></script><script src="/static/object_storage_user_settings.js?v={{ static_version }}"></script>
 </body>
 </html>

@@ -10,6 +10,9 @@
   const previousButton = document.getElementById("trash-page-prev");
   const nextButton = document.getElementById("trash-page-next");
   const pageStatus = document.getElementById("trash-page-status");
+  const pageButtons = document.getElementById("trash-page-buttons");
+  const pageSizeSelect = document.getElementById("trash-page-size");
+  const pageSummary = document.getElementById("trash-page-summary");
   const selectAll = document.getElementById("trash-select-all");
   const restoreSelected = document.getElementById("trash-restore-selected");
   const deleteSelected = document.getElementById("trash-delete-selected");
@@ -232,10 +235,10 @@
   document.querySelectorAll(".trash-copy-id").forEach((button) => button.addEventListener("click", () => copyId(button)));
   document.querySelectorAll(".trash-force-purge-form, .trash-force-remove-form").forEach((form) => form.addEventListener("submit", (event) => { event.preventDefault(); openTrashConfirmation(form); }));
 
-  if (!table || !filterInput || !resetButton || !result || !empty || !pagination || !previousButton || !nextButton || !pageStatus) return;
+  if (!table || !filterInput || !resetButton || !result || !empty || !pagination || !previousButton || !nextButton || !pageStatus || !pageButtons || !pageSizeSelect || !pageSummary) return;
 
   const rows = Array.from(table.querySelectorAll("tbody tr"));
-  const pageSize = 10;
+  let pageSize = Number(pageSizeSelect.value) || 10;
   let currentPage = 1;
   const normalize = (value) => String(value || "").trim().toLocaleLowerCase("vi");
 
@@ -267,10 +270,14 @@
     const start = (currentPage - 1) * pageSize;
     const pageRows = new Set(matches.slice(start, start + pageSize));
     rows.forEach((row) => { row.hidden = !pageRows.has(row); });
-    result.textContent = `Hiển thị ${matches.length ? start + 1 : 0}-${Math.min(start + pageSize, matches.length)} / ${matches.length}`;
+    const summary = `Hiển thị ${matches.length ? start + 1 : 0}–${Math.min(start + pageSize, matches.length)} / ${matches.length} mục`;
+    result.textContent = summary;
+    pageSummary.textContent = summary;
+    pageSummary.dataset.mobileSummary = `${matches.length ? start + 1 : 0}–${Math.min(start + pageSize, matches.length)} / ${matches.length}`;
     pageStatus.textContent = `Trang ${currentPage} / ${pageCount}`;
     previousButton.disabled = currentPage === 1;
     nextButton.disabled = currentPage === pageCount;
+    if (window.DashboardPagination) window.DashboardPagination.renderPages(pageButtons, currentPage, pageCount, (page) => { currentPage = page; render(); });
     resetButton.disabled = !query;
     empty.hidden = matches.length !== 0;
     table.hidden = matches.length === 0;
@@ -282,5 +289,6 @@
   resetButton.addEventListener("click", () => { filterInput.value = ""; currentPage = 1; render(); filterInput.focus(); });
   previousButton.addEventListener("click", () => { if (currentPage > 1) currentPage -= 1; render(); });
   nextButton.addEventListener("click", () => { currentPage += 1; render(); });
+  pageSizeSelect.addEventListener("change", () => { pageSize = Number(pageSizeSelect.value) || 10; currentPage = 1; render(); });
   render();
 })();

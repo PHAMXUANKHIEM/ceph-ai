@@ -98,13 +98,15 @@
           <span>Chi tiết</span>
         </div>
         <ul id="crush-history-list" class="crush-history-list"></ul>
-        <div class="crush-history-toolbar">
-          <div class="crush-history-pagination">
-            <button id="crush-history-prev" class="btn btn-ghost btn-sm" type="button" disabled>Trang trước</button>
-            <span id="crush-history-page" class="hint pagination-status">Trang 1</span>
-            <button id="crush-history-next" class="btn btn-ghost btn-sm" type="button" disabled>Trang sau</button>
+        <div id="crush-history-pagination" class="dashboard-pagination crush-history-toolbar">
+          <span id="crush-history-count" class="pagination-summary" data-mobile-summary="0 / 0">Hiển thị 0–0 / 0 mục</span>
+          <div class="pagination-controls crush-history-pagination">
+            <button id="crush-history-prev" class="pagination-prev" type="button" aria-label="Trang trước" disabled>‹</button>
+            <div id="crush-history-pages" class="pagination-pages"></div>
+            <span id="crush-history-page" class="pagination-mobile-status">Trang 1/1</span>
+            <button id="crush-history-next" class="pagination-next" type="button" aria-label="Trang sau" disabled>›</button>
           </div>
-          <span id="crush-history-count" class="hint crush-history-count">Hiển thị tối đa 10 mục/trang</span>
+          <label class="pagination-page-size">Mỗi trang <select id="crush-history-page-size" aria-label="Số mục mỗi trang"><option selected>10</option><option>20</option><option>50</option><option>100</option></select></label>
         </div>
       </div>
     </section>
@@ -121,6 +123,7 @@
   </main>
 
   <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/pagination.js?v={{ static_version }}"></script>
   <script src="/static/crush_map.js?v={{ static_version }}"></script>
 </body>
 </html>

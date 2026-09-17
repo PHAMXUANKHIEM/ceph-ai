@@ -2070,6 +2070,41 @@ class TelegramChannelConfigChange(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class TelegramManagedChannel(Base):
+    """Admin-managed Telegram channel created from the Alert Telegram UI.
+
+    The eight built-in channels remain environment-backed for compatibility
+    with the existing alert workers. This table stores only additional
+    channels and their display/configuration metadata; the dashboard never
+    renders the bot token back to the browser after the initial save.
+    """
+
+    __tablename__ = "telegram_managed_channels"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    bot_token: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    chat_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    template: Mapped[str] = mapped_column(String(64), nullable=False, default="custom")
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TelegramChannelLayout(Base):
+    """Persistent ordering, aliases, and hidden state for Telegram cards."""
+
+    __tablename__ = "telegram_channel_layouts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="default")
+    order_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    hidden_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    display_names_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    updated_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class CapabilityStatus(str, enum.Enum):
     """AI roadmap Pha 0.1 (Plan/ai-missing-features-roadmap.md) -- the
     standardized response every capability-aware AI feature must be able to

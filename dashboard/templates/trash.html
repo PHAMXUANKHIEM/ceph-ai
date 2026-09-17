@@ -148,10 +148,15 @@
         </table>
       </div>
       <div id="trash-filter-empty" class="empty-state trash-filter-empty" hidden>Không tìm thấy Trash phù hợp.</div>
-      <div id="trash-pagination" class="trash-pagination" aria-label="Phân trang Trash">
-        <button id="trash-page-prev" type="button" class="btn btn-ghost btn-sm" aria-label="Trang trước">← Trang trước</button>
-        <span id="trash-page-status" class="pagination-status" role="status" aria-live="polite">Trang 1 / {{ ((trash_entries|length + 9) // 10) }}</span>
-        <div class="pagination-end"><button id="trash-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">10 Trash mỗi trang (10 volume mỗi trang)</button></div>
+      <div id="trash-pagination" class="dashboard-pagination trash-pagination" aria-label="Phân trang Trash">
+        <span id="trash-page-summary" class="pagination-summary" data-mobile-summary="0 / 0">Hiển thị 0–0 / 0 mục</span>
+        <div class="pagination-controls">
+          <button id="trash-page-prev" type="button" class="pagination-prev" aria-label="Trang trước">‹</button>
+          <div id="trash-page-buttons" class="pagination-pages"></div>
+          <span id="trash-page-status" class="pagination-mobile-status" role="status" aria-live="polite">Trang 1 / 1</span>
+          <button id="trash-page-next" type="button" class="pagination-next" aria-label="Trang sau">›</button>
+        </div>
+        <label class="pagination-page-size">Mỗi trang <select id="trash-page-size" aria-label="Số volume mỗi trang"><option selected>10</option><option>20</option><option>50</option><option>100</option></select></label>
       </div>
       {% else %}
       <p class="trash-empty-state">Trash của pool <code>{{ selected_pool }}</code> đang trống.</p>
@@ -160,7 +165,7 @@
     {% endif %}
   </main>
 
-  {% if selected_pool %}<script src="/static/trash.js?v={{ static_version }}&trash_layout=2"></script>{% endif %}
+  {% if selected_pool %}<script src="/static/pagination.js?v={{ static_version }}"></script><script src="/static/trash.js?v={{ static_version }}&trash_layout=2"></script>{% endif %}
   <script src="/static/app.js?v={{ static_version }}"></script>
 </body>
 </html>

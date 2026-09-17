@@ -99,23 +99,21 @@
         <div id="bah-empty" class="bucket-audit-empty" hidden>Không có request nào khớp bộ lọc.</div>
       </div>
 
-      <footer class="bucket-audit-footer">
-        <div class="bucket-audit-page-size">
-          <span id="bah-total-label">— sự kiện</span>
-          <label for="bah-page-size">Mỗi trang</label>
-          <select id="bah-page-size" aria-label="Số dòng mỗi trang"><option>10</option><option>25</option><option>50</option></select>
+      <footer class="dashboard-pagination bucket-audit-footer">
+        <span id="bah-total-label" class="pagination-summary" data-mobile-summary="0 / 0">Hiển thị 0–0 / 0 mục</span>
+        <div class="pagination-controls bucket-audit-pagination" aria-label="Phân trang">
+          <button class="pagination-prev" id="bah-prev" type="button" aria-label="Trang trước">‹</button>
+          <div id="bah-pages" class="pagination-pages bucket-audit-page-numbers"></div>
+          <span id="bah-page-label" class="pagination-mobile-status">Trang 1/1</span>
+          <button class="pagination-next" id="bah-next" type="button" aria-label="Trang sau">›</button>
         </div>
-        <div class="bucket-audit-pagination" aria-label="Phân trang">
-          <button class="btn btn-ghost btn-sm" id="bah-prev" type="button">‹ Trước</button>
-          <div id="bah-pages" class="bucket-audit-page-numbers"></div>
-          <button class="btn btn-ghost btn-sm" id="bah-next" type="button">Sau ›</button>
-          <span id="bah-page-label" class="bucket-audit-page-label">Trang 1/1</span>
-        </div>
+        <label class="pagination-page-size">Mỗi trang <select id="bah-page-size" aria-label="Số dòng mỗi trang"><option>10</option><option>20</option><option>50</option><option>100</option></select></label>
       </footer>
     </section>
   </main>
 
   <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/pagination.js?v={{ static_version }}"></script>
   <script src="/static/bucket_access_log.js?v={{ static_version }}"></script>
 </body>
 </html>

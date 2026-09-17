@@ -34,18 +34,24 @@ async def ai_cost_page(
     request: Request,
     hours: str | None = None,
     page: str | None = None,
+    page_size: str | None = None,
     user: str = Depends(require_login),
 ):
     data = summary(_hours(hours))
     all_groups = data["groups"]
-    page_count = max(1, (len(all_groups) + DETAIL_PAGE_SIZE - 1) // DETAIL_PAGE_SIZE)
+    try:
+        requested_size = int(page_size or DETAIL_PAGE_SIZE)
+    except (TypeError, ValueError):
+        requested_size = DETAIL_PAGE_SIZE
+    size = requested_size if requested_size in {10, 20, 50, 100} else DETAIL_PAGE_SIZE
+    page_count = max(1, (len(all_groups) + size - 1) // size)
     current_page = min(_page(page), page_count)
-    start = (current_page - 1) * DETAIL_PAGE_SIZE
+    start = (current_page - 1) * size
     data.update({
-        "groups": all_groups[start:start + DETAIL_PAGE_SIZE],
+        "groups": all_groups[start:start + size],
         "group_count": len(all_groups),
         "page": current_page,
-        "page_size": DETAIL_PAGE_SIZE,
+        "page_size": size,
         "page_count": page_count,
     })
     return templates.TemplateResponse(request, "ai_cost.html", {"user": user, **data})

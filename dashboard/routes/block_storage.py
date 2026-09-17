@@ -317,7 +317,7 @@ def _cached_block_storage(cluster) -> list[dict]:
 async def block_storage_page(
     request: Request,
     page: int = Query(1, ge=1),
-    page_size: int = Query(BLOCK_STORAGE_OVERVIEW_LIMIT, ge=10, le=50),
+    page_size: int = Query(BLOCK_STORAGE_OVERVIEW_LIMIT, ge=10, le=100),
     user: str = Depends(require_login),
 ):
     clusters, cluster = cluster_selection(request)

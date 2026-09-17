@@ -425,6 +425,8 @@
   var emptyEl = document.getElementById("crush-history-empty");
   var pageEl = document.getElementById("crush-history-page");
   var countEl = document.getElementById("crush-history-count");
+  var pagesEl = document.getElementById("crush-history-pages");
+  var pageSizeEl = document.getElementById("crush-history-page-size");
   var prevBtn = document.getElementById("crush-history-prev");
   var nextBtn = document.getElementById("crush-history-next");
   var purgeBtn = document.getElementById("crush-history-purge");
@@ -436,6 +438,9 @@
   var clusterId = treePageEl ? treePageEl.dataset.clusterId : "";
   var currentPage = 1;
   var pageCursors = [null];
+  var historyTotal = 0;
+  var historyPages = 1;
+  var historyPageSize = Number(pageSizeEl && pageSizeEl.value) || 10;
   var requestInFlight = false;
   var CRUSH_WEIGHT_SCALE = 65536;
 
@@ -520,9 +525,12 @@
 
   function updatePagination(nextBefore) {
     prevBtn.disabled = requestInFlight || currentPage <= 1;
-    nextBtn.disabled = requestInFlight || !nextBefore;
-    pageEl.textContent = "Trang " + currentPage;
-    if (countEl) countEl.textContent = "Tối đa 10 mục · dùng nút để xem trang tiếp theo";
+    nextBtn.disabled = requestInFlight || currentPage >= historyPages || !nextBefore;
+    pageEl.textContent = "Trang " + currentPage + "/" + historyPages;
+    var first = historyTotal ? ((currentPage - 1) * historyPageSize + 1) : 0;
+    var last = Math.min(currentPage * historyPageSize, historyTotal);
+    if (countEl) { countEl.textContent = "Hiển thị " + first + "–" + last + " / " + historyTotal + " mục"; countEl.dataset.mobileSummary = first + "–" + last + " / " + historyTotal; }
+    if (pagesEl && window.DashboardPagination) window.DashboardPagination.renderPages(pagesEl, currentPage, historyPages, function (targetPage) { if (targetPage <= pageCursors.length) loadPage(targetPage); });
   }
 
   function loadPage(page) {
@@ -530,7 +538,7 @@
     requestInFlight = true;
     updatePagination(null);
     var before = pageCursors[page - 1];
-    var url = "/api/crush-map/history?cluster_id=" + encodeURIComponent(clusterId) + "&limit=10" + (before ? "&before=" + encodeURIComponent(before) : "");
+    var url = "/api/crush-map/history?cluster_id=" + encodeURIComponent(clusterId) + "&limit=" + historyPageSize + (before ? "&before=" + encodeURIComponent(before) : "");
     fetch(url, { credentials: "same-origin", cache: "no-store" })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
@@ -538,6 +546,8 @@
       })
       .then(function (data) {
         currentPage = page;
+        historyTotal = Number(data.total || 0);
+        historyPages = Math.max(1, Math.ceil(historyTotal / historyPageSize));
         renderItems(data.items || []);
         if (data.next_before) pageCursors[page] = data.next_before; else pageCursors.length = page;
         emptyEl.hidden = (data.items || []).length > 0 || page !== 1;
@@ -553,6 +563,7 @@
 
   prevBtn.addEventListener("click", function () { loadPage(currentPage - 1); });
   nextBtn.addEventListener("click", function () { loadPage(currentPage + 1); });
+  if (pageSizeEl) pageSizeEl.addEventListener("change", function () { historyPageSize = Number(pageSizeEl.value) || 10; pageCursors = [null]; currentPage = 1; loadPage(1); });
   purgeBtn.addEventListener("click", function () {
     if (!window.confirm("Xóa toàn bộ lịch sử thay đổi cấu trúc CRUSH của cluster này? Không thể hoàn tác.")) return;
     purgeBtn.disabled = true;

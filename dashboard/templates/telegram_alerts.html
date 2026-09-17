@@ -4,25 +4,27 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Alert Telegram — Ceph AIOps</title>
-  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&telegram_layout=2">
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&telegram_layout=3">
+  <link rel="stylesheet" href="/static/telegram_alerts_inline.css?v={{ static_version }}">
 </head>
 <body>
   {% include "_nav.html" %}
 
   <main class="page telegram-alerts-page telegram-overview-page">
+    <div id="telegram-toggle-toast" class="telegram-toggle-toast" role="status" aria-live="polite" hidden></div>
     <header class="telegram-page-header">
       <div class="telegram-page-title-row">
         <div>
           <div class="telegram-eyebrow">NOTIFICATION CONTROL PLANE</div>
           <h1>Alert Telegram</h1>
-          <p>Tổng quan nhanh về 9 kênh cảnh báo Telegram. Chọn một kênh để chỉnh cấu hình chi tiết.</p>
+          <p>Quản lý trạng thái, cấu hình và thứ tự ưu tiên của các kênh cảnh báo Telegram.</p>
         </div>
         <a class="btn btn-ghost telegram-help-link" href="/telegram-alerts/help" target="_blank" rel="noopener">Xem hướng dẫn ↗</a>
       </div>
       <details class="telegram-intro-more">
         <summary>Xem thêm về phạm vi và luồng phê duyệt</summary>
         <div class="telegram-more-content">
-          <p>Các kênh ở đây là cấu hình toàn hệ thống và fallback của cụm mặc định. Kênh riêng của cluster phụ được cấu hình tại <a href="/clusters">Clusters</a>.</p>
+          <p>Các kênh mặc định là cấu hình toàn hệ thống và fallback của cụm mặc định. Kênh riêng của cluster phụ được cấu hình tại <a href="/clusters">Clusters</a>.</p>
           <p>Ba kênh vận hành Backup, Lỗi cụm và Phần cứng có thể gửi nút Duyệt/Từ chối cho đề xuất đang chờ. Chỉ dùng chat riêng hoặc nhóm nhỏ đáng tin cậy.</p>
           <p>Chatbox AI là kênh hai chiều và có quyền riêng theo User ID. Chỉ bật chế độ toàn quyền sau khi đã kiểm tra kỹ người dùng được phép.</p>
         </div>
@@ -31,92 +33,98 @@
 
     <section class="telegram-panel telegram-common-panel" aria-labelledby="telegram-common-title">
       <div class="telegram-section-heading">
-        <div>
-          <div class="telegram-eyebrow">GLOBAL SETTINGS</div>
-          <h2 id="telegram-common-title">Cấu hình chung</h2>
-          <p>Nhận diện cluster cho các tin nhắn cảnh báo.</p>
-        </div>
+        <div><div class="telegram-eyebrow">GLOBAL SETTINGS</div><h2 id="telegram-common-title">Cấu hình chung</h2><p>Nhận diện cluster cho các tin nhắn cảnh báo.</p></div>
       </div>
       <div class="telegram-common-grid">
         <article class="telegram-common-card telegram-common-card-compact">
-          <div class="telegram-card-title-row">
-            <div>
-              <h3>Tên cụm</h3>
-              <p>Nhãn cluster được chèn vào đầu tin nhắn Telegram.</p>
-            </div>
-            <span class="telegram-card-icon" aria-hidden="true">ID</span>
-          </div>
+          <div class="telegram-card-title-row"><div><h3>Tên cụm</h3><p>Nhãn cluster được chèn vào đầu tin nhắn Telegram.</p></div><span class="telegram-card-icon" aria-hidden="true">ID</span></div>
           {% if cluster_name_error %}<p class="error telegram-feedback" role="alert">{{ cluster_name_error }}</p>{% endif %}
           {% if cluster_name_success %}<p class="success telegram-feedback" role="status">{{ cluster_name_success }}</p>{% endif %}
           <form class="telegram-common-form" method="post" action="/telegram-alerts/cluster-name">
-            <label for="telegram-cluster-name">Tên cụm
-              <input id="telegram-cluster-name" type="text" name="cluster_name" value="{{ cluster_name }}" placeholder="vd: cluster-hcm-01">
-            </label>
+            <label for="telegram-cluster-name">Tên cụm<input id="telegram-cluster-name" type="text" name="cluster_name" value="{{ cluster_name }}" placeholder="vd: cluster-hcm-01"></label>
             <button type="submit" class="btn btn-primary">Lưu</button>
           </form>
         </article>
-
       </div>
     </section>
 
     <section class="telegram-panel telegram-channel-overview" aria-labelledby="telegram-channels-title">
-      <div class="telegram-section-heading">
-        <div>
-          <div class="telegram-eyebrow">CHANNELS</div>
-          <h2 id="telegram-channels-title">Các kênh Telegram</h2>
-          <p>Mở cấu hình của kênh cần chỉnh. Công tắc thay đổi trạng thái mà không xóa thông tin đã lưu.</p>
-        </div>
-        <span class="telegram-section-meta">{{ channels|length + 1 }} kênh</span>
+      <div class="telegram-section-heading telegram-channel-section-heading">
+        <div><div class="telegram-eyebrow">CHANNELS</div><h2 id="telegram-channels-title">Các kênh Telegram</h2><p>Kéo thả để sắp xếp. Menu ⋮ dùng để đổi tên, nhân bản hoặc xóa kênh.</p></div>
+        <div class="telegram-channel-heading-actions"><span class="telegram-section-meta" id="telegram-channel-count">{{ channel_count }} kênh</span><button type="button" class="btn btn-primary" data-open-channel-modal="create"><span aria-hidden="true">＋</span> Thêm kênh</button></div>
       </div>
 
       {% if performance_rca_error %}<p class="error telegram-channel-feedback" role="alert">{{ performance_rca_error }}</p>{% endif %}
       {% if performance_rca_success %}<p class="success telegram-channel-feedback" role="status">{{ performance_rca_success }}</p>{% endif %}
 
-      <div class="telegram-overview-grid">
-        {% for ch in channels.values() %}
+      {% if visible_channels %}
+      <div class="telegram-overview-grid telegram-managed-grid" id="telegram-channel-grid" aria-label="Danh sách kênh Telegram">
+        {% for ch in visible_channels %}
         {% set status_class = 'is-on' if ch.status_label == 'Đang bật' else 'is-off' if ch.status_label == 'Đã tắt' else 'is-unconfigured' %}
-        <article class="telegram-overview-item {{ status_class }}">
-          <a class="telegram-overview-main" href="/telegram-alerts/{{ ch.key }}" aria-label="Cấu hình {{ ch.label }}">
+        <article class="telegram-overview-item telegram-managed-card {{ status_class }}" draggable="true" data-channel-key="{{ ch.key }}" data-channel-label="{{ ch.label }}" data-channel-custom="{{ 'true' if ch.custom else 'false' }}" data-channel-enabled="{{ 'true' if ch.enabled else 'false' }}" data-channel-chat-id="{{ ch.chat_id or '' }}">
+          <div class="telegram-managed-card-top">
+            <label class="telegram-channel-select"><input type="checkbox" data-channel-select aria-label="Chọn {{ ch.label }}"><span></span></label>
             <span class="telegram-channel-index">{{ '%02d'|format(loop.index) }}</span>
-            <span class="telegram-overview-copy">
-              <strong>{{ ch.label }}</strong>
-              <span class="telegram-status-badge {{ status_class }}"><span class="telegram-status-dot" aria-hidden="true"></span>{{ ch.status_label }}</span>
-            </span>
-          </a>
-          <span class="telegram-overview-actions">
-            {% if ch.status_label != 'Chưa cấu hình' %}
-            <form class="telegram-quick-toggle" method="post" action="/telegram-alerts/{{ ch.key }}/toggle">
-              <input type="hidden" name="enabled" value="{{ 'false' if ch.enabled else 'true' }}">
-              <button class="telegram-switch {{ 'is-on' if ch.enabled else 'is-off' }}" type="submit" role="switch" aria-checked="{{ 'true' if ch.enabled else 'false' }}" aria-label="{{ 'Tắt' if ch.enabled else 'Bật' }} {{ ch.label }}"><span aria-hidden="true"></span></button>
-            </form>
+            <span class="telegram-drag-handle" title="Kéo để sắp xếp" aria-label="Kéo để sắp xếp" tabindex="0">⠿</span>
+            <details class="telegram-channel-menu">
+              <summary aria-label="Thao tác với {{ ch.label }}">⋮</summary>
+              <div class="telegram-channel-menu-list">
+                <button type="button" data-channel-action="rename">Đổi tên</button>
+                <button type="button" data-channel-action="duplicate">Nhân bản kênh</button>
+                <button type="button" class="is-danger" data-channel-action="delete">Xóa kênh</button>
+              </div>
+            </details>
+          </div>
+          <div class="telegram-overview-main-wrap">
+            {% if ch.custom %}
+            <button type="button" class="telegram-overview-main telegram-overview-main-button" data-open-channel-modal="edit" aria-label="Cấu hình {{ ch.label }}">
+            {% elif ch.rca %}
+            <a class="telegram-overview-main" href="/telegram-alerts/performance-rca" aria-label="Cấu hình {{ ch.label }}">
             {% else %}
-            <span class="telegram-switch is-disabled" title="Lưu Bot Token và Chat ID trước khi bật kênh" aria-label="Chưa cấu hình kênh"><span aria-hidden="true"></span></span>
+            <a class="telegram-overview-main" href="/telegram-alerts/{{ ch.key }}" aria-label="Cấu hình {{ ch.label }}">
             {% endif %}
-            <a class="btn btn-ghost telegram-configure-link" href="/telegram-alerts/{{ ch.key }}">Cấu hình</a>
+              <span class="telegram-overview-copy"><strong data-channel-name>{{ ch.label }}</strong><span class="telegram-status-badge {{ status_class }}"><span class="telegram-status-dot" aria-hidden="true"></span><span data-channel-status>{{ ch.status_label }}</span></span></span>
+            {% if ch.custom %}</button>{% else %}</a>{% endif %}
+          </div>
+          <span class="telegram-overview-actions">
+            {% if ch.custom %}
+            <button type="button" class="telegram-switch {{ status_class }}{% if ch.status_label == 'Chưa cấu hình' %} is-disabled{% endif %}" data-channel-toggle role="switch" aria-checked="{{ 'true' if ch.enabled else 'false' }}" aria-label="{{ 'Tắt' if ch.enabled else 'Bật' }} {{ ch.label }}" {% if ch.status_label == 'Chưa cấu hình' %}disabled title="Cấu hình Bot Token và Chat ID trước khi bật"{% endif %}><span aria-hidden="true"></span></button>
+            {% else %}
+            <form class="telegram-quick-toggle" method="post" action="{% if ch.rca %}/telegram-alerts/performance-rca/toggle{% else %}/telegram-alerts/{{ ch.key }}/toggle{% endif %}"><input type="hidden" name="enabled" value="{{ 'false' if ch.enabled else 'true' }}"><button class="telegram-switch {{ status_class }}{% if ch.status_label == 'Chưa cấu hình' %} is-disabled{% endif %}" type="submit" role="switch" aria-checked="{{ 'true' if ch.enabled else 'false' }}" aria-label="{{ 'Tắt' if ch.enabled else 'Bật' }} {{ ch.label }}" {% if ch.status_label == 'Chưa cấu hình' %}disabled title="Cấu hình Bot Token và Chat ID trước khi bật"{% endif %}><span aria-hidden="true"></span></button></form>
+            {% endif %}
+            {% if ch.custom %}<button type="button" class="btn btn-ghost telegram-configure-link" data-open-channel-modal="edit">Cấu hình</button>{% elif ch.rca %}<a class="btn btn-ghost telegram-configure-link" href="/telegram-alerts/performance-rca">Cấu hình</a>{% else %}<a class="btn btn-ghost telegram-configure-link" href="/telegram-alerts/{{ ch.key }}">Cấu hình</a>{% endif %}
           </span>
         </article>
         {% endfor %}
-        {% set rca_status_class = 'is-on' if performance_rca_enabled else 'is-off' %}
-        <article class="telegram-overview-item telegram-overview-item-rca {{ rca_status_class }}">
-          <a class="telegram-overview-main" href="/telegram-alerts/performance-rca" aria-label="Cấu hình Cảnh báo Performance RCA">
-            <span class="telegram-channel-index">09</span>
-            <span class="telegram-overview-copy">
-              <strong>Cảnh báo Performance RCA</strong>
-              <span class="telegram-status-badge {{ rca_status_class }}"><span class="telegram-status-dot" aria-hidden="true"></span>{{ "Đang bật" if performance_rca_enabled else "Đã tắt" }}</span>
-            </span>
-          </a>
-          <span class="telegram-overview-actions">
-            <form class="telegram-quick-toggle" method="post" action="/telegram-alerts/performance-rca/toggle">
-              <input type="hidden" name="enabled" value="{{ 'false' if performance_rca_enabled else 'true' }}">
-              <button class="telegram-switch {{ rca_status_class }}" type="submit" role="switch" aria-checked="{{ 'true' if performance_rca_enabled else 'false' }}" aria-label="{{ 'Tắt' if performance_rca_enabled else 'Bật' }} Cảnh báo Performance RCA"><span aria-hidden="true"></span></button>
-            </form>
-            <a class="btn btn-ghost telegram-configure-link" href="/telegram-alerts/performance-rca">Cấu hình</a>
-          </span>
-        </article>
       </div>
+      {% else %}
+      <div class="telegram-channel-empty" id="telegram-channel-empty"><div class="telegram-channel-empty-icon" aria-hidden="true">✈</div><h3>Chưa có kênh cảnh báo nào</h3><p>Tạo kênh đầu tiên để bắt đầu nhận thông báo Telegram.</p><button type="button" class="btn btn-primary" data-open-channel-modal="create">＋ Tạo kênh đầu tiên</button></div>
+      {% endif %}
     </section>
   </main>
 
+  <div class="telegram-bulk-bar" id="telegram-bulk-bar" hidden><strong><span id="telegram-selected-count">0</span> kênh đã chọn</strong><button type="button" class="btn btn-ghost btn-sm" data-bulk-action="enable">Bật tất cả</button><button type="button" class="btn btn-ghost btn-sm" data-bulk-action="disable">Tắt tất cả</button><button type="button" class="btn btn-danger-outline btn-sm" data-bulk-action="delete">Xóa</button><button type="button" class="btn btn-ghost btn-sm telegram-bulk-clear" data-bulk-clear>Bỏ chọn</button></div>
+
+  <dialog class="telegram-channel-dialog" id="telegram-channel-dialog" aria-labelledby="telegram-channel-dialog-title">
+    <form method="dialog" class="telegram-dialog-card" id="telegram-channel-form">
+      <button type="button" class="telegram-dialog-close" data-dialog-close aria-label="Đóng">×</button>
+      <div class="telegram-eyebrow">CHANNEL MANAGEMENT</div><h2 id="telegram-channel-dialog-title">Thêm kênh Telegram</h2><p id="telegram-channel-dialog-description">Tạo một kênh mới. Kênh mới mặc định ở trạng thái tắt.</p>
+      <input type="hidden" name="source_id" id="telegram-channel-source-id">
+      <input type="hidden" name="channel_key" id="telegram-channel-edit-key">
+      <label for="telegram-managed-name">Tên kênh<input id="telegram-managed-name" name="name" type="text" maxlength="128" required placeholder="vd: Team Platform"></label>
+      <label for="telegram-managed-token" id="telegram-managed-token-field">Bot Token<input id="telegram-managed-token" type="password" autocomplete="off" required placeholder="123456789:AA..."> <small>Kênh mới cần Bot Token; token đã nhân bản sẽ được giữ ở server.</small></label>
+      <label for="telegram-managed-chat">Chat ID<input id="telegram-managed-chat" type="text" required placeholder="vd: -1001234567890"></label>
+      <label class="telegram-dialog-toggle"><input id="telegram-managed-enabled" name="enabled" type="checkbox"> Bật kênh ngay sau khi lưu</label>
+      <p class="telegram-dialog-error" id="telegram-channel-dialog-error" role="alert" hidden></p>
+      <div class="telegram-dialog-actions"><button type="button" class="btn btn-ghost" data-dialog-close>Hủy</button><button type="submit" class="btn btn-primary" id="telegram-channel-save">Tạo kênh</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="telegram-channel-dialog telegram-confirm-dialog" id="telegram-delete-dialog" aria-labelledby="telegram-delete-title">
+    <form method="dialog" class="telegram-dialog-card"><div class="telegram-eyebrow">DESTRUCTIVE ACTION</div><h2 id="telegram-delete-title">Xóa kênh?</h2><p id="telegram-delete-message"></p><p class="telegram-delete-warning">Các cảnh báo đang dùng kênh này sẽ không còn gửi được.</p><div class="telegram-dialog-actions"><button type="button" class="btn btn-ghost" data-dialog-close>Hủy</button><button type="button" class="btn btn-danger" id="telegram-delete-confirm">Xóa</button></div></form>
+  </dialog>
+
+  <script src="/static/telegram_alerts_inline.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>
 </body>
 </html>

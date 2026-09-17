@@ -796,14 +796,47 @@ async def volume_known_images_api(request: Request, pool: str, user: str = Depen
         ).distinct().all()
         images.update(row[0] for row in rows)
 
+    live_samples = []
+    live_query_ok = False
     try:
         samples = _cached_rbd_iostat(cluster, pool)
     except CephQueryError as exc:
         logger.warning("volume_known_images_api: live iostat failed, using history only: %s", exc)
     else:
+        live_samples = samples
+        live_query_ok = True
         images.update(sample["image"] for sample in samples)
 
-    return {"pool": pool, "images": sorted(images)}
+    # Keep the original ``images: string[]`` response as the default API
+    # contract. The picker asks for ``details=1`` to get bounded metadata for
+    # its friendly two-line options without changing existing consumers.
+    if request.query_params.get("details") != "1":
+        return {"pool": pool, "images": sorted(images)}
+
+    inventory_by_name = {}
+    try:
+        inventory_rows = _cached_rbd_inventory(cluster, pool)
+    except CephQueryError as exc:
+        logger.warning("volume_known_images_api: inventory metadata unavailable: %s", exc)
+    else:
+        inventory_by_name = {row["name"]: row for row in inventory_rows}
+
+    live_names = {sample["image"] for sample in live_samples}
+    uuid_name = re.compile(r"^(?:volume-)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.IGNORECASE)
+    records = []
+    for name in sorted(images):
+        inventory = inventory_by_name.get(name) or {}
+        image_id = inventory.get("image_id")
+        display_name = None if uuid_name.fullmatch(name) else name
+        records.append({
+            "name": name,
+            "display_name": display_name,
+            "image_id": image_id,
+            "size_bytes": int(inventory.get("provisioned_size") or 0),
+            "status": "active" if name in live_names else "inactive",
+            "status_available": live_query_ok,
+        })
+    return {"pool": pool, "images": records}
 
 
 @router.get("/api/volumes/{pool}/inventory")
@@ -814,7 +847,7 @@ async def volume_inventory_api(
     sort: str = Query("name"),
     order: str = Query("asc"),
     page: int = Query(1, ge=1),
-    page_size: int = Query(10, ge=1, le=10),
+    page_size: int = Query(10, ge=1, le=100),
     user: str = Depends(require_login),
 ):
     """Live, read-only inventory from ``rbd du`` for the selected cluster."""

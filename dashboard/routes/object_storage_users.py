@@ -213,33 +213,34 @@ def _setting_action(cluster, action: str, uid: str, params: dict) -> None:
     )
 
 
-def _inventory(cluster, query: str, page: int) -> dict:
+def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> dict:
     host = _host(cluster)
     users = _list(cluster, host)
     normalized = query.strip().casefold()
     if normalized:
         users = [uid for uid in users if normalized in uid.casefold()]
     total = len(users)
-    page_count = max(1, ceil(total / PAGE_SIZE))
+    page_size = page_size if page_size in {10, 20, 50, 100} else PAGE_SIZE
+    page_count = max(1, ceil(total / page_size))
     page = min(max(page, 1), page_count)
     with ThreadPoolExecutor(max_workers=min(4, max(1, len(users)))) as executor:
         all_details = list(executor.map(lambda uid: _info(cluster, host, uid), users))
-    page_users = users[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
-    details = all_details[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
+    page_users = users[(page - 1) * page_size:page * page_size]
+    details = all_details[(page - 1) * page_size:page * page_size]
     items = [detail or {"uid": uid, "unavailable": True} for uid, detail in zip(page_users, details)]
     available = [detail for detail in all_details if detail]
     return {"host": host, "items": items, "query": query.strip(), "page": page,
-            "page_count": page_count, "total": total,
+            "page_size": page_size, "page_count": page_count, "total": total,
             "active_count": sum(1 for detail in available if not detail["suspended"]),
             "key_count_total": sum(detail["key_count"] for detail in available)}
 
 
-def _cached_inventory(cluster, query: str, page: int) -> dict:
-    key = f"{cluster.id}:{query}:{page}"
+def _cached_inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> dict:
+    key = f"{cluster.id}:{query}:{page}:{page_size}"
     return get_or_load(
         "s3-users",
         key,
-        lambda: _inventory(cluster, query, page),
+        lambda: _inventory(cluster, query, page, page_size),
         stale_ttl_seconds=7200,
     )
 
@@ -445,12 +446,13 @@ async def setting_execute(request: Request, user: str = Depends(require_login)):
 
 @router.get("/object-storage/users", response_class=HTMLResponse)
 async def users_page(request: Request, user: str = Depends(require_login),
-                     query: str = Query("", max_length=MAX_QUERY_LENGTH), page: int = Query(1, ge=1)):
+                     query: str = Query("", max_length=MAX_QUERY_LENGTH), page: int = Query(1, ge=1),
+                     page_size: int = Query(PAGE_SIZE, ge=1, le=100)):
     clusters, cluster = cluster_selection(request)
-    inventory = {"items": [], "query": query.strip(), "page": page, "page_count": 1, "total": 0}
+    inventory = {"items": [], "query": query.strip(), "page": page, "page_size": PAGE_SIZE, "page_count": 1, "total": 0}
     error = None
     try:
-        inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page)
+        inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page, page_size)
     except RgwLogError as exc:
         error = str(exc)
     return templates.TemplateResponse(request, "object_storage_users.html", {

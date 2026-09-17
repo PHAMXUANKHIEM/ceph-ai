@@ -48,7 +48,7 @@
           </tbody></table>
           <div id="auth-user-empty" class="auth-user-empty" hidden>Không tìm thấy Auth User phù hợp.</div>
         </div>
-        <footer class="auth-users-footer"><span id="auth-user-page-status" role="status" aria-live="polite">Trang 1 / 1</span><label>Rows <select id="auth-user-page-size" aria-label="Số user mỗi trang"><option value="15" selected>15</option><option value="30">30</option><option value="50">50</option></select></label><button type="button" class="btn btn-ghost btn-sm" id="auth-user-prev" aria-label="Trang trước">← Trước</button><button type="button" class="btn btn-ghost btn-sm" id="auth-user-next" aria-label="Trang sau">Sau →</button></footer>
+        <footer class="dashboard-pagination auth-users-footer"><span id="auth-user-page-summary" class="pagination-summary" data-mobile-summary="0 / 0">Hiển thị 0–0 / 0 mục</span><div class="pagination-controls"><button type="button" class="pagination-prev" id="auth-user-prev" aria-label="Trang trước">‹</button><div id="auth-user-page-buttons" class="pagination-pages"></div><span id="auth-user-page-status" class="pagination-mobile-status" role="status" aria-live="polite">Trang 1/1</span><button type="button" class="pagination-next" id="auth-user-next" aria-label="Trang sau">›</button></div><label class="pagination-page-size">Mỗi trang <select id="auth-user-page-size" aria-label="Số user mỗi trang"><option selected>10</option><option>20</option><option>50</option><option>100</option></select></label></footer>
         {% else %}<div class="auth-user-empty">Cụm chưa có Auth User nào.</div>{% endif %}
       </section>
     </section>
@@ -100,10 +100,10 @@
             <tbody></tbody>
           </table>
         </div>
-        <div class="audit-filters" id="ceph-config-dump-pagination" hidden>
-          <button type="button" class="btn" id="ceph-config-dump-prev">Trang trước</button>
-          <span class="hint" id="ceph-config-dump-page-status" aria-live="polite"></span>
-          <button type="button" class="btn" id="ceph-config-dump-next">Trang sau</button>
+        <div class="dashboard-pagination" id="ceph-config-dump-pagination" hidden>
+          <span id="ceph-config-dump-summary" class="pagination-summary" data-mobile-summary="0 / 0">Hiển thị 0–0 / 0 mục</span>
+          <div class="pagination-controls"><button type="button" class="pagination-prev" id="ceph-config-dump-prev" aria-label="Trang trước">‹</button><div id="ceph-config-dump-page-buttons" class="pagination-pages"></div><span class="pagination-mobile-status" id="ceph-config-dump-page-status" aria-live="polite">Trang 1/1</span><button type="button" class="pagination-next" id="ceph-config-dump-next" aria-label="Trang sau">›</button></div>
+          <label class="pagination-page-size">Mỗi trang <select id="ceph-config-dump-page-size" aria-label="Số option mỗi trang"><option selected>10</option><option>20</option><option>50</option><option>100</option></select></label>
         </div>
       </div>
       {% endif %}
@@ -111,6 +111,7 @@
       </main>
   {% endif %}
   <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/pagination.js?v={{ static_version }}"></script>
   <script src="/static/openstack_auth_pool.js?v={{ static_version }}"></script>
   {% if active_view == 'create-user' %}<script src="/static/auth_user_create.js?v={{ static_version }}"></script>{% endif %}
 </body></html>

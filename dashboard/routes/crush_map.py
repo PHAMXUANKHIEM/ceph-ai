@@ -309,6 +309,7 @@ async def crush_map_history_api(
             ),
             CrushStructureSnapshot.diff_json.isnot(None)
         )
+        total = query.count()
         if before:
             before_ts, _, before_id = before.rpartition("|")
             try:
@@ -347,7 +348,7 @@ async def crush_map_history_api(
             )
 
         next_before = f"{rows[-1].created_at.isoformat()}|{rows[-1].id}" if len(items) == limit else None
-        return {"items": items, "next_before": next_before}
+        return {"items": items, "next_before": next_before, "total": total}
 
 
 @router.post("/api/crush-map/history/purge")

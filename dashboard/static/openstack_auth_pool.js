@@ -18,12 +18,15 @@
   var editorToggle = document.getElementById("ceph-config-editor-toggle");
   var editorContent = document.getElementById("ceph-config-editor-content");
   var pagination = document.getElementById("ceph-config-dump-pagination");
+  var previousButton = document.getElementById("ceph-config-dump-prev");
+  var nextButton = document.getElementById("ceph-config-dump-next");
+  var pageSummary = document.getElementById("ceph-config-dump-summary");
   var pageStatus = document.getElementById("ceph-config-dump-page-status");
   var pageSizeSelect = document.getElementById("ceph-config-dump-page-size");
   var pageButtons = document.getElementById("ceph-config-dump-page-buttons");
   if (!panel || !loadButton || !filterInput || !levelFilter || !countBadge || !tableWrap || !tableBody ||
       !status || !error || !form || !actionInput || !sectionInput || !nameInput || !valueInput ||
-      !submitButton || !resetButton || !editorToggle || !editorContent || !pagination || !pageStatus ||
+      !submitButton || !resetButton || !editorToggle || !editorContent || !pagination || !previousButton || !nextButton || !pageStatus || !pageSummary ||
       !pageSizeSelect || !pageButtons) return;
 
   var rows = [];
@@ -152,12 +155,11 @@
 
   function renderPagination(pageCount) {
     pageButtons.replaceChildren();
-    if (pageCount <= 1) return;
-    appendPageButton("◀", Math.max(1, currentPage - 1), currentPage <= 1, false, "Trang trước");
+    previousButton.disabled = currentPage <= 1;
+    nextButton.disabled = currentPage >= pageCount;
     pageItems(pageCount).forEach(function (page) {
       appendPageButton(page, page, false, page === currentPage);
     });
-    appendPageButton("▶", Math.min(pageCount, currentPage + 1), currentPage >= pageCount, false, "Trang sau");
   }
 
   function render() {
@@ -249,7 +251,12 @@
     pagination.hidden = !visible.length;
     countBadge.textContent = rows.length + " options";
     var last = Math.min(first + pageRows.length, visible.length);
-    pageStatus.textContent = "Hiển thị " + (visible.length ? first + 1 : 0) + "–" + last + " / " + visible.length + " options";
+    var summary = "Hiển thị " + (visible.length ? first + 1 : 0) + "–" + last + " / " + visible.length + " mục";
+    pageSummary.textContent = summary;
+    pageSummary.dataset.mobileSummary = (visible.length ? first + 1 : 0) + "–" + last + " / " + visible.length;
+    pageStatus.textContent = "Trang " + currentPage + "/" + pageCount;
+    previousButton.disabled = currentPage <= 1;
+    nextButton.disabled = currentPage >= pageCount;
     renderPagination(pageCount);
     if (visible.length) status.textContent = "Đang hiển thị " + visible.length + " option phù hợp.";
     else status.textContent = query || selectedLevel ? "Không có option phù hợp." : "Cụm không trả về option nào.";
@@ -291,6 +298,8 @@
   filterInput.addEventListener("input", function () { currentPage = 1; render(); });
   levelFilter.addEventListener("change", function () { currentPage = 1; render(); });
   pageSizeSelect.addEventListener("change", function () { currentPage = 1; render(); });
+  previousButton.addEventListener("click", function () { if (currentPage > 1) { currentPage -= 1; render(); } });
+  nextButton.addEventListener("click", function () { currentPage += 1; render(); });
 
   resetButton.addEventListener("click", function () {
     form.reset();
@@ -309,3 +318,46 @@
   setEditorOpen(false);
   loadConfig();
 })();
+
+// Auth-Pool user inventory uses the same pagination contract as every other
+// dashboard list. The table is already server-rendered, so filtering stays
+// local and does not disturb the capability forms above it.
+(function () {
+  var table = document.getElementById("auth-user-table");
+  if (!table) return;
+  var rows = Array.prototype.slice.call(table.querySelectorAll("tbody tr"));
+  var previous = document.getElementById("auth-user-prev");
+  var next = document.getElementById("auth-user-next");
+  var pages = document.getElementById("auth-user-page-buttons");
+  var status = document.getElementById("auth-user-page-status");
+  var summary = document.getElementById("auth-user-page-summary");
+  var sizeSelect = document.getElementById("auth-user-page-size");
+  var search = document.getElementById("auth-user-search");
+  var kind = document.getElementById("auth-user-type");
+  if (!previous || !next || !pages || !status || !summary || !sizeSelect) return;
+  var page = 1;
+  function render() {
+    var query = String(search && search.value || "").trim().toLowerCase();
+    var wanted = String(kind && kind.value || "");
+    var visible = rows.filter(function (row) {
+      return (!query || String(row.dataset.authUser || "").indexOf(query) !== -1) && (!wanted || row.dataset.authKind === wanted);
+    });
+    var pageSize = Number(sizeSelect.value) || 10;
+    var pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
+    page = Math.min(page, pageCount);
+    var first = (page - 1) * pageSize;
+    var last = Math.min(first + pageSize, visible.length);
+    rows.forEach(function (row) { row.hidden = visible.indexOf(row) < first || visible.indexOf(row) >= last; });
+    var text = "Hiển thị " + (visible.length ? first + 1 : 0) + "–" + last + " / " + visible.length + " mục";
+    summary.textContent = text; summary.dataset.mobileSummary = (visible.length ? first + 1 : 0) + "–" + last + " / " + visible.length;
+    status.textContent = "Trang " + page + "/" + pageCount;
+    previous.disabled = page <= 1; next.disabled = page >= pageCount;
+    if (window.DashboardPagination) window.DashboardPagination.renderPages(pages, page, pageCount, function (target) { page = target; render(); });
+  }
+  previous.addEventListener("click", function () { if (page > 1) { page -= 1; render(); } });
+  next.addEventListener("click", function () { page += 1; render(); });
+  sizeSelect.addEventListener("change", function () { page = 1; render(); });
+  if (search) search.addEventListener("input", function () { page = 1; render(); });
+  if (kind) kind.addEventListener("change", function () { page = 1; render(); });
+  render();
+}());

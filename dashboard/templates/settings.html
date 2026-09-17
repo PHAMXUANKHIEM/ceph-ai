@@ -185,10 +185,10 @@
           </td>
         </tr>{% endfor %}
         </tbody></table></div>
-        <nav class="action-policy-pagination" id="action-policy-pagination" aria-label="Phân trang hành động AI">
-          <button type="button" class="btn btn-secondary btn-sm" id="action-policy-page-previous">Trước</button>
-          <span id="action-policy-page-status" class="pagination-status" aria-live="polite">Trang 1 / 1</span>
-          <button type="button" class="btn btn-secondary btn-sm" id="action-policy-page-next">Sau</button>
+        <nav class="dashboard-pagination action-policy-pagination" id="action-policy-pagination" aria-label="Phân trang hành động AI">
+          <span id="action-policy-page-summary" class="pagination-summary" data-mobile-summary="0 / 0">Hiển thị 0–0 / 0 mục</span>
+          <div class="pagination-controls"><button type="button" class="pagination-prev" id="action-policy-page-previous" aria-label="Trang trước">‹</button><div id="action-policy-page-buttons" class="pagination-pages"></div><span id="action-policy-page-status" class="pagination-mobile-status" aria-live="polite">Trang 1/1</span><button type="button" class="pagination-next" id="action-policy-page-next" aria-label="Trang sau">›</button></div>
+          <label class="pagination-page-size">Mỗi trang <select id="action-policy-page-size" aria-label="Số hành động mỗi trang"><option selected>10</option><option>20</option><option>50</option><option>100</option></select></label>
         </nav>
       </div>
     </section>
@@ -1291,6 +1291,7 @@
     </section>
     </div>
   </main>
+  <script src="/static/pagination.js?v={{ static_version }}"></script>
   <script src="/static/settings.js?v={{ static_version }}-settings-v2"></script>
   <script src="/static/settings_navigation.js?v={{ static_version }}"></script>
   <script src="/static/settings_logs.js?v={{ static_version }}"></script>

@@ -332,11 +332,15 @@
     }
 
     function renderPageNumbers() {
+      if (window.DashboardPagination) {
+        window.DashboardPagination.renderPages(pageNumbers, historyPage, historyPages, function (targetPage) { historyPage = targetPage; loadHistory(); });
+        return;
+      }
       pageNumbers.replaceChildren();
       var start = Math.max(1, historyPage - 2), end = Math.min(historyPages, start + 4);
       start = Math.max(1, end - 4);
       for (var page = start; page <= end; page += 1) {
-        var button = document.createElement("button"); button.type = "button"; button.className = "bucket-audit-page-number" + (page === historyPage ? " is-active" : ""); button.textContent = String(page); button.setAttribute("aria-label", "Trang " + page); button.setAttribute("aria-current", page === historyPage ? "page" : "false");
+        var button = document.createElement("button"); button.type = "button"; button.className = "pagination-page-number bucket-audit-page-number" + (page === historyPage ? " is-active" : ""); button.textContent = String(page); button.setAttribute("aria-label", "Trang " + page); button.setAttribute("aria-current", page === historyPage ? "page" : "false");
         button.disabled = page === historyPage; button.addEventListener("click", (function (targetPage) { return function () { historyPage = targetPage; loadHistory(); }; })(page)); pageNumbers.appendChild(button);
       }
     }
@@ -359,7 +363,11 @@
       }).then(function (data) {
         renderHistoryRows(data.items || []); renderSummary(data); historyPages = data.pages || 1; historyPage = data.page || historyPage;
         document.getElementById("bah-status").textContent = data.total + " sự kiện · cập nhật gần thời gian thực";
-        document.getElementById("bah-total-label").textContent = data.total + " sự kiện";
+        var first = data.total ? ((historyPage - 1) * historyPageSize + 1) : 0;
+        var last = Math.min(historyPage * historyPageSize, data.total);
+        var summary = "Hiển thị " + first + "–" + last + " / " + data.total + " mục";
+        document.getElementById("bah-total-label").textContent = summary;
+        document.getElementById("bah-total-label").dataset.mobileSummary = first + "–" + last + " / " + data.total;
         document.getElementById("bah-page-label").textContent = "Trang " + historyPage + "/" + historyPages;
         document.getElementById("bah-prev").disabled = historyPage <= 1; document.getElementById("bah-next").disabled = historyPage >= historyPages;
         emptyEl.hidden = (data.items || []).length > 0; tableWrap.classList.toggle("is-empty", !(data.items || []).length); renderPageNumbers();

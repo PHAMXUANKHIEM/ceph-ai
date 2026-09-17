@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Placement Groups — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/pgs_redesign.css?v={{ static_version }}-v1">
 </head>
 <body>
   {% include "_nav.html" %}
@@ -60,10 +61,15 @@
         <table id="pg-list" class="pg-table"><thead><tr><th>PG ID</th><th>State</th><th>Pool</th><th>OSD set</th><th class="num">Primary</th><th>Last scrub</th></tr></thead><tbody></tbody></table>
         <div id="pg-filter-empty" class="empty-state pg-filter-empty" hidden>Không tìm thấy Placement Group phù hợp.</div>
       </div>
-      <div id="pg-pagination" class="pg-pagination" aria-label="Phân trang Placement Groups">
-        <button id="pg-page-prev" type="button" class="btn btn-ghost btn-sm" aria-label="Trang trước">← Trước</button><span id="pg-page-status" class="pagination-status" role="status" aria-live="polite">Trang 1 / 1</span><button id="pg-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Sau →</button>
-        <label class="pg-page-size">Rows <select id="pg-page-size" aria-label="Số PG mỗi trang"><option value="10">10</option><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="all">All</option></select></label>
-        <label class="pg-page-jump">Go to page <input id="pg-page-input" type="number" min="1" value="1" inputmode="numeric" aria-label="Nhảy tới trang"></label>
+      <div id="pg-pagination" class="dashboard-pagination pg-pagination" aria-label="Phân trang Placement Groups">
+        <span id="pg-filter-result-pagination" class="pagination-summary" data-mobile-summary="0 / 0">Hiển thị 0–0 / 0 mục</span>
+        <div class="pagination-controls">
+          <button id="pg-page-prev" type="button" class="pagination-prev" aria-label="Trang trước">‹</button>
+          <div id="pg-page-buttons" class="pagination-pages"></div>
+          <span id="pg-page-status" class="pagination-mobile-status" role="status" aria-live="polite">Trang 1 / 1</span>
+          <button id="pg-page-next" type="button" class="pagination-next" aria-label="Trang sau">›</button>
+        </div>
+        <label class="pagination-page-size">Mỗi trang <select id="pg-page-size" aria-label="Số PG mỗi trang"><option value="10">10</option><option value="20">20</option><option value="50" selected>50</option><option value="100">100</option></select></label>
       </div>
       {% elif cache_loading %}
       <div class="card-body"><div class="empty-state">Đang tải dữ liệu Placement Groups từ snapshot nền…</div></div>
@@ -77,6 +83,6 @@
   <aside id="pg-detail-panel" class="pg-detail-panel" hidden aria-labelledby="pg-detail-title" aria-modal="true" role="dialog"><header class="pg-detail-header"><div><span class="pg-eyebrow">PG DETAILS</span><h2 id="pg-detail-title">Placement Group</h2></div><button id="pg-detail-close" type="button" class="pg-detail-close" aria-label="Đóng chi tiết">×</button></header><div id="pg-detail-content" class="pg-detail-content"></div></aside>
 
   {% if pgs %}<script type="application/json" id="pg-bootstrap-data">{{ pgs|tojson }}</script>{% endif %}
-  <script src="/static/app.js?v={{ static_version }}"></script><script src="/static/pgs.js?v={{ static_version }}"></script>
+  <script src="/static/app.js?v={{ static_version }}"></script><script src="/static/pagination.js?v={{ static_version }}"></script><script src="/static/pgs.js?v={{ static_version }}"></script>
 </body>
 </html>

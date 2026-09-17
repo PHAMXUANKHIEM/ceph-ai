@@ -1079,11 +1079,14 @@
   var previous = document.getElementById("action-policy-page-previous");
   var next = document.getElementById("action-policy-page-next");
   var pageStatus = document.getElementById("action-policy-page-status");
+  var pageButtons = document.getElementById("action-policy-page-buttons");
+  var pageSummary = document.getElementById("action-policy-page-summary");
+  var pageSizeSelect = document.getElementById("action-policy-page-size");
   if (!table || !search || !classification || !source || !reset || !result || !empty ||
-      !pagination || !previous || !next || !pageStatus) return;
+      !pagination || !previous || !next || !pageStatus || !pageButtons || !pageSummary || !pageSizeSelect) return;
 
   var rows = Array.prototype.slice.call(table.querySelectorAll("tbody tr"));
-  var pageSize = 10;
+  var pageSize = Number(pageSizeSelect.value) || 10;
   var currentPage = 1;
   rows.sort(function (left, right) {
     return String(left.getAttribute("data-action-id") || "").localeCompare(
@@ -1107,12 +1110,16 @@
     var pageRows = filtered.slice(first, first + pageSize);
     rows.forEach(function (row) { row.hidden = pageRows.indexOf(row) === -1; });
     result.textContent = filtered.length + " / " + rows.length + " hành động";
+    var summaryText = "Hiển thị " + (filtered.length ? first + 1 : 0) + "–" + Math.min(first + pageSize, filtered.length) + " / " + filtered.length + " mục";
+    pageSummary.textContent = summaryText;
+    pageSummary.dataset.mobileSummary = (filtered.length ? first + 1 : 0) + "–" + Math.min(first + pageSize, filtered.length) + " / " + filtered.length;
     empty.hidden = filtered.length !== 0;
     if (tableWrap) tableWrap.hidden = filtered.length === 0;
     pagination.hidden = filtered.length === 0;
-    pageStatus.textContent = "Trang " + currentPage + " / " + pageCount;
+    pageStatus.textContent = "Trang " + currentPage + "/" + pageCount;
     previous.disabled = currentPage <= 1;
     next.disabled = currentPage >= pageCount;
+    if (window.DashboardPagination) window.DashboardPagination.renderPages(pageButtons, currentPage, pageCount, function (target) { currentPage = target; render(); });
     reset.disabled = !query && !wantedClassification && !wantedSource;
   }
   function resetPageAndRender() { currentPage = 1; render(); }
@@ -1126,6 +1133,7 @@
     currentPage += 1;
     render();
   });
+  pageSizeSelect.addEventListener("change", function () { pageSize = Number(pageSizeSelect.value) || 10; resetPageAndRender(); });
   reset.addEventListener("click", function () {
     search.value = "";
     classification.value = "";

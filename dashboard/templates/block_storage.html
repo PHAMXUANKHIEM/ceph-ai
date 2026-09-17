@@ -5,6 +5,7 @@
   <title>Block Storage — Ceph AIOps</title>
   {% if cache_loading %}<meta http-equiv="refresh" content="3">{% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/block_storage_overview.css?v={{ static_version }}">
 </head>
 <body>
   {% include "_nav.html" %}
@@ -82,10 +83,15 @@
         </table>
       </div>
       <div class="block-storage-filter-empty" id="block-storage-filter-empty" hidden>Không tìm thấy volume phù hợp với bộ lọc.</div>
-      <footer class="block-storage-pagination pagination" aria-label="Phân trang Block Storage">
-        <div class="block-storage-page-size"><span>{{ total_images }} volumes</span><label for="block-storage-page-size">Mỗi trang</label><select id="block-storage-page-size"><option value="10" {% if page_size == 10 %}selected{% endif %}>10</option><option value="25" {% if page_size == 25 %}selected{% endif %}>25</option><option value="50" {% if page_size == 50 %}selected{% endif %}>50</option></select></div>
-        <div class="block-storage-page-links">{% if page > 1 %}<a class="btn btn-ghost btn-sm" href="/block-storage?cluster={{ selected_cluster.id }}&page={{ page - 1 }}&page_size={{ page_size }}">← Trước</a>{% endif %}{% for number in range(1, total_pages + 1) %}<a class="block-storage-page-number{% if number == page %} is-active{% endif %}" href="/block-storage?cluster={{ selected_cluster.id }}&page={{ number }}&page_size={{ page_size }}">{{ number }}</a>{% endfor %}{% if page < total_pages %}<a class="btn btn-ghost btn-sm" href="/block-storage?cluster={{ selected_cluster.id }}&page={{ page + 1 }}&page_size={{ page_size }}">Sau →</a>{% endif %}</div>
-        <span class="block-storage-page-label">Trang {{ page }} / {{ total_pages }}</span>
+      <footer class="dashboard-pagination block-storage-pagination pagination" aria-label="Phân trang Block Storage">
+        <span class="pagination-summary" data-mobile-summary="{{ ((page - 1) * page_size + 1) if total_images else 0 }}–{{ [page * page_size, total_images]|min }} / {{ total_images }}">Hiển thị {{ ((page - 1) * page_size + 1) if total_images else 0 }}–{{ [page * page_size, total_images]|min }} / {{ total_images }} mục</span>
+        <div class="pagination-controls block-storage-page-links">
+          {% if page > 1 %}<a class="pagination-prev" aria-label="Trang trước" href="/block-storage?cluster={{ selected_cluster.id }}&amp;page={{ page - 1 }}&amp;page_size={{ page_size }}">‹</a>{% else %}<button class="pagination-prev" disabled aria-label="Trang trước">‹</button>{% endif %}
+          <div class="pagination-pages">{% for number in range(1, total_pages + 1) %}<a class="pagination-page-number{% if number == page %} is-active{% endif %}"{% if number == page %} aria-current="page"{% endif %} href="/block-storage?cluster={{ selected_cluster.id }}&amp;page={{ number }}&amp;page_size={{ page_size }}">{{ number }}</a>{% endfor %}</div>
+          <span class="pagination-mobile-status">Trang {{ page }} / {{ total_pages }}</span>
+          {% if page < total_pages %}<a class="pagination-next" aria-label="Trang sau" href="/block-storage?cluster={{ selected_cluster.id }}&amp;page={{ page + 1 }}&amp;page_size={{ page_size }}">›</a>{% else %}<button class="pagination-next" disabled aria-label="Trang sau">›</button>{% endif %}
+        </div>
+        <label class="pagination-page-size">Mỗi trang <select id="block-storage-page-size" onchange="window.location.href='/block-storage?cluster={{ selected_cluster.id }}&amp;page=1&amp;page_size=' + this.value" aria-label="Số volume mỗi trang">{% for size in [10, 20, 50, 100] %}<option value="{{ size }}"{% if page_size == size %} selected{% endif %}>{{ size }}</option>{% endfor %}</select></label>
       </footer>
     </section>
   </main>
@@ -105,6 +111,6 @@
     </div>
   </div>
   {% endif %}
-  <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/app.js?v={{ static_version }}"></script><script src="/static/pagination.js?v={{ static_version }}"></script>
   <script src="/static/block_storage.js?v={{ static_version }}"></script>
 </body></html>

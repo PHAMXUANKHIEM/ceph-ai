@@ -62,17 +62,14 @@
           </td>
         </tr>{% endfor %}</tbody>
       </table></div>
-      {% if cinder_backup_page_count > 1 %}
-      <nav class="cinder-backup-pagination" aria-label="Phân trang Cinder Volume Backups">
-        {% if cinder_backup_page > 1 %}<a class="btn btn-ghost btn-sm" href="{{ cinder_backup_base_path }}?{{ cinder_backup_page_queries[cinder_backup_page - 1] }}">← Trước</a>{% endif %}
-        {% for page_number in range(1, cinder_backup_page_count + 1) %}
-        <a class="btn btn-sm {% if page_number == cinder_backup_page %}btn-primary{% else %}btn-ghost{% endif %}" href="{{ cinder_backup_base_path }}?{{ cinder_backup_page_queries[page_number] }}">{{ page_number }}</a>
-        {% endfor %}
-        {% if cinder_backup_page < cinder_backup_page_count %}<a class="btn btn-ghost btn-sm" href="{{ cinder_backup_base_path }}?{{ cinder_backup_page_queries[cinder_backup_page + 1] }}">Sau →</a>{% endif %}
+      <nav class="dashboard-pagination cinder-backup-pagination" aria-label="Phân trang Cinder Volume Backups">
+        <span class="pagination-summary" data-mobile-summary="{{ ((cinder_backup_page - 1) * cinder_backup_page_size + 1) if cinder_backup_filtered else 0 }}–{{ [cinder_backup_page * cinder_backup_page_size, cinder_backup_filtered]|min }} / {{ cinder_backup_filtered }}">Hiển thị {{ ((cinder_backup_page - 1) * cinder_backup_page_size + 1) if cinder_backup_filtered else 0 }}–{{ [cinder_backup_page * cinder_backup_page_size, cinder_backup_filtered]|min }} / {{ cinder_backup_filtered }} mục</span>
+        <div class="pagination-controls">{% if cinder_backup_page > 1 %}<a class="pagination-prev" aria-label="Trang trước" href="{{ cinder_backup_base_path }}?{{ cinder_backup_page_queries[cinder_backup_page - 1] }}">‹</a>{% else %}<button class="pagination-prev" type="button" disabled aria-label="Trang trước">‹</button>{% endif %}<div class="pagination-pages">{% for page_number in range(1, cinder_backup_page_count + 1) %}<a class="pagination-page-number{% if page_number == cinder_backup_page %} is-active{% endif %}"{% if page_number == cinder_backup_page %} aria-current="page"{% endif %} href="{{ cinder_backup_base_path }}?{{ cinder_backup_page_queries[page_number] }}">{{ page_number }}</a>{% endfor %}</div><span class="pagination-mobile-status">Trang {{ cinder_backup_page }}/{{ cinder_backup_page_count }}</span>{% if cinder_backup_page < cinder_backup_page_count %}<a class="pagination-next" aria-label="Trang sau" href="{{ cinder_backup_base_path }}?{{ cinder_backup_page_queries[cinder_backup_page + 1] }}">›</a>{% else %}<button class="pagination-next" type="button" disabled aria-label="Trang sau">›</button>{% endif %}</div>
+        <label class="pagination-page-size">Mỗi trang <select onchange="window.location.href='{{ cinder_backup_base_path }}?{{ cinder_backup_list_query }}&amp;page=1&amp;page_size=' + this.value" aria-label="Số backup mỗi trang">{% for size in [10, 20, 50, 100] %}<option value="{{ size }}"{% if cinder_backup_page_size == size %} selected{% endif %}>{{ size }}</option>{% endfor %}</select></label>
       </nav>
-      {% endif %}
       {% else %}<p class="hint">Chưa có Cinder Volume Backup nào.</p>{% endif %}
     </section>
   </main>
+<script src="/static/pagination.js?v={{ static_version }}"></script>
 </body>
 </html>

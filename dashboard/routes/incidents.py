@@ -237,7 +237,13 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
         page = int(request.query_params.get("page", "1"))
     except (TypeError, ValueError):
         page = 1
-    page_data = alert_center.paginate_alert_groups(groups, page=page)
+    try:
+        page_size = int(request.query_params.get("page_size", "20"))
+    except (TypeError, ValueError):
+        page_size = 20
+    if page_size not in {10, 20, 50, 100}:
+        page_size = 20
+    page_data = alert_center.paginate_alert_groups(groups, page=page, page_size=page_size)
     filter_query = urlencode({
         "cluster": selected_cluster.id,
         "status": status_filter,
@@ -254,6 +260,7 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
         "total_groups": page_data["total_groups"],
         "total_pages": page_data["total_pages"],
         "page": page_data["page"],
+        "page_size": page_data["page_size"],
         "total_incidents": len(incidents),
         "active_groups": sum(1 for group in groups if group["is_active"]),
         "status_filter": status_filter,

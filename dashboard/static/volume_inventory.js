@@ -16,6 +16,9 @@
   var prev = document.getElementById("volume-inventory-prev");
   var next = document.getElementById("volume-inventory-next");
   var pageStatus = document.getElementById("volume-inventory-page-status");
+  var pageButtons = document.getElementById("volume-inventory-page-buttons");
+  var pageSummary = document.getElementById("volume-inventory-summary");
+  var pageSizeSelect = document.getElementById("volume-inventory-page-size");
   var detail = document.getElementById("volume-inventory-detail");
   var createForm = document.getElementById("volume-create-form");
   var mutationResult = document.getElementById("volume-mutation-result");
@@ -24,7 +27,7 @@
   var overviewError = document.getElementById("volume-pool-overview-error");
   var healthChecks = document.getElementById("volume-pool-health-checks");
   var state = { page: 1, pages: 1, loading: false };
-  var PAGE_SIZE = 10;
+  var PAGE_SIZE = Number(pageSizeSelect && pageSizeSelect.value) || 10;
 
   function bytes(value) {
     var n = Number(value || 0);
@@ -106,9 +109,15 @@
     state.page = data.page;
     state.pages = data.pages;
     pager.hidden = data.total <= data.page_size;
-    pageStatus.textContent = "Trang " + data.page + " / " + data.pages + " · " + data.total + " volumes · 10 dòng/trang";
+    var first = data.total ? ((data.page - 1) * data.page_size + 1) : 0;
+    var last = Math.min(data.page * data.page_size, data.total);
+    var summary = "Hiển thị " + first + "–" + last + " / " + data.total + " mục";
+    pageSummary.textContent = summary;
+    pageSummary.dataset.mobileSummary = first + "–" + last + " / " + data.total;
+    pageStatus.textContent = "Trang " + data.page + " / " + data.pages;
     prev.disabled = data.page <= 1;
     next.disabled = data.page >= data.pages;
+    if (window.DashboardPagination) window.DashboardPagination.renderPages(pageButtons, data.page, data.pages, function (page) { state.page = page; loadInventory(); });
     freshness.textContent = "Cập nhật live: " + new Date(data.collected_at).toLocaleString("vi-VN") +
       " · Used " + bytes(data.summary.used_size) + " / " + bytes(data.summary.provisioned_size) +
       " (" + percent(data.summary.used_size, data.summary.provisioned_size, data.summary.used_percent) + ")";
@@ -132,6 +141,8 @@
       })
       .finally(function () { state.loading = false; });
   }
+
+  if (pageSizeSelect) pageSizeSelect.addEventListener("change", function () { PAGE_SIZE = Number(pageSizeSelect.value) || 10; state.page = 1; loadInventory(); });
 
   function addListSection(root, title, items, formatter) {
     var heading = document.createElement("h3");

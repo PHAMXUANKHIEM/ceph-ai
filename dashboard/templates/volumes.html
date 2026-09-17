@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ 'Trash' if selected_view == 'trash' else ('Performance' if selected_view == 'performance' else 'Volumes') }} — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  {% if selected_view == 'performance' %}<link rel="stylesheet" href="/static/volume_performance_picker.css?v={{ static_version }}">{% endif %}
 </head>
 <body>
   {% include "_nav.html" %}
@@ -87,10 +88,15 @@
             <tbody><tr><td colspan="7" class="hint">Đang tải inventory…</td></tr></tbody>
           </table>
         </div>
-        <div class="trash-pagination volume-inventory-pagination" id="volume-inventory-pagination" hidden>
-          <button type="button" class="btn btn-ghost btn-sm" id="volume-inventory-prev">← Trang trước</button>
-          <span id="volume-inventory-page-status" class="pagination-status"></span>
-          <button type="button" class="btn btn-ghost btn-sm" id="volume-inventory-next">Trang sau →</button>
+        <div class="dashboard-pagination trash-pagination volume-inventory-pagination" id="volume-inventory-pagination" hidden>
+          <span id="volume-inventory-summary" class="pagination-summary" data-mobile-summary="0 / 0">Hiển thị 0–0 / 0 mục</span>
+          <div class="pagination-controls">
+            <button type="button" class="pagination-prev" id="volume-inventory-prev" aria-label="Trang trước">‹</button>
+            <div id="volume-inventory-page-buttons" class="pagination-pages"></div>
+            <span id="volume-inventory-page-status" class="pagination-mobile-status" aria-live="polite"></span>
+            <button type="button" class="pagination-next" id="volume-inventory-next" aria-label="Trang sau">›</button>
+          </div>
+          <label class="pagination-page-size">Mỗi trang <select id="volume-inventory-page-size" aria-label="Số volume mỗi trang"><option selected>10</option><option>20</option><option>50</option><option>100</option></select></label>
         </div>
         <div id="volume-inventory-detail" class="empty-node-state" hidden></div>
       </div>
@@ -115,15 +121,25 @@
           </div>
           <label class="performance-step performance-volume-step">
             <span class="performance-step-label">VOLUME</span>
-            <input
-              type="text"
-              id="volume-search-input"
-              list="volume-datalist"
-              placeholder="Tìm theo tên hoặc ID"
-              autocomplete="off"
-            >
+            <div class="volume-combobox" id="volume-combobox">
+              <div class="volume-combobox-control">
+                <input
+                  type="text"
+                  id="volume-search-input"
+                  placeholder="Tìm theo tên hoặc ID"
+                  autocomplete="off"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-expanded="false"
+                  aria-controls="volume-dropdown-options"
+                >
+                <button type="button" class="volume-combobox-toggle" id="volume-combobox-toggle" aria-label="Mở danh sách volume" aria-expanded="false">▼</button>
+              </div>
+              <div class="volume-dropdown" id="volume-dropdown" hidden>
+                <div class="volume-dropdown-options" id="volume-dropdown-options" role="listbox" aria-label="Danh sách volume"></div>
+              </div>
+            </div>
           </label>
-          <datalist id="volume-datalist"></datalist>
           <button type="submit" class="btn btn-primary btn-sm">Xem hiệu năng</button>
           <button type="button" class="btn btn-ghost btn-sm performance-clear-btn" id="volume-clear-btn" hidden>Xoá</button>
         </form>
@@ -309,10 +325,15 @@
           </tr>{% endfor %}</tbody>
         </table></div>
         <div id="trash-filter-empty" class="empty-state trash-filter-empty" hidden>Không tìm thấy Trash có Volume ID phù hợp.</div>
-        <div id="trash-pagination" class="trash-pagination" aria-label="Phân trang Trash">
-          <button id="trash-page-prev" type="button" class="btn btn-ghost btn-sm" aria-label="Trang trước">← Trang trước</button>
-          <span id="trash-page-status" class="pagination-status" role="status" aria-live="polite">Trang 1 / {{ ((trash_entries|length + 9) // 10) }}</span>
-          <div class="pagination-end"><button id="trash-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Trang sau →</button><span class="trash-page-size">10 Trash mỗi trang</span></div>
+        <div id="trash-pagination" class="dashboard-pagination trash-pagination" aria-label="Phân trang Trash">
+          <span id="trash-page-summary" class="pagination-summary" data-mobile-summary="0 / 0">Hiển thị 0–0 / 0 mục</span>
+          <div class="pagination-controls">
+            <button id="trash-page-prev" type="button" class="pagination-prev" aria-label="Trang trước">‹</button>
+            <div id="trash-page-buttons" class="pagination-pages"></div>
+            <span id="trash-page-status" class="pagination-mobile-status" role="status" aria-live="polite">Trang 1 / 1</span>
+            <button id="trash-page-next" type="button" class="pagination-next" aria-label="Trang sau">›</button>
+          </div>
+          <label class="pagination-page-size">Mỗi trang <select id="trash-page-size" aria-label="Số volume mỗi trang"><option selected>10</option><option>20</option><option>50</option><option>100</option></select></label>
         </div>
         {% else %}<p class="hint">Trash của pool <code>{{ selected_pool }}</code> đang trống.</p>{% endif %}
       </div>
@@ -327,11 +348,11 @@
     </div>
     </div>
   </main>
-  {% if selected_view == "trash" %}<script src="/static/trash.js?v={{ static_version }}"></script>{% endif %}
+  {% if selected_view == "trash" %}<script src="/static/pagination.js?v={{ static_version }}"></script><script src="/static/trash.js?v={{ static_version }}"></script>{% endif %}
 
   <script src="/static/app.js?v={{ static_version }}"></script>
   {% if selected_view == 'performance' %}<script src="/static/volumes.js?v={{ static_version }}"></script>{% endif %}
-  {% if selected_view == 'volumes' %}<script src="/static/volume_inventory.js?v={{ static_version }}"></script>{% endif %}
+  {% if selected_view == 'volumes' %}<script src="/static/pagination.js?v={{ static_version }}"></script><script src="/static/volume_inventory.js?v={{ static_version }}"></script>{% endif %}
   {% if selected_view == 'performance' %}<script src="/static/vm_perf.js?v={{ static_version }}"></script>{% endif %}
 </body>
 </html>
