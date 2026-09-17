@@ -52,7 +52,8 @@
         <h2 id="trash-summary-title"><code>{{ selected_pool }}</code></h2>
       </div>
       <div class="trash-summary-stat"><span>Volume</span><strong>{{ summary.entry_count if summary and summary.entry_count is not none else '—' }}</strong></div>
-      <div class="trash-summary-stat"><span>Dung lượng</span><strong>{{ summary.total_used_size_human if summary else '—' }}</strong></div>
+      <div class="trash-summary-stat"><span>Đã dùng</span><strong>{{ summary.total_used_size_human if summary else '—' }}</strong></div>
+      <div class="trash-summary-stat"><span>Dung lượng cấp phát</span><strong>{{ summary.total_provisioned_size_human if summary else '—' }}</strong></div>
       <div class="trash-summary-stat"><span>Sắp hết TTL <small>≤ 7 ngày</small></span><strong class="{% if summary and summary.expiring_count %}is-warning{% endif %}">{{ summary.expiring_count if summary and summary.expiring_count is not none else '—' }}</strong></div>
       <div class="trash-summary-stat"><span>Đang bảo vệ</span><strong>{{ summary.protected_count if summary and summary.protected_count is not none else '—' }}</strong></div>
       <div class="trash-summary-actions">

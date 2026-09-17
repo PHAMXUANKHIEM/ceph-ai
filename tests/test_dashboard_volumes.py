@@ -2265,3 +2265,47 @@ def test_volume_history_chart_hides_empty_state_until_a_volume_is_selected():
     assert 'id="volume-chart-empty"' in markup
     assert 'id="volume-chart-stack" hidden' in markup
     assert ".empty-node-state[hidden], .metrics-stack[hidden] { display: none; }" in stylesheet
+
+
+def test_trash_summary_sums_what_it_knows_instead_of_blanking_the_pool(
+    dashboard_client, monkeypatch
+):
+    """Một image bị `rbd trash mv` từ CLI không bao giờ có snapshot usage.
+    Trước đây chỉ một mục như vậy đủ làm tổng của CẢ pool thành '—', che mất
+    con số thật của mọi mục còn lại."""
+    _configure_pools(monkeypatch)
+    entries = [
+        {"id": "aaa", "name": "do-dashboard", "deletion_time": "2026-07-28 10:00:00",
+         "status": "expired", "size_bytes": None, "used_size_bytes": None},
+        {"id": "bbb", "name": "do-cli", "deletion_time": "2026-07-28 10:00:00",
+         "status": "expired", "size_bytes": None, "used_size_bytes": None},
+    ]
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash",
+        lambda pool, *, include_capacity=True: entries,
+    )
+    with db_module.SessionLocal() as session:
+        cluster_id = session.query(Cluster).filter_by(is_default=True).one().id
+        session.add(RbdTrashUsage(
+            cluster_id=cluster_id, pool="vms", trash_id="aaa", image="do-dashboard",
+            provisioned_size_bytes=10 * 1024 ** 3, used_size_bytes=268435456,
+            used_percent=2.5, observed_at=datetime.utcnow(),
+        ))
+        session.commit()
+    _login(dashboard_client)
+
+    body = " ".join(dashboard_client.get("/trash?pool=vms").text.split())
+
+    assert "256.0 MiB + 1 chưa rõ" in body
+    # provisioned_size_bytes được lưu sẵn trong snapshot nhưng trước đây
+    # không bao giờ được đọc, nên cột này vĩnh viễn là '—'.
+    assert "10.0 GiB + 1 chưa rõ" in body
+
+
+def test_partial_total_reports_the_missing_count():
+    assert volumes_route._partial_total([10, 20]) == (30, 0)
+    assert volumes_route._partial_total([10, None]) == (10, 1)
+    assert volumes_route._partial_total([None, None]) == (None, 2)
+    # Pool rỗng = 0 byte thật, không phải "chưa đo được".
+    assert volumes_route._partial_total([]) == (0, 0)
+    assert volumes_route._format_partial_bytes(None, 3) == "—"

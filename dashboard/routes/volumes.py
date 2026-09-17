@@ -107,8 +107,18 @@ def _rbd_pools_for_request(request: Request) -> list[str]:
 
 
 def _cached_rbd_trash(cluster, pool: str) -> list[dict]:
+    """Trash listing for the page, including measured capacity.
+
+    The page is the one caller that must show real numbers, and it only runs
+    once an operator has picked a pool, behind this cache. Preflight paths
+    keep using _query_rbd_trash_fast: they match Trash IDs and never render a
+    size, so they must not pay for the scan.
+    """
+
     def load_trash() -> list[dict]:
-        return _query_rbd_trash_fast(cluster, pool)
+        query = ceph_client.query_rbd_trash if cluster.is_default else ceph_client.query_rbd_trash_with
+        args = (pool,) if cluster.is_default else (pool, *cluster_connection(cluster))
+        return query(*args)
 
     return get_cached_ceph_query(
         "rbd-trash", f"{cluster.id}:{pool}", load_trash,
@@ -427,8 +437,10 @@ def _volumes_page_context(
                     "expiring_count": None,
                     "total_used_size_bytes": None,
                     "total_used_size_human": "—",
+                    "total_used_size_unknown": 0,
                     "total_provisioned_size_bytes": None,
                     "total_provisioned_size_human": "—",
+                    "total_provisioned_size_unknown": 0,
                     "error": None,
                 }
                 for trash_pool in pools
@@ -465,8 +477,10 @@ def _volumes_page_context(
                         "expiring_count": None,
                         "total_used_size_bytes": None,
                         "total_used_size_human": "—",
+                        "total_used_size_unknown": 0,
                         "total_provisioned_size_bytes": None,
                         "total_provisioned_size_human": "—",
+                        "total_provisioned_size_unknown": 0,
                         "error": str(result),
                     }
                 )
@@ -478,22 +492,24 @@ def _volumes_page_context(
                 )
                 for row in rows:
                     usage = usage_by_id.get(str(row.get("id")))
-                    if row.get("used_size_bytes") is None and usage is not None:
+                    if usage is None:
+                        continue
+                    if row.get("used_size_bytes") is None:
                         row["used_size_bytes"] = usage.used_size_bytes
+                    # The same snapshot already carries the logical size, and
+                    # the fast listing never fills it (include_capacity=False),
+                    # so without this the column is permanently "—" even
+                    # though the number is sitting in the database.
+                    if row.get("size_bytes") is None:
+                        row["size_bytes"] = usage.provisioned_size_bytes
                 retention_rows = [_trash_retention(dict(row)) for row in rows]
                 protected_count = sum(1 for retention in retention_rows if retention["retention_kind"] == "ceph_protected")
                 expiring_count = sum(1 for retention in retention_rows if retention.get("expiring_soon"))
-                used_sizes = [row.get("used_size_bytes") for row in rows]
-                total_used_size_bytes = (
-                    sum(max(0, int(value)) for value in used_sizes)
-                    if all(value is not None for value in used_sizes)
-                    else None
+                total_used_size_bytes, used_unknown = _partial_total(
+                    [row.get("used_size_bytes") for row in rows]
                 )
-                provisioned_sizes = [row.get("size_bytes") for row in rows]
-                total_provisioned_size_bytes = (
-                    sum(max(0, int(value)) for value in provisioned_sizes)
-                    if all(value is not None for value in provisioned_sizes)
-                    else None
+                total_provisioned_size_bytes, provisioned_unknown = _partial_total(
+                    [row.get("size_bytes") for row in rows]
                 )
                 trash_pool_summaries.append(
                     {
@@ -503,9 +519,13 @@ def _volumes_page_context(
                         "protected_count": protected_count,
                         "expiring_count": expiring_count,
                         "total_used_size_bytes": total_used_size_bytes,
-                        "total_used_size_human": _format_optional_bytes(total_used_size_bytes),
+                        "total_used_size_human": _format_partial_bytes(total_used_size_bytes, used_unknown),
+                        "total_used_size_unknown": used_unknown,
                         "total_provisioned_size_bytes": total_provisioned_size_bytes,
-                        "total_provisioned_size_human": _format_optional_bytes(total_provisioned_size_bytes),
+                        "total_provisioned_size_human": _format_partial_bytes(
+                            total_provisioned_size_bytes, provisioned_unknown
+                        ),
+                        "total_provisioned_size_unknown": provisioned_unknown,
                         "error": None,
                     }
                 )
@@ -569,6 +589,34 @@ def _format_bytes(value: int | float) -> str:
 
 def _format_optional_bytes(value: int | float | None) -> str:
     return "—" if value is None else _format_bytes(value)
+
+
+def _partial_total(values: list) -> tuple[int | None, int]:
+    """Sum the entries we do know and report how many we do not.
+
+    Blanking a pool's whole total because one entry lacks a usage snapshot
+    hid the real figure for every other entry — and an image moved to Trash
+    from the CLI never gets a snapshot, so that was the normal case, not the
+    edge case. Callers must render the unknown count beside the sum so a
+    partial total is never mistaken for a complete one.
+    """
+    if not values:
+        # A Trash pool with no entries really does hold zero bytes. Returning
+        # None here would render "—", claiming we could not measure it.
+        return 0, 0
+    known = [value for value in values if value is not None]
+    unknown = len(values) - len(known)
+    if not known:
+        return None, unknown
+    return sum(max(0, int(value)) for value in known), unknown
+
+
+def _format_partial_bytes(total: int | None, unknown: int) -> str:
+    if total is None:
+        return "—"
+    if unknown:
+        return f"{_format_bytes(total)} + {unknown} chưa rõ"
+    return _format_bytes(total)
 
 
 def _trash_retention(entry: dict, *, now: datetime | None = None) -> dict:

@@ -340,9 +340,26 @@ def _normalize_rbd_inventory(payload: dict | list) -> list[RbdInventoryEntry]:
     if not isinstance(rows, list):
         logger.warning("query_rbd_inventory: unexpected rbd du response shape")
         return []
+    # `rbd du` emits one row per snapshot and then one row for the head image,
+    # all sharing the same `name`. Treating a snapshot row as an image
+    # multiplies every total (a 10 GiB image with two snapshots reported 30 GiB
+    # provisioned) and makes query_rbd_image_usage's `next(... name == image)`
+    # return the FIRST row — a snapshot's used_size, not the image's. This is
+    # the same guard dashboard/routes/block_storage.py::_image_rows already
+    # applies to `rbd ls --long`; the two normalizers must not disagree.
+    snapshot_counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("snapshot") is None:
+            continue
+        snapshot_name = row.get("name") or row.get("image")
+        if snapshot_name:
+            key = str(snapshot_name)
+            snapshot_counts[key] = snapshot_counts.get(key, 0) + 1
     result: list[RbdInventoryEntry] = []
     for row in rows:
         if not isinstance(row, dict):
+            continue
+        if row.get("snapshot") is not None:
             continue
         name = row.get("name") or row.get("image")
         if not name:
@@ -350,6 +367,15 @@ def _normalize_rbd_inventory(payload: dict | list) -> list[RbdInventoryEntry]:
         snapshots = row.get("snapshots")
         provisioned_size = _as_int(row.get("provisioned_size") or row.get("size"))
         used_size = _as_int(row.get("used_size"))
+        # Prefer whatever the payload states explicitly; only fall back to the
+        # snapshot rows we just filtered out, which is the sole source `rbd du`
+        # actually gives us for this count.
+        if isinstance(snapshots, list):
+            snapshot_count = len(snapshots)
+        elif row.get("snapshot_count") is not None:
+            snapshot_count = _as_int(row.get("snapshot_count"))
+        else:
+            snapshot_count = snapshot_counts.get(str(name), 0)
         result.append(
             RbdInventoryEntry(
                 name=str(name),
@@ -357,7 +383,7 @@ def _normalize_rbd_inventory(payload: dict | list) -> list[RbdInventoryEntry]:
                 provisioned_size=provisioned_size,
                 used_size=used_size,
                 used_percent=round((used_size * 100.0 / provisioned_size), 2) if provisioned_size else 0.0,
-                snapshot_count=len(snapshots) if isinstance(snapshots, list) else _as_int(row.get("snapshot_count")),
+                snapshot_count=snapshot_count,
             )
         )
     return result
@@ -717,6 +743,11 @@ def query_rbd_trash(pool: str, *, include_capacity: bool = True) -> list[TrashEn
         pool,
         payload,
         lambda command: run_ceph_json_command(command)[1],
+        lambda command: run_ceph_text_command(command)[1],
+        lambda commands: run_ceph_json_batch_command_with(
+            get_mon_nodes(), settings.ceph_container_name, settings.ssh_user,
+            settings.ssh_key_path, settings.ceph_exec_mode, commands, parallel=True,
+        )[1],
         include_capacity=include_capacity,
     )
 
@@ -735,14 +766,82 @@ def query_rbd_trash_with(
         pool,
         payload,
         lambda command: run_ceph_json_command_with(*connection, command)[1],
+        lambda command: run_ceph_text_command_with(*connection, command)[1],
+        lambda commands: run_ceph_json_batch_command_with(
+            *connection, commands, parallel=True
+        )[1],
         include_capacity=include_capacity,
     )
+
+
+# One `rados ls` can hold this many object names in memory before the scan is
+# not worth its cost; above it the UI keeps showing "—" rather than stalling a
+# page render on a multi-million-object pool.
+_TRASH_USAGE_MAX_POOL_OBJECTS = 500_000
+
+
+def _trash_used_sizes(
+    pool: str,
+    images: list[tuple[str, str, int]],
+    query_json: Callable[[str], dict | list],
+    query_text: Callable[[str], str],
+) -> dict[str, int]:
+    """Allocated bytes per Trash ID, measured from the pool's RADOS objects.
+
+    No ``rbd`` subcommand except ``info`` accepts ``--image-id``, and a trashed
+    image is gone from the pool directory, so neither ``rbd du <pool>/<name>``
+    nor a pool-wide ``rbd du`` can see it (verified against Ceph 20.2, which
+    answers ``rbd: unrecognised option '--image-id'`` for both ``du`` and
+    ``diff``). What does work is counting the image's own
+    ``<block_name_prefix>.*`` objects: ``rbd du`` without ``--exact`` also
+    reports object-granular usage, so ``object_count * object_size``
+    reproduces its figure exactly — measured at 0.0% deviation against
+    ``rbd du`` on live images of the same pool.
+
+    Costs one ``rados ls`` for the whole pool regardless of how many entries
+    are in Trash, never one per entry.
+    """
+    if not images:
+        return {}
+    try:
+        stats = query_json("rados df")
+    except CephQueryError as exc:
+        logger.warning("_trash_used_sizes: cannot size pool %r before scanning: %s", pool, exc)
+        return {}
+    pools = stats.get("pools") if isinstance(stats, dict) else None
+    entry = next(
+        (row for row in pools if isinstance(row, dict) and row.get("name") == pool),
+        None,
+    ) if isinstance(pools, list) else None
+    object_count = _as_int(entry.get("num_objects")) if isinstance(entry, dict) else None
+    if object_count is None or object_count > _TRASH_USAGE_MAX_POOL_OBJECTS:
+        logger.info(
+            "_trash_used_sizes: skipping pool %r (%s objects, cap %s)",
+            pool, object_count, _TRASH_USAGE_MAX_POOL_OBJECTS,
+        )
+        return {}
+    try:
+        listing = query_text(f"rados -p {shlex.quote(pool)} ls")
+    except CephQueryError as exc:
+        logger.warning("_trash_used_sizes: rados ls failed for pool %r: %s", pool, exc)
+        return {}
+    names = listing.split()
+    used: dict[str, int] = {}
+    for trash_id, block_name_prefix, object_size in images:
+        if not block_name_prefix or object_size <= 0:
+            continue
+        prefix = f"{block_name_prefix}."
+        allocated = sum(1 for name in names if name.startswith(prefix))
+        used[trash_id] = allocated * object_size
+    return used
 
 
 def _normalize_rbd_trash(
     pool: str,
     payload: dict | list,
     query_json: Callable[[str], dict | list],
+    query_text: Callable[[str], str] | None = None,
+    query_batch: Callable[[list[str]], list[dict | list | None]] | None = None,
     *,
     include_capacity: bool = True,
 ) -> list[TrashEntry]:
@@ -754,6 +853,28 @@ def _normalize_rbd_trash(
         return []
 
     entries: list[TrashEntry] = []
+    measurable: list[tuple[str, str, int]] = []
+    # One `rbd info` per entry means one SSH round trip per entry, and under
+    # `cephadm shell` each costs ~10s — 78s measured for six entries. The same
+    # reads batched into a single remote shell cost one round trip total.
+    batched_infos: dict[str, dict] | None = None
+    if include_capacity and query_batch is not None:
+        listed_ids = [
+            str(entry["id"]) for entry in payload
+            if isinstance(entry, dict) and entry.get("id")
+        ]
+        if listed_ids:
+            frames = query_batch([
+                # The batch runner sends commands verbatim; unlike
+                # run_ceph_json_command it does not append the format flag.
+                f"rbd info --pool {shlex.quote(pool)} --image-id {shlex.quote(trash_id)} --format json"
+                for trash_id in listed_ids
+            ])
+            batched_infos = {
+                trash_id: frame
+                for trash_id, frame in zip(listed_ids, frames)
+                if isinstance(frame, dict)
+            }
     for entry in payload:
         if not isinstance(entry, dict):
             continue
@@ -778,8 +899,22 @@ def _normalize_rbd_trash(
                 )
             )
             continue
+        if batched_infos is not None:
+            info = batched_infos.get(str(trash_id))
+            if info is None:
+                # A frame with no JSON is the same restore/purge race the
+                # per-entry path tolerates below: the ID vanished between the
+                # listing and the metadata read.
+                logger.info(
+                    "query_rbd_trash: entry %s/%s unreadable during batch scan; skipping",
+                    pool, trash_id,
+                )
+                continue
+            entries_info = info
+        else:
+            entries_info = None
         try:
-            info = query_json(
+            info = entries_info if entries_info is not None else query_json(
                 f"rbd info --pool {shlex.quote(pool)} --image-id {shlex.quote(str(trash_id))}"
             )
         except CephQueryError as exc:
@@ -806,6 +941,14 @@ def _normalize_rbd_trash(
             provisioned_size = max(0, int(_as_float(info["size"])))
         except (TypeError, ValueError) as exc:
             raise CephQueryError(f"invalid logical size for trash image {pool}/{trash_id}") from exc
+        # `rbd info --image-id` is the one command that reaches a trashed
+        # image, and it hands over exactly what the RADOS object scan below
+        # needs to turn allocated objects into bytes.
+        measurable.append((
+            str(trash_id),
+            str(info.get("block_name_prefix") or ""),
+            _as_int(info.get("object_size")) or 0,
+        ))
         entries.append(
             TrashEntry(
                 id=str(trash_id),
@@ -813,13 +956,18 @@ def _normalize_rbd_trash(
                 deletion_time=str(entry.get("deleted_at") or ""),
                 status=str(entry.get("status") or ""),
                 size_bytes=provisioned_size,
-                # Ceph does not expose an exact per-image allocated byte
-                # count for an image that is already in Trash through the
-                # supported `rbd trash ls`/`rbd info` commands. `None` is
-                # intentional; the UI must show “—”, never a false number.
+                # Filled in below from the pool-wide object listing; stays
+                # None when that scan is unavailable or too expensive, and the
+                # UI must then show “—” rather than a false number.
                 used_size_bytes=None,
             )
         )
+    if query_text is not None:
+        used_by_id = _trash_used_sizes(pool, measurable, query_json, query_text)
+        for item in entries:
+            used = used_by_id.get(item["id"])
+            if used is not None:
+                item["used_size_bytes"] = used
     return entries
 
 

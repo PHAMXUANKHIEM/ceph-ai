@@ -1433,12 +1433,17 @@ def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
     )
 
     commands = []
+    batches = []
 
     def routed_exec(self, command, timeout=None):
         commands.append(command)
         return None, _FakeStream(json.dumps(next(responses))), _FakeStream("")
 
     monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_batch_command_with",
+        lambda *args, **kwargs: (batches.append(args[-1]), ("10.20.1.150", [next(responses)]))[1],
+    )
     monkeypatch.setattr(ceph_client, "run_ceph_text_command", lambda command: ("10.20.1.150", "268435456\n"))
     fake_ssh.behavior = {"10.20.1.150": {}}
 
@@ -1455,24 +1460,23 @@ def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
         }
     ]
     assert "rbd trash ls --long vms --format json" in commands[0]
-    assert "rbd info --pool vms --image-id 1234567890ab --format json" in commands[1]
+    # Mọi `rbd info` đi chung MỘT phiên SSH, không còn một round trip mỗi mục.
+    assert batches == [["rbd info --pool vms --image-id 1234567890ab --format json"]]
+    # `rados df` đo pool trước khi quét object; fake này không có pool khớp
+    # nên bỏ qua vòng quét và used_size_bytes giữ nguyên None.
+    assert "rados df --format json" in commands[1]
     assert len(commands) == 2
 
 
 def test_query_rbd_trash_rejects_info_without_size(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
-    responses = iter(
-        [
-            [{"id": "abc123", "name": "old-disk", "deleted_at": "x", "status": "y"}],
-            {"id": "abc123"},
-        ]
+    fake_ssh.behavior = {
+        "10.20.1.150": [{"id": "abc123", "name": "old-disk", "deleted_at": "x", "status": "y"}]
+    }
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_batch_command_with",
+        lambda *args, **kwargs: ("10.20.1.150", [{"id": "abc123"}]),
     )
-
-    def routed_exec(self, command, timeout=None):
-        return None, _FakeStream(json.dumps(next(responses))), _FakeStream("")
-
-    monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
-    fake_ssh.behavior = {"10.20.1.150": {}}
 
     with pytest.raises(CephQueryError, match="incomplete capacity metadata"):
         query_rbd_trash("vms")
@@ -1480,16 +1484,12 @@ def test_query_rbd_trash_rejects_info_without_size(fake_ssh, monkeypatch):
 
 def test_query_rbd_trash_skips_entry_removed_during_scan(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
-    calls = []
-
-    def routed_exec(self, command, timeout=None):
-        calls.append(command)
-        if len(calls) == 1:
-            return None, _FakeStream(json.dumps([{"id": "gone123", "name": "gone-disk"}])), _FakeStream("")
-        raise CephQueryError("All MON nodes failed: rbd: error opening image: (2) No such file or directory")
-
-    monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
-    fake_ssh.behavior = {"10.20.1.150": {}}
+    fake_ssh.behavior = {"10.20.1.150": [{"id": "gone123", "name": "gone-disk"}]}
+    # Frame rỗng (None) chính là cách batch báo lệnh con thất bại.
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_batch_command_with",
+        lambda *args, **kwargs: ("10.20.1.150", [None]),
+    )
 
     # The stale listing entry is a normal restore/purge race, not a pool-wide
     # Trash failure.
@@ -1505,22 +1505,20 @@ def test_query_rbd_trash_returns_empty_list_for_unexpected_shape(fake_ssh, monke
 
 def test_query_rbd_trash_skips_entries_without_an_id(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
-    responses = iter(
-        [
-            [
-                {"name": "no-id-entry"},  # no "id" key
-                {"id": "abc123", "name": "real-entry", "deleted_at": "x", "status": "y"},
-            ],
-            {"size": 4096, "block_name_prefix": "rbd_data.abc123", "object_size": 4096},
+    fake_ssh.behavior = {
+        "10.20.1.150": [
+            {"name": "no-id-entry"},  # no "id" key
+            {"id": "abc123", "name": "real-entry", "deleted_at": "x", "status": "y"},
         ]
+    }
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_batch_command_with",
+        lambda *args, **kwargs: (
+            "10.20.1.150",
+            [{"size": 4096, "block_name_prefix": "rbd_data.abc123", "object_size": 4096}],
+        ),
     )
-
-    def routed_exec(self, command, timeout=None):
-        return None, _FakeStream(json.dumps(next(responses))), _FakeStream("")
-
-    monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
     monkeypatch.setattr(ceph_client, "run_ceph_text_command", lambda command: ("10.20.1.150", "1024\n"))
-    fake_ssh.behavior = {"10.20.1.150": {}}
 
     entries = query_rbd_trash("vms")
 
@@ -1643,3 +1641,98 @@ def test_query_rbd_trash_raises_when_all_mon_nodes_fail(fake_ssh, monkeypatch):
 
     with pytest.raises(CephQueryError):
         query_rbd_trash("vms")
+
+
+def test_normalize_rbd_inventory_ignores_rbd_du_snapshot_rows():
+    """`rbd du` trả một dòng cho mỗi snapshot rồi mới tới dòng head image,
+    tất cả cùng `name`. Đếm dòng snapshot như một image sẽ nhân bội mọi con
+    số: image 10 GiB có 2 snapshot từng bị báo thành 30 GiB provisioned."""
+    GiB = 1024 ** 3
+    payload = {"images": [
+        {"name": "vol-a", "snapshot": "snap1", "provisioned_size": 10 * GiB, "used_size": 1 * GiB},
+        {"name": "vol-a", "snapshot": "snap2", "provisioned_size": 10 * GiB, "used_size": 1 * GiB},
+        {"name": "vol-a", "provisioned_size": 10 * GiB, "used_size": 7 * GiB},
+        {"name": "vol-b", "provisioned_size": 5 * GiB, "used_size": 2 * GiB},
+    ]}
+
+    rows = ceph_client._normalize_rbd_inventory(payload)
+
+    assert [row["name"] for row in rows] == ["vol-a", "vol-b"]
+    assert sum(row["provisioned_size"] for row in rows) == 15 * GiB
+    assert sum(row["used_size"] for row in rows) == 9 * GiB
+    # Những dòng snapshot bị lọc ra chính là nguồn duy nhất cho số đếm này.
+    assert rows[0]["snapshot_count"] == 2
+    assert rows[1]["snapshot_count"] == 0
+
+
+def test_query_rbd_image_usage_reports_the_head_image_not_its_first_snapshot(fake_ssh, monkeypatch):
+    """`next(... name == image)` từng lấy dòng ĐẦU TIÊN, tức là một snapshot."""
+    GiB = 1024 ** 3
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": {"images": [
+            {"name": "vol-a", "snapshot": "snap1", "provisioned_size": 10 * GiB, "used_size": 1 * GiB},
+            {"name": "vol-a", "provisioned_size": 10 * GiB, "used_size": 7 * GiB},
+        ]}
+    }
+
+    assert ceph_client.query_rbd_image_usage("vms", "vol-a")["used_size"] == 7 * GiB
+
+
+def test_query_rbd_trash_measures_used_size_from_the_pool_object_listing(fake_ssh, monkeypatch):
+    """Không lệnh `rbd` nào (trừ `info`) nhận `--image-id`, và image trong
+    Trash đã rời khỏi directory của pool, nên `rbd du` không với tới được.
+    Đếm object `<block_name_prefix>.*` cho ra đúng con số của `rbd du` —
+    `rbd du` không có `--exact` cũng tính theo object nguyên."""
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": [{"id": "abc123", "name": "old-disk", "deleted_at": "x", "status": "y"}]
+    }
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_batch_command_with",
+        lambda *args, **kwargs: (
+            "10.20.1.150",
+            [{"size": 40 * 1024 ** 3, "block_name_prefix": "rbd_data.abc123",
+              "object_size": 8 * 1024 ** 2}],
+        ),
+    )
+    listings = {
+        "rados df": {"pools": [{"name": "vms", "num_objects": 4}]},
+    }
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_command",
+        lambda command: ("10.20.1.150", listings[command]) if command in listings
+        else ("10.20.1.150", fake_ssh.behavior["10.20.1.150"]),
+    )
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_text_command",
+        lambda command: ("10.20.1.150", "\n".join([
+            "rbd_data.abc123.0000000000000000",
+            "rbd_data.abc123.0000000000000001",
+            "rbd_data.abc123.0000000000000002",
+            "rbd_data.other9.0000000000000000",   # image khác, không được tính
+        ])),
+    )
+
+    entries = ceph_client.query_rbd_trash("vms")
+
+    assert entries[0]["size_bytes"] == 40 * 1024 ** 3
+    assert entries[0]["used_size_bytes"] == 3 * 8 * 1024 ** 2
+
+
+def test_trash_usage_scan_is_skipped_on_an_oversized_pool(monkeypatch):
+    """Một `rados ls` trên pool hàng triệu object không đáng để treo một lần
+    render trang; khi đó UI phải giữ '—' thay vì số bịa."""
+    scanned = []
+    used = ceph_client._trash_used_sizes(
+        "vms",
+        [("abc123", "rbd_data.abc123", 4096)],
+        lambda command: {"pools": [{
+            "name": "vms",
+            "num_objects": ceph_client._TRASH_USAGE_MAX_POOL_OBJECTS + 1,
+        }]},
+        lambda command: scanned.append(command) or "",
+    )
+
+    assert used == {}
+    assert scanned == []
