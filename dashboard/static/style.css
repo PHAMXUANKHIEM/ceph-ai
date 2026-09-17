@@ -5157,164 +5157,205 @@ body.s3-drawer-open { overflow:hidden; }
   .convert-warning-card { padding: 16px; }
   .convert-node-summary { flex-wrap: wrap; }
 }
-/* Unified dashboard pagination. Keep this block last so legacy page-specific
-   pagination rules cannot change the control geometry or font rendering. */
-.dashboard-pagination,
-.dashboard-pagination * {
-  box-sizing: border-box;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  letter-spacing: normal !important;
-}
-.dashboard-pagination {
-  display: flex !important;
-  align-items: center;
-  justify-content: space-between !important;
-  gap: 12px;
-  width: 100%;
-  min-height: 48px;
-  height: 48px;
-  margin-top: 16px;
-  padding: 12px 0;
-  border-top: 1px solid rgba(255,255,255,0.06);
-  color: rgba(255,255,255,0.7);
-  white-space: nowrap;
-}
-.dashboard-pagination .pagination-summary {
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: rgba(255,255,255,0.7);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 36px;
-}
-.dashboard-pagination .pagination-controls,
-.dashboard-pagination .pagination-pages,
-.dashboard-pagination .pagination-page-buttons {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  flex: 0 0 auto;
-}
-.dashboard-pagination .pagination-controls { min-width: 0; }
-.dashboard-pagination .pagination-page-size {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex: 1 1 0;
-  color: rgba(255,255,255,0.55);
-  font-size: 12px;
-  line-height: 36px;
-}
-.dashboard-pagination .pagination-page-size select {
-  min-width: 68px;
-  height: 36px;
-  padding: 0 8px;
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 6px;
-  background: rgba(255,255,255,0.04);
-  color: rgba(255,255,255,0.8);
-  font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-}
-.dashboard-pagination .pagination-prev,
-.dashboard-pagination .pagination-next,
-.dashboard-pagination .pagination-page-number,
-.dashboard-pagination .pagination-pages a,
-.dashboard-pagination .pagination-page-buttons button,
-.dashboard-pagination .pagination-controls > button,
-.dashboard-pagination .pagination-controls > a {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 36px;
-  width: auto;
-  height: 36px;
-  margin: 0;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: rgba(255,255,255,0.7);
-  font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  text-decoration: none;
-  cursor: pointer;
-  transition: background 160ms ease, color 160ms ease, opacity 160ms ease;
-}
-.dashboard-pagination .pagination-pages button,
-.dashboard-pagination .pagination-pages .config-page-button,
-.dashboard-pagination .pagination-pages .bucket-audit-page-number {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 36px;
-  height: 36px;
-  margin: 0;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: rgba(255,255,255,0.7);
-  font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  cursor: pointer;
-}
-.dashboard-pagination .pagination-pages button:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: #fff; }
-.dashboard-pagination .pagination-pages button.is-active { background: rgba(99,102,241,0.15); color: #818cf8; font-weight: 600; }
-.dashboard-pagination .pagination-prev:hover:not(:disabled),
-.dashboard-pagination .pagination-next:hover:not(:disabled),
-.dashboard-pagination .pagination-page-number:hover:not(:disabled),
-.dashboard-pagination .pagination-pages a:hover,
-.dashboard-pagination .pagination-page-buttons button:hover:not(:disabled),
-.dashboard-pagination .pagination-controls > button:hover:not(:disabled),
-.dashboard-pagination .pagination-controls > a:hover {
-  background: rgba(255,255,255,0.06);
-  color: #fff;
-}
-.dashboard-pagination .pagination-page-number.is-active,
-.dashboard-pagination .pagination-page-number[aria-current="page"],
-.dashboard-pagination .pagination-pages a.is-active,
-.dashboard-pagination .pagination-page-buttons button.is-active {
-  background: rgba(99,102,241,0.15);
-  color: #818cf8;
-  font-weight: 600;
-}
-.dashboard-pagination button:disabled,
-.dashboard-pagination a.is-disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-  pointer-events: none;
-}
-.dashboard-pagination .pagination-ellipsis {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 36px;
-  height: 36px;
-  color: rgba(255,255,255,0.45);
-  font-size: 13px;
-}
-.dashboard-pagination .pagination-mobile-status { display: none; color: rgba(255,255,255,0.7); font-size: 12px; }
-.dashboard-pagination .pagination-end { display: contents; }
-.dashboard-pagination .pagination-status { color: rgba(255,255,255,0.7); font: 500 12px/36px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
 
-@media (max-width: 767px) {
-  .dashboard-pagination { gap: 6px; }
-  .dashboard-pagination .pagination-summary {
-    flex: 1 1 auto;
-    font-size: 0;
-  }
-  .dashboard-pagination .pagination-summary::after {
-    content: attr(data-mobile-summary);
-    font-size: 12px;
-  }
-  .dashboard-pagination .pagination-pages,
-  .dashboard-pagination .pagination-page-buttons { display: none !important; }
-  .dashboard-pagination .pagination-mobile-status { display: inline; }
-  .dashboard-pagination .pagination-page-size { display: none; }
-  .dashboard-pagination .pagination-prev,
-  .dashboard-pagination .pagination-next,
-  .dashboard-pagination .pagination-controls > button,
-  .dashboard-pagination .pagination-controls > a { min-width: 36px; padding: 0; }
+/* ===== Telegram channel management ===== */
+.telegram-channel-section-heading { align-items: flex-end; }
+.telegram-channel-heading-actions { display: flex; align-items: center; gap: 12px; }
+.telegram-managed-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.telegram-managed-card { display: grid; align-items: stretch; gap: 10px; padding: 12px; border-left-width: 1px; }
+.telegram-managed-card.is-dragging { opacity: .45; border-color: var(--accent-hover); }
+.telegram-managed-card.is-removing { opacity: 0; transform: scale(.97); transition: opacity 160ms ease, transform 160ms ease; }
+.telegram-managed-card-top { display: flex; align-items: center; min-height: 25px; gap: 7px; }
+.telegram-channel-select { display: grid; width: 22px; height: 22px; place-items: center; cursor: pointer; }
+.telegram-channel-select input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.telegram-channel-select span { width: 15px; height: 15px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg-surface-2); }
+.telegram-channel-select input:checked + span { border-color: var(--accent-hover); background: var(--accent); box-shadow: inset 0 0 0 3px var(--bg-surface); }
+.telegram-channel-select input:focus-visible + span { outline: 2px solid var(--accent-hover); outline-offset: 2px; }
+.telegram-managed-card .telegram-channel-index { margin-left: 0; }
+.telegram-drag-handle { margin-left: auto; color: var(--text-faint); cursor: grab; font-size: 1.1rem; line-height: 1; user-select: none; }
+.telegram-drag-handle:active { cursor: grabbing; }
+.telegram-channel-menu { position: relative; }
+.telegram-channel-menu > summary { display: grid; width: 26px; height: 26px; place-items: center; border: 1px solid transparent; border-radius: 5px; color: var(--text-muted); cursor: pointer; font-size: 1.1rem; font-weight: 800; line-height: 1; list-style: none; }
+.telegram-channel-menu > summary::-webkit-details-marker { display: none; }
+.telegram-channel-menu > summary:hover, .telegram-channel-menu[open] > summary { border-color: var(--border); background: var(--bg-surface-2); color: var(--text); }
+.telegram-channel-menu-list { position: absolute; z-index: 10; top: calc(100% + 4px); right: 0; display: grid; min-width: 148px; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: #1b1f2a; box-shadow: 0 12px 30px rgba(0,0,0,.35); }
+.telegram-channel-menu-list button { width: 100%; padding: 8px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--text); cursor: pointer; font: inherit; font-size: .75rem; text-align: left; }
+.telegram-channel-menu-list button:hover { background: rgba(255,255,255,.06); }
+.telegram-channel-menu-list button.is-danger { color: #f87171; }
+.telegram-overview-main-wrap { min-width: 0; }
+.telegram-overview-main-button { width: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; font: inherit; text-align: left; }
+.telegram-overview-main-button:focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 3px; border-radius: 5px; }
+.telegram-managed-card .telegram-overview-copy { gap: 7px; }
+.telegram-managed-card .telegram-overview-copy strong { font-size: .86rem; }
+.telegram-inline-name-input { width: 100%; min-height: 30px; padding: 4px 7px; border: 1px solid var(--accent-hover); border-radius: 5px; background: var(--bg-surface-2); color: var(--text); font: inherit; font-size: .84rem; font-weight: 700; }
+.telegram-inline-name-input:focus { outline: none; box-shadow: 0 0 0 3px var(--accent-bg); }
+.telegram-bulk-bar { position: fixed; z-index: 90; right: 22px; bottom: 18px; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid rgba(59,130,246,.38); border-radius: 9px; background: rgba(22,25,34,.97); box-shadow: 0 12px 30px rgba(0,0,0,.35); }
+.telegram-bulk-bar strong { margin-right: 4px; color: var(--text); font-size: .78rem; }
+.telegram-bulk-clear { margin-left: 5px; border-left: 1px solid var(--border); border-radius: 0; }
+.telegram-channel-empty { display: grid; min-height: 280px; place-items: center; align-content: center; gap: 8px; color: var(--text-muted); text-align: center; }
+.telegram-channel-empty-icon { display: grid; width: 64px; height: 64px; place-items: center; margin-bottom: 4px; border: 1px solid currentColor; border-radius: 50%; color: #60a5fa; font-size: 2rem; opacity: .3; transform: rotate(-12deg); }
+.telegram-channel-empty h3 { margin: 0; color: var(--text); font-size: 1rem; }
+.telegram-channel-empty p { margin: 0 0 7px; color: var(--text-muted); font-size: .8rem; }
+.telegram-channel-dialog { width: min(460px, calc(100vw - 28px)); padding: 0; border: 1px solid var(--border-strong); border-radius: 11px; background: transparent; color: var(--text); box-shadow: 0 24px 70px rgba(0,0,0,.55); }
+.telegram-channel-dialog::backdrop { background: rgba(2,6,23,.72); backdrop-filter: blur(2px); }
+.telegram-dialog-card { position: relative; display: grid; gap: 12px; padding: 22px; background: var(--bg-surface); }
+.telegram-dialog-card h2 { margin: 0; font-size: 1.15rem; }
+.telegram-dialog-card > p { margin: -5px 0 3px; color: var(--text-muted); font-size: .78rem; line-height: 1.45; }
+.telegram-dialog-card label { display: grid; gap: 5px; color: var(--text); font-size: .78rem; font-weight: 650; }
+.telegram-dialog-card label small { color: var(--text-muted); font-size: .69rem; font-weight: 400; }
+.telegram-dialog-card input[type="text"], .telegram-dialog-card input[type="password"] { width: 100%; min-height: 38px; }
+.telegram-dialog-close { position: absolute; top: 12px; right: 12px; width: 28px; height: 28px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 1.2rem; }
+.telegram-dialog-close:hover { background: var(--bg-surface-2); color: var(--text); }
+.telegram-dialog-toggle { display: flex !important; grid-template-columns: auto 1fr; align-items: center; gap: 8px !important; }
+.telegram-dialog-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
+.telegram-dialog-error { padding: 8px 10px; border-left: 3px solid var(--critical); border-radius: 5px; background: var(--critical-bg); color: #fca5a5 !important; }
+.telegram-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 5px; }
+.telegram-delete-warning { color: #fca5a5 !important; }
+@media (max-width: 980px) { .telegram-managed-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) {
+  .telegram-channel-section-heading { align-items: flex-start; flex-direction: column; }
+  .telegram-channel-heading-actions { width: 100%; justify-content: space-between; }
+  .telegram-managed-grid { grid-template-columns: 1fr; }
+  .telegram-bulk-bar { right: 10px; bottom: 10px; left: 10px; flex-wrap: wrap; }
+  .telegram-bulk-bar strong { width: 100%; }
+  .telegram-dialog-card { padding: 18px; }
 }
+@media (prefers-reduced-motion: reduce) { .telegram-managed-card, .telegram-managed-card.is-removing { transition: none; } }
+
+/* AI chat layout refresh: Dashboard uses the spare vertical space below the
+   telemetry cards; product pages keep a real push-layout sidebar. */
+.dashboard-page-shell .app-body { display: block; }
+.dashboard-page-shell .app-body .page { width: 100%; }
+.dashboard-page-shell .chat-panel-inline {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  transform: none;
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  width: 100%;
+  height: min(540px, 62vh);
+  max-height: none;
+  margin: 18px auto 28px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0,0,0,.16);
+}
+.dashboard-page-shell .chat-panel-inline .chat-resize-handle,
+.dashboard-page-shell .chat-panel-inline #chat-panel-minimize,
+.dashboard-page-shell .chat-panel-inline #chat-panel-close { display: none; }
+.dashboard-page-shell .chat-panel-inline .chat-panel-header { border-radius: 14px 14px 0 0; }
+.dashboard-page-shell .chat-panel-inline .chat-context-badge { display: inline-flex; }
+
+.chat-panel:not(.chat-panel-inline) {
+  flex-basis: var(--chat-panel-width, 380px);
+  width: var(--chat-panel-width, 380px);
+  transition: flex-basis 200ms ease, width 200ms ease, height 200ms ease;
+}
+.chat-resize-handle {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 8px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.chat-resize-handle:hover,
+.is-chat-resizing .chat-resize-handle { background: rgba(85,167,255,.28); }
+.is-chat-resizing, .is-chat-resizing * { cursor: ew-resize !important; user-select: none !important; }
+.chat-context-badge {
+  display: inline-flex;
+  max-width: 220px;
+  margin-left: 8px;
+  padding: 3px 7px;
+  overflow: hidden;
+  border: 1px solid rgba(85,167,255,.25);
+  border-radius: 999px;
+  background: rgba(85,167,255,.1);
+  color: #9fcaff;
+  font-size: 10px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+.chat-context-badge[hidden], .chat-unread-badge[hidden], .chat-fab[hidden] { display: none; }
+.chat-unread-badge,
+.chat-fab-badge {
+  display: inline-grid;
+  min-width: 17px;
+  height: 17px;
+  place-items: center;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+.chat-panel.is-minimized:not(.chat-panel-inline) {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 100vh;
+  border-left: 1px solid var(--border);
+}
+.chat-panel.is-minimized:not(.chat-panel-inline) .chat-panel-header {
+  width: 48px;
+  height: 100%;
+  padding: 12px 8px;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 10px;
+}
+.chat-panel.is-minimized:not(.chat-panel-inline) .chat-panel-title { flex-direction: column; gap: 6px; }
+.chat-panel.is-minimized:not(.chat-panel-inline) .chat-panel-title-copy,
+.chat-panel.is-minimized:not(.chat-panel-inline) #chat-panel-settings,
+.chat-panel.is-minimized:not(.chat-panel-inline) #chat-panel-history,
+.chat-panel.is-minimized:not(.chat-panel-inline) #chat-panel-new-session,
+.chat-panel.is-minimized:not(.chat-panel-inline) #chat-panel-close { display: none; }
+.chat-panel.is-minimized:not(.chat-panel-inline) .chat-panel-controls { flex-direction: column; }
+.chat-panel.is-minimized:not(.chat-panel-inline) #chat-panel-minimize { display: inline-flex; }
+.chat-panel.is-minimized:not(.chat-panel-inline) .chat-unread-badge { display: inline-grid; }
+.chat-fab {
+  position: fixed;
+  z-index: 55;
+  right: 22px;
+  bottom: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 13px;
+  border: 1px solid rgba(85,167,255,.4);
+  border-radius: 999px;
+  background: #162b49;
+  color: #dcebff;
+  box-shadow: 0 12px 28px rgba(0,0,0,.28);
+  cursor: pointer;
+  font: 650 .78rem/1 var(--font-sans, sans-serif);
+}
+.chat-fab-icon { font-size: 1rem; }
+.chat-fab-badge { position: absolute; top: -6px; right: -5px; }
+.chat-panel.is-minimized:not(.chat-panel-inline) .chat-panel-body { display: none; }
+
+@media (max-width: 900px) {
+  .dashboard-page-shell .chat-panel-inline { height: min(560px, 72vh); margin-inline: 0; border-radius: 12px; }
+  body:not(.dashboard-page-shell) .chat-panel { position: static; inset: auto; flex: 0 0 auto; width: 100%; height: min(560px, 72vh); border: 1px solid var(--border); border-radius: 12px; box-shadow: none; }
+  body:not(.dashboard-page-shell) .chat-panel.is-minimized { width: 48px; height: 100vh; border-radius: 0; }
+  .vitastor-app > .vitastor-workspace > .chat-panel { position: static; width: var(--chat-panel-width, 380px); max-width: 100%; height: min(560px, 72vh); border: 1px solid rgba(108,190,173,.15); border-radius: 12px; }
+  .vitastor-app > .vitastor-workspace > .chat-panel.is-minimized { width: 48px; height: 100vh; }
+  .chat-fab { right: 14px; bottom: 14px; }
+}
+
+@media (max-width: 560px) {
+  .dashboard-page-shell .chat-panel-inline { margin-top: 14px; height: 560px; }
+  .chat-fab { right: 12px; bottom: 12px; }
+  .chat-fab > span:not(.chat-fab-icon):not(.chat-fab-badge) { display: none; }
+}
+
+.chat-quick-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; margin-top: 16px; }
+.chat-quick-action { padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: 999px; background: rgba(85,167,255,.07); color: var(--text-muted); cursor: pointer; font: 600 .7rem/1.2 var(--font-sans, sans-serif); }
+.chat-quick-action:hover, .chat-quick-action:focus-visible { border-color: var(--accent); color: var(--text); background: var(--accent-bg); }
