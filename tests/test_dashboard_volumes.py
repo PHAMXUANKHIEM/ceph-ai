@@ -1203,21 +1203,22 @@ def test_trash_page_uses_saved_usage_snapshot_when_ceph_trash_has_no_usage(
     assert "256.0 MiB" in response.text
 
 
-def test_trash_landing_page_does_not_scan_every_pool(dashboard_client, monkeypatch):
+def test_trash_landing_page_shows_volume_count_without_capacity_scan(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     calls = []
 
-    def fail_if_trash_is_scanned(pool):
+    def list_trash(pool):
         calls.append(pool)
-        raise AssertionError("Trash must be loaded only after a pool is selected")
+        return [_fake_trash_entry()]
 
-    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", fail_if_trash_is_scanned)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", list_trash)
     _login(dashboard_client)
 
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert calls == []
+    assert set(calls) == {"vms", "backups"}
+    assert response.text.count("1 <small>volume</small>") == 2
     assert "Chọn một pool để xem các volume" in response.text
 
 

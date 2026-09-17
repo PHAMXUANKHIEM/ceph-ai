@@ -438,30 +438,13 @@ def _volumes_page_context(
     vm_perf_action: Action | None = None
     if selected_view == "trash":
         cluster = _cluster_for_request(request)
-        # The landing page only needs the list of RBD pools.  A full Trash
-        # scan is expensive: each entry requires an additional `rbd info`
-        # and `rados ls` command over SSH to calculate its logical and used
-        # size.  Do that work only after the operator selects one pool.
-        trash_pools = [pool] if pool else []
-        if not pool:
-            trash_pool_summaries = [
-                {
-                    "pool": trash_pool,
-                    "entry_count": None,
-                    "protected_count": None,
-                    "expiring_count": None,
-                    "total_used_size_bytes": None,
-                    "total_used_size_human": "—",
-                    "total_used_size_unknown": 0,
-                    "total_provisioned_size_bytes": None,
-                    "total_provisioned_size_human": "—",
-                    "total_provisioned_size_unknown": 0,
-                    "error": None,
-                }
-                for trash_pool in pools
-            ]
+        # The landing page needs a cheap Trash listing so each pool card can
+        # show its real volume count.  The expensive capacity scan (rbd info
+        # and rados ls per entry) still runs only after an operator selects a
+        # pool, through _cached_rbd_trash().
+        trash_pools = [pool] if pool else list(pools)
         def fetch_trash(trash_pool: str):
-            return _cached_rbd_trash(cluster, trash_pool)
+            return _cached_rbd_trash(cluster, trash_pool) if pool else _query_rbd_trash_fast(cluster, trash_pool)
 
         # A trash listing is one independent RBD command per pool. Bound the
         # fan-out so large installations do not create an unbounded number
