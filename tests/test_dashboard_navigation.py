@@ -325,3 +325,25 @@ def test_pagination_uses_three_column_grid():
     css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
     assert "grid-template-columns: 1fr auto 1fr;" in css
     assert ".pagination-end { display: flex;" in css
+
+
+def test_hidden_nav_links_really_disappear():
+    """`.nav-link` đặt `display:flex` nên nó thắng `[hidden]{display:none}` của
+    trình duyệt (cùng độ ưu tiên, author > UA). Trang Buckets có một `<a hidden
+    class="nav-link">` nằm thẳng trong `<body>`; `body{display:flex}` biến nó
+    thành flex item với flex-basis 100%, bóp `.app-body` (flex-basis 0) xuống
+    0px và cả trang biến mất."""
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+
+    assert ".nav-link[hidden] { display: none; }" in css or ".nav-link[hidden]{display:none}" in css
+
+
+def test_body_level_nav_link_cannot_starve_the_page_column():
+    """Chặn tái phát ở tầng markup: nếu một `.nav-link` lại xuất hiện làm con
+    trực tiếp của `<body>` mà không có `hidden`, nó sẽ ăn hết chiều ngang."""
+    import re
+
+    markup = Path("dashboard/templates/object_storage_buckets.html").read_text(encoding="utf-8")
+    body = markup[markup.index("<body>"):]
+    strays = re.findall(r'<a\b(?![^>]*\bhidden\b)[^>]*class="nav-link[^"]*"[^>]*>', body[:body.index("<div class=\"app-body\">")])
+    assert not strays, f"nav-link không có hidden nằm ở cấp body: {strays}"

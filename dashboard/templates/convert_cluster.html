@@ -9,9 +9,10 @@
 <body>
   {% include "_nav.html" %}
 
-  <main class="page">
+  <main class="page convert-page">
+    <div class="convert-shell">
     {% if last_action and last_action.status in ("EXECUTED", "FAILED") and not pending_action %}
-    <section class="card">
+    <section class="card convert-result-card">
       <div class="card-header"><h2>{% if last_action.status == "EXECUTED" %}✅ Lần chuyển đổi gần nhất thành công{% else %}❌ Lần chuyển đổi gần nhất thất bại{% endif %}</h2></div>
       <div class="card-body">
         {% if last_action.status == "EXECUTED" %}
@@ -23,25 +24,46 @@
     </section>
     {% endif %}
 
-    {% if not pending_action %}
-    <section class="card">
-      <div class="card-header"><h2>⚠ Đọc kỹ trước khi chuyển đổi</h2></div>
-      <div class="card-body">
-        <p class="hint">
-          Tính năng này dùng quy trình <code>cephadm adopt --style legacy</code> CHÍNH THỨC của Ceph để
-          chuyển từng daemon MON/MGR/OSD từ systemd sang cephadm quản lý, TẠI CHỖ — không xoá dữ liệu,
-          không tạo lại daemon. Chỉ hỗ trợ MỘT CHIỀU (systemd → cephadm); Ceph không có quy trình chính
-          thức cho chiều ngược lại nên tính năng này không hỗ trợ chiều đó.
-        </p>
-        <p class="hint">
-          <strong>CHƯA được kiểm chứng trên một cụm systemd thật</strong> — khác với Deploy/Delete Cluster
-          (đã sửa qua nhiều lần chạy thật), đây là lần triển khai đầu tiên theo đúng tài liệu Ceph. Khuyến
-          nghị thử trên cụm không quan trọng trước khi dùng cho cụm production.
-        </p>
-        <p class="hint">
-          Node RGW/MDS (nếu có) sẽ KHÔNG được chuyển đổi — chỉ MON/MGR/OSD.
-        </p>
+    <section class="convert-status-card is-{{ orchestrator_state }}" aria-labelledby="convert-status-title">
+      <div class="convert-status-main">
+        <span class="convert-status-icon" aria-hidden="true">{% if orchestrator_state == "managed" %}✓{% elif orchestrator_state == "convertible" %}⚠{% else %}•{% endif %}</span>
+        <div>
+          <p class="convert-eyebrow">CLUSTER MANAGEMENT STATUS</p>
+          <h1 id="convert-status-title">{{ orchestrator_label }}</h1>
+          {% if orchestrator_state == "managed" %}
+          <p class="convert-status-message">Cụm đã chạy cephadm — không cần chuyển đổi</p>
+          {% elif orchestrator_state == "convertible" %}
+          <p class="convert-status-message">Cụm đang chạy systemd legacy — có thể chuyển đổi</p>
+          {% elif orchestrator_state == "unconfigured" %}
+          <p class="convert-status-message">Chưa có node để xác định trạng thái quản lý</p>
+          {% else %}
+          <p class="convert-status-message">Exec mode hiện tại chưa được hỗ trợ để chuyển đổi</p>
+          {% endif %}
+        </div>
       </div>
+      <div class="convert-daemon-stats" aria-label="Số daemon đã cấu hình">
+        <div><strong>{{ daemon_counts.mon }}</strong><span>MON</span></div>
+        <div><strong>{{ daemon_counts.mgr }}</strong><span>MGR</span></div>
+        <div><strong>{{ daemon_counts.osd }}</strong><span>OSD</span></div>
+      </div>
+    </section>
+
+    {% if not pending_action and eligible %}
+    <section class="convert-warning-card" aria-labelledby="convert-warning-title">
+      <div class="convert-warning-heading"><span class="convert-warning-icon" aria-hidden="true">⚠</span><div><p class="convert-eyebrow">BEFORE YOU START</p><h2 id="convert-warning-title">Đọc kỹ trước khi chuyển đổi</h2></div></div>
+      <div class="convert-production-alert" role="alert"><span aria-hidden="true">⛔</span><strong>Chưa kiểm chứng trên cụm production</strong><p>Hãy thử trên một cụm không quan trọng trước khi thực hiện.</p></div>
+      <div class="convert-notes">
+        <h3>Lưu ý quan trọng</h3>
+        <ul>
+          <li><span aria-hidden="true">↗</span><span>Chỉ hỗ trợ một chiều: <strong>systemd legacy → cephadm</strong>.</span></li>
+          <li><span aria-hidden="true">◈</span><span>Không xóa dữ liệu và không tạo lại daemon trong quá trình adopt.</span></li>
+          <li><span aria-hidden="true">⊘</span><span>Chỉ xử lý MON, MGR và OSD; RGW/MDS không được chuyển đổi.</span></li>
+        </ul>
+      </div>
+      <details class="convert-technical-details">
+        <summary>Chi tiết kỹ thuật <span aria-hidden="true">⌄</span></summary>
+        <p>Ceph sử dụng quy trình <code>cephadm adopt --style legacy</code> để nhận các daemon systemd hiện có vào cephadm quản lý tại chỗ. Worker sẽ kiểm tra SSH, health, version và post-check sau từng phase; nếu lỗi, action chuyển sang trạng thái cần operator xử lý.</p>
+      </details>
     </section>
     {% endif %}
 
@@ -63,13 +85,16 @@
     </section>
     {% else %}
     <div class="deploy-cluster-grid">
-      <section class="card">
-        <div class="card-header"><h2>Cụm đang cấu hình</h2></div>
+    <section class="card convert-form-card">
+        <div class="card-header"><div><p class="convert-eyebrow">CONTROLLED MIGRATION</p><h2>Cụm đang cấu hình</h2></div><span class="convert-mode-badge">{{ orchestrator_label }}</span></div>
         <div class="card-body">
           {% if pending_action %}
           <p class="hint">Đã có một đề xuất chuyển đổi đang chờ xử lý — xem chi tiết bên phải.</p>
           {% else %}
-          <p><strong>Phương thức hiện tại:</strong> {{ exec_mode }}</p>
+          <p class="hint">Xác nhận từng điều kiện trước khi tạo đề xuất chuyển đổi. Action vẫn cần bước duyệt riêng trước khi Worker thực thi.</p>
+          <div class="convert-node-summary"><span><strong>{{ daemon_counts.mon }}</strong> MON</span><span><strong>{{ daemon_counts.mgr }}</strong> MGR</span><span><strong>{{ daemon_counts.osd }}</strong> OSD</span></div>
+          <details class="convert-node-details">
+            <summary>Xem node đang cấu hình</summary>
           <div class="table-wrap">
             <table>
               <thead><tr><th>IP</th><th>Vai trò</th></tr></thead>
@@ -80,10 +105,17 @@
               </tbody>
             </table>
           </div>
+          </details>
 
           <form id="convert-form" class="login-box">
+            <fieldset class="convert-checklist">
+              <legend>Checklist bắt buộc</legend>
+              <label><input type="checkbox" required> <span>Đã backup cụm</span></label>
+              <label><input type="checkbox" required> <span>Hiểu rằng không thể rollback</span></label>
+              <label><input type="checkbox" required> <span>Cụm không phải production</span></label>
+            </fieldset>
             <p class="error" id="cc-error" hidden></p>
-            <button type="submit" class="btn btn-reject">Đề xuất chuyển đổi sang cephadm</button>
+            <button type="submit" class="btn btn-reject convert-start-button" disabled>Bắt đầu chuyển đổi</button>
           </form>
           {% endif %}
         </div>
@@ -115,7 +147,7 @@
             <input type="text" id="cc-confirm-input" autocomplete="off">
           </label>
           <div class="pending-action-buttons">
-            <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form">
+            <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form cc-approve-form">
               <input type="hidden" name="confirm_text" id="cc-confirm-hidden" value="">
               <button type="submit" class="btn btn-reject" id="cc-approve-btn" disabled>Duyệt — chuyển đổi ngay</button>
             </form>
@@ -136,6 +168,7 @@
       </section>
     </div>
     {% endif %}
+    </div>
   </main>
 
   <script type="application/json" id="convert-initial-state">

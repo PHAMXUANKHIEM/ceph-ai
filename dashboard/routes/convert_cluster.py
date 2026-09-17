@@ -58,6 +58,20 @@ def _normalize_configured_nodes() -> list[dict]:
     return nodes
 
 
+def _daemon_counts(nodes: list[dict]) -> dict[str, int]:
+    """Return the configured MON/MGR/OSD daemon counts for the status card.
+
+    The conversion page must stay fast and read-only on GET, so these are the
+    daemon roles configured for the selected cluster rather than a fresh SSH
+    probe.  The conversion worker performs the authoritative preflight before
+    any mutation.
+    """
+    return {
+        role: sum(1 for node in nodes if role in node.get("roles", []))
+        for role in ("mon", "mgr", "osd")
+    }
+
+
 def _step_clock(value: str | None) -> str | None:
     if not value:
         return None
@@ -150,6 +164,19 @@ async def convert_cluster_page(request: Request, user: str = Depends(require_log
     # legacy` isn't designed for; "cephadm" is already converted.
     eligible = exec_mode == "none" and bool(nodes)
     first_mon_ip = next((n["ip"] for n in nodes if "mon" in n["roles"]), None)
+    daemon_counts = _daemon_counts(nodes)
+    if not nodes:
+        orchestrator_label = "chưa cấu hình"
+        orchestrator_state = "unconfigured"
+    elif exec_mode == "cephadm":
+        orchestrator_label = "cephadm"
+        orchestrator_state = "managed"
+    elif exec_mode == "none":
+        orchestrator_label = "systemd legacy"
+        orchestrator_state = "convertible"
+    else:
+        orchestrator_label = exec_mode
+        orchestrator_state = "unsupported"
 
     return templates.TemplateResponse(
         request,
@@ -164,6 +191,9 @@ async def convert_cluster_page(request: Request, user: str = Depends(require_log
             "pending_action": pending_action,
             "last_action": last_action,
             "progress": progress,
+            "daemon_counts": daemon_counts,
+            "orchestrator_label": orchestrator_label,
+            "orchestrator_state": orchestrator_state,
         },
     )
 

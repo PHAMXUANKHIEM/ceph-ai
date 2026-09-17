@@ -47,7 +47,14 @@ def test_get_page_shows_configured_nodes_when_eligible(dashboard_client, monkeyp
     assert response.status_code == 200
     # TEST_CEPH_MON_NODES/TEST_CEPH_OSD_NODES from conftest.py's autouse fixture.
     assert "10.20.1.150" in response.text
-    assert "Đề xuất chuyển đổi sang cephadm" in response.text
+    assert "systemd legacy" in response.text
+    assert "Cụm đang chạy systemd legacy — có thể chuyển đổi" in response.text
+    assert "Chưa kiểm chứng trên cụm production" in response.text
+    assert "Lưu ý quan trọng" in response.text
+    assert "Chi tiết kỹ thuật" in response.text
+    assert "Đã backup cụm" in response.text
+    assert "Hiểu rằng không thể rollback" in response.text
+    assert "Bắt đầu chuyển đổi" in response.text
 
 
 def test_get_page_shows_ineligible_when_already_cephadm(dashboard_client, monkeypatch):
@@ -56,6 +63,9 @@ def test_get_page_shows_ineligible_when_already_cephadm(dashboard_client, monkey
     response = dashboard_client.get("/convert-cluster")
     assert response.status_code == 200
     assert "đã chạy cephadm rồi" in response.text
+    assert "Cụm đã chạy cephadm — không cần chuyển đổi" in response.text
+    assert "Chưa kiểm chứng trên cụm production" not in response.text
+    assert 'id="convert-form"' not in response.text
 
 
 def test_get_page_shows_ineligible_when_no_cluster_configured(dashboard_client, monkeypatch):
