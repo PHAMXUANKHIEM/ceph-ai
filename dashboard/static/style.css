@@ -5382,7 +5382,10 @@ body.s3-drawer-open { overflow:hidden; }
 .dashboard-pagination.pagination-top + table thead th,
 .dashboard-pagination.pagination-top ~ .table-wrap thead th {
   position: sticky;
-  top: 64px;
+  /* The table wrapper is the sticky containing block. The pagination is
+     outside it, so an extra offset makes the first data row slide under the
+     header while the table scrolls. */
+  top: 0;
   z-index: 20;
   background: #1e293b;
 }
@@ -5397,7 +5400,7 @@ body.s3-drawer-open { overflow:hidden; }
   .dashboard-pagination.pagination-top + .table-wrap thead th,
   .dashboard-pagination.pagination-top + .bucket-audit-table-frame thead th,
   .dashboard-pagination.pagination-top + table thead th,
-  .dashboard-pagination.pagination-top ~ .table-wrap thead th { top: 56px; }
+  .dashboard-pagination.pagination-top ~ .table-wrap thead th { top: 0; }
 }
 
 /* ===== Telegram channel management ===== */
