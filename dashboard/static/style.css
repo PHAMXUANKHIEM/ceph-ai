@@ -5320,6 +5320,103 @@ body.s3-drawer-open { overflow:hidden; }
   .dashboard-pagination .pagination-controls > a { min-width: 36px; padding: 0; }
 }
 
+/* Pagination is duplicated above long tables by pagination.js. The original
+   footer remains the full pager; the top copy is compact and sticky. */
+.dashboard-pagination[hidden] { display: none !important; }
+.dashboard-pagination.pagination-top {
+  position: sticky;
+  top: 8px;
+  z-index: 40;
+  width: 100%;
+  min-height: 48px;
+  height: 48px;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  background: rgba(15,23,42,0.96);
+  box-shadow: 0 8px 22px rgba(2,6,23,0.28);
+  backdrop-filter: blur(10px);
+}
+.dashboard-pagination.pagination-top .pagination-summary {
+  line-height: 36px;
+  color: rgba(255,255,255,0.78);
+}
+.dashboard-pagination.pagination-top .pagination-pages { display: none !important; }
+.dashboard-pagination.pagination-top .pagination-mobile-status { display: none; }
+.dashboard-pagination.pagination-top .pagination-page-jump {
+  width: 52px;
+  height: 32px;
+  padding: 0 6px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.04);
+  color: #e2e8f0;
+  font: 500 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  text-align: center;
+}
+.dashboard-pagination.pagination-top .pagination-page-size { line-height: 32px; }
+.dashboard-pagination.pagination-top .pagination-custom-size { position: relative; }
+.dashboard-pagination.pagination-top .pagination-size-toggle {
+  min-width: 58px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 6px;
+  background: #1e293b;
+  color: #e2e8f0;
+  font: 500 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  cursor: pointer;
+}
+.dashboard-pagination.pagination-top .pagination-size-toggle::after { content: "⌄"; margin-left: 6px; color: #94a3b8; }
+.dashboard-pagination.pagination-top .pagination-size-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 60;
+  display: grid;
+  min-width: 90px;
+  padding: 4px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  background: #1e293b;
+  box-shadow: 0 12px 28px rgba(2,6,23,0.5);
+}
+.dashboard-pagination.pagination-top .pagination-size-menu[hidden] { display: none; }
+.dashboard-pagination.pagination-top .pagination-size-option {
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #cbd5e1;
+  font: 500 12px/30px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.dashboard-pagination.pagination-top .pagination-size-option:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.dashboard-pagination.pagination-bottom-single { display: none !important; }
+.dashboard-pagination.pagination-top + .table-wrap thead th,
+.dashboard-pagination.pagination-top + .bucket-audit-table-frame thead th,
+.dashboard-pagination.pagination-top ~ .table-wrap thead th {
+  position: sticky;
+  top: 64px;
+  z-index: 20;
+  background: #1e293b;
+}
+@media (max-width: 767px) {
+  .dashboard-pagination.pagination-top { top: 4px; padding-inline: 6px; }
+  .dashboard-pagination.pagination-top .pagination-summary { font-size: 12px; }
+  .dashboard-pagination.pagination-top .pagination-controls { gap: 3px; }
+  .dashboard-pagination.pagination-top .pagination-page-jump { width: 46px; }
+  .dashboard-pagination.pagination-top .pagination-page-size > span { display: none; }
+  .dashboard-pagination.pagination-top .pagination-size-toggle { min-width: 44px; padding-inline: 4px; }
+  .dashboard-pagination.pagination-top .pagination-size-toggle::after { margin-left: 2px; }
+  .dashboard-pagination.pagination-top + .table-wrap thead th,
+  .dashboard-pagination.pagination-top + .bucket-audit-table-frame thead th,
+  .dashboard-pagination.pagination-top ~ .table-wrap thead th { top: 56px; }
+}
+
 /* ===== Telegram channel management ===== */
 .telegram-channel-section-heading { align-items: flex-end; }
 .telegram-channel-heading-actions { display: flex; align-items: center; gap: 12px; }

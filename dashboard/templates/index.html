@@ -217,7 +217,6 @@
   </main>
 
   <aside class="chat-panel chat-panel-inline" id="chat-panel" data-dashboard-inline="true" data-context-cluster="{{ selected_cluster.name if selected_cluster else '' }}">
-    <div class="chat-resize-handle" id="chat-resize-handle" role="separator" aria-label="Thay đổi chiều rộng khung chat" title="Kéo để thay đổi chiều rộng"></div>
     <header class="chat-panel-header">
       <div class="chat-panel-title">
         <span class="chat-panel-icon" aria-hidden="true">&#129302;</span>
@@ -226,8 +225,7 @@
       </div>
       <div class="chat-panel-controls">
         <button type="button" class="chat-panel-btn" id="chat-panel-settings" aria-label="Cấu hình AI" title="Cấu hình AI">&#9881;</button>
-        <button type="button" class="chat-panel-btn" id="chat-panel-minimize" aria-label="Thu nhỏ" title="Thu nhỏ">&#8722;</button>
-        <button type="button" class="chat-panel-btn" id="chat-panel-close" aria-label="Đóng" title="Đóng">&#215;</button>
+        <button type="button" class="chat-panel-btn" id="chat-panel-minimize" aria-label="Thu nhỏ" title="Thu nhỏ">⌄</button>
       </div>
     </header>
 
@@ -239,6 +237,7 @@
       </select>
     </div>
     <div class="chat-panel-body" id="chat-panel-body">
+      <div class="chat-main-column">
       <div class="chat-history-toast" id="chat-history-toast" role="status" aria-live="polite" hidden></div>
       <div class="chat-history-list-view" id="chat-history-list-view" hidden>
         <div class="chat-view-header">
@@ -279,23 +278,25 @@
         <div class="chat-empty-state" id="chat-empty-state">
           <span class="chat-empty-icon" aria-hidden="true">&#129302;</span>
           <p class="chat-empty-text">Hỏi tôi về trạng thái cụm Ceph</p>
-          <p class="chat-empty-subtext">VD: cụm có bao nhiêu pool? OSD nào đang down?</p>
-          <div class="chat-quick-actions" aria-label="Câu hỏi nhanh">
-            <button type="button" class="chat-quick-action" data-chat-prompt="Tóm tắt health và các cảnh báo hiện tại">Tóm tắt health</button>
-            <button type="button" class="chat-quick-action" data-chat-prompt="Hiện trạng OSD và PG hiện tại thế nào?">Kiểm tra OSD / PG</button>
-            <button type="button" class="chat-quick-action" data-chat-prompt="Dung lượng cụm và các pool đang dùng bao nhiêu?">Xem dung lượng</button>
-          </div>
+          <p class="chat-empty-subtext">Trợ lý có thể giải thích cấu hình, vận hành và sự cố.</p>
         </div>
       </div>
 
       <p class="chat-error" id="chat-error" hidden></p>
 
+      <div class="chat-responsive-quick-actions" aria-label="Câu hỏi nhanh">
+        <button type="button" class="chat-quick-action" data-chat-prompt="Tóm tắt health và các cảnh báo hiện tại">Tóm tắt health</button>
+        <button type="button" class="chat-quick-action" data-chat-prompt="Hiện trạng OSD và PG hiện tại thế nào?">Kiểm tra OSD / PG</button>
+        <button type="button" class="chat-quick-action" data-chat-prompt="Dung lượng cụm và các pool đang dùng bao nhiêu?">Xem dung lượng</button>
+      </div>
+
       <form class="chat-input-bar" id="chat-form">
+        <button type="button" class="chat-inline-restore" id="chat-panel-restore" aria-label="Mở rộng chat" title="Mở rộng chat">⌃</button>
         <textarea
           id="chat-input"
           class="chat-textarea"
           rows="1"
-          placeholder="Nhập câu hỏi về cụm Ceph..."
+          placeholder="Hỏi AI về trạng thái cụm Ceph…"
           required
         ></textarea>
         <button type="button" class="chat-stop-btn" id="chat-stop-btn" hidden aria-label="Dừng Hai AI">Dừng</button>
@@ -306,6 +307,37 @@
           </svg>
         </button>
       </form>
+      </div>
+
+      <aside class="chat-context-panel" id="chat-context-panel" aria-label="Context và gợi ý chat">
+        <div class="chat-context-overview">
+          <span class="chat-context-eyebrow">CONTEXT ĐANG XEM</span>
+          <strong id="chat-context-cluster-value">{{ selected_cluster.name if selected_cluster else 'Dashboard' }}</strong>
+          <span class="chat-context-muted">Snapshot hiện tại của Dashboard</span>
+        </div>
+        <div class="chat-context-stats" aria-label="Tóm tắt nhanh cụm Ceph">
+          <div><span>Health</span><strong id="chat-context-health">—</strong></div>
+          <div><span>OSD</span><strong id="chat-context-osds">—</strong></div>
+          <div><span>MON</span><strong id="chat-context-mons">—</strong></div>
+          <div><span>Dung lượng</span><strong id="chat-context-utilization">—</strong></div>
+        </div>
+        <section class="chat-context-section">
+          <h3>Gợi ý nhanh</h3>
+          <div class="chat-context-quick-actions">
+            <button type="button" class="chat-quick-action" data-chat-prompt="Tóm tắt health và các cảnh báo hiện tại">Tóm tắt health</button>
+            <button type="button" class="chat-quick-action" data-chat-prompt="Hiện trạng OSD và PG hiện tại thế nào?">Kiểm tra OSD / PG</button>
+            <button type="button" class="chat-quick-action" data-chat-prompt="Dung lượng cụm và các pool đang dùng bao nhiêu?">Xem dung lượng</button>
+          </div>
+        </section>
+        <section class="chat-context-section chat-context-result-section">
+          <h3>Kết quả bổ sung</h3>
+          <p id="chat-context-result" class="chat-context-muted">Khi AI trả lời, bản xem trước sẽ xuất hiện ở đây.</p>
+        </section>
+        <section class="chat-context-section">
+          <h3>Câu hỏi gần đây</h3>
+          <div id="chat-recent-questions" class="chat-recent-questions"><span class="chat-context-muted">Chưa có câu hỏi.</span></div>
+        </section>
+      </aside>
     </div>
   </aside>
   <button type="button" class="chat-fab" id="chat-fab" aria-controls="chat-panel" aria-expanded="false">

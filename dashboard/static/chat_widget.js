@@ -6,6 +6,7 @@
   var settingsBtn = document.getElementById("chat-panel-settings");
   var newSessionBtn = document.getElementById("chat-panel-new-session");
   var minimizeBtn = document.getElementById("chat-panel-minimize");
+  var restoreBtn = document.getElementById("chat-panel-restore");
   var closeBtn = document.getElementById("chat-panel-close");
   var chatFab = document.getElementById("chat-fab");
   var messagesEl = document.getElementById("chat-messages");
@@ -24,6 +25,13 @@
   var contextBadgeEl = document.getElementById("chat-context-badge");
   var panelUnreadBadgeEl = document.getElementById("chat-unread-badge");
   var resizeHandleEl = document.getElementById("chat-resize-handle");
+  var contextClusterEl = document.getElementById("chat-context-cluster-value");
+  var contextHealthEl = document.getElementById("chat-context-health");
+  var contextOsdsEl = document.getElementById("chat-context-osds");
+  var contextMonsEl = document.getElementById("chat-context-mons");
+  var contextUtilizationEl = document.getElementById("chat-context-utilization");
+  var contextResultEl = document.getElementById("chat-context-result");
+  var recentQuestionsEl = document.getElementById("chat-recent-questions");
   var modeSelectEl = document.getElementById("chat-mode-select");
   if (!panelEl || !bodyEl || !messagesEl || !formEl) {
     return; // not on a page with the chat panel
@@ -47,8 +55,8 @@
   var errorEl = document.getElementById("chat-error");
 
   var MINIMIZED_STORAGE_KEY = "chatPanelMinimized";
-  var MINIMIZE_ICON = "−"; // −
-  var RESTORE_ICON = "□"; // □
+  var MINIMIZE_ICON = "⌄";
+  var RESTORE_ICON = "⌃";
   var TYPING_ID = "chat-typing-indicator";
   // Must match dashboard/chat_client.py's MISSING_AI_CONFIG_MESSAGE exactly
   // — the backend sends this as plain text (chat bubbles never carry HTML),
@@ -70,6 +78,7 @@
   var dualStopRequestedSessionId = null;
   var activeDelegatedTasks = {};
   var unreadCount = 0;
+  var recentQuestionMessages = [];
 
   function updateChatFabBadge() {
     var badge = chatFab ? chatFab.querySelector(".chat-fab-badge") : null;
@@ -153,8 +162,21 @@
           stale: data.stale,
           age_seconds: data.age_seconds,
         };
+        if (contextClusterEl) contextClusterEl.textContent = clusterName;
+        if (contextHealthEl) contextHealthEl.textContent = data.health || "—";
+        if (contextOsdsEl) contextOsdsEl.textContent = formatPair(data.osds);
+        if (contextMonsEl) contextMonsEl.textContent = formatPair(data.mons);
+        if (contextUtilizationEl) {
+          contextUtilizationEl.textContent = data.utilization && data.utilization.percent != null
+            ? String(data.utilization.percent) + "%" : "—";
+        }
       })
       .catch(function () {});
+  }
+
+  function formatPair(value) {
+    if (!value || value.up == null || value.total == null) return "—";
+    return String(value.up) + "/" + String(value.total);
   }
 
   loadDashboardContext();
@@ -166,6 +188,40 @@
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function updateContextResult(message) {
+    if (!contextResultEl || !message || message.role === "user") return;
+    var content = String(message.content || "").replace(/\s+/g, " ").trim();
+    if (!content) return;
+    contextResultEl.textContent = content.length > 260 ? content.slice(0, 257) + "…" : content;
+    contextResultEl.classList.remove("chat-context-muted");
+  }
+
+  function renderRecentQuestions(messages) {
+    if (!recentQuestionsEl) return;
+    if (messages) recentQuestionMessages = messages.filter(function (message) {
+      return message && message.role === "user" && String(message.content || "").trim();
+    }).slice(-4);
+    var questions = recentQuestionMessages.filter(function (message) {
+      return message && message.role === "user" && String(message.content || "").trim();
+    }).slice(-4).reverse();
+    while (recentQuestionsEl.firstChild) recentQuestionsEl.removeChild(recentQuestionsEl.firstChild);
+    if (!questions.length) {
+      var empty = document.createElement("span");
+      empty.className = "chat-context-muted";
+      empty.textContent = "Chưa có câu hỏi.";
+      recentQuestionsEl.appendChild(empty);
+      return;
+    }
+    questions.forEach(function (message) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "chat-recent-question";
+      button.setAttribute("data-chat-prompt", message.content);
+      button.textContent = message.content;
+      recentQuestionsEl.appendChild(button);
+    });
   }
 
   // --- message bubbles -----------------------------------------------------
@@ -580,6 +636,11 @@
     clearEmptyState();
     messagesEl.appendChild(buildMessage(message));
     enhanceLongMessages(messagesEl);
+    updateContextResult(message);
+    if (message && message.role === "user") {
+      recentQuestionMessages = recentQuestionMessages.concat([message]).slice(-4);
+      renderRecentQuestions();
+    }
     if (message && message.role !== "user" && panelEl.classList.contains("is-minimized")) {
       unreadCount += 1;
       updateChatFabBadge();
@@ -941,6 +1002,7 @@
         currentSessionId = data.session_id || null;
         var messages = data.messages || [];
         if (!messages.length) {
+          renderRecentQuestions([]);
           setDualProcessing(false);
           resumeDelegatedTasks();
           return;
@@ -948,6 +1010,9 @@
         clearEmptyState();
         messages.forEach(function (message) { messagesEl.appendChild(buildMessage(message)); });
         enhanceLongMessages(messagesEl);
+        renderRecentQuestions(messages);
+        var latestAssistant = messages.filter(function (message) { return message.role === "assistant"; }).pop();
+        updateContextResult(latestAssistant);
         scrollToBottom();
         setDualProcessing(false);
         resumeDelegatedTasks();
@@ -1022,13 +1087,13 @@
     empty.innerHTML =
       '<span class="chat-empty-icon" aria-hidden="true">&#129302;</span>' +
       '<p class="chat-empty-text">Hỏi tôi về ' + productName + '</p>' +
-      '<p class="chat-empty-subtext">Trợ lý có thể giải thích cấu hình, vận hành và sự cố.</p>' +
-      (isDashboardInline ? '<div class="chat-quick-actions" aria-label="Câu hỏi nhanh">' +
-        '<button type="button" class="chat-quick-action" data-chat-prompt="Tóm tắt health và các cảnh báo hiện tại">Tóm tắt health</button>' +
-        '<button type="button" class="chat-quick-action" data-chat-prompt="Hiện trạng OSD và PG hiện tại thế nào?">Kiểm tra OSD / PG</button>' +
-        '<button type="button" class="chat-quick-action" data-chat-prompt="Dung lượng cụm và các pool đang dùng bao nhiêu?">Xem dung lượng</button>' +
-        '</div>' : '');
+      '<p class="chat-empty-subtext">Trợ lý có thể giải thích cấu hình, vận hành và sự cố.</p>';
     messagesEl.appendChild(empty);
+    renderRecentQuestions([]);
+    if (contextResultEl) {
+      contextResultEl.textContent = "Khi AI trả lời, bản xem trước sẽ xuất hiện ở đây.";
+      contextResultEl.classList.add("chat-context-muted");
+    }
   }
 
   function startNewSession() {
@@ -1420,6 +1485,7 @@
 
   function focusInlineChat() {
     if (!isDashboardInline) return;
+    if (panelEl.classList.contains("is-minimized")) setMinimized(false);
     panelEl.scrollIntoView({ behavior: "smooth", block: "start" });
     window.setTimeout(function () {
       if (inputEl) inputEl.focus();
@@ -1427,16 +1493,6 @@
   }
 
   function setMinimized(minimized) {
-    if (isDashboardInline) {
-      minimized = false;
-      panelEl.classList.remove("is-minimized");
-      panelEl.setAttribute("aria-hidden", "false");
-      if (chatFab) {
-        chatFab.hidden = false;
-        chatFab.setAttribute("aria-expanded", "true");
-      }
-      return;
-    }
     panelEl.classList.toggle("is-minimized", minimized);
     panelEl.setAttribute("aria-hidden", "false");
     if (!minimized) {
@@ -1444,7 +1500,7 @@
       updateChatFabBadge();
     }
     if (chatFab) {
-      chatFab.hidden = !minimized;
+      chatFab.hidden = isDashboardInline ? false : !minimized;
       chatFab.setAttribute("aria-expanded", minimized ? "false" : "true");
     }
     if (minimizeBtn) {
@@ -1452,6 +1508,7 @@
       minimizeBtn.setAttribute("aria-label", minimized ? "Phóng to" : "Thu nhỏ");
       minimizeBtn.title = minimized ? "Phóng to" : "Thu nhỏ";
     }
+    if (restoreBtn) restoreBtn.hidden = !minimized;
     try {
       localStorage.setItem(MINIMIZED_STORAGE_KEY, minimized ? "1" : "0");
     } catch (e) {
@@ -1481,6 +1538,9 @@
       setMinimized(!panelEl.classList.contains("is-minimized"));
     });
   }
+  if (restoreBtn) {
+    restoreBtn.addEventListener("click", function () { setMinimized(false); });
+  }
   if (closeBtn) {
     closeBtn.addEventListener("click", function () { setMinimized(true); });
   }
@@ -1497,9 +1557,8 @@
   var startMinimized = false;
   try {
     var storedMinimized = localStorage.getItem(MINIMIZED_STORAGE_KEY);
-    // The Ceph Dashboard has a floating trigger, so its drawer starts closed
-    // on first visit. Other products may still use the inline chat layout and
-    // have no trigger; preserve their historical open-by-default behavior.
+    // Dashboard keeps the inline section open on first visit. Other pages
+    // expose the bottom-sheet trigger and start collapsed until opened.
     startMinimized = isDashboardInline ? false : (chatFab
       ? (storedMinimized === null ? true : storedMinimized === "1")
       : storedMinimized === "1");
@@ -1572,7 +1631,7 @@
     if (!modeSelectEl) return;
     var dual = modeSelectEl.value === "dual";
     var delegated = modeSelectEl.value === "delegate";
-    inputEl.placeholder = dual ? "Nhập yêu cầu để hai AI trao đổi..." : (delegated ? "Giao việc cho các agent độc lập..." : "Nhập câu hỏi về cụm Ceph...");
+    inputEl.placeholder = dual ? "Nhập yêu cầu để hai AI trao đổi..." : (delegated ? "Giao việc cho các agent độc lập..." : "Hỏi AI về trạng thái cụm Ceph…");
   }
   if (modeSelectEl) {
     modeSelectEl.addEventListener("change", updateChatMode);
