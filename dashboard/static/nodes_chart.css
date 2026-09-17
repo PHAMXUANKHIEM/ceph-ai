@@ -1,0 +1,37 @@
+/* Node Monitoring chart polish: the legend belongs above the plot and the
+   empty state must remain readable over a dark canvas. */
+.node-monitor-page .metric-section-head {
+  margin-bottom: 4px;
+}
+
+.node-monitor-page .metric-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 20px;
+  margin: 0 0 3px;
+  color: var(--text-muted);
+  font-size: .7rem;
+  font-family: var(--font-mono);
+}
+
+.node-monitor-page .metric-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.node-monitor-page .metric-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, .04);
+}
+
+.node-monitor-page .chart-empty-overlay {
+  padding: 20px;
+  text-align: center;
+  line-height: 1.5;
+  background: rgba(15, 23, 42, .72);
+}

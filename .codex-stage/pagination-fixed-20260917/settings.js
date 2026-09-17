@@ -811,9 +811,9 @@
       button.addEventListener("click", function () {
         pendingRestartButton = button;
         var service = button.getAttribute("data-restart-service");
-        dialogTitle.textContent = "Khởi động lại " + service + "?";
+        dialogTitle.textContent = "Restart " + service + "?";
         dialogDescription.textContent = button.getAttribute("data-restart-warning") || "This service will be briefly unavailable.";
-        dialogConfirm.textContent = "Xác nhận";
+        dialogConfirm.textContent = "Restart " + service;
         restartDialog.showModal();
       });
     });
@@ -827,9 +827,9 @@
       var form = document.getElementById("restart-form-" + service.toLowerCase());
       if (!form) return;
       dialogConfirm.disabled = true;
-      dialogConfirm.textContent = "Đang xử lý...";
+      dialogConfirm.textContent = "Restarting...";
       pendingRestartButton.classList.add("is-loading");
-      pendingRestartButton.innerHTML = "<span>↻</span>Đang xử lý...";
+      pendingRestartButton.innerHTML = "<span>↻</span> Restarting...";
       form.submit();
     });
   }
@@ -841,16 +841,16 @@
   var items = Array.prototype.slice.call(document.querySelectorAll(".settings-nav-item[data-section]"));
   if (!groupLink || !currentLabel || !items.length) return;
   var labels = {
-    "restart-controls": ["Hệ thống", "Tiến trình hệ thống"], "action-policy": ["Hệ thống", "Chính sách hành động AI"],
-    database: ["Hệ thống", "Kết nối cơ sở dữ liệu"], "server-log": ["Hệ thống", "Nhật ký máy chủ"],
-    "patch-pipeline": ["Pipeline & lưu trữ", "Pipeline"], "log-intel": ["Pipeline & lưu trữ", "Phân tích nhật ký"],
-    "dual-ai": ["Pipeline & lưu trữ", "Hai AI trao đổi"], "code-repair": ["Pipeline & lưu trữ", "Sửa mã bằng AI"],
-    "backup-targets": ["Pipeline & lưu trữ", "Cấu hình lưu trữ"], router: ["Kết nối", "API AI"],
-    cost: ["Kết nối", "Chi phí"], cluster: ["Kết nối", "Cụm Ceph"], "ceph-host-keys": ["Kết nối", "Khóa SSH node Ceph"],
-    openstack: ["Kết nối", "OpenStack"], cleanup: ["Bảo trì", "Bảo trì hệ thống"]
+    "restart-controls": ["Hệ thống", "System Processes"], "action-policy": ["Hệ thống", "AI Action Policy"],
+    database: ["Hệ thống", "Database Connection"], "server-log": ["Hệ thống", "Server Logs"],
+    "patch-pipeline": ["Pipeline & lưu trữ", "Pipeline"], "log-intel": ["Pipeline & lưu trữ", "Log Intelligence"],
+    "dual-ai": ["Pipeline & lưu trữ", "Hai AI trao đổi"], "code-repair": ["Pipeline & lưu trữ", "AI Code Repair"],
+    "backup-targets": ["Pipeline & lưu trữ", "Storage Configuration"], router: ["Kết nối", "AI API"],
+    cost: ["Kết nối", "Chi phí"], cluster: ["Kết nối", "Ceph Cluster"], "ceph-host-keys": ["Kết nối", "Ceph Node SSH Keys"],
+    openstack: ["Kết nối", "OpenStack"], cleanup: ["Bảo trì", "System Maintenance"]
   };
   function update(item) {
-    var data = labels[item.getAttribute("data-section")] || ["Cài đặt", item.textContent.trim()];
+    var data = labels[item.getAttribute("data-section")] || ["Settings", item.textContent.trim()];
     groupLink.textContent = data[0]; groupLink.href = "#" + item.getAttribute("data-section"); currentLabel.textContent = data[1];
   }
   items.forEach(function (item) { item.addEventListener("click", function () { update(item); }); });

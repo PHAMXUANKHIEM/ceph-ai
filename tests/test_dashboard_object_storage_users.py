@@ -3,6 +3,7 @@ from config.settings import settings
 from shared import db
 from shared.models import Cluster
 from shared.models import ObjectStorageAuditEntry
+from watcher.rgw_access_log import _fetch_s3_user_info_batch
 
 
 def _login(client):
@@ -197,6 +198,24 @@ def test_object_storage_audit_filters_and_paginates_25_rows_client_side():
     assert "filtered.slice((auditPage - 1) * auditSize, auditPage * auditSize)" in source
     assert "25 dòng/trang" in source
     assert "classifyAction" in source
+
+
+def test_s3_user_batch_parser_keeps_users_separate_and_handles_missing_payload():
+    output = "\n".join([
+        "__CEPH_AIOPS_S3_USER__alice__",
+        '{"user_id":"alice","keys":[]}',
+        "__CEPH_AIOPS_S3_USER__bob__",
+        '{"user_id":"bob","keys":[]}',
+    ])
+
+    result = _fetch_s3_user_info_batch(
+        "test-host", ["alice", "bob", "missing"], "none", "",
+        lambda command: output,
+    )
+
+    assert result["alice"]["user_id"] == "alice"
+    assert result["bob"]["user_id"] == "bob"
+    assert result["missing"] is None
 
 
 def test_execute_requires_admin_and_exact_uid_confirmation(dashboard_client, monkeypatch):

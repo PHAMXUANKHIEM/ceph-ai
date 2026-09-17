@@ -28,23 +28,24 @@
   </header>
 
   <main class="page users-page">
-    <div class="users-page-heading"><div><p class="users-eyebrow">ACCESS CONTROL</p><h1>Users</h1><p class="users-page-description">Quản lý tài khoản dashboard và quyền truy cập các tính năng vận hành.</p></div><span class="users-count-badge">{{ users|length }} user{% if users|length != 1 %}s{% endif %}</span></div>
+    <div class="users-page-heading"><div><p class="users-eyebrow">ACCESS CONTROL</p><h1>Users</h1><p class="users-page-description">Quản lý tài khoản dashboard và quyền truy cập các tính năng vận hành.</p></div></div>
 
     {% if user_create_error or user_create_success or user_toggle_error or user_chat_scope_success or user_delete_error or user_delete_success %}
     <div class="users-feedback-stack">
-      {% if user_create_error %}<p class="users-feedback is-error">⚠️ {{ user_create_error }}</p>{% endif %}
-      {% if user_toggle_error or user_delete_error %}<p class="users-feedback is-error">⚠️ {{ user_toggle_error or user_delete_error }}</p>{% endif %}
-      {% if user_create_success %}<p class="users-feedback is-success">✅ {{ user_create_success }}</p>{% endif %}
-      {% if user_chat_scope_success or user_delete_success %}<p class="users-feedback is-success">✅ {{ user_chat_scope_success or user_delete_success }}</p>{% endif %}
+      {% if user_create_error %}<p class="users-feedback is-error" data-user-toast>⚠️ {{ user_create_error }}<button type="button" class="users-feedback-dismiss" aria-label="Đóng thông báo">✕</button></p>{% endif %}
+      {% if user_toggle_error or user_delete_error %}<p class="users-feedback is-error" data-user-toast>⚠️ {{ user_toggle_error or user_delete_error }}<button type="button" class="users-feedback-dismiss" aria-label="Đóng thông báo">✕</button></p>{% endif %}
+      {% if user_create_success %}<p class="users-feedback is-success" data-user-toast>✅ {{ user_create_success }}<button type="button" class="users-feedback-dismiss" aria-label="Đóng thông báo">✕</button></p>{% endif %}
+      {% if user_chat_scope_success or user_delete_success %}<p class="users-feedback is-success" data-user-toast>✅ {{ user_chat_scope_success or user_delete_success }}<button type="button" class="users-feedback-dismiss" aria-label="Đóng thông báo">✕</button></p>{% endif %}
     </div>
     {% endif %}
 
     <div class="users-workspace">
       <section class="card users-list-card">
-        <div class="card-header users-card-header"><div><p class="users-card-kicker">DASHBOARD ACCOUNTS</p><h2>Danh sách user</h2><p class="hint">Các tài khoản được tạo trong dashboard, không bao gồm admin mặc định.</p></div><span class="users-card-total">{{ users|length }} tài khoản</span></div>
-        <div class="users-admin-alert"><span>ℹ️</span><p><strong>Admin mặc định</strong> — Tài khoản admin mặc định được cấu hình trong file môi trường (.env). Tài khoản này luôn có quyền admin và không thể vô hiệu hóa.</p></div>
+        <div class="card-header users-card-header"><div><p class="users-card-kicker">DASHBOARD ACCOUNTS</p><h2>Danh sách user ({{ users|length }})</h2><p class="hint">{{ users|length }} tài khoản, không tính admin mặc định.</p></div><button type="button" class="btn btn-primary btn-sm users-open-create" id="users-open-create">＋ Tạo user mới</button></div>
+        <details class="users-admin-alert"><summary><span>ℹ️</span><strong>Admin mặc định được cấu hình từ .env</strong><span class="users-admin-alert-toggle">Xem chi tiết</span></summary><p>Tài khoản này luôn có quyền admin và không thể vô hiệu hóa.</p></details>
         <div class="table-wrap users-table-wrap">
           <table class="users-table">
+            <colgroup><col class="users-col-username"><col class="users-col-role"><col class="users-col-ai"><col class="users-col-status"><col class="users-col-created-by"><col class="users-col-created-at"><col class="users-col-actions"></colgroup>
             <thead><tr><th>Username</th><th>Vai trò</th><th>Phạm vi AI</th><th>Trạng thái</th><th>Người tạo</th><th>Ngày tạo</th><th><span class="sr-only">Thao tác</span></th></tr></thead>
             <tbody>
               {% for u in users %}
@@ -57,11 +58,11 @@
                 <td><time class="user-relative-time" data-created-at="{{ u.created_at.isoformat() }}" title="{{ u.created_at.strftime('%Y-%m-%d %H:%M') }}">{{ u.created_at.strftime("%Y-%m-%d %H:%M") }}</time></td>
                 <td class="user-actions-cell"><details class="user-actions-menu"><summary aria-label="Mở menu thao tác">⋮</summary><div class="user-actions-popover">
                   <span class="user-menu-label">Thao tác với {{ u.username }}</span>
-                  <span class="user-menu-disabled" title="Chưa có chức năng chỉnh sửa hồ sơ">Chỉnh sửa</span>
-                  <span class="user-menu-disabled" title="Chưa có chức năng đặt lại mật khẩu">Đặt lại mật khẩu</span>
-                  <form method="post" action="/users/{{ u.id }}/toggle-ceph-chat-scope" class="inline-form">{% if u.is_admin %}<button type="submit" disabled title="Admin luôn không bị giới hạn">AI: Không giới hạn</button>{% else %}<button type="submit">{{ "Mở rộng AI" if u.ceph_chat_restricted else "Giới hạn Ceph" }}</button>{% endif %}</form>
-                  <form method="post" action="/users/{{ u.id }}/toggle-active" class="inline-form">{% if u.username == user %}<button type="submit" disabled title="Không thể tự vô hiệu hóa chính mình">{{ "Vô hiệu hóa" if u.is_active else "Kích hoạt lại" }}</button>{% else %}<button type="submit" class="{{ 'is-danger' if u.is_active else '' }}">{{ "Vô hiệu hóa" if u.is_active else "Kích hoạt lại" }}</button>{% endif %}</form>
-                  {% if u.username == user %}<form method="post" action="/users/{{ u.id }}/delete" class="inline-form"><button type="submit" disabled title="Không thể tự xóa chính mình">Xóa</button></form>{% else %}<form method="post" action="/users/{{ u.id }}/delete" class="inline-form" onsubmit="return confirm('Xóa vĩnh viễn user {{ u.username }}? Không thể hoàn tác.');"><button type="submit" class="is-danger">Xóa</button></form>{% endif %}
+                  <span class="user-menu-disabled" title="Chưa có chức năng chỉnh sửa hồ sơ">✏️ Chỉnh sửa</span>
+                  <span class="user-menu-disabled" title="Chưa có chức năng đổi mật khẩu">🔑 Đổi mật khẩu</span>
+                  <form method="post" action="/users/{{ u.id }}/toggle-ceph-chat-scope" class="inline-form">{% if u.is_admin %}<button type="submit" disabled title="Admin luôn không bị giới hạn">🤖 Quyền AI không giới hạn</button>{% else %}<button type="submit">🤖 {{ "Mở rộng quyền AI" if u.ceph_chat_restricted else "Giới hạn quyền AI" }}</button>{% endif %}</form>
+                  <form method="post" action="/users/{{ u.id }}/toggle-active" class="inline-form">{% if u.username == user %}<button type="submit" disabled title="Không thể tự vô hiệu hóa chính mình">⛔ {{ "Vô hiệu hóa" if u.is_active else "Kích hoạt lại" }}</button>{% else %}<button type="submit" class="{{ 'is-warning' if u.is_active else '' }}">{{ "⛔ Vô hiệu hóa" if u.is_active else "✅ Kích hoạt lại" }}</button>{% endif %}</form>
+                  {% if u.username == user %}<form method="post" action="/users/{{ u.id }}/delete" class="inline-form"><button type="submit" disabled title="Không thể tự xóa chính mình">🗑️ Xóa</button></form>{% else %}<form method="post" action="/users/{{ u.id }}/delete" class="inline-form" onsubmit="return confirm('Xóa vĩnh viễn user {{ u.username }}? Không thể hoàn tác.');"><button type="submit" class="is-danger">🗑️ Xóa</button></form>{% endif %}
                 </div></details></td>
               </tr>
               {% else %}
@@ -72,21 +73,22 @@
         </div>
       </section>
 
-      <aside class="card user-create-card">
-        <div class="user-create-header"><span class="user-create-icon">＋</span><div><p class="users-card-kicker">NEW ACCOUNT</p><h2>Tạo user mới</h2><p class="hint">Cấp quyền truy cập dashboard cho thành viên trong đội vận hành.</p></div></div>
+      <aside class="card user-create-card" id="user-create-card">
+        <div class="user-create-header"><span class="user-create-icon">＋</span><div><p class="users-card-kicker">NEW ACCOUNT</p><h2>Tạo user mới</h2><p class="hint">Cấp quyền truy cập dashboard cho thành viên trong đội vận hành.</p></div><button type="button" class="users-close-create" id="users-close-create" aria-label="Đóng form tạo user">✕</button></div>
         <form class="user-create-form" id="user-create-form" method="post" action="/users/create">
-          <label class="user-form-field">Username<span class="user-input-wrap"><span class="user-input-icon">👤</span><input type="text" name="new_username" placeholder="on-call" autocomplete="username" required></span><small>Tên đăng nhập, ví dụ: on-call</small></label>
+          <label class="user-form-field">Username<span class="user-input-wrap"><input type="text" name="new_username" placeholder="on-call" autocomplete="username" required></span><small>Tên đăng nhập, ví dụ: on-call</small></label>
           <div class="user-password-grid">
             <label class="user-form-field">Mật khẩu<span class="user-input-wrap"><input type="password" id="new-password" name="new_password" autocomplete="new-password" required><button type="button" class="password-toggle" data-password-toggle="new-password" aria-label="Hiện mật khẩu">👁️</button></span></label>
             <label class="user-form-field">Nhập lại mật khẩu<span class="user-input-wrap"><input type="password" id="new-password-confirm" name="new_password_confirm" autocomplete="new-password" required><button type="button" class="password-toggle" data-password-toggle="new-password-confirm" aria-label="Hiện mật khẩu">👁️</button></span></label>
           </div>
-          <div class="password-strength" aria-live="polite"><div class="password-strength-track"><span id="password-strength-fill"></span></div><div class="password-strength-meta"><span id="password-strength-label">Độ mạnh mật khẩu</span><span>Tối thiểu 8 ký tự</span></div></div>
+          <div class="password-strength" aria-live="polite"><div class="password-strength-track" aria-hidden="true"><span id="password-strength-fill" class="strength-segment"></span><span class="strength-segment"></span><span class="strength-segment"></span><span class="strength-segment"></span></div><div class="password-strength-meta"><span id="password-strength-label">Độ mạnh mật khẩu</span><span>Tối thiểu 8 ký tự</span></div></div>
           <p class="password-requirements" id="password-requirements">Dùng ít nhất 8 ký tự; thêm chữ hoa, số và ký tự đặc biệt để tăng độ mạnh.</p>
-          <fieldset class="user-role-fieldset"><legend>Vai trò &amp; Quyền</legend><div class="user-role-options"><label class="user-role-option is-selected"><input type="radio" name="new_is_admin" value="" checked><span class="user-role-option-icon">◉</span><span><strong>User thường</strong><small>Xem dashboard, monitoring</small></span><i>✓</i></label><label class="user-role-option"><input type="radio" name="new_is_admin" value="on"><span class="user-role-option-icon">◆</span><span><strong>Admin</strong><small>Toàn quyền — Tiến trình hệ thống, Database, Users</small></span><i>✓</i></label></div></fieldset>
+          <fieldset class="user-role-fieldset"><legend>Vai trò &amp; Quyền</legend><div class="user-role-options"><label class="user-role-option is-selected"><input type="radio" name="new_is_admin" value="" checked><span class="user-role-option-icon">👤</span><span><strong>User thường</strong><small>Xem dashboard, monitoring</small></span><i>✓</i></label><label class="user-role-option"><input type="radio" name="new_is_admin" value="on"><span class="user-role-option-icon">🛡️</span><span><strong>Admin</strong><small>Toàn quyền — Tiến trình hệ thống, Database, Users</small></span><i>✓</i></label></div></fieldset>
           <button type="submit" class="btn user-create-submit">＋ Tạo user</button>
         </form>
       </aside>
     </div>
+    <div class="users-drawer-backdrop" id="users-drawer-backdrop" hidden></div>
   </main>
 
   <script src="/static/users.js?v={{ static_version }}"></script>

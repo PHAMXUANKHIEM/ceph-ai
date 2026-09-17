@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Deploy Cluster — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&lifecycle_layout=4">
+  <link rel="stylesheet" href="/static/custom_selects.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/deploy_cluster_redesign.css?v={{ static_version }}">
 </head>
 <body>
   {% include "_nav.html" %}
@@ -15,14 +17,21 @@
       <span class="lifecycle-page-badge is-primary">PREVIEW / APPROVAL</span>
     </header>
     {% if last_action and last_action.status in ("EXECUTED", "FAILED") and not pending_action %}
-    <section class="card lifecycle-panel">
-      <div class="card-header"><h2>{% if last_action.status == "EXECUTED" %}✅ Cụm gần nhất đã dựng thành công{% else %}❌ Lần dựng cụm gần nhất thất bại{% endif %}</h2></div>
+    <section class="card lifecycle-panel deploy-last-action-card {% if last_action.status == "FAILED" %}is-failed{% else %}is-success{% endif %}">
+      <div class="card-header">
+        <div>
+          <span class="deploy-last-action-status">{% if last_action.status == "EXECUTED" %}✅{% else %}❌{% endif %}</span>
+          <h2>{% if last_action.status == "EXECUTED" %}Cụm gần nhất đã dựng thành công{% else %}Lần dựng cụm gần nhất thất bại{% endif %}</h2>
+        </div>
+        {% if last_action.created_at %}<time datetime="{{ last_action.created_at.isoformat() }}">{{ last_action.created_at.strftime("%d/%m/%Y %H:%M") }}</time>{% endif %}
+      </div>
       <div class="card-body">
         <p><strong>Phiên bản:</strong> Ceph {{ last_action_params.version or "?" }}</p>
         <p><strong>Phương thức:</strong> {{ last_action_params.method or "?" }}</p>
         {% if last_action_params.nodes %}
         <p><strong>Số node:</strong> {{ last_action_params.nodes|length }}</p>
         {% endif %}
+        <p><strong>{% if last_action.status == "FAILED" %}Thất bại lúc{% else %}Hoàn tất lúc{% endif %}:</strong> {{ last_action.created_at.strftime("%d/%m/%Y %H:%M") if last_action.created_at else "—" }}</p>
         {% if last_action.status == "EXECUTED" %}
         <div class="pending-action-buttons">
           <a href="/" class="btn btn-primary">→ Xem Dashboard</a>
@@ -36,15 +45,26 @@
           {% endif %}
         </div>
         <p class="hint">Cấu hình cụm mới đã được ghi vào .env — khởi động lại Watcher &amp; Worker để bắt đầu theo dõi cụm này.</p>
+        {% else %}
+        <div class="deploy-last-action-buttons">
+          <a class="btn btn-sm btn-ghost" href="#deploy-log-card">Xem log chi tiết</a>
+          <button type="button" class="btn btn-sm btn-primary" id="df-retry-last">Thử lại với cấu hình cũ</button>
+        </div>
         {% endif %}
       </div>
     </section>
     {% endif %}
 
     <div class="deploy-cluster-grid">
-      <section class="card">
-        <div class="card-header"><h2>Cấu hình</h2></div>
-        <div class="card-body">
+      <section class="card deploy-config-card" id="deploy-config-card">
+        <div class="card-header deploy-config-header">
+          {% if pending_action %}
+          <h2>Cấu hình</h2>
+          {% else %}
+          <button type="button" class="deploy-collapse-toggle" id="df-config-toggle" aria-expanded="false" aria-controls="deploy-config-body"><span class="deploy-collapse-icon">▶</span><h2>Tạo / Cập nhật Config</h2></button>
+          {% endif %}
+        </div>
+        <div class="card-body" id="deploy-config-body" {% if not pending_action %}hidden{% endif %}>
           {% if pending_action %}
           <p class="hint">Đã có một đề xuất dựng cụm đang chờ xử lý — xem chi tiết bên phải.</p>
           {% else %}
@@ -82,14 +102,16 @@
               <input type="text" id="df-rpm-path" name="rpm_path" placeholder="/opt/ceph-rpms">
             </label>
 
-            <label>
-              SSH User
-              <input type="text" id="df-ssh-user" value="{{ default_ssh_user }}" disabled>
-            </label>
-            <label>
-              SSH Key Path
-              <input type="text" id="df-ssh-key-path" value="{{ default_ssh_key_path }}" disabled>
-            </label>
+            <div class="deploy-field-grid">
+              <label>
+                SSH User
+                <input type="text" id="df-ssh-user" value="{{ default_ssh_user }}" disabled>
+              </label>
+              <label>
+                SSH Key Path
+                <input type="text" id="df-ssh-key-path" value="{{ default_ssh_key_path }}" disabled>
+              </label>
+            </div>
             <p class="hint">SSH User/Key Path lấy từ <a href="/settings">Settings</a> — sửa tại đó nếu cần đổi.</p>
 
             <label>Nodes trong cụm</label>
@@ -110,14 +132,16 @@
             <p class="hint" id="df-node-warning"></p>
             <p class="hint">Mỗi node OSD tự chọn (một hoặc nhiều) đĩa riêng — nhập nhiều đĩa trên cùng 1 node bằng cách phân tách bằng dấu phẩy (vd node1: <code>/dev/vdc, /dev/vdd</code>, node2: <code>/dev/vdb</code>) — chỉ cần điền khi đã tick OSD cho node đó.</p>
 
-            <label>
-              Public Network
-              <input type="text" id="df-public-network" name="public_network" placeholder="10.20.1.0/24">
-            </label>
-            <label>
-              Cluster Network
-              <input type="text" id="df-cluster-network" name="cluster_network" placeholder="(giống Public Network nếu để trống)">
-            </label>
+            <div class="deploy-field-grid">
+              <label>
+                Public Network
+                <input type="text" id="df-public-network" name="public_network" placeholder="10.20.1.0/24">
+              </label>
+              <label>
+                Cluster Network
+                <input type="text" id="df-cluster-network" name="cluster_network" placeholder="(giống Public Network nếu để trống)">
+              </label>
+            </div>
 
             <details>
               <summary>Tùy chọn nâng cao</summary>
@@ -131,21 +155,26 @@
               </label>
             </details>
 
-            <p class="error" id="df-error" hidden></p>
-            <button type="submit" class="btn btn-primary">Bắt đầu cài đặt</button>
+            <div class="deploy-submit-bar">
+              <p class="error" id="df-error" hidden></p>
+              <button type="submit" class="btn btn-primary" id="df-submit-btn">Bắt đầu cài đặt</button>
+            </div>
           </form>
           {% endif %}
         </div>
       </section>
 
-      <section class="card lifecycle-panel deploy-log-card lifecycle-log-panel">
+      <section class="card lifecycle-panel deploy-log-card lifecycle-log-panel" id="deploy-log-card">
         <div class="card-header">
-          <h2 id="df-log-title">
+          <div class="deploy-log-heading">
+            <h2 id="df-log-title">
             {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}Chờ duyệt
             {% elif pending_action and pending_action.status == "APPROVED" %}● ĐANG CÀI ĐẶT...
             {% elif last_action %}Nhật ký lần gần nhất
             {% else %}Nhật ký tiến trình{% endif %}
-          </h2>
+            </h2>
+            <time id="df-log-timestamp">{% if last_action and last_action.created_at %}{{ last_action.created_at.strftime("%d/%m/%Y %H:%M") }}{% endif %}</time>
+          </div>
           <div class="deploy-log-actions">
             <button type="button" class="btn btn-sm btn-ghost" id="df-log-clear">Clear</button>
             <button type="button" class="btn btn-sm btn-ghost" id="df-log-copy">Copy</button>
@@ -187,7 +216,11 @@
   <script type="application/json" id="versions-by-codename-data">
     {{ versions_by_codename|tojson }}
   </script>
+  <script type="application/json" id="deploy-last-action-params-data">
+    {{ last_action_params|tojson }}
+  </script>
   <script src="/static/deploy_cluster.js?v={{ static_version }}"></script>
+  <script src="/static/custom_selects.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>
 </body>
 </html>

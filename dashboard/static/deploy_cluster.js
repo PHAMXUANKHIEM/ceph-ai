@@ -32,9 +32,10 @@
   function addNodeRow(ip) {
     if (!nodeRowsEl) return;
     nodeRowCount += 1;
+    var suggestedIp = "10.20.1." + (110 + nodeRowCount);
     var row = document.createElement("tr");
     row.innerHTML =
-      '<td><input type="text" class="node-ip" placeholder="10.20.1.112" value="' + (ip || "") + '"></td>' +
+      '<td class="node-ip-cell"><input type="text" class="node-ip" placeholder="' + suggestedIp + '" value="' + escapeHtml(ip || "") + '" inputmode="decimal" autocomplete="off"><small class="node-field-error" hidden></small></td>' +
       '<td><input type="checkbox" class="node-role" value="mon"></td>' +
       '<td><input type="checkbox" class="node-role" value="mgr"></td>' +
       '<td><input type="checkbox" class="node-role node-role-osd" value="osd"></td>' +
@@ -44,12 +45,22 @@
       '<td><button type="button" class="btn btn-sm btn-ghost node-remove">×</button></td>';
     row.querySelector(".node-remove").addEventListener("click", function () {
       row.remove();
+      validateNodes(false);
+      updateSubmitState();
     });
     var osdCheckbox = row.querySelector(".node-role-osd");
     var osdDiskInput = row.querySelector(".node-osd-disk");
     osdCheckbox.addEventListener("change", function () {
       osdDiskInput.disabled = !osdCheckbox.checked;
       if (!osdCheckbox.checked) osdDiskInput.value = "";
+      updateSubmitState();
+    });
+    row.querySelector(".node-ip").addEventListener("input", function () {
+      validateNodes(false);
+      updateSubmitState();
+    });
+    Array.prototype.forEach.call(row.querySelectorAll(".node-role"), function (checkbox) {
+      checkbox.addEventListener("change", updateSubmitState);
     });
     nodeRowsEl.appendChild(row);
   }
@@ -61,6 +72,18 @@
     addNodeRow();
     addNodeRow();
     addNodeRow();
+  }
+
+  var configToggle = document.getElementById("df-config-toggle");
+  var configBody = document.getElementById("deploy-config-body");
+  if (configToggle && configBody) {
+    configToggle.addEventListener("click", function () {
+      var expanded = configToggle.getAttribute("aria-expanded") === "true";
+      configToggle.setAttribute("aria-expanded", expanded ? "false" : "true");
+      configBody.hidden = expanded;
+      var icon = configToggle.querySelector(".deploy-collapse-icon");
+      if (icon) icon.textContent = expanded ? "▶" : "▼";
+    });
   }
 
   function collectNodes() {
@@ -87,6 +110,69 @@
       nodes.push(node);
     });
     return nodes;
+  }
+
+  function isValidIp(value) {
+    if (!value) return false;
+    if (value.indexOf(":") !== -1) {
+      return /^[0-9a-f:]+$/i.test(value) && value.indexOf(":::") === -1;
+    }
+    var parts = value.split(".");
+    return parts.length === 4 && parts.every(function (part) {
+      return /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255;
+    });
+  }
+
+  function setNodeError(row, message) {
+    var input = row.querySelector(".node-ip");
+    var error = row.querySelector(".node-field-error");
+    if (input) input.classList.toggle("is-invalid", !!message);
+    if (error) {
+      error.textContent = message || "";
+      error.hidden = !message;
+    }
+  }
+
+  function validateNodes(showEmptyErrors) {
+    if (!nodeRowsEl) return false;
+    var rows = Array.prototype.slice.call(nodeRowsEl.querySelectorAll("tr"));
+    var seen = {};
+    var valid = rows.length > 0;
+    var monCount = 0;
+    rows.forEach(function (row) {
+      var input = row.querySelector(".node-ip");
+      var ip = input ? input.value.trim() : "";
+      var message = "";
+      if (!ip) {
+        valid = false;
+        if (showEmptyErrors) message = "Nhập IP của node";
+      } else if (!isValidIp(ip)) {
+        valid = false;
+        message = "IP không đúng định dạng";
+      } else if (seen[ip.toLowerCase()]) {
+        valid = false;
+        message = "IP bị trùng với node khác";
+        setNodeError(seen[ip.toLowerCase()], "IP bị trùng với node khác");
+      } else {
+        seen[ip.toLowerCase()] = row;
+      }
+      setNodeError(row, message);
+      if (row.querySelector('.node-role[value="mon"]:checked')) monCount += 1;
+    });
+    if (monCount === 0) valid = false;
+    return valid;
+  }
+
+  function updateSubmitState() {
+    var submitButton = document.getElementById("df-submit-btn");
+    if (!submitButton) return;
+    var hasVersion = !!(versionInput && versionInput.value.trim());
+    var rows = nodeRowsEl ? nodeRowsEl.querySelectorAll("tr") : [];
+    var hasNodeIp = Array.prototype.some.call(rows, function (row) {
+      return row.querySelector(".node-ip") && row.querySelector(".node-ip").value.trim();
+    });
+    var hasMon = !!(nodeRowsEl && nodeRowsEl.querySelector('.node-role[value="mon"]:checked'));
+    submitButton.disabled = !(hasVersion && hasNodeIp && hasMon && validateNodes(false));
   }
 
   // --- Method radio -> rpm-path field + not-yet-supported note --------
@@ -149,8 +235,12 @@
 
     versionSelect.addEventListener("change", function () {
       if (versionInput && versionSelect.value) versionInput.value = versionSelect.value;
+      updateSubmitState();
     });
   }
+
+  if (versionInput) versionInput.addEventListener("input", updateSubmitState);
+  updateSubmitState();
 
   // --- Propose submit ---------------------------------------------------
 
@@ -158,6 +248,17 @@
     form.addEventListener("submit", function (event) {
       event.preventDefault();
       if (errorEl) { errorEl.hidden = true; errorEl.textContent = ""; }
+
+      if (!versionInput || !versionInput.value.trim()) {
+        if (errorEl) { errorEl.textContent = "Chọn hoặc nhập phiên bản Ceph trước khi tiếp tục."; errorEl.hidden = false; }
+        updateSubmitState();
+        return;
+      }
+      if (!validateNodes(true)) {
+        if (errorEl) { errorEl.textContent = "Kiểm tra lại IP node và chọn ít nhất một node MON."; errorEl.hidden = false; }
+        updateSubmitState();
+        return;
+      }
 
       var method = currentMethod();
       if (notYetSupported.indexOf(method) !== -1) {
@@ -205,6 +306,45 @@
     });
   }
 
+  var retryButton = document.getElementById("df-retry-last");
+  var lastActionParamsEl = document.getElementById("deploy-last-action-params-data");
+  if (retryButton && lastActionParamsEl && form) {
+    retryButton.addEventListener("click", function () {
+      var params = JSON.parse(lastActionParamsEl.textContent || "{}");
+      if (versionInput) versionInput.value = params.version || "";
+      Array.prototype.forEach.call(document.querySelectorAll('input[name="method"]'), function (radio) {
+        radio.checked = radio.value === (params.method || "cephadm");
+      });
+      if (document.getElementById("df-rpm-path")) document.getElementById("df-rpm-path").value = params.rpm_path || "";
+      if (document.getElementById("df-public-network")) document.getElementById("df-public-network").value = params.public_network || "";
+      if (document.getElementById("df-cluster-network")) document.getElementById("df-cluster-network").value = params.cluster_network || "";
+      onMethodChange();
+      if (nodeRowsEl) {
+        nodeRowsEl.innerHTML = "";
+        nodeRowCount = 0;
+        (params.nodes || []).forEach(function (node) {
+          addNodeRow(node.ip || "");
+          var row = nodeRowsEl.lastElementChild;
+          (node.roles || []).forEach(function (role) {
+            var checkbox = row.querySelector('.node-role[value="' + role + '"]');
+            if (checkbox) checkbox.checked = true;
+          });
+          var disks = (node.osd_disks || []).join(", ");
+          var diskInput = row.querySelector(".node-osd-disk");
+          if (diskInput) { diskInput.value = disks; diskInput.disabled = !(node.roles || []).includes("osd"); }
+        });
+        if (!nodeRowsEl.children.length) { addNodeRow(); addNodeRow(); addNodeRow(); }
+      }
+      var configCard = document.getElementById("deploy-config-card");
+      var configBody = document.getElementById("deploy-config-body");
+      var configToggle = document.getElementById("df-config-toggle");
+      if (configBody) configBody.hidden = false;
+      if (configToggle) { configToggle.setAttribute("aria-expanded", "true"); configToggle.querySelector(".deploy-collapse-icon").textContent = "▼"; }
+      updateSubmitState();
+      if (configCard) configCard.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
   // --- Progress polling + terminal log rendering -------------------------
 
   var logBox = document.getElementById("df-log-box");
@@ -212,10 +352,12 @@
   var progressBar = document.getElementById("df-progress-bar");
   var progressLabel = document.getElementById("df-progress-label");
   var logTitle = document.getElementById("df-log-title");
+  var logCard = document.getElementById("deploy-log-card");
   var clearBtn = document.getElementById("df-log-clear");
   var copyBtn = document.getElementById("df-log-copy");
 
   function renderProgress(status, progress) {
+    if (logCard && status) logCard.dataset.status = status;
     if (!logBox) return; // PENDING_APPROVAL view has no log box (shows the plan instead)
 
     if (!progress || !progress.length) {
@@ -255,7 +397,8 @@
           var hostLine = document.createElement("p");
           hostLine.className = "deploy-log-line status-" + h.status;
           hostLine.style.marginLeft = "1.5em";
-          hostLine.innerHTML = hostGlyph + " " + escapeHtml(h.host) + (h.message ? " — " + escapeHtml(h.message) : "");
+          var hostClock = h.finished_at_display || h.started_at_display || "";
+          hostLine.innerHTML = (hostClock ? "<span class=\"deploy-log-time\">[" + escapeHtml(hostClock) + "]</span> " : "") + hostGlyph + " " + escapeHtml(h.host) + (h.message ? " — " + escapeHtml(h.message) : "");
           logBox.appendChild(hostLine);
         });
       }

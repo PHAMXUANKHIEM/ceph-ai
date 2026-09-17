@@ -125,14 +125,6 @@
 
   function installTopPager(original) {
     if (original.dataset.paginationEnhanced === "true") return;
-    var anchor = findAnchor(original);
-    // Some pages already render their pager before the table (for example
-    // Buckets). Cloning it would put a second pager between the filter and
-    // table and shift the header/first row relationship unexpectedly.
-    if (anchor !== original && (original.compareDocumentPosition(anchor) & Node.DOCUMENT_POSITION_FOLLOWING)) {
-      original.dataset.paginationEnhanced = "true";
-      return;
-    }
     original.dataset.paginationEnhanced = "true";
     var top = original.cloneNode(true);
     top.classList.add("pagination-top");
@@ -155,6 +147,7 @@
     var topNext = top.querySelector(".pagination-next");
     if (topPrev) topPrev.addEventListener("click", function () { var target = original.querySelector(".pagination-prev"); if (target && !target.disabled) target.click(); });
     if (topNext) topNext.addEventListener("click", function () { var target = original.querySelector(".pagination-next"); if (target && !target.disabled) target.click(); });
+    var anchor = findAnchor(original);
     if (anchor !== original) anchor.before(top); else original.before(top);
     var focusTarget = anchor.querySelector ? (anchor.querySelector("table, ul") || anchor) : anchor;
     if (focusTarget && !focusTarget.hasAttribute("tabindex")) focusTarget.tabIndex = 0;

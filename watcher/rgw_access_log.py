@@ -66,6 +66,9 @@ _CREATION_TIME_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 # longer than the 5-second default used by read-only SSH commands, but scoped
 # only to the admin delete-all path.
 BUCKET_PURGE_TIMEOUT_SECONDS = 600
+# A batched inventory query must tolerate a busy cephadm host, but should not
+# wait indefinitely when RGW is unavailable.
+S3_USER_BATCH_TIMEOUT_SECONDS = 45
 
 _ACTION_VI = {
     ("GET", True): "Tải xuống",
@@ -622,6 +625,71 @@ def fetch_s3_user_info_with(host: str, uid: str, ssh_user: str, ssh_key_path: st
         return _parse_json_object(run_command_on_node_with(host, command, ssh_user, ssh_key_path))
     except Exception as exc:
         raise RgwLogError(f"Không lấy được thông tin S3 user trên {host}: {exc}") from exc
+
+
+def _fetch_s3_user_info_batch(host: str, uids: list[str], exec_mode: str,
+                              rgw_container_name: str, runner) -> dict[str, dict | None]:
+    """Fetch one page of user metadata through one remote RGW command.
+
+    A separate ``cephadm shell`` for every user is very expensive: cephadm
+    starts a transient container and serializes those starts per host.  The
+    inventory page only needs a small, bounded set of users, so execute the
+    same read-only command in one shell and delimit each JSON response with a
+    UID marker.  Missing/invalid responses remain ``None`` just like the
+    single-user helpers.
+    """
+    if not uids:
+        return {}
+    if exec_mode not in ("cephadm", "none") and not rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW.")
+    parts = []
+    for uid in uids:
+        marker = f"__CEPH_AIOPS_S3_USER__{uid}__"
+        parts.append(f"printf '%s\\n' {shlex.quote(marker)}")
+        parts.append(
+            f"radosgw-admin user info --uid={shlex.quote(uid)} --format json"
+        )
+    inner = "; ".join(parts)
+    command = ceph_client.build_exec_command(
+        exec_mode, rgw_container_name, f"sh -c {shlex.quote(inner)}"
+    )
+    try:
+        output = runner(command)
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được thông tin S3 user trên {host}: {exc}") from exc
+
+    result: dict[str, dict | None] = {uid: None for uid in uids}
+    current_uid = None
+    buffered: list[str] = []
+    for line in output.splitlines():
+        if line.startswith("__CEPH_AIOPS_S3_USER__") and line.endswith("__"):
+            if current_uid is not None:
+                result[current_uid] = _parse_json_object("\n".join(buffered).strip())
+            current_uid = line[len("__CEPH_AIOPS_S3_USER__"):-2]
+            buffered = []
+        elif current_uid is not None:
+            buffered.append(line)
+    if current_uid is not None:
+        result[current_uid] = _parse_json_object("\n".join(buffered).strip())
+    return result
+
+
+def fetch_s3_user_info_batch(host: str, uids: list[str]) -> dict[str, dict | None]:
+    return _fetch_s3_user_info_batch(
+        host, uids, settings.ceph_exec_mode, settings.ceph_rgw_container_name,
+        lambda command: run_command_on_node(host, command, timeout=S3_USER_BATCH_TIMEOUT_SECONDS),
+    )
+
+
+def fetch_s3_user_info_batch_with(host: str, uids: list[str], ssh_user: str,
+                                  ssh_key_path: str, exec_mode: str,
+                                  rgw_container_name: str) -> dict[str, dict | None]:
+    return _fetch_s3_user_info_batch(
+        host, uids, exec_mode, rgw_container_name,
+        lambda command: run_command_on_node_with(
+            host, command, ssh_user, ssh_key_path, timeout=S3_USER_BATCH_TIMEOUT_SECONDS
+        ),
+    )
 
 def _mask_s3_access_key(value: object) -> str:
     access_key = str(value or "").strip()

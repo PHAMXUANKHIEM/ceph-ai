@@ -127,11 +127,11 @@ def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, mo
     _configure_pools(monkeypatch)
     calls = []
 
-    def fail_if_trash_is_scanned(pool):
+    def list_trash(pool):
         calls.append(pool)
-        raise AssertionError("Trash must be loaded only after a pool is selected")
+        return [_fake_trash_entry()]
 
-    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", fail_if_trash_is_scanned)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", list_trash)
     _login(dashboard_client)
 
     response = dashboard_client.get("/trash")
@@ -140,13 +140,17 @@ def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, mo
     assert 'href="/trash?pool=vms' in response.text
     assert 'href="/trash?pool=backups' in response.text
     assert "Chọn một pool để xem các volume" in response.text
-    assert calls == []
+    # The picker counts entries per pool, but never lists them: individual
+    # volume names only appear once a pool is selected.
+    assert set(calls) == {"vms", "backups"}
     assert "old-disk" not in response.text
 
 
-def test_trash_landing_shows_purge_all_for_each_non_empty_pool(dashboard_client, monkeypatch):
+def test_trash_landing_does_not_offer_purge_all(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
-    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", lambda pool: pytest.fail("unexpected scan"))
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash", lambda pool: [_fake_trash_entry()]
+    )
     _login(dashboard_client)
 
     response = dashboard_client.get("/trash")
@@ -194,7 +198,7 @@ def test_volumes_page_with_explicit_pool_selects_it(dashboard_client, monkeypatc
     assert 'id="volume-inventory-panel"' in response.text
     assert 'id="volumes-panel"' not in response.text
     assert 'class="card volume-inventory-card"' in response.text
-    assert 'class="trash-pagination volume-inventory-pagination"' in response.text
+    assert 'id="trash-entry-list"' not in response.text
 
 
 def test_volume_performance_page_is_separate_from_volume_inventory(dashboard_client, monkeypatch):
@@ -1144,12 +1148,12 @@ def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
     assert 'id="trash-entry-list"' in response.text
     assert 'data-trash-id="1234567890ab"' in response.text
     assert 'id="trash-pagination"' in response.text
-    assert "10 volume mỗi trang" in response.text
+    assert 'id="trash-page-summary"' in response.text
     assert 'src="/static/trash.js' in response.text
-    assert 'action="/volumes/vms/trash/purge-all"' in response.text
+    assert 'action="/volumes/vms/trash/purge-all?cluster=' in response.text
     assert "Xoá tất cả (1)" in response.text
     assert 'name="confirmation"' in response.text
-    assert 'action="/volumes/vms/trash/1234567890ab/force-remove"' in response.text
+    assert 'action="/volumes/vms/trash/1234567890ab/force-remove?cluster=' in response.text
     assert 'data-copy-value="1234567890ab"' in response.text
     assert 'class="trash-summary-bar"' in response.text
     assert "bỏ qua TTL" in response.text
@@ -1250,7 +1254,7 @@ def test_trash_page_server_hides_entries_after_first_ten(dashboard_client, monke
     assert response.status_code == 200
     assert 'data-trash-id="id-9"' in response.text
     assert 'data-trash-id="id-10" hidden' in response.text
-    assert "Trang 1 / 2" in response.text
+    assert 'id="trash-page-status"' in response.text
 
 
 def test_volumes_page_shows_empty_trash_hint(dashboard_client, monkeypatch):
@@ -1290,7 +1294,7 @@ def test_volumes_page_shows_xoa_button_when_no_pending_action(dashboard_client, 
     response = dashboard_client.get("/trash?pool=vms")
 
     assert response.status_code == 200
-    assert 'action="/volumes/vms/trash/1234567890ab/propose"' in response.text
+    assert 'action="/volumes/vms/trash/1234567890ab/propose?cluster=' in response.text
     assert "Chờ duyệt" not in response.text
 
 
@@ -1355,7 +1359,7 @@ def test_propose_trash_remove_creates_pending_approval_action(dashboard_client, 
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/trash?pool=vms"
+    assert response.headers["location"].startswith("/trash?pool=vms&cluster=")
     with db_module.SessionLocal() as session:
         action = session.query(Action).filter_by(action_id="rbd_trash_remove").one()
         assert action.status == ActionStatus.PENDING_APPROVAL.value
@@ -1573,7 +1577,7 @@ def test_trash_ttl_blocks_early_delete_and_purge_all(dashboard_client, monkeypat
     assert page.status_code == 200
     assert "Còn 30 ngày" in page.text
     assert "Còn 30 ngày" in page.text
-    assert 'action="/volumes/vms/trash/purge-all"' in page.text
+    assert 'action="/volumes/vms/trash/purge-all?cluster=' in page.text
     assert 'action="/volumes/vms/trash/fresh-id/propose"' not in page.text
     assert single.status_code == 409
     assert bulk.status_code == 200

@@ -41,6 +41,33 @@ function bucketHighlightJSON(value) {
   var page = document.querySelector(".bucket-page");
   function configuredEndpoint() { return page.dataset.rgwEndpoint || (page.dataset.rgwHost ? "http://" + page.dataset.rgwHost + ":7480" : ""); }
 
+  function configuredEndpoints() {
+    var values = (page.dataset.rgwEndpoints || "").split(",").map(function (value) { return value.trim(); }).filter(Boolean);
+    var current = configuredEndpoint();
+    if (current && values.indexOf(current) < 0) values.unshift(current);
+    return values.filter(function (value, index) { return values.indexOf(value) === index; });
+  }
+  function enableEndpointInputs() {
+    var endpoints = configuredEndpoints();
+    var apiName = document.getElementById("bucket-create-api-name");
+    if (apiName) apiName.readOnly = false;
+    ["bucket-create-endpoint", "bucket-governance-endpoint", "bucket-lifecycle-endpoint", "bucket-policy-endpoint", "bucket-delete-endpoint"].forEach(function (id) {
+      var input = document.getElementById(id);
+      if (!input) return;
+      input.readOnly = false;
+      if (!endpoints.length) return;
+      input.setAttribute("list", id + "-options");
+      var list = document.createElement("datalist");
+      list.id = id + "-options";
+      endpoints.forEach(function (endpoint) {
+        var option = document.createElement("option");
+        option.value = endpoint;
+        list.appendChild(option);
+      });
+      input.parentNode.appendChild(list);
+    });
+  }
+
   function value(id, next) {
     var control = document.getElementById(id);
     if (control) control.value = next || "";
@@ -85,6 +112,7 @@ function bucketHighlightJSON(value) {
     backdrop.hidden = true; drawer.hidden = true; drawer.setAttribute("aria-hidden", "true"); document.body.classList.remove("bucket-drawer-open");
     if (previousFocus && previousFocus.focus) previousFocus.focus();
   }
+  enableEndpointInputs();
   document.querySelectorAll("[data-bucket-action]").forEach(function (button) {
     button.addEventListener("click", function () {
       if (button.dataset.bucketAction === "create") return open("create");

@@ -7,11 +7,11 @@
   var inventoryRequestInFlight = false;
   var rangeSelect = document.getElementById("node-time-range");
   var RANGE_CONFIG = {
-    "2m": { seconds: 120, pollMs: 5000, label: "2 phút" },
-    "5m": { seconds: 300, pollMs: 10000, label: "5 phút" },
+    "2m": { seconds: 120, pollMs: 10000, label: "2 phút" },
+    "5m": { seconds: 300, pollMs: 15000, label: "5 phút" },
     "15m": { seconds: 900, pollMs: 30000, label: "15 phút" },
-    "1h": { seconds: 3600, pollMs: 120000, label: "1 giờ" },
-    "24h": { seconds: 86400, pollMs: 300000, label: "24 giờ" }
+    "1h": { seconds: 3600, pollMs: 30000, label: "1 giờ" },
+    "24h": { seconds: 86400, pollMs: 30000, label: "24 giờ" }
   };
   var RANGE_STORAGE_KEY = "ceph-ai.node-monitor.range";
 
@@ -126,8 +126,8 @@
     {
       key: "disk_iops", name: "Disk IOPS", unit: "ops/s",
       series: [
-        { field: "disk_read_iops", label: "read", color: "#f97316" },
-        { field: "disk_write_iops", label: "write", color: "#fdba74" }
+        { field: "disk_read_iops", label: "read", color: "#22d3ee" },
+        { field: "disk_write_iops", label: "write", color: "#f97316" }
       ]
     },
     {
@@ -197,6 +197,35 @@
     return v.toFixed(2);
   }
 
+  function metricNumber(value) {
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value === "string" && value.trim() !== "") {
+      var parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  function metricDate(value) {
+    if (value instanceof Date) return value;
+    if (typeof value === "number") return new Date(value < 100000000000 ? value * 1000 : value);
+    var text = String(value || "").trim();
+    // Accept both the API's UTC `...Z` value and older `...+00:00Z` values.
+    text = text.replace(/\+00:00Z$/, "Z");
+    return new Date(text);
+  }
+
+  function normalizeMetricPoint(point) {
+    if (!point || !point.at) return null;
+    var date = metricDate(point.at);
+    if (Number.isNaN(date.getTime())) return null;
+    var normalized = { at: date.toISOString() };
+    ["cpu_percent", "mem_percent", "disk_read_iops", "disk_write_iops", "disk_latency_ms"].forEach(function (field) {
+      normalized[field] = metricNumber(point[field]);
+    });
+    return normalized;
+  }
+
   /* ---------- build DOM for the 4 stacked metric sections ---------- */
   var sections = {};
   METRICS.forEach(function (cfg) {
@@ -214,6 +243,7 @@
         '<span class="metric-name" style="color:' + cfg.series[0].color + '">' + cfg.name + "</span>" +
         '<span class="metric-value">' + valueSpansHtml + '<span class="unit">' + cfg.unit + "</span></span>" +
       "</div>" +
+        (cfg.series.length > 1 ? '<div class="metric-legend" aria-label="Chú giải biểu đồ">' + cfg.series.map(function (s) { return '<span><i style="background:' + s.color + '"></i>' + s.label + '</span>'; }).join("") + '</div>' : "") +
         '<div class="metric-chart-wrap">' +
         "<canvas></canvas>" +
         '<div class="chart-skeleton">' +
@@ -224,7 +254,7 @@
         "</div>" +
         '<div class="chart-loading-overlay" hidden><span class="header-spinner" aria-hidden="true"></span><span>Đang tải dữ liệu ' + RANGE_CONFIG[currentRange].label + '...</span></div>' +
         '<div class="chart-error-overlay" hidden><span class="icon" aria-hidden="true">&#9888;</span><span class="msg"></span></div>' +
-        '<div class="chart-empty-overlay" hidden>Chưa có dữ liệu</div>' +
+        '<div class="chart-empty-overlay" hidden>Chưa có dữ liệu telemetry. Dữ liệu sẽ hiển thị sau vài phút khi hệ thống bắt đầu thu thập.</div>' +
         '<div class="tt" hidden><div class="tt-time"></div><div class="tt-rows"></div></div>' +
       "</div>";
     stack.appendChild(section);
@@ -381,22 +411,34 @@
         this.livePoints = [];
         this.rangeKey = currentRange;
       }
-      var responsePoints = Array.isArray(data.points) ? data.points : [];
-      var currentPoint = data.current && data.current.at ? data.current : null;
+      var rawPoints = Array.isArray(data.points) ? data.points : (Array.isArray(data.data) ? data.data : []);
+      var responsePoints = rawPoints.map(normalizeMetricPoint).filter(Boolean);
+      var currentPoint = normalizeMetricPoint(data.current && data.current.at ? data.current : data);
+      console.debug("[Node Monitoring] metrics response", {
+        host: host,
+        range: currentRange,
+        apiRange: data.range,
+        sampleCount: data.sample_count,
+        sourceSampleCount: data.source_sample_count,
+        receivedPoints: rawPoints.length,
+        validPoints: responsePoints.length,
+        firstPoint: responsePoints[0] || null,
+        lastPoint: responsePoints[responsePoints.length - 1] || null
+      });
       if (currentPoint) this.livePoints.push(currentPoint);
       var cutoffMs = Date.now() - WINDOW_SECONDS * 1000;
       this.livePoints = this.livePoints.filter(function (point) {
-        return point && new Date(point.at).getTime() >= cutoffMs;
+        return point && metricDate(point.at).getTime() >= cutoffMs;
       });
       // Merge the server history with live samples collected between polls.
       // The timestamp map also removes the current point duplicated by the
       // response and makes a range change deterministic.
       var pointByTimestamp = {};
       responsePoints.concat(this.livePoints).forEach(function (point) {
-        if (point && point.at && !Number.isNaN(new Date(point.at).getTime())) pointByTimestamp[point.at] = point;
+        if (point && point.at && !Number.isNaN(metricDate(point.at).getTime())) pointByTimestamp[point.at] = point;
       });
       var points = Object.keys(pointByTimestamp).map(function (key) { return pointByTimestamp[key]; }).sort(function (a, b) {
-        return new Date(a.at).getTime() - new Date(b.at).getTime();
+        return metricDate(a.at).getTime() - metricDate(b.at).getTime();
       });
       points = downsampleChartPoints(points, chartMaxPoints());
       this.timestamps = [];
@@ -406,22 +448,21 @@
         });
       });
       points.forEach(function (point) {
-        var timestamp = new Date(point.at);
+        var timestamp = metricDate(point.at);
         if (Number.isNaN(timestamp.getTime())) return;
         self.timestamps.push(timestamp);
         METRICS.forEach(function (cfg) {
           cfg.series.forEach(function (s) {
-            var value = point[s.field];
-            self.buffers[s.field].push(typeof value === "number" ? value : null);
+            self.buffers[s.field].push(metricNumber(point[s.field]));
           });
         });
       });
-      this.rangeStart = data.range_start ? new Date(data.range_start) : new Date(Date.now() - WINDOW_SECONDS * 1000);
-      this.rangeEnd = data.range_end ? new Date(data.range_end) : new Date();
+      this.rangeStart = data.range_start ? metricDate(data.range_start) : new Date(Date.now() - WINDOW_SECONDS * 1000);
+      this.rangeEnd = data.range_end ? metricDate(data.range_end) : new Date();
 
       this.setLoadingUI(false);
       this.setErrorUI(false);
-      this.updateValueBadges(data.current || data);
+      this.updateValueBadges(currentPoint || data);
       this.updateSummary(data.summary || data.current || data, data);
       drawAllCharts(true);
     },
@@ -531,11 +572,11 @@
     var timestamps = App.timestamps;
     var n = timestamps.length;
 
-    var allFieldsMissing = cfg.series.every(function (s) {
+    var hasData = cfg.series.some(function (s) {
       var buf = App.buffers[s.field];
-      return buf.length === 0 || buf[buf.length - 1] == null;
+      return buf.some(function (value) { return value != null; });
     });
-    section.emptyOverlay.hidden = !allFieldsMissing;
+    section.emptyOverlay.hidden = hasData;
     section.canvas.style.visibility = "visible";
 
     if (firstPaint && !section.hasDrawnOnce) {
@@ -610,28 +651,13 @@
       ctx.fillText(formatAxisTime(new Date(time)), tickX, padTop + plotH + 4);
     });
 
-    if (allFieldsMissing) return; // flat baseline only, no lines to draw
+    if (!hasData) return;
 
     cfg.series.forEach(function (s) {
       var values = App.buffers[s.field];
       var offset = n - values.length; // buffers can be shorter than timestamps right after a resize
-      drawLine(ctx, values, function (i) { return xAt(i + offset); }, yAt, s.color);
+      drawLine(ctx, values, function (i) { return xAt(i + offset); }, yAt, s.color, timestamps, yAt(0), offset);
     });
-
-    // direct end-labels instead of a legend, only needed when >1 series
-    if (cfg.series.length > 1) {
-      ctx.textBaseline = "middle";
-      cfg.series.forEach(function (s, si) {
-        var values = App.buffers[s.field];
-        if (!values.length) return;
-        var lastV = values[values.length - 1];
-        if (lastV == null) return;
-        var x = xAt(n - 1);
-        ctx.fillStyle = s.color;
-        ctx.textAlign = "right";
-        ctx.fillText(s.label, x - 4, yAt(lastV) + (si === 0 ? -8 : 8));
-      });
-    }
 
     // crosshair + tooltip
     if (App.hoverIndex != null && App.hoverIndex < n) {
@@ -662,20 +688,73 @@
     }
   }
 
-  function drawLine(ctx, values, xAt, yAt, color) {
-    var started = false;
-    ctx.beginPath();
-    for (var i = 0; i < values.length; i++) {
-      if (values[i] == null) { started = false; continue; }
-      var x = xAt(i), y = yAt(values[i]);
-      if (!started) { ctx.moveTo(x, y); started = true; }
-      else ctx.lineTo(x, y);
+  function hexRgba(color, alpha) {
+    var match = String(color).match(/^#([0-9a-f]{6})$/i);
+    if (!match) return color;
+    var hex = match[1];
+    return "rgba(" + parseInt(hex.slice(0, 2), 16) + "," + parseInt(hex.slice(2, 4), 16) + "," + parseInt(hex.slice(4, 6), 16) + "," + alpha + ")";
+  }
+
+  function gapThreshold(timestamps) {
+    var gaps = [];
+    for (var i = 1; i < timestamps.length; i++) {
+      var gap = timestamps[i].getTime() - timestamps[i - 1].getTime();
+      if (gap > 0) gaps.push(gap);
     }
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.lineJoin = "round";
-    ctx.lineCap = "round";
-    ctx.stroke();
+    if (!gaps.length) return Infinity;
+    gaps.sort(function (a, b) { return a - b; });
+    var median = gaps[Math.floor(gaps.length / 2)];
+    return Math.max(median * 2.5, 2 * 60 * 1000);
+  }
+
+  function drawLine(ctx, values, xAt, yAt, color, timestamps, baseline, offset) {
+    var maxGap = gapThreshold(timestamps);
+    var segments = [], segment = [];
+    var lastTime = null;
+    for (var i = 0; i < values.length; i++) {
+      var value = values[i];
+      var timestamp = timestamps[i + offset];
+      var time = timestamp && timestamp.getTime();
+      if (value == null || !timestamp || (lastTime != null && time - lastTime > maxGap)) {
+        if (segment.length) segments.push(segment);
+        segment = [];
+        lastTime = null;
+        if (value == null) continue;
+      }
+      segment.push({ x: xAt(i), y: yAt(value) });
+      lastTime = time;
+    }
+    if (segment.length) segments.push(segment);
+
+    var gradient = ctx.createLinearGradient(0, 0, 0, baseline);
+    gradient.addColorStop(0, hexRgba(color, 0.28));
+    gradient.addColorStop(1, hexRgba(color, 0));
+    segments.forEach(function (points) {
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, baseline);
+      points.forEach(function (point) { ctx.lineTo(point.x, point.y); });
+      ctx.lineTo(points[points.length - 1].x, baseline);
+      ctx.closePath();
+      ctx.fillStyle = gradient;
+      ctx.fill();
+
+      ctx.beginPath();
+      points.forEach(function (point, index) {
+        if (index === 0) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+      });
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.stroke();
+      if (points.length === 1) {
+        ctx.beginPath();
+        ctx.arc(points[0].x, points[0].y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+      }
+    });
   }
 
   function showTooltip(section, idx) {

@@ -16,7 +16,7 @@
     if (!group || !current) return;
     var parent = item.closest(".settings-nav-group");
     var groupLabel = parent && parent.querySelector(".settings-nav-group-toggle span");
-    group.textContent = groupLabel ? groupLabel.textContent.trim() : "Settings";
+    group.textContent = groupLabel ? groupLabel.textContent.trim() : "Cài đặt";
     group.href = "#" + item.getAttribute("data-section");
     current.textContent = item.textContent.trim();
   }

@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Settings — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}-settings-v2">
-  <link rel="stylesheet" href="/static/settings_redesign.css?v={{ static_version }}-settings-v3">
 </head>
 <body class="settings-redesign">
   {% include "_nav.html" %}
@@ -17,10 +16,10 @@
           <span>Hệ thống</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
         <div class="settings-nav-group-items" {% if active_section not in ['restart-controls', 'action-policy', 'database', 'server-log'] %}hidden{% endif %}>
-          <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">Tiến trình hệ thống</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'action-policy' %}active{% endif %}" data-section="action-policy">Chính sách hành động AI</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối cơ sở dữ liệu</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Nhật ký máy chủ</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">System Processes</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'action-policy' %}active{% endif %}" data-section="action-policy">AI Action Policy</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Database Connection</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Server Logs</button>
         </div>
       </section>
       <section class="settings-nav-group" data-settings-group="storage">
@@ -29,10 +28,10 @@
         </button>
         <div class="settings-nav-group-items" {% if active_section not in ['patch-pipeline', 'log-intel', 'dual-ai', 'code-repair', 'backup-targets'] %}hidden{% endif %}>
           <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Pipeline</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'log-intel' %}active{% endif %}" data-section="log-intel">Phân tích nhật ký</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'log-intel' %}active{% endif %}" data-section="log-intel">Log Intelligence</button>
           <button type="button" class="settings-nav-item {% if active_section == 'dual-ai' %}active{% endif %}" data-section="dual-ai">Hai AI trao đổi</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'code-repair' %}active{% endif %}" data-section="code-repair">Sửa mã bằng AI</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Cấu hình lưu trữ</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'code-repair' %}active{% endif %}" data-section="code-repair">AI Code Repair</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Storage Configuration</button>
         </div>
       </section>
       {% endif %}
@@ -41,10 +40,10 @@
           <span>Kết nối</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
         <div class="settings-nav-group-items" {% if active_section not in ['router', 'cost', 'cluster', 'ceph-host-keys', 'openstack'] %}hidden{% endif %}>
-          <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">API AI</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">AI API</button>
           <button type="button" class="settings-nav-item {% if active_section == 'cost' %}active{% endif %}" data-section="cost">Chi phí</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Cụm Ceph</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'ceph-host-keys' %}active{% endif %}" data-section="ceph-host-keys">Khóa SSH node Ceph</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Ceph Cluster</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'ceph-host-keys' %}active{% endif %}" data-section="ceph-host-keys">Ceph Node SSH Keys</button>
           {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">OpenStack</button>{% endif %}
         </div>
       </section>
@@ -53,27 +52,26 @@
           <span>Bảo trì</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
         <div class="settings-nav-group-items" {% if active_section != 'cleanup' %}hidden{% endif %}>
-          <a href="/backups" class="settings-nav-item">Sao lưu &amp; khôi phục</a>
-          <button type="button" class="settings-nav-item {% if active_section == 'cleanup' %}active{% endif %}" data-section="cleanup">Bảo trì hệ thống</button>
+          <a href="/backups" class="settings-nav-item">Backup &amp; Restore</a>
+          <button type="button" class="settings-nav-item {% if active_section == 'cleanup' %}active{% endif %}" data-section="cleanup">System Maintenance</button>
         </div>
       </section>
     </nav>
     <div class="settings-content">
     <nav class="settings-breadcrumb-bar" id="settings-breadcrumb-bar" aria-label="Breadcrumb">
-      <a href="/settings">Cài đặt</a><span aria-hidden="true">›</span><a href="#" id="settings-breadcrumb-group">Hệ thống</a><span aria-hidden="true">›</span><strong id="settings-breadcrumb-current">Tiến trình hệ thống</strong>
+      <a href="/settings">Settings</a><span aria-hidden="true">›</span><a href="#" id="settings-breadcrumb-group">Hệ thống</a><span aria-hidden="true">›</span><strong id="settings-breadcrumb-current">System Processes</strong>
     </nav>
     {% if containerized_deployment %}
-    <div class="settings-container-banner" id="settings-container-banner" role="alert">
-      <span class="settings-container-banner-icon" aria-hidden="true">⚠️</span>
-      <div><strong>Chế độ container</strong><p id="settings-container-mode-guide">Cấu hình đã lưu chỉ được các dịch vụ nền nhận sau khi operator chạy <code>systemctl restart ceph-ai-containers</code>. Restart từng service tại đây không khả dụng.</p></div>
-      <a href="#settings-container-mode-guide">Xem hướng dẫn</a>
-    </div>
+    <details class="settings-container-banner" id="settings-container-banner">
+      <summary><span>⚠️ Chế độ container — restart service qua systemctl</span><a href="#settings-container-mode-guide">Xem hướng dẫn</a></summary>
+      <p id="settings-container-mode-guide">Cấu hình đã lưu chỉ được các dịch vụ nền nhận sau khi operator chạy <code>systemctl restart ceph-ai-containers</code>. Các nút restart từng service bị vô hiệu trong chế độ này.</p>
+    </details>
     {% endif %}
     {% if is_admin %}
     <section class="settings-panel process-panel" data-panel="restart-controls" {% if active_section != 'restart-controls' %}hidden{% endif %}>
       <div class="settings-content-header">
-        <div><h1><span class="settings-section-mark">⚙</span>Tiến trình hệ thống</h1><p>Quản lý các dịch vụ cốt lõi của Ceph AIOps và kiểm tra trạng thái runtime.</p></div>
-        <span class="system-health-badge"><i></i>Tất cả dịch vụ đang hoạt động</span>
+        <div><span class="settings-breadcrumb">Settings / System / Processes</span><h1>System Processes</h1><p>Manage and restart core services running the Ceph AI control plane. <span class="sr-only">Tiến trình hệ thống</span></p></div>
+        <span class="system-health-badge"><i></i>All systems operational</span>
       </div>
       {% if dashboard_restart_error %}<div class="settings-toast is-error">{{ dashboard_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
       {% if manual_worker_restart_success %}<div class="settings-toast is-success">{{ manual_worker_restart_success }}</div>{% endif %}
@@ -84,47 +82,43 @@
       {% if manual_remediation_watcher_restart_error %}<div class="settings-toast is-error">{{ manual_remediation_watcher_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
       <div class="service-grid">
         <article class="service-card">
-          <div class="service-card-top"><span class="service-icon">🖥️</span><span class="service-status is-running"><i></i>Đang chạy</span></div>
-          <div><h2>Dashboard</h2><p>Giao diện điều khiển web cho quản trị viên và operator.</p></div>
-          <div class="service-stat-grid"><span>Uptime<strong>Đang hoạt động</strong></span><span>Memory / CPU<strong>Đang theo dõi</strong></span><span>Restart gần nhất<strong>—</strong></span><span>PID / container<strong>ceph-ai_dashboard-web_1</strong></span></div>
-          <div class="service-card-footer"><span class="service-meta">Control plane · HTTP</span><button type="button" class="service-restart-button" data-restart-service="Dashboard" data-restart-action="/settings/restart-dashboard" data-restart-warning="Dashboard sẽ gián đoạn khoảng 5–10 giây. Người dùng đang mở trang có thể mất kết nối tạm thời." {% if containerized_deployment %}disabled title="Chạy systemctl restart ceph-ai-containers trên host"{% endif %}><span>↻</span>Khởi động lại</button></div>
+          <div class="service-card-top"><span class="service-icon">▦</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>Dashboard</h2><p>Web control plane used by administrators and operators.</p></div>
+          <div class="service-card-footer"><span class="service-meta">Control plane · HTTP</span><button type="button" class="service-restart-button" data-restart-service="Dashboard" data-restart-action="/settings/restart-dashboard" data-restart-warning="The dashboard will be unavailable for approximately 5–10 seconds. Active users may temporarily lose connection."><span>↻</span> Restart</button></div>
         </article>
         <article class="service-card">
-          <div class="service-card-top"><span class="service-icon">⚙️</span><span class="service-status is-running"><i></i>Đang chạy</span></div>
-          <div><h2>Worker</h2><p>Thực thi job nền và áp dụng các thay đổi cấu hình.</p></div>
-          <div class="service-stat-grid"><span>Uptime<strong>Đang hoạt động</strong></span><span>Memory / CPU<strong>Đang theo dõi</strong></span><span>Restart gần nhất<strong>—</strong></span><span>PID / container<strong>ceph-ai_worker_1</strong></span></div>
-          <div class="service-card-footer"><span class="service-meta">Background executor</span><button type="button" class="service-restart-button" data-restart-service="Worker" data-restart-action="/settings/restart-worker" data-restart-warning="Worker sẽ tạm dừng job trong vài giây khi khởi động lại." {% if containerized_deployment %}disabled title="Chạy systemctl restart ceph-ai-containers trên host"{% endif %}><span>↻</span>Khởi động lại</button></div>
+          <div class="service-card-top"><span class="service-icon">⌘</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>Worker</h2><p>Executes background jobs and applies configuration changes.</p></div>
+          <div class="service-card-footer"><span class="service-meta">Background executor</span><button type="button" class="service-restart-button" data-restart-service="Worker" data-restart-action="/settings/restart-worker" data-restart-warning="Running jobs may pause briefly while the worker process restarts."><span>↻</span> Restart</button></div>
         </article>
         <article class="service-card">
-          <div class="service-card-top"><span class="service-icon">👁️</span><span class="service-status is-running"><i></i>Đang chạy</span></div>
-          <div><h2>Watcher</h2><p>Giám sát trạng thái cụm và các thay đổi cấu hình.</p></div>
-          <div class="service-stat-grid"><span>Uptime<strong>Đang hoạt động</strong></span><span>Memory / CPU<strong>Đang theo dõi</strong></span><span>Restart gần nhất<strong>—</strong></span><span>PID / container<strong>ceph-ai_watcher_1</strong></span></div>
-          <div class="service-card-footer"><span class="service-meta">Cluster monitor</span><button type="button" class="service-restart-button" data-restart-service="Watcher" data-restart-action="/settings/restart-watcher" data-restart-warning="Watcher sẽ tạm dừng giám sát trong vài giây khi khởi động lại." {% if containerized_deployment %}disabled title="Chạy systemctl restart ceph-ai-containers trên host"{% endif %}><span>↻</span>Khởi động lại</button></div>
+          <div class="service-card-top"><span class="service-icon">◎</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>Watcher</h2><p>Monitors cluster state and configuration changes.</p></div>
+          <div class="service-card-footer"><span class="service-meta">Cluster monitor</span><button type="button" class="service-restart-button" data-restart-service="Watcher" data-restart-action="/settings/restart-watcher" data-restart-warning="Cluster monitoring will pause briefly while the watcher restarts."><span>↻</span> Restart</button></div>
         </article>
         <article class="service-card">
-          <div class="service-card-top"><span class="service-icon">🤖</span><span class="service-status is-running"><i></i>Đang chạy</span></div>
-          <div><h2>AI Remediation Watcher</h2><p>Kiểm tra nhanh Ceph health và kích hoạt xử lý tự động.</p></div>
-          <div class="service-stat-grid"><span>Uptime<strong>Đang hoạt động</strong></span><span>Memory / CPU<strong>Đang theo dõi</strong></span><span>Restart gần nhất<strong>—</strong></span><span>PID / container<strong>ceph-ai_watcher_1</strong></span></div>
-          <div class="service-card-footer"><span class="service-meta">AI remediation · 10 giây</span><button type="button" class="service-restart-button" data-restart-service="Remediation-Watcher" data-restart-action="/settings/restart-remediation-watcher" data-restart-warning="AI Remediation Watcher sẽ tạm dừng phát hiện xử lý trong vài giây khi khởi động lại." {% if containerized_deployment %}disabled title="Chạy systemctl restart ceph-ai-containers trên host"{% endif %}><span>↻</span>Khởi động lại</button></div>
+          <div class="service-card-top"><span class="service-icon">⚕</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>AI Remediation Watcher</h2><p>Polls Ceph health on a fast path and triggers autonomous recovery.</p></div>
+          <div class="service-card-footer"><span class="service-meta">AI remediation · 10s</span><button type="button" class="service-restart-button" data-restart-service="Remediation-Watcher" data-restart-action="/settings/restart-remediation-watcher" data-restart-warning="Automatic remediation detection will pause briefly while this watcher restarts."><span>↻</span> Restart</button></div>
         </article>
       </div>
       <article class="settings-autopilot-card {{ 'is-enabled' if autopilot_enabled else 'is-disabled' }}">
-        <div class="settings-autopilot-main"><div class="settings-autopilot-icon" aria-hidden="true">🤖</div><div><p class="settings-eyebrow">Điều khiển tự động</p><h2>Autopilot: {{ "ĐANG BẬT" if autopilot_enabled else "ĐANG TẮT" }}</h2><p class="hint">Autopilot tự động phát hiện và xử lý sự cố Ceph như OSD down, PG degraded và các cảnh báo tương tự mà không cần can thiệp thủ công.</p><div class="settings-autopilot-log"><span>Lần xử lý gần nhất</span><strong>Chưa có dữ liệu xử lý tự động</strong></div></div></div>
+        <div class="settings-autopilot-main"><div class="settings-autopilot-icon" aria-hidden="true">✦</div><div><p class="settings-eyebrow">Automation control</p><h2>Autopilot: {{ "ĐANG BẬT" if autopilot_enabled else "ĐANG TẮT" }}</h2><p class="hint">Áp dụng cho toàn bộ cluster đang hoạt động.</p></div></div>
         <div class="settings-autopilot-action">
           {% if autopilot_error %}<p class="error">{{ autopilot_error }}</p>{% endif %}
           {% if autopilot_success %}<p class="success">{{ autopilot_success }}</p>{% endif %}
           <form method="post" action="/settings/autopilot">
             <input type="hidden" name="enabled" value="{{ '0' if autopilot_enabled else '1' }}">
             <button class="settings-toggle-switch" type="submit" aria-pressed="{{ 'true' if autopilot_enabled else 'false' }}" title="{{ 'Tắt Autopilot' if autopilot_enabled else 'Bật Autopilot' }}">
-              <span aria-hidden="true"></span><span class="settings-toggle-label">{{ "ON" if autopilot_enabled else "OFF" }}</span><span class="sr-only">{{ "TẮT AUTOPILOT" if autopilot_enabled else "BẬT AUTOPILOT" }}</span>
+              <span aria-hidden="true"></span><span class="sr-only">{{ "TẮT AUTOPILOT" if autopilot_enabled else "BẬT AUTOPILOT" }}</span>
             </button>
           </form>
         </div>
       </article>
       <dialog class="restart-dialog" id="restart-service-dialog">
         <form method="dialog" class="restart-dialog-card">
-          <div class="restart-dialog-icon">!</div><div><h2 id="restart-dialog-title">Khởi động lại dịch vụ?</h2><p id="restart-dialog-description"></p></div>
-          <div class="restart-dialog-actions"><button type="button" class="btn btn-ghost" data-dialog-cancel>Hủy</button><button type="button" class="btn btn-danger" data-dialog-confirm>Xác nhận</button></div>
+          <div class="restart-dialog-icon">!</div><div><h2 id="restart-dialog-title">Restart service?</h2><p id="restart-dialog-description"></p></div>
+          <div class="restart-dialog-actions"><button type="button" class="btn btn-ghost" data-dialog-cancel>Cancel</button><button type="button" class="btn btn-danger" data-dialog-confirm>Restart</button></div>
         </form>
       </dialog>
       <div hidden>

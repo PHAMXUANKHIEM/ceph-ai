@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from urllib.parse import quote
 
@@ -24,8 +25,6 @@ from watcher.rgw_access_log import (
     RgwLogError,
     fetch_s3_user_info,
     fetch_s3_user_info_with,
-    fetch_s3_user_info_batch,
-    fetch_s3_user_info_batch_with,
     fetch_s3_user_list,
     fetch_s3_user_list_with,
     fetch_s3_user_bucket_list,
@@ -46,13 +45,9 @@ from watcher.rgw_access_log import (
 router = APIRouter()
 templates = make_templates()
 PAGE_SIZE = 10
-USER_PAGE_SIZES = {10, 25, 50, 100}
-AUDIT_MAX_ROWS = 500
 MAX_QUERY_LENGTH = 120
 logger = logging.getLogger(__name__)
 USER_ACTIONS = {"create", "modify", "suspend", "enable", "delete"}
-_DEFAULT_FETCH_S3_USER_INFO = fetch_s3_user_info
-_DEFAULT_FETCH_S3_USER_INFO_WITH = fetch_s3_user_info_with
 
 
 def _host(cluster) -> str:
@@ -76,24 +71,6 @@ def _info(cluster, host: str, uid: str) -> dict | None:
         user, key, mode, _container = resolve_ssh_creds(cluster)
         raw = fetch_s3_user_info_with(host, uid, user, key, mode, cluster.ceph_rgw_container_name)
     return summarize_s3_user(raw) if raw else None
-
-
-def _info_batch(cluster, host: str, uids: list[str]) -> dict[str, dict | None]:
-    # Keep the single-user path when tests or callers inject the existing
-    # helpers. This preserves the established seam while production uses the
-    # batched command below.
-    if cluster.is_default and fetch_s3_user_info is not _DEFAULT_FETCH_S3_USER_INFO:
-        return {uid: _info(cluster, host, uid) for uid in uids}
-    if not cluster.is_default and fetch_s3_user_info_with is not _DEFAULT_FETCH_S3_USER_INFO_WITH:
-        return {uid: _info(cluster, host, uid) for uid in uids}
-    raw_by_uid = (
-        fetch_s3_user_info_batch(host, uids)
-        if cluster.is_default
-        else fetch_s3_user_info_batch_with(
-            host, uids, *resolve_ssh_creds(cluster)[:3], cluster.ceph_rgw_container_name
-        )
-    )
-    return {uid: summarize_s3_user(raw_by_uid.get(uid)) if raw_by_uid.get(uid) else None for uid in uids}
 
 
 def _valid_uid(uid: str) -> str:
@@ -164,11 +141,11 @@ def _finish_audit(audit_id: str, result: str, error: str | None = None) -> None:
         invalidate_object_storage_cache(cluster_id, "s3-users")
 
 
-def _audit_rows(cluster_id: str, limit: int = AUDIT_MAX_ROWS) -> list[dict]:
+def _audit_rows(cluster_id: str) -> list[dict]:
     with db.SessionLocal() as session:
         rows = session.query(ObjectStorageAuditEntry).filter_by(cluster_id=cluster_id).order_by(
             ObjectStorageAuditEntry.created_at.desc()
-        ).limit(limit).all()
+        ).all()
         return [{
             "id": row.id, "actor": row.actor, "action": row.action,
             "target_type": row.target_type, "target_id": row.target_id,
@@ -243,20 +220,17 @@ def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> di
     if normalized:
         users = [uid for uid in users if normalized in uid.casefold()]
     total = len(users)
-    page_size = page_size if page_size in USER_PAGE_SIZES else PAGE_SIZE
+    page_size = PAGE_SIZE
     page_count = max(1, ceil(total / page_size))
     page = min(max(page, 1), page_count)
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(users)))) as executor:
+        all_details = list(executor.map(lambda uid: _info(cluster, host, uid), users))
     page_users = users[(page - 1) * page_size:page * page_size]
-    # Metadata is expensive: each _info() call invokes radosgw-admin over SSH.
-    # Only fetch users visible on this page instead of scanning the entire
-    # inventory before slicing it.
-    details_by_uid = _info_batch(cluster, host, page_users)
-    details = [details_by_uid.get(uid) for uid in page_users]
+    details = all_details[(page - 1) * page_size:page * page_size]
     items = [detail or {"uid": uid, "unavailable": True} for uid, detail in zip(page_users, details)]
-    available = [detail for detail in details if detail]
+    available = [detail for detail in all_details if detail]
     return {"host": host, "items": items, "query": query.strip(), "page": page,
             "page_size": page_size, "page_count": page_count, "total": total,
-            "summary_scope": "current_page",
             "active_count": sum(1 for detail in available if not detail["suspended"]),
             "key_count_total": sum(detail["key_count"] for detail in available)}
 
@@ -292,14 +266,10 @@ def _buckets(cluster, uid: str) -> list[str]:
 
 @router.get("/api/object-storage/users")
 async def users_api(request: Request, query: str = Query("", max_length=MAX_QUERY_LENGTH),
-                    page: int = Query(1, ge=1), page_size: int = Query(0, ge=0, le=100),
-                    user: str = Depends(require_login)):
+                    page: int = Query(1, ge=1), user: str = Depends(require_login)):
     del user
     try:
-        effective_page_size = page_size if page_size in USER_PAGE_SIZES else PAGE_SIZE
-        return await asyncio.to_thread(
-            _cached_inventory, selected_cluster(request), query, page, effective_page_size
-        )
+        return await asyncio.to_thread(_cached_inventory, selected_cluster(request), query, page)
     except RgwLogError as exc:
         raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
 
@@ -477,10 +447,10 @@ async def setting_execute(request: Request, user: str = Depends(require_login)):
 @router.get("/object-storage/users", response_class=HTMLResponse)
 async def users_page(request: Request, user: str = Depends(require_login),
                      query: str = Query("", max_length=MAX_QUERY_LENGTH), page: int = Query(1, ge=1),
-                     page_size: int = Query(0, ge=0, le=100)):
-    page_size = page_size if page_size in USER_PAGE_SIZES else PAGE_SIZE
+                     page_size: int = Query(PAGE_SIZE, ge=1, le=100)):
+    page_size = PAGE_SIZE
     clusters, cluster = cluster_selection(request)
-    inventory = {"items": [], "query": query.strip(), "page": page, "page_size": page_size, "page_count": 1, "total": 0}
+    inventory = {"items": [], "query": query.strip(), "page": page, "page_size": PAGE_SIZE, "page_count": 1, "total": 0}
     error = None
     try:
         inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page, page_size)

@@ -40,7 +40,7 @@
         <button type="submit" class="btn btn-primary btn-sm">Lọc</button>
         <a href="{{ cinder_backup_base_path }}" class="btn btn-ghost btn-sm">Xóa lọc</a>
       </form>
-      <p class="hint cinder-backup-count">Hiển thị {{ cinder_backups|length }} / {{ cinder_backup_filtered }} backup{% if cinder_backup_filtered != cinder_backup_total %} sau khi lọc{% endif %}.</p>
+      <p class="hint cinder-backup-count">Hiển thị {{ cinder_backups|length }} / {{ cinder_backup_filtered }} backup{% if cinder_backup_filtered != cinder_backup_total %} sau khi lọc{% endif %}; tối đa 10 backup mỗi trang.</p>
       {% if cinder_backup_error %}
       <p class="error">Không đọc được Cinder backup: {{ cinder_backup_error }}</p>
       {% elif cinder_backups %}

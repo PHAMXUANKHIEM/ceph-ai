@@ -23,10 +23,13 @@
       if (/[a-z]/.test(value) && /[A-Z]/.test(value)) score += 1;
       if (/\d/.test(value)) score += 1;
       if (/[^A-Za-z0-9]/.test(value)) score += 1;
-      var level = value.length === 0 ? "empty" : score <= 2 ? "weak" : score <= 3 ? "medium" : "strong";
-      var labels = { empty: "Độ mạnh mật khẩu", weak: "Yếu", medium: "Trung bình", strong: "Mạnh" };
-      strengthFill.className = level;
-      strengthFill.style.width = { empty: "0%", weak: "33%", medium: "66%", strong: "100%" }[level];
+      var level = value.length === 0 ? "empty" : score <= 2 ? "weak" : score <= 3 ? "medium" : score === 4 ? "strong" : "very-strong";
+      var labels = { empty: "Độ mạnh mật khẩu", weak: "Yếu", medium: "Trung bình", strong: "Mạnh", "very-strong": "Rất mạnh" };
+      var segments = document.querySelectorAll(".password-strength-track .strength-segment");
+      var activeCount = { empty: 0, weak: 1, medium: 2, strong: 3, "very-strong": 4 }[level];
+      Array.prototype.forEach.call(segments, function (segment, index) {
+        segment.className = "strength-segment " + (index < activeCount ? level : "");
+      });
       strengthLabel.textContent = labels[level];
     });
   }
@@ -58,5 +61,34 @@
   }
   Array.prototype.forEach.call(document.querySelectorAll(".user-relative-time"), function (time) {
     time.textContent = relativeTime(time.getAttribute("data-created-at"));
+  });
+
+  function closeToast(toast) {
+    if (!toast || toast.classList.contains("is-dismissing")) return;
+    toast.classList.add("is-dismissing");
+    window.setTimeout(function () { toast.remove(); }, 220);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-user-toast]"), function (toast) {
+    var dismiss = toast.querySelector(".users-feedback-dismiss");
+    if (dismiss) dismiss.addEventListener("click", function () { closeToast(toast); });
+    window.setTimeout(function () { closeToast(toast); }, 5000);
+  });
+
+  var usersPage = document.querySelector(".users-page");
+  var openCreate = byId("users-open-create");
+  var closeCreate = byId("users-close-create");
+  var backdrop = byId("users-drawer-backdrop");
+  function setDrawer(open) {
+    if (!usersPage) return;
+    usersPage.classList.toggle("is-user-drawer-open", !!open);
+    if (backdrop) backdrop.hidden = !open;
+    document.body.classList.toggle("users-drawer-is-open", !!open);
+    if (open && closeCreate) closeCreate.focus();
+  }
+  if (openCreate) openCreate.addEventListener("click", function () { setDrawer(true); });
+  if (closeCreate) closeCreate.addEventListener("click", function () { setDrawer(false); });
+  if (backdrop) backdrop.addEventListener("click", function () { setDrawer(false); });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") setDrawer(false);
   });
 })();

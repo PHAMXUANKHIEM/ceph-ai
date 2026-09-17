@@ -19,3 +19,138 @@
 @media (max-width: 1050px) { .users-workspace { grid-template-columns: minmax(0,1fr) minmax(300px,.8fr); }.user-create-header, .user-create-form { padding-inline: 17px; } }
 @media (max-width: 860px) { .users-workspace { grid-template-columns: 1fr; }.user-create-card { order: -1; }.users-table { min-width: 760px; } }
 @media (max-width: 560px) { .users-page { padding: 19px 12px 32px; }.users-page-heading { align-items: flex-start; }.users-page-heading h1 { font-size: 1.4rem; }.users-count-badge { margin-top: 2px; }.users-card-header { padding-inline: 15px; }.users-admin-alert { margin-inline: 15px; }.user-create-header, .user-create-form { padding-inline: 15px; }.user-password-grid { grid-template-columns: 1fr; }.users-empty-state { min-height: 250px; } }
+
+/* 2026 users workspace repair: keep the table inside its card and make the
+   create form usable on both wide and narrow screens. */
+.users-page { max-width: 1480px; }
+.users-page-heading { align-items: flex-end; }
+.users-workspace { grid-template-columns: minmax(0, 1fr) 380px; gap: 24px; }
+.users-list-card, .user-create-card { min-width: 0; }
+.users-card-header { padding: 20px 24px 16px; }
+.users-card-header h2 { color: var(--text); }
+.users-card-header .hint { font-size: .72rem; }
+.users-count-badge, .users-card-total { display: none; }
+.users-open-create { display: none; white-space: nowrap; }
+
+.users-admin-alert {
+  display: block;
+  margin: 0 24px 14px;
+  padding: 0;
+  border: 1px solid rgba(59,130,246,.18);
+  border-left: 3px solid #3b82f6;
+  border-radius: 7px;
+  background: rgba(59,130,246,.045);
+}
+.users-admin-alert summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  color: #bfdbfe;
+  cursor: pointer;
+  list-style: none;
+  font-size: .72rem;
+}
+.users-admin-alert summary::-webkit-details-marker { display: none; }
+.users-admin-alert summary::after { content: "⌄"; margin-left: auto; color: #93c5fd; }
+.users-admin-alert[open] summary::after { content: "⌃"; }
+.users-admin-alert-toggle { margin-left: auto; color: #93c5fd; font-size: .66rem; }
+.users-admin-alert[open] .users-admin-alert-toggle { display: none; }
+.users-admin-alert p { margin: 0; padding: 0 11px 10px 35px; color: var(--text-muted); font-size: .7rem; line-height: 1.45; }
+
+.users-feedback { position: relative; display: flex; align-items: center; gap: 10px; padding-right: 40px; transition: opacity 220ms ease, transform 220ms ease; }
+.users-feedback.is-dismissing { opacity: 0; transform: translateY(-5px); }
+.users-feedback-dismiss { position: absolute; top: 50%; right: 10px; width: 24px; height: 24px; transform: translateY(-50%); border: 0; border-radius: 5px; background: transparent; color: currentColor; cursor: pointer; opacity: .7; }
+.users-feedback-dismiss:hover { background: rgba(255,255,255,.08); opacity: 1; }
+
+.users-table-wrap {
+  max-height: calc(100vh - 265px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0 24px 2px;
+  scrollbar-color: #475569 #0f172a;
+  scrollbar-width: thin;
+}
+.users-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.users-table col.users-col-username { width: auto; }
+.users-table col.users-col-role { width: 100px; }
+.users-table col.users-col-ai { width: 120px; }
+.users-table col.users-col-status { width: 100px; }
+.users-table col.users-col-created-by { width: 100px; }
+.users-table col.users-col-created-at { width: 120px; }
+.users-table col.users-col-actions { width: 40px; }
+.users-table thead th { top: 0; padding: 11px 9px; overflow: hidden; text-overflow: ellipsis; }
+.users-table tbody tr:first-child td { padding-top: 18px; }
+.users-table tbody td { padding: 11px 9px; overflow: hidden; text-overflow: ellipsis; }
+.users-table tbody td:not(.user-actions-cell) { overflow-wrap: anywhere; }
+.user-name-cell { max-width: 100%; min-width: 0; }
+.user-name-cell strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-ai-scope, .user-created-by { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-role-badge, .user-status-badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.user-actions-cell { overflow: visible !important; }
+
+.user-create-card { position: sticky; top: 24px; width: 380px; padding: 0; border: 1px solid #334155; background: #1e293b; }
+.user-create-header { padding: 20px 24px 17px; }
+.user-create-header > div { min-width: 0; }
+.users-close-create { display: none; }
+.user-create-form { gap: 16px; padding: 24px; }
+.user-password-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.user-password-grid .user-form-field { min-width: 0; }
+.user-input-icon { display: none; }
+.user-input-icon + input { padding-left: 11px; }
+.user-input-wrap input { background: #0f172a; }
+
+.password-strength-track { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; height: 7px; overflow: visible; background: transparent; }
+.password-strength-track .strength-segment { display: block; width: 100% !important; height: 7px; border-radius: 3px; background: #334155; opacity: 1; transition: background 180ms ease; }
+.password-strength-track .strength-segment.weak { background: #ef4444; }
+.password-strength-track .strength-segment.medium { background: #f97316; }
+.password-strength-track .strength-segment.strong { background: #eab308; }
+.password-strength-track .strength-segment.very-strong { background: #22c55e; }
+.password-strength-track .strength-segment.empty { background: #334155; }
+
+.user-role-options { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.user-role-option { grid-template-columns: 1fr auto; grid-template-rows: auto 1fr; min-height: 92px; padding: 13px; border-color: #334155; border-width: 1px; align-items: start; }
+.user-role-option-icon { grid-column: 1 / -1; color: #cbd5e1; font-size: 1.25rem; line-height: 1; }
+.user-role-option > span:nth-of-type(2) { grid-column: 1 / -1; align-self: end; }
+.user-role-option > i { position: absolute; top: 9px; right: 9px; width: 18px; height: 18px; border: 0; border-radius: 4px; background: transparent; }
+.user-role-option.is-selected { border-color: #22d3ee; background: #1e3a5f; }
+.user-role-option.is-selected > i { background: #22d3ee; color: #fff; }
+.user-create-submit { background: linear-gradient(135deg, #2563eb, #3b82f6); }
+
+.user-actions-popover { width: 222px; padding: 7px; }
+.user-actions-popover button, .user-menu-disabled { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 7px 8px; border-radius: 5px; }
+.user-actions-popover button:hover, .user-menu-disabled:hover { background: #334155; color: var(--text); }
+.user-actions-popover button.is-warning { color: #fbbf24; }
+.user-actions-popover button.is-danger { color: #f87171; }
+.user-actions-popover button.is-danger:hover { color: #fecaca; background: rgba(239,68,68,.14); }
+
+.users-drawer-backdrop { display: none; }
+@media (max-width: 1200px) {
+  .users-workspace { grid-template-columns: minmax(0, 1fr); }
+  .users-open-create { display: inline-flex; }
+  .user-create-card { position: fixed; top: 0; right: 0; bottom: 0; z-index: 40; width: min(380px, calc(100vw - 32px)); max-width: 100%; border-radius: 12px 0 0 12px; overflow-y: auto; transform: translateX(105%); transition: transform 200ms ease; }
+  .users-page.is-user-drawer-open .user-create-card { transform: translateX(0); }
+  .users-close-create { display: grid; place-items: center; margin-left: auto; width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; }
+  .users-close-create:hover { background: rgba(255,255,255,.08); color: var(--text); }
+  .users-drawer-backdrop:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 39; background: rgba(2,6,23,.72); }
+  body.users-drawer-is-open { overflow: hidden; }
+}
+@media (max-width: 680px) {
+  .users-card-header { padding-inline: 15px; }
+  .users-admin-alert { margin-inline: 15px; }
+  .users-table-wrap { padding-inline: 15px; }
+  .users-table col.users-col-role { width: 78px; }
+  .users-table col.users-col-ai { width: 86px; }
+  .users-table col.users-col-status { width: 78px; }
+  .users-table col.users-col-actions { width: 36px; }
+  .users-table th:nth-child(5), .users-table td:nth-child(5),
+  .users-table th:nth-child(6), .users-table td:nth-child(6) { display: none; }
+  .user-password-grid, .user-role-options { grid-template-columns: 1fr; }
+  .user-create-header, .user-create-form { padding-inline: 18px; }
+}

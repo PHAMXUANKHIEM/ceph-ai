@@ -1,0 +1,344 @@
+/* Settings v3: keep the Settings navigator as the only secondary rail and
+   give the process page a predictable, information-dense 2x2 layout. */
+.settings-redesign .settings-page {
+  grid-template-columns: 236px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.settings-redesign .settings-sidebar {
+  position: sticky;
+  top: 18px;
+  max-height: calc(100vh - 36px);
+  overflow-y: auto;
+}
+
+.settings-redesign .settings-nav-item::before {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  font-size: .9rem;
+}
+
+.settings-redesign .settings-nav-item[data-section="restart-controls"]::before { content: "⚙️"; }
+.settings-redesign .settings-nav-item[data-section="action-policy"]::before { content: "🛡️"; }
+.settings-redesign .settings-nav-item[data-section="database"]::before { content: "🗄️"; }
+.settings-redesign .settings-nav-item[data-section="server-log"]::before { content: "📋"; }
+.settings-redesign .settings-nav-item[data-section="patch-pipeline"]::before { content: "🔄"; }
+.settings-redesign .settings-nav-item[data-section="log-intel"]::before { content: "🧠"; }
+.settings-redesign .settings-nav-item[data-section="dual-ai"]::before { content: "🤝"; }
+.settings-redesign .settings-nav-item[data-section="code-repair"]::before { content: "🤖"; }
+.settings-redesign .settings-nav-item[data-section="backup-targets"]::before { content: "💾"; }
+.settings-redesign .settings-nav-item[data-section="router"]::before { content: "🔑"; }
+.settings-redesign .settings-nav-item[data-section="cost"]::before { content: "💰"; }
+.settings-redesign .settings-nav-item[data-section="cluster"]::before { content: "💎"; }
+.settings-redesign .settings-nav-item[data-section="ceph-host-keys"]::before { content: "🔐"; }
+.settings-redesign .settings-nav-item[data-section="openstack"]::before { content: "☁️"; }
+.settings-redesign .settings-nav-item[data-section="cleanup"]::before { content: "🧹"; }
+.settings-redesign .settings-nav-item[href="/backups"]::before { content: "💾"; }
+
+.settings-redesign .settings-content {
+  min-width: 0;
+}
+
+.settings-redesign .settings-breadcrumb-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin: 2px 0 16px;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.settings-redesign .settings-breadcrumb-bar a {
+  color: #94a3b8;
+  text-decoration: none;
+}
+
+.settings-redesign .settings-breadcrumb-bar a:hover {
+  color: #e2e8f0;
+}
+
+.settings-redesign .settings-breadcrumb-bar strong {
+  color: #e2e8f0;
+  font-weight: 650;
+}
+
+.settings-redesign .settings-breadcrumb-bar > span {
+  color: #64748b;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.settings-redesign .settings-container-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 13px 15px;
+  border: 1px solid rgba(234, 179, 8, .22);
+  border-left: 4px solid #eab308;
+  border-radius: 8px;
+  background: rgba(234, 179, 8, .1);
+  color: #fef3c7;
+}
+
+.settings-redesign .settings-container-banner-icon {
+  font-size: 21px;
+  line-height: 1.2;
+}
+
+.settings-redesign .settings-container-banner strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #fde68a;
+  font-size: .82rem;
+}
+
+.settings-redesign .settings-container-banner p {
+  margin: 0;
+  color: #cbd5a4;
+  font-size: .75rem;
+  line-height: 1.5;
+}
+
+.settings-redesign .settings-container-banner code {
+  color: #fef08a;
+}
+
+.settings-redesign .settings-container-banner a {
+  color: #facc15;
+  font-size: .72rem;
+  white-space: nowrap;
+}
+
+.settings-redesign .settings-content-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.settings-redesign .settings-section-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  border: 1px solid rgba(85, 167, 255, .34);
+  border-radius: 8px;
+  background: rgba(85, 167, 255, .1);
+  color: #93c5fd;
+  font-size: 16px;
+}
+
+.settings-redesign .settings-content-header > div > .settings-breadcrumb {
+  display: none;
+}
+
+.settings-redesign .service-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.settings-redesign .service-card {
+  min-height: 0;
+  gap: 16px;
+  padding: 18px;
+}
+
+.settings-redesign .service-card h2 {
+  margin-top: 13px;
+}
+
+.settings-redesign .service-icon {
+  width: 40px;
+  height: 40px;
+  font-size: 19px;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+}
+
+.settings-redesign .service-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 12px;
+  padding: 11px 0;
+  border-top: 1px solid rgba(255,255,255,.055);
+  border-bottom: 1px solid rgba(255,255,255,.055);
+}
+
+.settings-redesign .service-stat-grid span {
+  display: grid;
+  gap: 3px;
+  color: #64748b;
+  font-size: .62rem;
+}
+
+.settings-redesign .service-stat-grid strong {
+  overflow: hidden;
+  color: #b9c6d7;
+  font-size: .68rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-redesign .service-restart-button:disabled {
+  cursor: not-allowed;
+  opacity: .42;
+}
+
+.settings-redesign .settings-autopilot-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 16px;
+  padding: 18px 20px;
+  border: 1px solid rgba(50, 213, 131, .2);
+  border-radius: 12px;
+  background: linear-gradient(115deg, rgba(50, 213, 131, .08), rgba(17, 25, 37, .82));
+}
+
+.settings-redesign .settings-autopilot-card.is-disabled {
+  border-color: rgba(148, 163, 184, .18);
+  background: rgba(148, 163, 184, .045);
+}
+
+.settings-redesign .settings-autopilot-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+  min-width: 0;
+}
+
+.settings-redesign .settings-autopilot-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border-radius: 10px;
+  background: rgba(50, 213, 131, .13);
+  font-size: 19px;
+}
+
+.settings-redesign .is-disabled .settings-autopilot-icon {
+  background: rgba(148, 163, 184, .1);
+  filter: grayscale(1);
+}
+
+.settings-redesign .settings-autopilot-main h2 {
+  margin: 3px 0 5px;
+  color: #ecfdf5;
+  font-size: 1rem;
+}
+
+.settings-redesign .settings-autopilot-main .hint {
+  max-width: 650px;
+  margin: 0;
+  line-height: 1.55;
+}
+
+.settings-redesign .settings-autopilot-log {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+  color: #718096;
+  font-size: .68rem;
+}
+
+.settings-redesign .settings-autopilot-log strong {
+  color: #a8b6c8;
+  font-weight: 600;
+}
+
+.settings-redesign .settings-autopilot-action {
+  flex: 0 0 auto;
+}
+
+.settings-redesign .settings-toggle-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 76px;
+  height: 38px;
+  padding: 4px 7px 4px 9px;
+  border: 1px solid rgba(148, 163, 184, .32);
+  border-radius: 999px;
+  background: #334155;
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: background .2s ease, border-color .2s ease;
+}
+
+.settings-redesign .settings-toggle-switch[aria-pressed="true"] {
+  border-color: rgba(50, 213, 131, .6);
+  background: #16a34a;
+  color: #f0fdf4;
+}
+
+.settings-redesign .settings-toggle-switch > span:first-child {
+  order: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #f8fafc;
+  box-shadow: 0 2px 5px rgba(0,0,0,.25);
+  transition: transform .2s ease;
+}
+
+.settings-redesign .settings-toggle-switch[aria-pressed="true"] > span:first-child {
+  transform: translateX(36px);
+}
+
+.settings-redesign .settings-toggle-label {
+  position: absolute;
+  right: 8px;
+  color: currentColor;
+  font: 750 .62rem var(--font-mono);
+}
+
+.settings-redesign .settings-toggle-switch[aria-pressed="true"] .settings-toggle-label {
+  left: 9px;
+  right: auto;
+}
+
+.settings-redesign .restart-dialog h2 {
+  color: #f8fafc;
+}
+
+@media (max-width: 1050px) {
+  .settings-redesign .settings-page {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .settings-redesign .settings-page {
+    display: block;
+  }
+
+  .settings-redesign .settings-sidebar {
+    position: static;
+    max-height: none;
+    margin-bottom: 16px;
+  }
+
+  .settings-redesign .settings-container-banner {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .settings-redesign .settings-container-banner a {
+    grid-column: 2;
+  }
+
+  .settings-redesign .service-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-redesign .settings-autopilot-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

@@ -199,6 +199,24 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "cluster_name", "", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def isolated_ceph_query_cache(tmp_path_factory, monkeypatch):
+    """Give every test its own Ceph query cache.
+
+    shared/ceph_query_cache.py is process-global and persists to
+    CEPH_AI_CACHE_DIR (/var/lib/ceph-ai/cache in production), so without this
+    the suite reads and writes the operator's real cache. It also leaks
+    between tests: one test's cached `rbd trash ls` answer silently satisfies
+    the next test's request, the monkeypatched loader never runs, and any
+    assertion on that double fails depending on test order.
+    """
+    from shared import ceph_query_cache
+
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path_factory.mktemp("ceph-query-cache"))
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    monkeypatch.setattr(ceph_query_cache, "_refreshing", set())
+
+
 @pytest.fixture()
 def db_session():
     engine = make_engine("sqlite:///:memory:")
