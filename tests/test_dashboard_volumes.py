@@ -2309,3 +2309,23 @@ def test_partial_total_reports_the_missing_count():
     # Pool rỗng = 0 byte thật, không phải "chưa đo được".
     assert volumes_route._partial_total([]) == (0, 0)
     assert volumes_route._format_partial_bytes(None, 3) == "—"
+
+
+def test_concurrent_page_load_during_a_capacity_scan_is_not_a_500(dashboard_client, monkeypatch):
+    """`CacheLockError` là RuntimeError chứ không phải CephQueryError. Từ khi
+    trang Trash đo dung lượng thật (~11s/pool), loader vượt quá hạn chờ khoá
+    5s của cache, nên một request thứ hai lúc cache còn lạnh sẽ nhận lỗi này
+    — không bắt thì thành 500 và operator thấy trang trắng."""
+    from shared.ceph_query_cache import CacheLockError
+
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route, "_cached_rbd_trash",
+        lambda cluster, pool: (_ for _ in ()).throw(CacheLockError("could not acquire cache lock")),
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/trash?pool=vms")
+
+    assert response.status_code == 200
+    assert "đang quét dung lượng Trash" in response.text

@@ -25,7 +25,7 @@ from dashboard.routes.incidents import OPEN_STATUSES, _resolve_selected_cluster
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
 from shared import audit, db
-from shared.ceph_query_cache import get_or_load as get_cached_ceph_query, invalidate as invalidate_ceph_query_cache
+from shared.ceph_query_cache import CacheLockError, get_or_load as get_cached_ceph_query, invalidate as invalidate_ceph_query_cache
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.rbd_trash_retention import trash_entry_ttl_status
 from shared.models import (
@@ -451,7 +451,7 @@ def _volumes_page_context(
         # A trash listing is one independent RBD command per pool. Bound the
         # fan-out so large installations do not create an unbounded number
         # of SSH sessions, while avoiding the old N x timeout page latency.
-        results: dict[str, list[dict] | CephQueryError] = {}
+        results: dict[str, list[dict] | CephQueryError | CacheLockError] = {}
         max_workers = min(8, max(1, len(trash_pools)))
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="trash-pool") as executor:
             futures = {executor.submit(fetch_trash, trash_pool): trash_pool for trash_pool in trash_pools}
@@ -459,13 +459,40 @@ def _volumes_page_context(
                 trash_pool = futures[future]
                 try:
                     results[trash_pool] = future.result()
-                except CephQueryError as exc:
+                # CacheLockError is a RuntimeError, not a CephQueryError: left
+                # uncaught it turns a concurrent page load into a 500 and the
+                # operator sees a blank page instead of their Trash. It means
+                # another request is still running the capacity scan, which is
+                # slow enough to outlast the cache's 5s lock wait.
+                except (CephQueryError, CacheLockError) as exc:
                     results[trash_pool] = exc
 
         # Render in configured pool order even though requests completed out
         # of order, so parallelism never makes the UI jump around.
         for trash_pool in trash_pools:
             result = results[trash_pool]
+            if isinstance(result, CacheLockError):
+                logger.info(
+                    "_volumes_page_context: capacity scan for pool %r still running elsewhere",
+                    trash_pool,
+                )
+                trash_error = f"{trash_pool}: đang quét dung lượng Trash, tải lại trang sau vài giây"
+                trash_pool_summaries.append(
+                    {
+                        "pool": trash_pool,
+                        "entry_count": None,
+                        "protected_count": None,
+                        "expiring_count": None,
+                        "total_used_size_bytes": None,
+                        "total_used_size_human": "—",
+                        "total_used_size_unknown": 0,
+                        "total_provisioned_size_bytes": None,
+                        "total_provisioned_size_human": "—",
+                        "total_provisioned_size_unknown": 0,
+                        "error": None,
+                    }
+                )
+                continue
             if isinstance(result, CephQueryError):
                 logger.warning("_volumes_page_context: failed to query trash for pool %r: %s", trash_pool, result)
                 trash_error = f"{trash_pool}: {result}"
