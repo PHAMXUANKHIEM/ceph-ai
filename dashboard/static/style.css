@@ -5157,3 +5157,164 @@ body.s3-drawer-open { overflow:hidden; }
   .convert-warning-card { padding: 16px; }
   .convert-node-summary { flex-wrap: wrap; }
 }
+/* Unified dashboard pagination. Keep this block last so legacy page-specific
+   pagination rules cannot change the control geometry or font rendering. */
+.dashboard-pagination,
+.dashboard-pagination * {
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  letter-spacing: normal !important;
+}
+.dashboard-pagination {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between !important;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  height: 48px;
+  margin-top: 16px;
+  padding: 12px 0;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.7);
+  white-space: nowrap;
+}
+.dashboard-pagination .pagination-summary {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgba(255,255,255,0.7);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 36px;
+}
+.dashboard-pagination .pagination-controls,
+.dashboard-pagination .pagination-pages,
+.dashboard-pagination .pagination-page-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.dashboard-pagination .pagination-controls { min-width: 0; }
+.dashboard-pagination .pagination-page-size {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 1 1 0;
+  color: rgba(255,255,255,0.55);
+  font-size: 12px;
+  line-height: 36px;
+}
+.dashboard-pagination .pagination-page-size select {
+  min-width: 68px;
+  height: 36px;
+  padding: 0 8px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.8);
+  font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+}
+.dashboard-pagination .pagination-prev,
+.dashboard-pagination .pagination-next,
+.dashboard-pagination .pagination-page-number,
+.dashboard-pagination .pagination-pages a,
+.dashboard-pagination .pagination-page-buttons button,
+.dashboard-pagination .pagination-controls > button,
+.dashboard-pagination .pagination-controls > a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  width: auto;
+  height: 36px;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255,255,255,0.7);
+  font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, opacity 160ms ease;
+}
+.dashboard-pagination .pagination-pages button,
+.dashboard-pagination .pagination-pages .config-page-button,
+.dashboard-pagination .pagination-pages .bucket-audit-page-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 36px;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255,255,255,0.7);
+  font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  cursor: pointer;
+}
+.dashboard-pagination .pagination-pages button:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: #fff; }
+.dashboard-pagination .pagination-pages button.is-active { background: rgba(99,102,241,0.15); color: #818cf8; font-weight: 600; }
+.dashboard-pagination .pagination-prev:hover:not(:disabled),
+.dashboard-pagination .pagination-next:hover:not(:disabled),
+.dashboard-pagination .pagination-page-number:hover:not(:disabled),
+.dashboard-pagination .pagination-pages a:hover,
+.dashboard-pagination .pagination-page-buttons button:hover:not(:disabled),
+.dashboard-pagination .pagination-controls > button:hover:not(:disabled),
+.dashboard-pagination .pagination-controls > a:hover {
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+}
+.dashboard-pagination .pagination-page-number.is-active,
+.dashboard-pagination .pagination-page-number[aria-current="page"],
+.dashboard-pagination .pagination-pages a.is-active,
+.dashboard-pagination .pagination-page-buttons button.is-active {
+  background: rgba(99,102,241,0.15);
+  color: #818cf8;
+  font-weight: 600;
+}
+.dashboard-pagination button:disabled,
+.dashboard-pagination a.is-disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.dashboard-pagination .pagination-ellipsis {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 36px;
+  color: rgba(255,255,255,0.45);
+  font-size: 13px;
+}
+.dashboard-pagination .pagination-mobile-status { display: none; color: rgba(255,255,255,0.7); font-size: 12px; }
+.dashboard-pagination .pagination-end { display: contents; }
+.dashboard-pagination .pagination-status { color: rgba(255,255,255,0.7); font: 500 12px/36px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+
+@media (max-width: 767px) {
+  .dashboard-pagination { gap: 6px; }
+  .dashboard-pagination .pagination-summary {
+    flex: 1 1 auto;
+    font-size: 0;
+  }
+  .dashboard-pagination .pagination-summary::after {
+    content: attr(data-mobile-summary);
+    font-size: 12px;
+  }
+  .dashboard-pagination .pagination-pages,
+  .dashboard-pagination .pagination-page-buttons { display: none !important; }
+  .dashboard-pagination .pagination-mobile-status { display: inline; }
+  .dashboard-pagination .pagination-page-size { display: none; }
+  .dashboard-pagination .pagination-prev,
+  .dashboard-pagination .pagination-next,
+  .dashboard-pagination .pagination-controls > button,
+  .dashboard-pagination .pagination-controls > a { min-width: 36px; padding: 0; }
+}

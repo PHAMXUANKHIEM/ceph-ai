@@ -659,6 +659,30 @@ async def post_chat_message(
     if not text:
         raise HTTPException(status_code=400, detail="Nội dung tin nhắn không được để trống")
     mode = (body.get("mode") or "single").strip().lower()
+    dashboard_context = body.get("dashboard_context")
+    ai_text = text
+    if mode == "single" and isinstance(dashboard_context, dict):
+        # The browser snapshot is only a helpful, bounded hint. It is not
+        # trusted as an operational fact; the model must still call Ceph tools
+        # for authoritative answers.
+        allowed_context_keys = {
+            "cluster", "health", "osds", "mons", "utilization",
+            "placement_groups", "stale", "age_seconds",
+        }
+        context = {
+            key: dashboard_context[key]
+            for key in allowed_context_keys
+            if key in dashboard_context
+        }
+        context_text = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+        if len(context_text) <= 2400:
+            ai_text = (
+                "[Context snapshot từ Dashboard hiện tại — có thể đã cũ; "
+                "hãy dùng tool Ceph để kiểm chứng nếu cần]\n"
+                + context_text
+                + "\n\nCâu hỏi của operator: "
+                + text
+            )
     if mode == "delegate":
         if len(text) > settings.delegated_ai_max_prompt_chars:
             raise HTTPException(
@@ -872,7 +896,7 @@ async def post_chat_message(
         return {"user_message": user_message_dict, "assistant_message": assistant_message_dict}
 
     try:
-        result = await run_chat_turn(history, text, user, cluster)
+        result = await run_chat_turn(history, ai_text, user, cluster)
     except ChatTurnError as exc:
         logger.warning("post_chat_message: %s", exc)
         ai_name = auth.chat_ai_name(user)

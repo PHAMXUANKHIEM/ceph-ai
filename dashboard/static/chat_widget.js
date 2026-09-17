@@ -21,6 +21,9 @@
   var femaleAddressInputEl = document.getElementById("chat-female-address");
   var settingsSuccessEl = document.getElementById("chat-settings-success");
   var panelAiNameEl = document.getElementById("chat-panel-ai-name");
+  var contextBadgeEl = document.getElementById("chat-context-badge");
+  var panelUnreadBadgeEl = document.getElementById("chat-unread-badge");
+  var resizeHandleEl = document.getElementById("chat-resize-handle");
   var modeSelectEl = document.getElementById("chat-mode-select");
   if (!panelEl || !bodyEl || !messagesEl || !formEl) {
     return; // not on a page with the chat panel
@@ -56,6 +59,11 @@
   var DELEGATED_POLL_BASE_MS = 2500;
   var DELEGATED_POLL_MAX_MS = 30000;
   var DELEGATED_TASK_MAX_MS = 30 * 60 * 1000;
+  var CHAT_WIDTH_STORAGE_KEY = "chatPanelWidth";
+  var CHAT_MIN_WIDTH = 300;
+  var CHAT_MAX_WIDTH = 600;
+  var isDashboardInline = panelEl.dataset.dashboardInline === "true";
+  var dashboardContext = null;
   var LIMIT_WARNING_THRESHOLDS = [5, 10, 15];
   var dualProcessing = false;
   var activeDualSessionId = null;
@@ -64,19 +72,23 @@
   var unreadCount = 0;
 
   function updateChatFabBadge() {
-    if (!chatFab) return;
-    var badge = chatFab.querySelector(".chat-fab-badge");
+    var badge = chatFab ? chatFab.querySelector(".chat-fab-badge") : null;
     if (!unreadCount) {
       if (badge) badge.remove();
+      if (panelUnreadBadgeEl) panelUnreadBadgeEl.hidden = true;
       return;
     }
-    if (!badge) {
+    if (chatFab && !badge) {
       badge = document.createElement("span");
       badge.className = "chat-fab-badge";
       badge.setAttribute("aria-label", "Tin nhắn mới chưa đọc");
       chatFab.appendChild(badge);
     }
-    badge.textContent = unreadCount > 9 ? "9+" : String(unreadCount);
+    if (badge) badge.textContent = unreadCount > 9 ? "9+" : String(unreadCount);
+    if (panelUnreadBadgeEl) {
+      panelUnreadBadgeEl.hidden = false;
+      panelUnreadBadgeEl.textContent = unreadCount > 9 ? "9+" : String(unreadCount);
+    }
   }
 
   // Always renders in Asia/Ho_Chi_Minh regardless of the viewing browser's
@@ -118,6 +130,34 @@
     }
     return response;
   }
+
+  function loadDashboardContext() {
+    if (!isDashboardInline) return;
+    var clusterName = panelEl.getAttribute("data-context-cluster") || "Dashboard";
+    if (contextBadgeEl) {
+      contextBadgeEl.textContent = "Đang xem: " + clusterName;
+      contextBadgeEl.hidden = false;
+    }
+    fetch("/api/dashboard/health", { credentials: "same-origin" })
+      .then(handleAuthRedirect)
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        dashboardContext = {
+          cluster: clusterName,
+          health: data.health,
+          osds: data.osds,
+          mons: data.mons,
+          utilization: data.utilization,
+          placement_groups: data.placement_groups,
+          stale: data.stale,
+          age_seconds: data.age_seconds,
+        };
+      })
+      .catch(function () {});
+  }
+
+  loadDashboardContext();
 
   function clearEmptyState() {
     var empty = document.getElementById("chat-empty-state");
@@ -982,7 +1022,12 @@
     empty.innerHTML =
       '<span class="chat-empty-icon" aria-hidden="true">&#129302;</span>' +
       '<p class="chat-empty-text">Hỏi tôi về ' + productName + '</p>' +
-      '<p class="chat-empty-subtext">Trợ lý có thể giải thích cấu hình, vận hành và sự cố.</p>';
+      '<p class="chat-empty-subtext">Trợ lý có thể giải thích cấu hình, vận hành và sự cố.</p>' +
+      (isDashboardInline ? '<div class="chat-quick-actions" aria-label="Câu hỏi nhanh">' +
+        '<button type="button" class="chat-quick-action" data-chat-prompt="Tóm tắt health và các cảnh báo hiện tại">Tóm tắt health</button>' +
+        '<button type="button" class="chat-quick-action" data-chat-prompt="Hiện trạng OSD và PG hiện tại thế nào?">Kiểm tra OSD / PG</button>' +
+        '<button type="button" class="chat-quick-action" data-chat-prompt="Dung lượng cụm và các pool đang dùng bao nhiêu?">Xem dung lượng</button>' +
+        '</div>' : '');
     messagesEl.appendChild(empty);
   }
 
@@ -1373,9 +1418,27 @@
 
   // --- minimize / restore (thu nhỏ / phóng to) --------------------------------
 
+  function focusInlineChat() {
+    if (!isDashboardInline) return;
+    panelEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.setTimeout(function () {
+      if (inputEl) inputEl.focus();
+    }, 180);
+  }
+
   function setMinimized(minimized) {
+    if (isDashboardInline) {
+      minimized = false;
+      panelEl.classList.remove("is-minimized");
+      panelEl.setAttribute("aria-hidden", "false");
+      if (chatFab) {
+        chatFab.hidden = false;
+        chatFab.setAttribute("aria-expanded", "true");
+      }
+      return;
+    }
     panelEl.classList.toggle("is-minimized", minimized);
-    panelEl.setAttribute("aria-hidden", minimized ? "true" : "false");
+    panelEl.setAttribute("aria-hidden", "false");
     if (!minimized) {
       unreadCount = 0;
       updateChatFabBadge();
@@ -1423,7 +1486,11 @@
   }
   if (chatFab) {
     chatFab.addEventListener("click", function () {
-      setMinimized(false);
+      if (isDashboardInline) {
+        focusInlineChat();
+      } else {
+        setMinimized(false);
+      }
     });
   }
 
@@ -1433,13 +1500,47 @@
     // The Ceph Dashboard has a floating trigger, so its drawer starts closed
     // on first visit. Other products may still use the inline chat layout and
     // have no trigger; preserve their historical open-by-default behavior.
-    startMinimized = chatFab
+    startMinimized = isDashboardInline ? false : (chatFab
       ? (storedMinimized === null ? true : storedMinimized === "1")
-      : storedMinimized === "1";
+      : storedMinimized === "1");
   } catch (e) {
     startMinimized = false;
   }
   setMinimized(startMinimized);
+
+  function setPanelWidth(width) {
+    if (!panelEl || isDashboardInline) return;
+    var next = Math.max(CHAT_MIN_WIDTH, Math.min(CHAT_MAX_WIDTH, Math.round(width)));
+    panelEl.style.setProperty("--chat-panel-width", next + "px");
+    try { localStorage.setItem(CHAT_WIDTH_STORAGE_KEY, String(next)); } catch (e) {}
+  }
+
+  if (!isDashboardInline) {
+    try {
+      var storedWidth = parseInt(localStorage.getItem(CHAT_WIDTH_STORAGE_KEY), 10);
+      if (Number.isFinite(storedWidth)) setPanelWidth(storedWidth);
+    } catch (e) {}
+  }
+
+  if (resizeHandleEl && !isDashboardInline) {
+    resizeHandleEl.addEventListener("pointerdown", function (event) {
+      event.preventDefault();
+      var rect = panelEl.getBoundingClientRect();
+      var right = rect.right;
+      document.body.classList.add("is-chat-resizing");
+      resizeHandleEl.setPointerCapture(event.pointerId);
+      function move(moveEvent) { setPanelWidth(right - moveEvent.clientX); }
+      function stop() {
+        document.body.classList.remove("is-chat-resizing");
+        resizeHandleEl.removeEventListener("pointermove", move);
+        resizeHandleEl.removeEventListener("pointerup", stop);
+        resizeHandleEl.removeEventListener("pointercancel", stop);
+      }
+      resizeHandleEl.addEventListener("pointermove", move);
+      resizeHandleEl.addEventListener("pointerup", stop);
+      resizeHandleEl.addEventListener("pointercancel", stop);
+    });
+  }
 
   // --- textarea auto-resize + send-button enabled state -----------------------
 
@@ -1457,6 +1558,15 @@
     refreshSendEnabled();
   });
   refreshSendEnabled();
+
+  bodyEl.addEventListener("click", function (event) {
+    var quickAction = event.target.closest("[data-chat-prompt]");
+    if (!quickAction || !inputEl) return;
+    inputEl.value = quickAction.getAttribute("data-chat-prompt") || "";
+    autoResizeTextarea();
+    refreshSendEnabled();
+    inputEl.focus();
+  });
 
   function updateChatMode() {
     if (!modeSelectEl) return;
@@ -1511,11 +1621,14 @@
     // wait, not a fixed-duration decoration.
     showTypingIndicator();
 
+    var requestBody = { content: text, session_id: currentSessionId, mode: modeSelectEl ? modeSelectEl.value : "single" };
+    if (isDashboardInline && dashboardContext) requestBody.dashboard_context = dashboardContext;
+
     fetch(apiPrefix + "/messages", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: text, session_id: currentSessionId, mode: modeSelectEl ? modeSelectEl.value : "single" }),
+      body: JSON.stringify(requestBody),
     })
       .then(handleAuthRedirect)
       .then(function (response) {
