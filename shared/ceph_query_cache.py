@@ -354,6 +354,21 @@ def _schedule_refresh(
     return True
 
 
+def schedule_refresh(
+    namespace: str,
+    key: str,
+    loader: Callable[[], T],
+    ttl_seconds: int,
+) -> bool:
+    """Populate a cache key in the background, never blocking the caller.
+
+    For a loader too slow to sit inside a page render: serve whatever cheap
+    answer the caller already has and let the next request read the real one.
+    Returns False when a refresh for this key is already in flight.
+    """
+    return _schedule_refresh(namespace, key, loader, ttl_seconds)
+
+
 def get_or_load(
     namespace: str,
     key: str,

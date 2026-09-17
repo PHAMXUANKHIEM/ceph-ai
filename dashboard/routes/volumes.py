@@ -25,7 +25,13 @@ from dashboard.routes.incidents import OPEN_STATUSES, _resolve_selected_cluster
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
 from shared import audit, db
-from shared.ceph_query_cache import CacheLockError, get_or_load as get_cached_ceph_query, invalidate as invalidate_ceph_query_cache
+from shared.ceph_query_cache import (
+    CacheLockError,
+    get_cached as cached_ceph_query_value,
+    get_or_load as get_cached_ceph_query,
+    invalidate as invalidate_ceph_query_cache,
+    schedule_refresh as schedule_ceph_query_refresh,
+)
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.rbd_trash_retention import trash_entry_ttl_status
 from shared.models import (
@@ -115,16 +121,25 @@ def _cached_rbd_trash(cluster, pool: str) -> list[dict]:
     size, so they must not pay for the scan.
     """
 
-    def load_trash() -> list[dict]:
+    def load_measured() -> list[dict]:
         query = ceph_client.query_rbd_trash if cluster.is_default else ceph_client.query_rbd_trash_with
         args = (pool,) if cluster.is_default else (pool, *cluster_connection(cluster))
         return query(*args)
 
-    return get_cached_ceph_query(
-        "rbd-trash", f"{cluster.id}:{pool}", load_trash,
-        ttl_seconds=_CEPH_PAGE_CACHE_TTL_SECONDS,
-        stale_ttl_seconds=900,
-    )
+    namespace, key = "rbd-trash", f"{cluster.id}:{pool}"
+    cached = cached_ceph_query_value(namespace, key, max_age_seconds=900)
+    if cached is not None:
+        value, age_seconds = cached
+        if age_seconds > _CEPH_PAGE_CACHE_TTL_SECONDS:
+            schedule_ceph_query_refresh(namespace, key, load_measured, _CEPH_PAGE_CACHE_TTL_SECONDS)
+        return value  # type: ignore[return-value]
+    # Cold cache: the capacity scan measured 11s on a healthy cluster and 38s
+    # when one MON timed out first. Never make an operator wait that out — and
+    # never let a second concurrent request hit the cache's 5s lock wait, which
+    # raised CacheLockError and blanked the page. Answer now from the cheap
+    # listing and let the next load read the measured one.
+    schedule_ceph_query_refresh(namespace, key, load_measured, _CEPH_PAGE_CACHE_TTL_SECONDS)
+    return _query_rbd_trash_fast(cluster, pool)
 
 
 def _query_rbd_trash_fast(cluster, pool: str) -> list[dict]:

@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -2329,3 +2330,44 @@ def test_concurrent_page_load_during_a_capacity_scan_is_not_a_500(dashboard_clie
 
     assert response.status_code == 200
     assert "đang quét dung lượng Trash" in response.text
+
+
+def test_cold_trash_page_never_blocks_on_the_capacity_scan(monkeypatch):
+    """Phép đo dung lượng mất ~11s khi cụm khoẻ, 38s khi một MON timeout
+    trước. Không được bắt operator chờ hết chỗ đó: trả ngay bản liệt kê rẻ
+    và để lần tải sau đọc bản đã đo."""
+    from shared import ceph_query_cache
+
+    cluster = SimpleNamespace(id="cluster-1", is_default=True)
+    scheduled = []
+    monkeypatch.setattr(
+        volumes_route, "schedule_ceph_query_refresh",
+        lambda namespace, key, loader, ttl: scheduled.append((namespace, key)) or True,
+    )
+    monkeypatch.setattr(volumes_route, "cached_ceph_query_value", lambda *a, **k: None)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash",
+        lambda pool, *, include_capacity=True: (
+            pytest.fail("cold load must not run the measured scan inline")
+            if include_capacity else [{"id": "aaa", "name": "vol", "deletion_time": "",
+                                       "status": "", "size_bytes": None, "used_size_bytes": None}]
+        ),
+    )
+
+    rows = volumes_route._cached_rbd_trash(cluster, "vms")
+
+    assert [row["id"] for row in rows] == ["aaa"]
+    assert scheduled == [("rbd-trash", "cluster-1:vms")]
+
+
+def test_warm_trash_page_serves_the_measured_values(monkeypatch):
+    cluster = SimpleNamespace(id="cluster-1", is_default=True)
+    measured = [{"id": "aaa", "name": "vol", "deletion_time": "", "status": "",
+                 "size_bytes": 40 * 1024 ** 3, "used_size_bytes": 3003121664}]
+    monkeypatch.setattr(volumes_route, "cached_ceph_query_value", lambda *a, **k: (measured, 1.0))
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash",
+        lambda *a, **k: pytest.fail("a warm cache must not query Ceph at all"),
+    )
+
+    assert volumes_route._cached_rbd_trash(cluster, "vms") == measured
