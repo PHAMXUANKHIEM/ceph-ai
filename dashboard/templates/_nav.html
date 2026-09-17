@@ -22,7 +22,6 @@
 {% set openstack_group_active = nav_path.startswith("/openstack") %}
 <header class="topbar">
   <div class="topbar-inner">
-    <button type="button" class="sidebar-collapse" aria-label="Thu gọn thanh điều hướng" aria-expanded="true" title="Thu gọn thanh điều hướng">‹</button>
     <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
     <div class="topbar-context"><span class="topbar-breadcrumb">Ceph / {{ nav_path == "/" and "Dashboard" or nav_path.lstrip("/")|replace("/", " / ") }}</span>{% if selected_cluster %}<span class="topbar-cluster-name">{{ selected_cluster.name }}</span>{% endif %}</div>
     <nav class="main-nav">

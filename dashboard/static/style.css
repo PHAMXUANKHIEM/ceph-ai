@@ -3305,42 +3305,6 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   .app-shell .topbar-user .btn::before { content: "↪"; font-size: 16px; }
 }
 
-/* Collapsed desktop rail: do not clip labels into meaningless fragments.
-   Hide the label node and expose all grouped links, including inactive ones.
-   A compact legacy block later in this file has the old centered/initial
-   rules, so the shell-qualified selectors below keep the DOM icon contract
-   authoritative when the rail is collapsed. */
-@media (min-width: 901px) {
-  body.app-shell.sidebar-collapsed .topbar-inner { align-items: stretch !important; padding-inline: 0; }
-  body.app-shell.sidebar-collapsed .brand { justify-content: center; padding-inline: 0; }
-  body.app-shell.sidebar-collapsed .bizfly-logo-plate { width: 34px; height: 34px; }
-  body.app-shell.sidebar-collapsed .bizfly-brand-logo { display: none; }
-  body.app-shell.sidebar-collapsed .bizfly-logo-plate::before {
-    content: "B";
-    display: grid;
-    width: 34px;
-    height: 34px;
-    place-items: center;
-    border-radius: 10px;
-    background: linear-gradient(135deg, #55a7ff, #7768ff);
-    color: #07101d;
-    font-size: .82rem;
-    font-weight: 850;
-  }
-  body.app-shell.sidebar-collapsed .main-nav { align-self: stretch !important; width: 100% !important; }
-  body.app-shell.sidebar-collapsed .shell-workspace,
-  body.app-shell.sidebar-collapsed .shell-product-status,
-  body.app-shell.sidebar-collapsed .topbar-context,
-  body.app-shell.sidebar-collapsed .topbar-cluster-switcher,
-  body.app-shell.sidebar-collapsed .topbar-user .user-chip { display: none; }
-  body.app-shell.sidebar-collapsed .topbar-user { justify-content: center; }
-  body.app-shell.sidebar-collapsed .sidebar-collapse { align-self: center; margin-inline: auto; }
-  .sidebar-collapsed .nav-section-toggle { display: none; }
-  .sidebar-collapsed .nav-section-items[hidden] { display: flex; }
-  body.app-shell.sidebar-collapsed .nav-link::before { content: none; }
-  .sidebar-collapsed .nav-link-label { display: none; }
-}
-
 @media (max-width: 560px) {
   .app-shell .nav-link-label { display: inline; }
   .app-shell .nav-link::before { content: none; }
@@ -4190,45 +4154,8 @@ body{display:flex;min-height:100vh;background:#0f1117}.app-body{flex:1;min-width
 @media(max-width:900px){.topbar{position:sticky;top:0;width:64px;padding:12px 8px}.brand{padding:4px 0 14px;text-align:center}.brand-mark{margin:0}.brand:not(:has(.brand-mark)){font-size:0}.main-nav{overflow-x:hidden}.nav-link{justify-content:center;padding:10px 4px;font-size:0}.nav-link::before{content:attr(data-initial);font-size:14px;font-weight:700;letter-spacing:.02em}.nav-dropdown-caret,.nav-dropdown-menu,.topbar-cluster-switcher,.topbar-user .user-chip{display:none}.topbar-user{justify-content:center}.topbar-user .btn{font-size:0;padding:8px}.topbar-user .btn::before{content:"↪";font-size:16px}.page{padding:18px}.mon-strip{left:64px}}
 @media(max-width:560px){body{display:block}.topbar{position:sticky;width:100%;min-height:auto;padding:8px}.topbar-inner{min-height:auto}.brand{border:0;padding:0}.main-nav{display:flex;flex-direction:row;overflow-x:auto}.nav-link{width:auto;flex:none;font-size:12px;white-space:nowrap}.nav-dropdown-menu{position:absolute;left:8px;right:8px;z-index:40;background:#161922;border:1px solid #2a3040;border-radius:8px}.topbar-cluster-switcher{display:block}.topbar-user{border:0;padding:0}.mon-strip{display:none}.page{padding:12px}}
 :root{--ops-bg:#0f1117;--ops-surface:#161922;--ops-raised:#1b1f2a;--ops-border:#2a3040;--ops-text:#e7e9ee;--ops-muted:#a0a9ba;--ops-brand:#1d4ed8;--ops-brand-hover:#3f7efe;--ops-healthy:#78d79a;--ops-warning:#f4c15d;--ops-critical:#ff7887}
-.sidebar-collapse{align-self:flex-end;width:28px;height:28px;border:1px solid var(--ops-border);border-radius:7px;background:transparent;color:var(--ops-muted);font-size:20px;line-height:1;cursor:pointer}.sidebar-collapse:hover,.sidebar-collapse:focus-visible{border-color:var(--ops-brand-hover);color:var(--ops-text);background:var(--ops-raised)}
-@media(min-width:561px){.sidebar-collapsed .topbar{width:64px}}.sidebar-collapsed .brand{font-size:0;text-align:center}.sidebar-collapsed .brand-mark{margin:0}.sidebar-collapsed .topbar-inner{align-items:center}.sidebar-collapsed .main-nav{width:100%}.sidebar-collapsed .nav-link{justify-content:center;font-size:0}.sidebar-collapsed .nav-link::before{content:attr(data-initial);font-size:14px;font-weight:700;letter-spacing:.02em}.sidebar-collapsed .nav-dropdown-caret,.sidebar-collapsed .nav-dropdown-menu,.sidebar-collapsed .topbar-cluster-switcher,.sidebar-collapsed .user-chip{display:none}.sidebar-collapsed .topbar-user{justify-content:center}.sidebar-collapsed .sidebar-collapse{align-self:center}.sidebar-collapsed .mon-strip{left:64px}
-@media(max-width:560px){.sidebar-collapsed .topbar{width:100%}.sidebar-collapsed .main-nav{flex-direction:row}.sidebar-collapsed .nav-link{width:auto;font-size:12px}.sidebar-collapsed .nav-link::before{content:none}.sidebar-collapsed .topbar-inner{align-items:stretch}}
 :root{--ops-bg:#0f1117;--ops-surface:#161922;--ops-raised:#1b1f2a;--ops-border:#2a3040;--ops-text:#e7e9ee;--ops-muted:#a0a9ba;--ops-brand:#1d4ed8;--ops-brand-hover:#3f7efe;--ops-healthy:#78d79a;--ops-warning:#f4c15d;--ops-critical:#ff7887}
 :focus-visible{outline:2px solid var(--ops-brand-hover);outline-offset:2px}@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important}}
-.sidebar-section-title{margin:10px 10px 3px;color:#6f7b90;font:700 10px/1.2 Inter,system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase}.topbar-context{display:grid;gap:4px;padding:0 10px 10px;border-bottom:1px solid var(--ops-border)}.topbar-breadcrumb{overflow:hidden;color:var(--ops-muted);font:11px ui-monospace,monospace;text-overflow:ellipsis;white-space:nowrap}.topbar-cluster-name{overflow:hidden;color:var(--ops-text);font-size:13px;font-weight:700;text-overflow:ellipsis;white-space:nowrap}.sidebar-collapsed .topbar-context{display:none}@media(max-width:560px){.sidebar-section-title{display:none}.topbar-context{display:flex;align-items:center;justify-content:space-between;padding:0 6px;border:0}.topbar-breadcrumb{max-width:48%}.topbar-cluster-name{max-width:45%}}
-
-/* Collapsed rail groups remain visually separated.  Tooltips are positioned
-   by app.js on <body> because the scrollable sidebar clips pseudo-elements. */
-@media (min-width: 901px) {
-  body.app-shell.sidebar-collapsed .main-nav { overflow-y: auto; overflow-x: visible; }
-  body.app-shell.sidebar-collapsed .nav-section + .nav-section { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
-  body.app-shell.sidebar-collapsed .nav-link { position: relative; color: var(--text-muted); }
-  body.app-shell.sidebar-collapsed .nav-link:hover .nav-icon,
-  body.app-shell.sidebar-collapsed .nav-link.active .nav-icon { color: var(--accent); }
-}
-.nav-rail-tooltip[hidden] { display: none; }
-.nav-rail-tooltip {
-  position: fixed;
-  z-index: 200;
-  max-width: 220px;
-  padding: 7px 9px;
-  border: 1px solid var(--border-strong);
-  border-radius: 7px;
-  background: #1b2433;
-  color: var(--text);
-  box-shadow: 0 10px 28px rgba(0,0,0,.35);
-  font-size: 12px;
-  line-height: 1.25;
-  pointer-events: none;
-  white-space: nowrap;
-}
-@media (min-width: 901px) {
-  /* The fixed sidebar changes width when collapsed; the content offset must
-     follow it or a hidden 252px gutter remains beside the 64px rail. */
-  body.app-shell.sidebar-collapsed > .app-body { margin-left: 64px; }
-  body.app-shell.sidebar-collapsed > .mon-strip { margin-left: 64px; }
-}
-
 /* ---- Table system (frontend roadmap item 4) --------------------------
    Chín lớp phân trang khác nhau từng lặp lại gần như cùng một khai báo.
    Gom phần chung về đây; `justify-content` KHÔNG gom vì vài chỗ cố ý dùng
