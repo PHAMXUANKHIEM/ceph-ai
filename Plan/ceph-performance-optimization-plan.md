@@ -488,6 +488,15 @@ Record before/after values for:
   candidate is `1535b9f6`. The full regression evidence immediately before
   this narrow follow-up was 3344 passed with only the three isolated-broker
   environment failures.
+- 2026-09-17: Redesigned Convert to Cephadm as a centered, narrow workflow:
+  current orchestrator status and configured MON/MGR/OSD counts are visible;
+  production risk is isolated in a red alert; key constraints are scannable;
+  technical details are collapsed; and legacy clusters receive a required
+  checklist, disabled-until-complete start button, approval confirm dialog,
+  and existing progress log. Cephadm-managed clusters now show only the
+  green terminal status without the conversion form. The focused gate passed
+  44 tests with one existing Starlette/httpx warning. Commit `8c52ff5e` is
+  pushed to `origin/main`; rollback candidate is `729436ef`.
 - 2026-09-16: Phase 1 completed. Added bounded Ceph collection settings in
   `config/settings.py` and `.env.example`, plus `shared/retry.py` with finite
   exponential backoff, jitter and retry classification. Focused tests: 8
