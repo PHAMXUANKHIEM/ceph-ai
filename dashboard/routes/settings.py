@@ -1,12 +1,14 @@
 import asyncio
 from datetime import datetime
 import ipaddress
+import json
 import logging
 import math
 import os
 import re
 import shlex
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -505,6 +507,62 @@ def _containerized_deployment() -> bool:
     return os.environ.get("CEPH_AI_CONTAINERIZED", "").lower() == "true"
 
 
+# Compose service names used by the host-side restart helper.  The helper is
+# intentionally allow-listed so an admin action can never turn into an
+# arbitrary ``podman restart`` command.
+CONTAINER_RESTART_SERVICES = {
+    "dashboard": "dashboard-web",
+    "worker": "worker",
+    "watcher": "watcher",
+    "code_repair": "code-repair",
+}
+CONTAINER_RESTART_SOCKET = "/run/ceph-ai/container-restart.sock"
+
+
+def _restart_container_service(kind: str, *, wait: bool = True) -> dict:
+    """Restart one compose container through the narrow host helper socket."""
+    service_name = CONTAINER_RESTART_SERVICES.get(kind)
+    if not service_name:
+        return {
+            "restarted": False,
+            "new_pid": None,
+            "error": "Dịch vụ này không có container riêng trong compose hiện tại.",
+        }
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(65 if wait else 10)
+            connection.connect(CONTAINER_RESTART_SOCKET)
+            payload = json.dumps({"service": service_name, "wait": wait}).encode("utf-8") + b"\n"
+            connection.sendall(payload)
+            response = b""
+            while not response.endswith(b"\n") and len(response) < 8192:
+                chunk = connection.recv(8192)
+                if not chunk:
+                    break
+                response += chunk
+        result = json.loads(response.decode("utf-8"))
+        if result.get("restarted") or result.get("accepted"):
+            return {
+                "restarted": bool(result.get("restarted")),
+                "accepted": bool(result.get("accepted")),
+                "new_pid": None,
+                "error": None,
+                **result,
+            }
+        return {
+            "restarted": False,
+            "new_pid": None,
+            "error": result.get("error") or "Host restart helper rejected the request.",
+        }
+    except Exception:
+        logger.exception("container restart request failed for %s", service_name)
+        return {
+            "restarted": False,
+            "new_pid": None,
+            "error": "Không kết nối được host restart helper — kiểm tra socket/systemd/podman.",
+        }
+
+
 def _code_repair_profile_dir(provider: str, profile: str) -> Path:
     if provider not in {"codex", "claude"}:
         raise HTTPException(status_code=400, detail="Provider tài khoản riêng phải là codex hoặc claude")
@@ -570,10 +628,7 @@ def _restart_managed_service(kind: str) -> dict | None:
     should use the existing detached-process fallback.
     """
     if _containerized_deployment():
-        return {
-            "restarted": False, "new_pid": None,
-            "error": "Container stack phải được restart bởi operator sau khi đổi cấu hình.",
-        }
+        return _restart_container_service(kind)
     owner = _current_systemd_service_unit()
     if not owner or "dashboard" not in owner:
         return None
@@ -972,7 +1027,10 @@ def restart_dashboard_process(host: str, port: int) -> None:
     the current connection, those don't).
     """
     if _containerized_deployment():
-        raise RuntimeError("Dashboard container phải được restart bởi container control-plane")
+        result = _restart_container_service("dashboard", wait=False)
+        if not (result["restarted"] or result.get("accepted")):
+            raise RuntimeError(result["error"] or "Không restart được Dashboard container")
+        return
     pid = os.getpid()
     systemd_unit = _current_systemd_service_unit()
     if systemd_unit:
@@ -1002,6 +1060,9 @@ def _cluster_form_values() -> dict:
         "ceph_mgr_nodes": settings.ceph_mgr_nodes,
         "ceph_rgw_nodes": settings.ceph_rgw_nodes,
         "ceph_rgw_container_name": settings.ceph_rgw_container_name,
+        "ceph_rgw_s3_endpoint": settings.ceph_rgw_s3_endpoint,
+        "ceph_rgw_s3_access_key": settings.ceph_rgw_s3_access_key,
+        "ceph_rgw_s3_secret_key_configured": bool(settings.ceph_rgw_s3_secret_key),
         "ceph_exec_mode": settings.ceph_exec_mode,
         "ceph_keyring_path": settings.ceph_keyring_path,
         "ssh_user": settings.ssh_user,
@@ -2463,6 +2524,9 @@ async def cluster_settings_submit(
     ceph_mgr_nodes: str = Form(""),
     ceph_rgw_nodes: str = Form(""),
     ceph_rgw_container_name: str = Form(""),
+    ceph_rgw_s3_endpoint: str = Form(""),
+    ceph_rgw_s3_access_key: str = Form(""),
+    ceph_rgw_s3_secret_key: str = Form(""),
     ceph_exec_mode: str = Form("docker"),
     ceph_keyring_path: str = Form(""),
     ssh_user: str = Form(""),
@@ -2476,6 +2540,14 @@ async def cluster_settings_submit(
         "ceph_mgr_nodes": ceph_mgr_nodes.strip(),
         "ceph_rgw_nodes": ceph_rgw_nodes.strip(),
         "ceph_rgw_container_name": ceph_rgw_container_name.strip(),
+        "ceph_rgw_s3_endpoint": ceph_rgw_s3_endpoint.strip(),
+        "ceph_rgw_s3_access_key": ceph_rgw_s3_access_key.strip(),
+        # An empty secret means "keep the existing secret". Never render it
+        # back into the form; only expose the configured/not-configured flag.
+        "ceph_rgw_s3_secret_key": ceph_rgw_s3_secret_key.strip() or settings.ceph_rgw_s3_secret_key,
+        "ceph_rgw_s3_secret_key_configured": bool(
+            ceph_rgw_s3_secret_key.strip() or settings.ceph_rgw_s3_secret_key
+        ),
         "ceph_exec_mode": ceph_exec_mode.strip() or "docker",
         "ceph_keyring_path": ceph_keyring_path.strip(),
         "ssh_user": ssh_user.strip(),
@@ -3015,7 +3087,7 @@ async def patch_pipeline_settings_submit(
     restart_suffix = (
         " Worker đã khởi động lại để áp dụng ngay."
         if worker_restart.get("restarted")
-        else " Chưa áp dụng vào Worker; operator cần chạy systemctl restart ceph-ai-containers."
+        else " Chưa áp dụng vào Worker: " + (worker_restart.get("error") or "hãy kiểm tra log dịch vụ.")
     )
 
     return templates.TemplateResponse(
@@ -3438,7 +3510,7 @@ async def backup_targets_settings_submit(
     restart_suffix = (
         " Worker đã khởi động lại để áp dụng ngay."
         if worker_restart.get("restarted")
-        else " Chưa áp dụng vào Worker; operator cần chạy systemctl restart ceph-ai-containers."
+        else " Chưa áp dụng vào Worker: " + (worker_restart.get("error") or "hãy kiểm tra log dịch vụ.")
     )
 
     return templates.TemplateResponse(
@@ -3492,11 +3564,16 @@ async def restart_worker_submit(request: Request, user: str = Depends(require_lo
     _require_admin_privilege(user)
     result = await asyncio.to_thread(restart_worker)
     if result["restarted"]:
+        restart_label = (
+            f"container {result['container']}"
+            if result.get("container")
+            else f"PID {result['new_pid']}"
+        )
         return templates.TemplateResponse(
             request,
             "settings.html",
             _settings_context(
-                user, manual_worker_restart_success=f"Đã khởi động lại Worker (PID {result['new_pid']})."
+                user, manual_worker_restart_success=f"Đã khởi động lại Worker ({restart_label})."
             ),
         )
     return templates.TemplateResponse(
@@ -3518,11 +3595,16 @@ async def restart_watcher_submit(request: Request, user: str = Depends(require_l
     _require_admin_privilege(user)
     result = await asyncio.to_thread(restart_watcher)
     if result["restarted"]:
+        restart_label = (
+            f"container {result['container']}"
+            if result.get("container")
+            else f"PID {result['new_pid']}"
+        )
         return templates.TemplateResponse(
             request,
             "settings.html",
             _settings_context(
-                user, manual_watcher_restart_success=f"Đã khởi động lại Watcher (PID {result['new_pid']})."
+                user, manual_watcher_restart_success=f"Đã khởi động lại Watcher ({restart_label})."
             ),
         )
     return templates.TemplateResponse(
@@ -3545,13 +3627,18 @@ async def restart_remediation_watcher_submit(
     _require_admin_privilege(user)
     result = await asyncio.to_thread(restart_remediation_watcher)
     if result["restarted"]:
+        restart_label = (
+            f"container {result['container']}"
+            if result.get("container")
+            else f"PID {result['new_pid']}"
+        )
         return templates.TemplateResponse(
             request,
             "settings.html",
             _settings_context(
                 user,
                 manual_remediation_watcher_restart_success=(
-                    f"Đã khởi động lại AI Remediation Watcher (PID {result['new_pid']})."
+                    f"Đã khởi động lại AI Remediation Watcher ({restart_label})."
                 ),
             ),
         )

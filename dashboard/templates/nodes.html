@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Node Monitoring — Ceph AIOps</title>
-  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&amp;nodes_layout=3&amp;nodes_range=1&amp;nodes_chart=2">
-  <link rel="stylesheet" href="/static/nodes_chart.css?v={{ static_version }}&amp;nodes_chart=2">
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&amp;nodes_layout=3&amp;nodes_range=1&amp;nodes_chart=3">
+  <link rel="stylesheet" href="/static/nodes_chart.css?v={{ static_version }}&amp;nodes_chart=3">
 </head>
 <body>
   {% include "_nav.html" %}
@@ -26,6 +26,8 @@
             <option value="15m" {% if selected_range == '15m' %}selected{% endif %}>15 phút</option>
             <option value="1h" {% if selected_range == '1h' %}selected{% endif %}>1 giờ</option>
             <option value="24h" {% if selected_range == '24h' %}selected{% endif %}>24 giờ</option>
+            <option value="7d" {% if selected_range == '7d' %}selected{% endif %}>7 ngày</option>
+            <option value="14d" {% if selected_range == '14d' %}selected{% endif %}>14 ngày</option>
           </select>
         </label>
         <span class="node-snapshot-meta" id="node-snapshot-meta">{% if snapshot_meta.last_error %}Snapshot error: {{ snapshot_meta.last_error }}{% elif snapshot_meta.collected_at %}Snapshot {{ snapshot_meta.generation }} · {{ snapshot_meta.age_seconds|round(0) }}s{% if snapshot_meta.stale %} · stale{% endif %}{% else %}Chưa có snapshot{% endif %}</span>
@@ -90,6 +92,6 @@
   </main>
 
   <script src="/static/app.js?v={{ static_version }}"></script>
-  <script src="/static/nodes.js?v={{ static_version }}&amp;nodes_layout=3&amp;nodes_range=1&amp;nodes_chart=2"></script>
+  <script src="/static/nodes.js?v={{ static_version }}&amp;nodes_layout=3&amp;nodes_range=1&amp;nodes_chart=3"></script>
 </body>
 </html>

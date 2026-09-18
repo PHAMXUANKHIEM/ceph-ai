@@ -1,0 +1,12 @@
+[Unit]
+Description=Allow-listed Ceph AI container restart helper
+
+[Service]
+Type=simple
+User=root
+Environment=CEPH_AI_COMPOSE_PROJECT=ceph-ai
+ExecStart=/usr/local/libexec/ceph-ai-container-restart
+KillMode=process
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=1

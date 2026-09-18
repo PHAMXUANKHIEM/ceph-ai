@@ -26,8 +26,12 @@ services:
     ports: ["8000:8000"]
     volumes:
       - ./:/app:ro
-      - /run/ceph-ai:/run/ceph-ai:rw
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      # Dashboard only needs read access to service heartbeats plus the
+      # dedicated restart socket. Do not expose the whole runtime directory.
+      - /run/ceph-ai/worker.json:/run/ceph-ai/worker.json:ro
+      - /run/ceph-ai/watcher.json:/run/ceph-ai/watcher.json:ro
+      - /run/ceph-ai/container-restart.sock:/run/ceph-ai/container-restart.sock
       - /root/.local:/opt/ai-tools:ro
       - /root/.codex/packages:/opt/codex-packages:ro
       # codex_home/claude_config_dir (config/settings.py) resolve under the

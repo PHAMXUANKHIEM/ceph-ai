@@ -4964,6 +4964,18 @@ body > .page { flex: 1 1 auto; min-width: 0; }
   .crush-history-toolbar { align-items: stretch; flex-direction: column; }
 }
 /* S3 Users workspace redesign */
+.s3-inventory-sync {
+  margin: 12px 24px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(34, 211, 238, 0.24);
+  border-radius: 8px;
+  background: rgba(8, 145, 178, 0.08);
+  color: #a5f3fc;
+  font-size: 13px;
+}
+.s3-inventory-sync.is-stale { border-color: rgba(234, 179, 8, 0.35); background: rgba(234, 179, 8, 0.08); color: #fde68a; }
+.s3-inventory-sync.is-error { border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.08); color: #fecaca; }
+
 .s3-users-page { max-width: 1440px; gap: 18px; }
 .s3-page-heading { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; padding:4px 2px 0; }
 .s3-page-heading h1 { margin-top:5px; font-size:clamp(1.55rem,2.5vw,2rem); }

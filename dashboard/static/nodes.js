@@ -11,7 +11,9 @@
     "5m": { seconds: 300, pollMs: 15000, label: "5 phút" },
     "15m": { seconds: 900, pollMs: 30000, label: "15 phút" },
     "1h": { seconds: 3600, pollMs: 30000, label: "1 giờ" },
-    "24h": { seconds: 86400, pollMs: 30000, label: "24 giờ" }
+    "24h": { seconds: 86400, pollMs: 30000, label: "24 giờ" },
+    "7d": { seconds: 604800, pollMs: 30000, label: "7 ngày" },
+    "14d": { seconds: 1209600, pollMs: 30000, label: "14 ngày" }
   };
   var RANGE_STORAGE_KEY = "ceph-ai.node-monitor.range";
 
@@ -166,7 +168,7 @@
   }
 
   function chartMaxPoints() {
-    return { "2m": 24, "5m": 30, "15m": 30, "1h": 40, "24h": 144 }[currentRange];
+    return { "2m": 24, "5m": 30, "15m": 30, "1h": 40, "24h": 144, "7d": 168, "14d": 240 }[currentRange];
   }
 
   function downsampleChartPoints(points, maxPoints) {
@@ -320,6 +322,7 @@
     activeRequest: 0,
     livePoints: [],
     rangeKey: currentRange,
+    livePending: false,
 
     init: function () {
       var self = this;
@@ -336,7 +339,11 @@
     schedulePoll: function () {
       var self = this;
       if (pollTimer) window.clearTimeout(pollTimer);
-      pollTimer = window.setTimeout(function () { self.poll(); }, POLL_INTERVAL_MS);
+      // The first request paints persisted history immediately and starts
+      // live SSH collection in the background. Poll again quickly so the
+      // fresh live sample appears without making the user wait 30 seconds.
+      var delay = this.livePending ? Math.min(POLL_INTERVAL_MS, 2000) : POLL_INTERVAL_MS;
+      pollTimer = window.setTimeout(function () { self.poll(); }, delay);
     },
 
     setLoadingUI: function (loading, rangeRefresh) {
@@ -405,6 +412,7 @@
 
     onSuccess: function (data) {
       this.status = "success";
+      this.livePending = data.live_pending === true;
       this.lastErrorMessage = "";
       var self = this;
       if (this.rangeKey !== currentRange) {
@@ -464,6 +472,14 @@
       this.setErrorUI(false);
       this.updateValueBadges(currentPoint || data);
       this.updateSummary(data.summary || data.current || data, data);
+      if (data.live_pending || data.live_available === false) {
+        var staleStatus = document.getElementById("metrics-status");
+        var staleText = document.getElementById("metrics-status-text");
+        if (staleStatus) staleStatus.classList.add("is-stale");
+        if (staleText) staleText.textContent = data.live_pending
+          ? "Đang lấy telemetry realtime..."
+          : "Đang hiển thị dữ liệu cuối cùng — node tạm mất kết nối";
+      }
       drawAllCharts(true);
     },
 
@@ -564,6 +580,24 @@
   /* ---------- drawing ---------- */
   function drawAllCharts(firstPaint) {
     METRICS.forEach(function (cfg) { drawSection(sections[cfg.key], firstPaint); });
+  }
+
+  // The Nodes page can change width when the main sidebar collapses or when
+  // the responsive grid changes without a window resize event. Redraw after
+  // the browser has committed the new layout so a canvas never keeps a
+  // zero/old backing size and appears empty.
+  var redrawFrame = 0;
+  function requestChartRedraw() {
+    if (redrawFrame) return;
+    redrawFrame = window.requestAnimationFrame(function () {
+      redrawFrame = 0;
+      if (App.status === "success") drawAllCharts();
+    });
+  }
+
+  if (typeof ResizeObserver === "function") {
+    var chartResizeObserver = new ResizeObserver(requestChartRedraw);
+    METRICS.forEach(function (cfg) { chartResizeObserver.observe(sections[cfg.key].wrap); });
   }
 
   function drawSection(section, firstPaint) {
@@ -792,5 +826,5 @@
   }
 
   App.init();
-  window.addEventListener("resize", function () { drawAllCharts(); });
+  window.addEventListener("resize", requestChartRedraw);
 })();

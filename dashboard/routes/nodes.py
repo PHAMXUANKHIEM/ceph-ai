@@ -33,9 +33,11 @@ NODE_TIME_RANGES = {
     "15m": 900,
     "1h": 3600,
     "24h": 86400,
+    "7d": 604800,
+    "14d": 1209600,
 }
 NODE_TIME_RANGE_ALIASES = {str(seconds): name for name, seconds in NODE_TIME_RANGES.items()}
-NODE_RANGE_MAX_POINTS = {"2m": 24, "5m": 30, "15m": 30, "1h": 40, "24h": 144}
+NODE_RANGE_MAX_POINTS = {"2m": 24, "5m": 30, "15m": 30, "1h": 40, "24h": 144, "7d": 168, "14d": 240}
 
 
 def _normalize_node_range(value: str | None) -> str:
@@ -190,6 +192,19 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
     )
     range_seconds = NODE_TIME_RANGES[range_name]
     now = datetime.utcnow()
+
+    # Read the persisted window first. It is local database data and should
+    # be available immediately, even when a node's SSH endpoint is slow.
+    cutoff = now - timedelta(seconds=range_seconds)
+    with db.SessionLocal() as session:
+        history_rows = session.query(HostMetricSample).filter(
+            HostMetricSample.cluster_id == cluster.id,
+            HostMetricSample.host == host,
+            HostMetricSample.collected_at >= cutoff,
+            HostMetricSample.collected_at <= now,
+        ).order_by(HostMetricSample.collected_at.asc()).all()
+
+    metrics_error = None
     try:
         def load_metrics():
             if cluster.is_default:
@@ -206,32 +221,64 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
             # refresh stale data in the background when possible.
             ttl_seconds=2,
             stale_ttl_seconds=10,
+            # Never make the chart wait for a first SSH sample. The Watcher
+            # history above is enough to paint the chart immediately; this
+            # refresh fills the live cache for the next poll.
+            background_on_miss=True,
+            fallback=None,
         )
     except NodeMetricsError as exc:
         logger.warning("node_metrics_api: %s", exc)
-        raise HTTPException(status_code=502, detail=f"Không lấy được metrics từ node: {exc}")
+        metrics = None
+        metrics_error = str(exc)
 
-    # The old endpoint returned only the latest live sample.  That made every
-    # range look like the same two-minute chart.  HostMetricSample is already
-    # collected by Watcher for RCA, so use it as the historical source and add
-    # the fresh live sample at the right edge of the selected window.
-    cutoff = now - timedelta(seconds=range_seconds)
-    with db.SessionLocal() as session:
-        history_rows = session.query(HostMetricSample).filter(
-            HostMetricSample.cluster_id == cluster.id,
-            HostMetricSample.host == host,
-            HostMetricSample.collected_at >= cutoff,
-            HostMetricSample.collected_at <= now,
-        ).order_by(HostMetricSample.collected_at.asc()).all()
-
+    # HostMetricSample is already collected by Watcher for RCA, so use it as
+    # the historical source and add a live point only when the cache already
+    # has one. This keeps first paint fast and preserves realtime updates on
+    # the following poll.
     history_points = [_metric_dict(row) for row in history_rows]
-    current_point = _live_metric_dict(metrics, now)
-    all_points = history_points + [current_point]
-    # A live sample can have the same second as a persisted sample.  Keep the
-    # live value as the newest point, but avoid drawing a duplicate timestamp.
-    if len(all_points) > 1 and all_points[-2]["at"] == all_points[-1]["at"]:
-        all_points[-2] = all_points[-1]
-        all_points.pop()
+    live_pending = metrics is None and metrics_error is None
+    if metrics is None:
+        # A first request schedules live collection in the background. Keep
+        # the chart available immediately from history; if history is empty,
+        # return an explicit no-data state and let the next poll pick up the
+        # freshly cached live sample.
+        if history_rows:
+            latest_row = history_rows[-1]
+            metrics = {
+                field: getattr(latest_row, field)
+                for field in (
+                    "cpu_percent", "mem_percent", "disk_read_iops",
+                    "disk_write_iops", "disk_latency_ms",
+                )
+            }
+            current_point = history_points[-1]
+            all_points = history_points
+            chart_points = _downsample_metrics(history_points, NODE_RANGE_MAX_POINTS[range_name])
+        else:
+            metrics = {
+                field: None
+                for field in (
+                    "cpu_percent", "mem_percent", "disk_read_iops",
+                    "disk_write_iops", "disk_latency_ms",
+                )
+            }
+            current_point = {"at": now.isoformat() + "Z", **metrics}
+            all_points = []
+            chart_points = []
+    else:
+        current_point = _live_metric_dict(metrics, now)
+        all_points = history_points + [current_point]
+        # A live sample can have the same second as a persisted sample. Keep
+        # the live value as the newest point, but avoid duplicate timestamps.
+        if len(all_points) > 1 and all_points[-2]["at"] == all_points[-1]["at"]:
+            all_points[-2] = all_points[-1]
+            all_points.pop()
+        # Keep the fresh point at the right edge; if it were included in the
+        # last averaging bucket, the chart would lose the actual current value.
+        chart_points = _downsample_metrics(
+            history_points, max(NODE_RANGE_MAX_POINTS[range_name] - 1, 1)
+        ) + [current_point]
 
     return {
         "host": host,
@@ -244,12 +291,10 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
         "range_end": now.isoformat() + "Z",
         "sample_count": len(all_points),
         "source_sample_count": len(history_points),
-        # Keep the fresh point at the right edge.  If it were included in the
-        # last averaging bucket, the chart would lose the actual current
-        # value and appear to stop before ``range_end``.
-        "points": _downsample_metrics(
-            history_points, max(NODE_RANGE_MAX_POINTS[range_name] - 1, 1)
-        ) + [current_point],
+        "live_available": metrics_error is None and not live_pending,
+        "live_pending": live_pending,
+        "live_error": metrics_error,
+        "points": chart_points,
         "current": current_point,
         "summary": _average_metrics(all_points),
         "summary_mode": "average",

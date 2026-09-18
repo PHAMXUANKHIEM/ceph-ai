@@ -1,0 +1,11 @@
+[Unit]
+Description=Ceph AI container restart helper socket
+
+[Socket]
+ListenStream=/run/ceph-ai/container-restart.sock
+SocketMode=0660
+DirectoryMode=0750
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

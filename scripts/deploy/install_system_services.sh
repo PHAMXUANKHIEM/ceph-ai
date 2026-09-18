@@ -8,12 +8,29 @@ if [ "$REPO_DIR" != "/root/ceph-ai" ]; then
 fi
 
 install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-*.service /etc/systemd/system/
+install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-container-restart.socket /etc/systemd/system/
+install -m 0755 "$REPO_DIR"/scripts/deploy/container_restart_helper.py /usr/local/libexec/ceph-ai-container-restart
 install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-ai-pricing.timer /etc/systemd/system/
 install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-ai-task-cleanup.timer /etc/systemd/system/
 install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement.timer /etc/systemd/system/
 install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement-report.timer /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/logrotate/ceph-ai" /etc/logrotate.d/ceph-ai
 systemctl daemon-reload
+install -d -m 0750 /run/ceph-ai
+for heartbeat in worker watcher; do
+  if [ ! -e "/run/ceph-ai/$heartbeat.json" ]; then
+    install -m 0640 /dev/null "/run/ceph-ai/$heartbeat.json"
+  fi
+done
+# Retire the legacy template that exposed host systemd/D-Bus control. It is
+# intentionally removed even when upgrading from an older installation.
+while read -r legacy_unit; do
+  [ -n "$legacy_unit" ] || continue
+  systemctl disable --now "$legacy_unit" || true
+done < <(systemctl list-units --all --plain --no-legend 'ceph-ai-container-restart@*.service' | awk '{print $1}')
+rm -f /etc/systemd/system/ceph-ai-container-restart@.service
+systemctl daemon-reload
+systemctl enable --now ceph-ai-container-restart.socket
 systemctl enable ceph-ai-watcher ceph-ai-worker ceph-ai-dashboard ceph-ai-ai-pricing.timer ceph-ai-ai-task-cleanup.timer ceph-ai-nightly-ai-improvement.timer ceph-ai-nightly-ai-improvement-report.timer
 systemctl start ceph-ai-ai-task-cleanup.timer
 systemctl start ceph-ai-nightly-ai-improvement.timer ceph-ai-nightly-ai-improvement-report.timer

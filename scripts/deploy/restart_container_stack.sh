@@ -33,6 +33,29 @@ else
 fi
 git reset --hard "$DEPLOY_REF"
 
+# Keep the narrow per-container restart helper in sync with the deployed
+# checkout. The Dashboard talks to its Unix socket; no host D-Bus is exposed
+# to the web container.
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-container-restart.service" /etc/systemd/system/
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-container-restart.socket" /etc/systemd/system/
+install -m 0755 "$REPO_DIR/scripts/deploy/container_restart_helper.py" /usr/local/libexec/ceph-ai-container-restart
+install -d -m 0750 /run/ceph-ai
+for heartbeat in worker watcher; do
+  if [ ! -e "/run/ceph-ai/$heartbeat.json" ]; then
+    install -m 0640 /dev/null "/run/ceph-ai/$heartbeat.json"
+  fi
+done
+# Remove the legacy template before reloading units; it granted the old
+# Dashboard path broader host systemd/D-Bus control.
+while read -r legacy_unit; do
+  [ -n "$legacy_unit" ] || continue
+  systemctl disable --now "$legacy_unit" || true
+done < <(systemctl list-units --all --plain --no-legend 'ceph-ai-container-restart@*.service' | awk '{print $1}')
+rm -f /etc/systemd/system/ceph-ai-container-restart@.service
+systemctl daemon-reload
+systemctl reset-failed ceph-ai-container-restart.service || true
+systemctl enable --now ceph-ai-container-restart.socket
+
 # Migrate before a newly-built process can query a table/column introduced by
 # this revision. ``heads`` safely applies all pending migration branches.
 "$REPO_DIR/.venv/bin/alembic" upgrade heads
