@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 5f8d0ca74f9ab7091cb149d9091ba978e9bbc9f2
+  commit_sha: 2b9229de
   rollback_candidate_sha: 9573816c4b106fe55434d2118bd9ab45f2127928
   worktree: concurrent_uncommitted_changes
-  release_commit: 5f8d0ca74f9ab7091cb149d9091ba978e9bbc9f2
+  release_commit: 2b9229de
   pushed_to_origin: true
 
 migrations:
@@ -32,10 +32,18 @@ runtime:
   podman_compose_runtime: running_independently
   watcher_container: healthy_but_not_owned_by_systemd
   operator_approval_for_restart: required
+  secrets_permissions: root_only_verified
+  backup_directory: /var/lib/ceph-ai/backups_missing
+  cluster_roles:
+    - name: CS-LAB
+      environment: production
+      active: true
+      per_cluster_autopilot_enabled: true
+      rollout_review: required
 
 feature_flags:
   global_autopilot_enabled: true
-  configured_cluster_autopilot_enabled: false
+  configured_cluster_autopilot_enabled: true_for_CS-LAB
   code_repair_auto_enabled: true
   log_intelligence_enabled: true
   log_intelligence_ai_enabled: true
@@ -123,6 +131,8 @@ deployment_gate:
   worktree_review: blocked_concurrent_uncommitted_changes
   runtime_ownership: blocked_pending_operator_decision
   global_autonomy_flags: review_required
+  per_cluster_autopilot: blocked_pending_operator_decision
+  backup_location: blocked_missing_configured_directory
   budget_observation: watcher_log_reports_monthly_ai_budget_at_159_5_percent
   release_manifest: this_file
   deploy: blocked
