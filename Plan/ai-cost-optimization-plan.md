@@ -23,10 +23,20 @@ usage mà không làm mất evidence quan trọng hoặc tự ý đổi provider
   giới hạn số message; giữ lượt hiện tại và evidence gần nhất, loại lịch sử dư.
   Đã thêm hard ceiling 12.000 ký tự/6.000 token ước lượng, marker khi cắt và
   regression test cho transcript dài.
-- [ ] **3. Giảm số provider round-trip** — cache read-only tool trong cùng lượt,
-  dừng sớm khi đủ evidence, giới hạn model output theo từng feature.
-- [ ] **4. Routing tiết kiệm có kiểm soát** — phân loại tác vụ, đề xuất model rẻ
-  hơn, canary và so sánh chất lượng trước khi đổi mặc định.
+- [x] **3. Giảm số provider round-trip** — chat đã có cache read-only trong cùng
+  lượt, prompt yêu cầu dừng ngay khi đủ evidence, giới hạn tối đa 4 vòng tool
+  và output riêng theo feature (incident/chat). Cache loại bỏ các lượt gọi tool
+  backend trùng lặp; số lượt gọi provider vẫn bị chặn bởi giới hạn vòng tool.
+  CLI-backed provider còn có output budget trong prompt và giới hạn trả về ở
+  application layer; 9router dùng hard `max_tokens`.
+- [x] **4. Routing tiết kiệm có kiểm soát** — thêm chế độ `off`/`advisory`/
+  `canary`. Mặc định là `advisory`, chỉ canary cùng provider khi model có giá,
+  tiết kiệm đạt ngưỡng, có trong allowlist đã xác minh và request nằm trong
+  phần trăm canary; model hiện tại không bị đổi mặc định. Cross-provider bị
+  chặn vì adapter hiện tại chưa hỗ trợ đổi provider. Có thể rollback bằng cách
+  chuyển mode về `advisory`/`off` và telemetry vẫn ghi model thực tế.
+  Việc so sánh chất lượng vẫn cần dashboard/evaluation riêng trước khi tăng
+  canary lên production.
 - [x] **5. Observability và budget guard** — telemetry content-free, giá token,
   daily/monthly budget và hard limit đã có.
 - [x] **6. Delegated task ceilings** — giới hạn sub-agent, provider calls,

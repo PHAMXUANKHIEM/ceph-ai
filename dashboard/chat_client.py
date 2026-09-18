@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
@@ -16,6 +17,8 @@ from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.codex_app_server import CodexAppServer, CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.ai_provider_runtime import refresh_chat_provider_flags
+from shared.ai_routing import choose_model
+from shared.ai_output import output_budget_instruction, trim_text_to_token_budget
 from shared import db
 from shared.incident_postmortem import build_timeline
 from shared.models import CephCapacitySample, Incident
@@ -97,6 +100,12 @@ TOOL_GET_INCIDENT_TIMELINE = "get_incident_timeline"
 TOOL_GET_CAPACITY_FORECAST = "get_capacity_forecast"
 TOOL_GET_CAPACITY_FAILURE_SIMULATION = "get_capacity_failure_simulation"
 TOOL_GET_DISK_FAILURE_RISK = "get_disk_failure_risk"
+_CACHEABLE_READ_ONLY_TOOLS = frozenset({
+    TOOL_LIST_NODES, TOOL_GET_NODE_METRICS, TOOL_GET_NODE_JOURNAL,
+    TOOL_GET_RBD_TRASH, TOOL_GET_RECENT_INCIDENTS, TOOL_GET_INCIDENT_TIMELINE,
+    TOOL_GET_CAPACITY_FORECAST, TOOL_GET_CAPACITY_FAILURE_SIMULATION,
+    TOOL_GET_DISK_FAILURE_RISK,
+})
 _POOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 # Shown as the assistant's message content (never raised as a generic error)
@@ -276,6 +285,7 @@ def system_prompt(
     "Ứng dụng tự gắn mục Nguồn đã kiểm chứng; không được bịa source ID/thời điểm và không tự viết "
     "một mục Nguồn riêng trong nội dung trả lời để tránh hiển thị trùng.\n"
     "- Khi được hỏi về thông tin cụm → GỌI TOOL, không tự đoán\n"
+    "- Mỗi tool read-only chỉ cần gọi một lần trong cùng lượt; nếu đã có đủ evidence thì dừng tra cứu và trả lời, không gọi lại để xác nhận trùng lặp\n"
     "- Với admin cần chẩn đoán log dịch vụ trên một node → dùng get_node_journal; "
     "tool này đọc journalctl trực tiếp, read-only và không restart dịch vụ\n"
     "- Khi admin yêu cầu chạy shell command trực tiếp trên node → dùng propose_node_command. "
@@ -961,6 +971,7 @@ def _run_tool(
     actor: str | None = None,
     cluster=None,
     allowed_tools: set[str] | None = None,
+    tool_cache: dict | None = None,
 ) -> tuple[str, bool]:
     """Returns (result_text, is_error). Never raises — ChatToolError and any
     unexpected exception are both turned into an error result string, same
@@ -970,6 +981,23 @@ def _run_tool(
     run_ceph_command's raw `ceph osd dump` output did."""
     if allowed_tools is not None and name not in allowed_tools:
         return f"tool {name!r} không được cấp cho agent này", True
+    cache_key = None
+    if tool_cache is not None and name in _CACHEABLE_READ_ONLY_TOOLS:
+        try:
+            cache_key = json.dumps(
+                {
+                    "name": name,
+                    "args": args or {},
+                    "cluster": getattr(cluster, "id", None) or "",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            cache_key = None
+        if cache_key is not None and cache_key in tool_cache:
+            return tool_cache[cache_key]
     try:
         if name == TOOL_LIST_NODES:
             result_text, is_error = _run_list_nodes(cluster), False
@@ -1015,7 +1043,10 @@ def _run_tool(
         TOOL_GET_CAPACITY_FAILURE_SIMULATION,
         TOOL_GET_DISK_FAILURE_RISK,
     } else MAX_TOOL_RESULT_CHARS
-    return result_text[:limit], is_error
+    result = (result_text[:limit], is_error)
+    if cache_key is not None and not is_error:
+        tool_cache[cache_key] = result
+    return result
 
 
 def _chat_uses_ai(
@@ -1090,6 +1121,31 @@ async def run_chat_turn(
     if bluestore_hint:
         actor_system_prompt += "\n\n" + bluestore_hint
     outbound_user_text = redact_text(user_text)
+    tool_cache: dict = {}
+    routing_request_id = uuid.uuid4().hex
+    output_token_limit = max(
+        1,
+        min(
+            int(max_tokens or getattr(settings, "ai_chat_max_output_tokens", MAX_TOKENS)),
+            MAX_TOKENS,
+        ),
+    )
+    routing_input_chars = len(outbound_user_text) + sum(len(item["content"]) for item in outbound_history)
+
+    def routed_model(provider: str, configured_model: str) -> str | None:
+        decision = choose_model(
+            "ceph_chat", provider, configured_model or "default",
+            input_chars=routing_input_chars, output_tokens=output_token_limit,
+            request_id=routing_request_id,
+        )
+        if decision.get("recommended_model"):
+            logger.info(
+                "AI cost route feature=%s provider=%s current=%s recommended=%s selected=%s reason=%s",
+                decision["feature"], provider, decision["current_model"],
+                decision["recommended_model"], decision["selected_model"], decision["reason"],
+            )
+        selected = decision.get("selected_model")
+        return selected if selected and selected != (configured_model or "default") else None
 
     provider_errors: list[str] = []
     claude_attempted = False
@@ -1099,11 +1155,14 @@ async def run_chat_turn(
     if preferred_provider == "claude" and settings.claude_chat_enabled:
         claude_attempted = True
         try:
+            claude_model = routed_model("claude", settings.claude_chat_model or "default")
             result = await _run_claude_chat_turn(
                 outbound_history, outbound_user_text, actor_system_prompt, actor, cluster,
                 allowed_tools, max_tool_iterations=max_tool_iterations,
                 timeout_seconds=timeout_seconds,
                 provider_call_budget=provider_call_budget,
+                tool_cache=tool_cache, model=claude_model,
+                output_token_limit=output_token_limit,
             )
         except ChatTurnError as exc:
             provider_errors.append(f"Claude call failed: {exc}")
@@ -1125,10 +1184,15 @@ async def run_chat_turn(
             codex_kwargs = {}
             if delegated_codex_server is not codex_app_server:
                 codex_kwargs["app_server"] = delegated_codex_server
+            codex_model = routed_model("codex", settings.codex_chat_model or "default")
+            if codex_model is not None:
+                codex_kwargs["model"] = codex_model
             result = await _run_codex_chat_turn(
                 outbound_history, outbound_user_text, actor_system_prompt, actor, cluster,
                 allowed_tools, timeout_seconds=timeout_seconds,
                 max_tool_iterations=max_tool_iterations,
+                tool_cache=tool_cache,
+                output_token_limit=output_token_limit,
                 **codex_kwargs,
             )
         except ChatTurnError as exc:
@@ -1147,11 +1211,14 @@ async def run_chat_turn(
                 await delegated_codex_server.close()
     if settings.claude_chat_enabled and not claude_attempted:
         try:
+            claude_model = routed_model("claude", settings.claude_chat_model or "default")
             result = await _run_claude_chat_turn(
                 outbound_history, outbound_user_text, actor_system_prompt, actor, cluster,
                 allowed_tools, max_tool_iterations=max_tool_iterations,
                 timeout_seconds=timeout_seconds,
                 provider_call_budget=provider_call_budget,
+                tool_cache=tool_cache, model=claude_model,
+                output_token_limit=output_token_limit,
             )
         except ChatTurnError as exc:
             provider_errors.append(f"Claude call failed: {exc}")
@@ -1179,6 +1246,8 @@ async def run_chat_turn(
     except RouterNotConfiguredError as exc:
         raise ChatTurnError(str(exc)) from exc
 
+    router_model = routed_model("9router", settings.router_model)
+    selected_router_model = router_model or settings.router_model
     messages = [{"role": "system", "content": actor_system_prompt}]
     for m in outbound_history[-MAX_HISTORY_MESSAGES:]:
         messages.append({"role": m["role"], "content": m["content"]})
@@ -1195,9 +1264,9 @@ async def run_chat_turn(
     tools_used: list[str] = []
     citations: list[dict] = []
 
-    tool_iterations = max(1, min(max_tool_iterations or MAX_TOOL_ITERATIONS, MAX_TOOL_ITERATIONS))
+    tool_iterations = max(1, min(max_tool_iterations or int(getattr(settings, "ai_chat_max_tool_iterations", MAX_TOOL_ITERATIONS)), MAX_TOOL_ITERATIONS))
     provider_timeout = timeout_seconds or ROUTER_TIMEOUT_SECONDS
-    output_tokens = max(1, min(max_tokens or MAX_TOKENS, MAX_TOKENS))
+    output_tokens = output_token_limit
     for _ in range(tool_iterations):
         try:
             if provider_call_budget is not None:
@@ -1208,9 +1277,9 @@ async def run_chat_turn(
             # reassembles the exact same ChatCompletion shape a plain call
             # would return, and works unchanged against a real non-
             # streaming-only OpenAI-compatible endpoint too.
-            mark_ai_provider("router", settings.router_model)
+            mark_ai_provider("router", selected_router_model)
             async with client.chat.completions.stream(
-                model=settings.router_model,
+                model=selected_router_model,
                 messages=messages,
                 tools=tools,
                 tool_choice="auto",
@@ -1305,6 +1374,7 @@ async def run_chat_turn(
                 actor,
                 cluster,
                 allowed_tools=allowed_tool_names,
+                tool_cache=tool_cache,
             )
             if not is_error:
                 tools_used.append(call.function.name)
@@ -1335,6 +1405,9 @@ async def _run_codex_chat_turn(
     allowed_tools: list[str] | None = None, timeout_seconds: float | None = None,
     max_tool_iterations: int | None = None,
     app_server: CodexAppServer | None = None,
+    tool_cache: dict | None = None,
+    model: str | None = None,
+    output_token_limit: int | None = None,
 ) -> dict:
     """Run chat through Codex while retaining ceph-ai's guarded tools."""
     transcript = []
@@ -1343,6 +1416,8 @@ async def _run_codex_chat_turn(
         transcript.append(f"{role}: {message['content']}")
     prompt = actor_system_prompt + "\n\nLịch sử hội thoại:\n" + "\n".join(transcript)
     prompt += f"\n\nNgười dùng: {user_text}\nTrợ lý:"
+    effective_output_limit = max(256, int(output_token_limit or getattr(settings, "ai_chat_max_output_tokens", MAX_TOKENS)))
+    prompt += output_budget_instruction(effective_output_limit)
     proposal: dict | None = None
     tools_used: list[str] = []
     citations: list[dict] = []
@@ -1371,6 +1446,7 @@ async def _run_codex_chat_turn(
             actor,
             cluster,
             allowed_tools=set(allowed_tools) if allowed_tools is not None else None,
+            tool_cache=tool_cache,
         )
         if not is_error:
             tools_used.append(name)
@@ -1379,17 +1455,26 @@ async def _run_codex_chat_turn(
         return text, not is_error
 
     try:
+        run_kwargs = {
+            "timeout": timeout_seconds or 120,
+            "max_tool_calls": max(1, min(max_tool_iterations or int(getattr(settings, "ai_chat_max_tool_iterations", MAX_TOOL_ITERATIONS)), MAX_TOOL_ITERATIONS)),
+        }
+        if model is not None:
+            run_kwargs["model"] = model
         result = await (app_server or codex_app_server).run_turn(
             prompt,
             [item for item in _tool_schemas(is_admin=auth.is_admin_user(actor), cluster=cluster)
              if allowed_tools is None or item["function"]["name"] in set(allowed_tools)],
             handle_tool,
-            timeout=timeout_seconds or 120,
-            max_tool_calls=max(1, min(max_tool_iterations or MAX_TOOL_ITERATIONS, MAX_TOOL_ITERATIONS)),
+            **run_kwargs,
         )
     except CodexAppServerError as exc:
         raise ChatTurnError(f"Codex: {exc}") from exc
-    response = {"reply_text": result["reply_text"], "proposal": proposal, "tools_used": tools_used}
+    response = {
+        "reply_text": trim_text_to_token_budget(result["reply_text"], effective_output_limit),
+        "proposal": proposal,
+        "tools_used": tools_used,
+    }
     if citations:
         response["citations"] = citations
     return response
@@ -1416,6 +1501,9 @@ async def _run_claude_chat_turn(
     allowed_tools: list[str] | None = None, max_tool_iterations: int | None = None,
     timeout_seconds: float | None = None,
     provider_call_budget: Callable[[], Awaitable[None]] | None = None,
+    tool_cache: dict | None = None,
+    model: str | None = None,
+    output_token_limit: int | None = None,
 ) -> dict:
     """Run Claude with server-managed tools and the same guards as other providers.
 
@@ -1436,6 +1524,7 @@ async def _run_claude_chat_turn(
     tools_used: list[str] = []
     citations: list[dict] = []
     proposal: dict | None = None
+    effective_output_limit = max(256, int(output_token_limit or getattr(settings, "ai_chat_max_output_tokens", MAX_TOKENS)))
     base_prompt = (
         actor_system_prompt
         + "\n\nBạn có các tool ceph-ai dưới đây. Claude CLI không chạy tool trực tiếp; "
@@ -1446,9 +1535,10 @@ async def _run_claude_chat_turn(
         + json.dumps(tool_contract, ensure_ascii=False)
         + "\n\nLịch sử hội thoại:\n" + "\n".join(transcript)
         + f"\n\nNgười dùng: {user_text}"
+        + output_budget_instruction(effective_output_limit)
     )
 
-    tool_iterations = max(1, min(max_tool_iterations or MAX_TOOL_ITERATIONS, MAX_TOOL_ITERATIONS))
+    tool_iterations = max(1, min(max_tool_iterations or int(getattr(settings, "ai_chat_max_tool_iterations", MAX_TOOL_ITERATIONS)), MAX_TOOL_ITERATIONS))
     provider_timeout = timeout_seconds or ROUTER_TIMEOUT_SECONDS
     for _ in range(tool_iterations):
         prompt = base_prompt + ("\n\nKết quả các bước trước:\n" + "\n".join(exchange) if exchange else "")
@@ -1456,13 +1546,16 @@ async def _run_claude_chat_turn(
         try:
             if provider_call_budget is not None:
                 await provider_call_budget()
-            raw = await run_claude_prompt(prompt, timeout=provider_timeout)
+            if model is None:
+                raw = await run_claude_prompt(prompt, timeout=provider_timeout)
+            else:
+                raw = await run_claude_prompt(prompt, timeout=provider_timeout, model=model)
         except ClaudeCLIError as exc:
             raise ChatTurnError(f"Claude: {exc}") from exc
         envelope = _parse_claude_tool_envelope(raw)
         if envelope is None:
             response = {
-                "reply_text": raw or "Claude không trả về nội dung",
+                "reply_text": trim_text_to_token_budget(raw, effective_output_limit) or "Claude không trả về nội dung",
                 "proposal": None,
                 "tools_used": tools_used,
             }
@@ -1471,7 +1564,10 @@ async def _run_claude_chat_turn(
             return response
         if envelope.get("type") == "final":
             response = {
-                "reply_text": str(envelope.get("content") or "Claude không trả về nội dung"),
+                "reply_text": trim_text_to_token_budget(
+                    envelope.get("content") or "Claude không trả về nội dung",
+                    effective_output_limit,
+                ),
                 "proposal": proposal,
                 "tools_used": tools_used,
             }
@@ -1510,7 +1606,7 @@ async def _run_claude_chat_turn(
                 response["citations"] = citations
             return response
         result_text, is_error = await asyncio.to_thread(
-            _run_tool, name, args, actor, cluster
+            _run_tool, name, args, actor, cluster, tool_cache=tool_cache
         )
         if not is_error:
             tools_used.append(name)

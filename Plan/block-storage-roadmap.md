@@ -77,9 +77,9 @@ thử và điểm cần làm tiếp.
     failed/overdue.
   - [x] Có queue/history/progress Dashboard, Run now, cấu hình tracked image,
     backup theo cluster và restore drill vào scratch image với đối chiếu checksum.
-  - [~] Restore production hiện ghi đè đúng image nguồn sau approval; chưa có UI
-    restore sang volume mới mặc định, preflight attachment/watcher/capacity hay
-    post-restore application check.
+  - [~] Restore production chỉ ghi đè sau approval và preflight detached; UI
+    restore-as-new là đường mặc định với recovery point/capacity preflight.
+    Còn post-restore application check và live Cinder/cross-cluster evidence.
   - [~] Restore drill và digest mới chạy cho cluster mặc định; cron/retention count
     phần lớn dùng policy YAML toàn cục, chưa quản trị đầy đủ trên Dashboard.
   - [ ] Chưa có RBD mirroring, replication lag, planned failover/failback,
@@ -291,21 +291,36 @@ không báo thành công trước khi đã xác minh trạng thái thực tế.
     cho volume Cinder, hiển thị ID/tên/status/size/thời gian trong Volume Detail.
     Lỗi snapshot degrade riêng. Đã có create crash-consistent qua Cinder: tên
     duy nhất, Action RISKY/idempotent, volume attached hiển thị và dùng `--force`,
-    Worker hậu kiểm snapshot xuất hiện và không ở trạng thái lỗi. Chưa có delete.
-- [ ] **3.2 Snapshot policy** theo lịch, timezone, số bản giữ và capacity guard;
-  scheduler có dedup, retry và missed-run handling.
-- [ ] **3.3 Restore/rollback**
-  - Khuyến nghị restore thành volume mới; rollback in-place là rủi ro cao, yêu
-    cầu volume detached và xác nhận mất dữ liệu sau recovery point.
-- [ ] **3.4 Clone và flatten**
-  - Hiển thị parent/child graph, protected snapshot và ước tính thời gian/dung
-    lượng trước flatten.
-- [ ] **3.5 Template/image workflow**
-  - Tạo volume từ snapshot/template và chuyển volume thành template read-only
-    theo policy.
-- [ ] **3.6 Test**
-  - Scheduler/timezone, protected snapshot, dependency graph, rollback guard,
-    concurrent clone/flatten, retention và audit.
+    Worker hậu kiểm snapshot xuất hiện và không ở trạng thái lỗi. Delete đã có
+    preflight exact snapshot ID, approval DESTRUCTIVE và post-check; live Cinder
+    acceptance vẫn còn.
+- [~] **3.2 Snapshot policy** theo lịch, timezone, số bản giữ và capacity guard;
+  đã có model/API/UI, APScheduler persistent với dedup/max_instances/coalesce/
+  misfire guard, capacity guard và retention proposal chờ approval. Còn live
+  Cinder run/browser acceptance và xác minh retry với backend thật.
+- [~] **3.3 Restore/rollback**
+  - Restore thành volume mới là mặc định, có recovery-point chain, checksum,
+    destination/capacity/RBD preflight và action chờ approval. Restore ghi đè
+    production là destructive, preflight + Worker re-check bắt buộc image
+    detached, không có watcher/clone child; còn thiếu post-restore application
+    check và live Cinder acceptance.
+- [~] **3.4 Clone và flatten**
+  - Có clone từ snapshot với source/destination/capacity preflight, tự bảo vệ
+    snapshot trước clone; có parent/child detail. Flatten chỉ mở khi có parent
+    và volume detached/không lock, có ước tính dung lượng, DESTRUCTIVE approval
+    và post-check. Detail nay có dependency graph read-only bounded theo depth/
+    node, cycle protection và partial-error reporting để đánh giá chain đa cấp.
+    Còn ước tính thời gian chính xác và live Ceph.
+- [~] **3.5 Template/image workflow**
+  - Template được biểu diễn bằng snapshot RBD được `snap protect` bảo vệ khỏi
+    xóa, có metadata tên/mô tả, action RISKY chờ approval và post-check xác
+    nhận protected. UI dùng Clone để tạo volume mới từ template. Còn image
+    service/Cinder integration, policy versioning và live acceptance.
+- [~] **3.6 Test**
+  - Đã có test cho scheduler/timezone, protected snapshot guard ở clone,
+    parent/watcher/capacity guard của flatten, rollback/restore safety,
+    reconciliation, policy và audit. Còn live Ceph, dependency graph đa cấp,
+    concurrent clone/flatten và browser acceptance.
 
 **Hoàn thành khi:** snapshot/clone không thể làm đứt dependency ngoài ý muốn và
 restore luôn tạo bằng chứng recovery point đã sử dụng.
@@ -319,17 +334,27 @@ restore luôn tạo bằng chứng recovery point đã sử dụng.
   - Checksum/manifest, chain validation, trạng thái immutable nếu backend hỗ trợ
     và cảnh báo chain bị thiếu.
 - [~] **4.3 Restore workflow**
-  - Restore sang volume mới theo mặc định, chọn cluster/pool đích, validate
-    capacity/compatibility và kiểm tra đọc sau restore.
-- [ ] **4.4 Replication liên cluster/site**
-  - Theo dõi lag, recovery point, health, planned failover, failback và fencing;
-    không tự failover chỉ dựa trên một tín hiệu.
-- [ ] **4.5 DR drill không ảnh hưởng production**
-  - Tạo bản restore cô lập, chạy kiểm tra, ghi thời gian thực tế và dọn tài nguyên
-    theo approval.
-- [ ] **4.6 Test**
-  - Broken incremental chain, destination full, retry/resume, checksum mismatch,
-    split-brain/fencing, cross-cluster credentials và RPO/RTO reporting.
+  - Restore sang volume mới theo mặc định, chọn cluster/pool đích trong modal,
+    hiển thị recovery chain/preflight và giữ proposal qua approval. Worker
+    re-check destination và restore in-place safety trước import; còn thiếu
+    read-after-restore/application check và live cross-cluster acceptance.
+- [~] **4.4 Replication liên cluster/site**
+  - Có read-only API/UI đọc `rbd mirror pool info/status`, hiển thị mode và
+    posture theo cluster/pool; pool chưa bật mirroring hiển thị rõ `disabled`.
+    Chưa triển khai peer setup, lag/RPO normalization, planned failover,
+    failback hoặc fencing; không có action tự promote/failover.
+- [~] **4.5 DR drill không ảnh hưởng production**
+  - RestoreDrill chạy vào scratch pool/image riêng, kiểm tra checksum byte-level,
+    ghi BackupJob/RPO/RTO và cleanup sau chạy. Đã thêm preflight từ chối scratch
+    image đã tồn tại, chỉ cleanup image do chính drill tạo và fail-closed khi
+    không xác minh được destination. Khi có incremental chain, drill nay dùng
+    chung `restore_image()` để chạy `rbd import` + `rbd import-diff` theo đúng
+    lineage và vẫn đọc hậu kiểm trước khi cleanup. Còn retry/resume, manual
+    Dashboard workflow và live isolated-cluster acceptance.
+- [~] **4.6 Test**
+  - Đã có test checksum mismatch, missing checksum, import failure, missing full,
+    cleanup và scratch-collision guard. Còn broken incremental chain, retry/resume,
+    split-brain/fencing, cross-cluster credentials và RPO/RTO browser reporting.
 
 **Hoàn thành khi:** có thể chứng minh backup khôi phục được, không chỉ chứng minh
 job copy đã chạy, và mỗi failover/failback có runbook cùng audit đầy đủ.
@@ -493,6 +518,19 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | BS-03 Cinder Multi-attach Guard | Hoàn thành code | Tách form attach/detach; cho attach thêm volume `in-use` chỉ khi Cinder trả `multiattach=true`, reconciliation `healthy` và Nova server đích chưa có attachment. Volume exclusive hoặc server trùng bị chặn server-side trước khi tạo Action. | Nhóm Cinder Volume API `6 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn nghiệm thu live OpenStack; force-detach chưa triển khai để tránh bypass trạng thái consumer. |
 | 2026-08-17 | BS-04 Cinder Snapshot Inventory | Đang làm | Volume Detail đọc snapshot bằng OpenStack CLI trên Controller, scope theo exact Cinder volume ID; chuẩn hóa ID/tên/status/size/created-at. Snapshot query lỗi degrade độc lập và không làm mất volume/attachment metadata. | Cinder discovery `11 passed`; Volume Detail `2 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo create snapshot crash-consistent qua Cinder với approval, idempotency và post-check. |
 | 2026-08-17 | BS-04 Cinder Snapshot Create | Hoàn thành code | Form/API tạo snapshot crash-consistent chỉ khi Cinder/Ceph reconciliation `healthy`; preflight inventory chặn tên trùng. Action RISKY chờ approval, idempotency exact intent, target Controller; volume `in-use` dùng `--force` rõ trong preview. Worker list lại snapshot và fail nếu thiếu hoặc status lỗi. | Command `2 passed`; policy `4 passed`; post-check `5 passed`; Volume API/detail `3 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo delete snapshot qua Cinder với dependency/status guard và post-check. |
+| 2026-09-18 | BS-01 Inventory metadata | Đang làm | Inventory read-only bổ sung enrich bằng `rbd ls --long --format json` để giữ `image_id`, `format`, `features` và batch `rbd status` để phân biệt `attached/idle/unknown`; nếu lệnh metadata phụ lỗi vẫn trả usage từ `rbd du` và ghi cảnh báo. UI không còn suy diễn attachment từ `snapshot_count`. | Nhóm Block Storage/Volume tests: `247 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn backup/audit summary, live Ceph acceptance và đóng BS-01 trước khi sang hạng mục tiếp theo. |
+| 2026-09-18 | BS-01 Detail evidence | Đang làm | Volume Detail bổ sung summary backup theo cluster/pool/image, sample telemetry 24 giờ từ `VolumeMetric`, và audit gần đây match bằng `Action.action_params`; UI hiển thị trạng thái backup, IOPS/latency gần nhất và bảng audit. Các query đều bounded, read-only và không trả raw backup error. | Nhóm Block Storage/Volume tests: `248 passed`; test mới xác nhận summary và audit có scope đúng; `py_compile`, `node --check`, `git diff --check` đạt. | Còn live Ceph/OpenStack acceptance và đóng BS-01; sau đó bắt đầu BS-02 theo thứ tự Plan. |
+| 2026-09-18 | BS-01 Live read-only acceptance | Đang làm | Sửa lỗi duplicate `--format json` trong metadata enrich; inventory thực tế default cluster `CS-LAB` trả metadata và attachment state cho cả 4 pool cấu hình, không có lệnh ghi dữ liệu. | `249 passed`; live `volumes`: 10 rows, `images`: 9, `vms`: 0, `everest-rbd`: 4; mỗi row trả `image_id/format/features` và `attached/idle` hoặc empty khi pool không có image; `py_compile`, `node --check`, `git diff --check` đạt. | Còn OpenStack/Cinder evidence live để đóng BS-01; default cluster không có secondary active cluster để kiểm chứng. |
+| 2026-09-18 | BS-04 Cinder Snapshot Delete | Đang làm | Thêm endpoint xóa snapshot theo exact Cinder volume/snapshot ID; preflight ownership/status, idempotency và audit. Worker dùng action `cinder_delete_snapshot` phân loại DESTRUCTIVE, poll bounded tới khi snapshot biến mất và post-check bắt buộc xác nhận `deleted=true`; UI có nút Xóa tại Cinder snapshots. | Nhóm Cinder/command/policy/route: `186 passed`; focused Block Storage suite hợp nhất: `435 passed`; `py_compile`, `node --check`, `git diff --check` đạt. Chưa chạy live delete — thao tác phá hủy cần approval và acceptance riêng. | Còn kiểm thử UI thực tế và live Cinder acceptance có approval; không tự chạy delete production. |
+| 2026-09-18 | BS-03.2 Snapshot policy | Đang làm | Thêm model/migration `volume_snapshot_policies`, API GET/POST/DELETE theo cluster/pool/image với cron 5 trường, timezone IANA, retention 1–365 và capacity guard. Volume detail có form policy. Worker APScheduler đăng ký job persistent, coalesce/misfire bounded; scheduler kiểm tra Cinder ownership + pool capacity trước khi tạo snapshot Action, và chỉ tạo retention-delete DESTRUCTIVE ở trạng thái chờ approval. | Alembic head `d1e2f3a456b7`; suite Block Storage: `445 passed`; scheduler không có policy active: `3 jobs`, `0 snapshot jobs`; scheduler guard/retention tests `2 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn live Cinder policy run, UI browser acceptance và kiểm tra retention với snapshot thật; không tự bật policy production. |
+| 2026-09-18 | BS-03.3 / 4.3 Restore safety | Đang làm | Thay prompt bằng modal chọn recovery point, pool/image đích và hiển thị preflight chain/capacity/blocker trước khi tạo proposal restore-as-new. Restore ghi đè production có preflight và Worker re-check watcher/clone child/source availability; sau import chạy `rbd info` và `rbd export ... /dev/null` để kiểm tra đọc; action vẫn DESTRUCTIVE/PENDING_APPROVAL, không tự chạy. | `tests/test_dashboard_backups.py tests/test_backup_engine.py`: `61 passed`; `tests/test_backup_restore.py`: `11 passed`; `node --check`, worker restart healthy, không có Traceback/ImportError. | Còn application check, browser acceptance và live Cinder/cross-cluster evidence; không chạy restore destructive production. |
+| 2026-09-18 | BS-03.4 Clone / Flatten | Đang làm | Thêm API/UI clone snapshot và flatten clone. Clone kiểm tra snapshot/source/destination/capacity; flatten yêu cầu parent và detached/no-lock. Worker command builder, RBD reconciliation post-check, cache invalidation cho cả source/destination, policy clone RISKY và flatten DESTRUCTIVE; không có đường chạy trực tiếp từ browser. | `tests/test_commands.py tests/test_rbd_reconciliation.py tests/test_policy_gate.py tests/test_dashboard_volumes.py`: `312 passed`; `py_compile`, `node --check`, `git diff --check`; Worker và Dashboard healthy sau restart. | Còn live Ceph acceptance, graph dependency đa cấp và thời gian flatten thực tế; không tự flatten production. |
+| 2026-09-18 | BS-03.4 Dependency graph | Đang làm | Thêm endpoint/UI đọc graph parent → child nhiều cấp bằng `rbd children`; giới hạn `max_depth`/`max_nodes`, chống cycle, ghi nhận partial error và không tạo mutation/approval. Children trực tiếp vẫn hiển thị cùng graph bounded trên Volume Detail. | `tests/test_ceph_client.py tests/test_dashboard_volumes.py`: `253 passed`; `py_compile`, `node --check`, `git diff --check`; Worker và Dashboard healthy sau restart. | Còn graph trên cụm có clone thật, ước tính thời gian flatten và live acceptance. |
+| 2026-09-18 | BS-03.6 Test coverage | Đang làm | Bổ sung regression cho clone/flatten command schema, post-check destination/size, policy classification và dashboard preflight (snapshot tồn tại, destination/capacity, parent, watcher/lock). | Suite clone/flatten liên quan: `312 passed`; `py_compile`, `node --check`, `git diff --check`. | Còn live Ceph, browser acceptance và concurrent/dependency-graph tests. |
+| 2026-09-18 | BS-03.5 Template/image workflow | Đang làm | Thêm UI/API `rbd_template_mark`: validate exact snapshot, lưu tên/mô tả metadata, bảo vệ snapshot bằng `rbd snap protect`, action RISKY/audit/approval và reconciliation bắt buộc `protected=true`. Clone từ template dùng workflow clone đã có; không coi metadata đơn thuần là read-only enforcement. | `tests/test_commands.py tests/test_rbd_reconciliation.py tests/test_policy_gate.py tests/test_dashboard_volumes.py`: `315 passed`; `py_compile`, `node --check`, `git diff --check`; Worker healthy, Dashboard đã reload và phục vụ detail page. | Còn image service/Cinder template integration, version policy, live protected-snapshot acceptance và browser acceptance. |
+| 2026-09-18 | BS-04.5 / 4.6 DR drill safety | Đang làm | RestoreDrill preflight `rbd info` scratch destination; nếu image đã tồn tại hoặc không phân biệt được lỗi not-found với lỗi hạ tầng thì dừng. Chỉ xóa scratch khi run đã đánh dấu image do chính drill tạo, giữ source production nguyên trạng. | `tests/test_restore_drill.py`: `7 passed`; `py_compile`, worker restart sau deploy và `git diff --check` đạt. | Còn full-chain drill, retry/resume, browser/RPO report và live isolated-cluster acceptance. |
+| 2026-09-18 | BS-04.5 Full + incremental drill | Đang làm | Nếu có incremental thành công cùng lineage với full mới nhất, RestoreDrill gọi shared `restore_image()` để restore scratch bằng full export rồi toàn bộ `import-diff`, hậu kiểm read-after-restore và ghi applied diff IDs vào progress; full-only vẫn giữ checksum byte-level path. Progress chain ghi mode/full lineage/applied diffs cả khi lỗi để retry không bị hiểu nhầm là thành công. Dashboard có nút admin `Chạy RestoreDrill`, chỉ queue approved Worker action khi policy scratch đầy đủ và cluster mặc định đang chọn. | `tests/test_restore_drill.py tests/test_backup_restore.py tests/test_backup_engine.py tests/test_dashboard_backups.py`: `80 passed`; worker và Dashboard healthy sau restart; `py_compile`, `node --check`, `git diff --check` đạt. | Còn live isolated-cluster acceptance; retry vẫn fail-closed nếu scratch cleanup không xác minh được. |
+| 2026-09-18 | BS-04.4 Replication posture | Đang làm | Thêm Ceph client và `/api/volumes/{pool}/replication` read-only cho `rbd mirror pool info/status`, không truyền duplicate `--format`, cluster scoped; Volume Detail hiển thị mode, peer/status và khóa failover/fencing. Live default cluster xác nhận pool `images` đang `mode=disabled`; không bật mirroring hay failover. | `tests/test_ceph_client.py tests/test_dashboard_volumes.py`: `250 passed`; live CLI info/status read-only; `node --check`, `py_compile`, `git diff --check` đạt. | Còn peer configuration, lag/RPO, failover/failback/fencing và multi-site acceptance. |
 
 ## Ghi chú bàn giao
 

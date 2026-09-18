@@ -389,21 +389,136 @@ def _normalize_rbd_inventory(payload: dict | list) -> list[RbdInventoryEntry]:
     return result
 
 
+def _normalize_rbd_ls_metadata(payload: dict | list) -> dict[str, dict]:
+    """Index image metadata from ``rbd ls --long`` without snapshot rows."""
+    rows = payload.get("images") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return {}
+    metadata: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("snapshot") is not None:
+            continue
+        name = row.get("image") or row.get("name")
+        if not name:
+            continue
+        features = row.get("features") or []
+        if isinstance(features, str):
+            features = [item.strip() for item in features.split(",") if item.strip()]
+        metadata[str(name)] = {
+            "image_id": str(row.get("id")) if row.get("id") is not None else None,
+            "format": row.get("format"),
+            "features": features if isinstance(features, list) else [],
+        }
+    return metadata
+
+
+def _merge_rbd_inventory_metadata(
+    rows: list[RbdInventoryEntry], metadata: dict[str, dict],
+) -> list[RbdInventoryEntry]:
+    """Add optional format/features while preserving the stable base schema."""
+    for row in rows:
+        extra = metadata.get(str(row["name"]))
+        if not extra:
+            continue
+        if row.get("image_id") is None and extra.get("image_id"):
+            row["image_id"] = extra["image_id"]
+        row["format"] = extra.get("format")
+        row["features"] = extra.get("features", [])
+    return rows
+
+
+def _enrich_rbd_inventory(
+    pool: str,
+    rows: list[RbdInventoryEntry],
+    query_json,
+) -> list[RbdInventoryEntry]:
+    """Best-effort metadata enrichment; usage data remains authoritative."""
+    if not rows:
+        return rows
+    try:
+        _host, payload = query_json(
+            # run_ceph_json_command[_with] appends the single JSON format
+            # flag. Keeping it out of the inner command is important for
+            # Ceph versions that reject duplicate --format options.
+            f"rbd ls --long --pool {shlex.quote(pool)}"
+        )
+        return _merge_rbd_inventory_metadata(rows, _normalize_rbd_ls_metadata(payload))
+    except CephQueryError as exc:
+        # ``rbd du`` is still useful when older Ceph versions or permissions do
+        # not expose long listing metadata. Detail API reports the partial error.
+        logger.warning("RBD inventory metadata enrichment failed for pool %s: %s", pool, exc)
+        return rows
+
+
+def _attachment_from_status(payload: dict | list | None) -> dict:
+    """Normalize one ``rbd status`` payload into a small safe summary."""
+    if not isinstance(payload, dict):
+        return {"attachment_state": "unknown", "watcher_count": None}
+    watchers = payload.get("watchers")
+    if not isinstance(watchers, list):
+        return {"attachment_state": "unknown", "watcher_count": None}
+    return {
+        "attachment_state": "attached" if watchers else "idle",
+        "watcher_count": len(watchers),
+    }
+
+
+def _enrich_rbd_attachment(
+    pool: str,
+    rows: list[RbdInventoryEntry],
+    query_batch,
+) -> list[RbdInventoryEntry]:
+    """Read attachment state with bounded parallel read-only commands."""
+    if not rows:
+        return rows
+    commands = [
+        f"rbd status {shlex.quote(pool)}/{shlex.quote(str(row['name']))} --format json"
+        for row in rows
+    ]
+    try:
+        payloads = query_batch(commands)
+    except CephQueryError as exc:
+        logger.warning("RBD attachment enrichment failed for pool %s: %s", pool, exc)
+        return rows
+    for row, payload in zip(rows, payloads):
+        row.update(_attachment_from_status(payload))
+    return rows
+
+
 def query_rbd_inventory(pool: str) -> list[RbdInventoryEntry]:
-    """Return every live image in one pool, including idle images."""
+    """Return every live image plus best-effort format/features metadata."""
     _, payload = run_ceph_json_command(f"rbd du --pool {shlex.quote(pool)}")
-    return _normalize_rbd_inventory(payload)
+    rows = _enrich_rbd_inventory(pool, _normalize_rbd_inventory(payload), run_ceph_json_command)
+    nodes = get_mon_nodes()
+    return _enrich_rbd_attachment(
+        pool,
+        rows,
+        lambda commands: run_ceph_json_batch_command_with(
+            nodes, settings.ceph_container_name, settings.ssh_user,
+            settings.ssh_key_path, settings.ceph_exec_mode, commands, parallel=True,
+        )[1],
+    )
 
 
 def query_rbd_inventory_with(
     pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
     ssh_key_path: str, exec_mode: str,
 ) -> list[RbdInventoryEntry]:
+    connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
     _, payload = run_ceph_json_command_with(
-        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        *connection,
         f"rbd du --pool {shlex.quote(pool)}",
     )
-    return _normalize_rbd_inventory(payload)
+    rows = _enrich_rbd_inventory(
+        pool,
+        _normalize_rbd_inventory(payload),
+        lambda command: run_ceph_json_command_with(*connection, command),
+    )
+    return _enrich_rbd_attachment(
+        pool,
+        rows,
+        lambda commands: run_ceph_json_batch_command_with(*connection, commands, parallel=True)[1],
+    )
 
 
 def query_rbd_image_usage(pool: str, image: str) -> RbdInventoryEntry | None:
@@ -527,6 +642,176 @@ def query_rbd_image_detail_with(
     )
 
 
+def _normalize_rbd_child_refs(payload: dict | list, default_pool: str) -> list[dict[str, str]]:
+    """Normalize the version-dependent output of ``rbd children``.
+
+    Ceph releases have returned both a list of strings and a mapping containing
+    ``children``.  Keep the graph contract stable and never trust an arbitrary
+    slash-delimited value as more than ``pool/image``.
+    """
+    values = payload.get("children", []) if isinstance(payload, dict) else payload
+    if not isinstance(values, list):
+        return []
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        if isinstance(value, dict):
+            child_pool = value.get("pool") or value.get("namespace") or default_pool
+            child_image = value.get("image") or value.get("name") or value.get("child")
+            token = f"{child_pool}/{child_image}" if child_image else ""
+        else:
+            token = str(value or "").strip()
+        parts = token.split("/", 1)
+        child_pool = (parts[0] or default_pool).strip()
+        child_image = (parts[1] if len(parts) == 2 else parts[0]).strip()
+        if not child_pool or not child_image or len(child_pool) > 128 or len(child_image) > 128:
+            continue
+        key = (child_pool, child_image)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"pool": child_pool, "image": child_image})
+    return result
+
+
+def _rbd_dependency_graph(
+    pool: str,
+    image: str,
+    run_command,
+    max_depth: int = 3,
+    max_nodes: int = 64,
+) -> dict:
+    """Build a bounded read-only parent-to-child graph from live RBD metadata."""
+    max_depth = max(0, min(int(max_depth), 5))
+    max_nodes = max(1, min(int(max_nodes), 128))
+    root = {"pool": pool, "image": image}
+    queue: list[tuple[str, str, int]] = [(pool, image, 0)]
+    visited: set[tuple[str, str]] = set()
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    errors: list[dict] = []
+    truncated = False
+
+    while queue:
+        current_pool, current_image, depth = queue.pop(0)
+        current_key = (current_pool, current_image)
+        if current_key in visited:
+            continue
+        visited.add(current_key)
+        nodes.append({"pool": current_pool, "image": current_image, "depth": depth})
+        if depth >= max_depth:
+            if depth == max_depth:
+                truncated = truncated or bool(queue)
+            continue
+        try:
+            payload = run_command(
+                f"rbd children {shlex.quote(current_pool)}/{shlex.quote(current_image)}"
+            )[1]
+            children = _normalize_rbd_child_refs(payload, current_pool)
+        except CephQueryError as exc:
+            errors.append({
+                "pool": current_pool,
+                "image": current_image,
+                "message": str(exc),
+            })
+            continue
+        for child in children:
+            child_key = (child["pool"], child["image"])
+            edges.append({
+                "parent": {"pool": current_pool, "image": current_image},
+                "child": child,
+            })
+            if child_key in visited or any(
+                item[0] == child_key[0] and item[1] == child_key[1] for item in queue
+            ):
+                continue
+            if len(nodes) + len(queue) >= max_nodes:
+                truncated = True
+                continue
+            queue.append((child_key[0], child_key[1], depth + 1))
+
+    return {
+        "root": root,
+        "nodes": nodes,
+        "edges": edges,
+        "max_depth": max_depth,
+        "max_nodes": max_nodes,
+        "truncated": truncated,
+        "partial_errors": errors,
+    }
+
+
+def query_rbd_dependency_graph(
+    pool: str, image: str, max_depth: int = 3, max_nodes: int = 64
+) -> dict:
+    return _rbd_dependency_graph(
+        pool, image, run_ceph_json_command, max_depth=max_depth, max_nodes=max_nodes
+    )
+
+
+def query_rbd_dependency_graph_with(
+    pool: str, image: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str, max_depth: int = 3, max_nodes: int = 64,
+) -> dict:
+    connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
+    return _rbd_dependency_graph(
+        pool,
+        image,
+        lambda command: run_ceph_json_command_with(*connection, command),
+        max_depth=max_depth,
+        max_nodes=max_nodes,
+    )
+
+
+_RBD_QOS_OPTION_NAMES = (
+    "rbd_qos_iops_limit", "rbd_qos_bps_limit", "rbd_qos_iops_burst", "rbd_qos_bps_burst",
+    "rbd_qos_read_iops_limit", "rbd_qos_read_bps_limit",
+    "rbd_qos_write_iops_limit", "rbd_qos_write_bps_limit",
+)
+
+
+def _normalize_rbd_qos(payload: dict | list) -> dict[str, int]:
+    rows = payload.get("options") if isinstance(payload, dict) else payload
+    values: dict[str, int] = {}
+    if isinstance(rows, dict):
+        pairs = rows.items()
+    elif isinstance(rows, list):
+        pairs = []
+        for row in rows:
+            if isinstance(row, dict):
+                key = row.get("name") or row.get("key") or row.get("option")
+                if key:
+                    pairs.append((key, row.get("value")))
+    else:
+        pairs = []
+    for key, raw in pairs:
+        if key not in _RBD_QOS_OPTION_NAMES:
+            continue
+        try:
+            values[key] = int(raw)
+        except (TypeError, ValueError):
+            continue
+    return {key: values.get(key, 0) for key in _RBD_QOS_OPTION_NAMES}
+
+
+def query_rbd_qos(pool: str, image: str) -> dict[str, int]:
+    spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
+    _, payload = run_ceph_json_command(f"rbd config image list {spec}")
+    return _normalize_rbd_qos(payload)
+
+
+def query_rbd_qos_with(
+    pool: str, image: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> dict[str, int]:
+    spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
+    _, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd config image list {spec}",
+    )
+    return _normalize_rbd_qos(payload)
+
+
 _GLOBAL_CAPACITY_HEALTH_CHECKS = {
     "OSD_NEARFULL", "OSD_BACKFILLFULL", "OSD_FULL", "POOL_NEAR_FULL", "POOL_FULL",
 }
@@ -618,6 +903,40 @@ def query_rbd_pool_overview_with(
     usage = run_ceph_json_command_with(*connection, "ceph df detail")[1]
     health = run_ceph_json_command_with(*connection, "ceph health detail")[1]
     return _normalize_rbd_pool_overview(pool, detail, usage, health)
+
+
+def query_rbd_mirror_pool_info(pool: str) -> dict:
+    """Read-only RBD mirroring capability/configuration for one pool."""
+    _host, payload = run_ceph_json_command(f"rbd mirror pool info {shlex.quote(pool)}")
+    return payload if isinstance(payload, dict) else {"raw": payload}
+
+
+def query_rbd_mirror_pool_info_with(
+    pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> dict:
+    _host, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd mirror pool info {shlex.quote(pool)}",
+    )
+    return payload if isinstance(payload, dict) else {"raw": payload}
+
+
+def query_rbd_mirror_pool_status(pool: str) -> dict:
+    """Read-only mirror status; disabled pools are handled by the route."""
+    _host, payload = run_ceph_json_command(f"rbd mirror pool status {shlex.quote(pool)}")
+    return payload if isinstance(payload, dict) else {"raw": payload}
+
+
+def query_rbd_mirror_pool_status_with(
+    pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> dict:
+    _host, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd mirror pool status {shlex.quote(pool)}",
+    )
+    return payload if isinstance(payload, dict) else {"raw": payload}
 
 
 def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:

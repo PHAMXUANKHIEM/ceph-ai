@@ -214,6 +214,7 @@ _TRASH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # `_ceph_aiops_perf_probe`).  Keep rejecting a leading dash so an image name
 # can never be interpreted as a CLI option.
 _RBD_IMAGE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+_RBD_SNAPSHOT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _RBD_SIZE_MIB_RANGE = (1, 64 * 1024 * 1024)
 
 
@@ -483,6 +484,90 @@ def _rbd_rename_volume_command(params: dict) -> str:
     return f"rbd mv {source} {destination} && rbd info {destination} --format json"
 
 
+def _rbd_clone_volume_command(params: dict) -> str:
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    snapshot = params.get("snapshot")
+    dest_pool = params.get("dest_pool")
+    dest_image = params.get("dest_image")
+    if not isinstance(snapshot, str) or not _RBD_SNAPSHOT_RE.fullmatch(snapshot):
+        raise ExecutorError(f"invalid or missing RBD snapshot: {snapshot!r}")
+    if not isinstance(dest_pool, str) or not _POOL_NAME_RE.fullmatch(dest_pool):
+        raise ExecutorError(f"invalid or missing destination pool: {dest_pool!r}")
+    if not isinstance(dest_image, str) or not _RBD_IMAGE_RE.fullmatch(dest_image):
+        raise ExecutorError(f"invalid or missing destination RBD image: {dest_image!r}")
+    source = shlex.quote(f"{pool}/{image}@{snapshot}")
+    destination = shlex.quote(f"{dest_pool}/{dest_image}")
+    # Protect is idempotent for this workflow: an already-protected snapshot
+    # may be reused; clone itself remains the authoritative failure point.
+    return (
+        f"(rbd snap protect {source} 2>/dev/null || true) && "
+        f"rbd clone {source} {destination} && rbd info {destination} --format json"
+    )
+
+
+def _rbd_flatten_volume_command(params: dict) -> str:
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    spec = shlex.quote(f"{pool}/{image}")
+    return f"rbd flatten {spec} && rbd info {spec} --format json"
+
+
+def _rbd_template_mark_command(params: dict) -> str:
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    snapshot = params.get("snapshot")
+    template_name = params.get("template_name")
+    description = params.get("description", "")
+    if not isinstance(snapshot, str) or not _RBD_SNAPSHOT_RE.fullmatch(snapshot):
+        raise ExecutorError(f"invalid or missing RBD snapshot: {snapshot!r}")
+    if not isinstance(template_name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", template_name):
+        raise ExecutorError(f"invalid or missing template name: {template_name!r}")
+    if not isinstance(description, str) or len(description) > 500 or "\x00" in description:
+        raise ExecutorError("template description must be at most 500 characters")
+    spec = shlex.quote(f"{pool}/{image}")
+    snap_spec = shlex.quote(f"{pool}/{image}@{snapshot}")
+    metadata_key = shlex.quote(f"ceph.ai.template.{snapshot}")
+    metadata_value = shlex.quote(f"{template_name}|{description}")
+    # `snap protect` can return non-zero when another approved request has
+    # protected the snapshot in the meantime. The post-check below remains
+    # authoritative and fails closed if the snapshot is not protected.
+    return (
+        f"(rbd snap protect {snap_spec} 2>/dev/null || true) && "
+        f"rbd image-meta set {spec} {metadata_key} {metadata_value} && "
+        f"rbd snap ls {spec} --format json"
+    )
+
+
+_RBD_QOS_OPTIONS = {
+    "rbd_qos_iops_limit": (0, 1_000_000_000),
+    "rbd_qos_bps_limit": (0, 10_000_000_000_000),
+    "rbd_qos_iops_burst": (0, 1_000_000_000),
+    "rbd_qos_bps_burst": (0, 10_000_000_000_000),
+    "rbd_qos_read_iops_limit": (0, 1_000_000_000),
+    "rbd_qos_read_bps_limit": (0, 10_000_000_000_000),
+    "rbd_qos_write_iops_limit": (0, 1_000_000_000),
+    "rbd_qos_write_bps_limit": (0, 10_000_000_000_000),
+}
+
+
+def _rbd_qos_set_command(params: dict) -> str:
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    spec = shlex.quote(f"{pool}/{image}")
+    commands = []
+    for option, bounds in _RBD_QOS_OPTIONS.items():
+        value = params.get(option, 0)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ExecutorError(f"invalid or missing {option}: {value!r}")
+        low, high = bounds
+        if value < low or value > high:
+            raise ExecutorError(f"{option}={value} out of allowed range [{low}, {high}]")
+        commands.append(f"rbd config image set {spec} {option} {value}")
+    commands.append(f"rbd config image list {spec} --format json")
+    return " && ".join(commands)
+
+
 def _rbd_trash_move_volume_command(params: dict) -> str:
     pool = _require_pool_name(params)
     image = _require_rbd_image(params)
@@ -575,6 +660,30 @@ def _cinder_create_snapshot_command(params: dict) -> str:
     return "sh -c " + shlex.quote(inner)
 
 
+def _cinder_delete_snapshot_command(params: dict) -> str:
+    volume_id = params.get("volume_id")
+    snapshot_id = params.get("snapshot_id")
+    openrc_path = params.get("openrc_path")
+    if not isinstance(volume_id, str) or not _OPENSTACK_UUID_RE.fullmatch(volume_id):
+        raise ExecutorError(f"invalid or missing Cinder volume ID: {volume_id!r}")
+    if not isinstance(snapshot_id, str) or not _OPENSTACK_UUID_RE.fullmatch(snapshot_id):
+        raise ExecutorError(f"invalid or missing Cinder snapshot ID: {snapshot_id!r}")
+    if not isinstance(openrc_path, str) or not openrc_path.startswith("/") or "\x00" in openrc_path:
+        raise ExecutorError("openrc_path must be an absolute path")
+    # Cinder deletion can be asynchronous. Poll a bounded number of times so
+    # the Worker only reports success after the snapshot is actually gone;
+    # if it remains, the final JSON lets the post-check fail closed.
+    inner = (
+        f". {shlex.quote(openrc_path)} >/dev/null 2>&1 && "
+        f"openstack volume snapshot delete {shlex.quote(snapshot_id)} && "
+        f"for attempt in 1 2 3 4 5; do "
+        f"if ! openstack volume snapshot show {shlex.quote(snapshot_id)} -f json >/dev/null 2>&1; then "
+        f"printf '{{\"snapshot_id\":\"{snapshot_id}\",\"deleted\":true}}'; exit 0; fi; sleep 2; done; "
+        f"openstack volume snapshot show {shlex.quote(snapshot_id)} -f json"
+    )
+    return "sh -c " + shlex.quote(inner)
+
+
 def _execute_node_command(params: dict) -> str:
     command = params.get("command")
     if not isinstance(command, str) or not command.strip() or len(command) > 2000:
@@ -605,12 +714,17 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "rbd_create_volume": _rbd_create_volume_command,
     "rbd_resize_volume": _rbd_resize_volume_command,
     "rbd_rename_volume": _rbd_rename_volume_command,
+    "rbd_clone_volume": _rbd_clone_volume_command,
+    "rbd_flatten_volume": _rbd_flatten_volume_command,
+    "rbd_template_mark": _rbd_template_mark_command,
+    "rbd_qos_set": _rbd_qos_set_command,
     "rbd_trash_move_volume": _rbd_trash_move_volume_command,
     "rbd_trash_restore_volume": _rbd_trash_restore_volume_command,
     "rbd_trash_purge_all": _rbd_trash_purge_all_command,
     "cinder_attach_volume": _cinder_attach_volume_command,
     "cinder_detach_volume": _cinder_detach_volume_command,
     "cinder_create_snapshot": _cinder_create_snapshot_command,
+    "cinder_delete_snapshot": _cinder_delete_snapshot_command,
 }
 
 # These actions invoke the Ceph CLI on the target node.  A cephadm host does
@@ -637,6 +751,10 @@ _CEPH_RUNTIME_ACTION_IDS = frozenset({
     "rbd_create_volume",
     "rbd_resize_volume",
     "rbd_rename_volume",
+    "rbd_clone_volume",
+    "rbd_flatten_volume",
+    "rbd_template_mark",
+    "rbd_qos_set",
     "rbd_trash_move_volume",
     "rbd_trash_restore_volume",
     "rbd_trash_purge_all",

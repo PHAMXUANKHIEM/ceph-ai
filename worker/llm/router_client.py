@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from shared import alert_lifecycle, audit, change_risk, db, incident_events, log
 from shared.synthetic_incidents import is_synthetic_evidence
 from shared.case_retrieval import find_verified_cases
 from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
+from shared.ai_routing import choose_model
+from shared.ai_output import output_budget_instruction, trim_text_to_token_budget
 from shared.models import (
     Action,
     ActionClassification,
@@ -644,6 +647,24 @@ async def _call_router(user_content: str) -> dict:
     too.
     """
     refresh_chat_provider_flags()
+    routing_request_id = uuid.uuid4().hex
+    output_limit = max(256, min(int(getattr(settings, "ai_incident_max_output_tokens", MAX_TOKENS)), MAX_TOKENS))
+
+    def routed_model(provider: str, configured_model: str) -> str | None:
+        decision = choose_model(
+            "incident_diagnosis", provider, configured_model or "default",
+            input_chars=len(user_content), output_tokens=output_limit,
+            request_id=routing_request_id,
+        )
+        if decision.get("recommended_model"):
+            logger.info(
+                "AI cost route feature=%s provider=%s current=%s recommended=%s selected=%s reason=%s",
+                decision["feature"], provider, decision["current_model"],
+                decision["recommended_model"], decision["selected_model"], decision["reason"],
+            )
+        selected = decision.get("selected_model")
+        return selected if selected and selected != (configured_model or "default") else None
+
     provider_errors: list[str] = []
     if settings.codex_chat_enabled:
         captured: dict = {}
@@ -652,15 +673,23 @@ async def _call_router(user_content: str) -> dict:
             if tool_name != TOOL_NAME:
                 return f"Tool không được phép: {tool_name}", False
             captured.update(arguments)
+            for key in ("diagnosis_text", "rationale"):
+                if key in captured:
+                    captured[key] = trim_text_to_token_budget(captured[key], output_limit)
             return "Đã ghi nhận chẩn đoán.", True
 
         prompt = (
             SYSTEM_PROMPT
             + "\n\nBạn BẮT BUỘC gọi tool report_diagnosis đúng một lần; không trả kết quả chỉ bằng văn bản.\n\n"
             + user_content
+            + output_budget_instruction(output_limit)
         )
         try:
-            await codex_app_server.run_turn(prompt, [_tool_schema()], capture, timeout=ROUTER_TIMEOUT_SECONDS)
+            codex_model = routed_model("codex", settings.codex_chat_model or "default")
+            run_kwargs = {"timeout": ROUTER_TIMEOUT_SECONDS}
+            if codex_model is not None:
+                run_kwargs["model"] = codex_model
+            await codex_app_server.run_turn(prompt, [_tool_schema()], capture, **run_kwargs)
         except CodexAppServerError as exc:
             # Codex can temporarily lose its OAuth session or quota.  Do not
             # make a separately authenticated Claude account unavailable in
@@ -679,11 +708,19 @@ async def _call_router(user_content: str) -> dict:
             + ", ".join(sorted(AI_EXECUTABLE_ACTION_IDS))
             + "\n\n"
             + user_content
+            + output_budget_instruction(output_limit)
         )
         try:
-            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+            claude_model = routed_model("claude", settings.claude_chat_model or "default")
+            if claude_model is None:
+                raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+            else:
+                raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS, model=claude_model)
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
             result = json.loads(clean)
+            for key in ("diagnosis_text", "rationale"):
+                if key in result:
+                    result[key] = trim_text_to_token_budget(result[key], output_limit)
         except (ClaudeCLIError, json.JSONDecodeError) as exc:
             provider_errors.append(f"Claude call failed: {exc}")
             logger.warning("%s; trying configured fallback", provider_errors[-1])
@@ -705,11 +742,12 @@ async def _call_router(user_content: str) -> dict:
         raise RouterDiagnosisError("Router đang tắt hoặc chưa cấu hình đầy đủ")
 
     client = _get_client()
+    selected_router_model = routed_model("9router", settings.router_model) or settings.router_model
     try:
-        mark_ai_provider("router", settings.router_model)
+        mark_ai_provider("router", selected_router_model)
         async with client.chat.completions.stream(
-            model=settings.router_model,
-            max_tokens=MAX_TOKENS,
+            model=selected_router_model,
+            max_tokens=output_limit,
             tools=[_tool_schema()],
             stream_options={"include_usage": True},
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
@@ -732,7 +770,7 @@ async def _call_router(user_content: str) -> dict:
     choice = completion.choices[0]
     if choice.finish_reason == "length":
         raise RouterDiagnosisError(
-            f"Router response truncated at max_tokens={MAX_TOKENS} — tool call args may be incomplete"
+            f"Router response truncated at max_tokens={output_limit} — tool call args may be incomplete"
         )
     for call in choice.message.tool_calls or []:
         if call.function.name == TOOL_NAME:
@@ -2779,6 +2817,35 @@ def _process_approved_actions_once() -> None:
         promotion_updated = trust_engine.evaluate_promotion_candidates(session, now=datetime.utcnow())
         log_learning_updated = log_learning.reconcile_samples(session, now=datetime.utcnow())
         log_fault_stats_updated = log_learning.recompute_fault_stats(session, now=datetime.utcnow())
+        from watcher.forecast_replay import compare_persisted_forecast_runs
+        shadow_results = compare_persisted_forecast_runs(session)
+    shadow_evaluations_persisted = 0
+    if shadow_results:
+        from shared import model_registry
+        with db.SessionLocal() as session:
+            for shadow in shadow_results:
+                if not shadow.scope_type or not shadow.scope_key:
+                    continue
+                try:
+                    active_model, candidate_model = model_registry.ensure_shadow_model_pair(
+                        session, shadow, now=datetime.utcnow(),
+                    )
+                    evaluation = model_registry.record_shadow_evaluation(
+                        session,
+                        active_model=active_model,
+                        candidate_model=candidate_model,
+                        comparison=shadow,
+                        now=datetime.utcnow(),
+                    )
+                    if evaluation is not None:
+                        shadow_evaluations_persisted += 1
+                except Exception as exc:
+                    session.rollback()
+                    logger.exception(
+                        "forecast shadow registry skipped scope=%s: %s",
+                        shadow.scope_key, exc,
+                    )
+            session.commit()
     if recovered:
         logger.warning(
             "reconciled %d expired autonomous execution(s) as INCONCLUSIVE; none were retried",
@@ -2798,6 +2865,23 @@ def _process_approved_actions_once() -> None:
         logger.info("updated %d daemon-log learning sample(s)", log_learning_updated)
     if log_fault_stats_updated:
         logger.info("recomputed %d daemon-log fault aggregate(s)", log_fault_stats_updated)
+    if shadow_results:
+        status_counts = {}
+        for shadow in shadow_results:
+            status_counts[shadow.status] = status_counts.get(shadow.status, 0) + 1
+        logger.info(
+            "forecast shadow evaluation: comparisons=%d statuses=%s mode=SHADOW_ONLY; "
+            "persisted_new_evaluations=%d; no promotion, notification or remediation",
+            len(shadow_results), status_counts, shadow_evaluations_persisted,
+        )
+        for shadow in [item for item in shadow_results if item.status == "PROMISING"][:10]:
+            logger.info(
+                "forecast shadow candidate promising: active=%s candidate=%s "
+                "samples=%d/%d mae_delta=%s reason=%s",
+                shadow.active_algorithm, shadow.candidate_algorithm,
+                shadow.active_evaluated, shadow.candidate_evaluated,
+                shadow.mae_delta, shadow.reason,
+            )
     _reconcile_stuck_rbd_actions_once()
     _process_due_grace_actions_once()
     with db.SessionLocal() as session:
@@ -3614,7 +3698,7 @@ def _record_approved_execution_result(
     action_pk: str, command: str | None, succeeded: bool, command_output: str | None = None
 ) -> None:
     notify: dict | None = None
-    cache_invalidation: tuple[str, str] | None = None
+    cache_invalidation: tuple[str, tuple[str, ...]] | None = None
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)
         if action is None:
@@ -3744,6 +3828,7 @@ def _record_approved_execution_result(
                 )
         if succeeded and action.action_id in {
             "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume",
+            "rbd_clone_volume", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
             "rbd_trash_move_volume", "rbd_trash_restore_volume",
             "rbd_trash_remove", "rbd_trash_purge_all",
         }:
@@ -3751,18 +3836,24 @@ def _record_approved_execution_result(
                 params = json.loads(action.action_params or "{}")
             except (TypeError, ValueError):
                 params = {}
-            pool = params.get("pool_name") if isinstance(params, dict) else None
-            if isinstance(pool, str) and pool:
+            pool_names = set()
+            if isinstance(params, dict):
+                for key in ("pool_name", "dest_pool"):
+                    value = params.get(key)
+                    if isinstance(value, str) and value:
+                        pool_names.add(value)
+            if pool_names:
                 cluster_id = incident.cluster_id if incident is not None else None
                 if cluster_id is None:
                     cluster_id = session.query(Cluster.id).filter(Cluster.is_default.is_(True)).scalar()
                 if cluster_id is not None:
-                    cache_invalidation = (str(cluster_id), pool)
+                    cache_invalidation = (str(cluster_id), tuple(sorted(pool_names)))
         session.commit()
     if cache_invalidation is not None:
-        cluster_id, pool = cache_invalidation
-        for namespace in ("rbd-trash", "rbd-inventory", "rbd-iostat"):
-            invalidate_ceph_query_cache(namespace, f"{cluster_id}:{pool}")
+        cluster_id, pools = cache_invalidation
+        for pool in pools:
+            for namespace in ("rbd-trash", "rbd-inventory", "rbd-iostat"):
+                invalidate_ceph_query_cache(namespace, f"{cluster_id}:{pool}")
     if notify is not None:
         send_auto_remediation_alert(**notify)
 

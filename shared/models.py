@@ -685,12 +685,7 @@ class ObjectStorageAuditEntry(Base):
 
 
 class BucketInventorySnapshot(Base):
-    """Last successful bucket-name inventory for one Ceph cluster.
-
-    This is deliberately only a small durable snapshot of bucket names. The
-    expensive owner/usage/quota fields remain short-lived per-bucket detail
-    data and are refreshed separately after the page is rendered.
-    """
+    """Last successful bucket-name inventory for one Ceph cluster."""
 
     __tablename__ = "bucket_inventory_snapshots"
 
@@ -1053,6 +1048,8 @@ class WatcherHeartbeat(Base):
     mon_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class User(Base):
@@ -1507,6 +1504,37 @@ class VolumeMetric(Base):
     polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class VolumeSnapshotPolicy(Base):
+    """Per-Cinder-volume snapshot schedule and retention guard."""
+
+    __tablename__ = "volume_snapshot_policies"
+    __table_args__ = (
+        Index("ix_volume_snapshot_policies_cluster_enabled", "cluster_id", "enabled"),
+        Index("ix_volume_snapshot_policies_next_run", "next_run_at"),
+        CheckConstraint("retention_count >= 1 AND retention_count <= 365", name="ck_volume_snapshot_policy_retention"),
+        CheckConstraint("capacity_guard_percent > 0 AND capacity_guard_percent < 100", name="ck_volume_snapshot_policy_capacity_guard"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    image: Mapped[str] = mapped_column(String(128), nullable=False)
+    volume_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    snapshot_prefix: Mapped[str] = mapped_column(String(48), nullable=False, default="scheduled")
+    cron_expression: Mapped[str] = mapped_column(String(128), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    retention_count: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
+    capacity_guard_percent: Mapped[float] = mapped_column(Float, nullable=False, default=85.0)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class VolumeOsdMapping(Base):
     """Latest read-only RBD header-object placement for one volume.
 
@@ -1623,10 +1651,117 @@ class VolumeModelState(Base):
     mean_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     mean_percentage_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rolling_mae: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_rmse: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_smape: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_bias: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_metrics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class ForecastModelRegistry(Base):
+    """Versioned metadata for forecast candidates and selected models.
+
+    This registry is deliberately separate from the online error state tables:
+    a model may be registered, shadowed or retired without changing the
+    production selector.  Promotion and rollback guards are implemented in a
+    later phase and must never be inferred from this row alone.
+    """
+
+    __tablename__ = "forecast_model_registry"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('CANDIDATE','SHADOW','ACTIVE','RETIRED','BLOCKED')",
+            name="ck_forecast_model_registry_status_valid",
+        ),
+        UniqueConstraint(
+            "scope_type", "scope_key", "name", "version",
+            name="uq_forecast_model_registry_identity",
+        ),
+        Index("ix_forecast_model_registry_scope_status", "scope_type", "scope_key", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False)
+    feature_schema: Mapped[str] = mapped_column(String(64), nullable=False)
+    training_window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="CANDIDATE", index=True)
+    promotion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class ForecastModelEvaluation(Base):
+    """Append-only paired evidence used by guarded model promotion."""
+
+    __tablename__ = "forecast_model_evaluations"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_model_id", "active_model_id", "target_at",
+            name="uq_forecast_model_evaluation_target",
+        ),
+        Index("ix_forecast_model_evaluation_candidate_time", "candidate_model_id", "target_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    candidate_model_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("forecast_model_registry.id"), nullable=False
+    )
+    active_model_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("forecast_model_registry.id"), nullable=False
+    )
+    target_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    active_evaluated: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_evaluated: Mapped[int] = mapped_column(Integer, nullable=False)
+    active_mae: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_mae: Mapped[float | None] = mapped_column(Float, nullable=True)
+    active_rmse: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_rmse: Mapped[float | None] = mapped_column(Float, nullable=True)
+    active_smape: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_smape: Mapped[float | None] = mapped_column(Float, nullable=True)
+    active_bias: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_bias: Mapped[float | None] = mapped_column(Float, nullable=True)
+    active_false_positive_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_false_positive_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ForecastModelPromotionAudit(Base):
+    """Append-only audit trail for guarded promotion and rollback decisions."""
+
+    __tablename__ = "forecast_model_promotion_audits"
+    __table_args__ = (
+        Index("ix_forecast_model_promotion_audit_candidate_time", "candidate_model_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    candidate_model_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("forecast_model_registry.id"), nullable=False
+    )
+    previous_active_model_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("forecast_model_registry.id"), nullable=True
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class VolumeEarlyForecast(Base):
@@ -1652,6 +1787,12 @@ class VolumeEarlyForecast(Base):
     predicted_value: Mapped[float] = mapped_column(Float, nullable=False)
     threshold_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     threshold_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consensus_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    consensus_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consensus_candidate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    predicted_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    predicted_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    model_votes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     training_samples: Mapped[int] = mapped_column(Integer, nullable=False)
     training_window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -2099,13 +2240,7 @@ class TelegramChannelConfigChange(Base):
 
 
 class TelegramManagedChannel(Base):
-    """Admin-managed Telegram channel created from the Alert Telegram UI.
-
-    The eight built-in channels remain environment-backed for compatibility
-    with the existing alert workers. This table stores only additional
-    channels and their display/configuration metadata; the dashboard never
-    renders the bot token back to the browser after the initial save.
-    """
+    """Admin-managed Telegram channel created from the Alert Telegram UI."""
 
     __tablename__ = "telegram_managed_channels"
 
@@ -2117,7 +2252,9 @@ class TelegramManagedChannel(Base):
     template: Mapped[str] = mapped_column(String(64), nullable=False, default="custom")
     created_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class TelegramChannelLayout(Base):
@@ -2130,7 +2267,9 @@ class TelegramChannelLayout(Base):
     hidden_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     display_names_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     updated_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class CapabilityStatus(str, enum.Enum):
@@ -2753,6 +2892,17 @@ class NodeResourceForecastRun(Base):
     current_percent: Mapped[float] = mapped_column(Float, nullable=False)
     predicted_percent: Mapped[float] = mapped_column(Float, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    coverage_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_gap_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latest_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consensus_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    consensus_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consensus_candidate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    predicted_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    predicted_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    residual_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    model_votes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     actual_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING", index=True)
@@ -2781,6 +2931,12 @@ class NodeResourceModelState(Base):
     evaluated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     mean_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rolling_mae: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_rmse: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_smape: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_bias: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_metrics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -2814,6 +2970,68 @@ class NodeResourceForecastAlert(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     samples: Mapped[int] = mapped_column(Integer, nullable=False)
     window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    consensus_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    consensus_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consensus_candidate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    predicted_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    predicted_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    coverage_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_gap_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latest_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    lifecycle_state: Mapped[str] = mapped_column(String(16), nullable=False, default="NORMAL")
+    notification_state: Mapped[str] = mapped_column(String(16), nullable=False, default="IDLE")
+    state_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    state_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    last_notified_evidence_fingerprint: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+    )
+    suppressed_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consecutive_breach_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    consecutive_healthy_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class NodeResourceForecastTransition(Base):
+    """Append-only lifecycle history for one node-resource forecast alert."""
+
+    __tablename__ = "node_resource_forecast_transitions"
+    __table_args__ = (
+        Index("ix_node_resource_forecast_transition_alert_time", "alert_id", "changed_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    alert_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("node_resource_forecast_alerts.id"), nullable=False,
+    )
+    previous_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    new_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class NodeResourceForecastFeedback(Base):
+    """Append-only operator verdicts for predictive resource alerts."""
+
+    __tablename__ = "node_resource_forecast_feedback"
+    __table_args__ = (
+        Index("ix_node_resource_forecast_feedback_alert_created", "alert_id", "created_at"),
+        Index("ix_node_resource_forecast_feedback_verdict", "verdict"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    alert_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("node_resource_forecast_alerts.id"), nullable=False,
+    )
+    verdict: Mapped[str] = mapped_column(String(24), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    impact_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    incident_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    remediation_case_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    submitted_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class AIInvocation(Base):

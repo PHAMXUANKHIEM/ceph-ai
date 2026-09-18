@@ -263,9 +263,10 @@ def test_restore_image_applies_full_then_diffs_in_order(isolated_db):
         "rbd import-diff - vms/web01",
         "rbd import-diff - vms/web01",
         "rbd info vms/web01 --format json",
+        "rbd export vms/web01 /dev/null",
     ])
     payloads = [bytes(sink) for _cmd, sink in FakeSSHClient.imported_calls]
-    assert payloads == [FULL_CONTENT, DIFF1_CONTENT, DIFF2_CONTENT, b""]
+    assert payloads == [FULL_CONTENT, DIFF1_CONTENT, DIFF2_CONTENT, b"", b""]
 
 
 def test_restore_image_stops_at_selected_incremental_recovery_point(isolated_db):
@@ -286,7 +287,7 @@ def test_restore_image_stops_at_selected_incremental_recovery_point(isolated_db)
     assert result.success is True
     assert result.applied_diff_job_ids == [selected_id]
     payloads = [bytes(sink) for _cmd, sink in FakeSSHClient.imported_calls]
-    assert payloads == [FULL_CONTENT, DIFF1_CONTENT, b""]
+    assert payloads == [FULL_CONTENT, DIFF1_CONTENT, b"", b""]
 
 
 def test_restore_image_restores_into_a_different_dest(isolated_db):
@@ -299,7 +300,8 @@ def test_restore_image_restores_into_a_different_dest(isolated_db):
     assert result.success is True
     _assert_bounded_restore_commands(
         [cmd for cmd, _sink in FakeSSHClient.imported_calls],
-        ["rbd import - restored/web01-copy", "rbd info restored/web01-copy --format json"],
+        ["rbd import - restored/web01-copy", "rbd info restored/web01-copy --format json",
+         "rbd export restored/web01-copy /dev/null"],
     )
 
 
@@ -415,5 +417,6 @@ def test_restore_image_ignores_failed_incremental_jobs(isolated_db):
     commands = [cmd for cmd, _sink in FakeSSHClient.imported_calls]
     _assert_bounded_restore_commands(
         commands,
-        ["rbd import - vms/web01", "rbd info vms/web01 --format json"],
+        ["rbd import - vms/web01", "rbd info vms/web01 --format json",
+         "rbd export vms/web01 /dev/null"],
     )

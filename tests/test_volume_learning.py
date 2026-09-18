@@ -30,9 +30,9 @@ def _cluster(db_session):
     return row
 
 
-def _history(db_session, cluster_id, *, hours=80):
+def _history(db_session, cluster_id, *, hours=80, end=NOW):
     for offset in range(hours, -1, -1):
-        timestamp = NOW - timedelta(hours=offset)
+        timestamp = end - timedelta(hours=offset)
         db_session.add(VolumeMetric(
             cluster_id=cluster_id, pool="vms", image="disk-1",
             iops=100 + timestamp.hour, read_latency_ms=1 + timestamp.hour / 100,
@@ -74,7 +74,7 @@ def test_observe_records_fail_closed_early_forecasts_for_all_horizons(db_session
     cluster = _cluster(db_session)
     _history(db_session, cluster.id)
     monkeypatch.setattr(settings, "volume_learning_min_samples", 24)
-    monkeypatch.setattr(settings, "volume_learning_candidate_hours", "72")
+    monkeypatch.setattr(settings, "volume_learning_candidate_hours", "24,72")
     monkeypatch.setattr(settings, "volume_forecast_enabled", True)
     monkeypatch.setattr(settings, "volume_forecast_horizons", "1,6,24")
     monkeypatch.setattr(settings, "volume_forecast_latency_slo_ms", 1.0)
@@ -94,6 +94,21 @@ def test_observe_records_fail_closed_early_forecasts_for_all_horizons(db_session
     assert all(row.threshold_value is None for row in iops)
     latency = [row for row in rows if row.metric != "iops"]
     assert {row.status for row in latency} == {"WARNING"}
+    assert all(row.consensus_status == "CONSENSUS" for row in rows)
+    assert all(row.consensus_candidate_count == 2 for row in rows)
+    assert all(row.model_votes_json for row in rows)
+
+
+def test_volume_consensus_rejects_disagreement(monkeypatch):
+    monkeypatch.setattr(settings, "volume_forecast_min_consensus_candidates", 2)
+    monkeypatch.setattr(settings, "volume_forecast_min_consensus_ratio", 0.67)
+    monkeypatch.setattr(settings, "volume_forecast_consensus_tolerance_percent", 1.0)
+    assert learning._volume_consensus([10.0, 10.5, 40.0]).status == "LOW_CONFIDENCE"
+
+
+def test_volume_consensus_requires_multiple_windows(monkeypatch):
+    monkeypatch.setattr(settings, "volume_forecast_min_consensus_candidates", 2)
+    assert learning._volume_consensus([10.0]).status == "INSUFFICIENT_CANDIDATES"
 
 
 def test_early_forecast_is_hourly_idempotent(db_session, monkeypatch):
@@ -126,6 +141,49 @@ def test_early_forecast_is_created_when_baseline_candidates_already_exist(db_ses
     db_session.commit()
 
     assert db_session.query(VolumeEarlyForecast).count() == 9
+
+
+def test_stale_volume_history_creates_data_quality_forecasts_and_no_candidates(db_session, monkeypatch):
+    cluster = _cluster(db_session)
+    _history(db_session, cluster.id, end=NOW - timedelta(hours=2))
+    monkeypatch.setattr(settings, "volume_learning_min_samples", 24)
+    monkeypatch.setattr(settings, "volume_learning_candidate_hours", "72")
+    monkeypatch.setattr(settings, "volume_forecast_enabled", True)
+    monkeypatch.setattr(settings, "volume_forecast_horizons", "1,6,24")
+    monkeypatch.setattr(settings, "volume_forecast_max_staleness_minutes", 30)
+
+    learning.observe_sample(db_session, cluster.id, _sample(), NOW)
+    db_session.commit()
+
+    assert db_session.query(VolumeForecastRun).count() == 0
+    rows = db_session.query(VolumeEarlyForecast).all()
+    assert len(rows) == 9
+    assert {row.status for row in rows} == {"DATA_QUALITY"}
+    assert all("STALE" in row.reason for row in rows)
+
+
+def test_large_gap_volume_history_creates_data_quality_forecasts(db_session, monkeypatch):
+    cluster = _cluster(db_session)
+    _history(db_session, cluster.id)
+    db_session.query(VolumeMetric).filter(
+        VolumeMetric.cluster_id == cluster.id,
+        VolumeMetric.polled_at > NOW - timedelta(hours=12),
+        VolumeMetric.polled_at < NOW - timedelta(hours=5),
+    ).delete(synchronize_session=False)
+    db_session.flush()
+    monkeypatch.setattr(settings, "volume_learning_min_samples", 24)
+    monkeypatch.setattr(settings, "volume_learning_candidate_hours", "72")
+    monkeypatch.setattr(settings, "volume_forecast_enabled", True)
+    monkeypatch.setattr(settings, "volume_forecast_horizons", "1")
+    monkeypatch.setattr(settings, "volume_learning_max_gap_hours", 2.0)
+
+    learning.observe_sample(db_session, cluster.id, _sample(), NOW)
+    db_session.commit()
+
+    rows = db_session.query(VolumeEarlyForecast).all()
+    assert len(rows) == 3
+    assert {row.status for row in rows} == {"DATA_QUALITY"}
+    assert all("GAP_DETECTED" in row.reason for row in rows)
 
 
 def test_warning_telegram_is_marked_only_once_after_success(db_session, monkeypatch):

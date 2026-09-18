@@ -865,6 +865,33 @@
   }
 })();
 
+// Cleanup panel: keep the selected scope visually clear and prevent a
+// duplicate submit while the destructive request is being sent.
+(function () {
+  var form = document.querySelector('[data-panel="cleanup"] .cleanup-form');
+  if (!form) return;
+  var cards = Array.prototype.slice.call(form.querySelectorAll(".cleanup-target-card"));
+  function sync() {
+    cards.forEach(function (card) {
+      var input = card.querySelector('input[type="checkbox"]');
+      card.classList.toggle("is-selected", !!(input && input.checked));
+    });
+  }
+  cards.forEach(function (card) {
+    var input = card.querySelector('input[type="checkbox"]');
+    if (input) input.addEventListener("change", sync);
+  });
+  form.addEventListener("submit", function (event) {
+    if (event.defaultPrevented) return;
+    var submit = form.querySelector(".cleanup-submit-button");
+    if (submit) {
+      submit.disabled = true;
+      submit.textContent = "Đang xóa…";
+    }
+  });
+  sync();
+})();
+
 // --- Telegram Chatbox dual-AI content controls ----------------------------
 // This block is scoped to the dual-AI panel and does not touch the Settings
 // sidebar or any other Settings form.

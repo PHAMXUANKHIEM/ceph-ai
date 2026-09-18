@@ -12,7 +12,7 @@
    a new page gets correct highlighting for free, nothing to remember to set. #}
 {% set nav_path = request.url.path %}
 {% set cluster_group_exact = [
-  "/nodes", "/volumes", "/trash", "/volume-performance", "/pools",
+  "/nodes", "/trash", "/volume-performance", "/pools",
   "/block-storage", "/pgs", "/capacity-forecast", "/disk-risk",
   "/deploy-cluster", "/delete-cluster", "/convert-cluster",
   "/patch", "/log-intelligence", "/ai-learning", "/synthetic-incidents", "/runbooks", "/alerts"
@@ -32,7 +32,6 @@
         <button type="button" data-initial="C" class="nav-link nav-dropdown-toggle{{ ' active' if cluster_group_active else '' }}">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
         <div class="nav-dropdown-menu">
           <a href="/nodes" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/nodes' else '' }}">Cluster Metrics</a>
-          <a href="/volumes" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path in ('/volumes', '/trash', '/volume-performance') else '' }}">Volumes</a>
           <a href="/pools" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/pools' else '' }}">Pools</a>
           <a href="/block-storage" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/block-storage' else '' }}">Block Storage</a>
           <a href="/capacity-forecast" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/capacity-forecast' else '' }}">Capacity Forecast</a>

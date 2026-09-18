@@ -287,12 +287,32 @@ class Settings(BaseSettings):
     # The runtime enforces both this and the character ceiling because exact
     # tokenization differs between Codex, Claude and router models.
     ai_incident_max_context_tokens: int = Field(default=6000, ge=1000, le=20000)
+    # Keep structured incident answers bounded so a verbose model cannot
+    # consume the entire budget after the evidence has already been collected.
+    ai_incident_max_output_tokens: int = Field(default=1536, ge=256, le=8192)
     # Chat history is persisted indefinitely, so a message-count-only window
     # still allows a few large tool/evidence replies to consume the whole
     # provider context. Keep the current turn separate and pack only the
     # most recent useful history within both hard ceilings.
     ai_chat_max_context_chars: int = Field(default=12000, ge=4000, le=50000)
     ai_chat_max_context_tokens: int = Field(default=6000, ge=1000, le=20000)
+    # A normal operator chat should answer concisely after the requested
+    # evidence is available; callers may still override this per turn.
+    ai_chat_max_output_tokens: int = Field(default=1536, ge=256, le=8192)
+    ai_chat_max_tool_iterations: int = Field(default=4, ge=1, le=6)
+
+    # Controlled cost routing. Advisory is the safe default: the dashboard
+    # can show cheaper candidates, but production keeps the configured model.
+    # Canary routing is opt-in, same-provider only, and requires an explicit
+    # percentage plus a minimum estimated saving. A canary candidate must also
+    # be listed here after the operator has verified it in the provider catalog
+    # (format: provider:model, comma-separated).
+    ai_cost_routing_mode: str = "advisory"
+    ai_cost_routing_canary_percent: int = Field(default=0, ge=0, le=100)
+    ai_cost_routing_min_savings_percent: float = Field(default=15.0, ge=0, le=100)
+    ai_cost_routing_same_provider_only: bool = True
+    ai_cost_routing_model_allowlist: str = ""
+    ai_cost_routing_features: str = "ceph_chat,incident_diagnosis"
 
     # Delegated AI guardrails. These limits are deliberately independent from
     # the normal chat turn so one delegated request cannot fan out without a
@@ -655,6 +675,14 @@ class Settings(BaseSettings):
     # trend.  Disabled by default so an existing SSH-only deployment does
     # not unexpectedly start writing to Loki.
     node_resource_forecast_enabled: bool = False
+    # Phase 0.2: independent safety gate for the future River/online learner.
+    # Existing deterministic forecast collection remains controlled by
+    # node_resource_forecast_enabled above.
+    online_learning_enabled: bool = False
+    online_learning_mode: str = "AUDIT_ONLY"
+    online_learning_kill_switch: bool = False
+    online_learning_watcher_failure_threshold: int = Field(default=3, ge=1, le=100)
+    online_learning_watcher_staleness_seconds: int = Field(default=120, ge=15, le=86400)
     # Optional self-contained ingestion path for deployments without Alloy:
     # Watcher samples /proc over its existing read-only SSH path and pushes
     # the fresh CPU/RAM sample to Loki before analysing the node. Keep this
@@ -664,6 +692,14 @@ class Settings(BaseSettings):
     node_resource_forecast_horizon_hours: int = 168
     node_resource_forecast_min_samples: int = 24
     node_resource_forecast_min_confidence: float = 0.5
+    node_resource_forecast_trigger_threshold_percent: float = 90.0
+    node_resource_forecast_recovery_threshold_percent: float = 85.0
+    node_resource_forecast_breach_consecutive_scans: int = 2
+    node_resource_forecast_recovery_consecutive_scans: int = 2
+    node_resource_forecast_min_consensus_ratio: float = 0.67
+    node_resource_forecast_min_consensus_candidates: int = 2
+    node_resource_forecast_consensus_tolerance_percent: float = 5.0
+    node_resource_forecast_consensus_relative_tolerance: float = 0.10
     # A forecast must cover enough of its requested training window and may
     # not bridge an excessively long Loki/Alloy outage.
     node_resource_forecast_min_coverage: float = 0.6
@@ -677,6 +713,16 @@ class Settings(BaseSettings):
     node_resource_learning_max_outcome_gap_hours: float = 3.0
     node_resource_learning_min_outcomes: int = 3
     node_resource_learning_candidate_hours: str = "24,72,168,720"
+    node_resource_learning_rolling_samples: int = 50
+
+    # Guarded forecast promotion is operator-approved only.  A candidate must
+    # beat the active model across several newly observed target timestamps;
+    # missing metrics fail closed and never trigger an automatic promotion.
+    forecast_promotion_min_outcomes: int = 20
+    forecast_promotion_required_evaluations: int = 3
+    forecast_promotion_max_false_positive_rate_increase: float = 0.0
+    forecast_promotion_min_mae_improvement: float = 0.0
+    forecast_promotion_min_smape_improvement: float = 0.0
 
     # LARGE_OMAP_OBJECTS auto-remediation is opt-in and bucket-scoped.
     # test-* remains the built-in lab-only path; production buckets must be
@@ -697,10 +743,20 @@ class Settings(BaseSettings):
     volume_learning_min_samples: int = 24
     volume_learning_min_outcomes: int = 10
     volume_learning_candidate_hours: str = "24,72,168,720"
+    volume_learning_rolling_samples: int = 50
+    # Quality gate for hourly RBD metric history. Coverage/gap checks are
+    # separate from source freshness because a recent sample can coexist
+    # with a long outage earlier in the selected training window.
+    volume_learning_min_coverage: float = 0.6
+    volume_learning_max_gap_hours: float = 6.0
     # Read-only early warning generated from the selected seasonal baseline.
     volume_forecast_enabled: bool = True
     volume_forecast_horizons: str = "1,6,24"
     volume_forecast_min_confidence: float = 0.5
+    volume_forecast_min_consensus_ratio: float = 0.67
+    volume_forecast_min_consensus_candidates: int = 2
+    volume_forecast_consensus_tolerance_percent: float = 5.0
+    volume_forecast_consensus_relative_tolerance: float = 0.10
     volume_forecast_max_staleness_minutes: int = 30
     volume_forecast_latency_slo_ms: float = 20.0
     volume_forecast_knee_warning_ratio: float = 0.9

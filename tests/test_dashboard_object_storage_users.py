@@ -226,14 +226,14 @@ def test_s3_user_features_keep_users_and_audit_as_two_tabs():
     assert 'data-s3-tab="s3-audit-panel"' in template
 
 
-def test_object_storage_audit_filters_and_paginates_25_rows_client_side():
+def test_object_storage_audit_filters_and_paginates_10_rows_client_side():
     source = open("dashboard/static/object_storage_users.js", encoding="utf-8").read()
-    assert 'var auditSize = 25;' in source
+    assert 'var auditSize = 10;' in source
     assert "data-s3-audit-search" in source
     assert "data-s3-audit-action" in source
     assert "data-s3-audit-result" in source
     assert "filtered.slice((auditPage - 1) * auditSize, auditPage * auditSize)" in source
-    assert "25 dòng/trang" in source
+    assert "10 dòng/trang" in source
     assert "classifyAction" in source
 
 
@@ -333,6 +333,43 @@ def test_audit_api_is_admin_only_and_cluster_scoped(dashboard_client, monkeypatc
 
     monkeypatch.setattr(route.auth, "is_admin_user", lambda user: False)
     assert dashboard_client.get("/api/object-storage/audit").status_code == 403
+
+
+def test_audit_purge_requires_confirmation_and_is_cluster_scoped(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        selected = session.query(Cluster).filter_by(is_default=True).one()
+        other = Cluster(
+            name="other-cluster", ceph_mon_nodes="10.0.0.2", is_default=False,
+            is_active=True, ssh_user="root", ssh_key_path="/key",
+        )
+        session.add(other)
+        session.flush()
+        session.add_all([
+            ObjectStorageAuditEntry(
+                cluster_id=selected.id, actor="admin", action="create_user",
+                target_type="s3_user", target_id="alice", preview="create", result="succeeded",
+            ),
+            ObjectStorageAuditEntry(
+                cluster_id=other.id, actor="admin", action="create_user",
+                target_type="s3_user", target_id="bob", preview="create", result="succeeded",
+            ),
+        ])
+        session.commit()
+
+    missing_confirmation = dashboard_client.post("/api/object-storage/audit/purge", json={})
+    assert missing_confirmation.status_code == 400
+
+    response = dashboard_client.post(
+        "/api/object-storage/audit/purge",
+        json={"confirmation": "DELETE_ALL_AUDIT"},
+    )
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 1
+    with db.SessionLocal() as session:
+        assert session.query(ObjectStorageAuditEntry).filter_by(target_id="alice").count() == 0
+        assert session.query(ObjectStorageAuditEntry).filter_by(target_id="bob").count() == 1
 
 
 def test_create_access_key_returns_secret_once_but_never_persists_it(dashboard_client, monkeypatch):

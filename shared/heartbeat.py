@@ -35,6 +35,11 @@ def record(
     row.mon_node = mon_node
     row.error_message = error_message
     row.polled_at = polled_at
+    if success:
+        row.consecutive_failures = 0
+        row.last_success_at = polled_at
+    else:
+        row.consecutive_failures = max(0, int(row.consecutive_failures or 0)) + 1
 
 
 def get_latest(session: Session, cluster_id: str | None) -> WatcherHeartbeat | None:

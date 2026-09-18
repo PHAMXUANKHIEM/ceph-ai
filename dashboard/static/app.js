@@ -165,7 +165,7 @@
   });
 
   var iconByPath = {
-    "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/volume-performance": "⌁", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
+    "/": "⌁", "/nodes": "◫", "/volume-performance": "⌁", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
@@ -293,7 +293,7 @@
       available.forEach(function (path) {
         var link = linksByPath[path];
         if (link.classList.contains("nav-dropdown-item-active")) link.classList.add("active");
-        if (window.location.pathname === path) link.classList.add("active");
+        if (window.location.pathname === path || (path === "/block-storage" && window.location.pathname.indexOf("/volumes/") === 0)) link.classList.add("active");
         link.classList.remove("nav-dropdown-item", "nav-dropdown-item-active");
         link.classList.add("nav-link");
         if (path === "/block-storage") link.textContent = "Overview";

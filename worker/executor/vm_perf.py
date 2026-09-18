@@ -9,6 +9,7 @@ from datetime import datetime
 
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.executor.volume_perf import _detect_knee
+from shared.resource_limits import fio_one_cpu_options
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ def _run_sample(
         f"--filename={shlex.quote(device)} --ioengine=libaio --direct=1 "
         f"--iodepth={iodepth} --numjobs=1 --runtime={FIO_RUNTIME_SECONDS} "
         f"--ramp_time={FIO_RAMP_SECONDS} --time_based --group_reporting "
-        "--lat_percentiles=1 --percentile_list=99 --output-format=json"
+        f"{fio_one_cpu_options()} --lat_percentiles=1 --percentile_list=99 --output-format=json"
     )
     output = _execute_in_vm(
         controller_ip, controller_user, controller_key_path,

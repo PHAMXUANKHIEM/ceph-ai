@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func
 
@@ -13,28 +14,64 @@ from config.settings import settings
 from dashboard.cluster_scope import cluster_selection
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from shared import db, remediation_feedback
+from shared import db, forecast_feedback, model_registry, remediation_feedback
 from shared.models import (
     Action,
+    Cluster,
     ChangeRiskAssessment,
+    ForecastModelEvaluation,
     Incident,
     LogFaultStat,
     LogFinding,
     LogLearningSample,
     NodeResourceForecastRun,
+    NodeResourceForecastAlert,
+    NodeResourceForecastFeedback,
+    NodeResourceForecastTransition,
     NodeResourceModelState,
+    ForecastModelPromotionAudit,
+    ForecastModelRegistry,
     PlaybookStat,
     RemediationCase,
     VolumeEarlyForecast,
     VolumeForecastRun,
     VolumeModelState,
+    HostMetricSample,
 )
+from watcher.forecast_replay import evaluate_shadow
 
 router = APIRouter()
 templates = make_templates()
 
 _LARGE_OMAP_ACTION = "reshard_rgw_bucket"
 _LARGE_OMAP_EVIDENCE_RE = re.compile(r"observed_at=([^\s]+)")
+_REPLAY_COLUMNS = {
+    "cpu": HostMetricSample.cpu_percent,
+    "ram": HostMetricSample.mem_percent,
+}
+
+
+def _parse_replay_datetime(value: object, field_name: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise HTTPException(status_code=422, detail=f"{field_name} là bắt buộc.")
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"{field_name} không đúng ISO datetime.") from exc
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _replay_options(cluster_id: str) -> dict:
+    with db.SessionLocal() as session:
+        hosts = [row[0] for row in session.query(HostMetricSample.host).filter(
+            HostMetricSample.cluster_id == cluster_id,
+        ).distinct().order_by(HostMetricSample.host).all()]
+        minimum, maximum = session.query(
+            func.min(HostMetricSample.collected_at), func.max(HostMetricSample.collected_at),
+        ).filter(HostMetricSample.cluster_id == cluster_id).one()
+    return {"hosts": hosts, "minimum_at": minimum, "maximum_at": maximum}
 
 
 def _parse_observed_at(value: str | None) -> datetime | None:
@@ -198,16 +235,178 @@ def _volume_quality(mape: float | None, outcomes: int) -> tuple[str, str, float 
     return "NEEDS_IMPROVEMENT", "MAPE còn lớn hơn 20%.", accuracy
 
 
+def model_promotion_status(cluster_id: str, cluster_name: str) -> dict:
+    """Return registry state and guarded-promotion evidence for the UI.
+
+    This is read-only.  It never changes selected models or creates audit
+    rows; only the explicit request/approve/rollback endpoints can do that.
+    """
+    node_prefix = f"{cluster_name}|"
+    volume_prefix = f"{cluster_id}|"
+    with db.SessionLocal() as session:
+        rows = session.query(ForecastModelRegistry).filter(
+            ((ForecastModelRegistry.scope_type == "NODE_RESOURCE")
+             & ForecastModelRegistry.scope_key.startswith(node_prefix))
+            | ((ForecastModelRegistry.scope_type == "VOLUME")
+               & ForecastModelRegistry.scope_key.startswith(volume_prefix))
+        ).order_by(ForecastModelRegistry.scope_type, ForecastModelRegistry.scope_key,
+                   ForecastModelRegistry.created_at).all()
+        output = []
+        for row in rows:
+            evaluations = session.query(ForecastModelEvaluation).filter_by(
+                candidate_model_id=row.id,
+            ).order_by(ForecastModelEvaluation.target_at.desc()).limit(20).all()
+            audits = session.query(ForecastModelPromotionAudit).filter_by(
+                candidate_model_id=row.id,
+            ).order_by(ForecastModelPromotionAudit.created_at.desc()).limit(5).all()
+            active = session.query(ForecastModelRegistry).filter_by(
+                scope_type=row.scope_type, scope_key=row.scope_key, status="ACTIVE",
+            ).one_or_none()
+            decision = model_registry.evaluate_guarded_promotion(
+                list(reversed(evaluations)),
+            ) if row.status in {"CANDIDATE", "SHADOW"} and active else None
+            output.append({
+                "id": row.id,
+                "scope_type": row.scope_type,
+                "scope_key": row.scope_key,
+                "version": row.version,
+                "algorithm": row.algorithm,
+                "training_window_hours": row.training_window_hours,
+                "status": row.status,
+                "promotion_reason": row.promotion_reason,
+                "blocked_reason": row.blocked_reason,
+                "evaluation_count": len(evaluations),
+                "latest_evaluation": {
+                    "target_at": evaluations[0].target_at,
+                    "status": evaluations[0].status,
+                    "reason": evaluations[0].reason,
+                } if evaluations else None,
+                "guard": {
+                    "status": decision.status,
+                    "allowed": decision.allowed,
+                    "reason": decision.reason,
+                    "checks": decision.checks,
+                } if decision else None,
+                "recent_audits": [{
+                    "event_type": audit.event_type,
+                    "actor": audit.actor,
+                    "reason": audit.reason,
+                    "created_at": audit.created_at,
+                } for audit in audits],
+                "can_rollback": any(audit.event_type == model_registry.PROMOTED for audit in audits),
+            })
+    return {
+        "policy": {
+            "minimum_outcomes": settings.forecast_promotion_min_outcomes,
+            "required_consecutive_evaluations": settings.forecast_promotion_required_evaluations,
+            "max_false_positive_rate_increase": settings.forecast_promotion_max_false_positive_rate_increase,
+        },
+        "models": output,
+    }
+
+
 def learning_status(cluster_id: str, cluster_name: str) -> dict:
     """Build a JSON-safe snapshot. No learning state is changed here."""
     with db.SessionLocal() as session:
         states = session.query(NodeResourceModelState).filter_by(cluster_name=cluster_name).all()
+        active_registry_rows = session.query(ForecastModelRegistry).filter(
+            ForecastModelRegistry.status == "ACTIVE",
+            ForecastModelRegistry.scope_type.in_(("NODE_RESOURCE", "VOLUME")),
+        ).all()
+        active_model_versions = {
+            (row.scope_type, row.scope_key): row.version
+            for row in active_registry_rows
+        }
         run_counts = dict(
             session.query(NodeResourceForecastRun.status, func.count(NodeResourceForecastRun.id))
             .filter(NodeResourceForecastRun.cluster_name == cluster_name)
             .group_by(NodeResourceForecastRun.status)
             .all()
         )
+        forecast_alert_count = session.query(NodeResourceForecastAlert).filter_by(
+            cluster_name=cluster_name,
+        ).count()
+        feedback_summary = forecast_feedback.summarize_feedback(
+            session,
+            cluster_name=cluster_name,
+            trigger_threshold=settings.node_resource_forecast_trigger_threshold_percent,
+        )
+        now = datetime.utcnow()
+        alert_rows = session.query(NodeResourceForecastAlert).filter_by(
+            cluster_name=cluster_name,
+        ).order_by(NodeResourceForecastAlert.last_detected_at.desc()).limit(100).all()
+        alert_ids = [row.id for row in alert_rows]
+        transition_rows = (
+            session.query(NodeResourceForecastTransition)
+            .filter(NodeResourceForecastTransition.alert_id.in_(alert_ids))
+            .order_by(NodeResourceForecastTransition.changed_at.desc())
+            .all()
+            if alert_ids else []
+        )
+        transitions_by_alert: dict[str, list[NodeResourceForecastTransition]] = {}
+        for transition in transition_rows:
+            history = transitions_by_alert.setdefault(transition.alert_id, [])
+            if len(history) < 10:
+                history.append(transition)
+
+        freshness_limit = max(120, settings.node_health_scan_interval_seconds * 2)
+
+        def _freshness(observed_at: datetime | None) -> tuple[float | None, str]:
+            if observed_at is None:
+                return None, "UNKNOWN"
+            age = max(0.0, (now - observed_at).total_seconds())
+            return round(age, 1), "FRESH" if age <= freshness_limit else "STALE"
+
+        node_alerts = []
+        for alert in alert_rows:
+            freshness_seconds, freshness_status = _freshness(alert.latest_observed_at)
+            if alert.coverage_ratio is None and alert.max_gap_hours is None:
+                quality_status = "LEGACY_NO_EVIDENCE"
+                quality_reason = "Alert cũ chưa có quality evidence được lưu persistent."
+            elif alert.coverage_ratio is not None and alert.coverage_ratio < settings.node_resource_forecast_min_coverage:
+                quality_status = "LOW_COVERAGE"
+                quality_reason = f"Coverage {alert.coverage_ratio:.3f} thấp hơn ngưỡng {settings.node_resource_forecast_min_coverage:.3f}."
+            elif alert.max_gap_hours is not None and alert.max_gap_hours > settings.node_resource_forecast_max_gap_hours:
+                quality_status = "GAP_DETECTED"
+                quality_reason = f"Gap dài nhất {alert.max_gap_hours:.2f}h vượt ngưỡng {settings.node_resource_forecast_max_gap_hours:.2f}h."
+            else:
+                quality_status = "OK"
+                quality_reason = "Window dữ liệu đạt quality gate."
+            node_alerts.append({
+                "id": alert.id,
+                "host": alert.host,
+                "metric": alert.metric.upper(),
+                "status": alert.status,
+                "lifecycle_state": alert.lifecycle_state or alert.status,
+                "notification_state": alert.notification_state,
+                "state_reason": alert.state_reason or "Chưa có lý do transition được lưu.",
+                "evidence_version": alert.evidence_version,
+                "state_changed_at": alert.state_changed_at,
+                "first_detected_at": alert.first_detected_at,
+                "last_detected_at": alert.last_detected_at,
+                "current_percent": round(alert.current_percent, 2),
+                "predicted_percent": round(alert.predicted_percent, 2),
+                "predicted_low": round(alert.predicted_low, 2) if alert.predicted_low is not None else None,
+                "predicted_high": round(alert.predicted_high, 2) if alert.predicted_high is not None else None,
+                "confidence": round(alert.confidence, 3),
+                "consensus_status": alert.consensus_status,
+                "consensus_ratio": round(alert.consensus_ratio, 3) if alert.consensus_ratio is not None else None,
+                "consensus_candidate_count": alert.consensus_candidate_count,
+                "coverage_ratio": round(alert.coverage_ratio, 3) if alert.coverage_ratio is not None else None,
+                "max_gap_hours": round(alert.max_gap_hours, 3) if alert.max_gap_hours is not None else None,
+                "latest_observed_at": alert.latest_observed_at,
+                "freshness_seconds": freshness_seconds,
+                "freshness_status": freshness_status,
+                "quality_status": quality_status,
+                "quality_reason": quality_reason,
+                "transitions": [{
+                    "previous_state": transition.previous_state,
+                    "new_state": transition.new_state,
+                    "reason": transition.reason,
+                    "evidence_version": transition.evidence_version,
+                    "changed_at": transition.changed_at,
+                } for transition in transitions_by_alert.get(alert.id, [])],
+            })
 
         resource_models = []
         for state in sorted(states, key=lambda row: (row.host, row.metric, row.window_hours)):
@@ -216,24 +415,49 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 session.query(NodeResourceForecastRun)
                 .filter_by(
                     cluster_name=cluster_name, host=state.host,
-                    metric=state.metric, window_hours=state.window_hours,
+                    metric=state.metric, algorithm=state.algorithm,
+                    window_hours=state.window_hours,
                 )
                 .order_by(NodeResourceForecastRun.predicted_at.desc())
                 .first()
             )
+            latest_quality = (
+                latest.status
+                if latest and latest.status in {"DATA_QUALITY", "LOW_CONFIDENCE"}
+                else latest.consensus_status
+                if latest and latest.consensus_status in {"DATA_QUALITY", "LOW_CONFIDENCE"}
+                else ("OK" if latest else "NO_FORECAST")
+            )
+            node_scope = f"{cluster_name}|{state.host}|{state.metric.lower()}"
             resource_models.append({
                 "host": state.host,
                 "metric": state.metric.upper(),
                 "window_hours": state.window_hours,
+                "algorithm": latest.algorithm if latest else state.algorithm,
+                "model_version": active_model_versions.get(("NODE_RESOURCE", node_scope)),
                 "selected": state.selected,
                 "evaluated_count": state.evaluated_count,
                 "mae": round(state.mean_absolute_error, 3) if state.mean_absolute_error is not None else None,
+                "rolling_mae": round(
+                    state.rolling_mae if state.rolling_mae is not None else state.mean_absolute_error, 3
+                ) if (state.rolling_mae is not None or state.mean_absolute_error is not None) else None,
+                "rolling_smape": round(state.rolling_smape, 3) if state.rolling_smape is not None else None,
                 "last_error": round(state.last_absolute_error, 3) if state.last_absolute_error is not None else None,
                 "accuracy_estimate": accuracy,
                 "quality_status": status,
                 "quality_reason": reason,
+                "data_quality": latest_quality,
+                "latest_status": latest.status if latest else None,
+                "latest_current": round(latest.current_percent, 2) if latest else None,
                 "latest_confidence": round(latest.confidence, 3) if latest else None,
                 "latest_prediction": round(latest.predicted_percent, 2) if latest else None,
+                "latest_actual": round(latest.actual_percent, 2) if latest and latest.actual_percent is not None else None,
+                "predicted_low": round(latest.predicted_low, 2) if latest and latest.predicted_low is not None else None,
+                "predicted_high": round(latest.predicted_high, 2) if latest and latest.predicted_high is not None else None,
+                "consensus_status": latest.consensus_status if latest else None,
+                "consensus_ratio": round(latest.consensus_ratio, 3) if latest and latest.consensus_ratio is not None else None,
+                "consensus_candidate_count": latest.consensus_candidate_count if latest else None,
+                "latest_predicted_at": latest.predicted_at if latest else None,
                 "latest_target_at": latest.target_at if latest else None,
                 "updated_at": state.updated_at,
             })
@@ -285,6 +509,10 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "image": state.image,
                 "metric": state.metric,
                 "window_hours": state.window_hours,
+                "algorithm": latest.algorithm if latest else state.algorithm,
+                "model_version": active_model_versions.get((
+                    "VOLUME", f"{cluster_id}|{state.pool}|{state.image}|{state.metric}"
+                )),
                 "selected": state.selected,
                 "evaluated_count": state.evaluated_count,
                 "mae": round(state.mean_absolute_error, 3) if state.mean_absolute_error is not None else None,
@@ -293,12 +521,22 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "accuracy_estimate": accuracy,
                 "quality_status": status,
                 "quality_reason": reason,
+                "rolling_mae": round(
+                    state.rolling_mae if state.rolling_mae is not None else state.mean_absolute_error, 3
+                ) if (state.rolling_mae is not None or state.mean_absolute_error is not None) else None,
+                "rolling_smape": round(state.rolling_smape, 3) if state.rolling_smape is not None else None,
                 "latest_prediction": round(latest.predicted_value, 3) if latest else None,
                 "latest_confidence": round(latest.confidence, 3) if latest else None,
+                "latest_actual": round(latest.actual_value, 3) if latest and latest.actual_value is not None else None,
                 "seasonal_scope": latest.seasonal_scope if latest else None,
                 "training_samples": latest.training_samples if latest else None,
+                "latest_status": latest.status if latest else None,
                 "updated_at": state.updated_at,
             })
+        volume_model_metrics = {
+            (model["pool"], model["image"], model["metric"]): model
+            for model in volume_models
+        }
 
         latest_forecast_times = (
             session.query(
@@ -327,13 +565,23 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
             "horizon_hours": row.horizon_hours,
             "current_value": round(row.current_value, 3),
             "predicted_value": round(row.predicted_value, 3),
+            "actual_value": None,
+            "predicted_low": round(row.predicted_low, 3) if row.predicted_low is not None else None,
+            "predicted_high": round(row.predicted_high, 3) if row.predicted_high is not None else None,
             "threshold_type": row.threshold_type,
             "threshold_value": round(row.threshold_value, 3) if row.threshold_value is not None else None,
             "confidence": round(row.confidence, 3),
+            "consensus_status": row.consensus_status,
+            "consensus_ratio": round(row.consensus_ratio, 3) if row.consensus_ratio is not None else None,
+            "consensus_candidate_count": row.consensus_candidate_count,
             "training_samples": row.training_samples,
             "training_window_hours": row.training_window_hours,
             "seasonal_scope": row.seasonal_scope,
             "model_version": row.model_version,
+            "algorithm": "seasonal_baseline",
+            "data_quality": row.status if row.status == "DATA_QUALITY" else "OK",
+            "rolling_mae": volume_model_metrics.get((row.pool, row.image, row.metric), {}).get("rolling_mae"),
+            "rolling_smape": volume_model_metrics.get((row.pool, row.image, row.metric), {}).get("rolling_smape"),
             "status": row.status, "reason": row.reason,
             "generated_at": row.generated_at, "target_at": row.target_at,
             "source_latest_at": row.source_latest_at,
@@ -392,6 +640,13 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
         } for sample, title in recent_rows]
 
         return {
+            "forecast_feedback": {
+                **feedback_summary,
+                "coverage": (
+                    round(feedback_summary["labeled_count"] / max(1, forecast_alert_count), 4)
+                    if forecast_alert_count else 0.0
+                ),
+            },
             "remediation_feedback": remediation_feedback.summary(
                 session, cluster_id=cluster_id
             ),
@@ -404,6 +659,7 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "selected_models": [row for row in resource_models if row["selected"]],
                 "candidate_models": resource_models,
             },
+            "node_alerts": node_alerts,
             "volume_learning": {
                 "enabled": settings.volume_learning_enabled,
                 "evaluation_hours": settings.volume_learning_evaluation_hours,
@@ -444,6 +700,7 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "recent_samples": recent_samples,
                 "mode": "AUDIT_ONLY",
             },
+            "model_promotion": model_promotion_status(cluster_id, cluster_name),
         }
 
 
@@ -451,6 +708,190 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
 async def ai_learning_api(request: Request, _user: str = Depends(require_login)):
     _clusters, cluster = cluster_selection(request)
     return {"cluster_id": cluster.id, "cluster_name": cluster.name, **learning_status(cluster.id, cluster.name), "large_omap_readiness": large_omap_readiness(cluster.id)}
+
+
+@router.post("/api/ai-learning/replay")
+async def ai_learning_replay(request: Request, _user: str = Depends(require_login)):
+    """Run a bounded, read-only historical replay; never persists or remediates."""
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Replay payload không hợp lệ.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Replay payload phải là object JSON.")
+
+    _clusters, selected_cluster = cluster_selection(request)
+    cluster_id = str(payload.get("cluster_id") or selected_cluster.id).strip()
+    host = str(payload.get("host") or "").strip()
+    metric = str(payload.get("metric") or "").strip().lower()
+    if metric not in _REPLAY_COLUMNS:
+        raise HTTPException(status_code=422, detail="Metric replay chỉ hỗ trợ cpu hoặc ram.")
+    if not host or len(host) > 255:
+        raise HTTPException(status_code=422, detail="Host replay không hợp lệ.")
+    start_at = _parse_replay_datetime(payload.get("start_at"), "start_at")
+    end_at = _parse_replay_datetime(payload.get("end_at"), "end_at")
+    if end_at <= start_at:
+        raise HTTPException(status_code=422, detail="end_at phải sau start_at.")
+    if end_at - start_at > timedelta(days=31):
+        raise HTTPException(status_code=422, detail="Replay tối đa 31 ngày mỗi lần chạy.")
+
+    try:
+        horizon_hours = int(payload.get("horizon_hours", 1))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="horizon_hours phải là số nguyên.") from exc
+    if not 1 <= horizon_hours <= 168:
+        raise HTTPException(status_code=422, detail="horizon_hours phải nằm trong khoảng 1–168.")
+
+    raw_windows = payload.get("window_hours", [6, 24, 72])
+    if isinstance(raw_windows, str):
+        raw_windows = raw_windows.split(",")
+    if not isinstance(raw_windows, list):
+        raise HTTPException(status_code=422, detail="window_hours phải là danh sách.")
+    try:
+        windows = sorted({int(value) for value in raw_windows})
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="window_hours chứa giá trị không hợp lệ.") from exc
+    if not windows or len(windows) > 8 or any(window < 1 or window > 720 for window in windows):
+        raise HTTPException(status_code=422, detail="window_hours phải có 1–8 giá trị trong khoảng 1–720.")
+
+    with db.SessionLocal() as session:
+        if session.get(Cluster, cluster_id) is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy cluster.")
+        rows = session.query(HostMetricSample).filter(
+            HostMetricSample.cluster_id == cluster_id,
+            HostMetricSample.host == host,
+            HostMetricSample.collected_at >= start_at,
+            HostMetricSample.collected_at <= end_at,
+        ).order_by(HostMetricSample.collected_at.desc()).limit(5000).all()
+
+    if not rows:
+        raise HTTPException(status_code=422, detail="Không có host metric trong khoảng thời gian đã chọn.")
+
+    # The pure replay helper works on hourly points. Aggregate raw host scans
+    # into hourly means so horizon_hours remains a time horizon, not a row
+    # count, while keeping the operation read-only and bounded.
+    buckets: dict[datetime, list[float]] = {}
+    value_column = _REPLAY_COLUMNS[metric]
+    for row in rows:
+        bucket = row.collected_at.replace(minute=0, second=0, microsecond=0)
+        buckets.setdefault(bucket, []).append(float(getattr(row, value_column.key)))
+    points = [
+        (bucket, round(sum(values) / len(values), 4))
+        for bucket, values in sorted(buckets.items())
+    ]
+    minimum_points = max(6, settings.node_resource_forecast_min_samples + horizon_hours)
+    if len(points) < minimum_points:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Cần ít nhất {minimum_points} điểm theo giờ; hiện có {len(points)}.",
+        )
+
+    replay = evaluate_shadow(
+        points, metric, horizon_hours=horizon_hours,
+        window_hours=windows, minimum_evaluated=1,
+    )
+    return {
+        "read_only": True,
+        "remediation_executed": False,
+        "cluster_id": cluster_id,
+        "host": host,
+        "metric": metric,
+        "start_at": start_at,
+        "end_at": end_at,
+        "source_rows": len(rows),
+        "hourly_points": len(points),
+        "horizon_hours": horizon_hours,
+        "window_hours": windows,
+        "metrics": {name: asdict(metrics) for name, metrics in replay["metrics"].items()},
+        "comparison": asdict(replay["comparison"]),
+    }
+
+
+@router.post("/api/ai-learning/models/{model_id}/promotion-request")
+async def request_model_promotion(
+    model_id: str, user: str = Depends(require_login),
+):
+    """Ask for promotion; this never changes the active model."""
+    with db.SessionLocal() as session:
+        try:
+            decision = model_registry.request_promotion(
+                session, candidate_id=model_id, actor=user,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "allowed": decision.allowed,
+            "status": decision.status,
+            "reason": decision.reason,
+            "checks": decision.checks,
+        }
+
+
+@router.post("/api/ai-learning/models/{model_id}/promote")
+async def approve_model_promotion(
+    model_id: str, user: str = Depends(require_login),
+):
+    """Explicit operator approval required before a model becomes active."""
+    with db.SessionLocal() as session:
+        try:
+            row = model_registry.approve_promotion(
+                session, candidate_id=model_id, actor=user,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"id": row.id, "status": row.status, "version": row.version}
+
+
+@router.post("/api/ai-learning/models/{model_id}/rollback")
+async def rollback_model_promotion(
+    model_id: str, user: str = Depends(require_login),
+):
+    """Restore the exact previous active model recorded in promotion audit."""
+    with db.SessionLocal() as session:
+        try:
+            row = model_registry.rollback_promotion(
+                session, candidate_id=model_id, actor=user,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"id": row.id, "status": row.status, "version": row.version}
+
+
+@router.post("/api/ai-learning/node-alerts/{alert_id}/feedback")
+async def node_forecast_feedback(
+    alert_id: str,
+    verdict: str = Form(...),
+    note: str = Form(""),
+    impact_percent: float | None = Form(None),
+    incident_id: str = Form(""),
+    remediation_case_id: str = Form(""),
+    user: str = Depends(require_login),
+):
+    """Append an operator verdict; this never changes lifecycle or policy."""
+    with db.SessionLocal() as session:
+        feedback = forecast_feedback.add_feedback(
+            session,
+            alert_id=alert_id,
+            verdict=verdict,
+            submitted_by=user,
+            note=note,
+            impact_percent=impact_percent,
+            incident_id=incident_id,
+            remediation_case_id=remediation_case_id,
+        )
+        session.commit()
+        return {
+            "id": feedback.id,
+            "alert_id": feedback.alert_id,
+            "verdict": feedback.verdict,
+            "submitted_by": feedback.submitted_by,
+        }
 
 
 @router.get("/ai-learning", response_class=HTMLResponse)
@@ -462,4 +903,5 @@ async def ai_learning_page(request: Request, user: str = Depends(require_login))
         "cluster": cluster,
         **learning_status(cluster.id, cluster.name),
         "large_omap_readiness": large_omap_readiness(cluster.id),
+        "replay_options": _replay_options(cluster.id),
     })

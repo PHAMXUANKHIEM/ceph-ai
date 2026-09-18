@@ -650,6 +650,30 @@ async def audit_api(request: Request, user: str = Depends(require_login)):
     return {"entries": await asyncio.to_thread(_audit_rows, cluster.id)}
 
 
+@router.post("/api/object-storage/audit/purge")
+async def purge_audit_api(request: Request, user: str = Depends(require_login)):
+    """Delete the Object Storage mutation audit for the selected cluster.
+
+    This is deliberately cluster-scoped. The page can be switched between
+    clusters, so a purge must never erase another cluster's audit trail.
+    Requiring an explicit confirmation token protects the endpoint from an
+    accidental POST or a stale browser click.
+    """
+    _require_admin(user)
+    body = await request.json()
+    if str(body.get("confirmation") or "") != "DELETE_ALL_AUDIT":
+        raise HTTPException(status_code=400, detail="Thiếu xác nhận xóa toàn bộ audit")
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        deleted = (
+            session.query(ObjectStorageAuditEntry)
+            .filter_by(cluster_id=cluster.id)
+            .delete(synchronize_session=False)
+        )
+        session.commit()
+    return {"ok": True, "deleted": deleted, "cluster_id": cluster.id}
+
+
 @router.post("/api/object-storage/users/keys/preview")
 async def key_action_preview(request: Request, user: str = Depends(require_login)):
     _require_admin(user)

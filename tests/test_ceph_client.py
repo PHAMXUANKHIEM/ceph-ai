@@ -1085,6 +1085,47 @@ def test_normalize_rbd_inventory_includes_idle_images_and_snapshot_count():
     ]
 
 
+def test_normalize_rbd_ls_metadata_ignores_snapshot_rows_and_normalizes_features():
+    payload = {"images": [
+        {"image": "vm-01", "id": "abc", "format": 2, "features": "layering, fast-diff"},
+        {"image": "vm-01", "snapshot": "daily", "id": "abc", "format": 2},
+        {"name": "idle", "id": "def", "format": 1, "features": []},
+    ]}
+
+    assert ceph_client._normalize_rbd_ls_metadata(payload) == {
+        "vm-01": {"image_id": "abc", "format": 2, "features": ["layering", "fast-diff"]},
+        "idle": {"image_id": "def", "format": 1, "features": []},
+    }
+
+
+def test_enrich_rbd_inventory_does_not_duplicate_json_format_flag():
+    calls = []
+
+    def query_json(command):
+        calls.append(command)
+        return "mon", {"images": [{"image": "vm-01", "id": "abc", "format": 2, "features": []}]}
+
+    rows = [{"name": "vm-01", "image_id": None, "provisioned_size": 10,
+             "used_size": 1, "used_percent": 10.0, "snapshot_count": 0}]
+
+    enriched = ceph_client._enrich_rbd_inventory("vms", rows, query_json)
+
+    assert calls == ["rbd ls --long --pool vms"]
+    assert enriched[0]["image_id"] == "abc"
+
+
+def test_attachment_from_status_is_fail_visible():
+    assert ceph_client._attachment_from_status({"watchers": []}) == {
+        "attachment_state": "idle", "watcher_count": 0,
+    }
+    assert ceph_client._attachment_from_status({"watchers": [{"address": "1.2.3.4"}]}) == {
+        "attachment_state": "attached", "watcher_count": 1,
+    }
+    assert ceph_client._attachment_from_status({}) == {
+        "attachment_state": "unknown", "watcher_count": None,
+    }
+
+
 def test_query_rbd_image_usage_returns_one_image(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
     fake_ssh.behavior = {
@@ -1134,6 +1175,19 @@ def test_query_rbd_image_detail_keeps_info_when_optional_section_fails(monkeypat
     assert detail["image_id"] == "img-1"
     assert detail["watchers"] == [{"client": "client.7"}]
     assert set(detail["partial_errors"]) == {"snapshots", "children", "locks"}
+
+
+def test_rbd_mirror_queries_do_not_duplicate_json_format(monkeypatch):
+    calls = []
+    def fake_query(command):
+        calls.append(command)
+        return "mon-1", {"mode": "disabled"}
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command", fake_query)
+
+    assert ceph_client.query_rbd_mirror_pool_info("images")["mode"] == "disabled"
+    assert ceph_client.query_rbd_mirror_pool_status("images")["mode"] == "disabled"
+    assert calls == ["rbd mirror pool info images", "rbd mirror pool status images"]
+    assert all("--format" not in command for command in calls)
 
 
 def test_normalize_rbd_pool_overview_combines_durability_and_usage():
@@ -1736,3 +1790,56 @@ def test_trash_usage_scan_is_skipped_on_an_oversized_pool(monkeypatch):
 
     assert used == {}
     assert scanned == []
+
+
+def test_rbd_qos_normalizer_supports_mapping_and_list_payloads():
+    mapping = ceph_client._normalize_rbd_qos({"options": {"rbd_qos_iops_limit": "500"}})
+    rows = ceph_client._normalize_rbd_qos({"options": [{"name": "rbd_qos_bps_limit", "value": 4096}]})
+
+    assert mapping["rbd_qos_iops_limit"] == 500
+    assert mapping["rbd_qos_bps_limit"] == 0
+    assert rows["rbd_qos_bps_limit"] == 4096
+
+
+def test_rbd_dependency_graph_is_bounded_and_cycle_safe(monkeypatch):
+    payloads = {
+        "rbd children images/root": {"children": ["images/child", "images/child"]},
+        "rbd children images/child": {"children": ["images/grandchild", "images/root"]},
+        "rbd children images/grandchild": {"children": []},
+    }
+    calls = []
+
+    def fake_run(command):
+        calls.append(command)
+        return "mon-1", payloads[command]
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command", fake_run)
+
+    graph = ceph_client.query_rbd_dependency_graph("images", "root", max_depth=4, max_nodes=10)
+
+    assert [(node["pool"], node["image"], node["depth"]) for node in graph["nodes"]] == [
+        ("images", "root", 0), ("images", "child", 1), ("images", "grandchild", 2)
+    ]
+    assert len(graph["edges"]) == 3
+    assert graph["partial_errors"] == []
+    assert calls == [
+        "rbd children images/root",
+        "rbd children images/child",
+        "rbd children images/grandchild",
+    ]
+
+
+def test_rbd_dependency_graph_marks_node_limit_without_unbounded_queries(monkeypatch):
+    calls = []
+
+    def fake_run(command):
+        calls.append(command)
+        return "mon-1", {"children": [f"images/child-{index}" for index in range(10)]}
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command", fake_run)
+
+    graph = ceph_client.query_rbd_dependency_graph("images", "root", max_depth=3, max_nodes=2)
+
+    assert len(graph["nodes"]) == 2
+    assert graph["truncated"] is True
+    assert len(calls) == 2

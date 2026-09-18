@@ -36,6 +36,7 @@ from datetime import datetime
 from shared import db
 from shared.models import VolumePerfSweep
 from worker.executor.ssh_executor import ExecutorError, execute_command
+from shared.resource_limits import fio_one_cpu_options
 from worker.policy.gate import VALID_VOLUME_PERF_ACTION_IDS
 
 logger = logging.getLogger(__name__)
@@ -181,7 +182,8 @@ def _run_fio_step(ip: str, pool: str, iodepth: int) -> dict:
         f"--pool={shlex.quote(pool)} --rbdname={shlex.quote(SCRATCH_IMAGE_NAME)} "
         f"--rw=randwrite --bs=4k --iodepth={iodepth} --numjobs=1 "
         f"--runtime={FIO_RUNTIME_SECONDS} --ramp_time={FIO_RAMP_SECONDS} --time_based --direct=1 "
-        "--invalidate=1 --randrepeat=0 --norandommap --thread=1 --group_reporting "
+        f"--invalidate=1 --randrepeat=0 --norandommap --thread=1 {fio_one_cpu_options()} "
+        "--group_reporting "
         "--lat_percentiles=1 --percentile_list=99 --output-format=json"
     )
     try:

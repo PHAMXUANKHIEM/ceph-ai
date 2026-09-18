@@ -177,6 +177,15 @@
     });
   }
 
+  var restoreDrillBtn = document.getElementById("btn-restore-drill-now");
+  if (restoreDrillBtn) {
+    restoreDrillBtn.addEventListener("click", function () {
+      if (window.confirm("Chạy RestoreDrill vào scratch image đã cấu hình? Volume nguồn production sẽ không bị thay đổi.")) {
+        postRunNow("/backups/restore-drill/run-now", {}, restoreDrillBtn);
+      }
+    });
+  }
+
   var deleteAllDigestsBtn = document.getElementById("btn-delete-all-backup-digests");
   if (deleteAllDigestsBtn) {
     deleteAllDigestsBtn.addEventListener("click", function () {
@@ -232,75 +241,157 @@
   });
 
   // Safe default: restore into a new image and leave production untouched.
+  // Use an in-page dialog instead of prompt(): recovery chains and preflight
+  // blockers must be visible before an operator creates a risky proposal.
+  var restoreDialog = document.getElementById("backup-restore-dialog");
+  var restoreForm = document.getElementById("backup-restore-form");
+  var restorePointEl = document.getElementById("backup-restore-point");
+  var restorePoolEl = document.getElementById("backup-restore-dest-pool");
+  var restoreImageEl = document.getElementById("backup-restore-dest-image");
+  var restoreSourceEl = document.getElementById("backup-restore-source");
+  var restoreSubmit = document.getElementById("backup-restore-submit");
+  var restoreError = document.getElementById("backup-restore-error");
+  var restorePreflight = document.getElementById("backup-restore-preflight");
+  var restorePreflightStatus = document.getElementById("backup-restore-preflight-status");
+  var restorePreflightGrid = document.getElementById("backup-restore-preflight-grid");
+  var restorePreflightDetail = document.getElementById("backup-restore-preflight-detail");
+  var restoreContext = null;
+
+  function restoreMessage(detail) {
+    if (!detail) return "Không thể tạo đề xuất khôi phục";
+    if (typeof detail === "string") return detail;
+    var message = detail.message || "Restore preflight không đạt.";
+    if (Array.isArray(detail.blockers) && detail.blockers.length) {
+      message += "\nBlockers: " + detail.blockers.join(", ");
+    }
+    return message;
+  }
+
+  function clearRestoreFeedback() {
+    if (restoreError) { restoreError.hidden = true; restoreError.textContent = ""; }
+    if (restorePreflight) { restorePreflight.hidden = true; restorePreflight.classList.remove("is-failed"); }
+    if (restorePreflightGrid) restorePreflightGrid.textContent = "";
+    if (restorePreflightDetail) restorePreflightDetail.textContent = "";
+  }
+
+  function showRestoreError(message) {
+    if (!restoreError) return;
+    restoreError.hidden = false;
+    restoreError.textContent = message;
+  }
+
+  function formatBytes(value) {
+    if (typeof value !== "number" || value < 0) return "—";
+    var units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    var index = 0;
+    while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
+    return value.toFixed(index ? 1 : 0) + " " + units[index];
+  }
+
+  function renderRestorePreflight(data) {
+    var passed = data && data.passed;
+    if (!restorePreflight) return;
+    restorePreflight.hidden = false;
+    restorePreflight.classList.toggle("is-failed", !passed);
+    if (restorePreflightStatus) {
+      restorePreflightStatus.textContent = passed ? "Đạt — có thể tạo đề xuất" : "Không đạt";
+      restorePreflightStatus.style.color = passed ? "#86efac" : "#fca5a5";
+    }
+    var destination = data && data.destination || {};
+    var rows = [
+      ["Nguồn", (data.source || {}).pool + "/" + (data.source || {}).image],
+      ["Đích", destination.pool + "/" + destination.image],
+      ["Dung lượng cần", formatBytes(data.required_bytes)],
+      ["Dung lượng khả dụng", formatBytes(destination.max_available)],
+      ["Số artifact", String((data.chain_job_ids || []).length)],
+      ["Blocker", (data.blockers || []).length ? data.blockers.join(", ") : "Không có"]
+    ];
+    if (restorePreflightGrid) {
+      rows.forEach(function (row) {
+        var item = document.createElement("div");
+        var label = document.createElement("span");
+        var value = document.createElement("strong");
+        label.textContent = row[0]; value.textContent = row[1] || "—";
+        item.appendChild(label); item.appendChild(value); restorePreflightGrid.appendChild(item);
+      });
+    }
+    if (restorePreflightDetail) restorePreflightDetail.textContent = JSON.stringify(data, null, 2);
+  }
+
+  async function openRestoreDialog(btn) {
+    var pool = btn.getAttribute("data-pool");
+    var image = btn.getAttribute("data-image");
+    restoreContext = { pool: pool, image: image, button: btn, points: [] };
+    btn.disabled = true;
+    clearRestoreFeedback();
+    if (restoreSourceEl) restoreSourceEl.textContent = pool + "/" + image;
+    if (restorePoolEl) restorePoolEl.value = pool;
+    if (restoreImageEl) restoreImageEl.value = image + "-restored";
+    if (restorePointEl) restorePointEl.innerHTML = "<option>Đang tải recovery point…</option>";
+    if (restoreDialog && typeof restoreDialog.showModal === "function") restoreDialog.showModal();
+    try {
+      var response = await fetch("/api/backups/recovery-points?pool=" + encodeURIComponent(pool) + "&image=" + encodeURIComponent(image), { credentials: "same-origin" });
+      var body = await response.json();
+      if (!response.ok) throw new Error(restoreMessage(body.detail));
+      var points = body.recovery_points || [];
+      if (!points.length) throw new Error("Không có recovery point hợp lệ để khôi phục");
+      restoreContext.points = points;
+      restorePointEl.innerHTML = "";
+      points.forEach(function (point) {
+        var option = document.createElement("option");
+        option.value = point.job_id;
+        option.textContent = new Date(point.created_at).toLocaleString("vi-VN") + " · " + point.job_type + " · chain " + point.chain_length + " · target " + (point.backup_target_slot || "—");
+        restorePointEl.appendChild(option);
+      });
+    } catch (err) {
+      showRestoreError(err.message || "Không tải được recovery point");
+      if (restoreSubmit) restoreSubmit.disabled = true;
+    }
+  }
+
+  function closeRestoreDialog() {
+    if (restoreDialog && restoreDialog.open) restoreDialog.close();
+    if (restoreContext && restoreContext.button) restoreContext.button.disabled = false;
+    restoreContext = null;
+  }
 
   Array.prototype.forEach.call(document.querySelectorAll(".btn-restore-image"), function (btn) {
-    btn.addEventListener("click", async function () {
-      var pool = btn.getAttribute("data-pool");
-      var image = btn.getAttribute("data-image");
-      btn.disabled = true;
-      var recoveryPointId = "";
-      try {
-        var pointsResponse = await fetch(
-          "/api/backups/recovery-points?pool=" + encodeURIComponent(pool) + "&image=" + encodeURIComponent(image),
-          { credentials: "same-origin" }
-        );
-        var pointsBody = await pointsResponse.json();
-        if (!pointsResponse.ok) throw new Error(pointsBody.detail || "Không tải được recovery point");
-        var points = pointsBody.recovery_points || [];
-        if (!points.length) throw new Error("Không có recovery point hợp lệ để khôi phục");
-        var choices = points.map(function (point, index) {
-          return (index + 1) + ". " + new Date(point.created_at).toLocaleString("vi-VN") +
-            " · " + point.job_type + " · chain " + point.chain_length + " · target " +
-            (point.backup_target_slot || "—");
-        }).join("\n");
-        var selected = window.prompt("Chọn recovery point (nhập số):\n\n" + choices, "1");
-        if (selected === null) { btn.disabled = false; return; }
-        var selectedIndex = Number(selected) - 1;
-        if (!Number.isInteger(selectedIndex) || !points[selectedIndex]) {
-          throw new Error("Recovery point đã chọn không hợp lệ");
-        }
-        recoveryPointId = points[selectedIndex].job_id;
-      } catch (err) {
-        btn.disabled = false;
-        window.alert(err.message || "Không tải được recovery point");
-        return;
+    btn.addEventListener("click", function () { openRestoreDialog(btn); });
+  });
+  ["backup-restore-close", "backup-restore-cancel"].forEach(function (id) {
+    var button = document.getElementById(id);
+    if (button) button.addEventListener("click", closeRestoreDialog);
+  });
+  if (restoreDialog) restoreDialog.addEventListener("cancel", closeRestoreDialog);
+  if (restoreForm) restoreForm.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    if (!restoreContext || !restorePointEl || !restorePoolEl || !restoreImageEl) return;
+    var pool = restoreContext.pool;
+    var image = restoreContext.image;
+    var destPool = restorePoolEl.value.trim();
+    var destImage = restoreImageEl.value.trim();
+    var selectedPoint = restorePointEl.value;
+    if (!restoreForm.reportValidity()) return;
+    clearRestoreFeedback();
+    restoreSubmit.disabled = true;
+    restoreSubmit.textContent = "Đang kiểm tra preflight…";
+    try {
+      var response = await fetch("/backups/restore-as-new/propose", {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: pool, image: image, dest_pool: destPool, dest_image: destImage, recovery_point_job_id: selectedPoint })
+      });
+      var body = await response.json();
+      if (!response.ok) {
+        if (body.detail && typeof body.detail === "object" && body.detail.preflight) renderRestorePreflight(body.detail.preflight);
+        throw new Error(restoreMessage(body.detail));
       }
-      var destPool = window.prompt("Pool đích cho volume khôi phục:", pool);
-      if (destPool === null) { btn.disabled = false; return; }
-      var destImage = window.prompt("Tên volume mới:", image + "-restored");
-      if (destImage === null) { btn.disabled = false; return; }
-      destPool = destPool.trim();
-      destImage = destImage.trim();
-      if (!destPool || !destImage || !window.confirm("Khôi phục " + pool + "/" + image + " thành volume mới " + destPool + "/" + destImage + "? Volume nguồn sẽ không bị thay đổi.")) {
-        btn.disabled = false;
-        return;
-      }
-      fetch("/backups/restore-as-new/propose", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pool: pool, image: image, dest_pool: destPool, dest_image: destImage,
-          recovery_point_job_id: recoveryPointId })
-      })
-        .then(function (response) {
-          if (!response.ok) {
-            return response.json().then(function (data) {
-              var detail = data.detail;
-              if (detail && typeof detail === "object") {
-                detail = detail.message + ((detail.blockers || []).length ? "\nBlockers: " + detail.blockers.join(", ") : "");
-              }
-              throw new Error(detail || "HTTP " + response.status);
-            });
-          }
-          return response.json();
-        })
-        .then(function () {
-          window.location.reload();
-        })
-        .catch(function (err) {
-          btn.disabled = false;
-          window.alert(err.message || "Không tạo được đề xuất khôi phục");
-        });
-    });
+      renderRestorePreflight(body.preflight);
+      restoreSubmit.textContent = "Đã tạo đề xuất";
+      window.setTimeout(function () { window.location.reload(); }, 850);
+    } catch (err) {
+      showRestoreError(err.message || "Không tạo được đề xuất khôi phục");
+      restoreSubmit.disabled = false;
+      restoreSubmit.textContent = "Kiểm tra & tạo đề xuất";
+    }
   });
 })();

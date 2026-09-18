@@ -59,7 +59,7 @@
     {% endif %}
 
     <section class="card backup-tab-panel" id="backup-panel-protection" data-backup-panel="protection" role="tabpanel">
-      <div class="card-header backup-panel-header"><div><div class="backup-panel-kicker">Protection posture</div><h2>RPO / RTO</h2></div><span class="backup-panel-meta">Mục tiêu RPO: {{ protection.rpo_hours }} giờ</span></div>
+      <div class="card-header backup-panel-header"><div><div class="backup-panel-kicker">Protection posture</div><h2>RPO / RTO</h2></div><div class="backup-panel-header-actions"><span class="backup-panel-meta">Mục tiêu RPO: {{ protection.rpo_hours }} giờ</span>{% if is_admin and protection.drill_configured %}<button type="button" class="btn btn-ghost btn-sm" id="btn-restore-drill-now">Chạy RestoreDrill</button>{% endif %}</div></div>
       <div class="card-body">
         <div class="backup-rpo-grid">
           <article class="backup-rpo-card is-healthy"><span class="backup-rpo-icon" aria-hidden="true">✓</span><strong>{{ protection.counts.healthy }}/{{ protection.total }}</strong><span>Healthy</span></article>
@@ -255,6 +255,41 @@
         {% if is_admin %}<div class="backup-report-footer"><button id="btn-delete-all-backup-digests" class="btn btn-danger-outline btn-sm" type="button"{% if not digests %} disabled{% endif %}><span aria-hidden="true">⌫</span> Xóa tất cả</button></div>{% endif %}
       </div>
     </section>
+
+    <dialog class="backup-restore-dialog" id="backup-restore-dialog" aria-labelledby="backup-restore-title">
+      <form method="dialog" class="backup-restore-modal" id="backup-restore-form">
+        <div class="backup-restore-modal-header">
+          <div>
+            <div class="backup-panel-kicker">Restore an image safely</div>
+            <h2 id="backup-restore-title">Khôi phục thành volume mới</h2>
+          </div>
+          <button type="button" class="backup-dialog-close" id="backup-restore-close" aria-label="Đóng">×</button>
+        </div>
+        <p class="backup-restore-source">Nguồn: <code id="backup-restore-source"></code> <span class="backup-safe-badge">Không ghi đè nguồn</span></p>
+        <div class="backup-restore-fields">
+          <label>Recovery point
+            <select id="backup-restore-point" required></select>
+            <small>Chỉ hiển thị các chain đã có checksum và có thể khôi phục.</small>
+          </label>
+          <label>Pool đích
+            <input id="backup-restore-dest-pool" name="dest_pool" required pattern="[A-Za-z0-9_.-]{1,128}" autocomplete="off">
+          </label>
+          <label>Volume mới
+            <input id="backup-restore-dest-image" name="dest_image" required pattern="[A-Za-z0-9_.-]{1,128}" autocomplete="off">
+          </label>
+        </div>
+        <div class="backup-restore-preflight" id="backup-restore-preflight" hidden aria-live="polite">
+          <div class="backup-restore-preflight-heading"><strong>Preflight</strong><span id="backup-restore-preflight-status"></span></div>
+          <div class="backup-restore-preflight-grid" id="backup-restore-preflight-grid"></div>
+          <pre class="backup-log" id="backup-restore-preflight-detail"></pre>
+        </div>
+        <p class="backup-restore-error" id="backup-restore-error" hidden role="alert"></p>
+        <div class="backup-restore-modal-actions">
+          <button type="button" class="btn btn-ghost" id="backup-restore-cancel">Hủy</button>
+          <button type="submit" class="btn btn-primary" id="backup-restore-submit">Kiểm tra &amp; tạo đề xuất</button>
+        </div>
+      </form>
+    </dialog>
   </main>
 
   <script src="/static/backups.js?v={{ static_version }}"></script>

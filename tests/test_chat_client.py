@@ -1055,3 +1055,19 @@ def test_run_chat_turn_reports_missing_router_config_as_chat_turn_error_not_raw_
 
     with pytest.raises(chat_client.ChatTurnError):
         asyncio.run(chat_client.run_chat_turn([], "Ceph status", "admin"))
+
+
+def test_read_only_tool_cache_reuses_same_result_within_turn(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_list_nodes(_cluster):
+        calls["count"] += 1
+        return '{"nodes": []}'
+
+    monkeypatch.setattr(chat_client, "_run_list_nodes", fake_list_nodes)
+    cache = {}
+    first = chat_client._run_tool(chat_client.TOOL_LIST_NODES, {}, "admin", tool_cache=cache)
+    second = chat_client._run_tool(chat_client.TOOL_LIST_NODES, {}, "admin", tool_cache=cache)
+
+    assert first == second == ('{"nodes": []}', False)
+    assert calls["count"] == 1

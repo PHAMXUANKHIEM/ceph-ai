@@ -12,6 +12,32 @@ from shared.models import Cluster, RemediationCase
 POSITIVE_VERDICTS = {"CORRECT"}
 NEGATIVE_VERDICTS = {"FALSE_POSITIVE", "UNSAFE", "INEFFECTIVE"}
 SCORED_VERDICTS = POSITIVE_VERDICTS | NEGATIVE_VERDICTS
+VERIFIED_OUTCOMES = {"VERIFIED_SUCCESS", "VERIFIED_FAILED", "EXECUTION_FAILED"}
+
+
+def _has_regression(row: RemediationCase) -> bool:
+    return any(value is True for value in (
+        row.regressed_1h, row.regressed_24h, row.regressed_7d,
+    ))
+
+
+def _telemetry_score(rows: list[RemediationCase]) -> dict:
+    """Score deterministic post-check truth separately from operator labels."""
+    correct = sum(
+        row.outcome == "VERIFIED_SUCCESS" and not _has_regression(row)
+        for row in rows
+    )
+    incorrect = sum(
+        row.outcome in {"VERIFIED_FAILED", "EXECUTION_FAILED"} or _has_regression(row)
+        for row in rows
+    )
+    scored = correct + incorrect
+    return {
+        "correct": correct,
+        "incorrect": incorrect,
+        "scored": scored,
+        "precision_percent": round(correct * 100 / scored, 2) if scored else None,
+    }
 
 
 def _score(rows: list[RemediationCase]) -> dict:
@@ -40,6 +66,13 @@ def summary(session, *, cluster_id: str, now: datetime | None = None) -> dict:
     scored = [row for row in labeled if row.operator_verdict in SCORED_VERDICTS]
     inconclusive = sum(row.operator_verdict == "INCONCLUSIVE" for row in labeled)
     overall = _score(scored)
+    telemetry_scored = [row for row in rows if row.outcome in VERIFIED_OUTCOMES or _has_regression(row)]
+    telemetry = _telemetry_score(telemetry_scored)
+    outcome_counts = {
+        outcome: sum(row.outcome == outcome for row in rows)
+        for outcome in sorted({row.outcome for row in rows})
+    }
+    outcome_counts["REGRESSED"] = sum(_has_regression(row) for row in rows)
 
     recent_cutoff = now - timedelta(days=30)
     recent_scored = [
@@ -66,6 +99,16 @@ def summary(session, *, cluster_id: str, now: datetime | None = None) -> dict:
         "inconclusive": inconclusive,
         "coverage_percent": round(len(labeled) * 100 / eligible, 2) if eligible else None,
         "recent_30d": recent,
+        # Operator feedback is intentionally kept separate from deterministic
+        # telemetry truth.  This makes a zero operator-label count diagnosable
+        # instead of hiding already verified outcomes behind it.
+        "telemetry_labeled": len(telemetry_scored),
+        "telemetry_scored": telemetry["scored"],
+        "telemetry_correct": telemetry["correct"],
+        "telemetry_incorrect": telemetry["incorrect"],
+        "telemetry_precision_percent": telemetry["precision_percent"],
+        "telemetry_unlabeled": max(0, len(rows) - len(telemetry_scored)),
+        "outcome_counts": outcome_counts,
         "by_fault_family": families[:20],
         "recent_unlabeled": [
             {

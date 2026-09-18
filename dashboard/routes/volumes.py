@@ -4,7 +4,7 @@ import ipaddress
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -39,6 +39,7 @@ from shared.models import (
     Action,
     ActionClassification,
     ActionStatus,
+    AuditEntry,
     BackupJob,
     Incident,
     IncidentStatus,
@@ -46,7 +47,9 @@ from shared.models import (
     RbdTrashUsage,
     VolumeMetric,
     VolumePerfSweep,
+    VolumeSnapshotPolicy,
 )
+from shared.volume_snapshot_policy import next_run_at, snapshot_name, validate_snapshot_policy
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher.volume_monitor import ceph_code_for
@@ -294,11 +297,16 @@ RBD_TRASH_PURGE_ALL_CEPH_CODE = "RBD_TRASH_PURGE_ALL"
 RBD_VOLUME_CREATE_CEPH_CODE = "RBD_VOLUME_CREATE"
 RBD_VOLUME_RESIZE_CEPH_CODE = "RBD_VOLUME_RESIZE"
 RBD_VOLUME_RENAME_CEPH_CODE = "RBD_VOLUME_RENAME"
+RBD_VOLUME_CLONE_CEPH_CODE = "RBD_VOLUME_CLONE"
+RBD_VOLUME_FLATTEN_CEPH_CODE = "RBD_VOLUME_FLATTEN"
+RBD_VOLUME_TEMPLATE_CEPH_CODE = "RBD_VOLUME_TEMPLATE"
+RBD_VOLUME_QOS_CEPH_CODE = "RBD_VOLUME_QOS"
 RBD_VOLUME_TRASH_MOVE_CEPH_CODE = "RBD_VOLUME_TRASH_MOVE"
 RBD_VOLUME_TRASH_RESTORE_CEPH_CODE = "RBD_VOLUME_TRASH_RESTORE"
 CINDER_VOLUME_ATTACH_CEPH_CODE = "CINDER_VOLUME_ATTACH"
 CINDER_VOLUME_DETACH_CEPH_CODE = "CINDER_VOLUME_DETACH"
 CINDER_SNAPSHOT_CREATE_CEPH_CODE = "CINDER_SNAPSHOT_CREATE"
+CINDER_SNAPSHOT_DELETE_CEPH_CODE = "CINDER_SNAPSHOT_DELETE"
 
 # 2026-07-29: "Đo hiệu năng tối đa" (load sweep) button — same synthetic-
 # incident trick as RBD_TRASH_REMOVE_CEPH_CODE above (an operator-initiated
@@ -348,13 +356,23 @@ _OPENSTACK_UUID_RE = re.compile(
 )
 _CINDER_SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
+_RBD_QOS_BOUNDS = {
+    "rbd_qos_iops_limit": (0, 1_000_000_000),
+    "rbd_qos_bps_limit": (0, 10_000_000_000_000),
+    "rbd_qos_iops_burst": (0, 1_000_000_000),
+    "rbd_qos_bps_burst": (0, 10_000_000_000_000),
+    "rbd_qos_read_iops_limit": (0, 1_000_000_000),
+    "rbd_qos_read_bps_limit": (0, 10_000_000_000_000),
+    "rbd_qos_write_iops_limit": (0, 1_000_000_000),
+    "rbd_qos_write_bps_limit": (0, 10_000_000_000_000),
+}
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 _RBD_VOLUME_MUTATION_ACTION_IDS = (
-    "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume",
+    "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume", "rbd_clone_volume", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
     "rbd_trash_move_volume", "rbd_trash_restore_volume",
     "cinder_attach_volume", "cinder_detach_volume",
-    "cinder_create_snapshot",
+    "cinder_create_snapshot", "cinder_delete_snapshot",
 )
 _INFLIGHT_INCIDENT_UNIQUE_INDEX = "uq_incidents_inflight_cluster_code"
 
@@ -375,6 +393,13 @@ def _rbd_mutation_dedupe_key(
     if action_id == "rbd_rename_volume":
         names = sorted({image, str(params.get("new_image") or "")})
         return f"rbd-volume:{pool}/{'/'.join(names)}"
+    if action_id == "rbd_clone_volume":
+        names = sorted({image, str(params.get("dest_image") or "")})
+        return f"rbd-volume:{pool}/{'/'.join(names)}"
+    if action_id == "rbd_template_mark":
+        return f"rbd-template:{pool}/{image}@{params.get('snapshot') or ''}"
+    if action_id == "rbd_qos_set":
+        return f"rbd-qos:{pool}/{image}"
     return f"rbd-volume:{pool}/{image}"
 
 
@@ -1039,6 +1064,92 @@ async def volume_inventory_overview_api(
     return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **overview}
 
 
+@router.get("/api/volumes/{pool}/replication")
+async def volume_replication_api(
+    request: Request, pool: str, user: str = Depends(require_login)
+):
+    """Read-only RBD mirroring posture; never enables, promotes, or fails over."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    query_info = ceph_client.query_rbd_mirror_pool_info if cluster.is_default else ceph_client.query_rbd_mirror_pool_info_with
+    query_status = ceph_client.query_rbd_mirror_pool_status if cluster.is_default else ceph_client.query_rbd_mirror_pool_status_with
+    args = (pool,) if cluster.is_default else (pool, *cluster_connection(cluster))
+    try:
+        info = query_info(*args)
+    except CephQueryError as exc:
+        message = str(exc)
+        if "mirroring not enabled" in message.lower():
+            return {"cluster_id": cluster.id, "pool": pool, "supported": True, "enabled": False,
+                    "mode": "disabled", "status": None, "collected_at": datetime.utcnow().isoformat() + "Z"}
+        raise HTTPException(status_code=502, detail=f"Không đọc được trạng thái mirroring: {exc}") from exc
+    mode = str(info.get("mode") or "disabled").lower()
+    enabled = mode not in {"disabled", "off", "none", ""}
+    status = None
+    if enabled:
+        try:
+            status = query_status(*args)
+        except CephQueryError as exc:
+            if "mirroring not enabled" not in str(exc).lower():
+                raise HTTPException(status_code=502, detail=f"Không đọc được mirror lag/status: {exc}") from exc
+    return {"cluster_id": cluster.id, "pool": pool, "supported": True, "enabled": enabled,
+            "mode": mode, "info": info, "status": status,
+            "collected_at": datetime.utcnow().isoformat() + "Z"}
+
+
+@router.get("/api/volumes/{pool}/inventory/{image}/qos")
+async def volume_qos_api(request: Request, pool: str, image: str, user: str = Depends(require_login)):
+    """Read current per-image RBD QoS values without changing the image."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if not image or not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+    query = ceph_client.query_rbd_qos if cluster.is_default else ceph_client.query_rbd_qos_with
+    try:
+        values = query(pool, image) if cluster.is_default else query(pool, image, *cluster_connection(cluster))
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không đọc được QoS của Volume: {exc}") from exc
+    return {"cluster_id": cluster.id, "pool": pool, "image": image, "values": values,
+            "units": {"*_iops_*": "IOPS", "*_bps_*": "bytes/s", "0": "unlimited"},
+            "read_only": True}
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/qos", status_code=201)
+async def propose_volume_qos(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Propose an approval-gated QoS update; zero means remove the limit."""
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if not image or not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="QoS payload không hợp lệ")
+    values = {}
+    for option, (low, high) in _RBD_QOS_BOUNDS.items():
+        raw = body.get(option, 0)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < low or raw > high:
+            raise HTTPException(status_code=400, detail=f"{option} phải là số nguyên trong khoảng {low}–{high}")
+        values[option] = raw
+    query = ceph_client.query_rbd_qos if cluster.is_default else ceph_client.query_rbd_qos_with
+    try:
+        before = query(pool, image) if cluster.is_default else query(pool, image, *cluster_connection(cluster))
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không đọc được QoS hiện tại; không tạo proposal: {exc}") from exc
+    action_id = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image, action_id="rbd_qos_set",
+        ceph_code=RBD_VOLUME_QOS_CEPH_CODE, user=user,
+        rationale=f"Đổi QoS cho {pool}/{image}; giá trị 0 nghĩa là không giới hạn",
+        extra_params={**values, "qos_before": before},
+        idempotency_key=request.headers.get("Idempotency-Key"),
+    )
+    return {"action_id": action_id, "before": before, "after": values, "requires_approval": True}
+
+
 def _propose_rbd_volume_mutation(
     *, cluster, pool: str, image: str, action_id: str,
     ceph_code: str, user: str, rationale: str,
@@ -1065,7 +1176,10 @@ def _propose_rbd_volume_mutation(
                 existing_params = json.loads(existing.action_params or "{}")
             except (TypeError, ValueError):
                 continue
-            existing_names = {existing_params.get("image"), existing_params.get("new_image")}
+            existing_names = {
+                existing_params.get("image"), existing_params.get("new_image"),
+                existing_params.get("dest_image"),
+            }
             if existing_params.get("pool_name") == pool and conflict_names.intersection(existing_names):
                 raise HTTPException(status_code=409, detail="Volume này đã có một thay đổi đang chờ duyệt hoặc thực thi")
 
@@ -1220,6 +1334,64 @@ def _propose_cinder_snapshot_create(
         action = Action(
             incident_id=incident.id, action_id="cinder_create_snapshot",
             classification=gate.classify_action("cinder_create_snapshot").value,
+            status=ActionStatus.PENDING_APPROVAL.value, rationale=rationale,
+            target_nodes=json.dumps([controllers[0]]), action_params=json.dumps(params),
+            proposed_command=preview,
+        )
+        session.add(action)
+        session.flush()
+        audit.record(
+            session, incident_id=incident.id, action_id=action.id,
+            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL, actor=user,
+        )
+        session.commit()
+        return action.id
+
+
+def _propose_cinder_snapshot_delete(
+    *, cluster, pool: str, image: str, volume_id: str, snapshot_id: str,
+    user: str, idempotency_key: str | None,
+) -> str:
+    controllers = [node.strip() for node in cluster.openstack_controller_nodes.split(",") if node.strip()]
+    if not controllers or not cluster.openstack_openrc_path:
+        raise HTTPException(status_code=400, detail="Cluster chưa cấu hình OpenStack Controller/openrc")
+    params = {
+        "pool_name": pool, "image": image, "volume_id": volume_id,
+        "snapshot_id": snapshot_id, "openrc_path": cluster.openstack_openrc_path,
+        "requested_by": user,
+    }
+    if idempotency_key:
+        params["idempotency_key"] = idempotency_key
+    try:
+        preview = executor_commands.get_command("cinder_delete_snapshot", controllers[0], params)
+    except ExecutorError as exc:
+        raise HTTPException(status_code=400, detail=f"Thông tin Cinder snapshot không hợp lệ: {exc}") from exc
+    rationale = f"Xóa Cinder snapshot {snapshot_id} của volume {volume_id}"
+    with db.SessionLocal() as session:
+        for existing in _inflight_volume_actions(session, cluster):
+            try:
+                existing_params = json.loads(existing.action_params or "{}")
+            except (TypeError, ValueError):
+                continue
+            if existing_params.get("pool_name") == pool and existing_params.get("image") == image:
+                raise HTTPException(status_code=409, detail="Volume này đã có thay đổi đang chờ duyệt hoặc thực thi")
+        incident = Incident(
+            cluster_id=cluster.id, ceph_code=CINDER_SNAPSHOT_DELETE_CEPH_CODE,
+            dedupe_key=f"cinder-snapshot:{pool}/{image}/{snapshot_id}",
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=f"{rationale} — yêu cầu bởi {user}", detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            if _is_inflight_incident_duplicate(exc):
+                raise HTTPException(status_code=409, detail="Snapshot này đã có thay đổi đang chờ duyệt hoặc thực thi.") from exc
+            raise
+        action = Action(
+            incident_id=incident.id, action_id="cinder_delete_snapshot",
+            classification=gate.classify_action("cinder_delete_snapshot").value,
             status=ActionStatus.PENDING_APPROVAL.value, rationale=rationale,
             target_nodes=json.dumps([controllers[0]]), action_params=json.dumps(params),
             proposed_command=preview,
@@ -1409,6 +1581,173 @@ async def propose_volume_rename(
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
 
 
+@router.post("/api/volumes/{pool}/inventory/{image}/clone")
+async def propose_volume_clone(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Clone one protected snapshot into a new image after dependency/capacity preflight."""
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    body = await request.json()
+    snapshot = str(body.get("snapshot") or "").strip()
+    dest_pool = str(body.get("dest_pool") or "").strip()
+    dest_image = str(body.get("dest_image") or "").strip()
+    if not _RBD_IMAGE_NAME_RE.fullmatch(image) or not _RBD_IMAGE_NAME_RE.fullmatch(snapshot):
+        raise HTTPException(status_code=400, detail="Tên Volume hoặc snapshot không hợp lệ")
+    if dest_pool not in allowed_pools or not _RBD_IMAGE_NAME_RE.fullmatch(dest_image):
+        raise HTTPException(status_code=400, detail="Pool/image đích không hợp lệ")
+    if pool == dest_pool and image == dest_image:
+        raise HTTPException(status_code=409, detail="Volume clone phải khác volume nguồn")
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id="rbd_clone_volume", user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image, "snapshot": snapshot,
+                "dest_pool": dest_pool, "dest_image": dest_image},
+    )
+    if replay:
+        return replay
+    try:
+        source = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+        inventory = (
+            ceph_client.query_rbd_inventory(dest_pool)
+            if cluster.is_default else ceph_client.query_rbd_inventory_with(dest_pool, *cluster_connection(cluster))
+        )
+        overview = (
+            ceph_client.query_rbd_pool_overview(dest_pool)
+            if cluster.is_default else ceph_client.query_rbd_pool_overview_with(dest_pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight clone Volume: {exc}") from exc
+    snapshots = source.get("snapshots") or []
+    snapshot_row = next((row for row in snapshots if str(row.get("name") or row.get("snap_name") or row.get("id") or "") == snapshot), None)
+    if snapshot_row is None:
+        raise HTTPException(status_code=409, detail="Snapshot không tồn tại hoặc không đọc được; không tạo clone")
+    if any(row.get("name") == dest_image for row in inventory):
+        raise HTTPException(status_code=409, detail="Tên Volume clone đã tồn tại trong pool đích")
+    source_size = int(source.get("size") or 0)
+    max_available = int(overview.get("max_available") or 0)
+    if overview.get("rbd_enabled") is False:
+        raise HTTPException(status_code=409, detail="Pool đích chưa bật ứng dụng RBD")
+    if overview.get("near_full"):
+        raise HTTPException(status_code=409, detail="Pool đích đang gần đầy; không tạo clone")
+    if max_available and source_size > max_available:
+        raise HTTPException(status_code=409, detail="Dung lượng dự kiến của clone vượt max available pool đích")
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image,
+        extra_params={"snapshot": snapshot, "dest_pool": dest_pool, "dest_image": dest_image,
+                      "size_bytes": source_size},
+        conflicting_images={image, dest_image}, action_id="rbd_clone_volume",
+        ceph_code=RBD_VOLUME_CLONE_CEPH_CODE, user=user,
+        idempotency_key=idempotency_key,
+        rationale=f"Clone {pool}/{image}@{snapshot} thành {dest_pool}/{dest_image}; giữ nguyên snapshot nguồn",
+    )
+    return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL",
+                         "estimated_size_bytes": source_size}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/flatten")
+async def propose_volume_flatten(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Flatten a clone only after parent/dependency, attachment and capacity evidence."""
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools or not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=400, detail="Pool/image không hợp lệ")
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id="rbd_flatten_volume", user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image},
+    )
+    if replay:
+        return replay
+    try:
+        detail = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+        overview = (
+            ceph_client.query_rbd_pool_overview(pool)
+            if cluster.is_default else ceph_client.query_rbd_pool_overview_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight flatten Volume: {exc}") from exc
+    if not detail.get("parent"):
+        raise HTTPException(status_code=409, detail="Volume không có parent clone để flatten")
+    if detail.get("watchers") or detail.get("locks"):
+        raise HTTPException(status_code=409, detail="Phải detach Volume và giải phóng lock trước khi flatten")
+    size_bytes = int(detail.get("size") or 0)
+    if overview.get("near_full"):
+        raise HTTPException(status_code=409, detail="Pool đang gần đầy; không flatten khi capacity guard không đạt")
+    max_available = int(overview.get("max_available") or 0)
+    if max_available and size_bytes > max_available:
+        raise HTTPException(status_code=409, detail="Dung lượng dự kiến flatten vượt max available của pool")
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image,
+        extra_params={"parent": detail.get("parent"), "size_bytes": size_bytes},
+        action_id="rbd_flatten_volume", ceph_code=RBD_VOLUME_FLATTEN_CEPH_CODE,
+        user=user, idempotency_key=idempotency_key,
+        rationale=f"Flatten {pool}/{image}; tách dữ liệu khỏi parent {detail.get('parent')}, dự kiến đọc/ghi lại khoảng {_format_bytes(size_bytes)}",
+    )
+    return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL",
+                         "parent": detail.get("parent"), "estimated_size_bytes": size_bytes}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/template")
+async def propose_volume_template(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Mark a protected snapshot as an immutable read-only template artifact."""
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools or not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=400, detail="Pool/image không hợp lệ")
+    body = await request.json()
+    snapshot = str(body.get("snapshot") or "").strip()
+    template_name = str(body.get("template_name") or "").strip()
+    description = str(body.get("description") or "").strip()
+    if not _RBD_IMAGE_NAME_RE.fullmatch(snapshot):
+        raise HTTPException(status_code=400, detail="Tên snapshot không hợp lệ")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", template_name):
+        raise HTTPException(status_code=400, detail="Tên template không hợp lệ")
+    if len(description) > 500:
+        raise HTTPException(status_code=400, detail="Mô tả template tối đa 500 ký tự")
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id="rbd_template_mark", user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image, "snapshot": snapshot,
+                "template_name": template_name, "description": description},
+    )
+    if replay:
+        return replay
+    try:
+        detail = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight template: {exc}") from exc
+    snapshot_row = next(
+        (row for row in (detail.get("snapshots") or [])
+         if str(row.get("name") or row.get("snap_name") or row.get("id") or "") == snapshot),
+        None,
+    )
+    if snapshot_row is None:
+        raise HTTPException(status_code=409, detail="Snapshot không tồn tại hoặc không đọc được")
+    protected = snapshot_row.get("protected")
+    if protected in (True, "true", "True", 1, "1"):
+        logger.info("template snapshot already protected: %s/%s@%s", pool, image, snapshot)
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image,
+        extra_params={"snapshot": snapshot, "template_name": template_name, "description": description},
+        action_id="rbd_template_mark", ceph_code=RBD_VOLUME_TEMPLATE_CEPH_CODE,
+        user=user, idempotency_key=idempotency_key,
+        rationale=f"Đánh dấu {pool}/{image}@{snapshot} thành template read-only '{template_name}'; snapshot được bảo vệ khỏi xóa",
+    )
+    return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL",
+                         "template_name": template_name, "protected_before": bool(protected)}, status_code=201)
+
+
 @router.post("/api/volumes/{pool}/inventory/{image}/trash")
 async def propose_volume_trash_move(
     request: Request, pool: str, image: str, user: str = Depends(require_login)
@@ -1533,6 +1872,146 @@ async def propose_volume_trash_restore(
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
 
 
+def _volume_timestamp(value: datetime | None) -> str | None:
+    """Serialize the app's naive-UTC database timestamps consistently."""
+    return value.isoformat() + "Z" if value else None
+
+
+def _volume_backup_summary(cluster, pool: str, image: str) -> dict:
+    """Return a bounded, cluster-scoped backup view for one RBD image.
+
+    This intentionally exposes status and provenance, not the raw failure
+    message: backup errors can contain paths or backend details that do not
+    belong in a general volume detail response.
+    """
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(BackupJob)
+            .filter(
+                BackupJob.pool == pool,
+                BackupJob.image == image,
+                _cluster_row_filter(BackupJob.cluster_id, cluster),
+            )
+            .order_by(BackupJob.created_at.desc())
+            .limit(30)
+            .all()
+        )
+
+    def public_job(row: BackupJob) -> dict:
+        return {
+            "id": row.id,
+            "run_id": row.run_id,
+            "job_type": row.job_type,
+            "status": row.status,
+            "backup_target_slot": row.backup_target_slot,
+            "size_bytes": row.size_bytes,
+            "sha256_present": bool(row.sha256),
+            "created_at": _volume_timestamp(row.created_at),
+            "finished_at": _volume_timestamp(row.finished_at),
+        }
+
+    latest_success = next((row for row in rows if row.status == "SUCCESS"), None)
+    latest_failure = next((row for row in rows if row.status == "FAILED"), None)
+    running = sum(1 for row in rows if row.status == "RUNNING")
+    if running:
+        status = "running"
+    elif latest_success:
+        status = "healthy"
+    elif latest_failure:
+        status = "failed"
+    else:
+        status = "no_data"
+    return {
+        "status": status,
+        "job_count": len(rows),
+        "running_count": running,
+        "latest_success": public_job(latest_success) if latest_success else None,
+        "latest_failure": public_job(latest_failure) if latest_failure else None,
+    }
+
+
+def _volume_metric_summary(cluster, pool: str, image: str) -> dict:
+    """Return the latest persisted telemetry sample, scoped to the cluster."""
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    with db.SessionLocal() as session:
+        latest = (
+            session.query(VolumeMetric)
+            .filter(
+                VolumeMetric.pool == pool,
+                VolumeMetric.image == image,
+                _cluster_row_filter(VolumeMetric.cluster_id, cluster),
+            )
+            .order_by(VolumeMetric.polled_at.desc())
+            .first()
+        )
+        recent_count = (
+            session.query(VolumeMetric)
+            .filter(
+                VolumeMetric.pool == pool,
+                VolumeMetric.image == image,
+                VolumeMetric.polled_at >= cutoff,
+                _cluster_row_filter(VolumeMetric.cluster_id, cluster),
+            )
+            .count()
+        )
+    if latest is None:
+        return {"status": "no_data", "recent_sample_count": 0, "latest": None}
+    return {
+        "status": "saturated" if latest.saturated else "available",
+        "recent_sample_count": recent_count,
+        "latest": {
+            "iops": latest.iops,
+            "read_latency_ms": latest.read_latency_ms,
+            "write_latency_ms": latest.write_latency_ms,
+            "saturated": latest.saturated,
+            "polled_at": _volume_timestamp(latest.polled_at),
+        },
+    }
+
+
+def _volume_audit_summary(cluster, pool: str, image: str) -> dict:
+    """Find recent mutation audit events that explicitly target this image.
+
+    AuditEntry is incident-scoped by design. We therefore join through the
+    cluster-scoped Incident and match the structured Action parameters, never
+    a free-text log excerpt, to prevent cross-volume or cross-cluster leaks.
+    """
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(AuditEntry, Action, Incident)
+            .join(Incident, AuditEntry.incident_id == Incident.id)
+            .outerjoin(Action, AuditEntry.action_id == Action.id)
+            .filter(_cluster_row_filter(Incident.cluster_id, cluster))
+            .order_by(AuditEntry.created_at.desc())
+            .limit(100)
+            .all()
+        )
+
+    events = []
+    for audit_entry, action, incident in rows:
+        params = {}
+        if action and action.action_params:
+            try:
+                params = json.loads(action.action_params)
+            except (TypeError, ValueError):
+                params = {}
+        target_pool = params.get("pool_name") or params.get("pool")
+        target_image = params.get("image") or params.get("source_image")
+        if target_pool != pool or target_image != image:
+            continue
+        events.append({
+            "event_type": audit_entry.event_type,
+            "actor": audit_entry.actor,
+            "action_id": action.action_id if action else None,
+            "action_status": action.status if action else None,
+            "incident_status": incident.status,
+            "created_at": _volume_timestamp(audit_entry.created_at),
+        })
+        if len(events) >= 10:
+            break
+    return {"count": len(events), "events": events}
+
+
 @router.get("/api/volumes/{pool}/inventory/{image}")
 async def volume_inventory_detail_api(
     request: Request, pool: str, image: str, user: str = Depends(require_login)
@@ -1552,6 +2031,11 @@ async def volume_inventory_detail_api(
     except CephQueryError as exc:
         logger.warning("volume_inventory_detail_api: cluster=%s volume=%s/%s: %s", cluster.id, pool, image, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được chi tiết Volume: {exc}")
+    backup_summary, metric_summary, audit_summary = await asyncio.gather(
+        asyncio.to_thread(_volume_backup_summary, cluster, pool, image),
+        asyncio.to_thread(_volume_metric_summary, cluster, pool, image),
+        asyncio.to_thread(_volume_audit_summary, cluster, pool, image),
+    )
     cinder = await asyncio.to_thread(discover_cinder_volume, cluster, image)
     detail["cinder"] = cinder
     detail["cinder_snapshots"] = (
@@ -1573,7 +2057,39 @@ async def volume_inventory_detail_api(
     if not reconciliation.get("safe"):
         detail.setdefault("attachment_summary", {})["mutation_supported"] = False
         detail["attachment_summary"]["blocked_reason"] = reconciliation.get("reason") or "Attachment chưa đối soát an toàn."
+    detail["backup_summary"] = backup_summary
+    detail["metric_summary"] = metric_summary
+    detail["audit_summary"] = audit_summary
     return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **detail}
+
+
+@router.get("/api/volumes/{pool}/inventory/{image}/dependencies")
+async def volume_dependency_graph_api(
+    request: Request,
+    pool: str,
+    image: str,
+    user: str = Depends(require_login),
+    max_depth: int = Query(3, ge=0, le=5),
+    max_nodes: int = Query(64, ge=1, le=128),
+):
+    """Return a bounded, read-only clone dependency graph for one image."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if not image or len(image) > 128 or "\x00" in image or "/" in image:
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+    try:
+        graph = (
+            ceph_client.query_rbd_dependency_graph(pool, image, max_depth, max_nodes)
+            if cluster.is_default
+            else ceph_client.query_rbd_dependency_graph_with(
+                pool, image, *cluster_connection(cluster), max_depth=max_depth, max_nodes=max_nodes
+            )
+        )
+    except CephQueryError as exc:
+        logger.warning("volume_dependency_graph_api: cluster=%s volume=%s/%s: %s", cluster.id, pool, image, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được dependency graph của Volume: {exc}") from exc
+    return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **graph}
 
 
 async def _cinder_attachment_preflight(cluster, pool: str, image: str) -> tuple[dict, dict, dict]:
@@ -1722,6 +2238,157 @@ async def propose_cinder_snapshot_create(
         snapshot_name=snapshot_name, force=force, user=user, idempotency_key=key,
     )
     return JSONResponse({"action_id": action_id, "status": "PENDING_APPROVAL"}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/snapshots/{snapshot_id}/delete")
+async def propose_cinder_snapshot_delete(
+    request: Request, pool: str, image: str, snapshot_id: str,
+    user: str = Depends(require_login),
+):
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if not _OPENSTACK_UUID_RE.fullmatch(snapshot_id):
+        raise HTTPException(status_code=400, detail="Cinder snapshot ID không hợp lệ")
+    volume_id = _cinder_volume_id_from_image(image)
+    intent = {"pool_name": pool, "image": image, "volume_id": volume_id, "snapshot_id": snapshot_id}
+    key, replay = _idempotency_replay(
+        request, action_id="cinder_delete_snapshot", user=user,
+        cluster_id=cluster.id, intent=intent,
+    )
+    if replay:
+        return replay
+    snapshot_inventory = await asyncio.to_thread(discover_cinder_snapshots, cluster, volume_id)
+    if snapshot_inventory.get("status") != "ok":
+        raise HTTPException(
+            status_code=502,
+            detail="Không kiểm tra được snapshot hiện có: " + str(snapshot_inventory.get("error") or "unknown"),
+        )
+    snapshot = next(
+        (item for item in snapshot_inventory.get("items") or []
+         if str(item.get("snapshot_id") or item.get("id") or "") == snapshot_id),
+        None,
+    )
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Snapshot không thuộc volume này hoặc đã được xóa")
+    status = str(snapshot.get("status") or "").lower()
+    if status in {"deleting", "error", "error_deleting"}:
+        raise HTTPException(status_code=409, detail=f"Snapshot đang ở trạng thái {status}, chưa thể xóa lại")
+    action_id = _propose_cinder_snapshot_delete(
+        cluster=cluster, pool=pool, image=image, volume_id=volume_id,
+        snapshot_id=snapshot_id, user=user, idempotency_key=key,
+    )
+    return JSONResponse({"action_id": action_id, "status": "PENDING_APPROVAL"}, status_code=201)
+
+
+def _snapshot_policy_for(cluster, pool: str, image: str):
+    with db.SessionLocal() as session:
+        return session.query(VolumeSnapshotPolicy).filter(
+            VolumeSnapshotPolicy.pool == pool,
+            VolumeSnapshotPolicy.image == image,
+            _cluster_row_filter(VolumeSnapshotPolicy.cluster_id, cluster),
+        ).first()
+
+
+@router.get("/api/volumes/{pool}/inventory/{image}/snapshot-policy")
+async def volume_snapshot_policy_get(
+    request: Request, pool: str, image: str, user: str = Depends(require_login),
+):
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    policy = await asyncio.to_thread(_snapshot_policy_for, cluster, pool, image)
+    if policy is None:
+        return {
+            "configured": False, "enabled": False, "cron_expression": "0 2 * * *",
+            "timezone": "UTC", "snapshot_prefix": "scheduled", "retention_count": 7,
+            "capacity_guard_percent": 85.0,
+        }
+    return {
+        "configured": True, "id": policy.id, "enabled": policy.enabled,
+        "cron_expression": policy.cron_expression, "timezone": policy.timezone,
+        "snapshot_prefix": policy.snapshot_prefix, "retention_count": policy.retention_count,
+        "capacity_guard_percent": policy.capacity_guard_percent,
+        "last_run_at": _volume_timestamp(policy.last_run_at),
+        "next_run_at": _volume_timestamp(policy.next_run_at),
+        "last_status": policy.last_status, "last_error": policy.last_error,
+    }
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/snapshot-policy")
+async def volume_snapshot_policy_save(
+    request: Request, pool: str, image: str, user: str = Depends(require_login),
+):
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    body = await request.json()
+    volume_id = _cinder_volume_id_from_image(image)
+    cinder = await asyncio.to_thread(discover_cinder_volume, cluster, image)
+    if cinder.get("status") != "managed" or not cinder.get("verified"):
+        raise HTTPException(status_code=409, detail="Chỉ tạo policy cho volume Cinder đã xác minh")
+    if str(cinder.get("volume_id") or "").lower() != volume_id.lower():
+        raise HTTPException(status_code=409, detail="Cinder volume ID không khớp RBD image")
+    try:
+        cron, tz_name, prefix, retention, guard, zone = validate_snapshot_policy(
+            cron_expression=body.get("cron_expression", "0 2 * * *"),
+            timezone_name=body.get("timezone", "UTC"),
+            snapshot_prefix=body.get("snapshot_prefix", "scheduled"),
+            retention_count=body.get("retention_count", 7),
+            capacity_guard_percent=body.get("capacity_guard_percent", 85),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    enabled = bool(body.get("enabled", True))
+    next_at = next_run_at(cron, tz_name).astimezone(timezone.utc).replace(tzinfo=None) if enabled else None
+    with db.SessionLocal() as session:
+        policy = session.query(VolumeSnapshotPolicy).filter(
+            VolumeSnapshotPolicy.pool == pool,
+            VolumeSnapshotPolicy.image == image,
+            _cluster_row_filter(VolumeSnapshotPolicy.cluster_id, cluster),
+        ).first()
+        if policy is None:
+            policy = VolumeSnapshotPolicy(
+                cluster_id=cluster.id, pool=pool, image=image, volume_id=volume_id,
+                created_by=user,
+            )
+            session.add(policy)
+        policy.volume_id = volume_id
+        policy.snapshot_prefix = prefix
+        policy.cron_expression = cron
+        policy.timezone = tz_name
+        policy.retention_count = retention
+        policy.capacity_guard_percent = guard
+        policy.enabled = enabled
+        policy.next_run_at = next_at
+        policy.last_error = None
+        session.commit()
+        policy_id = policy.id
+    return {"saved": True, "policy_id": policy_id, "enabled": enabled, "next_run_at": _volume_timestamp(next_at)}
+
+
+@router.delete("/api/volumes/{pool}/inventory/{image}/snapshot-policy")
+async def volume_snapshot_policy_disable(
+    request: Request, pool: str, image: str, user: str = Depends(require_login),
+):
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    with db.SessionLocal() as session:
+        policy = session.query(VolumeSnapshotPolicy).filter(
+            VolumeSnapshotPolicy.pool == pool,
+            VolumeSnapshotPolicy.image == image,
+            _cluster_row_filter(VolumeSnapshotPolicy.cluster_id, cluster),
+        ).first()
+        if policy is not None:
+            policy.enabled = False
+            policy.next_run_at = None
+            policy.last_status = "disabled"
+            session.commit()
+    return {"disabled": True}
 
 
 @router.get("/api/volumes/{pool}/{image}/history")

@@ -277,7 +277,10 @@ def check_node_resources(
                     logger.warning(
                         "node forecast: %s %s may reach 90%% in %.1fh "
                         "(slope=%.3f%%/h confidence=%.2f samples=%d)",
-                        host, prediction.metric.upper(), prediction.hours_to_90,
+                        host, prediction.metric.upper(),
+                        prediction.hours_to_90
+                        if prediction.hours_to_90 is not None
+                        else settings.node_resource_forecast_horizon_hours,
                         prediction.slope_percent_per_hour, prediction.confidence,
                         prediction.samples,
                     )

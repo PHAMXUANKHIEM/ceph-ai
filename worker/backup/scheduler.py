@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -28,11 +29,13 @@ from apscheduler.triggers.interval import IntervalTrigger
 from shared import db
 from config.settings import settings
 from shared.clusters import list_active_clusters
-from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident, IncidentStatus
+from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident, IncidentStatus, VolumeSnapshotPolicy
 from worker.backup import alerting, digest
 from worker import ai_ops_digest
 from worker.backup.cluster_scope import first_mon_node, get_cluster, parse_tracked_images
 from worker.backup.policy_config import load_backup_policy
+from worker import volume_snapshot_scheduler
+from shared.volume_snapshot_policy import validate_snapshot_policy
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +260,40 @@ def _register_cluster_backup_jobs(
         desired_job_ids.add(digest_job_id)
 
 
+def _register_volume_snapshot_jobs(
+    scheduler: AsyncIOScheduler, desired_job_ids: set[str],
+) -> None:
+    """Register persisted per-volume policies with bounded misfire handling."""
+    with db.SessionLocal() as session:
+        policies = session.query(VolumeSnapshotPolicy).filter(VolumeSnapshotPolicy.enabled.is_(True)).all()
+        session.expunge_all()
+    for policy in policies:
+        try:
+            _cron, timezone_name, _prefix, _retention, _guard, zone = validate_snapshot_policy(
+                cron_expression=policy.cron_expression,
+                timezone_name=policy.timezone,
+                snapshot_prefix=policy.snapshot_prefix,
+                retention_count=policy.retention_count,
+                capacity_guard_percent=policy.capacity_guard_percent,
+            )
+            trigger = CronTrigger.from_crontab(policy.cron_expression, timezone=zone)
+        except (TypeError, ValueError, ZoneInfoNotFoundError) as exc:
+            logger.error("scheduler: invalid volume snapshot policy %s: %s", policy.id, exc)
+            continue
+        job_id = f"volume_snapshot_policy_{policy.id}"
+        scheduler.add_job(
+            volume_snapshot_scheduler.run_policy,
+            trigger=trigger,
+            args=[policy.id],
+            id=job_id,
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        desired_job_ids.add(job_id)
+
+
 def _reconcile_backup_jobs(scheduler: AsyncIOScheduler, desired_job_ids: set[str]) -> None:
     """Remove persisted jobs owned by this module that are no longer
     represented by the current policy/configuration.
@@ -274,6 +311,7 @@ def _reconcile_backup_jobs(scheduler: AsyncIOScheduler, desired_job_ids: set[str
                 "backup_digest_run",
                 "ai_ops_weekly_digest",
             }
+            or job_id.startswith("volume_snapshot_policy_")
         )
 
     for job in scheduler.get_jobs():
@@ -380,6 +418,7 @@ def build_scheduler() -> AsyncIOScheduler:
             replace_existing=True,
         )
         desired_job_ids.add("ai_ops_weekly_digest")
+    _register_volume_snapshot_jobs(scheduler, desired_job_ids)
     # Keep the desired set on the scheduler so ``run()`` can reconcile jobs
     # loaded from the persistent job store after APScheduler starts.  Before
     # start(), ``get_jobs()`` only exposes jobs queued during construction;

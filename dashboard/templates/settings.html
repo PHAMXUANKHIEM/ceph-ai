@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Settings — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}-settings-v2">
-  <link rel="stylesheet" href="/static/settings_redesign.css?v={{ static_version }}-settings-v7">
+  <link rel="stylesheet" href="/static/settings_redesign.css?v={{ static_version }}-settings-v9">
 </head>
 <body class="settings-redesign">
   {% include "_nav.html" %}
@@ -321,7 +321,7 @@
     </section>
 
     <section class="card settings-panel" data-panel="patch-pipeline" {% if active_section != 'patch-pipeline' %}hidden{% endif %}>
-      <div class="card-header pipeline-panel-title"><div><h2>Build &amp; Copy Patch Ceph</h2><p class="hint">Build RPM từ patch và triển khai tới các node Ceph.</p></div><div class="pipeline-status-chip"><i></i><span>Sẵn sàng cấu hình</span><small>Build gần nhất: chưa ghi nhận</small></div></div>
+      <div class="card-header pipeline-panel-title"><div><h2><span class="pipeline-title-icon" aria-hidden="true">🔄</span>Build &amp; Copy Patch Ceph</h2><p class="hint">Cấu hình build server để build RPM từ patch và deploy sang các node Ceph.</p></div><div class="pipeline-status-chip"><i></i><span>Sẵn sàng cấu hình</span><small>Build gần nhất: chưa ghi nhận</small></div></div>
       <div class="card-body pipeline-panel-body">
           {% if patch_pipeline_error %}
           <p class="pipeline-feedback error">{{ patch_pipeline_error }}</p>
@@ -329,13 +329,20 @@
           {% if patch_pipeline_success %}
           <p class="pipeline-feedback success">{{ patch_pipeline_success }}</p>
         {% endif %}
-        <div class="pipeline-summary"><strong>Cấu hình build server để build RPM từ patch và deploy sang các node Ceph.</strong><details><summary>Chi tiết kỹ thuật</summary><p>Build server là máy riêng, không phải node Ceph. Worker dùng <code>scp</code> và SSH để chuyển RPM; private key phải được đặt trên build server theo quyền an toàn. Xem workflow tại <a class="pipeline-patch-link" href="/patch">Mở Patch Ceph →</a></p></details></div>
+        <div class="pipeline-summary">
+          <div class="pipeline-summary-main"><span class="pipeline-summary-icon" aria-hidden="true">🛠️</span><div><strong>Build RPM từ patch và triển khai tới node Ceph.</strong><p>Worker dùng SSH để chuyển artifact và khởi động lại Worker sau khi lưu cấu hình.</p></div></div>
+          <details><summary>Chi tiết kỹ thuật</summary><p>Build server là máy riêng, không phải node Ceph. Worker dùng <code>scp</code> và SSH để chuyển RPM; private key phải được đặt trên build server theo quyền an toàn. <a class="pipeline-patch-link" href="/patch">Mở Patch Ceph →</a></p></details>
+        </div>
         <form class="login-box pipeline-form" id="patch-pipeline-form" method="post" action="/settings/patch-pipeline">
-          <label>IP/hostname build server <span class="required-mark">*</span><input type="text" name="ceph_patch_build_node" id="pipeline-build-node" value="{{ ceph_patch_build_node }}" placeholder="10.0.0.20 hoặc build.ceph.local" required><small class="pipeline-field-error" data-error-for="pipeline-build-node"></small></label>
-          <label>Thư mục source Ceph trên build server <span class="required-mark">*</span><input class="pipeline-path-input" type="text" name="ceph_patch_source_dir" id="pipeline-source-dir" value="{{ ceph_patch_source_dir }}" placeholder="/root/ceph" required><small class="pipeline-field-error" data-error-for="pipeline-source-dir"></small></label>
-          <label>Lệnh build <span class="required-mark">*</span><textarea class="pipeline-command-input" name="ceph_patch_build_command" id="pipeline-build-command" rows="1" placeholder="./make-srpm.sh &amp;&amp; rpmbuild --rebuild ceph.src.rpm" required>{{ ceph_patch_build_command }}</textarea><small class="pipeline-field-error" data-error-for="pipeline-build-command"></small></label>
-          <label>Thư mục chứa file .rpm sau khi build xong <span class="required-mark">*</span><input class="pipeline-path-input" type="text" name="ceph_patch_output_dir" id="pipeline-output-dir" value="{{ ceph_patch_output_dir }}" placeholder="/root/rpmbuild/RPMS/x86_64" required><small class="pipeline-field-error" data-error-for="pipeline-output-dir"></small></label>
-          <label>Thư mục tạm trên mỗi node Ceph <span class="required-mark">*</span><input class="pipeline-path-input" type="text" name="ceph_patch_node_staging_dir" id="pipeline-staging-dir" value="{{ ceph_patch_node_staging_dir }}" placeholder="/opt/ceph-aiops-patch-staging" required><small class="pipeline-field-error" data-error-for="pipeline-staging-dir"></small></label>
+          <div class="pipeline-form-section-heading"><span class="pipeline-step-number">1</span><div><h3>Build server</h3><p>Máy dùng để build RPM, không phải node Ceph.</p></div></div>
+          <div class="pipeline-fields-grid">
+            <label>IP/hostname build server <span class="required-mark">*</span><input type="text" name="ceph_patch_build_node" id="pipeline-build-node" value="{{ ceph_patch_build_node }}" placeholder="10.0.0.20 hoặc build.ceph.local" required><small class="pipeline-field-error" data-error-for="pipeline-build-node"></small></label>
+            <label>Thư mục source Ceph trên build server <span class="required-mark">*</span><input class="pipeline-path-input" type="text" name="ceph_patch_source_dir" id="pipeline-source-dir" value="{{ ceph_patch_source_dir }}" placeholder="/root/ceph" required><small class="pipeline-field-error" data-error-for="pipeline-source-dir"></small></label>
+            <label>Thư mục chứa file .rpm sau khi build xong <span class="required-mark">*</span><input class="pipeline-path-input" type="text" name="ceph_patch_output_dir" id="pipeline-output-dir" value="{{ ceph_patch_output_dir }}" placeholder="/root/rpmbuild/RPMS/x86_64" required><small class="pipeline-field-error" data-error-for="pipeline-output-dir"></small></label>
+            <label>Thư mục tạm trên mỗi node Ceph <span class="required-mark">*</span><input class="pipeline-path-input" type="text" name="ceph_patch_node_staging_dir" id="pipeline-staging-dir" value="{{ ceph_patch_node_staging_dir }}" placeholder="/opt/ceph-aiops-patch-staging" required><small class="pipeline-field-error" data-error-for="pipeline-staging-dir"></small></label>
+          </div>
+          <div class="pipeline-form-section-heading pipeline-command-heading"><span class="pipeline-step-number">2</span><div><h3>Lệnh build</h3><p>Chạy trên build server sau khi Worker lấy patch.</p></div></div>
+          <label class="pipeline-command-field">Lệnh build <span class="required-mark">*</span><textarea class="pipeline-command-input" name="ceph_patch_build_command" id="pipeline-build-command" rows="1" placeholder="./make-srpm.sh &amp;&amp; rpmbuild --rebuild ceph.src.rpm" required>{{ ceph_patch_build_command }}</textarea><small class="pipeline-field-help">Có thể nhập nhiều lệnh nối bằng <code>&amp;&amp;</code>.</small><small class="pipeline-field-error" data-error-for="pipeline-build-command"></small></label>
           <input type="hidden" name="save_action" id="pipeline-save-action" value="save-restart">
           <div class="pipeline-form-actions"><button type="submit" data-save-action="save" class="pipeline-save-button">Lưu cấu hình</button><button type="submit" data-save-action="save-restart" class="pipeline-restart-button" id="pipeline-restart-button">↻ Lưu &amp; restart Worker</button></div>
         </form>
@@ -1109,49 +1116,41 @@
     </section>
 
     <section class="card settings-panel" data-panel="cleanup" {% if active_section != 'cleanup' %}hidden{% endif %}>
-      <div class="card-header"><h2>Dọn dẹp log &amp; dữ liệu cũ</h2></div>
-      <div class="card-body">
+      <div class="card-header cleanup-panel-title"><div><h2><span class="cleanup-title-icon" aria-hidden="true">🧹</span>Dọn dẹp log &amp; dữ liệu cũ</h2><p class="hint">Giải phóng dữ liệu không còn cần thiết mà không ảnh hưởng tới cấu hình hệ thống.</p></div><span class="cleanup-danger-badge">⚠ Thao tác không thể hoàn tác</span></div>
+      <div class="card-body cleanup-panel-body">
         {% if cleanup_error %}
-          <p class="error">{{ cleanup_error }}</p>
+          <p class="cleanup-feedback is-error">{{ cleanup_error }}</p>
         {% endif %}
         {% if cleanup_success %}
-          <p class="success">{{ cleanup_success }}</p>
+          <p class="cleanup-feedback is-success">{{ cleanup_success }}</p>
         {% endif %}
-        <p class="hint">
-          Xóa vĩnh viễn, không hoàn tác được. File log được xóa TRỰC TIẾP trong file đang dùng (Dashboard/Watcher/Worker vẫn ghi tiếp bình thường, không cần khởi động lại).
-        </p>
+        <div class="cleanup-warning"><span class="cleanup-warning-icon" aria-hidden="true">⚠️</span><div><strong>Dữ liệu sẽ bị xóa vĩnh viễn</strong><p>Hãy chọn đúng phạm vi trước khi tiếp tục. File log đang được sử dụng vẫn tiếp tục ghi bình thường và không cần restart service.</p></div></div>
         <form
-          class="login-box"
+          class="login-box cleanup-form"
           method="post"
           action="/settings/cleanup"
           onsubmit="return confirm('Xóa dữ liệu đã chọn? Hành động này KHÔNG thể hoàn tác.');"
         >
-          <label class="checkbox-label">
-            <input type="checkbox" name="target_files" checked>
-            File log tiến trình (Dashboard, Watcher, Worker)
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" name="target_db" checked>
-            Lịch sử Incident / Audit Trail / Chẩn đoán CLI / Hiệu năng Volume (database)
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" name="target_backup_digest">
-            Digest backup (bảng Digest ở trang <a href="/backups">Backup</a>)
-          </label>
-          <label>Xóa dữ liệu trước ngày (để trống = xóa hết)
-            <input type="date" name="cutoff_date">
-          </label>
-          <p class="hint">
-            File log dashboard.log không có mốc thời gian theo từng dòng (định dạng log gốc của uvicorn) — chọn mốc ngày với file này sẽ xóa toàn bộ file, không xóa được từng phần theo ngày.
-          </p>
-          <button type="submit" class="btn btn-danger">Xóa dữ liệu đã chọn</button>
+          <div class="cleanup-section-heading"><span class="cleanup-step-number">1</span><div><h3>Chọn loại dữ liệu</h3><p>Có thể chọn một hoặc nhiều nhóm dữ liệu.</p></div></div>
+          <div class="cleanup-target-grid">
+            <label class="cleanup-target-card is-selected"><input type="checkbox" name="target_files" checked><span class="cleanup-check" aria-hidden="true">✓</span><span class="cleanup-target-copy"><strong>File log tiến trình</strong><small>Dashboard, Watcher và Worker</small></span></label>
+            <label class="cleanup-target-card is-selected"><input type="checkbox" name="target_db" checked><span class="cleanup-check" aria-hidden="true">✓</span><span class="cleanup-target-copy"><strong>Lịch sử trong database</strong><small>Incident, Audit Trail, chẩn đoán CLI, Volume và Host metrics</small></span></label>
+            <label class="cleanup-target-card"><input type="checkbox" name="target_backup_digest"><span class="cleanup-check" aria-hidden="true">✓</span><span class="cleanup-target-copy"><strong>Digest backup</strong><small>Bảng Digest tại <a href="/backups">trang Backup</a></small></span></label>
+          </div>
+          <div class="cleanup-section-heading cleanup-retention-heading"><span class="cleanup-step-number">2</span><div><h3>Giới hạn theo thời gian</h3><p>Để trống nếu muốn xóa toàn bộ dữ liệu đã chọn.</p></div></div>
+          <div class="cleanup-retention-card">
+            <label for="cleanup-cutoff-date">Xóa dữ liệu trước ngày</label>
+            <input id="cleanup-cutoff-date" type="date" name="cutoff_date" aria-describedby="cleanup-cutoff-help">
+            <p id="cleanup-cutoff-help">Chỉ xóa bản ghi trước 00:00 của ngày đã chọn. File <code>dashboard.log</code> không có timestamp theo từng dòng nên nếu chọn ngày, toàn bộ file log sẽ được xóa.</p>
+          </div>
+          <div class="cleanup-form-actions"><span class="cleanup-action-note">Bạn sẽ được hỏi xác nhận trước khi xóa.</span><button type="submit" class="btn btn-danger cleanup-submit-button">🗑 Xóa dữ liệu đã chọn</button></div>
         </form>
       </div>
     </section>
     </div>
   </main>
   <script src="/static/pagination.js?v={{ static_version }}"></script>
-  <script src="/static/settings.js?v={{ static_version }}-settings-v6"></script>
+  <script src="/static/settings.js?v={{ static_version }}-settings-v7"></script>
   <script src="/static/settings_navigation.js?v={{ static_version }}"></script>
   <script src="/static/settings_logs.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>

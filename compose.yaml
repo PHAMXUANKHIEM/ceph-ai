@@ -19,9 +19,18 @@ x-app: &app
     - /run/ceph-ai:/run/ceph-ai:rw
     - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
 
+# Resource policy for the 8-vCPU host.  The hard CPU caps below total 6.0
+# CPUs, leaving at least 2 CPUs for the host OS, Ceph, SSH and short-lived
+# maintenance commands.  memswap_limit == mem_limit keeps normal application
+# work out of swap even when an optional host swapfile is enabled.
+
 services:
   dashboard-web:
     <<: *app
+    cpus: "0.50"
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 256
     command: ["python", "-m", "uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000"]
     ports: ["8000:8000"]
     volumes:
@@ -61,6 +70,10 @@ services:
 
   telegram-ai:
     <<: *app
+    cpus: "0.50"
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
     command: ["python", "-m", "worker.telegram_gateway"]
     volumes:
       - ./:/app:ro
@@ -99,6 +112,12 @@ services:
 
   full-executor:
     <<: *app
+    # Dedicated AI/job executor budget.  Remote fio benchmark commands also
+    # carry an explicit one-CPU fio affinity in worker/executor/*_perf.py.
+    cpus: "1.00"
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 256
     command: ["python", "-m", "uvicorn", "worker.full_executor:app", "--host", "0.0.0.0", "--port", "8787"]
     privileged: true
     volumes:
@@ -124,6 +143,10 @@ services:
 
   watcher:
     <<: *app
+    cpus: "1.50"
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
     command: ["python", "-m", "watcher.main"]
     volumes:
       - ./:/app:ro
@@ -151,6 +174,10 @@ services:
 
   vault-monitor:
     <<: *app
+    cpus: "0.25"
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
     command: ["python", "-m", "watcher.vault_monitor"]
     volumes:
       - ./:/app:ro
@@ -163,6 +190,10 @@ services:
 
   worker:
     <<: *app
+    cpus: "2.00"
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
     command: ["python", "-m", "worker.main"]
     volumes:
       - ./:/app:ro
@@ -189,6 +220,10 @@ services:
 
   code-repair:
     <<: *app
+    cpus: "0.25"
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
     command: ["python", "-m", "worker.code_repair_supervisor"]
     volumes:
       - ./:/app:rw

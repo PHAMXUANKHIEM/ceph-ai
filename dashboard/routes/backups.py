@@ -252,6 +252,48 @@ def _restore_preflight(
     }
 
 
+def _restore_in_place_preflight(cluster, pool: str, image: str, selected_point: dict) -> dict:
+    """Fail-closed preflight for the destructive in-place restore path.
+
+    An image with active RBD watchers is normally attached to a consumer.  A
+    production restore must not overwrite it while it is attached, and an
+    image with children must not be replaced while clone dependencies still
+    exist.  The check is repeated by the Worker immediately before import;
+    this dashboard check only gives the operator actionable evidence before
+    approval.
+    """
+    connection = cluster_connection(cluster) if not cluster.is_default else None
+    try:
+        source = (
+            ceph_client.query_rbd_image_detail(pool, image) if connection is None
+            else ceph_client.query_rbd_image_detail_with(pool, image, *connection)
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được restore preflight: {exc}") from exc
+    watchers = source.get("watchers") or []
+    children = source.get("children") or []
+    blockers = []
+    if watchers:
+        blockers.append("source_attached")
+    if children:
+        blockers.append("source_has_children")
+    if source.get("available") is False:
+        blockers.append("source_unavailable")
+    return {
+        "checked_at": datetime.utcnow().isoformat() + "Z",
+        "cluster_id": cluster.id,
+        "source": {"pool": pool, "image": image, "watcher_count": len(watchers),
+                   "snapshot_count": len(source.get("snapshots") or []),
+                   "child_count": len(children),
+                   "partial_errors": source.get("partial_errors") or {},
+                   "available": source.get("available", True)},
+        "recovery_point_job_id": selected_point["job_id"],
+        "chain_job_ids": selected_point["chain_job_ids"],
+        "blockers": blockers,
+        "passed": not blockers,
+    }
+
+
 @router.get("/api/backups/recovery-points")
 async def recovery_points_api(request: Request, pool: str, image: str, user: str = Depends(require_login)):
     del user
@@ -483,6 +525,7 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
             "restore_bytes_per_second": restore_bytes_per_second,
             "metadata": _freshness(latest_metadata, metadata_rpo_hours),
             "drill_freshness": _freshness(latest_drill, drill_rpo_hours) if drill_configured else None,
+            "drill_configured": drill_configured,
             "latest_drill": None if latest_drill is None else {
                 "status": latest_drill.status, "created_at": latest_drill.created_at,
                 "duration_seconds": latest_drill.duration_seconds,
@@ -654,6 +697,17 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
             detail=f"Chưa có bản full backup thành công cho {pool}/{image} — không thể khôi phục.",
         )
 
+    preflight = _restore_in_place_preflight(cluster, pool, image, selected_point)
+    if not preflight["passed"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Restore ghi đè preflight không đạt. Hãy detach volume và xử lý dependency trước khi duyệt.",
+                "blockers": preflight["blockers"],
+                "preflight": preflight,
+            },
+        )
+
     # target_nodes MUST be a non-empty single-host list — same requirement
     # worker/backup/scheduler.py::_create_scheduled_action's docstring
     # documents (a previously-shipped bug: _execute_approved_action rejects
@@ -668,6 +722,7 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
         "pool": pool,
         "image": image,
         "recovery_point_job_id": selected_point["job_id"],
+        "preflight": preflight,
     }
     try:
         preview_command = executor_commands.get_command(RESTORE_ACTION_ID, None, action_params)
@@ -833,7 +888,9 @@ def _create_manual_backup_action(action_id: str, action_params: dict, user: str,
     with db.SessionLocal() as session:
         existing = (
             _in_flight_action_query(
-                session, ("rbd_backup_run", "backup_metadata_run"), cluster
+                session,
+                ("rbd_backup_run", "backup_metadata_run", "restore_drill_execute"),
+                cluster,
             )
             .first()
         )
@@ -843,6 +900,8 @@ def _create_manual_backup_action(action_id: str, action_params: dict, user: str,
         label = (
             f"Backup RBD thủ công cho {action_params['pool']}/{action_params['image']}"
             if action_id == "rbd_backup_run"
+            else "RestoreDrill thủ công vào scratch image được cấu hình"
+            if action_id == "restore_drill_execute"
             else "Backup metadata cụm thủ công"
         )
         incident = Incident(
@@ -894,6 +953,20 @@ async def run_metadata_backup_now(request: Request, user: str = Depends(require_
     _require_admin_privilege(user)
     cluster = selected_cluster(request)
     action_pk = _create_manual_backup_action("backup_metadata_run", {}, user, cluster)
+    return JSONResponse({"action_id": action_pk}, status_code=201)
+
+
+@router.post("/backups/restore-drill/run-now")
+async def run_restore_drill_now(request: Request, user: str = Depends(require_login)):
+    """Queue a manual, read-only RestoreDrill against its configured scratch target."""
+    _require_admin_privilege(user)
+    cluster = selected_cluster(request)
+    if cluster is not None and not cluster.is_default:
+        raise HTTPException(status_code=409, detail="RestoreDrill hiện chỉ chạy trên cluster mặc định.")
+    drill_config = load_backup_policy().get("restore_drill") or {}
+    if not all(drill_config.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image")):
+        raise HTTPException(status_code=409, detail="RestoreDrill chưa được cấu hình đầy đủ trong backup policy.")
+    action_pk = _create_manual_backup_action("restore_drill_execute", {}, user, cluster)
     return JSONResponse({"action_id": action_pk}, status_code=201)
 
 

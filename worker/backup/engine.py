@@ -743,29 +743,44 @@ def _run_restore_to_production(
     write_progress(action_pk, progress)
 
     cluster = get_cluster(cluster_id)
+    restore_as_new = dest_pool != pool or dest_image != image
     approved_preflight = action_params.get("preflight")
     if isinstance(approved_preflight, dict):
         try:
             if cluster is None:
                 inventory = ceph_client.query_rbd_inventory(dest_pool)
                 overview = ceph_client.query_rbd_pool_overview(dest_pool)
+                source_detail = ceph_client.query_rbd_image_detail(pool, image) if not restore_as_new else None
             else:
                 nodes = [row["host"] for row in configured_nodes(cluster) if "MON" in row["roles"]]
                 ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(cluster)
                 connection = (nodes, container_name, ssh_user, ssh_key_path, exec_mode)
                 inventory = ceph_client.query_rbd_inventory_with(dest_pool, *connection)
                 overview = ceph_client.query_rbd_pool_overview_with(dest_pool, *connection)
+                source_detail = (
+                    ceph_client.query_rbd_image_detail_with(pool, image, *connection)
+                    if not restore_as_new else None
+                )
             required_bytes = int(approved_preflight.get("required_bytes") or 0)
             blockers = []
-            if any(row.get("name") == dest_image for row in inventory):
+            if not restore_as_new and not any(row.get("name") == dest_image for row in inventory):
+                blockers.append("source_missing")
+            if restore_as_new and any(row.get("name") == dest_image for row in inventory):
                 blockers.append("destination_exists")
             if overview.get("near_full"):
                 blockers.append("destination_pool_near_full")
             if overview.get("rbd_enabled") is False:
                 blockers.append("destination_pool_rbd_disabled")
             max_available = int(overview.get("max_available") or 0)
-            if max_available and required_bytes > max_available:
+            if restore_as_new and max_available and required_bytes > max_available:
                 blockers.append("insufficient_capacity")
+            if not restore_as_new and source_detail is not None:
+                if source_detail.get("watchers"):
+                    blockers.append("source_attached")
+                if source_detail.get("children"):
+                    blockers.append("source_has_children")
+                if source_detail.get("available") is False:
+                    blockers.append("source_unavailable")
             if blockers:
                 raise BackupEngineError("Restore preflight re-check failed: " + ", ".join(blockers))
         except (CephQueryError, ValueError, BackupEngineError) as exc:
@@ -791,7 +806,6 @@ def _run_restore_to_production(
         return False
 
     backend = get_backend_for_cluster(cluster) if cluster is not None else get_backend(slot, settings)
-    restore_as_new = dest_pool != pool or dest_image != image
     result = restore.restore_image(
         pool,
         image,

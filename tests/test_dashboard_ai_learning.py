@@ -9,7 +9,10 @@ from shared.models import (
     LogFinding,
     LogIngestRun,
     LogLearningSample,
+    HostMetricSample,
+    NodeResourceForecastAlert,
     NodeResourceForecastRun,
+    NodeResourceForecastTransition,
     NodeResourceModelState,
     RemediationCase,
     VolumeEarlyForecast, VolumeForecastRun,
@@ -249,3 +252,103 @@ def test_ai_learning_shows_auditable_volume_early_warning(dashboard_client):
     assert "seasonal-trend-v1" in response.text
     payload = dashboard_client.get(f"/api/ai-learning?cluster={cluster_id}").json()
     assert payload["volume_learning"]["forecast_warning_count"] == 1
+
+
+def test_ai_learning_shows_volume_data_quality_reason(dashboard_client):
+    with db.SessionLocal() as session:
+        cluster = ensure_default_cluster(session)
+        session.add(VolumeEarlyForecast(
+            cluster_id=cluster.id, pool="vms", image="sparse-disk",
+            metric="write_latency_ms", horizon_hours=6,
+            generated_at=NOW, target_at=NOW + timedelta(hours=6),
+            source_latest_at=NOW - timedelta(hours=3), current_value=12.0,
+            predicted_value=12.0, threshold_type=None, threshold_value=None,
+            confidence=0.0, training_samples=18, training_window_hours=24,
+            seasonal_scope="none", model_version="seasonal-trend-v1",
+            status="DATA_QUALITY",
+            reason="GAP_DETECTED: longest gap is 25200.0s; limit is 21600.0s",
+            idempotency_key="dashboard-data-quality",
+        ))
+        session.commit()
+        cluster_id = cluster.id
+    _login(dashboard_client)
+
+    response = dashboard_client.get(f"/ai-learning?cluster={cluster_id}")
+
+    assert response.status_code == 200
+    assert "DATA_QUALITY" in response.text
+    assert "GAP_DETECTED" in response.text
+
+
+def test_ai_learning_explains_node_alert_with_quality_and_transition_history(dashboard_client):
+    with db.SessionLocal() as session:
+        cluster = ensure_default_cluster(session)
+        cluster.name = "CS-EXPLAIN"
+        alert = NodeResourceForecastAlert(
+            cluster_name=cluster.name, host="10.3.53.69", metric="cpu",
+            status="OPEN", lifecycle_state="WARNING", notification_state="SENT",
+            first_detected_at=NOW, last_detected_at=NOW,
+            current_percent=82.0, predicted_percent=94.0, hours_to_90=4.0,
+            confidence=.91, samples=48, window_hours=24,
+            consensus_status="CONSENSUS", consensus_ratio=.75,
+            consensus_candidate_count=4, predicted_low=89.0, predicted_high=97.0,
+            coverage_ratio=.96, max_gap_hours=.5, latest_observed_at=datetime.utcnow(),
+            state_changed_at=NOW, state_reason="Upper bound vượt ngưỡng cảnh báo.",
+            evidence_version="forecast-consensus:v1",
+        )
+        session.add(alert)
+        session.flush()
+        session.add(NodeResourceForecastTransition(
+            alert_id=alert.id, previous_state="CANDIDATE", new_state="WARNING",
+            reason="Đủ breach liên tiếp để mở warning.",
+            evidence_version="forecast-consensus:v1", changed_at=NOW,
+        ))
+        session.commit()
+        cluster_id = cluster.id
+    _login(dashboard_client)
+
+    payload = dashboard_client.get(f"/api/ai-learning?cluster={cluster_id}").json()
+    explanation = payload["node_alerts"][0]
+    assert explanation["state_reason"] == "Upper bound vượt ngưỡng cảnh báo."
+    assert explanation["consensus_candidate_count"] == 4
+    assert explanation["coverage_ratio"] == .96
+    assert explanation["freshness_status"] == "FRESH"
+    assert explanation["transitions"][0]["new_state"] == "WARNING"
+
+    page = dashboard_client.get(f"/ai-learning?cluster={cluster_id}")
+    assert "Giải thích alert CPU/RAM" in page.text
+    assert "Đủ breach liên tiếp để mở warning." in page.text
+
+
+def test_ai_learning_replay_is_read_only_and_compares_models(dashboard_client):
+    with db.SessionLocal() as session:
+        cluster = ensure_default_cluster(session)
+        for index in range(40):
+            session.add(HostMetricSample(
+                cluster_id=cluster.id, host="10.3.53.69", node_name="node-1",
+                cpu_percent=30.0 + index * .2, mem_percent=40.0 + index * .1,
+                disk_read_iops=10.0, disk_write_iops=8.0, disk_latency_ms=1.0,
+                network_rx_bytes_per_sec=100.0, network_tx_bytes_per_sec=80.0,
+                collected_at=NOW + timedelta(hours=index),
+            ))
+        session.commit()
+        cluster_id = cluster.id
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/ai-learning/replay", json={
+        "cluster_id": cluster_id, "host": "10.3.53.69", "metric": "cpu",
+        "start_at": NOW.isoformat(),
+        "end_at": (NOW + timedelta(hours=39)).isoformat(),
+        "horizon_hours": 1, "window_hours": [6, 12, 24],
+    })
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["read_only"] is True
+    assert payload["remediation_executed"] is False
+    assert payload["metrics"]["linear"]["evaluated"] > 0
+    assert payload["comparison"]["active_algorithm"] == "linear"
+    assert "rolling_quantile" in payload["metrics"]
+    with db.SessionLocal() as session:
+        assert session.query(NodeResourceForecastRun).count() == 0
+        assert session.query(NodeResourceForecastAlert).count() == 0

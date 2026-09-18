@@ -11,6 +11,7 @@ from shared import db as db_module
 from shared.models import (
     Action,
     ActionStatus,
+    AuditEntry,
     BackupJob,
     Incident,
     IncidentStatus,
@@ -19,6 +20,7 @@ from shared.models import (
     User,
     VolumeMetric,
     VolumePerfSweep,
+    VolumeSnapshotPolicy,
 )
 from watcher.ceph_client import CephQueryError
 
@@ -1701,6 +1703,35 @@ def test_volume_inventory_detail_rejects_invalid_name_and_returns_dependencies(d
     assert response.json()["attachment_summary"]["mutation_supported"] is False
 
 
+def test_volume_dependency_graph_api_is_cluster_scoped_and_read_only(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    graph = {
+        "root": {"pool": "vms", "image": "vm-01"},
+        "nodes": [
+            {"pool": "vms", "image": "vm-01", "depth": 0},
+            {"pool": "vms", "image": "vm-01-clone", "depth": 1},
+        ],
+        "edges": [{"parent": {"pool": "vms", "image": "vm-01"}, "child": {"pool": "vms", "image": "vm-01-clone"}}],
+        "max_depth": 3,
+        "max_nodes": 64,
+        "truncated": False,
+        "partial_errors": [],
+    }
+    calls = []
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_dependency_graph",
+        lambda pool, image, max_depth, max_nodes: calls.append((pool, image, max_depth, max_nodes)) or graph,
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/inventory/vm-01/dependencies?max_depth=2&max_nodes=8")
+
+    assert response.status_code == 200
+    assert response.json()["nodes"][1]["image"] == "vm-01-clone"
+    assert calls == [("vms", "vm-01", 2, 8)]
+
+
 def test_volume_inventory_detail_marks_verified_cinder_consumer(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     volume_id = "12345678-1234-4123-8123-1234567890ab"
@@ -1740,6 +1771,59 @@ def test_volume_inventory_detail_marks_verified_cinder_consumer(dashboard_client
     assert payload["attachment_summary"]["mutation_supported"] is False
     assert payload["attachment_reconciliation"]["status"] == "mismatch"
     assert payload["cinder_snapshots"]["items"][0]["snapshot_id"] == "snap-1"
+
+
+def test_volume_inventory_detail_summaries_are_cluster_scoped_and_structured(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        session.add(BackupJob(
+            cluster_id=cluster.id, run_id="run-1", pool="vms", image="vm-01",
+            job_type="full", status="SUCCESS", size_bytes=4096,
+            sha256="a" * 64, created_at=now, finished_at=now,
+        ))
+        session.add(VolumeMetric(
+            cluster_id=cluster.id, pool="vms", image="vm-01", iops=12.5,
+            read_latency_ms=1.2, write_latency_ms=2.3, saturated=False, polled_at=now,
+        ))
+        incident = Incident(
+            cluster_id=cluster.id, ceph_code="RBD_VOLUME", status="PENDING_APPROVAL",
+            detected_at=now, created_at=now,
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="rbd_volume_resize", classification="RISKY",
+            status=ActionStatus.PENDING_APPROVAL.value,
+            action_params=json.dumps({"pool_name": "vms", "image": "vm-01", "size_mib": 10}),
+        )
+        session.add(action)
+        session.flush()
+        session.add(AuditEntry(
+            incident_id=incident.id, action_id=action.id,
+            event_type="RISKY_ACTION_PENDING_APPROVAL", actor="admin", created_at=now,
+        ))
+        session.commit()
+
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"pool": pool, "name": image, "watchers": [], "locks": [],
+                              "attachment_summary": {"attached": False, "watcher_count": 0,
+                                                      "lock_count": 0, "mutation_supported": False}},
+    )
+    monkeypatch.setattr(volumes_route, "discover_cinder_volume", lambda cluster, image: {
+        "status": "not_cinder", "verified": False,
+    })
+    _login(dashboard_client)
+
+    payload = dashboard_client.get("/api/volumes/vms/inventory/vm-01").json()
+
+    assert payload["backup_summary"]["status"] == "healthy"
+    assert payload["backup_summary"]["latest_success"]["sha256_present"] is True
+    assert payload["metric_summary"]["latest"]["iops"] == 12.5
+    assert payload["audit_summary"]["count"] == 1
+    assert payload["audit_summary"]["events"][0]["action_id"] == "rbd_volume_resize"
 
 
 def test_cinder_attach_proposal_is_approval_gated_and_targets_controller(dashboard_client, monkeypatch):
@@ -1886,6 +1970,66 @@ def test_cinder_snapshot_create_is_approval_gated_and_forces_attached_volume(das
         assert "--force" in action.proposed_command
 
 
+def test_cinder_snapshot_delete_is_destructive_and_requires_existing_snapshot(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _configure_openstack_controller()
+    volume_id = "12345678-1234-4123-8123-1234567890ab"
+    snapshot_id = "abcdefab-1234-4123-8123-1234567890ab"
+    monkeypatch.setattr(
+        volumes_route, "discover_cinder_snapshots",
+        lambda cluster, cinder_volume_id: {
+            "status": "ok", "items": [{"snapshot_id": snapshot_id, "name": "daily-01", "status": "available"}],
+            "count": 1,
+        },
+    )
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/snapshots/{snapshot_id}/delete",
+        headers={"Idempotency-Key": "snapshot-delete-1"},
+        json={},
+    )
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(action_id="cinder_delete_snapshot").one()
+        assert action.classification == "DESTRUCTIVE"
+        params = json.loads(action.action_params)
+        assert params["snapshot_id"] == snapshot_id
+        assert "snapshot delete" in action.proposed_command
+
+
+def test_snapshot_policy_save_validates_cinder_context_and_persists_schedule(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _configure_openstack_controller()
+    volume_id = "12345678-1234-4123-8123-1234567890ab"
+    monkeypatch.setattr(volumes_route, "discover_cinder_volume", lambda cluster, image: {
+        "status": "managed", "verified": True, "volume_id": volume_id,
+    })
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/snapshot-policy",
+        json={
+            "cron_expression": "15 3 * * 1-5", "timezone": "Asia/Ho_Chi_Minh",
+            "snapshot_prefix": "daily", "retention_count": 14,
+            "capacity_guard_percent": 88, "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    with db_module.SessionLocal() as session:
+        policy = session.query(VolumeSnapshotPolicy).one()
+        assert policy.cron_expression == "15 3 * * 1-5"
+        assert policy.timezone == "Asia/Ho_Chi_Minh"
+        assert policy.retention_count == 14
+        assert policy.enabled is True
+
+    invalid = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/snapshot-policy",
+        json={"cron_expression": "not cron"},
+    )
+    assert invalid.status_code == 400
+
+
 def test_volume_inventory_api_is_read_only_for_non_admin_and_surfaces_backend_error(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _create_user("viewer", "viewer-password", is_admin=False)
@@ -1923,6 +2067,79 @@ def test_volume_pool_overview_api_returns_durability_and_capacity(dashboard_clie
     assert response.json()["rbd_enabled"] is True
     assert response.json()["bytes_used"] == 2048
     assert response.json()["near_full"] is True
+
+
+def test_volume_replication_api_is_read_only_and_exposes_disabled_mode(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_info", lambda pool: {"mode": "disabled"})
+    calls = []
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_status", lambda pool: calls.append(pool))
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/replication")
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is False
+    assert response.json()["mode"] == "disabled"
+    assert calls == []
+
+
+def test_volume_replication_api_returns_status_when_enabled(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_info", lambda pool: {"mode": "journal"})
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_status", lambda pool: {"site_status": "up_to_date"})
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/replication")
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is True
+    assert response.json()["status"]["site_status"] == "up_to_date"
+
+
+def test_volume_qos_api_reads_values_and_proposes_approval_gated_change(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    current = {
+        "rbd_qos_iops_limit": 100,
+        "rbd_qos_bps_limit": 0,
+        "rbd_qos_iops_burst": 0,
+        "rbd_qos_bps_burst": 0,
+        "rbd_qos_read_iops_limit": 0,
+        "rbd_qos_read_bps_limit": 0,
+        "rbd_qos_write_iops_limit": 0,
+        "rbd_qos_write_bps_limit": 0,
+    }
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_qos", lambda pool, image: current)
+    _login(dashboard_client)
+
+    read = dashboard_client.get("/api/volumes/vms/inventory/vm-01/qos")
+    proposed = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/qos",
+        json={"rbd_qos_iops_limit": 500, "rbd_qos_bps_limit": 0},
+        headers={"Idempotency-Key": "qos-vm-01-001"},
+    )
+
+    assert read.status_code == 200
+    assert read.json()["values"]["rbd_qos_iops_limit"] == 100
+    assert proposed.status_code == 201
+    assert proposed.json()["requires_approval"] is True
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, proposed.json()["action_id"])
+        assert action.action_id == "rbd_qos_set"
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+
+
+def test_volume_qos_api_rejects_out_of_range_value(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_qos", lambda pool, image: {})
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/qos",
+        json={"rbd_qos_iops_limit": -1},
+    )
+
+    assert response.status_code == 400
 
 
 def test_volume_inventory_rejects_inactive_cluster_without_default_fallback(dashboard_client, monkeypatch):
@@ -2142,6 +2359,96 @@ def test_propose_rename_volume_rejects_existing_destination_or_watcher(dashboard
 
     assert existing.status_code == 409
     assert attached.status_code == 409
+
+
+def test_propose_clone_volume_checks_snapshot_destination_and_capacity(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"pool": pool, "name": image, "size": 2 * 1024 ** 3,
+                             "snapshots": [{"name": "gold"}], "watchers": [], "children": []},
+    )
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [])
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda pool: {"max_available": 8 * 1024 ** 3})
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/vms/inventory/vm-01/clone", json={
+        "snapshot": "gold", "dest_pool": "backups", "dest_image": "vm-copy",
+    })
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "rbd_clone_volume"
+        assert action.classification == "RISKY"
+        assert "rbd clone" in action.proposed_command
+        assert json.loads(action.action_params)["dest_image"] == "vm-copy"
+
+
+def test_propose_clone_volume_rejects_missing_snapshot(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"size": 1, "snapshots": [], "watchers": [], "children": []},
+    )
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [])
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda pool: {"max_available": 10})
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/vms/inventory/vm-01/clone", json={
+        "snapshot": "missing", "dest_pool": "backups", "dest_image": "vm-copy",
+    })
+
+    assert response.status_code == 409
+
+
+def test_propose_template_requires_snapshot_and_creates_risky_action(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"size": 1, "snapshots": [{"name": "gold", "protected": False}],
+                             "watchers": [], "children": []},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/vms/inventory/vm-01/template", json={
+        "snapshot": "gold", "template_name": "ubuntu-24", "description": "golden image",
+    })
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "rbd_template_mark"
+        assert action.classification == "RISKY"
+        assert "snap protect" in action.proposed_command
+        assert json.loads(action.action_params)["template_name"] == "ubuntu-24"
+
+
+def test_propose_flatten_requires_parent_and_detached_volume(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda pool: {"max_available": 10 * 1024})
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"parent": "vms/vm-01@gold", "size": 1024,
+                             "watchers": [], "locks": [], "children": []},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/backups/inventory/vm-copy/flatten")
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "rbd_flatten_volume"
+        assert action.classification == "DESTRUCTIVE"
+
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"parent": "vms/vm-01@gold", "size": 1024,
+                             "watchers": [{"client": "client.1"}], "locks": [], "children": []},
+    )
+    second = dashboard_client.post("/api/volumes/vms/inventory/vm-copy/flatten")
+    assert second.status_code == 409
 
 
 def test_propose_rename_volume_rejects_destination_reserved_by_pending_create(dashboard_client, monkeypatch):

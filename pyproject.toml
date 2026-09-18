@@ -22,6 +22,7 @@ dependencies = [
     "boto3==1.43.59",
     "apscheduler==3.11.3",
     "openpyxl==3.1.5",
+    "river==0.25.0",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +41,6 @@ include = ["watcher*", "worker*", "dashboard*", "shared*", "config*", "scripts*"
 dashboard = ["templates/*.html", "static/*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
 markers = [
     "live: makes real network/SSH calls to the Ceph lab cluster — excluded by default, run with `pytest -m live`",
 ]

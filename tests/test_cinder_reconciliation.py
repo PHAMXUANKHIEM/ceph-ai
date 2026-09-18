@@ -54,3 +54,16 @@ def test_cinder_snapshot_post_check_requires_named_non_error_snapshot():
             "cinder_create_snapshot", params,
             json.dumps([{"name": "daily-01", "status": "error"}]),
         )
+
+
+def test_cinder_snapshot_delete_post_check_requires_confirmed_absence():
+    params = {"snapshot_id": "12345678-1234-4123-8123-1234567890ab"}
+    cinder_reconciliation.reconcile(
+        "cinder_delete_snapshot", params,
+        json.dumps({"snapshot_id": params["snapshot_id"], "deleted": True}),
+    )
+    with pytest.raises(ExecutorError, match="vẫn còn tồn tại"):
+        cinder_reconciliation.reconcile(
+            "cinder_delete_snapshot", params,
+            json.dumps({"id": params["snapshot_id"], "status": "deleting"}),
+        )

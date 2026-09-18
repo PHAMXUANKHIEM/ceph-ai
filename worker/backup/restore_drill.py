@@ -32,11 +32,12 @@ from config.settings import settings
 from shared import db
 from shared.models import BackupJob
 from worker.backup import alerting
+from worker.backup import restore as restore_chain
 from worker.backup.cluster_scope import is_valid_rbd_name
 from worker.backup.policy_config import load_backup_policy
 from worker.backup.ssh_io import read_all, read_chunk, wait_exit_status, write_chunk
 from worker.backup.storage.factory import get_backend
-from worker.executor.ssh_executor import KNOWN_HOSTS_PATH, execute_command
+from worker.executor.ssh_executor import ExecutorError, KNOWN_HOSTS_PATH, execute_command
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,24 @@ def _cleanup_scratch(mon_ip: str, scratch_pool: str, scratch_image: str) -> None
         )
 
 
+def _assert_scratch_absent(mon_ip: str, scratch_pool: str, scratch_image: str) -> None:
+    """Refuse to touch an operator-owned scratch image.
+
+    Cleanup is allowed only after this preflight proves that the destination
+    did not exist before the drill. Treat transport/permission failures as
+    blockers; only Ceph's explicit not-found result is safe to continue.
+    """
+    spec = f"{shlex.quote(scratch_pool)}/{shlex.quote(scratch_image)}"
+    try:
+        execute_command(mon_ip, f"rbd info {spec} --format json")
+    except ExecutorError as exc:
+        message = str(exc).lower()
+        if "exited 2" in message or "no such" in message or "not found" in message:
+            return
+        raise RestoreDrillError(f"Không xác minh được scratch image trước DR drill: {exc}") from exc
+    raise RestoreDrillError(
+        f"Scratch image {scratch_pool}/{scratch_image} đã tồn tại; từ chối ghi đè hoặc tự xóa image có sẵn"
+    )
 def _record_result(
     pool: str, image: str, success: bool, started_at: datetime, error_message: str | None,
     size_bytes: int = 0,
@@ -195,6 +214,9 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
     if not all(is_valid_rbd_name(value) for value in (pool, image, scratch_pool, scratch_image)):
         logger.error("restore_drill.run: 'restore_drill' is not fully configured in backup_policy.yaml")
         return False
+    if pool == scratch_pool and image == scratch_image:
+        logger.error("restore_drill.run: source and scratch image must differ")
+        return False
 
     started_at = datetime.utcnow()
     progress = [{"step": "restore_drill", "status": "running", "started_at": started_at.isoformat()}]
@@ -212,7 +234,43 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
     backend = get_backend(backup_job.backup_target_slot, settings)
 
     tmp_path = None
+    scratch_created = False
     try:
+        _assert_scratch_absent(mon_ip, scratch_pool, scratch_image)
+        # Reuse the production restore engine when the selected full backup
+        # has successful incrementals. This makes the drill exercise the same
+        # full + import-diff chain used by an actual recovery, while the
+        # existing full-only path remains the small compatibility path for
+        # installations that have not enabled incremental backups.
+        chain_full, diff_jobs = restore_chain._backup_chain(pool, image, cluster_id=None)
+        if chain_full is not None and chain_full.id == backup_job.id and diff_jobs:
+            scratch_created = True
+            progress[0]["mode"] = "full+incremental"
+            progress[0]["full_job_id"] = chain_full.id
+            progress[0]["incremental_job_ids"] = [job.id for job in diff_jobs]
+            write_progress(action_pk, progress)
+            result = restore_chain.restore_image(
+                pool,
+                image,
+                backend,
+                scratch_pool,
+                scratch_image,
+                cluster_id=None,
+                cleanup_new_destination_on_failure=True,
+            )
+            if not result.success:
+                progress[0]["applied_diff_job_ids"] = result.applied_diff_job_ids
+                progress[0]["message"] = result.error_message or "full + incremental restore chain failed"
+                write_progress(action_pk, progress)
+                raise RestoreDrillError(result.error_message or "full + incremental restore chain failed")
+            _record_result(pool, image, True, started_at, None, result.size_bytes)
+            progress[0]["status"] = "done"
+            progress[0]["finished_at"] = datetime.utcnow().isoformat()
+            progress[0]["full_job_id"] = result.full_job_id
+            progress[0]["applied_diff_job_ids"] = result.applied_diff_job_ids
+            write_progress(action_pk, progress)
+            return True
+
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = tmp.name
             backend.download(backup_job.remote_key, tmp)
@@ -242,6 +300,9 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
                 f"backend verification failed for BackupJob {backup_job.id}"
             )
 
+        # Mark before import: a failed import can still leave a partial RBD
+        # image that must be removed during the finally block.
+        scratch_created = True
         _import_backup_to_scratch(mon_ip, tmp_path, scratch_pool, scratch_image)
         restored_sha256 = _export_scratch_sha256(mon_ip, scratch_pool, scratch_image)
 
@@ -266,6 +327,7 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
         )
         return False
     finally:
-        _cleanup_scratch(mon_ip, scratch_pool, scratch_image)
+        if scratch_created:
+            _cleanup_scratch(mon_ip, scratch_pool, scratch_image)
         if tmp_path is not None and os.path.exists(tmp_path):
             os.remove(tmp_path)

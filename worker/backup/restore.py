@@ -357,8 +357,12 @@ def restore_image(
             applied_diff_ids.append(diff_job.id)
 
         # Do not treat a successful import stream as sufficient evidence:
-        # Ceph must be able to resolve the resulting image afterwards.
+        # Ceph must resolve the resulting image and read its data afterwards.
+        # The export is directed to /dev/null, so no restored payload is
+        # retained or returned to the Dashboard; it verifies the RBD read path
+        # and catches an image that exists but cannot be read after import.
         _run_rbd_command(mon_ip, f"rbd info {destination_spec} --format json", cluster)
+        _run_rbd_command(mon_ip, f"rbd export {destination_spec} /dev/null", cluster)
 
         return RestoreResult(
             success=True,
