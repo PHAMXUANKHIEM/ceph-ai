@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 from shared import db
+import shared.ai_cost as ai_cost
 from shared.ai_cost import summary
 from shared.models import AIInvocation
 
@@ -113,6 +114,9 @@ def test_summary_suggests_cheaper_reference_model(dashboard_client, monkeypatch)
                          status="SUCCESS", latency_ms=1, input_chars=400, output_chars=400, created_at=now),
         ])
         session.commit()
+    # The host may have a refreshed .ai-pricing.json with additional models.
+    # This unit test verifies the checked-in reference table deterministically.
+    monkeypatch.setattr(ai_cost, "_active_prices", lambda: ai_cost.TOKEN_PRICES)
     data = summary(24, now=now)
     item = next(item for item in data["optimization"]["recommendations"] if item["feature"] == "runbook")
     assert item["recommended_model_id"] == "gc/gemini-2.5-flash"
@@ -132,6 +136,7 @@ def test_summary_recommends_a_price_for_unpriced_model_without_fake_savings(dash
             input_chars=400, output_chars=400, created_at=now,
         ))
         session.commit()
+    monkeypatch.setattr(ai_cost, "_active_prices", lambda: ai_cost.TOKEN_PRICES)
     data = summary(24, now=now)
     item = next(item for item in data["optimization"]["recommendations"] if item["feature"] == "unknown-feature")
     assert item["recommended_model_id"] == "gc/gemini-2.5-flash"

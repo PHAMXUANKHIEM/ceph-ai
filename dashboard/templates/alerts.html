@@ -94,7 +94,7 @@
           <div class="pagination-controls">
             {% if page > 1 %}<a class="pagination-prev" aria-label="Trang trước" href="/alerts?page={{ page - 1 }}&amp;page_size={{ page_size }}&amp;{{ filter_query }}">‹</a>{% else %}<button class="pagination-prev" disabled aria-label="Trang trước">‹</button>{% endif %}
             <div class="pagination-pages">{% for number in range(1, total_pages + 1) %}<a class="pagination-page-number{% if number == page %} is-active{% endif %}"{% if number == page %} aria-current="page"{% endif %} href="/alerts?page={{ number }}&amp;page_size={{ page_size }}&amp;{{ filter_query }}">{{ number }}</a>{% endfor %}</div>
-            <span class="pagination-mobile-status">Trang {{ page }}/{{ total_pages }}</span>
+            <span class="pagination-mobile-status pagination-status">Trang {{ page }}/{{ total_pages }}</span>
             {% if page < total_pages %}<a class="pagination-next" aria-label="Trang sau" href="/alerts?page={{ page + 1 }}&amp;page_size={{ page_size }}&amp;{{ filter_query }}">›</a>{% else %}<button class="pagination-next" disabled aria-label="Trang sau">›</button>{% endif %}
           </div>
         </nav>

@@ -52,7 +52,8 @@ def test_main_sends_once_and_marks_state(monkeypatch, tmp_path):
 
     assert nightly_ai_report.main() == 0
     assert len(sent) == 1
-    assert saved[str(report_state_path)]["morning_report_date"] == "2026-09-16"
+    expected_date = datetime.now(timezone.utc).astimezone(nightly_ai_report.NIGHTLY_TIMEZONE).date().isoformat()
+    assert saved[str(report_state_path)]["morning_report_date"] == expected_date
 
 
 def test_long_previews_do_not_hide_recommendation():

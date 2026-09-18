@@ -245,13 +245,11 @@ def test_tablet_rail_is_static_and_mobile_restores_full_labels():
     assert ".app-shell .nav-link-label { display: inline; }" in css
 
 
-def test_collapsed_desktop_rail_keeps_a_real_icon_width_and_no_pseudo_fragments():
+def test_sidebar_collapse_feature_is_removed_without_pseudo_fragments():
     css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
 
-    assert "body.app-shell.sidebar-collapsed .main-nav" in css
-    assert "align-self: stretch !important" in css
-    assert "width: 100% !important" in css
-    assert "body.app-shell.sidebar-collapsed .nav-link::before { content: none; }" in css
+    assert "sidebar-collapsed" not in css
+    assert "body.app-shell.sidebar-collapsed .main-nav" not in css
     assert ".app-shell .nav-link::before { content: none; }" in css
 
 
