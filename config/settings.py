@@ -1,4 +1,5 @@
 import os
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,6 +15,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=os.environ.get("CEPH_AI_ENV_FILE", ".env"), extra="forbid")
 
     database_url: str = "sqlite:///./ceph_aiops.db"
+    # Explicit deployment mode keeps lab/test SQLite usage possible while
+    # making production safety checks fail closed instead of guessing from
+    # the database URL or container runtime.
+    ceph_ai_environment: Literal["development", "test", "lab", "staging", "production"] = "development"
     rabbitmq_url: str = "amqp://guest:guest@localhost/"
 
     # Dashboard auth (single static account — AD from Architecture, no RBAC in v1).

@@ -96,6 +96,17 @@ class _CachedStaticFiles(StaticFiles):
 
 
 def _warn_if_using_dev_defaults() -> None:
+    if settings.ceph_ai_environment == "production":
+        errors = []
+        if settings.dashboard_password_hash == DEFAULT_DASHBOARD_PASSWORD_HASH:
+            errors.append("DASHBOARD_PASSWORD_HASH is still the dev default")
+        if settings.session_secret_key == DEFAULT_SESSION_SECRET_KEY:
+            errors.append("SESSION_SECRET_KEY is still the dev default")
+        if errors:
+            raise RuntimeError(
+                "Production security configuration rejected: " + "; ".join(errors)
+            )
+        return
     if settings.dashboard_password_hash == DEFAULT_DASHBOARD_PASSWORD_HASH:
         logger.warning(
             "Dashboard is using the DEFAULT dev-only password (admin/admin). "

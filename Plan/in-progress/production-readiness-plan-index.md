@@ -30,3 +30,9 @@
 - ADVISORY: cho phép sau khi read-only evidence gate đạt.
 - APPROVAL_REQUIRED: có thể pilot ở staging sau khi test gate tương ứng đạt.
 - LIMITED_AUTOPILOT: chưa được phép trên production.
+
+## Trạng thái cập nhật — 2026-09-18
+
+- Production 03 — PostgreSQL/migration foundation: **đang triển khai**; database gate, pool bounds, backup và restore/downgrade drill đã có evidence.
+- Production 05 — Security baseline: **đang triển khai**; production credential/database startup gates đã có, CSRF và multi-replica rate limit còn mở.
+- Production 01/02/04/06/07/08/09/10: **chưa nghiệm thu**; không bật LIMITED_AUTOPILOT.

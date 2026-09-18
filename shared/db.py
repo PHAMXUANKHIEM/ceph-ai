@@ -15,6 +15,23 @@ logger = logging.getLogger(__name__)
 _ACTION_STATE_EVENTS_KEY = "ceph_ai_action_state_events"
 
 
+def _validate_production_database_url(url: str) -> None:
+    environment = str(getattr(settings, "ceph_ai_environment", "development")).lower()
+    if environment != "production":
+        return
+    normalized = url.lower()
+    if not normalized.startswith((
+        "postgresql://",
+        "postgres://",
+        "postgresql+psycopg://",
+        "postgresql+psycopg2://",
+    )):
+        raise RuntimeError(
+            "Production requires a PostgreSQL DATABASE_URL; SQLite is only "
+            "allowed for development, test, or lab environments."
+        )
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -27,6 +44,7 @@ def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
 
 def make_engine(database_url: str | None = None):
     url = database_url or settings.database_url
+    _validate_production_database_url(url)
     is_sqlite = url.startswith("sqlite")
     if is_sqlite:
         connect_args = {"check_same_thread": False}

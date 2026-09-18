@@ -4,6 +4,19 @@
 
 Biến các cảnh báo bảo mật thành startup gate và middleware policy bắt buộc, thay vì chỉ log cảnh báo rồi tiếp tục chạy.
 
+## Trạng thái thực hiện — 2026-09-18
+
+- [x] Production fail-closed nếu còn `DASHBOARD_PASSWORD_HASH` hoặc `SESSION_SECRET_KEY` mặc định.
+- [x] Có regression test bảo đảm production bị từ chối với credential dev mặc định.
+- [ ] Bật CSRF protection thống nhất cho mọi mutation của Dashboard.
+- [ ] Hoàn tất Origin/Referer policy, Trusted Host và reverse-proxy trust.
+- [ ] Chuyển login/API rate limit sang shared store cho multi-replica.
+- [ ] Hoàn tất security regression cho session fixation, CSRF, host header và brute force.
+
+Evidence hiện tại: `tests/test_production_readiness.py`. Gate chỉ được kích hoạt
+khi `CEPH_AI_ENVIRONMENT=production`; các môi trường development/test/lab giữ hành
+vi cảnh báo phục vụ local development.
+
 ## Việc cần làm
 
 - Production fail startup nếu còn admin/admin, default password hash hoặc default session secret.
