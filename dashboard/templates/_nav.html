@@ -42,12 +42,13 @@
           <a href="/upgrade" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path.startswith('/upgrade') else '' }}">Upgrade Cluster</a>
           <a href="/patch" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/patch' else '' }}">Patch Ceph</a>
           <a href="/log-intelligence" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/log-intelligence' else '' }}">Log Intelligence</a>
-          <a href="/ai-learning" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/ai-learning' else '' }}">AI Learning</a>
           <a href="/runbooks" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/runbooks' else '' }}">AI Runbooks</a>
           <a href="/alerts" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/alerts' else '' }}">Trung tâm cảnh báo</a>
           {% if is_admin %}<a href="/synthetic-incidents" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/synthetic-incidents' else '' }}">Synthetic Tests</a>{% endif %}
         </div>
       </div>
+      <div class="sidebar-section-title">AI &amp; Intelligence</div>
+      <a href="/ai-learning" data-initial="AI" class="nav-link{{ ' active' if nav_path == '/ai-learning' else '' }}">AI Learning</a>
       <div class="sidebar-section-title">Data Protection</div>
       <a href="/backups" data-initial="B" class="nav-link{{ ' active' if nav_path == '/backups' else '' }}">Backup</a>
       <a href="/cinder-backups" data-initial="CB" class="nav-link nav-cinder-backups{{ ' active' if nav_path == '/cinder-backups' else '' }}">Cinder Volume Backups</a>
