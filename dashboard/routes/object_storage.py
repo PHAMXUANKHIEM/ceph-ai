@@ -27,7 +27,7 @@ from dashboard.vntime import to_utc_iso
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared import db
 from shared.ceph_releases import codename_for_version
-from shared.models import ObjectStorageAuditEntry
+from shared.models import BucketInventorySnapshot, ObjectStorageAuditEntry
 from shared.object_storage_cache import (
     get_or_load,
     invalidate as invalidate_object_storage_cache,
@@ -928,25 +928,84 @@ def _rgw_hosts(cluster) -> list[str]:
     return [str(node["host"]) for node in nodes if "RGW" in node["roles"]]
 
 
+def _load_bucket_inventory_snapshot(cluster) -> dict | None:
+    """Read the last successful bucket-name inventory from the database.
+
+    The process-local cache is intentionally still the fast path. This small
+    durable snapshot is only the cold-start fallback, so a Dashboard restart
+    does not turn the first Buckets request into a visibly empty page while
+    SSH/RGW inventory is being refreshed.
+    """
+    try:
+        with db.SessionLocal() as session:
+            snapshot = session.get(BucketInventorySnapshot, cluster.id)
+            if snapshot is None:
+                return None
+            names = json.loads(snapshot.bucket_names_json or "[]")
+            if not isinstance(names, list):
+                raise ValueError("bucket_names_json is not a list")
+            clean_names = sorted(
+                {str(name).strip() for name in names if str(name or "").strip()},
+                key=str.casefold,
+            )
+            return {
+                "host": snapshot.rgw_host,
+                "names": clean_names,
+                "captured_at": snapshot.captured_at,
+            }
+    except Exception:
+        logger.exception("Failed to read durable bucket inventory snapshot for cluster %s", cluster.id)
+        return None
+
+
+def _save_bucket_inventory_snapshot(cluster, host: str, names: list[str]) -> None:
+    """Persist bucket names best-effort; never fail a successful RGW read."""
+    clean_names = sorted(
+        {str(name).strip() for name in names if str(name or "").strip()},
+        key=str.casefold,
+    )
+    try:
+        with db.SessionLocal() as session:
+            snapshot = session.get(BucketInventorySnapshot, cluster.id)
+            if snapshot is None:
+                snapshot = BucketInventorySnapshot(cluster_id=cluster.id)
+                session.add(snapshot)
+            snapshot.rgw_host = host
+            snapshot.bucket_names_json = json.dumps(clean_names, ensure_ascii=False)
+            snapshot.captured_at = datetime.utcnow()
+            session.commit()
+    except Exception:
+        logger.exception("Failed to persist durable bucket inventory snapshot for cluster %s", cluster.id)
+
+
 def _load_bucket_list_from_first_reachable_rgw(cluster, hosts: list[str]) -> tuple[str, list[str]]:
     """Use any configured RGW endpoint; bucket metadata is shared per zone."""
     errors = []
     for host in hosts:
         api_names = _load_bucket_list_via_s3(cluster, host)
         if api_names is not None:
+            _save_bucket_inventory_snapshot(cluster, host, api_names)
             return host, api_names
         try:
             if cluster.is_default:
-                return host, fetch_bucket_list(host)
+                names = fetch_bucket_list(host)
+                _save_bucket_inventory_snapshot(cluster, host, names)
+                return host, names
             ssh_user, ssh_key_path, exec_mode, _mon_container = resolve_ssh_creds(cluster)
             container = cluster.ceph_rgw_container_name
-            return host, fetch_bucket_list_with(host, ssh_user, ssh_key_path, exec_mode, container)
+            names = fetch_bucket_list_with(host, ssh_user, ssh_key_path, exec_mode, container)
+            _save_bucket_inventory_snapshot(cluster, host, names)
+            return host, names
         except RgwLogError as exc:
             errors.append(_safe_error(exc))
     raise ObjectStorageError("Không thể lấy danh sách bucket từ RGW. " + "; ".join(errors))
 
 
 def _list_from_first_reachable_rgw(cluster, hosts: list[str]) -> tuple[str, list[str]]:
+    snapshot = _load_bucket_inventory_snapshot(cluster)
+    preferred_host = snapshot.get("host") if snapshot else None
+    if preferred_host in hosts:
+        hosts = [preferred_host] + [host for host in hosts if host != preferred_host]
     if _uses_mocked_rgw_client():
         return _load_bucket_list_from_first_reachable_rgw(cluster, hosts)
     return get_or_load(
@@ -1153,6 +1212,59 @@ def _inventory(
     }
 
 
+def _durable_snapshot_fallback(cluster, query: str, page: int, owner: str,
+                               quota: QuotaFilter, usage: UsageFilter,
+                               sort: SortField, order: SortOrder, page_size: int) -> dict | None:
+    """Build a renderable inventory from the last durable name snapshot.
+
+    A name-only snapshot is safe for the default name view. Metadata filters
+    and non-name sorting still require fresh bucket stats, so those requests
+    keep the empty loading fallback until the background refresh completes.
+    """
+    if owner.strip() or quota != "all" or usage != "all" or sort != "name":
+        return None
+    snapshot = _load_bucket_inventory_snapshot(cluster)
+    if snapshot is None:
+        return None
+    names = [
+        name for name in snapshot["names"]
+        if not query.strip() or query.strip().casefold() in name.casefold()
+    ]
+    names.sort(key=str.casefold, reverse=order == "desc")
+    total = len(names)
+    page_count = max(1, ceil(total / page_size))
+    safe_page = min(max(1, page), page_count)
+    page_names = names[(safe_page - 1) * page_size:safe_page * page_size]
+    current_hosts = _rgw_hosts(cluster)
+    host = (
+        snapshot["host"]
+        if snapshot["host"] in current_hosts
+        else (current_hosts[0] if current_hosts else "")
+    )
+    return {
+        "host": host,
+        "rgw_endpoint": _default_s3_endpoint(host) if host else "",
+        "rgw_endpoints": [_default_s3_endpoint(rgw_host) for rgw_host in _rgw_hosts(cluster)],
+        "zonegroup_api_name": "default",
+        "items": [
+            {"name": name, "stats_available": False, "stats_pending": True, "stats_error": None}
+            for name in page_names
+        ],
+        "query": query.strip(),
+        "owner": owner.strip(),
+        "quota": quota,
+        "usage": usage,
+        "sort": sort,
+        "order": order,
+        "page": safe_page,
+        "page_size": page_size,
+        "page_count": page_count,
+        "total": total,
+        "snapshot_available": True,
+        "snapshot_at": snapshot["captured_at"].isoformat() if snapshot["captured_at"] else None,
+    }
+
+
 def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: QuotaFilter = "all",
                       usage: UsageFilter = "all", sort: SortField = "name", order: SortOrder = "asc",
                       page_size: int = PAGE_SIZE) -> dict:
@@ -1174,6 +1286,19 @@ def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: Qu
         "page_count": 1,
         "total": 0,
     }
+    cache_status = cache_state("buckets", key)
+    cache_age = cache_status.get("age_seconds")
+    cache_needs_cold_fallback = (
+        not cache_status["available"]
+        or (cache_age is not None and cache_age >= BUCKET_LIST_STALE_TTL_SECONDS)
+    )
+    snapshot_fallback = (
+        _durable_snapshot_fallback(cluster, query, page, owner, quota, usage, sort, order, page_size)
+        if cache_needs_cold_fallback
+        else None
+    )
+    if snapshot_fallback is not None:
+        fallback.update(snapshot_fallback)
     result = get_or_load(
         "buckets", key,
         lambda: _inventory(cluster, query, page, owner, quota, usage, sort, order, page_size),
@@ -1188,6 +1313,7 @@ def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: Qu
     )
     if isinstance(result, dict):
         result = dict(result)
+        snapshot_available = bool(result.get("snapshot_available"))
         if not result.get("rgw_endpoints"):
             result["rgw_endpoints"] = [
                 _default_s3_endpoint(host) for host in _rgw_hosts(cluster)
@@ -1196,9 +1322,12 @@ def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: Qu
         result["refreshing"] = bool(status["refreshing"])
         result["refresh_error"] = bool(status["error"])
         result["stale"] = bool(
-            status["available"]
-            and status["age_seconds"] is not None
-            and status["age_seconds"] >= BUCKET_LIST_TTL_SECONDS
+            snapshot_available
+            or (
+                status["available"]
+                and status["age_seconds"] is not None
+                and status["age_seconds"] >= BUCKET_LIST_TTL_SECONDS
+            )
         )
     return result
 

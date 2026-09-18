@@ -684,6 +684,24 @@ class ObjectStorageAuditEntry(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class BucketInventorySnapshot(Base):
+    """Last successful bucket-name inventory for one Ceph cluster.
+
+    This is deliberately only a small durable snapshot of bucket names. The
+    expensive owner/usage/quota fields remain short-lived per-bucket detail
+    data and are refreshed separately after the page is rendered.
+    """
+
+    __tablename__ = "bucket_inventory_snapshots"
+
+    cluster_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("clusters.id"), primary_key=True
+    )
+    rgw_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    bucket_names_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class RgwAccessAuditEvent(Base):
     """Durable, de-duplicated copy of every parsed RGW HTTP request."""
 

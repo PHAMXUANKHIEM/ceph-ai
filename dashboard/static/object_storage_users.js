@@ -54,7 +54,7 @@
       if (!response.ok) throw new Error('inventory refresh failed');
       return response.json();
     }).then(function (body) {
-      if (body.refreshing) window.setTimeout(pollInventoryRefresh, 1000);
+      if (body.refreshing || body.searching) window.setTimeout(pollInventoryRefresh, 1000);
       else {
         var currentQuery = current.searchParams.get('query') || '';
         var inputDirty = userSearchInput && document.activeElement === userSearchInput

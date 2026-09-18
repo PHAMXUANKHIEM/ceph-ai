@@ -129,6 +129,30 @@ def test_s3_user_inventory_reuses_cluster_cache(dashboard_client, monkeypatch):
     assert calls == ["10.20.1.90"]
 
 
+def test_user_search_during_cold_list_refresh_returns_pending_state(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "_cached_user_list", lambda _cluster: {"host": None, "uids": []})
+    monkeypatch.setattr(
+        route,
+        "cache_state",
+        lambda namespace, _key: {
+            "refreshing": namespace == "s3-user-list",
+            "error": False,
+            "available": False,
+            "age_seconds": None,
+        },
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/object-storage/users?query=alice")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["searching"] is True
+    assert body["refreshing"] is True
+    assert body["items"] == []
+
+
 def test_user_detail_rejects_path_like_uid(dashboard_client, monkeypatch):
     _configure(monkeypatch)
     _login(dashboard_client)

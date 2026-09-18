@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from datetime import datetime
@@ -54,8 +55,12 @@ PAGE_SIZE = 10
 USER_PAGE_SIZES = {10, 25, 50, 100}
 AUDIT_MAX_ROWS = 500
 MAX_QUERY_LENGTH = 120
-USER_SNAPSHOT_TTL_SECONDS = 60
-USER_SNAPSHOT_STALE_TTL_SECONDS = 7200
+USER_LIST_TTL_SECONDS = 60
+USER_LIST_STALE_TTL_SECONDS = 300
+USER_PAGE_TTL_SECONDS = 60
+USER_PAGE_STALE_TTL_SECONDS = 300
+USER_SEARCH_TTL_SECONDS = 120
+USER_SEARCH_STALE_TTL_SECONDS = 7200
 USER_SNAPSHOT_MAX_SECONDS = 120
 USER_SNAPSHOT_BATCH_SIZE = 50
 logger = logging.getLogger(__name__)
@@ -67,11 +72,15 @@ _DEFAULT_FETCH_S3_USER_INFO_WITH = fetch_s3_user_info_with
 
 
 def _host(cluster) -> str:
-    nodes = configured_nodes() if cluster.is_default else configured_nodes(cluster)
-    hosts = [str(node["host"]) for node in nodes if "RGW" in node["roles"]]
+    hosts = _rgw_hosts(cluster)
     if not hosts:
         raise RgwLogError("Chưa cấu hình node RGW cho cluster đang chọn.")
     return hosts[0]
+
+
+def _rgw_hosts(cluster) -> list[str]:
+    nodes = configured_nodes() if cluster.is_default else configured_nodes(cluster)
+    return [str(node["host"]) for node in nodes if "RGW" in node["roles"]]
 
 
 def _list(cluster, host: str) -> list[str]:
@@ -79,6 +88,19 @@ def _list(cluster, host: str) -> list[str]:
         return fetch_s3_user_list(host)
     user, key, mode, _container = resolve_ssh_creds(cluster)
     return fetch_s3_user_list_with(host, user, key, mode, cluster.ceph_rgw_container_name)
+
+
+def _list_from_available_rgw(cluster) -> tuple[str, list[str]]:
+    """Read the shared user list from the first reachable RGW node."""
+    errors = []
+    for host in _rgw_hosts(cluster):
+        try:
+            return host, _list(cluster, host)
+        except Exception as exc:
+            errors.append(f"{host}: {type(exc).__name__}")
+            logger.warning("s3_user_inventory_rgW_failed host=%s error=%s", host, type(exc).__name__)
+    detail = "; ".join(errors) or "không có node RGW"
+    raise RgwLogError(f"Không đọc được danh sách S3 user từ các node RGW ({detail})")
 
 
 def _info(cluster, host: str, uid: str) -> dict | None:
@@ -172,7 +194,8 @@ def _finish_audit(audit_id: str, result: str, error: str | None = None) -> None:
         row.completed_at = datetime.utcnow()
         session.commit()
     if result == "succeeded" and cluster_id:
-        invalidate_object_storage_cache(cluster_id, "s3-users")
+        for namespace in ("s3-user-list", "s3-user-pages", "s3-user-search"):
+            invalidate_object_storage_cache(cluster_id, namespace)
 
 
 def _audit_rows(cluster_id: str, limit: int = AUDIT_MAX_ROWS) -> list[dict]:
@@ -257,15 +280,32 @@ def _uses_mocked_inventory_helpers() -> bool:
     )
 
 
-def _load_user_snapshot(cluster) -> dict:
-    """Load one cluster-wide, secret-safe user snapshot.
+def _load_user_list(cluster) -> dict:
+    """Load only user IDs for the fast inventory path."""
+    host, uids = _list_from_available_rgw(cluster)
+    return {"host": host, "uids": uids}
 
-    Search and pagination filter this snapshot locally instead of starting a
-    new SSH/radosgw-admin scan for every query string.
-    """
+
+def _user_page_key(cluster, uids: list[str], host: str | None = None) -> str:
+    scope = f"{host or _host(cluster)}\0" + "\0".join(uids)
+    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:20]
+    return f"{cluster.id}:page:{digest}"
+
+
+def _load_user_page(cluster, uids: list[str], host: str | None = None) -> dict:
+    """Load metadata only for the users visible on the current page."""
+    host = host or _host(cluster)
+    details = _info_batch(cluster, host, uids)
+    return {
+        "host": host,
+        "items": [details.get(uid) or {"uid": uid, "unavailable": True} for uid in uids],
+    }
+
+
+def _load_user_search_index(cluster) -> dict:
+    """Build the expensive name/email index only when such a search is used."""
     deadline = time.monotonic() + USER_SNAPSHOT_MAX_SECONDS
-    host = _host(cluster)
-    users = _list(cluster, host)
+    host, users = _list_from_available_rgw(cluster)
     details_by_uid: dict[str, dict | None] = {}
     # Keep each remote command bounded to avoid oversized shell commands.
     for offset in range(0, len(users), USER_SNAPSHOT_BATCH_SIZE):
@@ -283,16 +323,42 @@ def _load_user_snapshot(cluster) -> dict:
     }
 
 
-def _cached_user_snapshot(cluster) -> dict:
-    key = f"{cluster.id}:snapshot"
+def _cached_user_list(cluster) -> dict:
+    key = f"{cluster.id}:list"
     return get_or_load(
-        "s3-users",
+        "s3-user-list",
         key,
-        lambda: _load_user_snapshot(cluster),
-        ttl_seconds=USER_SNAPSHOT_TTL_SECONDS,
-        stale_ttl_seconds=USER_SNAPSHOT_STALE_TTL_SECONDS,
-        # A cold page must not wait for the whole RGW inventory. The browser
-        # polls the lightweight API while this job is running.
+        lambda: _load_user_list(cluster),
+        ttl_seconds=USER_LIST_TTL_SECONDS,
+        stale_ttl_seconds=USER_LIST_STALE_TTL_SECONDS,
+        background_on_miss=not _uses_mocked_inventory_helpers(),
+        fallback={"host": None, "uids": []},
+        replace_cluster=True,
+    )
+
+
+def _cached_user_page(cluster, uids: list[str], host: str | None = None) -> dict:
+    key = _user_page_key(cluster, uids, host)
+    return get_or_load(
+        "s3-user-pages",
+        key,
+        lambda: _load_user_page(cluster, uids, host),
+        ttl_seconds=USER_PAGE_TTL_SECONDS,
+        stale_ttl_seconds=USER_PAGE_STALE_TTL_SECONDS,
+        background_on_miss=not _uses_mocked_inventory_helpers(),
+        fallback={"host": None, "items": []},
+        replace_cluster=True,
+    )
+
+
+def _cached_user_search_index(cluster) -> dict:
+    key = f"{cluster.id}:index"
+    return get_or_load(
+        "s3-user-search",
+        key,
+        lambda: _load_user_search_index(cluster),
+        ttl_seconds=USER_SEARCH_TTL_SECONDS,
+        stale_ttl_seconds=USER_SEARCH_STALE_TTL_SECONDS,
         background_on_miss=not _uses_mocked_inventory_helpers(),
         fallback={"host": None, "items": []},
         replace_cluster=True,
@@ -300,33 +366,62 @@ def _cached_user_snapshot(cluster) -> dict:
 
 
 def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> dict:
-    snapshot = _cached_user_snapshot(cluster)
-    snapshot_state = cache_state("s3-users", f"{cluster.id}:snapshot")
-    # The background job can finish between get_or_load() returning its
-    # fallback and the state read above. Re-read once so a fast refresh is
-    # rendered immediately instead of showing a false empty state.
-    if not snapshot.get("items") and snapshot_state["available"]:
-        snapshot = _cached_user_snapshot(cluster)
-        snapshot_state = cache_state("s3-users", f"{cluster.id}:snapshot")
-    all_items = list(snapshot.get("items") or [])
+    user_list = _cached_user_list(cluster)
+    list_key = f"{cluster.id}:list"
+    list_state = cache_state("s3-user-list", list_key)
+    user_ids = list(user_list.get("uids") or [])
     normalized = query.strip().casefold()
+    search_state = None
+    page_state = None
+    search_pending = False
+    indexed_items: list[dict] | None = None
+    search_snapshot = {"host": None, "items": []}
     if normalized:
-        all_items = [
-            item for item in all_items
-            if normalized in " ".join(
-                str(item.get(field) or "")
-                for field in ("uid", "display_name", "email")
-            ).casefold()
-        ]
+        uid_matches = [uid for uid in user_ids if normalized in uid.casefold()]
+        if uid_matches:
+            user_ids = uid_matches
+        elif list_state["refreshing"] and not user_ids:
+            # Do not start the expensive display-name/email index while the
+            # cheap UID list is still cold. The next poll can resolve a UID
+            # match without launching two competing RGW scans.
+            indexed_items = []
+            search_pending = True
+        else:
+            index = _cached_user_search_index(cluster)
+            search_snapshot = index
+            search_key = f"{cluster.id}:index"
+            search_state = cache_state("s3-user-search", search_key)
+            indexed_items = [
+                item for item in (index.get("items") or [])
+                if normalized in " ".join(
+                    str(item.get(field) or "")
+                    for field in ("uid", "display_name", "email")
+                ).casefold()
+            ]
+            search_pending = not bool(index.get("items")) and bool(search_state["refreshing"])
+            user_ids = [str(item.get("uid")) for item in indexed_items if item.get("uid")]
 
-    total = len(all_items)
+    if indexed_items is not None:
+        all_items = indexed_items
+    else:
+        all_items = None
+    total = len(user_ids) if all_items is None else len(all_items)
     page_size = page_size if page_size in USER_PAGE_SIZES else PAGE_SIZE
     page_count = max(1, ceil(total / page_size))
     page = min(max(page, 1), page_count)
-    page_users = all_items[(page - 1) * page_size:page * page_size]
+    page_uids = user_ids[(page - 1) * page_size:page * page_size]
+    if all_items is None:
+        page_host = user_list.get("host")
+        page_snapshot = _cached_user_page(cluster, page_uids, page_host) if page_uids else {"host": None, "items": []}
+        page_state = cache_state("s3-user-pages", _user_page_key(cluster, page_uids, page_host)) if page_uids else None
+        page_users = list(page_snapshot.get("items") or [])
+    else:
+        page_users = all_items[(page - 1) * page_size:page * page_size]
     available = [item for item in page_users if not item.get("unavailable")]
+    states = [list_state, search_state, page_state]
+    active_states = [state for state in states if state is not None]
     return {
-        "host": snapshot.get("host"),
+        "host": user_list.get("host") or search_snapshot.get("host"),
         "items": page_users,
         "query": query.strip(),
         "page": page,
@@ -336,12 +431,20 @@ def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> di
         "summary_scope": "current_page",
         "active_count": sum(1 for detail in available if not detail["suspended"]),
         "key_count_total": sum(detail["key_count"] for detail in available),
-        "refreshing": bool(snapshot_state["refreshing"]),
-        "refresh_error": bool(snapshot_state["error"]),
+        "refreshing": any(bool(state["refreshing"]) for state in active_states) or search_pending,
+        "searching": search_pending,
+        "refresh_error": any(bool(state["error"]) for state in active_states),
         "stale": bool(
-            snapshot_state["available"]
-            and snapshot_state["age_seconds"] is not None
-            and snapshot_state["age_seconds"] >= USER_SNAPSHOT_TTL_SECONDS
+            any(
+                state["available"] and state["age_seconds"] is not None
+                and state["age_seconds"] >= ttl
+                for state, ttl in (
+                    (list_state, USER_LIST_TTL_SECONDS),
+                    (search_state, USER_SEARCH_TTL_SECONDS),
+                    (page_state, USER_PAGE_TTL_SECONDS),
+                )
+                if state is not None
+            )
         ),
     }
 
@@ -352,21 +455,32 @@ def _cached_inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE
 
 def _detail(cluster, uid: str) -> dict:
     uid = _valid_uid(uid)
-    host = _host(cluster)
-    detail = _info(cluster, host, uid)
-    if detail is None:
-        raise HTTPException(status_code=404, detail="Không tìm thấy S3 user")
-    return {"host": host, **detail}
+    errors = []
+    for host in _rgw_hosts(cluster):
+        try:
+            detail = _info(cluster, host, uid)
+            if detail is None:
+                continue
+            return {"host": host, **detail}
+        except Exception as exc:
+            errors.append(f"{host}: {type(exc).__name__}")
+    if errors:
+        raise RgwLogError("Không đọc được metadata S3 user từ các node RGW")
+    raise HTTPException(status_code=404, detail="Không tìm thấy S3 user")
 
 def _buckets(cluster, uid: str) -> list[str]:
     uid = _valid_uid(uid)
-    host = _host(cluster)
-    if cluster.is_default:
-        return fetch_s3_user_bucket_list(host, uid)
-    ssh_user, ssh_key, mode, _container = resolve_ssh_creds(cluster)
-    return fetch_s3_user_bucket_list_with(
-        host, uid, ssh_user, ssh_key, mode, cluster.ceph_rgw_container_name
-    )
+    for host in _rgw_hosts(cluster):
+        try:
+            if cluster.is_default:
+                return fetch_s3_user_bucket_list(host, uid)
+            ssh_user, ssh_key, mode, _container = resolve_ssh_creds(cluster)
+            return fetch_s3_user_bucket_list_with(
+                host, uid, ssh_user, ssh_key, mode, cluster.ceph_rgw_container_name
+            )
+        except Exception:
+            continue
+    raise RgwLogError("Không đọc được bucket của S3 user từ các node RGW")
 
 
 @router.get("/api/object-storage/users")

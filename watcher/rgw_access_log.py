@@ -68,7 +68,11 @@ _CREATION_TIME_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 BUCKET_PURGE_TIMEOUT_SECONDS = 600
 # A batched inventory query must tolerate a busy cephadm host, but should not
 # wait indefinitely when RGW is unavailable.
-S3_USER_BATCH_TIMEOUT_SECONDS = 45
+S3_USER_BATCH_TIMEOUT_SECONDS = settings.ceph_inventory_timeout
+# One cephadm shell can serve several independent, read-only user-info
+# commands in parallel. Keep this below the global Ceph concurrency limit so
+# an inventory refresh cannot stampede an RGW host.
+S3_USER_BATCH_CONCURRENCY = max(1, min(4, settings.ceph_max_concurrency))
 
 _ACTION_VI = {
     ("GET", True): "Tải xuống",
@@ -402,7 +406,9 @@ def fetch_bucket_list(host: str) -> list[str]:
         exec_mode, settings.ceph_rgw_container_name, "radosgw-admin bucket list --format json"
     )
     try:
-        output = run_command_on_node(host, command)
+        output = run_command_on_node(
+            host, command, timeout=settings.ceph_inventory_timeout
+        )
     except Exception as exc:
         raise RgwLogError(f"Không lấy được danh sách bucket trên {host}: {exc}") from exc
     try:
@@ -420,7 +426,10 @@ def fetch_bucket_list_with(host: str, ssh_user: str, ssh_key_path: str,
         exec_mode, rgw_container_name, "radosgw-admin bucket list --format json"
     )
     try:
-        output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        output = run_command_on_node_with(
+            host, command, ssh_user, ssh_key_path,
+            timeout=settings.ceph_inventory_timeout,
+        )
     except Exception as exc:
         raise RgwLogError(f"Không lấy được danh sách bucket trên {host}: {exc}") from exc
     try:
@@ -439,7 +448,9 @@ def fetch_s3_user_bucket_list(host: str, uid: str) -> list[str]:
         f"radosgw-admin bucket list --uid={shlex.quote(uid)} --format json",
     )
     try:
-        output = run_command_on_node(host, command)
+        output = run_command_on_node(
+            host, command, timeout=settings.ceph_inventory_timeout
+        )
         return _bucket_names(json.loads(output))
     except (TypeError, ValueError) as exc:
         raise RgwLogError(f"RGW {host} trả về danh sách bucket của user không hợp lệ") from exc
@@ -458,7 +469,10 @@ def fetch_s3_user_bucket_list_with(host: str, uid: str, ssh_user: str, ssh_key_p
         f"radosgw-admin bucket list --uid={shlex.quote(uid)} --format json",
     )
     try:
-        output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        output = run_command_on_node_with(
+            host, command, ssh_user, ssh_key_path,
+            timeout=settings.ceph_inventory_timeout,
+        )
         return _bucket_names(json.loads(output))
     except (TypeError, ValueError) as exc:
         raise RgwLogError(f"RGW {host} trả về danh sách bucket của user không hợp lệ") from exc
@@ -575,7 +589,9 @@ def fetch_s3_user_list(host: str) -> list[str]:
         exec_mode, settings.ceph_rgw_container_name, "radosgw-admin user list --format json"
     )
     try:
-        output = run_command_on_node(host, command)
+        output = run_command_on_node(
+            host, command, timeout=settings.ceph_inventory_timeout
+        )
         return _user_ids(json.loads(output))
     except (TypeError, ValueError) as exc:
         raise RgwLogError(f"RGW {host} trả về danh sách S3 user không hợp lệ") from exc
@@ -591,7 +607,10 @@ def fetch_s3_user_list_with(host: str, ssh_user: str, ssh_key_path: str,
         exec_mode, rgw_container_name, "radosgw-admin user list --format json"
     )
     try:
-        output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        output = run_command_on_node_with(
+            host, command, ssh_user, ssh_key_path,
+            timeout=settings.ceph_inventory_timeout,
+        )
         return _user_ids(json.loads(output))
     except (TypeError, ValueError) as exc:
         raise RgwLogError(f"RGW {host} trả về danh sách S3 user không hợp lệ") from exc
@@ -608,7 +627,9 @@ def fetch_s3_user_info(host: str, uid: str) -> dict | None:
         f"radosgw-admin user info --uid={shlex.quote(uid)} --format json",
     )
     try:
-        return _parse_json_object(run_command_on_node(host, command))
+        return _parse_json_object(
+            run_command_on_node(host, command, timeout=settings.ceph_inventory_timeout)
+        )
     except Exception as exc:
         raise RgwLogError(f"Không lấy được thông tin S3 user trên {host}: {exc}") from exc
 
@@ -622,7 +643,10 @@ def fetch_s3_user_info_with(host: str, uid: str, ssh_user: str, ssh_key_path: st
         f"radosgw-admin user info --uid={shlex.quote(uid)} --format json",
     )
     try:
-        return _parse_json_object(run_command_on_node_with(host, command, ssh_user, ssh_key_path))
+        return _parse_json_object(run_command_on_node_with(
+            host, command, ssh_user, ssh_key_path,
+            timeout=settings.ceph_inventory_timeout,
+        ))
     except Exception as exc:
         raise RgwLogError(f"Không lấy được thông tin S3 user trên {host}: {exc}") from exc
 
@@ -642,14 +666,30 @@ def _fetch_s3_user_info_batch(host: str, uids: list[str], exec_mode: str,
         return {}
     if exec_mode not in ("cephadm", "none") and not rgw_container_name:
         raise RgwLogError("Chưa cấu hình tên container RGW.")
-    parts = []
-    for uid in uids:
-        marker = f"__CEPH_AIOPS_S3_USER__{uid}__"
-        parts.append(f"printf '%s\\n' {shlex.quote(marker)}")
-        parts.append(
-            f"radosgw-admin user info --uid={shlex.quote(uid)} --format json"
-        )
-    inner = "; ".join(parts)
+    # Running all ten commands serially inside one cephadm shell still makes
+    # a cold page wait for every user. Start a bounded number of commands in
+    # parallel, write each response to a private temporary file, then merge
+    # the files. The UID and file index are shell-quoted, and failed user
+    # lookups intentionally produce an empty response so one bad user does
+    # not discard the rest of the page.
+    parts = [
+        "tmpdir=$(mktemp -d)",
+        "trap 'rm -rf \"$tmpdir\"' EXIT",
+    ]
+    for offset in range(0, len(uids), S3_USER_BATCH_CONCURRENCY):
+        for index, uid in enumerate(uids[offset:offset + S3_USER_BATCH_CONCURRENCY], start=offset):
+            marker = f"__CEPH_AIOPS_S3_USER__{uid}__"
+            parts.append(
+                f"(printf '%s\\n' {shlex.quote(marker)}; "
+                f"radosgw-admin user info --uid={shlex.quote(uid)} --format json) "
+                f">\"$tmpdir/{index}\" 2>/dev/null &"
+            )
+        parts.append("wait")
+    parts.append("cat \"$tmpdir\"/* 2>/dev/null || true")
+    # Use newlines between background jobs. A semicolon after ``&`` is a
+    # syntax error in POSIX shells (``&;``), while a newline cleanly starts
+    # the next command inside the quoted ``sh -c`` payload.
+    inner = "\n".join(parts)
     command = ceph_client.build_exec_command(
         exec_mode, rgw_container_name, f"sh -c {shlex.quote(inner)}"
     )
