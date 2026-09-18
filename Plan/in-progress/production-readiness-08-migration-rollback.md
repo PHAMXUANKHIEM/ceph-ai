@@ -7,6 +7,7 @@
 ## Trạng thái thực hiện — 2026-09-18
 
 - [x] Repository có một Alembic head hiện tại: `c8d9e0f1a2b4`.
+- [x] Migration runner có lock PostgreSQL fail-closed và không cho hai job chạy đồng thời.
 - [x] Restore database snapshot production-like và chạy upgrade tới head.
 - [x] Chạy downgrade một migration rồi upgrade lại tới head trên PostgreSQL 18 ephemeral database.
 - [x] Backup custom-format và restore listing đã được xác minh trước drill.

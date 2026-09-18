@@ -9,6 +9,8 @@ Loại bỏ nguy cơ production vô tình chạy SQLite trong hệ thống nhi�
 - [x] Có `CEPH_AI_ENVIRONMENT` để phân biệt development/test/lab/staging/production.
 - [x] Production fail-closed nếu `DATABASE_URL` là SQLite; development/test/lab vẫn được phép dùng SQLite.
 - [x] PostgreSQL engine có pool size, timeout, recycle và `pool_pre_ping` bounded.
+- [x] Có migration runner canonical `scripts/deploy/run_migrations.sh`: backup trước migration, production SQLite gate và chạy `alembic upgrade head` một lần.
+- [x] Alembic PostgreSQL dùng `pg_try_advisory_lock` để fail-closed khi có migration job cạnh tranh.
 - [x] Backup custom-format trước migration đã tạo và kiểm tra được bằng `pg_restore --list`.
 - [x] Restore drill trên PostgreSQL 18 ephemeral container: restore 95 bảng, upgrade tới head hiện tại, downgrade một migration và upgrade lại thành công.
 - [ ] Tách migration thành một job canonical có lock/timeout trong deployment pipeline.
