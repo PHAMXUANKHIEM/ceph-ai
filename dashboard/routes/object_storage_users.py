@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from math import ceil
 from urllib.parse import quote
@@ -19,7 +20,11 @@ from dashboard.templating import make_templates
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared import db
 from shared.models import ObjectStorageAuditEntry
-from shared.object_storage_cache import get_or_load, invalidate as invalidate_object_storage_cache
+from shared.object_storage_cache import (
+    get_or_load,
+    invalidate as invalidate_object_storage_cache,
+    state as cache_state,
+)
 from watcher.rgw_access_log import (
     RgwLogError,
     fetch_s3_user_info,
@@ -49,8 +54,14 @@ PAGE_SIZE = 10
 USER_PAGE_SIZES = {10, 25, 50, 100}
 AUDIT_MAX_ROWS = 500
 MAX_QUERY_LENGTH = 120
+USER_SNAPSHOT_TTL_SECONDS = 60
+USER_SNAPSHOT_STALE_TTL_SECONDS = 7200
+USER_SNAPSHOT_MAX_SECONDS = 120
+USER_SNAPSHOT_BATCH_SIZE = 50
 logger = logging.getLogger(__name__)
 USER_ACTIONS = {"create", "modify", "suspend", "enable", "delete"}
+_DEFAULT_FETCH_S3_USER_LIST = fetch_s3_user_list
+_DEFAULT_FETCH_S3_USER_LIST_WITH = fetch_s3_user_list_with
 _DEFAULT_FETCH_S3_USER_INFO = fetch_s3_user_info
 _DEFAULT_FETCH_S3_USER_INFO_WITH = fetch_s3_user_info_with
 
@@ -236,50 +247,107 @@ def _setting_action(cluster, action: str, uid: str, params: dict) -> None:
     )
 
 
-def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> dict:
+def _uses_mocked_inventory_helpers() -> bool:
+    """Keep unit-test seams synchronous while production refreshes in background."""
+    return (
+        fetch_s3_user_list is not _DEFAULT_FETCH_S3_USER_LIST
+        or fetch_s3_user_list_with is not _DEFAULT_FETCH_S3_USER_LIST_WITH
+        or fetch_s3_user_info is not _DEFAULT_FETCH_S3_USER_INFO
+        or fetch_s3_user_info_with is not _DEFAULT_FETCH_S3_USER_INFO_WITH
+    )
+
+
+def _load_user_snapshot(cluster) -> dict:
+    """Load one cluster-wide, secret-safe user snapshot.
+
+    Search and pagination filter this snapshot locally instead of starting a
+    new SSH/radosgw-admin scan for every query string.
+    """
+    deadline = time.monotonic() + USER_SNAPSHOT_MAX_SECONDS
     host = _host(cluster)
     users = _list(cluster, host)
-    normalized = query.strip().casefold()
-    details_by_uid = None
-    if normalized:
-        # Search UID and safe metadata fields from one bounded batch.
-        details_by_uid = _info_batch(cluster, host, users)
-        users = [uid for uid in users if normalized in " ".join(
-            str(value or "") for value in (
-                uid,
-                (details_by_uid.get(uid) or {}).get("display_name"),
-                (details_by_uid.get(uid) or {}).get("email"),
-            )
-        ).casefold()]
-    total = len(users)
-    page_size = page_size if page_size in USER_PAGE_SIZES else PAGE_SIZE
-    page_count = max(1, ceil(total / page_size))
-    page = min(max(page, 1), page_count)
-    page_users = users[(page - 1) * page_size:page * page_size]
-    # Metadata is expensive: each _info() call invokes radosgw-admin over SSH.
-    # Only fetch users visible on this page instead of scanning the entire
-    # inventory before slicing it.
-    if details_by_uid is None:
-        # Normal browsing only loads metadata for the current page.
-        details_by_uid = _info_batch(cluster, host, page_users)
-    details = [details_by_uid.get(uid) for uid in page_users]
-    items = [detail or {"uid": uid, "unavailable": True} for uid, detail in zip(page_users, details)]
-    available = [detail for detail in details if detail]
-    return {"host": host, "items": items, "query": query.strip(), "page": page,
-            "page_size": page_size, "page_count": page_count, "total": total,
-            "summary_scope": "current_page",
-            "active_count": sum(1 for detail in available if not detail["suspended"]),
-            "key_count_total": sum(detail["key_count"] for detail in available)}
+    details_by_uid: dict[str, dict | None] = {}
+    # Keep each remote command bounded to avoid oversized shell commands.
+    for offset in range(0, len(users), USER_SNAPSHOT_BATCH_SIZE):
+        if time.monotonic() >= deadline:
+            raise RgwLogError("Vượt quá thời gian đồng bộ S3 user ở chế độ nền.")
+        details_by_uid.update(_info_batch(
+            cluster, host, users[offset:offset + USER_SNAPSHOT_BATCH_SIZE]
+        ))
+    return {
+        "host": host,
+        "items": [
+            details_by_uid.get(uid) or {"uid": uid, "unavailable": True}
+            for uid in users
+        ],
+    }
 
 
-def _cached_inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> dict:
-    key = f"{cluster.id}:{query}:{page}:{page_size}"
+def _cached_user_snapshot(cluster) -> dict:
+    key = f"{cluster.id}:snapshot"
     return get_or_load(
         "s3-users",
         key,
-        lambda: _inventory(cluster, query, page, page_size),
-        stale_ttl_seconds=7200,
+        lambda: _load_user_snapshot(cluster),
+        ttl_seconds=USER_SNAPSHOT_TTL_SECONDS,
+        stale_ttl_seconds=USER_SNAPSHOT_STALE_TTL_SECONDS,
+        # A cold page must not wait for the whole RGW inventory. The browser
+        # polls the lightweight API while this job is running.
+        background_on_miss=not _uses_mocked_inventory_helpers(),
+        fallback={"host": None, "items": []},
+        replace_cluster=True,
     )
+
+
+def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> dict:
+    snapshot = _cached_user_snapshot(cluster)
+    snapshot_state = cache_state("s3-users", f"{cluster.id}:snapshot")
+    # The background job can finish between get_or_load() returning its
+    # fallback and the state read above. Re-read once so a fast refresh is
+    # rendered immediately instead of showing a false empty state.
+    if not snapshot.get("items") and snapshot_state["available"]:
+        snapshot = _cached_user_snapshot(cluster)
+        snapshot_state = cache_state("s3-users", f"{cluster.id}:snapshot")
+    all_items = list(snapshot.get("items") or [])
+    normalized = query.strip().casefold()
+    if normalized:
+        all_items = [
+            item for item in all_items
+            if normalized in " ".join(
+                str(item.get(field) or "")
+                for field in ("uid", "display_name", "email")
+            ).casefold()
+        ]
+
+    total = len(all_items)
+    page_size = page_size if page_size in USER_PAGE_SIZES else PAGE_SIZE
+    page_count = max(1, ceil(total / page_size))
+    page = min(max(page, 1), page_count)
+    page_users = all_items[(page - 1) * page_size:page * page_size]
+    available = [item for item in page_users if not item.get("unavailable")]
+    return {
+        "host": snapshot.get("host"),
+        "items": page_users,
+        "query": query.strip(),
+        "page": page,
+        "page_size": page_size,
+        "page_count": page_count,
+        "total": total,
+        "summary_scope": "current_page",
+        "active_count": sum(1 for detail in available if not detail["suspended"]),
+        "key_count_total": sum(detail["key_count"] for detail in available),
+        "refreshing": bool(snapshot_state["refreshing"]),
+        "refresh_error": bool(snapshot_state["error"]),
+        "stale": bool(
+            snapshot_state["available"]
+            and snapshot_state["age_seconds"] is not None
+            and snapshot_state["age_seconds"] >= USER_SNAPSHOT_TTL_SECONDS
+        ),
+    }
+
+
+def _cached_inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> dict:
+    return _inventory(cluster, query, page, page_size)
 
 
 def _detail(cluster, uid: str) -> dict:

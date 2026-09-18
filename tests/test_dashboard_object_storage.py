@@ -118,6 +118,73 @@ def test_bucket_inventory_reuses_cluster_cache(dashboard_client, monkeypatch):
     assert calls == ["10.20.1.90"]
 
 
+def test_production_inventory_defers_bucket_stats_until_detail_api(monkeypatch):
+    cluster = SimpleNamespace(id="lazy-inventory", is_default=True)
+    monkeypatch.setattr(object_storage_route, "_rgw_hosts", lambda current_cluster: ["10.20.1.90"])
+    monkeypatch.setattr(
+        object_storage_route,
+        "_list_from_first_reachable_rgw",
+        lambda current_cluster, hosts: (hosts[0], ["archive", "images"]),
+    )
+    monkeypatch.setattr(object_storage_route, "_uses_mocked_rgw_client", lambda: False)
+    monkeypatch.setattr(
+        object_storage_route,
+        "_bucket_summary",
+        lambda *args: (_ for _ in ()).throw(AssertionError("stats must be lazy")),
+    )
+
+    result = object_storage_route._inventory(cluster, "", 1)
+
+    assert [row["name"] for row in result["items"]] == ["archive", "images"]
+    assert all(row["stats_pending"] is True for row in result["items"])
+
+
+def test_bucket_list_uses_configured_rgw_s3_api_before_ssh(monkeypatch):
+    cluster = SimpleNamespace(id="s3-inventory", is_default=True)
+    monkeypatch.setattr(settings, "ceph_rgw_s3_endpoint", "http://rgw.example:7480")
+    monkeypatch.setattr(settings, "ceph_rgw_s3_access_key", "inventory-key")
+    monkeypatch.setattr(settings, "ceph_rgw_s3_secret_key", "inventory-secret")
+
+    class FakeS3Client:
+        def list_buckets(self):
+            return {"Buckets": [{"Name": "Volumes"}, {"Name": "images"}, {"Name": "Volumes"}]}
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3Client())
+    monkeypatch.setattr(
+        object_storage_route,
+        "fetch_bucket_list",
+        lambda host: (_ for _ in ()).throw(AssertionError("SSH fallback must not run")),
+    )
+
+    host, names = object_storage_route._load_bucket_list_from_first_reachable_rgw(
+        cluster, ["10.20.1.90"]
+    )
+
+    assert host == "10.20.1.90"
+    assert names == ["images", "Volumes"]
+
+
+def test_bucket_list_falls_back_to_ssh_for_invalid_s3_response(monkeypatch):
+    cluster = SimpleNamespace(id="s3-invalid-response", is_default=True)
+    monkeypatch.setattr(settings, "ceph_rgw_s3_endpoint", "http://rgw.example:7480")
+    monkeypatch.setattr(settings, "ceph_rgw_s3_access_key", "inventory-key")
+    monkeypatch.setattr(settings, "ceph_rgw_s3_secret_key", "inventory-secret")
+
+    class FakeS3Client:
+        def list_buckets(self):
+            return {"unexpected": []}
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3Client())
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["ssh-bucket"])
+
+    host, names = object_storage_route._load_bucket_list_from_first_reachable_rgw(
+        cluster, ["10.20.1.90"]
+    )
+
+    assert host == "10.20.1.90"
+    assert names == ["ssh-bucket"]
+
+
 def test_bucket_inventory_is_not_dependent_on_hidden_feature_tabs():
     source = open("dashboard/static/object_storage_buckets.js", encoding="utf-8").read()
     assert 'document.querySelectorAll("[data-bucket-tab]")' not in source

@@ -126,6 +126,12 @@ class Settings(BaseSettings):
     # (ignored for "cephadm"/"none", same as ceph_osd_container_name).
     ceph_rgw_nodes: str = ""
     ceph_rgw_container_name: str = ""
+    # Optional read-only S3 credential used by the Buckets inventory. This is
+    # deliberately separate from backup S3 credentials. When blank, Buckets
+    # keeps the SSH/radosgw-admin fallback.
+    ceph_rgw_s3_endpoint: str = ""
+    ceph_rgw_s3_access_key: str = ""
+    ceph_rgw_s3_secret_key: str = ""
 
     # 2026-07-28: RBD pools to poll for per-image performance (IOPS/latency)
     # and saturation detection (watcher/volume_monitor.py) — comma-separated

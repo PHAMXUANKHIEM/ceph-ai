@@ -9,6 +9,7 @@
   var userSearchStatus = document.querySelector('[data-s3-search-status]');
   var userSearchClear = document.querySelector('[data-s3-user-search-clear]');
   var userSearchTimer = null;
+  var inventoryRefreshAttempts = 0;
   function updateUserSearchStatus() {
     if (!userSearchStatus || !userSearchInput) return;
     var value = userSearchInput.value.trim();
@@ -35,6 +36,42 @@
   if (userSearchForm) userSearchForm.addEventListener('submit', function (event) { event.preventDefault(); window.clearTimeout(userSearchTimer); submitUserSearch(); });
   if (userSearchClear) userSearchClear.addEventListener('click', function () { if (userSearchInput) userSearchInput.value = ''; submitUserSearch(); });
   updateUserSearchStatus();
+
+  // A cold inventory is collected in the server-side cache executor. Poll
+  // only the lightweight JSON endpoint, then reload once the snapshot is
+  // ready; never start another Ceph command from the browser.
+  function pollInventoryRefresh() {
+    if (page.getAttribute('data-inventory-refreshing') !== 'true' || inventoryRefreshAttempts >= 45) return;
+    inventoryRefreshAttempts += 1;
+    var current = new URL(window.location.href);
+    var apiUrl = new URL('/api/object-storage/users', window.location.origin);
+    apiUrl.searchParams.set('cluster', cluster);
+    ['query', 'page', 'page_size'].forEach(function (name) {
+      var value = current.searchParams.get(name);
+      if (value) apiUrl.searchParams.set(name, value);
+    });
+    window.fetch(apiUrl.toString(), {headers: {'Accept': 'application/json'}}).then(function (response) {
+      if (!response.ok) throw new Error('inventory refresh failed');
+      return response.json();
+    }).then(function (body) {
+      if (body.refreshing) window.setTimeout(pollInventoryRefresh, 1000);
+      else {
+        var currentQuery = current.searchParams.get('query') || '';
+        var inputDirty = userSearchInput && document.activeElement === userSearchInput
+          && userSearchInput.value.trim() !== currentQuery;
+        var auditVisible = document.getElementById('s3-audit-panel')
+          && !document.getElementById('s3-audit-panel').hidden;
+        if (inputDirty || auditVisible) {
+          page.setAttribute('data-inventory-refreshing', 'false');
+          var notice = document.querySelector('[data-s3-inventory-sync]');
+          if (notice) notice.textContent = 'Snapshot S3 user đã sẵn sàng. Bấm Enter hoặc chuyển sang tab Danh sách để xem dữ liệu mới.';
+          return;
+        }
+        window.location.reload();
+      }
+    }).catch(function () { window.setTimeout(pollInventoryRefresh, 1500); });
+  }
+  pollInventoryRefresh();
 
   function escapeHtml(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function (char) {

@@ -8,7 +8,7 @@
 </head>
 <body>
 {% include "_nav.html" %}
-<main class="page s3-users-page" data-cluster="{{ selected_cluster.id }}" data-is-admin="{{ 'true' if is_admin else 'false' }}">
+<main class="page s3-users-page" data-cluster="{{ selected_cluster.id }}" data-is-admin="{{ 'true' if is_admin else 'false' }}" data-inventory-refreshing="{{ 'true' if inventory.refreshing else 'false' }}">
   <div class="s3-page-heading">
     <div>
       <p class="s3-eyebrow">Object Storage / Identity</p>
@@ -30,6 +30,7 @@
 
       </div>
       {% if error %}<div class="card-body"><p class="error">{{ error }}</p></div>{% endif %}
+      {% if inventory.refreshing %}<div class="s3-inventory-sync" data-s3-inventory-sync role="status" aria-live="polite">Đang đồng bộ user từ RGW ở chế độ nền.{% if inventory.stale %} Đang hiển thị snapshot cũ trong lúc làm mới.{% else %} Trang sẽ tự cập nhật khi dữ liệu sẵn sàng.{% endif %}</div>{% elif inventory.refresh_error %}<div class="s3-inventory-sync is-error" role="alert">Không thể đồng bộ S3 user từ RGW. Dữ liệu hiện tại có thể chưa đầy đủ; hãy tải lại để thử lại.</div>{% elif inventory.stale %}<div class="s3-inventory-sync is-stale" role="status">Đang hiển thị snapshot S3 user cũ.</div>{% endif %}
       <div class="s3-summary-grid" aria-label="Tổng quan S3 users"><div class="s3-summary-item"><span class="s3-summary-label">Tổng users</span><strong>{{ inventory.total }}</strong><span class="s3-summary-icon">◎</span></div><div class="s3-summary-item"><span class="s3-summary-label">Active trên trang</span><strong>{{ inventory.active_count }}</strong><span class="s3-summary-icon is-good">●</span></div><div class="s3-summary-item"><span class="s3-summary-label">Access keys trên trang</span><strong>{{ inventory.key_count_total }}</strong><span class="s3-summary-icon">⌁</span></div></div>
       <div class="s3-user-table-toolbar">
         <div class="s3-user-search-area">

@@ -14,6 +14,7 @@ from urllib.parse import quote, urlparse
 
 import boto3
 from botocore.config import Config
+from config.settings import settings
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -30,7 +31,7 @@ from shared.models import ObjectStorageAuditEntry
 from shared.object_storage_cache import (
     get_or_load,
     invalidate as invalidate_object_storage_cache,
-    is_refreshing as cache_is_refreshing,
+    state as cache_state,
 )
 from dashboard.cluster_scope import cluster_connection
 from watcher import ceph_client
@@ -72,6 +73,8 @@ BUCKET_STATS_TTL_SECONDS = 30
 BUCKET_STATS_STALE_TTL_SECONDS = 300
 BUCKET_LIST_TTL_SECONDS = 30
 BUCKET_LIST_STALE_TTL_SECONDS = 300
+RGW_S3_CONNECT_TIMEOUT_SECONDS = 3
+RGW_S3_READ_TIMEOUT_SECONDS = 5
 BUCKET_ACTIVITY_TTL_SECONDS = 30
 BUCKET_ACTIVITY_STALE_TTL_SECONDS = 300
 BUCKET_DETAIL_TTL_SECONDS = 30
@@ -862,6 +865,64 @@ def _default_s3_endpoint(host: str) -> str:
     return f"http://{host}:7480"
 
 
+def _configured_rgw_s3_credentials(cluster) -> tuple[str, str, str] | None:
+    """Return optional RGW S3 inventory credentials for the default cluster."""
+    if not cluster.is_default:
+        return None
+    endpoint = str(settings.ceph_rgw_s3_endpoint or "").strip().rstrip("/")
+    access_key = str(settings.ceph_rgw_s3_access_key or "").strip()
+    secret_key = str(settings.ceph_rgw_s3_secret_key or "")
+    if not endpoint or not access_key or not secret_key:
+        return None
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        logger.warning("RGW S3 inventory endpoint is invalid; using SSH fallback")
+        return None
+    return endpoint, access_key, secret_key
+
+
+def _load_bucket_list_via_s3(cluster, host: str) -> list[str] | None:
+    """List bucket names through RGW S3 when explicitly configured.
+
+    ListBuckets replaces only the expensive name-list phase. It returns the
+    buckets visible to the configured S3 identity, not an unconditional
+    cluster-wide admin inventory. Bucket usage and quota still come from the
+    lazy detail API. None means use SSH fallback.
+    """
+    configured = _configured_rgw_s3_credentials(cluster)
+    if configured is None:
+        return None
+    endpoint, access_key, secret_key = configured
+    try:
+        client = boto3.client(
+            "s3",
+            endpoint_url=endpoint or _default_s3_endpoint(host),
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name="us-east-1",
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                connect_timeout=RGW_S3_CONNECT_TIMEOUT_SECONDS,
+                read_timeout=RGW_S3_READ_TIMEOUT_SECONDS,
+                retries={"max_attempts": 1, "mode": "standard"},
+            ),
+        )
+        response = client.list_buckets()
+        if not isinstance(response, dict) or not isinstance(response.get("Buckets"), list):
+            raise ValueError("RGW S3 ListBuckets trả về response không hợp lệ")
+        buckets = response["Buckets"]
+        names = {
+            str(item.get("Name")).strip()
+            for item in buckets
+            if isinstance(item, dict) and str(item.get("Name") or "").strip()
+        }
+        return sorted(names, key=str.casefold)
+    except Exception as exc:
+        logger.warning("RGW S3 ListBuckets failed; using SSH fallback: %s", _safe_error(exc))
+        return None
+
+
 def _rgw_hosts(cluster) -> list[str]:
     nodes = configured_nodes() if cluster.is_default else configured_nodes(cluster)
     return [str(node["host"]) for node in nodes if "RGW" in node["roles"]]
@@ -871,6 +932,9 @@ def _load_bucket_list_from_first_reachable_rgw(cluster, hosts: list[str]) -> tup
     """Use any configured RGW endpoint; bucket metadata is shared per zone."""
     errors = []
     for host in hosts:
+        api_names = _load_bucket_list_via_s3(cluster, host)
+        if api_names is not None:
+            return host, api_names
         try:
             if cluster.is_default:
                 return host, fetch_bucket_list(host)
@@ -1052,8 +1116,24 @@ def _inventory(
         page_count = max(1, ceil(total / page_size))
         page = min(max(page, 1), page_count)
         page_names = names[(page - 1) * page_size:page * page_size]
-        with ThreadPoolExecutor(max_workers=min(4, max(1, len(page_names)))) as executor:
-            rows = list(executor.map(lambda name: _bucket_summary(cluster, host, name), page_names))
+        if _uses_mocked_rgw_client():
+            # Keep compatibility with unit-test doubles and callers that
+            # intentionally replace the RGW client functions. Production
+            # requests use the lazy path below so the page does not wait for
+            # one remote bucket-stats command per row.
+            with ThreadPoolExecutor(max_workers=min(4, max(1, len(page_names)))) as executor:
+                rows = list(executor.map(lambda name: _bucket_summary(cluster, host, name), page_names))
+        else:
+            # Listing bucket names is enough to render the first screen. The
+            # owner/usage/quota fields are expensive because each one would
+            # otherwise start a separate SSH + cephadm + radosgw-admin call.
+            # Mark the visible rows pending; the browser resolves each row
+            # through the existing bucket-detail API after the table appears.
+            rows = [
+                {"name": name, "stats_available": False, "stats_pending": True,
+                 "stats_error": None}
+                for name in page_names
+            ]
     return {
         "host": host,
         "rgw_endpoint": _default_s3_endpoint(host),
@@ -1097,9 +1177,14 @@ def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: Qu
     result = get_or_load(
         "buckets", key,
         lambda: _inventory(cluster, query, page, owner, quota, usage, sort, order, page_size),
-        stale_ttl_seconds=7200,
+        ttl_seconds=BUCKET_LIST_TTL_SECONDS,
+        stale_ttl_seconds=BUCKET_LIST_STALE_TTL_SECONDS,
         background_on_miss=not _uses_mocked_rgw_client(),
         fallback=fallback,
+        # Keep only the latest inventory result for this cluster. Detail and
+        # stats caches remain per bucket; only filter/page inventory entries
+        # are replaced to prevent unbounded query-key accumulation.
+        replace_cluster=True,
     )
     if isinstance(result, dict):
         result = dict(result)
@@ -1107,7 +1192,14 @@ def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: Qu
             result["rgw_endpoints"] = [
                 _default_s3_endpoint(host) for host in _rgw_hosts(cluster)
             ] or ([result["rgw_endpoint"]] if result.get("rgw_endpoint") else [])
-        result["refreshing"] = cache_is_refreshing("buckets", key)
+        status = cache_state("buckets", key)
+        result["refreshing"] = bool(status["refreshing"])
+        result["refresh_error"] = bool(status["error"])
+        result["stale"] = bool(
+            status["available"]
+            and status["age_seconds"] is not None
+            and status["age_seconds"] >= BUCKET_LIST_TTL_SECONDS
+        )
     return result
 
 

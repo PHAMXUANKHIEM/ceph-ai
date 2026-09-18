@@ -23,6 +23,106 @@ function bucketHighlightJSON(value) {
 })();
 
 (function () {
+  var page = document.querySelector(".bucket-page");
+  if (!page) return;
+  var rows = Array.prototype.slice.call(document.querySelectorAll("tr.bucket-row-pending[data-bucket-name]"));
+  if (!rows.length) return;
+  var activeLoads = 0;
+  var nextRow = 0;
+  var MAX_ACTIVE_LOADS = 3;
+  var MAX_PENDING_ATTEMPTS = 18;
+  var RETRY_DELAY_MS = 1000;
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>\"']/g, function (character) {
+      return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[character];
+    });
+  }
+
+  function formatCreatedTimes(root) {
+    root.querySelectorAll(".bucket-created-time").forEach(function (element) {
+      var date = new Date(element.getAttribute("datetime") || "");
+      if (Number.isNaN(date.getTime())) return;
+      element.textContent = new Intl.DateTimeFormat("vi-VN", {
+        day: "2-digit", month: "2-digit", year: "numeric",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+      }).format(date);
+      element.title = element.getAttribute("datetime") || "";
+    });
+  }
+
+  function formatBytes(value) {
+    var size = Number(value);
+    if (!Number.isFinite(size) || size < 0) return "—";
+    var units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    var index = 0;
+    while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
+    return (index === 0 ? Math.round(size) : size.toFixed(1)) + " " + units[index];
+  }
+  function setField(row, field, html) {
+    var target = row.querySelector('[data-bucket-field="' + field + '"]');
+    if (target) target.innerHTML = html;
+  }
+  function setError(row, message) {
+    setField(row, "owner", '<span class="muted-value">Không lấy được</span>');
+    setField(row, "objects", '<span class="muted-value">—</span>');
+    setField(row, "size", '<span class="muted-value" title="' + escapeHtml(message || "") + '">Không khả dụng</span>');
+    setField(row, "quota", '<span class="muted-value">—</span>');
+    setField(row, "created", '<span class="muted-value">—</span>');
+    setField(row, "status", '<span class="status-badge warning">Chưa đầy đủ</span>');
+    row.classList.remove("bucket-row-pending");
+  }
+  function apply(row, data) {
+    if (!data || !data.ready) return false;
+    if (data.error) { setError(row, data.error); return true; }
+    var quota = data.quota_enabled
+      ? escapeHtml(data.quota_size || "—") + " / " + escapeHtml(data.quota_max_objects == null ? "—" : data.quota_max_objects) + " objects"
+      : '<span class="muted-value">Không giới hạn</span>';
+    setField(row, "owner", escapeHtml(data.owner || "—"));
+    setField(row, "objects", escapeHtml(data.num_objects == null ? "—" : data.num_objects));
+    setField(row, "size", formatBytes(data.size_bytes) + (Number(data.num_objects || 0) === 0 && Number(data.size_bytes || 0) === 0 ? ' <span class="bucket-empty-badge">Trống</span>' : ""));
+    setField(row, "quota", quota);
+    setField(row, "created", data.creation_time ? '<time class="bucket-created-time" datetime="' + escapeHtml(data.creation_time) + '" title="' + escapeHtml(data.creation_time) + '">' + escapeHtml(data.creation_time) + '</time>' : "—");
+    setField(row, "status", '<span class="status-badge healthy">Sẵn sàng</span>');
+    formatCreatedTimes(row);
+    row.classList.remove("bucket-row-pending");
+    var manage = row.querySelector("[data-bucket-action=menu]");
+    if (manage) {
+      manage.dataset.bucketOwner = data.owner || "";
+      manage.dataset.bucketSize = data.size || formatBytes(data.size_bytes);
+      manage.dataset.bucketObjects = String(data.num_objects || 0);
+    }
+    return true;
+  }
+  function load(row, attempt, done) {
+    var bucket = row.dataset.bucketName || "";
+    var url = "/api/object-storage/buckets/" + encodeURIComponent(bucket) + "?cluster=" + encodeURIComponent(page.dataset.cluster || "");
+    fetch(url, {cache: "no-store"}).then(function (response) {
+      return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Không đọc được metadata"); });
+    }).then(function (data) {
+      var ready = apply(row, data);
+      if (!ready && attempt < MAX_PENDING_ATTEMPTS) {
+        window.setTimeout(function () { load(row, attempt + 1, done); }, RETRY_DELAY_MS);
+      } else {
+        if (!ready) setError(row, "RGW phản hồi chậm");
+        done();
+      }
+    }).catch(function (error) {
+      if (attempt < 2) window.setTimeout(function () { load(row, attempt + 1, done); }, RETRY_DELAY_MS);
+      else { setError(row, error.message); done(); }
+    });
+  }
+  function pump() {
+    while (activeLoads < MAX_ACTIVE_LOADS && nextRow < rows.length) {
+      var row = rows[nextRow++];
+      activeLoads += 1;
+      load(row, 0, function () { activeLoads -= 1; pump(); });
+    }
+  }
+  pump();
+})();
+
+(function () {
   var banner = document.getElementById("bucket-capability-banner");
   var dismiss = banner && banner.querySelector(".bucket-capability-dismiss");
   if (!banner || !dismiss) return;
@@ -229,6 +329,10 @@ function bucketHighlightJSON(value) {
       .then(function (response) { return response.ok ? response.json() : null; })
       .then(function (data) {
         if (data && !data.refreshing) {
+          if (data.refresh_error) {
+            loading.textContent = "Không thể đồng bộ inventory bucket từ RGW. Bấm tải lại để thử lại.";
+            return;
+          }
           window.location.reload();
           return;
         }
