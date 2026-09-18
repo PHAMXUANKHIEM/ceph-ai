@@ -43,7 +43,12 @@ from config.settings import settings
 from shared import db
 from shared.notification_channels import enqueue_external_alert
 from shared.models import TelegramManagedChannel
-from shared.telegram_client import TelegramSendError, sanitize_telegram_text, send_telegram_message
+from shared.telegram_client import (
+    TelegramSendError,
+    edit_telegram_message,
+    sanitize_telegram_text,
+    send_telegram_message,
+)
 from shared.telegram_humanizer import (
     HUMANIZER_CLI_TIMEOUT_SECONDS,
     humanize_log_for_telegram,
@@ -326,6 +331,66 @@ def _run_alert_in_background(name: str, callback) -> None:
         _BACKGROUND_ALERT_EXECUTOR.submit(run)
     except Exception:
         logger.exception("could not queue background Telegram alert: %s", name)
+
+
+def _enrich_telegram_message(message_id: int, bot_token: str, chat_id: str, text: str, context: str) -> None:
+    """Append one AI explanation without changing the structured alert.
+
+    The original notification is sent first. The AI only produces an
+    additional, short explanation and never owns the severity, identifiers,
+    metrics, commands or remediation fields already present in the alert.
+    This keeps a slow or unavailable provider out of watcher and worker hot
+    paths.
+    """
+    detail, was_humanized = humanize_telegram_alert_detail(
+        text,
+        context=context,
+        limit=_MAX_EXCERPT_CHARS,
+    )
+    if not was_humanized or not detail:
+        return
+    enriched = f"{text}\n🧠 Giải thích dễ hiểu: {detail}"
+    try:
+        edit_telegram_message(bot_token, chat_id, message_id, enriched)
+    except TelegramSendError:
+        # The alert was already delivered. A deleted/expired Telegram
+        # message must not make the original operation look unsuccessful.
+        logger.warning("Telegram AI enrichment edit failed", exc_info=True)
+
+
+def send_telegram_alert_with_ai(
+    bot_token: str,
+    chat_id: str,
+    enabled: bool,
+    text: str,
+    *,
+    context: str = "cảnh báo vận hành Ceph",
+    send_func=None,
+) -> bool:
+    """Send an alert immediately, then enrich it asynchronously with AI.
+
+    This is the common Telegram delivery path for alert notifications. It
+    deliberately does not apply to interactive chat replies or approval
+    keyboards: those are conversations/actions, not alerts. If Telegram
+    returns a message id, the background job edits that exact message, so
+    concurrent alerts cannot exchange their explanations.
+    """
+    if not enabled or not bot_token or not chat_id:
+        return False
+    sender = send_func or send_telegram_message
+    try:
+        message_id = sender(bot_token, chat_id, text)
+    except TelegramSendError:
+        logger.exception("Telegram alert delivery failed")
+        return False
+    if message_id is not None and getattr(settings, "telegram_ai_humanize_enabled", False):
+        _run_alert_in_background(
+            "telegram-ai-enrichment",
+            lambda: _enrich_telegram_message(
+                int(message_id), bot_token, chat_id, text, context
+            ),
+        )
+    return True
 
 
 def _large_omap_evidence_is_empty(value: str | None) -> bool:
@@ -682,14 +747,13 @@ def _send(
         category=category, severity=severity, message=text, cluster_name=resolved_cluster,
     )
     managed_sent = send_managed_channel_alert(text, cluster_name=cluster_name, category=category)
-    if not enabled or not bot_token or not chat_id:
-        return managed_sent
-    try:
-        send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text, cluster_name))
-        return True
-    except TelegramSendError:
-        logger.exception("shared.telegram_alerts: Telegram delivery failed")
-        return False
+    return send_telegram_alert_with_ai(
+        bot_token,
+        chat_id,
+        enabled,
+        _with_cluster_prefix(text, cluster_name),
+        context=f"cảnh báo {category} Ceph",
+    ) or managed_sent
 
 
 def send_managed_channel_alert(
@@ -725,11 +789,13 @@ def send_managed_channel_alert(
 
     sent = False
     for bot_token, chat_id, _template in destinations:
-        try:
-            send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text, cluster_name))
-            sent = True
-        except TelegramSendError:
-            logger.exception("shared.telegram_alerts: managed Telegram delivery failed")
+        sent = send_telegram_alert_with_ai(
+            bot_token,
+            chat_id,
+            True,
+            _with_cluster_prefix(text, cluster_name),
+            context=f"cảnh báo {category} Ceph",
+        ) or sent
     return sent
 
 

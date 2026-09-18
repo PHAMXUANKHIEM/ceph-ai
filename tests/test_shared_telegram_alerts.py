@@ -267,6 +267,53 @@ def test_humanize_telegram_alert_detail_has_bounded_wait(monkeypatch):
     assert "status: DOWN" in detail
 
 
+def test_common_ai_pipeline_keeps_concurrent_alert_contexts_separate(monkeypatch):
+    """Mỗi message ID phải nhận đúng phần diễn giải của chính nó."""
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", True)
+    queued = []
+    sent = []
+    edited = []
+
+    def fake_send(_token, _chat_id, text):
+        message_id = len(sent) + 100
+        sent.append((message_id, text))
+        return message_id
+
+    def fake_humanize(value, **_kwargs):
+        marker = value.split("marker=", 1)[1].split()[0]
+        return f"Cảnh báo marker {marker} thuộc đúng sự kiện này.", True
+
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", fake_send)
+    monkeypatch.setattr(telegram_alerts, "humanize_telegram_alert_detail", fake_humanize)
+    monkeypatch.setattr(
+        telegram_alerts._BACKGROUND_ALERT_EXECUTOR,
+        "submit",
+        lambda callback: queued.append(callback),
+    )
+    monkeypatch.setattr(
+        telegram_alerts,
+        "edit_telegram_message",
+        lambda _token, _chat, message_id, text: edited.append((message_id, text)),
+    )
+
+    for marker in ("A", "B", "C", "D"):
+        assert telegram_alerts.send_telegram_alert_with_ai(
+            "token", "chat", True, f"HEALTH_WARN marker={marker} raw=DOWN",
+            context=f"test marker {marker}",
+        ) is True
+
+    assert [message_id for message_id, _text in sent] == [100, 101, 102, 103]
+    assert len(queued) == 4
+    for callback in queued:
+        callback()
+
+    assert [message_id for message_id, _text in edited] == [100, 101, 102, 103]
+    for message_id, text in edited:
+        marker = chr(ord("A") + message_id - 100)
+        assert f"marker {marker}" in text
+        assert f"marker {chr(ord('A') + (message_id - 100 + 1) % 4)}" not in text.split("Giải thích dễ hiểu:", 1)[1]
+
+
 def test_humanizer_redacts_secret_before_provider(monkeypatch):
     monkeypatch.setattr(telegram_humanizer.settings, "telegram_ai_humanize_enabled", True)
     monkeypatch.setattr(telegram_humanizer.settings, "codex_chat_enabled", False)
