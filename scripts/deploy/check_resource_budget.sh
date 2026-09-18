@@ -5,6 +5,7 @@ set -euo pipefail
 # Set REQUIRE_SWAP=1 in a deployment gate when swap is mandatory.
 
 required_swap_gib_min=4
+required_host_cpus=8
 host_cpus="$(nproc)"
 mem_kib="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
 swap_kib="$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)"
@@ -13,8 +14,8 @@ swap_gib=$((swap_kib / 1024 / 1024))
 
 printf 'host_cpus=%s memory_gib=%s swap_gib=%s\n' "$host_cpus" "$mem_gib" "$swap_gib"
 
-if (( host_cpus < 4 )); then
-  echo 'ERROR: at least 4 logical CPUs are required for the 2-CPU host reserve.' >&2
+if (( host_cpus < required_host_cpus )); then
+  echo "ERROR: at least ${required_host_cpus} logical CPUs are required for the 6-CPU service cap plus 2-CPU host reserve." >&2
   exit 2
 fi
 if (( swap_gib < required_swap_gib_min )); then

@@ -5,6 +5,7 @@ import yaml
 from shared.resource_limits import (
     HOST_RESERVED_CPU,
     JOB_CPU_LIMIT,
+    REQUIRED_HOST_CPU,
     SERVICE_CPU_BUDGETS,
     fio_one_cpu_options,
     host_cpu_reserve_is_possible,
@@ -36,7 +37,9 @@ def test_compose_resource_caps_match_policy():
 def test_budget_keeps_two_cpu_host_reserve():
     assert host_cpu_reserve_is_possible(8)
     assert not host_cpu_reserve_is_possible(8, extra_cpu=0.1)
+    assert not host_cpu_reserve_is_possible(7)
     assert not host_cpu_reserve_is_possible(3)
+    assert REQUIRED_HOST_CPU == 8
     assert JOB_CPU_LIMIT == 1.0
 
 

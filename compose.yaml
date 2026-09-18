@@ -112,8 +112,8 @@ services:
 
   full-executor:
     <<: *app
-    # Dedicated AI/job executor budget.  Remote fio benchmark commands also
-    # carry an explicit one-CPU fio affinity in worker/executor/*_perf.py.
+    # AI chat executor budget. Benchmark actions run in a separate child
+    # process inside the Worker cgroup and have their own one-CPU limit.
     cpus: "1.00"
     mem_limit: 2g
     memswap_limit: 2g

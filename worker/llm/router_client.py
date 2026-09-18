@@ -51,7 +51,7 @@ from shared.telegram_alerts import (
     send_update_failure_alert,
 )
 from worker.backup import engine as backup_engine
-from worker.executor import cinder_reconciliation, cluster_deploy, commands, rbd_reconciliation, vm_perf, volume_perf
+from worker.executor import bounded_job, cinder_reconciliation, cluster_deploy, commands, rbd_reconciliation, vm_perf, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
 from worker.policy.playbook_registry import evaluate_auto_execution, get_contract
@@ -3340,15 +3340,17 @@ def _execute_approved_action(action_pk: str) -> None:
             )
             _record_approved_execution_result(action_pk, command=None, succeeded=False)
             return
-        executor = vm_perf if action_id_str == vm_perf.VM_PERF_ACTION_ID else volume_perf
-        if action_id_str == vm_perf.VM_PERF_ACTION_ID:
-            succeeded = executor.run(
-                action_pk, action_params, incident_id, _write_action_progress, cluster
-            )
-        else:
-            succeeded = executor.run(
-                action_pk, action_params, incident_id, _write_action_progress
-            )
+        is_vm_benchmark = action_id_str == vm_perf.VM_PERF_ACTION_ID
+        executor = vm_perf if is_vm_benchmark else volume_perf
+        succeeded = bounded_job.run_bounded_benchmark(
+            action_pk,
+            action_params,
+            incident_id,
+            _write_action_progress,
+            executor_module=executor,
+            executor_name="vm" if is_vm_benchmark else "volume",
+            cluster=cluster,
+        )
         _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
         return
 

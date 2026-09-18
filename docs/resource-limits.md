@@ -5,7 +5,7 @@ stack now has hard service limits whose CPU total is 6.0 CPUs:
 
 - Worker: 2 CPUs, 2 GiB RAM.
 - Watcher: 1.5 CPUs, 1 GiB RAM.
-- Full executor/job service: 1 CPU, 2 GiB RAM.
+- Full executor (AI chat): 1 CPU, 2 GiB RAM.
 - Dashboard: 0.5 CPU, 512 MiB RAM.
 - Telegram AI: 0.5 CPU, 1 GiB RAM.
 - Code repair: 0.25 CPU, 1 GiB RAM.
@@ -17,10 +17,13 @@ work is not allowed to spill into swap and cause latency or lockup pressure.
 
 The two fio benchmark paths add `--cpus_allowed=0` and
 `--cpus_allowed_policy=split`, so each benchmark job is limited to one CPU at
-the target VM/Ceph host.  The existing online-learning code is lightweight
-statistics, not continuous neural-model training; it remains inside the
-Watcher 1.5-CPU cap.  Future training/replay jobs must use the 1-CPU job
-budget rather than running in the Watcher poll loop.
+the target VM/Ceph host. The Worker also launches benchmark actions in a
+separate child process with one-CPU affinity and a 2 GiB address-space limit;
+the child remains inside the Worker cgroup's 2-CPU cap. The existing
+online-learning code is lightweight statistics, not continuous neural-model
+training, and remains inside the Watcher 1.5-CPU cap. Future training/replay
+jobs must use the same bounded child-job path rather than running in the
+Watcher poll loop.
 
 The current host has no swap.  `scripts/deploy/check_resource_budget.sh` is a
 read-only preflight and reports this as a warning.  The separate
