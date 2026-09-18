@@ -865,6 +865,97 @@
   }
 })();
 
+// --- Telegram Chatbox dual-AI content controls ----------------------------
+// This block is scoped to the dual-AI panel and does not touch the Settings
+// sidebar or any other Settings form.
+(function () {
+  var panel = document.querySelector('[data-panel="dual-ai"]');
+  if (!panel) return;
+
+  var statusRequests = {};
+  var statusEndpoints = { codex: "/settings/codex/status", claude: "/settings/claude/status" };
+
+  function providerStatus(provider) {
+    if (provider === "auto") {
+      return Promise.all([providerStatus("codex"), providerStatus("claude")]).then(function (states) {
+        return states.some(Boolean);
+      });
+    }
+    if (!statusEndpoints[provider]) return Promise.resolve(false);
+    if (statusRequests[provider]) return statusRequests[provider];
+    statusRequests[provider] = fetch(statusEndpoints[provider], { credentials: "same-origin" })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) { return !!(data && data.authenticated === true && data.enabled !== false); })
+      .catch(function () { return false; });
+    return statusRequests[provider];
+  }
+
+  function syncDropdown(dropdown, select) {
+    var label = dropdown.querySelector("[data-dropdown-label]");
+    var selected = select.value || "auto";
+    if (label) label.textContent = selected;
+    Array.prototype.forEach.call(dropdown.querySelectorAll("[data-value]"), function (option) {
+      option.setAttribute("aria-selected", option.getAttribute("data-value") === selected ? "true" : "false");
+    });
+  }
+
+  function updateProviderStatus(card) {
+    var select = card.querySelector(".dual-ai-native-provider");
+    var status = card.querySelector("[data-provider-status]");
+    if (!select || !status) return;
+    status.className = "dual-ai-provider-status is-checking";
+    status.textContent = "● Đang kiểm tra";
+    providerStatus(select.value).then(function (connected) {
+      status.className = "dual-ai-provider-status " + (connected ? "is-connected" : "is-disconnected");
+      status.textContent = connected ? "● Đang hoạt động" : "● Chưa kết nối";
+    });
+  }
+
+  Array.prototype.forEach.call(panel.querySelectorAll(".dual-ai-role-card"), function (card) {
+    var select = card.querySelector(".dual-ai-native-provider");
+    var dropdown = card.querySelector("[data-dual-ai-dropdown]");
+    var trigger = dropdown && dropdown.querySelector(".dual-ai-dropdown-trigger");
+    var menu = dropdown && dropdown.querySelector(".dual-ai-dropdown-menu");
+    if (!select || !dropdown || !trigger || !menu) return;
+
+    syncDropdown(dropdown, select);
+    updateProviderStatus(card);
+    select.addEventListener("change", function () {
+      syncDropdown(dropdown, select);
+      updateProviderStatus(card);
+    });
+    trigger.addEventListener("click", function () {
+      var open = trigger.getAttribute("aria-expanded") === "true";
+      trigger.setAttribute("aria-expanded", open ? "false" : "true");
+      menu.hidden = open;
+    });
+    Array.prototype.forEach.call(menu.querySelectorAll("[data-value]"), function (option) {
+      option.addEventListener("click", function () {
+        select.value = option.getAttribute("data-value");
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        trigger.setAttribute("aria-expanded", "false");
+        menu.hidden = true;
+      });
+    });
+  });
+
+  document.addEventListener("click", function (event) {
+    if (panel.contains(event.target)) return;
+    Array.prototype.forEach.call(panel.querySelectorAll(".dual-ai-dropdown"), function (dropdown) {
+      var trigger = dropdown.querySelector(".dual-ai-dropdown-trigger");
+      var menu = dropdown.querySelector(".dual-ai-dropdown-menu");
+      if (trigger) trigger.setAttribute("aria-expanded", "false");
+      if (menu) menu.hidden = true;
+    });
+  });
+
+  var fallbackToggle = panel.querySelector("#dual-ai-fallback-toggle");
+  var fallbackConfig = panel.querySelector("#dual-ai-fallback-config");
+  if (fallbackToggle && fallbackConfig) {
+    fallbackToggle.addEventListener("change", function () { fallbackConfig.hidden = !fallbackToggle.checked; });
+  }
+})();
+
 // --- Patch pipeline: compact command input, validation and explicit restart flow ---
 (function () {
   var form = document.getElementById("patch-pipeline-form");
@@ -1034,7 +1125,11 @@
     select.appendChild(option);
   }
 
-  function renderModelSelect(select, status, data, preserveCurrent) {
+  function renderModelSelect(select, status, data, preserveCurrent, retry) {
+    if (retry) {
+      retry.hidden = true;
+      if (retry.parentElement) retry.parentElement.classList.remove("is-error");
+    }
     var current = preserveCurrent ? (select.dataset.currentModel || "") : "";
     var models = data && Array.isArray(data.models) ? data.models : [];
     var seen = {};
@@ -1067,11 +1162,11 @@
     }
   }
 
-  function loadRole(providerSelect, modelSelect, status, preserveCurrent) {
+  function loadRole(providerSelect, modelSelect, status, preserveCurrent, retry) {
     var provider = providerSelect.value;
     modelSelect.dataset.providerName = provider === "codex" ? "Codex" : "Claude";
     if (provider === "auto") {
-      renderModelSelect(modelSelect, status, { models: [] }, preserveCurrent);
+      renderModelSelect(modelSelect, status, { models: [] }, preserveCurrent, retry);
       status.textContent = "auto sẽ chọn provider khả dụng; chọn Codex hoặc Claude để xem catalog model.";
       status.className = "hint";
       return;
@@ -1079,29 +1174,35 @@
     status.textContent = "Đang tải danh sách model " + modelSelect.dataset.providerName + "…";
     status.className = "hint";
     requestCatalog(provider).then(function (data) {
-      renderModelSelect(modelSelect, status, data, preserveCurrent);
+      renderModelSelect(modelSelect, status, data, preserveCurrent, retry);
     }).catch(function (error) {
-      renderModelSelect(modelSelect, status, { models: [] }, preserveCurrent);
-      status.textContent = "Không tải được catalog " + modelSelect.dataset.providerName + ": " + error.message;
+      renderModelSelect(modelSelect, status, { models: [] }, preserveCurrent, retry);
+      status.textContent = "Không tải được danh sách model " + modelSelect.dataset.providerName + ". Kiểm tra kết nối API tại trang API AI.";
       status.className = "hint error";
+      if (retry) {
+        retry.hidden = false;
+        if (retry.parentElement) retry.parentElement.classList.add("is-error");
+      }
     });
   }
 
-  function bindRole(providerSelect, modelId, statusId) {
+  function bindRole(providerSelect, modelId, statusId, retryId) {
     var modelSelect = document.getElementById(modelId);
     var status = document.getElementById(statusId);
+    var retry = document.querySelector('[data-retry-role="' + retryId + '"]');
     if (!modelSelect || !status) return;
     providerSelect.addEventListener("change", function () {
       // A model selected for one provider must not silently be submitted for
       // another provider. The operator can then choose from the new catalog.
       modelSelect.dataset.currentModel = "";
-      loadRole(providerSelect, modelSelect, status, false);
+      loadRole(providerSelect, modelSelect, status, false, retry);
     });
-    loadRole(providerSelect, modelSelect, status, true);
+    if (retry) retry.addEventListener("click", function () { loadRole(providerSelect, modelSelect, status, true, retry); });
+    loadRole(providerSelect, modelSelect, status, true, retry);
   }
 
-  bindRole(plannerProvider, "code-repair-planner-model", "code-repair-planner-model-status");
-  bindRole(implementerProvider, "code-repair-implementer-model", "code-repair-implementer-model-status");
+  bindRole(plannerProvider, "code-repair-planner-model", "code-repair-planner-model-status", "planner");
+  bindRole(implementerProvider, "code-repair-implementer-model", "code-repair-implementer-model-status", "implementer");
 
 })();
 
@@ -1206,6 +1307,98 @@
   }
   bindAccount("planner");
   bindAccount("implementer");
+})();
+
+// AI Code Repair visual controls. Native selects remain in the form so the
+// existing account/catalog flows and server field names continue to work.
+(function () {
+  var panel = document.querySelector('[data-panel="code-repair"]');
+  if (!panel) return;
+
+  var openMenu = null;
+  function closeMenu() {
+    if (!openMenu) return;
+    openMenu.hidden = true;
+    var trigger = openMenu.parentNode && openMenu.parentNode.querySelector(".code-repair-select-trigger");
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+    openMenu = null;
+  }
+  function refresh(wrapper, select) {
+    var trigger = wrapper.querySelector(".code-repair-select-trigger");
+    var label = wrapper.querySelector("[data-custom-select-label]");
+    var menu = wrapper.querySelector(".code-repair-select-menu");
+    if (!trigger || !label || !menu) return;
+    var selected = select.options[select.selectedIndex];
+    label.textContent = selected ? selected.textContent : "Chọn một giá trị";
+    menu.innerHTML = "";
+    Array.prototype.forEach.call(select.options, function (option) {
+      var item = document.createElement("button");
+      item.type = "button";
+      item.textContent = option.textContent;
+      item.dataset.value = option.value;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", option.value === select.value ? "true" : "false");
+      item.addEventListener("click", function () {
+        select.value = option.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        refresh(wrapper, select);
+        closeMenu();
+      });
+      menu.appendChild(item);
+    });
+  }
+  function init(wrapper) {
+    var select = document.getElementById(wrapper.dataset.nativeSelectId);
+    if (!select) return;
+    var trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "code-repair-select-trigger";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    var label = document.createElement("span");
+    label.dataset.customSelectLabel = "true";
+    trigger.appendChild(label);
+    var menu = document.createElement("div");
+    menu.className = "code-repair-select-menu";
+    menu.hidden = true;
+    menu.setAttribute("role", "listbox");
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+    select.classList.add("code-repair-native-select");
+    trigger.addEventListener("click", function (event) {
+      event.stopPropagation();
+      if (openMenu && openMenu !== menu) closeMenu();
+      menu.hidden = !menu.hidden;
+      trigger.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+      openMenu = menu.hidden ? null : menu;
+    });
+    select.addEventListener("change", function () { refresh(wrapper, select); });
+    if (window.MutationObserver) new MutationObserver(function () { refresh(wrapper, select); }).observe(select, { childList: true });
+    refresh(wrapper, select);
+  }
+  panel.querySelectorAll(".code-repair-custom-select").forEach(init);
+  document.addEventListener("click", closeMenu);
+})();
+
+// Dependent execution permissions: without Push, the downstream actions are
+// unavailable and are cleared before the form can be submitted.
+(function () {
+  var panel = document.querySelector('[data-panel="code-repair"]');
+  if (!panel) return;
+  var push = panel.querySelector('input[name="code_repair_push"]');
+  var deploy = panel.querySelector('input[name="code_repair_deploy_staging"]');
+  var promote = panel.querySelector('input[name="code_repair_promote_main"]');
+  if (!push || !deploy || !promote) return;
+  function sync() {
+    [deploy, promote].forEach(function (input) {
+      var disabled = !push.checked;
+      input.disabled = disabled;
+      input.closest(".code-repair-policy-toggle").classList.toggle("is-disabled", disabled);
+      if (disabled) input.checked = false;
+    });
+  }
+  push.addEventListener("change", sync);
+  sync();
 })();
 
 // AI Action Policy: compact local filtering with custom dark dropdowns.
@@ -1361,6 +1554,38 @@
       form.querySelector('input[name="confirmation"]').value = confirmation;
       form.submit();
     });
+  });
+})();
+
+// --- Log Intelligence: custom source dropdown -----------------------------
+(function () {
+  var select = document.querySelector("[data-log-intel-select]");
+  if (!select) return;
+  var input = select.querySelector('input[name="log_intel_source"]');
+  var trigger = select.querySelector(".log-intel-select-trigger");
+  var label = select.querySelector("[data-log-intel-select-label]");
+  var menu = select.querySelector(".log-intel-select-menu");
+  var options = select.querySelectorAll("[data-log-intel-option]");
+  if (!input || !trigger || !label || !menu) return;
+  function close() { menu.hidden = true; trigger.setAttribute("aria-expanded", "false"); }
+  trigger.addEventListener("click", function () {
+    menu.hidden = !menu.hidden;
+    trigger.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+  });
+  Array.prototype.forEach.call(options, function (option) {
+    option.addEventListener("click", function () {
+      input.value = option.getAttribute("data-log-intel-option");
+      label.textContent = option.textContent;
+      Array.prototype.forEach.call(options, function (candidate) {
+        candidate.setAttribute("aria-selected", candidate === option ? "true" : "false");
+      });
+      close();
+    });
+  });
+  document.addEventListener("click", function (event) { if (!select.contains(event.target)) close(); });
+  document.addEventListener("keydown", function (event) { if (event.key === "Escape") close(); });
+  Array.prototype.forEach.call(options, function (option) {
+    option.setAttribute("aria-selected", option.getAttribute("data-log-intel-option") === input.value ? "true" : "false");
   });
 })();
 

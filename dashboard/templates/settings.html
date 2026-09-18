@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Settings — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}-settings-v2">
-  <link rel="stylesheet" href="/static/settings_redesign.css?v={{ static_version }}-settings-v4">
+  <link rel="stylesheet" href="/static/settings_redesign.css?v={{ static_version }}-settings-v7">
 </head>
 <body class="settings-redesign">
   {% include "_nav.html" %}
@@ -179,7 +179,7 @@
         </tbody></table></div>
         <nav class="dashboard-pagination action-policy-pagination" id="action-policy-pagination" aria-label="Phân trang hành động AI">
           <span id="action-policy-page-summary" class="pagination-summary" data-mobile-summary="0 / 0">Hiển thị 0–0 / 0 mục</span>
-          <div class="pagination-controls"><button type="button" class="pagination-prev" id="action-policy-page-previous" aria-label="Trang trước">‹</button><div id="action-policy-page-buttons" class="pagination-pages"></div><span id="action-policy-page-status" class="pagination-mobile-status" aria-live="polite">Trang 1/1</span><button type="button" class="pagination-next" id="action-policy-page-next" aria-label="Trang sau">›</button></div>
+          <div class="pagination-controls"><button type="button" class="pagination-prev" id="action-policy-page-previous" aria-label="Trang trước">‹</button><div id="action-policy-page-buttons" class="pagination-pages"></div><span id="action-policy-page-status" class="pagination-status pagination-mobile-status" aria-live="polite">Trang 1/1</span><button type="button" class="pagination-next" id="action-policy-page-next" aria-label="Trang sau">›</button></div>
         </nav>
       </div>
     </section>
@@ -344,40 +344,59 @@
 
     <section class="card settings-panel" data-panel="dual-ai" {% if active_section != 'dual-ai' %}hidden{% endif %}>
       <div class="card-header"><h2>Hai AI trao đổi</h2></div>
-      <div class="card-body">
+      <div class="card-body dual-ai-content">
         {% if dual_ai_error %}<p class="error">{{ dual_ai_error }}</p>{% endif %}
         {% if dual_ai_success %}<p class="success">{{ dual_ai_success }}</p>{% endif %}
-        <p class="hint">Cấu hình riêng cho Telegram Chatbox: Planner/Reviewer phân tích, Implementer có thể sửa code trong workspace cô lập theo lệnh <code>/dual</code>, chờ operator promote. Chatbox web chỉ hỗ trợ một AI. Thay đổi ở đây không tác động đến AI tự động sửa code khi application có log lỗi.</p>
-        <p class="hint"><strong>Muốn thêm tài khoản:</strong> mở <a href="/settings#code-repair">AI tự động sửa code từ log</a>, tại Planner hoặc Implementer chọn <strong>Tài khoản AI khác</strong>, nhập tên profile rồi bấm <strong>Đăng nhập tài khoản riêng</strong>. Lặp lại một lần cho từng tài khoản; không cần logout khi hệ thống tự xoay.</p>
-        <form class="login-box" method="post" action="/settings/dual-ai">
-          <label class="checkbox-label">
-            <input type="checkbox" name="dual_ai_fallback_enabled" value="true" {% if dual_ai_values.dual_ai_fallback_enabled %}checked{% endif %}>
-            <strong>Bật AI dự phòng khi provider hết token/quota</strong>
-          </label>
-          <p class="hint">Chọn mục này nếu muốn hệ thống tự chuyển sang provider/model tiếp theo khi AI hiện tại hết quota.</p>
-          <div class="settings-field-grid">
+        <p class="dual-ai-description">Cấu hình riêng cho Telegram Chatbox: Planner/Reviewer phân tích, Implementer sửa code.</p>
+        <div class="dual-ai-tip"><strong>💡 Muốn thêm tài khoản?</strong><span>Mở <a href="/settings#code-repair">AI tự động sửa code từ log</a>, chọn <strong>Tài khoản AI khác</strong> rồi đăng nhập profile riêng cho từng role.</span></div>
+        <form class="login-box dual-ai-form" method="post" action="/settings/dual-ai">
+          <div class="dual-ai-divider"></div>
+          <div class="dual-ai-fallback-row">
             <div>
-              <h3>Planner / Reviewer</h3>
-              <label>Provider
-                <select name="dual_ai_planner_provider">
+              <label class="dual-ai-toggle-label" for="dual-ai-fallback-toggle"><strong>Bật AI dự phòng khi provider hết token/quota</strong></label>
+              <p class="dual-ai-helper">Tự chuyển sang provider/model tiếp theo khi AI hiện tại hết quota.</p>
+            </div>
+            <label class="dual-ai-toggle" aria-label="Bật AI dự phòng">
+              <input id="dual-ai-fallback-toggle" type="checkbox" name="dual_ai_fallback_enabled" value="true" {% if dual_ai_values.dual_ai_fallback_enabled %}checked{% endif %}>
+              <span class="dual-ai-toggle-track" aria-hidden="true"><span></span></span>
+            </label>
+          </div>
+          <div class="dual-ai-divider"></div>
+          <div class="dual-ai-role-grid">
+            <article class="dual-ai-role-card" data-dual-ai-role="planner">
+              <div class="dual-ai-role-header"><h3>Planner / Reviewer</h3><span class="dual-ai-provider-status is-checking" data-provider-status>● Đang kiểm tra</span></div>
+              <label class="dual-ai-field">Provider
+                <span class="dual-ai-dropdown" data-dual-ai-dropdown>
+                  <button type="button" class="dual-ai-dropdown-trigger" aria-haspopup="listbox" aria-expanded="false"><span data-dropdown-label></span><span aria-hidden="true">⌄</span></button>
+                  <span class="dual-ai-dropdown-menu" role="listbox" hidden>
+                    {% for provider in dual_ai_providers %}<button type="button" role="option" data-value="{{ provider }}">{{ provider }}</button>{% endfor %}
+                  </span>
+                </span>
+                <select class="dual-ai-native-provider" name="dual_ai_planner_provider" tabindex="-1" aria-hidden="true">
                   {% for provider in dual_ai_providers %}<option value="{{ provider }}" {% if dual_ai_values.dual_ai_planner_provider == provider %}selected{% endif %}>{{ provider }}</option>{% endfor %}
                 </select>
               </label>
-              <label>Model (tuỳ chọn)
-                <input type="text" name="dual_ai_planner_model" value="{{ dual_ai_values.dual_ai_planner_model }}" maxlength="128" placeholder="để trống = model mặc định">
+              <label class="dual-ai-field">Model (ghi đè)
+                <input type="text" name="dual_ai_planner_model" value="{{ dual_ai_values.dual_ai_planner_model }}" maxlength="128" placeholder="Để trống = dùng model mặc định của provider">
               </label>
-            </div>
-            <div>
-              <h3>Implementer</h3>
-              <label>Provider
-                <select name="dual_ai_implementer_provider">
+            </article>
+            <article class="dual-ai-role-card" data-dual-ai-role="implementer">
+              <div class="dual-ai-role-header"><h3>Implementer</h3><span class="dual-ai-provider-status is-checking" data-provider-status>● Đang kiểm tra</span></div>
+              <label class="dual-ai-field">Provider
+                <span class="dual-ai-dropdown" data-dual-ai-dropdown>
+                  <button type="button" class="dual-ai-dropdown-trigger" aria-haspopup="listbox" aria-expanded="false"><span data-dropdown-label></span><span aria-hidden="true">⌄</span></button>
+                  <span class="dual-ai-dropdown-menu" role="listbox" hidden>
+                    {% for provider in dual_ai_providers %}<button type="button" role="option" data-value="{{ provider }}">{{ provider }}</button>{% endfor %}
+                  </span>
+                </span>
+                <select class="dual-ai-native-provider" name="dual_ai_implementer_provider" tabindex="-1" aria-hidden="true">
                   {% for provider in dual_ai_providers %}<option value="{{ provider }}" {% if dual_ai_values.dual_ai_implementer_provider == provider %}selected{% endif %}>{{ provider }}</option>{% endfor %}
                 </select>
               </label>
-              <label>Model (tuỳ chọn)
-                <input type="text" name="dual_ai_implementer_model" value="{{ dual_ai_values.dual_ai_implementer_model }}" maxlength="128" placeholder="để trống = model mặc định">
+              <label class="dual-ai-field">Model (ghi đè)
+                <input type="text" name="dual_ai_implementer_model" value="{{ dual_ai_values.dual_ai_implementer_model }}" maxlength="128" placeholder="Để trống = dùng model mặc định của provider">
               </label>
-            </div>
+            </article>
           </div>
           <div id="dual-ai-fallback-config" {% if not dual_ai_values.dual_ai_fallback_enabled %}hidden{% endif %}>
             <h3>AI dự phòng</h3>
@@ -395,41 +414,57 @@
             </div>
             <p class="hint">Nhập theo thứ tự: <code>provider@account-profile:model</code>, phân cách bằng dấu phẩy. Ví dụ: <code>codex@acc-2:gpt-5.5,claude@acc-3:claude-sonnet-4-6</code>. Mỗi profile phải được đăng nhập trước một lần trong phần tài khoản AI. Chỉ chuyển khi tài khoản hiện tại hết token/quota.</p>
           </div>
-          <button type="submit" class="btn btn-primary">Lưu cấu hình hai AI chat</button>
+          <div class="dual-ai-divider"></div>
+          <div class="dual-ai-actions"><button type="submit" class="dual-ai-save-button">💾 <span>Lưu cấu hình</span></button></div>
         </form>
       </div>
     </section>
 
     <section class="card settings-panel" data-panel="code-repair" {% if active_section != 'code-repair' %}hidden{% endif %}>
       <div class="card-header"><h2>AI tự động sửa code từ log</h2></div>
-      <div class="card-body">
+      <div class="card-body code-repair-content">
         {% if code_repair_error %}<p class="error">{{ code_repair_error }}</p>{% endif %}
         {% if code_repair_success %}<p class="success">{{ code_repair_success }}</p>{% endif %}
-        <p class="hint">
-          Đây là cấu hình riêng cho supervisor <code>worker.code_repair_supervisor</code>, chỉ xử lý khi phát hiện log lỗi:
-          <strong>Planner / Reviewer</strong> là AI hỏi, phân tích, lập kế hoạch và review read-only;
-          <strong>Implementer</strong> là AI thực hiện sửa code, viết test và sửa theo feedback.
-          Quyền push branch, deploy staging và promote main được cấu hình rõ ở bên dưới.
-        </p>
-        <form class="login-box" method="post" action="/settings/code-repair">
-        <label class="code-repair-auto-toggle">
-          <input type="checkbox" name="code_repair_auto_enabled" value="true" {% if code_repair_values.code_repair_auto_enabled %}checked{% endif %}>
-          <strong>Bật tự động sửa khi phát hiện lỗi trong application log</strong>
-        </label>
-        <p class="hint">Khi bật, supervisor sẽ đọc log mới, gửi lỗi cho Planner/Reviewer và Implementer, chạy test gate rồi tạo branch sửa lỗi. Cần đăng nhập và chọn provider Claude hoặc Codex trước.</p>
-        <fieldset class="code-repair-execution-policy">
-          <legend>Quyền sau khi test đạt</legend>
-          <label><input type="checkbox" name="code_repair_push" value="true" {% if code_repair_values.code_repair_push %}checked{% endif %}> Push branch sửa lỗi lên remote</label>
-          <label><input type="checkbox" name="code_repair_deploy_staging" value="true" {% if code_repair_values.code_repair_deploy_staging %}checked{% endif %}> Deploy candidate lên staging và smoke test</label>
-          <label><input type="checkbox" name="code_repair_promote_main" value="true" {% if code_repair_values.code_repair_promote_main %}checked{% endif %}> Promote commit đã verify lên main</label>
-          <p class="hint">Deploy staging cần bật Push; Promote main cần bật cả Push và Deploy staging.</p>
+        <div class="code-repair-description">
+          <p class="code-repair-description-primary">Supervisor tự phát hiện lỗi trong application log → gửi AI phân tích → tạo branch sửa code → chạy test gate.</p>
+          <p class="code-repair-description-secondary">Planner/Reviewer: lập kế hoạch + review read-only. Implementer: sửa code + viết test.</p>
+        </div>
+        <form class="login-box code-repair-form" method="post" action="/settings/code-repair">
+        <div class="code-repair-divider"></div>
+        <div class="code-repair-auto-row">
+          <div>
+            <label class="code-repair-auto-label" for="code-repair-auto-toggle">Bật tự động sửa khi phát hiện lỗi</label>
+            <p class="code-repair-helper">Cần đăng nhập provider Claude hoặc Codex trước.</p>
+          </div>
+          <label class="code-repair-toggle" aria-label="Bật tự động sửa">
+            <input id="code-repair-auto-toggle" class="code-repair-toggle-input" type="checkbox" name="code_repair_auto_enabled" value="true" {% if code_repair_values.code_repair_auto_enabled %}checked{% endif %}>
+            <span class="code-repair-toggle-track" aria-hidden="true"><span></span></span>
+          </label>
+        </div>
+        <div class="code-repair-divider"></div>
+        <fieldset class="code-repair-execution-policy code-repair-policy-card">
+          <legend>Quyền tự động sau khi test đạt</legend>
+          <div class="code-repair-policy-row">
+            <label class="code-repair-policy-toggle"><input type="checkbox" name="code_repair_push" value="true" {% if code_repair_values.code_repair_push %}checked{% endif %}><span class="code-repair-small-track"><span></span></span><span>Push branch</span></label>
+            <label class="code-repair-policy-toggle"><input type="checkbox" name="code_repair_deploy_staging" value="true" {% if code_repair_values.code_repair_deploy_staging %}checked{% endif %}><span class="code-repair-small-track"><span></span></span><span>Deploy staging</span></label>
+            <label class="code-repair-policy-toggle"><input type="checkbox" name="code_repair_promote_main" value="true" {% if code_repair_values.code_repair_promote_main %}checked{% endif %}><span class="code-repair-small-track"><span></span></span><span>Promote main</span></label>
+          </div>
+          <p class="code-repair-dependency">🔗 Deploy staging yêu cầu Push · Promote main yêu cầu Push + Deploy</p>
         </fieldset>
-        <hr>
-          <div class="settings-field-grid">
-            <div>
-              <h3>Planner / Reviewer — hỏi &amp; kiểm tra</h3>
-              <p class="hint">Không được sửa file; dùng cùng role cho lần lập kế hoạch và các vòng review.</p>
+        <div class="code-repair-divider"></div>
+        <div class="code-repair-review-card">
+          <label for="code-repair-max-review-rounds">Số vòng review tối đa</label>
+          <div class="code-repair-review-control">
+            <input id="code-repair-max-review-rounds" type="number" name="code_repair_max_review_rounds" min="0" max="5" value="{{ code_repair_values.code_repair_max_review_rounds }}">
+            <span>0 = bỏ review; khuyến nghị 2–5</span>
+          </div>
+        </div>
+        <div class="code-repair-divider"></div>
+          <div class="settings-field-grid code-repair-role-grid">
+            <article class="code-repair-role-card">
+              <header class="code-repair-role-header"><h3>Planner / Reviewer</h3><p>Phân tích, lập kế hoạch và review read-only.</p></header>
               <label>Nguồn tài khoản
+                <span class="code-repair-custom-select" data-native-select-id="code-repair-planner-account-source"></span>
                 <select id="code-repair-planner-account-source" name="code_repair_planner_account_source">
                   <option value="configured" {% if code_repair_values.code_repair_planner_account_source == 'configured' %}selected{% endif %}>AI trong phần cấu hình API</option>
                   <option value="separate" {% if code_repair_values.code_repair_planner_account_source == 'separate' %}selected{% endif %}>Tài khoản AI khác</option>
@@ -437,6 +472,7 @@
               </label>
               <div id="code-repair-planner-configured" class="code-repair-account-configured">
               <label>Provider
+                <span class="code-repair-custom-select" data-native-select-id="code-repair-planner-provider"></span>
                 <select id="code-repair-planner-provider" name="code_repair_planner_provider">
                   {% for provider in code_repair_providers %}
                     <option value="{{ provider }}" {% if code_repair_values.code_repair_planner_provider == provider %}selected{% endif %}>{{ provider }}</option>
@@ -444,6 +480,7 @@
                 </select>
               </label>
               <label>Model
+                <span class="code-repair-custom-select" data-native-select-id="code-repair-planner-model"></span>
                 <select id="code-repair-planner-model" name="code_repair_planner_model"
                         data-current-model="{{ code_repair_values.code_repair_planner_model }}"
                         data-model-provider="code-repair-planner-provider">
@@ -452,11 +489,12 @@
                     <option value="{{ code_repair_values.code_repair_planner_model }}" selected>{{ code_repair_values.code_repair_planner_model }} · đã lưu</option>
                   {% endif %}
                 </select>
-                <span id="code-repair-planner-model-status" class="hint">Chọn provider để tải danh sách model.</span>
+                <span class="code-repair-model-status-row"><span id="code-repair-planner-model-status" class="hint">Chọn provider để tải danh sách model.</span><button type="button" class="code-repair-catalog-retry" data-retry-role="planner" hidden>Thử lại</button></span>
               </label>
               </div>
               <div id="code-repair-planner-separate" class="code-repair-account-separate" hidden>
                 <label>Provider tài khoản riêng
+                  <span class="code-repair-custom-select" data-native-select-id="code-repair-planner-separate-provider"></span>
                   <select id="code-repair-planner-separate-provider" name="code_repair_planner_separate_provider">
                     <option value="codex" {% if code_repair_values.code_repair_planner_provider == 'codex' %}selected{% endif %}>Codex</option>
                     <option value="claude" {% if code_repair_values.code_repair_planner_provider == 'claude' %}selected{% endif %}>Claude</option>
@@ -482,11 +520,11 @@
                   <button type="button" class="btn btn-primary btn-sm" id="code-repair-planner-separate-complete" hidden>Nhập mã &amp; kết nối</button>
                 </div>
               </div>
-            </div>
-            <div>
-              <h3>Implementer — thực hiện</h3>
-              <p class="hint">Được sửa trong worktree cô lập; bắt buộc giữ hoặc thêm regression test.</p>
+            </article>
+            <article class="code-repair-role-card">
+              <header class="code-repair-role-header"><h3>Implementer</h3><p>Sửa code trong worktree cô lập và viết test.</p></header>
               <label>Nguồn tài khoản
+                <span class="code-repair-custom-select" data-native-select-id="code-repair-implementer-account-source"></span>
                 <select id="code-repair-implementer-account-source" name="code_repair_implementer_account_source">
                   <option value="configured" {% if code_repair_values.code_repair_implementer_account_source == 'configured' %}selected{% endif %}>AI trong phần cấu hình API</option>
                   <option value="separate" {% if code_repair_values.code_repair_implementer_account_source == 'separate' %}selected{% endif %}>Tài khoản AI khác</option>
@@ -494,6 +532,7 @@
               </label>
               <div id="code-repair-implementer-configured" class="code-repair-account-configured">
               <label>Provider
+                <span class="code-repair-custom-select" data-native-select-id="code-repair-implementer-provider"></span>
                 <select id="code-repair-implementer-provider" name="code_repair_implementer_provider">
                   {% for provider in code_repair_providers %}
                     <option value="{{ provider }}" {% if code_repair_values.code_repair_implementer_provider == provider %}selected{% endif %}>{{ provider }}</option>
@@ -501,6 +540,7 @@
                 </select>
               </label>
               <label>Model
+                <span class="code-repair-custom-select" data-native-select-id="code-repair-implementer-model"></span>
                 <select id="code-repair-implementer-model" name="code_repair_implementer_model"
                         data-current-model="{{ code_repair_values.code_repair_implementer_model }}"
                         data-model-provider="code-repair-implementer-provider">
@@ -509,11 +549,12 @@
                     <option value="{{ code_repair_values.code_repair_implementer_model }}" selected>{{ code_repair_values.code_repair_implementer_model }} · đã lưu</option>
                   {% endif %}
                 </select>
-                <span id="code-repair-implementer-model-status" class="hint">Chọn provider để tải danh sách model.</span>
+                <span class="code-repair-model-status-row"><span id="code-repair-implementer-model-status" class="hint">Chọn provider để tải danh sách model.</span><button type="button" class="code-repair-catalog-retry" data-retry-role="implementer" hidden>Thử lại</button></span>
               </label>
               </div>
               <div id="code-repair-implementer-separate" class="code-repair-account-separate" hidden>
                 <label>Provider tài khoản riêng
+                  <span class="code-repair-custom-select" data-native-select-id="code-repair-implementer-separate-provider"></span>
                   <select id="code-repair-implementer-separate-provider" name="code_repair_implementer_separate_provider">
                     <option value="codex" {% if code_repair_values.code_repair_implementer_provider == 'codex' %}selected{% endif %}>Codex</option>
                     <option value="claude" {% if code_repair_values.code_repair_implementer_provider == 'claude' %}selected{% endif %}>Claude</option>
@@ -539,13 +580,10 @@
                   <button type="button" class="btn btn-primary btn-sm" id="code-repair-implementer-separate-complete" hidden>Nhập mã &amp; kết nối</button>
                 </div>
               </div>
-            </div>
+            </article>
           </div>
-          <label>Số vòng review tối đa
-            <input type="number" name="code_repair_max_review_rounds" min="0" max="5" value="{{ code_repair_values.code_repair_max_review_rounds }}">
-          </label>
-          <p class="hint">0 = bỏ review; khuyến nghị 2; tối đa 5 vòng.</p>
-          <button type="submit" class="btn btn-primary">Lưu cấu hình tự động sửa code</button>
+          <div class="code-repair-divider"></div>
+          <div class="code-repair-actions"><button type="submit" class="btn btn-primary code-repair-save-button">💾 <span>Lưu cấu hình</span></button></div>
         </form>
         <hr>
         <section id="nightly-ai-today-control" class="code-repair-execution-policy">
@@ -1113,7 +1151,7 @@
     </div>
   </main>
   <script src="/static/pagination.js?v={{ static_version }}"></script>
-  <script src="/static/settings.js?v={{ static_version }}-settings-v3"></script>
+  <script src="/static/settings.js?v={{ static_version }}-settings-v6"></script>
   <script src="/static/settings_navigation.js?v={{ static_version }}"></script>
   <script src="/static/settings_logs.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>
