@@ -42,6 +42,7 @@ def publish_event(
     *,
     sections: Iterable[str] | None = None,
     action_id: str | None = None,
+    action_status: str | None = None,
     generation: int | None = None,
     collected_at: str | None = None,
 ) -> dict:
@@ -57,11 +58,33 @@ def publish_event(
     }
     if action_id:
         payload["action_id"] = str(action_id)
+    if action_status:
+        payload["action_status"] = str(action_status)
     if generation is not None:
         payload["generation"] = int(generation)
     if collected_at:
         payload["collected_at"] = str(collected_at)
     return ceph_query_cache.store_versioned(EVENT_NAMESPACE, normalized_cluster, payload)
+
+
+def publish_action_state_event(
+    cluster_id: str,
+    action_id: str,
+    status: str,
+) -> dict:
+    """Publish a committed Action lifecycle transition for the UI.
+
+    The event is metadata only; clients still read the authenticated Action
+    API. Keeping the status in the envelope lets a reconnecting client avoid
+    guessing which transition it missed, while the action primary key keeps
+    the event cluster-scoped and idempotently addressable.
+    """
+    return publish_event(
+        cluster_id,
+        "action_state_changed",
+        action_id=action_id,
+        action_status=status,
+    )
 
 
 def read_latest_event(cluster_id: str) -> dict | None:
