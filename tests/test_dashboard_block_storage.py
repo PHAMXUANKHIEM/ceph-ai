@@ -59,7 +59,7 @@ def test_block_storage_overview_paginates_ten_volumes_per_page(dashboard_client,
     assert first.status_code == 200
     assert first.text.count('class="block-storage-image-row"') == 10
     assert 'data-name="volume-09"' in first.text
-    assert 'image=volume-09' in first.text
+    assert '/volumes/volumes/volume-09' in first.text
     assert 'data-name="volume-10"' not in first.text
     assert "Trang 1 / 2" in first.text
     assert "page=2" in first.text
