@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from itertools import islice
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -13,7 +14,7 @@ from config.settings import settings
 from shared import db
 from shared.clusters import get_default_cluster_id
 from shared.learning_runtime import evaluate
-from shared.models import OnlineLearnerAudit
+from shared.models import OnlineLearnerAudit, OnlineLearnerCycleAudit
 from shared.online_learning import (
     MODEL_VERSION,
     LearningCircuitBreaker,
@@ -30,6 +31,7 @@ from shared.online_learning_gate import (
 )
 from shared.online_learning_labels import (
     enqueue_verified_outcomes,
+    label_policy_paused,
     mark_consumed,
     normalize_metric,
     ready_label_for_sample,
@@ -93,6 +95,7 @@ def _consume_one(
         # before reading this sample so a previously audited NO_LABEL row can
         # become learnable on a later Watcher cycle.
         enqueue_verified_outcomes(session, max_rows=100)
+        policy_paused = label_policy_paused(session)
         existing = session.scalar(
             select(OnlineLearnerAudit).where(
                 OnlineLearnerAudit.cluster_key == cluster_key,
@@ -110,7 +113,22 @@ def _consume_one(
                 sample_id=sample_id,
             )
             if ready_label is not None and not existing.update_applied:
-                runtime = evaluate(session, effective_cluster_id)
+                if policy_paused:
+                    session.commit()
+                    return ConsumedSample(
+                        sample_id=sample_id,
+                        metric=metric,
+                        quality=OnlineLearningGateDecision(
+                            "DATA_QUALITY", False,
+                            "label poisoning guard is paused for the current rate-limit window",
+                            sample_id, None,
+                        ),
+                        runtime_mode="LABEL_POLICY_PAUSED",
+                        update_applied=False,
+                    )
+                runtime = evaluate(
+                    session, effective_cluster_id, host=host, metric=metric,
+                )
                 learner, _state = load_or_reset_state(
                     session,
                     cluster_id=effective_cluster_id,
@@ -118,16 +136,32 @@ def _consume_one(
                     metric=metric,
                     model_version=MODEL_VERSION,
                 )
+                reference = learner.predict_one(fallback=existing.value)
+                quality = evaluate_sample(
+                    OnlineLearningSample(
+                        value=ready_label.label_value,
+                        label=ready_label.label_value,
+                        observed_at=_utc(existing.observed_at),
+                        sample_id=sample_id,
+                    ),
+                    OnlineLearningInputTracker(),
+                    now=_utc(existing.observed_at),
+                    max_age_seconds=settings.online_learning_sample_max_age_seconds,
+                    max_forward_gap_seconds=settings.online_learning_sample_max_gap_seconds,
+                    require_label=True,
+                    drift_reference=reference,
+                    drift_absolute_threshold=settings.online_learning_drift_threshold_percent,
+                )
                 quality = OnlineLearningGateDecision(
-                    "READY_TO_LEARN",
-                    True,
-                    "verified forecast outcome attached to audited sample",
+                    quality.status,
+                    quality.allowed,
+                    f"{quality.reason}; outcome={ready_label.outcome}; evidence={ready_label.evidence_count}",
                     sample_id,
-                    max(0.0, (datetime.now(timezone.utc) - _utc(existing.observed_at)).total_seconds()),
+                    quality.age_seconds,
                 )
                 update = guarded_update(
                     learner,
-                    existing.value,
+                    ready_label.label_value,
                     runtime,
                     target="shadow",
                     quality_decision=quality,
@@ -155,6 +189,20 @@ def _consume_one(
                         quality=quality,
                         runtime_mode=runtime.mode,
                         update_applied=True,
+                    )
+                if not quality.allowed:
+                    existing.label = ready_label.label_value
+                    existing.quality_status = quality.status
+                    existing.quality_reason = quality.reason
+                    existing.runtime_mode = runtime.mode
+                    existing.runtime_reason = runtime.reason
+                    session.commit()
+                    return ConsumedSample(
+                        sample_id=sample_id,
+                        metric=metric,
+                        quality=quality,
+                        runtime_mode=runtime.mode,
+                        update_applied=False,
                     )
                 session.commit()
             else:
@@ -192,7 +240,16 @@ def _consume_one(
             max_forward_gap_seconds=settings.online_learning_sample_max_gap_seconds,
             require_label=settings.online_learning_require_verified_label,
         )
-        runtime = evaluate(session, effective_cluster_id)
+        runtime = evaluate(
+            session, effective_cluster_id, host=host, metric=metric,
+        )
+        if policy_paused:
+            runtime = replace(
+                runtime,
+                can_update_shadow=False,
+                can_update_active=False,
+                reason="label poisoning guard is paused for the current rate-limit window",
+            )
         learner, _state = load_or_reset_state(
             session,
             cluster_id=effective_cluster_id,
@@ -252,17 +309,42 @@ def consume_samples(samples: Iterable[dict]) -> list[ConsumedSample]:
     if not settings.online_learning_enabled:
         return []
     results: list[ConsumedSample] = []
+    bounded_samples = list(islice(
+        samples, settings.online_learning_max_samples_per_cycle + 1,
+    ))
 
     def update(sample: dict) -> None:
         results.append(_consume_one(**sample))
 
-    run_bounded_updates(
-        samples,
+    result = run_bounded_updates(
+        bounded_samples,
         update,
         max_samples=settings.online_learning_max_samples_per_cycle,
         timeout_seconds=settings.online_learning_timeout_seconds,
         circuit_breaker=_CIRCUIT_BREAKER,
     )
+    if result.processed or result.failed:
+        clusters = {str(item.get("cluster_id") or "__default__") for item in bounded_samples}
+        hosts = {str(item.get("host") or "*") for item in bounded_samples}
+        metrics = {str(item.get("metric") or "*").strip().lower() for item in bounded_samples}
+        runtime_modes = {item.runtime_mode for item in results}
+        with db.SessionLocal() as session:
+            session.add(OnlineLearnerCycleAudit(
+                cluster_key=next(iter(clusters)) if len(clusters) == 1 else "*",
+                host=next(iter(hosts)) if len(hosts) == 1 else "*",
+                metric=next(iter(metrics)) if len(metrics) == 1 else "mixed",
+                processed=result.processed,
+                applied=sum(item.update_applied for item in results),
+                failed=result.failed,
+                skipped=result.skipped,
+                elapsed_ms=round(result.elapsed_seconds * 1000, 3),
+                cpu_time_ms=round(result.cpu_time_seconds * 1000, 3),
+                reason=result.reason,
+                runtime_mode=(
+                    next(iter(runtime_modes)) if len(runtime_modes) == 1 else "MIXED"
+                ) if runtime_modes else "NO_RESULT",
+            ))
+            session.commit()
     return results
 
 

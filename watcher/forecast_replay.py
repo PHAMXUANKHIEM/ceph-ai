@@ -66,6 +66,10 @@ class ShadowComparison:
     scope_key: str | None = None
     active_window_hours: int | None = None
     candidate_window_hours: int | None = None
+    candidate_drift_status: str | None = None
+    candidate_drift_score: float | None = None
+    resource_budget_ok: bool | None = True
+    poll_latency_ms: float | None = None
 
 
 def _smape(predicted: float, actual: float) -> float:
@@ -338,6 +342,13 @@ def compare_persisted_forecast_runs(session, *, minimum_evaluated: int | None = 
                 scope_key=f"{state.cluster_name}|{state.host}|{state.metric.lower()}",
                 active_window_hours=state.window_hours,
                 candidate_window_hours=window,
+                candidate_drift_status=(
+                    "DRIFT" if any(getattr(row, "drift_status", None) == "DRIFT" for row in candidate_rows)
+                    else "STABLE"
+                ),
+                candidate_drift_score=max(
+                    [float(getattr(row, "drift_score", 0.0) or 0.0) for row in candidate_rows] or [0.0]
+                ),
             ))
 
     volume_states = session.query(VolumeModelState).filter_by(selected=True).all()

@@ -102,10 +102,10 @@ thử và điểm cần làm tiếp.
 - [ ] **0.4 Baseline kỹ thuật**
   - [x] Đã lập inventory API/schema/command RBD và khoảng trống chức năng trong
     tài liệu này ngày 2026-08-17.
-  - [~] Bộ test tập trung đạt `239 passed`; còn 1 lỗi setup tại test đầu tiên do
-    race khi lifespan đồng bộ default cluster trên SQLite in-memory, không phải
-    assertion của Block Storage. Cần sửa hoặc cô lập lỗi rồi chạy lại để đóng
-    regression baseline.
+  - [x] Regression baseline đã chạy lại trong `.venv` sau khi cập nhật assertion
+    deep-link theo contract UI hiện tại; nhóm Block Storage đạt `216 passed,
+    1 warning`. Warning còn lại là deprecation từ Starlette/httpx, không phải
+    lỗi chức năng Block Storage.
   - [ ] Chưa audit live trên Ceph thật và chưa kiểm tra toàn bộ Alembic/repository
     regression, do đó mục baseline vẫn để `[ ]`.
 
@@ -536,6 +536,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-09-18 | BS-05.3 QoS policy | Đang làm | Thêm read-only `rbd config image list` API/UI theo volume; proposal QoS gồm tổng/read/write IOPS/BPS và burst, giới hạn server-side, zero = unlimited, action `rbd_qos_set` RISKY qua Worker, approval/audit, impact preview theo workload, cache invalidation và post-check/reconciliation; browser không có đường chạy trực tiếp. API trả `supported=false` rõ khi Ceph release không nhận QoS inventory. | Affected suite: `447 passed` plus QoS route smoke `2 passed`; `py_compile`, `node --check`, `git diff --check`; Worker và Dashboard healthy sau restart. | Còn live Ceph output validation và rollback proposal từ `qos_before`. |
 | 2026-09-18 | BS-04.4 Replication posture | Đang làm | Thêm Ceph client và `/api/volumes/{pool}/replication` read-only cho `rbd mirror pool info/status`, không truyền duplicate `--format`, cluster scoped; Volume Detail hiển thị mode, peer/status và khóa failover/fencing. Live default cluster xác nhận pool `images` đang `mode=disabled`; không bật mirroring hay failover. | `tests/test_ceph_client.py tests/test_dashboard_volumes.py`: `250 passed`; live CLI info/status read-only; `node --check`, `py_compile`, `git diff --check` đạt. | Còn peer configuration, lag/RPO, failover/failback/fencing và multi-site acceptance. |
 
+| 2026-09-18 | 0.4 Regression baseline | Hoàn thành phần test | Cập nhật test contract từ query `image=...` cũ sang deep-link `/volumes/{pool}/{image}` đang được UI sử dụng; không thay đổi hành vi production. | `.venv/bin/pytest -q tests/test_dashboard_block_storage.py tests/test_dashboard_volumes.py tests/test_rbd_reconciliation.py tests/test_volume_monitor.py tests/test_volume_perf.py tests/test_volume_perf_analysis.py tests/test_volume_snapshot_policy.py tests/test_volume_snapshot_scheduler.py tests/test_cinder_discovery.py tests/test_cinder_reconciliation.py`: `216 passed, 1 warning`. | Còn live Ceph audit và full repository/Alembic regression trước khi đóng toàn bộ mục 0.4. |
 ## Ghi chú bàn giao
 
 - Không ghi đè thay đổi chưa commit của người khác; luôn kiểm tra `git status`

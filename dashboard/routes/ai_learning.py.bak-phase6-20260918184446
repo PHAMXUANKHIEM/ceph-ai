@@ -14,7 +14,7 @@ from config.settings import settings
 from dashboard.cluster_scope import cluster_selection
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from shared import canary, db, forecast_feedback, learning_runtime, model_registry, remediation_feedback
+from shared import canary, db, forecast_feedback, model_registry, remediation_feedback
 from shared.models import (
     Action,
     Cluster,
@@ -31,8 +31,6 @@ from shared.models import (
     NodeResourceModelState,
     ForecastModelPromotionAudit,
     ForecastModelRegistry,
-    OnlineLearnerAudit,
-    OnlineLearnerCycleAudit,
     PlaybookStat,
     RemediationCase,
     VolumeEarlyForecast,
@@ -641,76 +639,7 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
             "updated_at": sample.updated_at,
         } for sample, title in recent_rows]
 
-        canary_metric = next(
-            (item.strip().lower() for item in str(settings.online_learning_canary_metrics or "").split(",")
-             if item.strip()),
-            "cpu",
-        )
-        runtime = learning_runtime.evaluate(
-            session,
-            cluster_id,
-            host=settings.online_learning_canary_host or None,
-            metric=canary_metric,
-        ).as_dict()
-        learner_cluster_key = str(cluster_id)
-        learner_sample_count = session.query(OnlineLearnerAudit).filter(
-            OnlineLearnerAudit.cluster_key == learner_cluster_key,
-        ).count()
-        learner_quality_rows = session.query(
-            OnlineLearnerAudit.quality_status, func.count(OnlineLearnerAudit.id),
-        ).filter(
-            OnlineLearnerAudit.cluster_key == learner_cluster_key,
-        ).group_by(OnlineLearnerAudit.quality_status).all()
-        learner_quality_counts = {status: count for status, count in learner_quality_rows}
-        latest_learner = session.query(OnlineLearnerAudit).filter(
-            OnlineLearnerAudit.cluster_key == learner_cluster_key,
-        ).order_by(OnlineLearnerAudit.created_at.desc()).first()
-        latest_applied = session.query(OnlineLearnerAudit).filter(
-            OnlineLearnerAudit.cluster_key == learner_cluster_key,
-            OnlineLearnerAudit.update_applied.is_(True),
-        ).order_by(OnlineLearnerAudit.created_at.desc()).first()
-        latest_cycle = session.query(OnlineLearnerCycleAudit).filter(
-            OnlineLearnerCycleAudit.cluster_key == learner_cluster_key,
-        ).order_by(OnlineLearnerCycleAudit.created_at.desc()).first()
-        drift_rows = session.query(
-            NodeResourceForecastRun.drift_status, func.count(NodeResourceForecastRun.id),
-        ).filter(
-            NodeResourceForecastRun.cluster_name == cluster_name,
-        ).group_by(NodeResourceForecastRun.drift_status).all()
-        online_learning = {
-            "feature_enabled": bool(settings.online_learning_enabled),
-            "configured_mode": str(settings.online_learning_mode or ""),
-            "effective_mode": runtime["mode"],
-            "runtime_reason": runtime["reason"],
-            "canary_enabled": bool(settings.online_learning_canary_enabled),
-            "canary_scope": {
-                "cluster_id": settings.online_learning_canary_cluster_id or None,
-                "host": settings.online_learning_canary_host or None,
-                "metrics": canary_metric,
-            },
-            "runtime": runtime,
-            "model_version": latest_learner.model_version if latest_learner else None,
-            "sample_count": learner_sample_count,
-            "quality_gate_counts": learner_quality_counts,
-            "drift_state_counts": {status: count for status, count in drift_rows},
-            "verified_feedback_count": feedback_summary.get("labeled_count", 0),
-            "last_sample_at": latest_learner.created_at if latest_learner else None,
-            "last_learned_at": latest_applied.created_at if latest_applied else None,
-            "latest_cycle": {
-                "processed": latest_cycle.processed,
-                "applied": latest_cycle.applied,
-                "failed": latest_cycle.failed,
-                "skipped": latest_cycle.skipped,
-                "elapsed_ms": round(latest_cycle.elapsed_ms, 2),
-                "cpu_time_ms": round(latest_cycle.cpu_time_ms, 2),
-                "reason": latest_cycle.reason,
-                "runtime_mode": latest_cycle.runtime_mode,
-                "created_at": latest_cycle.created_at,
-            } if latest_cycle else None,
-        }
-
         return {
-            "online_learning": online_learning,
             "forecast_feedback": {
                 **feedback_summary,
                 "coverage": (

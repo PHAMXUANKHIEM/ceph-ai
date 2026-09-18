@@ -252,6 +252,53 @@ def _cached_rbd_inventory(cluster, pool: str) -> list[dict]:
     )
 
 
+def _load_rbd_inventory(cluster, pool: str) -> list[dict]:
+    return (
+        ceph_client.query_rbd_inventory(pool)
+        if cluster.is_default
+        else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+    )
+
+
+def _cached_rbd_inventory_with_state(cluster, pool: str) -> tuple[list[dict], dict]:
+    """Return inventory plus freshness metadata without hiding stale snapshots."""
+    namespace, key = "rbd-inventory", f"{cluster.id}:{pool}"
+    stale_ttl_seconds = 900
+    cached = cached_ceph_query_value(namespace, key)
+    if cached is not None:
+        value, age_seconds = cached
+        if age_seconds < stale_ttl_seconds:
+            stale = age_seconds > _CEPH_PAGE_CACHE_TTL_SECONDS
+            if stale:
+                schedule_ceph_query_refresh(
+                    namespace, key,
+                    lambda: _load_rbd_inventory(cluster, pool),
+                    _CEPH_PAGE_CACHE_TTL_SECONDS,
+                )
+            return value, {
+                "stale": stale,
+                "refreshing": stale,
+                "age_seconds": round(age_seconds, 1),
+                "source": "stale-cache" if stale else "cache",
+            }
+
+    value = _cached_rbd_inventory(cluster, pool)
+    refreshed = cached_ceph_query_value(namespace, key)
+    age_seconds = refreshed[1] if refreshed is not None else 0.0
+    return value, {
+        "stale": age_seconds > _CEPH_PAGE_CACHE_TTL_SECONDS,
+        "refreshing": False,
+        "age_seconds": round(age_seconds, 1),
+        "source": "live",
+    }
+
+
+def _cache_collected_at(cache_state: dict) -> str:
+    age_seconds = max(0.0, float(cache_state.get("age_seconds") or 0.0))
+    collected_at = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    return collected_at.isoformat().replace("+00:00", "Z")
+
+
 def _cluster_for_request(request: Request):
     cluster = selected_cluster(request)
     requested = request.query_params.get("cluster", "").strip()
@@ -1012,7 +1059,7 @@ async def volume_inventory_api(
     if order not in {"asc", "desc"}:
         raise HTTPException(status_code=400, detail="Thứ tự sắp xếp không hợp lệ")
     try:
-        rows = _cached_rbd_inventory(cluster, pool)
+        rows, cache_state = _cached_rbd_inventory_with_state(cluster, pool)
     except CephQueryError as exc:
         logger.warning("volume_inventory_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}")
@@ -1048,7 +1095,11 @@ async def volume_inventory_api(
             "used_percent": all_used_percent,
         },
         "pages": max(1, (total + page_size - 1) // page_size),
-        "collected_at": datetime.utcnow().isoformat() + "Z",
+        "collected_at": _cache_collected_at(cache_state),
+        "stale": bool(cache_state["stale"]),
+        "refreshing": bool(cache_state["refreshing"]),
+        "cache_age_seconds": cache_state["age_seconds"],
+        "cache_source": cache_state["source"],
     }
 
 

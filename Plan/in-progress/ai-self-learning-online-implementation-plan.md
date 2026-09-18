@@ -1,7 +1,7 @@
 # Kế hoạch triển khai AI tự học cho Ceph-AI
 
-Ngày lập: 2026-09-18
-Phạm vi: self-learning cho metric và cảnh báo vận hành Ceph
+Ngày lập: 2026-09-18  
+Phạm vi: self-learning cho metric và cảnh báo vận hành Ceph  
 Trạng thái: kế hoạch đã được viết; chưa bật thêm model online trên production
 
 ## 1. Mục tiêu
@@ -177,17 +177,19 @@ Tiếp theo: chạy Phase 2 ở `AUDIT_ONLY` trên một node và CPU metric tro
 
 #### Bước 3.2 — Label policy
 
-- [ ] `VERIFIED_SUCCESS` là nhãn tích cực.
-- [ ] `VERIFIED_FAILED` và `REGRESSED` là nhãn lỗi.
-- [ ] `INCONCLUSIVE`, stale và partial telemetry không được đưa vào learner.
-- [ ] Mọi label phải có source, actor, evidence và timestamp.
+- [x] `VERIFIED_SUCCESS` là nhãn tích cực khi absolute error nằm trong tolerance.
+- [x] `VERIFIED_FAILED` là nhãn lỗi khi forecast có actual nhưng vượt tolerance; `REGRESSED` không được suy diễn từ numeric telemetry.
+- [x] `INCONCLUSIVE`, stale, thiếu actual hoặc không khớp timestamp không được đưa vào learner.
+- [x] Mọi label có source run, source actor, evidence count, verified timestamp và reason.
+- [x] Minimum evidence mặc định là 3 outcome/stream; thiếu bằng chứng thì chờ chu kỳ reconcile sau.
+- [x] Drift vượt 20 percentage points bị quality gate chặn và label vẫn giữ `READY`, không cập nhật learner.
 
 #### Bước 3.3 — Chống feedback poisoning
 
-- [ ] Giới hạn số label một actor có thể tạo trong một khoảng thời gian.
-- [ ] Không cho một alert chưa đóng tạo label cuối cùng.
-- [ ] Có audit khi sửa hoặc thu hồi label.
-- [ ] Khi tỷ lệ label bất thường, tạm dừng learner.
+- [x] Giới hạn số label một actor có thể tạo trong một khoảng thời gian (`100/3600s` mặc định).
+- [x] Không cho một alert chưa đóng tạo label cuối cùng; reconcile lại sau khi alert chuyển `RESOLVED`.
+- [x] Có audit append-only cho `CREATED`, `BLOCKED`, `CONSUMED` và `REVOKED`; thu hồi không xoá bản ghi.
+- [x] Khi chạm rate limit bất thường, mở policy pause trong cùng cửa sổ thời gian và fail-closed mọi online update.
 
 Tiếp theo: dùng verified feedback để chạy online update trong `SHADOW_ONLY`, chưa thay đổi model active.
 
@@ -195,24 +197,27 @@ Tiếp theo: dùng verified feedback để chạy online update trong `SHADOW_ON
 
 #### Bước 4.1 — Drift detection
 
-- [ ] Theo dõi drift của baseline, residual, coverage và alert rate.
-- [ ] Phân biệt drift thật với thiếu dữ liệu.
-- [ ] Khi drift xảy ra, giảm confidence và yêu cầu thêm sample.
-- [ ] Không tự promotion chỉ vì drift.
+- [x] Theo dõi drift của baseline, residual, coverage và alert rate trong detector đa tín hiệu.
+- [x] Phân biệt drift thật (`DRIFT`) với thiếu bằng chứng (`INSUFFICIENT_DATA`).
+- [x] Khi drift xảy ra, giảm confidence theo multiplier và chặn đường mở predictive alert/online update cho tới khi có evidence mới.
+- [x] Drift không có quyền tự promotion model; promotion vẫn đi qua guarded comparison và operator approval.
+- [x] Lưu `coverage_ratio`, `max_gap_hours`, `drift_status`, `drift_score` và `drift_reason` trên forecast run.
 
 #### Bước 4.2 — Model ensemble nhẹ
 
 - [x] Có baseline và candidate forecast.
 - [x] Có multi-model vote và prediction interval.
-- [ ] Bổ sung River model như candidate, không thay thế ngay seasonal/rolling baseline.
-- [ ] Xác định tối thiểu số model đồng thuận theo metric.
+- [x] Bổ sung River model (`river_mean`) như shadow candidate, không thay thế active deterministic ensemble.
+- [x] Xác định tối thiểu số model đồng thuận theo metric; River không được làm thay đổi active vote trước guarded promotion.
+- [x] Persist River candidate cùng target timestamp để replay/MAE/SMAPE/false-positive comparison dùng chung ground truth.
 
 #### Bước 4.3 — Quyết định alert
 
 - [x] Có hysteresis, cooldown và dedupe.
-- [ ] Hiển thị rõ model vote, confidence, interval và quality trong lý do alert.
-- [ ] Alert chỉ mở khi quality đạt và consensus vượt ngưỡng.
-- [ ] Khi model bất đồng, chuyển thành `LOW_CONFIDENCE` hoặc `REVIEW_REQUIRED`.
+- [x] Hiển thị rõ model vote, confidence, interval và quality trong `state_reason`/evidence fingerprint.
+- [x] Alert chỉ mở khi quality đạt và consensus vượt ngưỡng; drift được lưu `DATA_QUALITY` không gửi notification.
+- [x] Khi model bất đồng, chuyển thành `CANDIDATE`/`LOW_CONFIDENCE`, không tự mở WARNING/CRITICAL.
+- [x] Hysteresis, consensus, drift và confidence được kiểm thử cùng lifecycle transition.
 
 Tiếp theo: kiểm thử trên dữ liệu lịch sử trước khi cho River candidate chạy canary.
 
@@ -223,7 +228,7 @@ Tiếp theo: kiểm thử trên dữ liệu lịch sử trước khi cho River c
 - [x] Candidate chạy song song active.
 - [x] Có MAE, RMSE, SMAPE, bias và false-positive guard.
 - [x] Candidate không gửi notification hoặc remediation.
-- [ ] Bổ sung so sánh chất lượng trước/sau drift.
+- [x] Bổ sung evidence drift của candidate để so sánh chất lượng trước/sau drift; không dùng candidate đang `DRIFT` làm cơ sở promotion.
 
 #### Bước 5.2 — Promotion policy
 
@@ -231,32 +236,42 @@ Tiếp theo: kiểm thử trên dữ liệu lịch sử trước khi cho River c
 - [x] Có yêu cầu số outcome tối thiểu.
 - [x] Operator approval là bắt buộc.
 - [x] Có rollback và append-only audit.
-- [ ] Chặn promotion nếu resource budget hoặc poll latency vượt ngưỡng.
+- [x] Chặn promotion nếu resource budget hoặc poll latency vượt ngưỡng.
+- [x] Chặn promotion nếu evidence drift của candidate không đạt; lỗi evidence hoặc runtime state thiếu cũng fail-closed và ghi audit `PROMOTION_BLOCKED`.
 
 #### Bước 5.3 — Canary rollout
 
-- [ ] Chọn một node hoặc một metric stream làm canary.
+- [x] Có runtime canary guard theo đúng `cluster_id + host + metric`; thiếu scope hoặc không khớp đều fail-closed.
+- [x] Ghi append-only lifecycle transition cho predictive alert để đo alert volume, recovery và early-detection theo thời gian.
+- [x] Có API/UI báo cáo canary read-only, hiển thị MAE/SMAPE, data-quality, alert volume, precision/lead time và CPU cost.
+- [x] Có bounded learner-cycle CPU/elapsed telemetry; khi chưa bật learner, báo cáo hiển thị rõ “chưa có telemetry”, không suy diễn thành 0.
+- [x] Chọn ứng viên canary `CS-LAB / 10.20.1.153 / cpu` và replay read-only 14 ngày: 335 hourly points, 311 paired outcomes; rolling MAE 8.568 thấp hơn linear 9.811, consensus MAE 7.902, false-positive rate không tăng.
+- [ ] Bật ứng viên trên production ở `SHADOW_ONLY` sau khi operator phê duyệt.
 - [ ] Theo dõi ít nhất một chu kỳ đánh giá đầy đủ.
 - [ ] So sánh alert volume, false positive, early detection và CPU cost.
 - [ ] Chỉ mở rộng scope khi operator xác nhận.
 
-Tiếp theo: hoàn tất dashboard và chạy canary 24–72 giờ.
+Tiếp theo: operator phê duyệt bật `SHADOW_ONLY` cho một metric stream, sau đó theo dõi đủ 24–72 giờ.
 
 ### Phase 6 — Dashboard và explainability
 
 #### Bước 6.1 — Online learning status
 
-- [ ] Hiển thị model version, sample count, last learned time.
-- [ ] Hiển thị quality gate và lý do sample bị loại.
-- [ ] Hiển thị drift state và learner latency.
-- [ ] Hiển thị verified feedback count.
+- [x] Hiển thị model version, sample count, last learned time.
+- [x] Hiển thị quality gate và lý do sample bị loại.
+- [x] Hiển thị drift state và learner latency.
+- [x] Hiển thị verified feedback count.
+
+Đã triển khai read-only status vào `/ai-learning`; khi learner chưa bật, UI hiển thị rõ `DISABLED` và `Chưa có telemetry`, không suy diễn thành zero.
 
 #### Bước 6.2 — Forecast detail
 
-- [ ] Actual, predicted và prediction interval.
-- [ ] Model/algorithm/window/version.
-- [ ] Confidence và consensus ratio.
-- [ ] MAE/SMAPE gần nhất.
+- [x] Actual, predicted và prediction interval.
+- [x] Model/algorithm/window/version.
+- [x] Confidence và consensus ratio.
+- [x] MAE/SMAPE gần nhất.
+
+Đã kiểm tra trên `/ai-learning`: các bảng CPU/RAM và RBD volume đều hiển thị actual/predicted, interval, model/window/version, confidence/consensus và MAE/SMAPE; dữ liệu thiếu được hiển thị bằng `—` thay vì suy diễn.
 
 #### Bước 6.3 — Operator controls
 
@@ -304,5 +319,13 @@ Tiếp theo: hoàn tất dashboard và chạy canary 24–72 giờ.
 - [x] Bước 1.2 — per-sample quality gate và kiểm thử fail-closed.
 - [x] Consumer Watcher CPU/RAM và bảng `online_learner_audit`.
 - [x] Bước 3.1 — verified telemetry outcome, label queue và delayed consumption.
+- [x] Bước 3.2 — label policy, minimum evidence, drift gate và source audit metadata.
+- [x] Bước 3.3 — poisoning guard, alert-close gate, rate limit và label event audit.
+- [x] Bước 4.1 — detector drift đa chiều và metadata drift trên forecast run.
+- [x] Bước 4.2 — River shadow candidate và deterministic active ensemble boundary.
+- [x] Bước 4.3 — alert quality/consensus boundary, drift state và evidence-rich lifecycle reason.
+- [x] Bước 5.1 — shadow metrics, paired target evidence và drift-aware comparison.
+- [x] Bước 5.2 — guarded promotion, resource/latency/drift gates, operator approval, rollback và append-only audit.
+- [x] Bước 5.3 — canary guard, lifecycle evidence, acceptance API/UI và resource-cost telemetry read-only.
 
-Bước tiếp theo sẽ làm: **Bước 3.2 — label policy cho `VERIFIED_SUCCESS/VERIFIED_FAILED`, drift và minimum evidence**.
+Bước tiếp theo sẽ làm: **Bước 5.3 — operator-approved canary rollout 24–72 giờ trên `CS-LAB / 10.20.1.153 / cpu`, giữ `SHADOW_ONLY`, không tự promote**.

@@ -1,5 +1,4 @@
 import os
-from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,11 +13,10 @@ DEFAULT_SESSION_SECRET_KEY = "dev-only-insecure-secret-change-me"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=os.environ.get("CEPH_AI_ENV_FILE", ".env"), extra="forbid")
 
+    # Kept for compatibility with the production dashboard's startup guard;
+    # the deployment environment may override it with CEPH_AI_ENVIRONMENT.
+    ceph_ai_environment: str = "development"
     database_url: str = "sqlite:///./ceph_aiops.db"
-    # Explicit deployment mode keeps lab/test SQLite usage possible while
-    # making production safety checks fail closed instead of guessing from
-    # the database URL or container runtime.
-    ceph_ai_environment: Literal["development", "test", "lab", "staging", "production"] = "development"
     rabbitmq_url: str = "amqp://guest:guest@localhost/"
 
     # Dashboard auth (single static account — AD from Architecture, no RBAC in v1).
@@ -27,6 +25,11 @@ class Settings(BaseSettings):
     dashboard_username: str = "admin"
     dashboard_password_hash: str = DEFAULT_DASHBOARD_PASSWORD_HASH
     session_secret_key: str = DEFAULT_SESSION_SECRET_KEY
+    # Production must explicitly declare the public hostnames/origins served
+    # by the Dashboard. Keeping these blank by default prevents a deployment
+    # from silently trusting an unexpected Host or browser Origin.
+    dashboard_trusted_hosts: str = ""
+    dashboard_allowed_origins: str = ""
 
     # SSH access to the Ceph cluster nodes (dedicated keypair, no passphrase
     # so the services can run unattended) — shared by BOTH Watcher (read-only
@@ -669,6 +672,13 @@ class Settings(BaseSettings):
     online_learning_enabled: bool = False
     online_learning_mode: str = "AUDIT_ONLY"
     online_learning_kill_switch: bool = False
+    # Canary scope: when enabled, exactly one cluster/host/metric stream may
+    # reach the learner. Empty scope values fail closed instead of widening
+    # the rollout accidentally.
+    online_learning_canary_enabled: bool = False
+    online_learning_canary_cluster_id: str = ""
+    online_learning_canary_host: str = ""
+    online_learning_canary_metrics: str = "cpu"
     online_learning_watcher_failure_threshold: int = Field(default=3, ge=1, le=100)
     online_learning_watcher_staleness_seconds: int = Field(default=120, ge=15, le=86400)
     online_learning_max_samples_per_cycle: int = Field(default=100, ge=1, le=10000)
@@ -676,6 +686,18 @@ class Settings(BaseSettings):
     online_learning_circuit_breaker_failures: int = Field(default=3, ge=1, le=100)
     online_learning_cooldown_seconds: int = Field(default=60, ge=1, le=86400)
     online_learning_require_verified_label: bool = True
+    online_learning_min_verified_evidence: int = Field(default=3, ge=1, le=100)
+    online_learning_label_tolerance_percent: float = Field(default=5.0, ge=0, le=100)
+    online_learning_drift_threshold_percent: float = Field(default=20.0, ge=0, le=100)
+    online_learning_label_rate_limit: int = Field(default=100, ge=1, le=10000)
+    online_learning_label_rate_window_seconds: int = Field(default=3600, ge=60, le=86400)
+    forecast_drift_minimum_samples: int = Field(default=10, ge=2, le=10000)
+    forecast_drift_baseline_shift_threshold: float = Field(default=15.0, ge=0, le=100)
+    forecast_drift_residual_shift_threshold: float = Field(default=15.0, ge=0, le=100)
+    forecast_drift_coverage_drop_threshold: float = Field(default=0.20, ge=0, le=1)
+    forecast_drift_alert_rate_increase_threshold: float = Field(default=0.25, ge=0, le=1)
+    forecast_drift_history_runs: int = Field(default=100, ge=20, le=10000)
+    forecast_drift_confidence_multiplier: float = Field(default=0.5, ge=0, le=1)
     online_learning_sample_max_age_seconds: int = Field(default=120, ge=15, le=86400)
     online_learning_sample_max_gap_seconds: int = Field(default=900, ge=30, le=604800)
     learning_job_min_interval_seconds: int = Field(default=300, ge=0, le=86400)
@@ -728,6 +750,8 @@ class Settings(BaseSettings):
     forecast_promotion_max_false_positive_rate_increase: float = 0.0
     forecast_promotion_min_mae_improvement: float = 0.0
     forecast_promotion_min_smape_improvement: float = 0.0
+    forecast_promotion_max_poll_latency_ms: float = Field(default=5000.0, ge=1, le=600000)
+    forecast_promotion_max_drift_score: float = Field(default=0.0, ge=0, le=100)
 
     # LARGE_OMAP_OBJECTS auto-remediation is opt-in and bucket-scoped.
     # test-* remains the built-in lab-only path; production buckets must be

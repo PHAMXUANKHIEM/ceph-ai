@@ -17,57 +17,31 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import object_session
+from sqlalchemy import select
 
 from config.settings import settings
 from shared import db
-from shared.learning_safety import CircuitBreaker
 from shared.predictive_alert_lifecycle import (
     AlertLifecycleState,
     NotificationState,
     next_lifecycle_state,
 )
 from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
+from shared.forecast_drift import DriftReport, evaluate_drift
 from shared.forecast_metrics import update_rolling_metrics
+from shared.learning_runtime import evaluate as evaluate_learning_runtime
 from shared.models import (
+    Cluster,
     NodeResourceForecastAlert,
     NodeResourceForecastRun,
     NodeResourceForecastTransition,
     NodeResourceModelState,
 )
-from shared.retry import RetryPolicy, retry_sync
+from shared.online_learning import MODEL_VERSION, load_or_reset_state
 from shared.telegram_alerts import send_node_forecast_alert
 
 logger = logging.getLogger(__name__)
 JOB = "ceph-ai-node-metrics"
-_LOKI_FETCH_BREAKER = CircuitBreaker(
-    failure_threshold=settings.learning_job_circuit_breaker_failures,
-    cooldown_seconds=settings.learning_job_circuit_breaker_cooldown_seconds,
-)
-_LOKI_PUSH_BREAKER = CircuitBreaker(
-    failure_threshold=settings.learning_job_circuit_breaker_failures,
-    cooldown_seconds=settings.learning_job_circuit_breaker_cooldown_seconds,
-)
-
-
-def _loki_timeout_seconds() -> float:
-    return float(min(settings.log_intel_loki_timeout_seconds, settings.learning_job_timeout_seconds))
-
-
-def _loki_retry_policy() -> RetryPolicy:
-    return RetryPolicy(
-        max_retries=settings.learning_job_max_retries,
-        base_delay_seconds=0.25,
-        max_delay_seconds=min(5.0, max(0.25, _loki_timeout_seconds())),
-    )
-
-
-def _bounded_loki_call(operation):
-    return retry_sync(
-        operation,
-        _loki_retry_policy(),
-        deadline=time.monotonic() + _loki_timeout_seconds(),
-    )
 
 
 @dataclass(frozen=True)
@@ -93,7 +67,9 @@ class ResourceForecast:
     predicted_high: float | None = None
     residual_percent: float = 0.0
     anomaly_score: float = 0.0
-    latest_observed_at: datetime | None = None
+    drift_status: str = "INSUFFICIENT_DATA"
+    drift_score: float = 0.0
+    drift_reason: str = ""
 
 
 class NodeResourceLokiError(Exception):
@@ -107,6 +83,83 @@ def _resource_consensus(values: list[ResourceForecast]) -> ForecastConsensus:
         minimum_ratio=settings.node_resource_forecast_min_consensus_ratio,
         absolute_tolerance=settings.node_resource_forecast_consensus_tolerance_percent,
         relative_tolerance=settings.node_resource_forecast_consensus_relative_tolerance,
+    )
+
+
+def _drift_report(session, cluster: str, host: str, metric: str, now: datetime) -> DriftReport:
+    """Compare recent forecast evidence with the preceding bounded window."""
+
+    rows = list(session.query(NodeResourceForecastRun).filter(
+        NodeResourceForecastRun.cluster_name == cluster,
+        NodeResourceForecastRun.host == host,
+        NodeResourceForecastRun.metric == metric,
+        NodeResourceForecastRun.predicted_at < now,
+    ).order_by(NodeResourceForecastRun.predicted_at).all())
+    rows = rows[-max(2, int(settings.forecast_drift_history_runs)):]
+    midpoint = len(rows) // 2
+    baseline, recent = rows[:midpoint], rows[midpoint:]
+    threshold = settings.node_resource_forecast_trigger_threshold_percent
+    return evaluate_drift(
+        [row.current_percent for row in baseline],
+        [row.current_percent for row in recent],
+        baseline_residuals=[row.residual_percent for row in baseline],
+        recent_residuals=[row.residual_percent for row in recent],
+        baseline_coverages=[row.coverage_ratio for row in baseline],
+        recent_coverages=[row.coverage_ratio for row in recent],
+        baseline_alerts=[row.predicted_percent >= threshold for row in baseline],
+        recent_alerts=[row.predicted_percent >= threshold for row in recent],
+        minimum_samples=settings.forecast_drift_minimum_samples,
+        baseline_shift_threshold=settings.forecast_drift_baseline_shift_threshold,
+        residual_shift_threshold=settings.forecast_drift_residual_shift_threshold,
+        coverage_drop_threshold=settings.forecast_drift_coverage_drop_threshold,
+        alert_rate_increase_threshold=settings.forecast_drift_alert_rate_increase_threshold,
+        drift_confidence_multiplier=settings.forecast_drift_confidence_multiplier,
+    )
+
+
+def _river_shadow_candidate(
+    session, cluster: str, host: str, metric: str, current_percent: float,
+) -> ResourceForecast | None:
+    """Return a River forecast only as an auditable shadow candidate.
+
+    This function never feeds ``operational_candidates``. The deterministic
+    ensemble therefore remains the active alert source until an explicit,
+    guarded promotion is approved.
+    """
+
+    if not settings.online_learning_enabled:
+        return None
+    cluster_row = session.scalar(select(Cluster).where(Cluster.name == cluster))
+    cluster_id = cluster_row.id if cluster_row is not None else None
+    runtime = evaluate_learning_runtime(session, cluster_id)
+    if not runtime.can_observe:
+        return None
+    learner, state = load_or_reset_state(
+        session,
+        cluster_id=cluster_id,
+        host=host,
+        metric=metric,
+        model_version=MODEL_VERSION,
+    )
+    if learner.sample_count < max(1, int(settings.online_learning_min_verified_evidence)):
+        return None
+    predicted = learner.predict_one(fallback=current_percent)
+    if predicted is None or not math.isfinite(float(predicted)):
+        return None
+    return ResourceForecast(
+        metric=metric,
+        current_percent=float(current_percent),
+        slope_percent_per_hour=0.0,
+        predicted_percent=max(0.0, min(100.0, float(predicted))),
+        hours_to_90=0.0 if float(predicted) >= 90.0 else None,
+        confidence=0.5,
+        samples=learner.sample_count,
+        window_hours=1.0,
+        algorithm="river_mean",
+        training_window_hours=1,
+        coverage_ratio=1.0,
+        max_gap_hours=0.0,
+        consensus_status="SHADOW_CANDIDATE",
     )
 
 
@@ -163,23 +216,12 @@ def push_sample(cluster: str, host: str, metrics: dict, *, timestamp_ns: int | N
         "job": JOB, "cluster": cluster or "default", "host": host,
         "metric_type": "node_resource",
     }, "values": [[str(timestamp_ns or time.time_ns()), line]]}]}
-    if not _LOKI_PUSH_BREAKER.allow():
-        logger.warning("node forecast: Loki push circuit is open; skipping %s", host)
-        return False
     try:
-        def request():
-            response = httpx.post(
-                f"{_base_url()}/loki/api/v1/push", json=payload,
-                headers=_headers(), timeout=_loki_timeout_seconds(),
-            )
-            response.raise_for_status()
-            return response
-
-        _bounded_loki_call(request)
-        _LOKI_PUSH_BREAKER.record_success()
+        response = httpx.post(f"{_base_url()}/loki/api/v1/push", json=payload,
+                              headers=_headers(), timeout=settings.log_intel_loki_timeout_seconds)
+        response.raise_for_status()
         return True
     except Exception:
-        _LOKI_PUSH_BREAKER.record_failure()
         logger.warning("node forecast: cannot push sample for %s to Loki", host, exc_info=True)
         return False
 
@@ -197,23 +239,13 @@ def fetch_samples(cluster: str, host: str, *, now: datetime | None = None) -> li
     selector = '{job="%s", cluster="%s", host="%s"}' % (
         JOB, cluster.replace('"', '\\"'), host.replace('"', '\\"'))
     params = {"query": selector, "start": str(int(start.timestamp() * 1e9)),
-              "end": str(int(end.timestamp() * 1e9)),
-              "limit": str(settings.learning_job_max_batch_size), "direction": "forward"}
-    if not _LOKI_FETCH_BREAKER.allow():
-        raise NodeResourceLokiError("Loki query circuit is open; retry after cooldown")
+              "end": str(int(end.timestamp() * 1e9)), "limit": "5000", "direction": "forward"}
     try:
-        def request():
-            response = httpx.get(
-                f"{_base_url()}/loki/api/v1/query_range", params=params,
-                headers=_headers(), timeout=_loki_timeout_seconds(),
-            )
-            response.raise_for_status()
-            return response.json()
-
-        payload = _bounded_loki_call(request)
-        _LOKI_FETCH_BREAKER.record_success()
-    except Exception as exc:
-        _LOKI_FETCH_BREAKER.record_failure()
+        response = httpx.get(f"{_base_url()}/loki/api/v1/query_range", params=params,
+                             headers=_headers(), timeout=settings.log_intel_loki_timeout_seconds)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, TypeError, ValueError) as exc:
         # Callers use NodeResourceLokiError to isolate one unavailable Loki
         # query from the remaining nodes in a health scan.  Do not leak a
         # transport, status, or malformed-JSON exception across that boundary.
@@ -326,7 +358,6 @@ def _linear_forecast(
         predicted_high=predicted_high,
         residual_percent=residual_percent,
         anomaly_score=anomaly_score,
-        latest_observed_at=points[-1][0],
     )
 
 
@@ -378,7 +409,6 @@ def _rolling_quantile_forecast(
         predicted_high=max(low, high),
         residual_percent=residual_percent,
         anomaly_score=anomaly_score,
-        latest_observed_at=timestamps[-1],
     )
 
 
@@ -519,7 +549,7 @@ def _selected_window(session, cluster: str, host: str, metric: str,
 def _record_candidates(
     session, cluster: str, host: str, metric: str,
     candidates: list[ResourceForecast], now_naive: datetime,
-    consensus: ForecastConsensus,
+    consensus: ForecastConsensus, drift: DriftReport | None = None,
 ) -> None:
     horizon = max(1, settings.node_resource_learning_evaluation_hours)
     bucket = now_naive.replace(minute=0, second=0, microsecond=0)
@@ -550,11 +580,13 @@ def _record_candidates(
             consensus_candidate_count=consensus.candidate_count,
             predicted_low=consensus.lower,
             predicted_high=consensus.upper,
-            coverage_ratio=prediction.coverage_ratio,
-            max_gap_hours=prediction.max_gap_hours,
-            latest_observed_at=prediction.latest_observed_at,
             residual_percent=prediction.residual_percent,
             anomaly_score=prediction.anomaly_score,
+            coverage_ratio=prediction.coverage_ratio,
+            max_gap_hours=prediction.max_gap_hours,
+            drift_status=drift.status if drift is not None else "INSUFFICIENT_DATA",
+            drift_score=drift.score if drift is not None else 0.0,
+            drift_reason=drift.reason if drift is not None else None,
             model_votes_json=votes,
         ))
 
@@ -625,12 +657,23 @@ def adaptive_forecast(
                 operational_linear = linear_candidates[selected]
             if operational_candidates:
                 consensus = _resource_consensus(operational_candidates)
+                drift = _drift_report(session, cluster, host, metric, now_naive)
+                river_candidate = _river_shadow_candidate(
+                    session, cluster, host, metric, operational_linear.current_percent,
+                )
+                recorded_candidates = operational_candidates + (
+                    [river_candidate] if river_candidate is not None else []
+                )
                 _record_candidates(
-                    session, cluster, host, metric, operational_candidates,
-                    now_naive, consensus,
+                    session, cluster, host, metric, recorded_candidates,
+                    now_naive, consensus, drift,
                 )
                 result[metric] = replace(
                     operational_linear,
+                    confidence=max(
+                        0.0,
+                        min(1.0, operational_linear.confidence * drift.confidence_multiplier),
+                    ),
                     predicted_percent=(
                         consensus.value if consensus.candidate_count else operational_linear.predicted_percent
                     ),
@@ -639,6 +682,9 @@ def adaptive_forecast(
                     consensus_status=consensus.status,
                     predicted_low=consensus.lower if consensus.candidate_count else None,
                     predicted_high=consensus.upper if consensus.candidate_count else None,
+                    drift_status=drift.status,
+                    drift_score=drift.score,
+                    drift_reason=drift.reason,
                 )
         try:
             session.commit()
@@ -662,12 +708,16 @@ def forecast(cluster: str, host: str, *, now: datetime | None = None) -> dict[st
 def risky_forecasts(values: dict[str, ResourceForecast]) -> list[ResourceForecast]:
     """Return credible threshold crossings inside the configured horizon."""
     def crosses_threshold(value: ResourceForecast) -> bool:
+        threshold = settings.node_resource_forecast_trigger_threshold_percent
         return (
             (
                 value.hours_to_90 is not None
                 and value.hours_to_90 <= settings.node_resource_forecast_horizon_hours
             )
-            or (value.predicted_high is not None and value.predicted_high >= 90.0)
+            or (
+                value.predicted_high is not None
+                and value.predicted_high >= threshold
+            )
         )
 
     return [value for value in values.values()
@@ -676,6 +726,7 @@ def risky_forecasts(values: dict[str, ResourceForecast]) -> list[ResourceForecas
             and value.coverage_ratio >= settings.node_resource_forecast_min_coverage
             and value.max_gap_hours <= settings.node_resource_forecast_max_gap_hours
             and value.consensus_status not in {"LOW_CONFIDENCE", "INSUFFICIENT_CANDIDATES"}
+            and value.drift_status != "DRIFT"
             and (
                 value.consensus_status == "LEGACY"
                 or value.consensus_ratio >= settings.node_resource_forecast_min_consensus_ratio
@@ -684,6 +735,13 @@ def risky_forecasts(values: dict[str, ResourceForecast]) -> list[ResourceForecas
                 value.hours_to_90 is None
                 or math.isfinite(value.hours_to_90)
             )]
+
+
+def _above_recovery_threshold(value: ResourceForecast) -> bool:
+    upper_bound = value.predicted_high
+    if upper_bound is None:
+        upper_bound = value.predicted_percent
+    return upper_bound >= settings.node_resource_forecast_recovery_threshold_percent
 
 
 def anomaly_candidates(values: dict[str, ResourceForecast]) -> list[ResourceForecast]:
@@ -695,7 +753,8 @@ def anomaly_candidates(values: dict[str, ResourceForecast]) -> list[ResourceFore
     """
 
     return [value for value in values.values()
-            if value.consensus_status in {"LOW_CONFIDENCE", "INSUFFICIENT_CANDIDATES"}
+            if value.drift_status == "DRIFT"
+            or value.consensus_status in {"LOW_CONFIDENCE", "INSUFFICIENT_CANDIDATES"}
             and (
                 value.hours_to_90 is not None
                 or (
@@ -704,13 +763,6 @@ def anomaly_candidates(values: dict[str, ResourceForecast]) -> list[ResourceFore
                 )
                 or value.anomaly_score >= 3.0
             )]
-
-
-def _above_recovery_threshold(value: ResourceForecast) -> bool:
-    upper_bound = value.predicted_high
-    if upper_bound is None:
-        upper_bound = value.predicted_percent
-    return upper_bound >= settings.node_resource_forecast_recovery_threshold_percent
 
 
 def _legacy_lifecycle_state(alert: NodeResourceForecastAlert | None) -> str | None:
@@ -737,20 +789,7 @@ def _set_lifecycle(
     evidence_version: str | None = None,
 ) -> None:
     previous = _legacy_lifecycle_state(alert)
-    initial_transition = alert.state_changed_at is None
-    if previous != state or initial_transition:
-        session = object_session(alert)
-        if session is not None:
-            if alert.id is None:
-                session.flush([alert])
-            session.add(NodeResourceForecastTransition(
-                alert_id=alert.id,
-                previous_state=None if initial_transition else previous,
-                new_state=state,
-                reason=reason,
-                evidence_version=evidence_version,
-                changed_at=now,
-            ))
+    if previous != state or alert.state_changed_at is None:
         alert.state_changed_at = now
     alert.lifecycle_state = state
     alert.state_reason = reason
@@ -805,8 +844,41 @@ def _evidence_fingerprint(
         f"{prediction.predicted_low or 0.0:.6f}",
         f"{prediction.predicted_high or 0.0:.6f}",
         f"{prediction.training_window_hours or prediction.window_hours}",
+        prediction.drift_status,
+        f"{prediction.drift_score:.6f}",
     ))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _quality_evidence_summary(prediction: ResourceForecast) -> str:
+    """Keep model vote, interval and quality visible in lifecycle history."""
+
+    upper = prediction.predicted_high if prediction.predicted_high is not None else prediction.predicted_percent
+    lower = prediction.predicted_low if prediction.predicted_low is not None else prediction.predicted_percent
+    return (
+        f"models={prediction.consensus_candidate_count}; "
+        f"consensus={prediction.consensus_status}/{prediction.consensus_ratio:.3f}; "
+        f"confidence={prediction.confidence:.3f}; interval=[{lower:.1f},{upper:.1f}]; "
+        f"quality=coverage:{prediction.coverage_ratio:.3f},gap:{prediction.max_gap_hours:.2f}h,"
+        f"drift:{prediction.drift_status}/{prediction.drift_score:.1f}"
+    )
+
+
+def _alert_cooldown_seconds(*, critical: bool) -> int:
+    """Return the severity-specific notification cooldown.
+
+    Keep the old setting as a safe fallback for older Settings objects used by
+    tests or rolling deployments.
+    """
+    setting_name = (
+        "node_resource_forecast_critical_cooldown_seconds"
+        if critical
+        else "node_resource_forecast_warning_cooldown_seconds"
+    )
+    configured = getattr(settings, setting_name, None)
+    if configured is None:
+        configured = getattr(settings, "node_resource_forecast_alert_cooldown_seconds", 0)
+    return max(0, int(configured))
 
 
 def sync_forecast_alerts(
@@ -831,6 +903,7 @@ def sync_forecast_alerts(
         return value is None or (
             value.coverage_ratio < settings.node_resource_forecast_min_coverage
             or value.max_gap_hours > settings.node_resource_forecast_max_gap_hours
+            or value.drift_status == "DRIFT"
         )
 
     with db.SessionLocal() as session:
@@ -839,6 +912,10 @@ def sync_forecast_alerts(
             for row in session.query(NodeResourceForecastAlert).filter_by(
                 cluster_name=cluster, host=host
             ).all()
+        }
+        previous_states = {
+            metric: _legacy_lifecycle_state(alert)
+            for metric, alert in existing.items()
         }
         for metric in ("cpu", "ram"):
             prediction = risky.get(metric)
@@ -860,12 +937,44 @@ def sync_forecast_alerts(
             if prediction is None:
                 candidate = values.get(metric)
                 if quality_blocked(candidate):
+                    if (
+                        alert is None
+                        and candidate is not None
+                        and candidate.drift_status == "DRIFT"
+                    ):
+                        window_hours = int(candidate.training_window_hours or candidate.window_hours)
+                        alert = NodeResourceForecastAlert(
+                            cluster_name=cluster,
+                            host=host,
+                            metric=metric,
+                            status="DATA_QUALITY",
+                            first_detected_at=now_naive,
+                            last_detected_at=now_naive,
+                            current_percent=candidate.current_percent,
+                            predicted_percent=candidate.predicted_percent,
+                            hours_to_90=candidate.hours_to_90 or 0.0,
+                            confidence=candidate.confidence,
+                            samples=candidate.samples,
+                            window_hours=window_hours,
+                            consensus_status=candidate.consensus_status,
+                            consensus_ratio=candidate.consensus_ratio,
+                            consensus_candidate_count=candidate.consensus_candidate_count,
+                            predicted_low=candidate.predicted_low,
+                            predicted_high=candidate.predicted_high,
+                            anomaly_score=candidate.anomaly_score,
+                        )
+                        session.add(alert)
+                    reason = "Nguồn metric không đạt data-quality gate."
+                    if candidate is not None and candidate.drift_status == "DRIFT":
+                        reason = f"Concept drift phát hiện; giữ DATA_QUALITY. {candidate.drift_reason}"
+                    if candidate is not None:
+                        reason = f"{reason} {_quality_evidence_summary(candidate)}"
                     if alert is not None:
                         _transition_lifecycle(
                             alert,
                             now_naive,
                             quality_ok=False,
-                            reason="Nguồn metric không đạt data-quality gate.",
+                            reason=reason,
                             evidence_version="quality-gate:v1",
                         )
                         alert.notification_state = NotificationState.SUPPRESSED.value
@@ -901,9 +1010,6 @@ def sync_forecast_alerts(
                             predicted_low=anomaly.predicted_low,
                             predicted_high=anomaly.predicted_high,
                             anomaly_score=anomaly.anomaly_score,
-                            coverage_ratio=anomaly.coverage_ratio,
-                            max_gap_hours=anomaly.max_gap_hours,
-                            latest_observed_at=anomaly.latest_observed_at,
                         )
                         session.add(alert)
                     else:
@@ -921,9 +1027,6 @@ def sync_forecast_alerts(
                         alert.predicted_low = anomaly.predicted_low
                         alert.predicted_high = anomaly.predicted_high
                         alert.anomaly_score = anomaly.anomaly_score
-                        alert.coverage_ratio = anomaly.coverage_ratio
-                        alert.max_gap_hours = anomaly.max_gap_hours
-                        alert.latest_observed_at = anomaly.latest_observed_at
                     alert.evidence_fingerprint = _evidence_fingerprint(cluster, host, anomaly)
                     _transition_lifecycle(
                         alert,
@@ -932,7 +1035,8 @@ def sync_forecast_alerts(
                         candidate=True,
                         reason=(
                             f"Consensus chưa đủ: {anomaly.consensus_ratio:.3f} ratio; "
-                            f"anomaly score {anomaly.anomaly_score:.2f}."
+                            f"anomaly score {anomaly.anomaly_score:.2f}; "
+                            f"{_quality_evidence_summary(anomaly)}"
                         ),
                         evidence_version="consensus:v1",
                     )
@@ -1045,9 +1149,6 @@ def sync_forecast_alerts(
                     predicted_low=prediction.predicted_low,
                     predicted_high=prediction.predicted_high,
                     anomaly_score=prediction.anomaly_score,
-                    coverage_ratio=prediction.coverage_ratio,
-                    max_gap_hours=prediction.max_gap_hours,
-                    latest_observed_at=prediction.latest_observed_at,
                 )
                 session.add(alert)
             elif alert.status != "OPEN":
@@ -1068,9 +1169,6 @@ def sync_forecast_alerts(
             alert.predicted_low = prediction.predicted_low
             alert.predicted_high = prediction.predicted_high
             alert.anomaly_score = prediction.anomaly_score
-            alert.coverage_ratio = prediction.coverage_ratio
-            alert.max_gap_hours = prediction.max_gap_hours
-            alert.latest_observed_at = prediction.latest_observed_at
             alert.evidence_fingerprint = _evidence_fingerprint(cluster, host, prediction)
             critical = (
                 prediction.predicted_percent >= 95.0
@@ -1091,7 +1189,8 @@ def sync_forecast_alerts(
                     reason=(
                         f"Dự báo {prediction.predicted_percent:.1f}% / upper "
                         f"{prediction.predicted_high if prediction.predicted_high is not None else prediction.predicted_percent:.1f}% "
-                        f"sau {alert.consecutive_breach_count} lần breach liên tiếp."
+                        f"sau {alert.consecutive_breach_count} lần breach liên tiếp; "
+                        f"{_quality_evidence_summary(prediction)}"
                     ),
                     evidence_version="forecast-consensus:v1",
                 )
@@ -1110,12 +1209,15 @@ def sync_forecast_alerts(
                 )
             alert.resolved_at = None
 
-            cooldown = max(0, settings.node_resource_forecast_alert_cooldown_seconds)
+            cooldown = _alert_cooldown_seconds(critical=critical)
+            duplicate_evidence = (
+                alert.last_notified_evidence_fingerprint == alert.evidence_fingerprint
+            )
             due = (
                 alert.last_notified_at is None
                 or (now_naive - alert.last_notified_at).total_seconds() >= cooldown
             )
-            if due and breach_ready:
+            if due and breach_ready and not duplicate_evidence:
                 sent = send_node_forecast_alert(
                     host,
                     metric,
@@ -1129,11 +1231,37 @@ def sync_forecast_alerts(
                 )
                 if sent:
                     alert.last_notified_at = now_naive
+                    alert.last_notified_evidence_fingerprint = alert.evidence_fingerprint
                     alert.notification_state = NotificationState.SENT.value
                 else:
                     alert.notification_state = NotificationState.FAILED.value
             elif breach_ready:
-                alert.notification_state = NotificationState.COOLDOWN.value
+                alert.notification_state = (
+                    NotificationState.SUPPRESSED.value
+                    if duplicate_evidence
+                    else NotificationState.COOLDOWN.value
+                )
             else:
                 alert.notification_state = NotificationState.SUPPRESSED.value
+        # Keep an append-only history of lifecycle transitions. The mutable
+        # alert row is still the operational state; this history is what
+        # makes canary alert volume and recovery/early-detection metrics
+        # auditable over a 24–72 hour window.
+        session.flush()
+        current_alerts = session.query(NodeResourceForecastAlert).filter_by(
+            cluster_name=cluster, host=host,
+        ).all()
+        for alert in current_alerts:
+            new_state = _legacy_lifecycle_state(alert)
+            previous_state = previous_states.get(alert.metric)
+            if not new_state or previous_state == new_state:
+                continue
+            session.add(NodeResourceForecastTransition(
+                alert_id=alert.id,
+                previous_state=previous_state,
+                new_state=new_state,
+                reason=alert.state_reason or "lifecycle transition",
+                evidence_version=alert.evidence_version,
+                changed_at=now_naive,
+            ))
         session.commit()

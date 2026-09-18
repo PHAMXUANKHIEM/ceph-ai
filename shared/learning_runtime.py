@@ -22,6 +22,34 @@ ACTIVE = "ACTIVE"
 VALID_MODES = frozenset({AUDIT_ONLY, SHADOW_ONLY, ACTIVE})
 
 
+def canary_scope_allows(
+    cluster_id: str | None, host: str | None, metric: str | None,
+) -> bool:
+    """Return whether an identity is inside the explicitly configured canary.
+
+    The default is permissive only while canary mode is disabled. Once it is
+    enabled, every identity must match all three configured dimensions and a
+    blank dimension fails closed.
+    """
+    if not settings.online_learning_canary_enabled:
+        return True
+    configured_cluster = str(settings.online_learning_canary_cluster_id or "").strip()
+    configured_host = str(settings.online_learning_canary_host or "").strip()
+    metrics = {
+        item.strip().lower()
+        for item in str(settings.online_learning_canary_metrics or "").split(",")
+        if item.strip()
+    }
+    return bool(
+        configured_cluster
+        and configured_host
+        and metrics
+        and str(cluster_id or "").strip() == configured_cluster
+        and str(host or "").strip() == configured_host
+        and str(metric or "").strip().lower() in metrics
+    )
+
+
 @dataclass(frozen=True)
 class LearningRuntimeDecision:
     enabled: bool
@@ -57,7 +85,10 @@ def _blocked(mode: str, reason: str, *, checked_at: datetime | None = None,
     )
 
 
-def evaluate(session, cluster_id: str | None, *, now: datetime | None = None) -> LearningRuntimeDecision:
+def evaluate(
+    session, cluster_id: str | None, *, host: str | None = None,
+    metric: str | None = None, now: datetime | None = None,
+) -> LearningRuntimeDecision:
     """Return the current learning decision; never mutates the database."""
 
     checked_at = now or datetime.utcnow()
@@ -65,6 +96,13 @@ def evaluate(session, cluster_id: str | None, *, now: datetime | None = None) ->
         return _blocked("DISABLED", "online learning feature flag is disabled", checked_at=checked_at)
     if settings.online_learning_kill_switch:
         return _blocked("KILL_SWITCH", "online learning kill switch is enabled", checked_at=checked_at)
+
+    if not canary_scope_allows(cluster_id, host, metric):
+        return _blocked(
+            "CANARY_SCOPE",
+            "sample is outside the configured online-learning canary scope",
+            checked_at=checked_at,
+        )
 
     mode = str(settings.online_learning_mode or "").strip().upper()
     if mode not in VALID_MODES:

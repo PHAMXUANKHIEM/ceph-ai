@@ -3423,30 +3423,6 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   .app-shell .nav-link-label { display: inline; }
   .app-shell .nav-link::before { content: none; }
 }
-
-.learning-status-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin: 16px 0;
-}
-.learning-status-grid > div {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  padding: 11px 12px;
-  border: 1px solid rgba(148, 163, 184, .18);
-  border-radius: 8px;
-  background: rgba(15, 23, 42, .55);
-}
-.learning-status-grid strong { color: #e2e8f0; font-size: .9rem; overflow-wrap: anywhere; }
-.learning-status-grid small { color: #64748b; line-height: 1.35; }
-@media (max-width: 800px) {
-  .learning-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 520px) {
-  .learning-status-grid { grid-template-columns: 1fr; }
-}
 .backup-panel-header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
 @media (max-width: 720px) {
   .backup-panel-header-actions { justify-content: flex-start; }

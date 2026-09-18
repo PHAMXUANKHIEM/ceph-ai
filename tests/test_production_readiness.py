@@ -1,4 +1,8 @@
+import asyncio
+
 import pytest
+from starlette.requests import Request
+from starlette.responses import HTMLResponse
 
 from config.settings import (
     DEFAULT_DASHBOARD_PASSWORD_HASH,
@@ -32,6 +36,88 @@ def test_production_dashboard_rejects_dev_security_defaults(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Production security configuration rejected"):
         dashboard_app._warn_if_using_dev_defaults()
+
+
+def test_production_dashboard_rejects_missing_host_and_origin_policy(monkeypatch):
+    monkeypatch.setattr(settings, "ceph_ai_environment", "production")
+    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
+    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_trusted_hosts", "")
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "")
+
+    with pytest.raises(RuntimeError, match="DASHBOARD_TRUSTED_HOSTS.*DASHBOARD_ALLOWED_ORIGINS"):
+        dashboard_app._warn_if_using_dev_defaults()
+
+
+def _request(headers: dict[str, str], scheme: str = "https", session: dict | None = None) -> Request:
+    raw_headers = [(key.lower().encode(), value.encode()) for key, value in headers.items()]
+    return Request({
+        "type": "http",
+        "method": "POST",
+        "scheme": scheme,
+        "path": "/settings/save",
+        "raw_path": b"/settings/save",
+        "query_string": b"",
+        "headers": raw_headers,
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 443),
+        "session": session or {},
+    })
+
+
+def test_production_mutation_origin_allows_same_origin(monkeypatch):
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "https://admin.example")
+    request = _request({"Host": "admin.example", "Origin": "https://admin.example"})
+    assert dashboard_app._mutation_origin_allowed(request)
+
+
+def test_production_mutation_origin_rejects_cross_site_and_missing_source(monkeypatch):
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "https://admin.example")
+    assert not dashboard_app._mutation_origin_allowed(
+        _request({"Host": "admin.example", "Origin": "https://evil.example"})
+    )
+    assert not dashboard_app._mutation_origin_allowed(_request({"Host": "admin.example"}))
+
+
+def test_production_csrf_requires_matching_session_cookie_and_header(monkeypatch):
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "https://admin.example")
+    token = "a" * 43
+    request = _request(
+        {
+            "Host": "admin.example",
+            "Origin": "https://admin.example",
+            "Cookie": f"ceph_ai_csrf={token}",
+            "X-CSRF-Token": token,
+        },
+        session={"_ceph_ai_csrf_token": token},
+    )
+    assert asyncio.run(dashboard_app._csrf_token_allowed(request))
+
+    request = _request(
+        {
+            "Host": "admin.example",
+            "Origin": "https://admin.example",
+            "Cookie": f"ceph_ai_csrf={token}",
+            "X-CSRF-Token": "wrong",
+        },
+        session={"_ceph_ai_csrf_token": token},
+    )
+    assert not asyncio.run(dashboard_app._csrf_token_allowed(request))
+
+
+def test_production_html_response_gets_csrf_form_and_script():
+    token = "b" * 43
+    response = asyncio.run(
+        dashboard_app._protect_html_response(
+            HTMLResponse('<html><head></head><body><form method="post"></form></body></html>'),
+            token,
+            secure_cookie=True,
+        )
+    )
+    body = response.body.decode()
+    assert 'name="_csrf_token"' in body
+    assert "X-CSRF-Token" in body
+    assert "Secure" in response.headers["set-cookie"]
 
 
 def test_non_production_dashboard_keeps_dev_warning_only(monkeypatch, caplog):

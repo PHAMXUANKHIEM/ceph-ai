@@ -38,6 +38,8 @@ class PromotionPolicy:
     max_false_positive_rate_increase: float = 0.0
     minimum_mae_improvement: float = 0.0
     minimum_smape_improvement: float = 0.0
+    max_poll_latency_ms: float = 5000.0
+    max_drift_score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,41 @@ def default_promotion_policy() -> PromotionPolicy:
         ),
         minimum_mae_improvement=max(0.0, float(settings.forecast_promotion_min_mae_improvement)),
         minimum_smape_improvement=max(0.0, float(settings.forecast_promotion_min_smape_improvement)),
+        max_poll_latency_ms=max(1.0, float(settings.forecast_promotion_max_poll_latency_ms)),
+        max_drift_score=max(0.0, float(settings.forecast_promotion_max_drift_score)),
     )
+
+
+def _promotion_evidence(row) -> dict:
+    raw = getattr(row, "evidence_json", None)
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {"_invalid": True}
+    return payload if isinstance(payload, dict) else {"_invalid": True}
+
+
+def _resource_budget_ok(payload: dict, policy: PromotionPolicy) -> bool:
+    if payload.get("_invalid") is True or payload.get("resource_budget_ok", True) is False:
+        return False
+    raw_latency = payload.get("poll_latency_ms")
+    if raw_latency is None:
+        return True
+    try:
+        return float(raw_latency) <= policy.max_poll_latency_ms
+    except (TypeError, ValueError):
+        return False
+
+
+def _drift_guard_ok(payload: dict, policy: PromotionPolicy) -> bool:
+    if payload.get("_invalid") is True or payload.get("candidate_drift_status") == "DRIFT":
+        return False
+    try:
+        return float(payload.get("candidate_drift_score", 0.0) or 0.0) <= policy.max_drift_score
+    except (TypeError, ValueError):
+        return False
 
 
 def evaluate_guarded_promotion(
@@ -80,6 +116,8 @@ def evaluate_guarded_promotion(
         "mae_improved": False,
         "smape_improved": False,
         "false_positive_rate_guard": False,
+        "resource_budget_guard": False,
+        "drift_guard": False,
     }
     if not checks["consecutive_evaluations"]:
         return PromotionDecision(
@@ -114,6 +152,15 @@ def evaluate_guarded_promotion(
             <= row.active_false_positive_rate + policy.max_false_positive_rate_increase
         )
         for row in recent
+    )
+    evidence = [_promotion_evidence(row) for row in recent]
+    checks["resource_budget_guard"] = all(
+        _resource_budget_ok(payload, policy)
+        for payload in evidence
+    )
+    checks["drift_guard"] = all(
+        _drift_guard_ok(payload, policy)
+        for payload in evidence
     )
     failed = [name for name, passed in checks.items() if not passed]
     if failed:
@@ -197,6 +244,10 @@ def record_shadow_evaluation(session, *, active_model, candidate_model, comparis
         "active_algorithm": comparison.active_algorithm,
         "candidate_algorithm": comparison.candidate_algorithm,
         "status": comparison.status,
+        "candidate_drift_status": getattr(comparison, "candidate_drift_status", None),
+        "candidate_drift_score": getattr(comparison, "candidate_drift_score", 0.0),
+        "resource_budget_ok": getattr(comparison, "resource_budget_ok", True),
+        "poll_latency_ms": getattr(comparison, "poll_latency_ms", None),
     }
     row = ForecastModelEvaluation(
         candidate_model_id=candidate_model.id,
@@ -321,7 +372,14 @@ def approve_promotion(session, *, candidate_id: str, actor: str,
             evidence={"checks": decision.checks}, now=now,
         )
         raise ValueError(decision.reason)
-    _select_runtime_state(session, candidate, selected=True)
+    try:
+        _select_runtime_state(session, candidate, selected=True)
+    except ValueError as exc:
+        _audit(
+            session, candidate_model_id=candidate.id, previous_active_model_id=active.id,
+            event_type=PROMOTION_BLOCKED, actor=actor, reason=str(exc), evidence={}, now=now,
+        )
+        raise
     set_status(session, active, status="RETIRED", reason=f"replaced by {candidate.version}", now=now)
     set_status(session, candidate, status="ACTIVE", reason="operator-approved guarded promotion", now=now)
     _audit(

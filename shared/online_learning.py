@@ -47,6 +47,7 @@ class BoundedLearningResult:
     skipped: int
     reason: str
     elapsed_seconds: float
+    cpu_time_seconds: float = 0.0
 
 
 class LearningCircuitBreaker:
@@ -89,9 +90,13 @@ def run_bounded_updates(
     if max_samples < 1 or timeout_seconds <= 0:
         raise ValueError("learning cycle budget must be positive")
     started = clock()
+    cpu_started = time.process_time()
     deadline = started + timeout_seconds
     if not circuit_breaker.allow(now=started):
-        return BoundedLearningResult(0, 0, 0, 0, "circuit_open", 0.0)
+        return BoundedLearningResult(
+            0, 0, 0, 0, "circuit_open", 0.0,
+            max(0.0, time.process_time() - cpu_started),
+        )
 
     processed = applied = failed = skipped = 0
     reason = "completed"
@@ -117,7 +122,10 @@ def run_bounded_updates(
         if processed >= max_samples:
             reason = "sample_budget_exhausted"
     elapsed = max(0.0, clock() - started)
-    return BoundedLearningResult(processed, applied, failed, skipped, reason, elapsed)
+    return BoundedLearningResult(
+        processed, applied, failed, skipped, reason, elapsed,
+        max(0.0, time.process_time() - cpu_started),
+    )
 
 
 class RiverMeanLearner:

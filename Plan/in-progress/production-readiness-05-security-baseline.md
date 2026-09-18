@@ -8,8 +8,13 @@ Biến các cảnh báo bảo mật thành startup gate và middleware policy b�
 
 - [x] Production fail-closed nếu còn `DASHBOARD_PASSWORD_HASH` hoặc `SESSION_SECRET_KEY` mặc định.
 - [x] Có regression test bảo đảm production bị từ chối với credential dev mặc định.
-- [ ] Bật CSRF protection thống nhất cho mọi mutation của Dashboard.
-- [ ] Hoàn tất Origin/Referer policy, Trusted Host và reverse-proxy trust.
+- [x] Bật CSRF protection thống nhất cho mọi mutation của Dashboard bằng token
+      double-submit (session + cookie), form hidden field và `X-CSRF-Token` cho
+      API/fetch; thiếu hoặc sai token bị từ chối trong production.
+- [~] Đã hoàn tất Origin/Referer policy và Trusted Host; production bắt buộc khai báo
+      `DASHBOARD_TRUSTED_HOSTS`/`DASHBOARD_ALLOWED_ORIGINS` và không tin
+      `X-Forwarded-*` nếu chưa có proxy boundary được cấu hình. Trusted
+      reverse-proxy boundary và header policy vẫn còn phải nghiệm thu.
 - [ ] Chuyển login/API rate limit sang shared store cho multi-replica.
 - [ ] Hoàn tất security regression cho session fixation, CSRF, host header và brute force.
 

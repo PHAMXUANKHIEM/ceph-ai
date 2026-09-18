@@ -2903,6 +2903,9 @@ class NodeResourceForecastRun(Base):
     residual_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     model_votes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    drift_status: Mapped[str] = mapped_column(String(24), nullable=False, default="INSUFFICIENT_DATA", server_default="INSUFFICIENT_DATA")
+    drift_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
+    drift_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     actual_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING", index=True)
@@ -3209,6 +3212,33 @@ class OnlineLearnerAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class OnlineLearnerCycleAudit(Base):
+    """Bounded learner-cycle resource telemetry for canary review."""
+
+    __tablename__ = "online_learner_cycle_audit"
+    __table_args__ = (
+        Index("ix_online_learner_cycle_audit_created_at", "created_at"),
+        Index(
+            "ix_online_learner_cycle_audit_scope_time",
+            "cluster_key", "host", "metric", "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    applied: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    elapsed_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    cpu_time_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    runtime_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class OnlineLearnerLabel(Base):
     """Verified ground-truth queue for a previously audited sample."""
 
@@ -3235,10 +3265,37 @@ class OnlineLearnerLabel(Base):
     )
     observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     label_value: Mapped[float] = mapped_column(Float, nullable=False)
+    predicted_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    outcome: Mapped[str] = mapped_column(String(24), nullable=False, default="VERIFIED_SUCCESS")
+    evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source_actor: Mapped[str] = mapped_column(String(64), nullable=False, default="forecast-evaluator")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="READY")
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     verified_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class OnlineLearnerLabelEvent(Base):
+    """Append-only audit for label creation, blocking, consumption and revocation."""
+
+    __tablename__ = "online_learner_label_events"
+    __table_args__ = (
+        Index("ix_online_learner_label_event_source_action", "source_run_id", "action"),
+        Index("ix_online_learner_label_event_created_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    label_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("online_learner_labels.id"), nullable=True,
+    )
+    source_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("node_resource_forecast_runs.id"), nullable=True,
+    )
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 

@@ -16,14 +16,6 @@
       <form method="get" action="/ai-learning" class="audit-filters">
         <label>Cụm<select name="cluster" onchange="this.form.submit()">{% for item in clusters %}<option value="{{ item.id }}" {% if item.id == cluster.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></label>
       </form>
-      <div class="learning-status-grid" aria-label="Trạng thái online learning">
-        <div><span class="hint">Runtime</span><strong>{{ online_learning.effective_mode }}</strong><small>{{ online_learning.runtime_reason }}</small></div>
-        <div><span class="hint">Model version</span><strong>{{ online_learning.model_version or 'Chưa có' }}</strong><small>{{ online_learning.sample_count }} sample audit</small></div>
-        <div><span class="hint">Lần học gần nhất</span><strong>{{ online_learning.last_learned_at|vntime if online_learning.last_learned_at else 'Chưa có' }}</strong><small>Verified feedback: {{ online_learning.verified_feedback_count }}</small></div>
-        <div><span class="hint">Drift</span><strong>{{ online_learning.drift_state_counts.get('DRIFT', 0) }} DRIFT</strong><small>OK: {{ online_learning.drift_state_counts.get('OK', 0) }} · thiếu dữ liệu: {{ online_learning.drift_state_counts.get('INSUFFICIENT_DATA', 0) }}</small></div>
-        <div><span class="hint">Quality gate</span><strong>{{ online_learning.quality_gate_counts.get('READY_TO_LEARN', 0) }} đủ điều kiện</strong><small>DATA_QUALITY: {{ online_learning.quality_gate_counts.get('DATA_QUALITY', 0) }} · NO_LABEL: {{ online_learning.quality_gate_counts.get('NO_LABEL', 0) }}</small></div>
-        <div><span class="hint">Learner cycle</span><strong>{% if online_learning.latest_cycle %}{{ online_learning.latest_cycle.cpu_time_ms }} ms CPU{% else %}Chưa có telemetry{% endif %}</strong><small>{% if online_learning.latest_cycle %}{{ online_learning.latest_cycle.applied }} applied · {{ online_learning.latest_cycle.elapsed_ms }} ms elapsed{% else %}Learner chưa chạy{% endif %}</small></div>
-      </div>
       <p><strong>CPU/RAM:</strong> {{ resource_learning.run_counts.get('EVALUATED', 0) }} dự báo đã đối chiếu · {{ resource_learning.run_counts.get('PENDING', 0) }} đang chờ outcome.</p>
       <p><strong>RBD volume:</strong> {{ volume_learning.run_counts.get('EVALUATED', 0) }} baseline đã đối chiếu · {{ volume_learning.run_counts.get('PENDING', 0) }} đang chờ outcome · {{ volume_learning.selected_models|length }} model được chọn.</p>
       <p><strong>Dự báo sớm RBD:</strong> {{ volume_learning.early_forecasts|length }} forecast mới nhất · {{ volume_learning.forecast_warning_count }} cảnh báo.</p>
