@@ -4,6 +4,38 @@
   var cluster = page.getAttribute('data-cluster');
   var isAdmin = page.getAttribute('data-is-admin') === 'true';
 
+  var userSearchForm = document.getElementById('s3-user-search-form');
+  var userSearchInput = document.querySelector('[data-s3-user-search]');
+  var userSearchStatus = document.querySelector('[data-s3-search-status]');
+  var userSearchClear = document.querySelector('[data-s3-user-search-clear]');
+  var userSearchTimer = null;
+  function updateUserSearchStatus() {
+    if (!userSearchStatus || !userSearchInput) return;
+    var value = userSearchInput.value.trim();
+    userSearchStatus.hidden = !value;
+    var code = userSearchStatus.querySelector('code');
+    if (code) code.textContent = value;
+  }
+  function submitUserSearch() {
+    if (!userSearchForm || !userSearchInput) return;
+    var url = new URL(userSearchForm.action, window.location.origin);
+    url.searchParams.set('cluster', cluster);
+    url.searchParams.set('page', '1');
+    var value = userSearchInput.value.trim();
+    if (value) url.searchParams.set('query', value);
+    window.location.assign(url.toString());
+  }
+  if (userSearchInput) {
+    userSearchInput.addEventListener('input', function () {
+      updateUserSearchStatus();
+      window.clearTimeout(userSearchTimer);
+      userSearchTimer = window.setTimeout(submitUserSearch, 300);
+    });
+  }
+  if (userSearchForm) userSearchForm.addEventListener('submit', function (event) { event.preventDefault(); window.clearTimeout(userSearchTimer); submitUserSearch(); });
+  if (userSearchClear) userSearchClear.addEventListener('click', function () { if (userSearchInput) userSearchInput.value = ''; submitUserSearch(); });
+  updateUserSearchStatus();
+
   function escapeHtml(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function (char) {
       return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char];

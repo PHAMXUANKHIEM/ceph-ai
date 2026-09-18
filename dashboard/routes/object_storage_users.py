@@ -240,8 +240,17 @@ def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> di
     host = _host(cluster)
     users = _list(cluster, host)
     normalized = query.strip().casefold()
+    details_by_uid = None
     if normalized:
-        users = [uid for uid in users if normalized in uid.casefold()]
+        # Search UID and safe metadata fields from one bounded batch.
+        details_by_uid = _info_batch(cluster, host, users)
+        users = [uid for uid in users if normalized in " ".join(
+            str(value or "") for value in (
+                uid,
+                (details_by_uid.get(uid) or {}).get("display_name"),
+                (details_by_uid.get(uid) or {}).get("email"),
+            )
+        ).casefold()]
     total = len(users)
     page_size = page_size if page_size in USER_PAGE_SIZES else PAGE_SIZE
     page_count = max(1, ceil(total / page_size))
@@ -250,7 +259,9 @@ def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> di
     # Metadata is expensive: each _info() call invokes radosgw-admin over SSH.
     # Only fetch users visible on this page instead of scanning the entire
     # inventory before slicing it.
-    details_by_uid = _info_batch(cluster, host, page_users)
+    if details_by_uid is None:
+        # Normal browsing only loads metadata for the current page.
+        details_by_uid = _info_batch(cluster, host, page_users)
     details = [details_by_uid.get(uid) for uid in page_users]
     items = [detail or {"uid": uid, "unavailable": True} for uid, detail in zip(page_users, details)]
     available = [detail for detail in details if detail]

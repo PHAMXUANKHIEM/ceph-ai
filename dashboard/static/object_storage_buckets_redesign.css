@@ -81,3 +81,22 @@
   .bucket-filter-bar .btn { width: 100%; }
   .bucket-toolbar-row .dashboard-pagination { overflow-x: auto; }
 }
+
+/* Bucket overview polish: compact context, readable values and explicit actions. */
+.bucket-capability-banner { min-height: 32px; margin-bottom: 12px; padding: 5px 9px; border-radius: 7px; }
+.bucket-capability-banner p { flex: 1 1 auto; overflow: hidden; font-size: .7rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.bucket-capability-dismiss { display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-faint); cursor: pointer; font-size: 1.05rem; line-height: 1; }
+.bucket-capability-dismiss:hover, .bucket-capability-dismiss:focus-visible { background: rgba(255,255,255,.08); color: var(--text); outline: none; }
+.bucket-filter-bar > .bucket-filter-submit { display: inline-flex; min-height: 40px; align-items: center; justify-content: center; gap: 5px; border: 1px solid #22d3ee; background: #22d3ee; color: #082f49; font-weight: 750; box-shadow: 0 4px 14px rgba(34,211,238,.16); }
+.bucket-filter-submit:hover, .bucket-filter-submit:focus-visible { border-color: #67e8f9; background: #67e8f9; color: #082f49; box-shadow: 0 0 0 3px rgba(34,211,238,.16); outline: none; }
+.bucket-filter-bar .bucket-search-field, .bucket-filter-field { align-self: end; }
+.bucket-filter-bar .bucket-search-field > span, .bucket-filter-field > span { min-height: 15px; }
+.bucket-name-link { display: inline-flex; align-items: center; gap: 5px; color: var(--accent-hover); text-decoration: none; }
+.bucket-name-link:hover, .bucket-name-link:focus-visible { color: #67e8f9; text-decoration: underline; }
+.bucket-external-icon { color: #22d3ee; font-size: .85em; font-weight: 700; }
+.bucket-created-time { cursor: help; white-space: nowrap; }
+.bucket-empty-badge { display: inline-flex; margin-left: 5px; padding: 2px 6px; border: 1px solid rgba(100,116,139,.4); border-radius: 999px; background: rgba(100,116,139,.16); color: #94a3b8; font-size: .65rem; font-weight: 700; line-height: 1.2; vertical-align: middle; }
+.bucket-manage-button { border-color: rgba(34,211,238,.55); background: rgba(34,211,238,.06); color: #67e8f9; }
+.bucket-manage-button:hover, .bucket-manage-button:focus-visible { border-color: #22d3ee; background: rgba(34,211,238,.14); color: #a5f3fc; outline: none; }
+.bucket-manage-icon { margin-left: 4px; color: #22d3ee; font-size: .9em; }
+@media (max-width: 560px) { .bucket-capability-banner p { white-space: normal; }.bucket-capability-banner { align-items: flex-start; }.bucket-capability-dismiss { flex: 0 0 auto; } }

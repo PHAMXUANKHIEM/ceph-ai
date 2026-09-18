@@ -11,6 +11,30 @@ function bucketHighlightJSON(value) {
 }
 
 (function () {
+  document.querySelectorAll(".bucket-created-time").forEach(function (element) {
+    var date = new Date(element.getAttribute("datetime") || "");
+    if (Number.isNaN(date.getTime())) return;
+    element.textContent = new Intl.DateTimeFormat("vi-VN", {
+      day: "2-digit", month: "2-digit", year: "numeric",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(date);
+    element.title = element.getAttribute("datetime") || "";
+  });
+})();
+
+(function () {
+  var banner = document.getElementById("bucket-capability-banner");
+  var dismiss = banner && banner.querySelector(".bucket-capability-dismiss");
+  if (!banner || !dismiss) return;
+  var storageKey = "ceph-ai.bucket-capability-banner.dismissed";
+  try { if (window.localStorage.getItem(storageKey) === "1") banner.hidden = true; } catch (_) {}
+  dismiss.addEventListener("click", function () {
+    banner.hidden = true;
+    try { window.localStorage.setItem(storageKey, "1"); } catch (_) {}
+  });
+})();
+
+(function () {
   document.querySelectorAll("[data-bucket-filter-select]").forEach(function (select) {
     var field = select.parentElement;
     var input = field.querySelector("input[type=hidden]");
