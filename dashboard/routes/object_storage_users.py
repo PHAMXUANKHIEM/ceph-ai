@@ -19,6 +19,11 @@ from dashboard.routes.object_storage import _safe_error
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
+from shared.ceph_query_cache import (
+    get_cached as get_persistent_cache,
+    invalidate as invalidate_persistent_cache,
+    store as store_persistent_cache,
+)
 from shared import db
 from shared.models import ObjectStorageAuditEntry
 from shared.object_storage_cache import (
@@ -63,6 +68,8 @@ USER_SEARCH_TTL_SECONDS = 120
 USER_SEARCH_STALE_TTL_SECONDS = 7200
 USER_SNAPSHOT_MAX_SECONDS = 120
 USER_SNAPSHOT_BATCH_SIZE = 50
+USER_PERSISTED_MAX_AGE_SECONDS = 86400
+USER_PERSISTED_NAMESPACE = "s3-user-snapshot"
 logger = logging.getLogger(__name__)
 USER_ACTIONS = {"create", "modify", "suspend", "enable", "delete"}
 _DEFAULT_FETCH_S3_USER_LIST = fetch_s3_user_list
@@ -196,6 +203,11 @@ def _finish_audit(audit_id: str, result: str, error: str | None = None) -> None:
     if result == "succeeded" and cluster_id:
         for namespace in ("s3-user-list", "s3-user-pages", "s3-user-search"):
             invalidate_object_storage_cache(cluster_id, namespace)
+        for key in ("list", "page", "index"):
+            try:
+                invalidate_persistent_cache(USER_PERSISTED_NAMESPACE, f"{cluster_id}:{key}")
+            except Exception:
+                logger.exception("cannot invalidate persistent S3 user snapshot cluster=%s key=%s", cluster_id, key)
 
 
 def _audit_rows(cluster_id: str, limit: int = AUDIT_MAX_ROWS) -> list[dict]:
@@ -280,6 +292,33 @@ def _uses_mocked_inventory_helpers() -> bool:
     )
 
 
+def _persistent_fallback(key: str, default: dict, *, max_age_seconds: int = USER_PERSISTED_MAX_AGE_SECONDS) -> tuple[dict, dict]:
+    """Read a durable S3 snapshot without making a network call."""
+    if _uses_mocked_inventory_helpers():
+        return default, {"available": False, "age_seconds": None}
+    try:
+        cached = get_persistent_cache(
+            USER_PERSISTED_NAMESPACE,
+            key,
+            max_age_seconds=max_age_seconds,
+        )
+    except Exception:
+        logger.exception("cannot read persistent S3 user snapshot key=%s", key)
+        return default, {"available": False, "age_seconds": None}
+    if cached is None or not isinstance(cached[0], dict):
+        return default, {"available": False, "age_seconds": None}
+    return cached[0], {"available": True, "age_seconds": cached[1]}
+
+
+def _store_persistent_snapshot(key: str, value: dict) -> None:
+    try:
+        store_persistent_cache(USER_PERSISTED_NAMESPACE, key, value)
+    except Exception:
+        # The live inventory remains valid even if the durable cache volume is
+        # temporarily unavailable.
+        logger.exception("cannot persist S3 user snapshot key=%s", key)
+
+
 def _load_user_list(cluster) -> dict:
     """Load only user IDs for the fast inventory path."""
     host, uids = _list_from_available_rgw(cluster)
@@ -325,42 +364,70 @@ def _load_user_search_index(cluster) -> dict:
 
 def _cached_user_list(cluster) -> dict:
     key = f"{cluster.id}:list"
+    fallback, _state = _persistent_fallback(key, {"host": None, "uids": []})
+
+    def load() -> dict:
+        value = _load_user_list(cluster)
+        _store_persistent_snapshot(key, value)
+        return value
+
     return get_or_load(
         "s3-user-list",
         key,
-        lambda: _load_user_list(cluster),
+        load,
         ttl_seconds=USER_LIST_TTL_SECONDS,
         stale_ttl_seconds=USER_LIST_STALE_TTL_SECONDS,
         background_on_miss=not _uses_mocked_inventory_helpers(),
-        fallback={"host": None, "uids": []},
+        fallback=fallback,
         replace_cluster=True,
     )
 
 
 def _cached_user_page(cluster, uids: list[str], host: str | None = None) -> dict:
     key = _user_page_key(cluster, uids, host)
+    persisted_key = f"{cluster.id}:page"
+    persisted, _state = _persistent_fallback(persisted_key, {})
+    fallback = (
+        {"host": persisted.get("host"), "items": list(persisted.get("items") or [])}
+        if persisted.get("uids") == uids else {"host": None, "items": []}
+    )
+
+    def load() -> dict:
+        value = _load_user_page(cluster, uids, host)
+        _store_persistent_snapshot(persisted_key, {**value, "uids": list(uids)})
+        return value
+
     return get_or_load(
         "s3-user-pages",
         key,
-        lambda: _load_user_page(cluster, uids, host),
+        load,
         ttl_seconds=USER_PAGE_TTL_SECONDS,
         stale_ttl_seconds=USER_PAGE_STALE_TTL_SECONDS,
         background_on_miss=not _uses_mocked_inventory_helpers(),
-        fallback={"host": None, "items": []},
+        fallback=fallback,
         replace_cluster=True,
     )
 
 
 def _cached_user_search_index(cluster) -> dict:
     key = f"{cluster.id}:index"
+    fallback, _state = _persistent_fallback(
+        key, {"host": None, "items": []}, max_age_seconds=USER_PERSISTED_MAX_AGE_SECONDS
+    )
+
+    def load() -> dict:
+        value = _load_user_search_index(cluster)
+        _store_persistent_snapshot(key, value)
+        return value
+
     return get_or_load(
         "s3-user-search",
         key,
-        lambda: _load_user_search_index(cluster),
+        load,
         ttl_seconds=USER_SEARCH_TTL_SECONDS,
         stale_ttl_seconds=USER_SEARCH_STALE_TTL_SECONDS,
         background_on_miss=not _uses_mocked_inventory_helpers(),
-        fallback={"host": None, "items": []},
+        fallback=fallback,
         replace_cluster=True,
     )
 
@@ -369,13 +436,18 @@ def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> di
     user_list = _cached_user_list(cluster)
     list_key = f"{cluster.id}:list"
     list_state = cache_state("s3-user-list", list_key)
+    _list_snapshot, list_persisted_state = _persistent_fallback(
+        list_key, {"host": None, "uids": []}
+    )
     user_ids = list(user_list.get("uids") or [])
     normalized = query.strip().casefold()
     search_state = None
     page_state = None
+    page_persisted_state = {"available": False, "age_seconds": None}
     search_pending = False
+    search_persisted_state = {"available": False, "age_seconds": None}
+    search_host = None
     indexed_items: list[dict] | None = None
-    search_snapshot = {"host": None, "items": []}
     if normalized:
         uid_matches = [uid for uid in user_ids if normalized in uid.casefold()]
         if uid_matches:
@@ -388,9 +460,12 @@ def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> di
             search_pending = True
         else:
             index = _cached_user_search_index(cluster)
-            search_snapshot = index
+            search_host = index.get("host")
             search_key = f"{cluster.id}:index"
             search_state = cache_state("s3-user-search", search_key)
+            _search_snapshot, search_persisted_state = _persistent_fallback(
+                search_key, {"host": None, "items": []}
+            )
             indexed_items = [
                 item for item in (index.get("items") or [])
                 if normalized in " ".join(
@@ -414,6 +489,10 @@ def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> di
         page_host = user_list.get("host")
         page_snapshot = _cached_user_page(cluster, page_uids, page_host) if page_uids else {"host": None, "items": []}
         page_state = cache_state("s3-user-pages", _user_page_key(cluster, page_uids, page_host)) if page_uids else None
+        _page_snapshot, page_persisted_state = (
+            _persistent_fallback(f"{cluster.id}:page", {}) if page_uids
+            else ({}, {"available": False, "age_seconds": None})
+        )
         page_users = list(page_snapshot.get("items") or [])
     else:
         page_users = all_items[(page - 1) * page_size:page * page_size]
@@ -421,7 +500,7 @@ def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> di
     states = [list_state, search_state, page_state]
     active_states = [state for state in states if state is not None]
     return {
-        "host": user_list.get("host") or search_snapshot.get("host"),
+        "host": user_list.get("host") or search_host,
         "items": page_users,
         "query": query.strip(),
         "page": page,
@@ -442,6 +521,9 @@ def _inventory(cluster, query: str, page: int, page_size: int = PAGE_SIZE) -> di
                     (list_state, USER_LIST_TTL_SECONDS),
                     (search_state, USER_SEARCH_TTL_SECONDS),
                     (page_state, USER_PAGE_TTL_SECONDS),
+                    (list_persisted_state, USER_LIST_TTL_SECONDS),
+                    (search_persisted_state, USER_SEARCH_TTL_SECONDS),
+                    (page_persisted_state, USER_PAGE_TTL_SECONDS),
                 )
                 if state is not None
             )
