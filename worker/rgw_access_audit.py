@@ -54,6 +54,12 @@ _RGW_HUMANIZATION_IN_FLIGHT: set[str] = set()
 _RGW_HUMANIZATION_LOCK = threading.Lock()
 
 
+def _rgw_errno_107(message: str) -> bool:
+    """Whether the daemon reported Linux errno 107 (ENOTCONN)."""
+    lowered = str(message or "").lower()
+    return bool(re.search(r"(?<!\d)-107\b", lowered)) or "transport endpoint is not connected" in lowered
+
+
 def _analysis_signature(cluster_id: str, host: str, message: str) -> str:
     lowered = message.lower()
     if "vault" in lowered or "retrieve actual key" in lowered or "error -13" in lowered:
@@ -66,6 +72,12 @@ def _analysis_signature(cluster_id: str, host: str, message: str) -> str:
 def _operator_error_context(message: str) -> tuple[str, str, str]:
     """Translate known RGW errors into an operator-facing explanation."""
     lowered = message.lower()
+    if _rgw_errno_107(message):
+        return (
+            "RGW mất kết nối với endpoint RADOS/Ceph (errno -107 / ENOTCONN).",
+            "Các request S3 và các watcher/cache của RGW có thể bị gián đoạn; chưa có bằng chứng object bị mất.",
+            "Đối chiếu ceph -s, trạng thái RGW và log cùng thời điểm; nếu lỗi lặp lại, kiểm tra đường RGW → MON/OSD rồi restart đúng RGW sau khi xác nhận.",
+        )
     if "vault" in lowered or "retrieve actual key" in lowered:
         return (
             "RGW không thể tạo hoặc lấy khóa mã hóa từ Vault.",
@@ -181,11 +193,26 @@ def _queue_error_humanization(
         session.commit()
 
 
-def _inconclusive_analysis_text(message: str, patterns_flagged: int) -> str:
+def _inconclusive_analysis_text(
+    message: str,
+    patterns_flagged: int,
+    run: LogIngestRun | None = None,
+) -> str:
     problem, impact, action = _operator_error_context(message)
+    if run is None:
+        evidence = f"🔎 Mẫu bất thường được gắn cờ: {patterns_flagged}."
+    else:
+        evidence = (
+            f"🔎 Triage: {patterns_flagged} mẫu bất thường được gắn cờ; "
+            f"đã thu {run.patterns_seen or 0} mẫu từ {run.lines_scanned or 0} dòng "
+            f"(host lỗi: {run.hosts_failed or 0}/{run.hosts_scanned or 0})."
+        )
+        if run.status != "OK":
+            evidence += f" Trạng thái thu thập: {run.status}."
     return "\n".join((
         "⚠️ Kết luận: Chưa đủ bằng chứng để xác định nguyên nhân gốc.",
-        f"🔎 Đã đối chiếu: {patterns_flagged} nhóm log liên quan.",
+        evidence,
+        "⚠️ 0 mẫu bị gắn cờ không có nghĩa RGW bình thường; chỉ có nghĩa chưa vượt ngưỡng triage.",
         f"📌 Vấn đề: {problem}",
         f"💥 Ảnh hưởng: {impact}",
         f"🛠 Cần làm: {action}",
@@ -705,10 +732,9 @@ def _process_analysis_jobs(limit: int = 1) -> None:
                     .order_by(LogFinding.created_at.desc())
                     .first()
                 ) if run_id else None
-                if run.patterns_flagged:
-                    result_text = _inconclusive_analysis_text(message, run.patterns_flagged)
-                else:
-                    result_text = _inconclusive_analysis_text(message, 0)
+                result_text = _inconclusive_analysis_text(
+                    message, run.patterns_flagged or 0, run
+                )
                 finding_id = None
                 if finding is not None:
                     finding_id = finding.id

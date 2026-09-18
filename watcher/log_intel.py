@@ -519,6 +519,16 @@ def _matches_focus(template: str, message: str) -> bool:
     """Keep only triage evidence related to an immediate detector message."""
     template_lower = template.lower()
     message_lower = message.lower()
+    if re.search(r"(?<!\d)-107\b", message_lower) or "transport endpoint is not connected" in message_lower:
+        return any(
+            marker in template_lower
+            for marker in (
+                "transport endpoint is not connected",
+                "rgw watcher",
+                "handle_error",
+                "librados",
+            )
+        )
     vault_markers = ("vault", "retrieve actual key", "error -13")
     if any(marker in message_lower for marker in vault_markers):
         return any(marker in template_lower for marker in vault_markers)
