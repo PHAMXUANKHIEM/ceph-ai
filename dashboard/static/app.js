@@ -268,6 +268,7 @@
       { label: "Block Storage", paths: ["/block-storage", "/volume-performance", "/trash"] },
       { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/config-dump", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
+      { label: "AI & Intelligence", paths: ["/ai-learning", "/log-intelligence", "/runbooks", "/alerts", "/synthetic-incidents"] },
       { label: "Backup", paths: ["/backups", "/cinder-backups", "/restore-cluster"] },
       { label: "Users & Notifications", paths: ["/telegram-alerts", "/users"] },
       { label: "System Administration", paths: ["/settings", "/clusters"] }

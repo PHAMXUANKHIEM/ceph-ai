@@ -15,6 +15,7 @@ SHARED_NAV_PATHS = {
     "/upgrade",
     "/patch",
     "/convert-cluster",
+    "/ai-learning",
     "/backups",
     "/restore-cluster",
     "/settings",
