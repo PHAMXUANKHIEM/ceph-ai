@@ -62,13 +62,6 @@
     <nav class="settings-breadcrumb-bar" id="settings-breadcrumb-bar" aria-label="Breadcrumb">
       <a href="/settings">Cài đặt</a><span aria-hidden="true">›</span><a href="#" id="settings-breadcrumb-group">Hệ thống</a><span aria-hidden="true">›</span><strong id="settings-breadcrumb-current">{{ 'Tiến trình hệ thống' if is_admin else 'API AI' }}</strong>
     </nav>
-    {% if containerized_deployment %}
-    <div class="settings-container-banner" id="settings-container-banner" role="alert">
-      <span class="settings-container-banner-icon" aria-hidden="true">⚠️</span>
-      <div><strong>Chế độ container</strong><p id="settings-container-mode-guide">Cấu hình đã lưu chỉ được các dịch vụ nền nhận sau khi operator chạy <code>systemctl restart ceph-ai-containers</code>. Restart từng service tại đây không khả dụng.</p></div>
-      <a href="#settings-container-mode-guide">Xem hướng dẫn</a>
-    </div>
-    {% endif %}
     {% if is_admin %}
     <section class="settings-panel process-panel" data-panel="restart-controls" {% if active_section != 'restart-controls' %}hidden{% endif %}>
       <div class="settings-content-header">
@@ -103,7 +96,7 @@
         </article>
         <article class="service-card">
           <div class="service-card-top"><span class="service-icon">🤖</span><span class="service-status is-running"><i></i>Đang chạy</span></div>
-          <div><h2>AI Remediation Watcher</h2><p>Kiểm tra nhanh Ceph health và kích hoạt xử lý tự động.</p></div>
+          <div><h2>AI Remediation Watcher</h2><p>Kiểm tra nhanh Ceph health và kích hoạt xử lý tự động.</p><p class="hint service-card-note">Chưa có container riêng trong Compose nên chưa hỗ trợ restart trực tiếp.</p></div>
           <div class="service-stat-grid"><span>Uptime<strong>Đang hoạt động</strong></span><span>Memory / CPU<strong>Đang theo dõi</strong></span><span>Restart gần nhất<strong>—</strong></span><span>PID / container<strong>ceph-ai_watcher_1</strong></span></div>
           <div class="service-card-footer"><span class="service-meta">AI remediation · 10 giây</span><button type="button" class="service-restart-button" data-restart-service="Remediation-Watcher" data-restart-action="/settings/restart-remediation-watcher" data-restart-warning="AI Remediation Watcher hiện không có container riêng trong compose." {% if containerized_deployment %}disabled title="Container mode chưa có container riêng cho AI Remediation Watcher"{% endif %}><span>↻</span>Khởi động lại</button></div>
         </article>
@@ -799,11 +792,8 @@
         <div class="settings-api-layout">
         <div class="login-box settings-api-account-card" id="codex-account-box">
           <h3>Tài khoản Codex</h3>
-          <p class="hint">
-            Dùng quyền lợi Codex trong gói ChatGPT cho Chat-with-AI. Token được Codex CLI
-            quản lý riêng trên server, không lưu vào database hay file <code>.env</code>.
-            Worker chẩn đoán nền vẫn dùng API AI bên dưới.
-          </p>
+          <p class="hint settings-api-description">Dùng tài khoản ChatGPT Codex cho Chat-with-AI.</p>
+          <p class="hint settings-api-technical-note">Codex CLI quản lý token riêng trên server; worker chẩn đoán vẫn dùng API AI bên dưới.</p>
           <p id="codex-account-status" class="hint">Đang kiểm tra trạng thái...</p>
           {% if is_admin %}
           <div id="codex-install-prompt" hidden>
@@ -815,14 +805,14 @@
           </div>
           <div class="ai-test-row">
             <button type="button" class="btn btn-primary btn-sm" id="codex-login-btn">Đăng nhập bằng Codex</button>
-            <button type="button" class="btn btn-sm btn-danger" id="codex-logout-btn" hidden>Đăng xuất</button>
+            <button type="button" class="btn btn-sm settings-api-logout" id="codex-logout-btn" hidden>Đăng xuất</button>
           </div>
           <div id="codex-model-panel" hidden>
             <label>Model Codex
               <select id="codex-model-select"></select>
             </label>
             <div class="ai-test-row">
-              <button type="button" class="btn btn-primary btn-sm" id="codex-model-save-btn">Lưu model</button>
+              <button type="button" class="btn btn-sm settings-api-secondary" id="codex-model-save-btn">Lưu model</button>
               <span id="codex-model-result" class="ai-test-result" hidden></span>
             </div>
           </div>
@@ -837,10 +827,8 @@
 
         <div class="login-box settings-api-account-card" id="claude-account-box">
           <h3>Tài khoản Claude</h3>
-          <p class="hint">
-            Dùng Claude Code với tài khoản Claude Pro/Max hoặc Anthropic Console. Credential OAuth
-            do Claude CLI quản lý trong thư mục riêng trên server, không ghi vào <code>.env</code>.
-          </p>
+          <p class="hint settings-api-description">Dùng Claude Code với tài khoản Claude Pro/Max hoặc Anthropic Console.</p>
+          <p class="hint settings-api-technical-note">Claude CLI quản lý credential OAuth trong thư mục riêng trên server; không ghi vào <code>.env</code>.</p>
           <p id="claude-account-status" class="hint">Đang kiểm tra trạng thái...</p>
           {% if is_admin %}
           <div id="claude-install-prompt" hidden>
@@ -852,7 +840,7 @@
           </div>
           <div class="ai-test-row">
             <button type="button" class="btn btn-primary btn-sm" id="claude-login-btn">Đăng nhập bằng Claude</button>
-            <button type="button" class="btn btn-sm btn-danger" id="claude-logout-btn" hidden>Đăng xuất</button>
+            <button type="button" class="btn btn-sm settings-api-logout" id="claude-logout-btn" hidden>Đăng xuất</button>
           </div>
           <div id="claude-model-panel" hidden>
             <label>Model Claude
@@ -862,7 +850,7 @@
               <select id="claude-effort-select"></select>
             </label>
             <div class="ai-test-row">
-              <button type="button" class="btn btn-primary btn-sm" id="claude-model-save-btn">Lưu model và effort</button>
+              <button type="button" class="btn btn-sm settings-api-secondary" id="claude-model-save-btn">Lưu model và effort</button>
               <span id="claude-model-result" class="ai-test-result" hidden></span>
             </div>
           </div>
@@ -917,7 +905,7 @@
                       data-base-url-placeholder="{{ p.base_url_placeholder }}"
                       {% if p.id == router_provider %}checked{% endif %}
                     >
-                    <span class="ai-provider-logo" aria-hidden="true">{{ "9R" if p.id == "9router" else ("CL" if p.id == "anthropic" else ("◎" if p.id == "openai" else "OR")) }}</span><span>{{ p.label }}</span>
+                    <span class="ai-provider-logo" aria-hidden="true">{{ "9router" if p.id == "9router" else ("Claude" if p.id == "anthropic" else ("Codex" if p.id == "openai" else "OpenRouter")) }}</span>
                   </label>
                 {% endfor %}
               </div>

@@ -23,6 +23,11 @@ def _osd_hosts(cluster) -> list[str]:
     return [node["host"] for node in nodes if "OSD" in node.get("roles", [])]
 
 
+def _telemetry_hosts(cluster) -> list[str]:
+    """Return every configured node that can be shown in Node Monitoring."""
+    return [node["host"] for node in configured_nodes(cluster) if node.get("host")]
+
+
 def _identity(cluster_id: str, host: str, cluster) -> str | None:
     key = (cluster_id, host)
     if key in _identity_cache:
@@ -50,9 +55,9 @@ def _identity(cluster_id: str, host: str, cluster) -> str | None:
 
 
 def collect_and_store(cluster_id: str, cluster=None, *, now: datetime | None = None) -> int:
-    """Collect one sample per configured OSD host; failed hosts are skipped."""
+    """Collect one sample per configured node; failed hosts are skipped."""
     now = now or datetime.utcnow()
-    hosts = _osd_hosts(cluster)
+    hosts = _telemetry_hosts(cluster)
     if not hosts:
         return 0
     if cluster is None:

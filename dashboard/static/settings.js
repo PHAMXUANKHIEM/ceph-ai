@@ -83,22 +83,28 @@
       panel.appendChild(unavailable);
     }
     limits.forEach(function (limit) {
-      var remaining = Math.max(0, Math.min(100, Number(limit.remaining_percent) || 0));
-      var severity = remaining > 50 ? "ok" : (remaining >= 20 ? "warning" : "danger");
+      var remaining = limit.remaining_percent == null ? NaN : Number(limit.remaining_percent);
+      var used = limit.used_percent == null ? NaN : Number(limit.used_percent);
+      if (!Number.isFinite(used) && Number.isFinite(remaining)) used = 100 - remaining;
+      if (!Number.isFinite(remaining) && Number.isFinite(used)) remaining = 100 - used;
+      if (!Number.isFinite(remaining)) remaining = 0;
+      if (!Number.isFinite(used)) used = 100 - remaining;
+      remaining = Math.max(0, Math.min(100, remaining));
+      used = Math.max(0, Math.min(100, used));
+      var severity = used < 50 ? "ok" : (used <= 80 ? "warning" : "danger");
       var row = document.createElement("div");
       row.className = "ai-limit-row ai-limit-" + severity;
       row.title = limit.resets_at ? "Reset: " + limit.resets_at : "Thời gian reset chưa được provider cung cấp";
       var label = document.createElement("span");
       label.textContent = limit.label;
       var value = document.createElement("strong");
-      var used = Number(limit.used_percent);
-      value.textContent = remaining + "% còn" + (Number.isFinite(used) ? " · đã dùng " + used + "%" : "");
+      value.textContent = remaining + "% còn · đã dùng " + used + "%";
       var meter = document.createElement("div");
       meter.className = "ai-limit-meter";
       var fill = document.createElement("span");
-      fill.style.width = remaining + "%";
+      fill.style.width = used + "%";
       meter.appendChild(fill);
-      row.appendChild(label); row.appendChild(value); row.appendChild(meter);
+      row.appendChild(label); row.appendChild(meter); row.appendChild(value);
       panel.appendChild(row);
     });
     panel.hidden = false;
@@ -1422,5 +1428,82 @@
       .finally(function () {
         testBtn.disabled = false;
       });
+  });
+})();
+
+// AI API only: replace the model selectors inside the router panel with dark-theme controls.
+(function () {
+  var routerPanel = document.querySelector('[data-panel="router"]');
+  if (!routerPanel) return;
+  var ids = ["codex-model-select", "claude-model-select", "claude-effort-select", "router-model-select"];
+
+  function closeAll(except) {
+    routerPanel.querySelectorAll(".settings-custom-select-menu").forEach(function (menu) {
+      if (menu !== except) menu.hidden = true;
+    });
+    routerPanel.querySelectorAll(".settings-custom-select-trigger").forEach(function (trigger) {
+      if (!except || trigger.nextElementSibling !== except) trigger.setAttribute("aria-expanded", "false");
+    });
+  }
+
+  function sync(select, trigger, menu) {
+    var current = select.options[select.selectedIndex];
+    trigger.textContent = current ? current.textContent : "Chọn...";
+    menu.innerHTML = "";
+    Array.prototype.forEach.call(select.options, function (option) {
+      var item = document.createElement("button");
+      item.type = "button";
+      item.className = "settings-custom-select-option";
+      item.textContent = option.textContent;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", option.selected ? "true" : "false");
+      item.addEventListener("click", function () {
+        select.value = option.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        sync(select, trigger, menu);
+        menu.hidden = true;
+        trigger.setAttribute("aria-expanded", "false");
+        trigger.focus();
+      });
+      menu.appendChild(item);
+    });
+  }
+
+  function init(select) {
+    if (!select || select.closest('[data-panel="router"]') !== routerPanel || select.dataset.customSelectReady) return;
+    select.dataset.customSelectReady = "true";
+    var wrapper = document.createElement("span");
+    wrapper.className = "settings-custom-select";
+    var trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "settings-custom-select-trigger";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    var menu = document.createElement("span");
+    menu.className = "settings-custom-select-menu";
+    menu.setAttribute("role", "listbox");
+    menu.hidden = true;
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+    select.classList.add("settings-native-select");
+    trigger.addEventListener("click", function () {
+      var opening = menu.hidden;
+      closeAll(menu);
+      menu.hidden = !opening;
+      trigger.setAttribute("aria-expanded", opening ? "true" : "false");
+    });
+    select.addEventListener("change", function () { sync(select, trigger, menu); });
+    new MutationObserver(function () { sync(select, trigger, menu); }).observe(select, { childList: true });
+    sync(select, trigger, menu);
+  }
+
+  ids.forEach(function (id) { init(document.getElementById(id)); });
+  routerPanel.addEventListener("click", function (event) {
+    if (!event.target.closest(".settings-custom-select")) closeAll(null);
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") closeAll(null);
   });
 })();

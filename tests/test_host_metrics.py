@@ -1,4 +1,24 @@
+from types import SimpleNamespace
+
+from watcher import host_metrics
 from watcher.node_metrics import parse_node_metrics
+
+
+def test_telemetry_hosts_includes_all_configured_ceph_roles(monkeypatch):
+    monkeypatch.setattr(
+        host_metrics,
+        "configured_nodes",
+        lambda _cluster: [
+            {"host": "mon-1", "roles": ["MON"]},
+            {"host": "mgr-1", "roles": ["MGR"]},
+            {"host": "osd-1", "roles": ["OSD"]},
+            {"host": "rgw-1", "roles": ["RGW"]},
+        ],
+    )
+
+    assert host_metrics._telemetry_hosts(SimpleNamespace()) == [
+        "mon-1", "mgr-1", "osd-1", "rgw-1"
+    ]
 
 
 def test_parse_node_metrics_includes_network_rates_without_counting_loopback():
