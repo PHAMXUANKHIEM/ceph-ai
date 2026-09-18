@@ -7,17 +7,17 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 329f09f5
+  commit_sha: 6207eaf8
   rollback_candidate_sha: 9573816c4b106fe55434d2118bd9ab45f2127928
-  worktree: concurrent_uncommitted_changes
-  release_commit: 329f09f5
+  worktree: untracked_codex_stage_snapshots_only
+  release_commit: 6207eaf8
   pushed_to_origin: true
 
 migrations:
-  alembic_head: c0d1e2f3a4b5
+  alembic_head: c2d3e4f5a6b7
   upgrade_downgrade_tests: passed
   sqlite_version: 3.26.0
-  full_round_trip: upgrade_head_downgrade_base_upgrade_head_passed
+  full_round_trip: upgrade_head_downgrade_base_upgrade_head_passed_current_wave
 
 artifacts:
   application_image: localhost/ceph-ai:local
@@ -62,6 +62,14 @@ message_broker:
 
 verification:
   focused_feature_gate: 176_passed_12_warnings_current_wave_modules
+  object_storage_current_wave_gate: 168_passed_1_warning
+  s3_users_persistent_cache_gate: 28_passed_1_warning
+  migration_cache_alert_gate: 66_passed_12_warnings
+  rgw_audit_evidence_gate: 61_passed_1_warning
+  telegram_enrichment_gate: 70_passed_1_warning
+  settings_wave_gate: 236_passed_3_deselected_2_warnings_1_pagination_contract_fixed
+  settings_pagination_contract_after_fix: 1_passed_1_warning
+  settings_javascript_syntax: passed
   settings_ai_provider_and_log_intel_gate: 14_passed_1_warning
   watcher_host_telemetry_cadence_gate: 38_passed_1_warning
   action_state_event_gate: 11_passed_1_warning
@@ -118,7 +126,7 @@ verification:
   object_storage_audit_workspace_gate: 152_passed_1_warning
   object_storage_render_guard_gate: 106_passed_1_warning
   convert_cephadm_redesign_gate: 44_passed_1_warning
-  broad_current_candidate_gate: not_counted_concurrent_transfer_overlay_invalidated_run
+  broad_current_candidate_gate: not_recorded_full_run_output_lost
   broad_segmented_current_candidate_gate:
     non_migration_suite: 3344_passed_3_broker_environment_failures_reproduced_then_isolated
     migration_suite: 10_passed_11_warnings
@@ -131,7 +139,7 @@ verification:
 deployment_gate:
   deterministic_tests: passed
   broker: passed_in_isolated_release_gate_vhost
-  worktree_review: blocked_concurrent_uncommitted_changes
+  worktree_review: blocked_untracked_codex_stage_snapshots
   runtime_ownership: blocked_pending_operator_decision
   global_autonomy_flags: review_required
   per_cluster_autopilot: blocked_pending_operator_decision
