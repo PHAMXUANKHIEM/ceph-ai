@@ -298,7 +298,7 @@ def test_common_ai_pipeline_keeps_concurrent_alert_contexts_separate(monkeypatch
 
     for marker in ("A", "B", "C", "D"):
         assert telegram_alerts.send_telegram_alert_with_ai(
-            "token", "chat", True, f"HEALTH_WARN marker={marker} raw=DOWN",
+            "token", "chat", True, f"status: DOWN marker={marker} raw=DOWN",
             context=f"test marker {marker}",
         ) is True
 
@@ -312,6 +312,84 @@ def test_common_ai_pipeline_keeps_concurrent_alert_contexts_separate(monkeypatch
         marker = chr(ord("A") + message_id - 100)
         assert f"marker {marker}" in text
         assert f"marker {chr(ord('A') + (message_id - 100 + 1) % 4)}" not in text.split("Giải thích dễ hiểu:", 1)[1]
+
+
+def test_common_ai_pipeline_deduplicates_same_content_for_multiple_channels(monkeypatch):
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", True)
+    queued = []
+    sent = []
+    edited = []
+    humanizer_calls = []
+
+    monkeypatch.setattr(
+        telegram_alerts,
+        "send_telegram_message",
+        lambda _token, _chat, text: sent.append(text) or (200 + len(sent)),
+    )
+    monkeypatch.setattr(
+        telegram_alerts,
+        "humanize_telegram_alert_detail",
+        lambda value, **_kwargs: (humanizer_calls.append(value) or "OSD 7 đang lỗi.", True),
+    )
+    monkeypatch.setattr(
+        telegram_alerts._BACKGROUND_ALERT_EXECUTOR,
+        "submit",
+        lambda callback: queued.append(callback),
+    )
+    monkeypatch.setattr(
+        telegram_alerts,
+        "edit_telegram_message",
+        lambda _token, _chat, message_id, text: edited.append((message_id, text)),
+    )
+
+    source = "status: DOWN marker=dedupe on osd.7"
+    for channel in ("chat-a", "chat-b", "chat-c"):
+        assert telegram_alerts.send_telegram_alert_with_ai(
+            "token", channel, True, source, context="same alert",
+        ) is True
+
+    assert len(queued) == 1
+    queued[0]()
+    assert len(humanizer_calls) == 1
+    assert [message_id for message_id, _text in edited] == [201, 202, 203]
+
+
+def test_common_ai_pipeline_retries_failed_edit(monkeypatch):
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", True)
+    queued = []
+    attempts = []
+    sleeps = []
+    monkeypatch.setattr(
+        telegram_alerts,
+        "send_telegram_message",
+        lambda *_args: 301,
+    )
+    monkeypatch.setattr(
+        telegram_alerts,
+        "humanize_telegram_alert_detail",
+        lambda *_args, **_kwargs: ("OSD 7 đang lỗi.", True),
+    )
+    monkeypatch.setattr(
+        telegram_alerts._BACKGROUND_ALERT_EXECUTOR,
+        "submit",
+        lambda callback: queued.append(callback),
+    )
+
+    def flaky_edit(*_args):
+        attempts.append(True)
+        if len(attempts) < 3:
+            raise TelegramSendError("temporary Telegram failure")
+
+    monkeypatch.setattr(telegram_alerts, "edit_telegram_message", flaky_edit)
+    monkeypatch.setattr(telegram_alerts.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    telegram_alerts.send_telegram_alert_with_ai(
+        "token", "chat", True, "status: DOWN on osd.7", context="retry test",
+    )
+    assert len(queued) == 1
+    queued[0]()
+    assert len(attempts) == 3
+    assert sleeps == [1, 2]
 
 
 def test_humanizer_redacts_secret_before_provider(monkeypatch):

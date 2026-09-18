@@ -35,6 +35,7 @@ import json
 import logging
 import re
 import threading
+import time
 from queue import Queue
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
@@ -76,6 +77,14 @@ _EXTERNAL_SEVERITY_BY_HEALTH = {
 _BACKGROUND_ALERT_EXECUTOR = ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="telegram-alert"
 )
+_AI_ENRICHMENT_QUEUE_CAPACITY = 20
+_AI_ENRICHMENT_CACHE_TTL_SECONDS = 60.0
+_AI_ENRICHMENT_CACHE_MAX_ENTRIES = 256
+_AI_ENRICHMENT_EDIT_ATTEMPTS = 3
+_AI_ENRICHMENT_CAPACITY = threading.BoundedSemaphore(_AI_ENRICHMENT_QUEUE_CAPACITY)
+_AI_ENRICHMENT_LOCK = threading.RLock()
+_AI_ENRICHMENT_IN_FLIGHT: dict[tuple[str, str], list[tuple[int, str, str, str]]] = {}
+_AI_ENRICHMENT_CACHE: dict[tuple[str, str], tuple[float, str, bool]] = {}
 HUMANIZER_ALERT_MAX_WAIT_SECONDS = 8.0
 _HUMANIZER_IN_FLIGHT = threading.BoundedSemaphore(2)
 
@@ -329,33 +338,113 @@ def _run_alert_in_background(name: str, callback) -> None:
 
     try:
         _BACKGROUND_ALERT_EXECUTOR.submit(run)
+        return True
     except Exception:
         logger.exception("could not queue background Telegram alert: %s", name)
+        return False
 
 
-def _enrich_telegram_message(message_id: int, bot_token: str, chat_id: str, text: str, context: str) -> None:
-    """Append one AI explanation without changing the structured alert.
-
-    The original notification is sent first. The AI only produces an
-    additional, short explanation and never owns the severity, identifiers,
-    metrics, commands or remediation fields already present in the alert.
-    This keeps a slow or unavailable provider out of watcher and worker hot
-    paths.
-    """
-    detail, was_humanized = humanize_telegram_alert_detail(
-        text,
-        context=context,
-        limit=_MAX_EXCERPT_CHARS,
-    )
-    if not was_humanized or not detail:
-        return
+def _edit_telegram_message_with_retry(
+    message_id: int, bot_token: str, chat_id: str, text: str, detail: str
+) -> None:
+    """Edit a delivered alert with bounded retries in the background."""
     enriched = f"{text}\n🧠 Giải thích dễ hiểu: {detail}"
+    for attempt in range(1, _AI_ENRICHMENT_EDIT_ATTEMPTS + 1):
+        try:
+            edit_telegram_message(bot_token, chat_id, message_id, enriched)
+            return
+        except TelegramSendError:
+            if attempt == _AI_ENRICHMENT_EDIT_ATTEMPTS:
+                logger.warning("Telegram AI enrichment edit failed after %s attempts", attempt, exc_info=True)
+                return
+            time.sleep(attempt)
+
+
+def _schedule_cached_ai_edit(destination: tuple[int, str, str, str], detail: str) -> None:
+    """Schedule an edit using an already computed explanation."""
+    if not _AI_ENRICHMENT_CAPACITY.acquire(blocking=False):
+        logger.warning("Telegram AI enrichment queue is full; skipping cached edit")
+        return
+    message_id, bot_token, chat_id, text = destination
+
+    def run() -> None:
+        try:
+            _edit_telegram_message_with_retry(message_id, bot_token, chat_id, text, detail)
+        finally:
+            _AI_ENRICHMENT_CAPACITY.release()
+
+    if not _run_alert_in_background("telegram-ai-enrichment-edit", run):
+        _AI_ENRICHMENT_CAPACITY.release()
+
+
+def _process_ai_enrichment_group(
+    key: tuple[str, str], source_text: str, context: str
+) -> None:
+    """Humanize one source once, then update every matching destination."""
+    detail = ""
+    was_humanized = False
     try:
-        edit_telegram_message(bot_token, chat_id, message_id, enriched)
-    except TelegramSendError:
-        # The alert was already delivered. A deleted/expired Telegram
-        # message must not make the original operation look unsuccessful.
-        logger.warning("Telegram AI enrichment edit failed", exc_info=True)
+        detail, was_humanized = humanize_telegram_alert_detail(
+            source_text,
+            context=context,
+            limit=_MAX_EXCERPT_CHARS,
+        )
+    except Exception:
+        logger.exception("Telegram AI humanization failed")
+    finally:
+        with _AI_ENRICHMENT_LOCK:
+            destinations = _AI_ENRICHMENT_IN_FLIGHT.pop(key, [])
+            _AI_ENRICHMENT_CACHE[key] = (
+                time.monotonic() + _AI_ENRICHMENT_CACHE_TTL_SECONDS,
+                detail,
+                was_humanized,
+            )
+            while len(_AI_ENRICHMENT_CACHE) > _AI_ENRICHMENT_CACHE_MAX_ENTRIES:
+                _AI_ENRICHMENT_CACHE.pop(next(iter(_AI_ENRICHMENT_CACHE)))
+        try:
+            if was_humanized and detail:
+                for message_id, bot_token, chat_id, text in destinations:
+                    _edit_telegram_message_with_retry(
+                        message_id, bot_token, chat_id, text, detail
+                    )
+        finally:
+            _AI_ENRICHMENT_CAPACITY.release()
+
+
+def _queue_ai_enrichment(
+    message_id: int, bot_token: str, chat_id: str, text: str, context: str
+) -> None:
+    """Bound and coalesce background AI work for the same alert content."""
+    if not _needs_humanization(text):
+        return
+    source_text = sanitize_telegram_text(text, limit=3_500)
+    key = (source_text, str(context or "")[:160])
+    destination = (message_id, bot_token, chat_id, text)
+    with _AI_ENRICHMENT_LOCK:
+        cached = _AI_ENRICHMENT_CACHE.get(key)
+        if cached is not None:
+            expires_at, detail, was_humanized = cached
+            if expires_at > time.monotonic():
+                if was_humanized and detail:
+                    _schedule_cached_ai_edit(destination, detail)
+                return
+            _AI_ENRICHMENT_CACHE.pop(key, None)
+        destinations = _AI_ENRICHMENT_IN_FLIGHT.get(key)
+        if destinations is not None:
+            destinations.append(destination)
+            return
+        if not _AI_ENRICHMENT_CAPACITY.acquire(blocking=False):
+            logger.warning("Telegram AI enrichment queue is full; skipping AI update")
+            return
+        _AI_ENRICHMENT_IN_FLIGHT[key] = [destination]
+
+    if not _run_alert_in_background(
+        "telegram-ai-enrichment",
+        lambda: _process_ai_enrichment_group(key, source_text, context),
+    ):
+        with _AI_ENRICHMENT_LOCK:
+            _AI_ENRICHMENT_IN_FLIGHT.pop(key, None)
+        _AI_ENRICHMENT_CAPACITY.release()
 
 
 def send_telegram_alert_with_ai(
@@ -384,12 +473,7 @@ def send_telegram_alert_with_ai(
         logger.exception("Telegram alert delivery failed")
         return False
     if message_id is not None and getattr(settings, "telegram_ai_humanize_enabled", False):
-        _run_alert_in_background(
-            "telegram-ai-enrichment",
-            lambda: _enrich_telegram_message(
-                int(message_id), bot_token, chat_id, text, context
-            ),
-        )
+        _queue_ai_enrichment(int(message_id), bot_token, chat_id, text, context)
     return True
 
 
