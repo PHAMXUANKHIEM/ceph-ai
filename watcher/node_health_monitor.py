@@ -134,6 +134,7 @@ def create_or_resolve_node_unreachable_incidents(
     current: dict[str, dict], still_unreachable: set[str] | None = None,
 ) -> None:
     """Persist one approval-gated incident and Telegram alert per outage."""
+    pending_alerts = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -178,8 +179,10 @@ def create_or_resolve_node_unreachable_incidents(
                 actor=audit.ACTOR_SYSTEM,
             )
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                send_node_alert(detail["host"], rationale)
+                pending_alerts.append((detail["host"], rationale))
         session.commit()
+    for host, rationale in pending_alerts:
+        send_node_alert(host, rationale)
 
 def ceph_code_for(host: str) -> str:
     return f"{NODE_RESOURCE_HIGH_PREFIX}{host}"
@@ -339,6 +342,7 @@ def create_or_resolve_node_health_incidents(
     Telegram mới ngay sau đó. Cùng một lỗi, cùng một cách vá như
     watcher/crush_skew_monitor.py (xem docstring hàm tương ứng ở đó, kèm số
     liệu đo được). Mặc định None giữ nguyên hành vi cũ."""
+    pending_alerts = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -413,5 +417,7 @@ def create_or_resolve_node_health_incidents(
             )
 
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                send_node_alert(detail["host"], rationale)
+                pending_alerts.append((detail["host"], rationale))
         session.commit()
+    for host, rationale in pending_alerts:
+        send_node_alert(host, rationale)

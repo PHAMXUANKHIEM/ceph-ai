@@ -207,6 +207,7 @@ def create_or_resolve_database_size_incident(
     lại cái mới ngay sau đó. Cùng một lỗi, cùng một cách vá như
     watcher/crush_skew_monitor.py (xem docstring hàm tương ứng ở đó, kèm số
     liệu đo được). Mặc định None giữ nguyên hành vi cũ."""
+    pending_alerts = []
     with db.SessionLocal() as session:
         open_incident = (
             session.query(Incident)
@@ -263,5 +264,7 @@ def create_or_resolve_database_size_incident(
             )
 
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                send_database_size_alert(rationale)
+                pending_alerts.append(rationale)
         session.commit()
+    for rationale in pending_alerts:
+        send_database_size_alert(rationale)

@@ -441,6 +441,7 @@ def create_or_resolve_crush_skew_incidents(
       * vắng mặt CHỈ vì streak chưa đủ -> vẫn đang vượt ngưỡng -> GIỮ MỞ
 
     Mặc định None giữ nguyên hành vi cũ cho mọi caller chưa cập nhật."""
+    pending_alerts = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -505,5 +506,11 @@ def create_or_resolve_crush_skew_incidents(
             )
 
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                send_crush_skew_alert(detail["signal"], _entity_label_for_alert(detail), rationale)
+                pending_alerts.append((detail["signal"], _entity_label_for_alert(detail), rationale))
         session.commit()
+    # External alert delivery may open its own DB session.  Commit the
+    # incident lifecycle first so an alert-side write cannot roll back the
+    # incident/action transaction (and so operators never receive an alert
+    # for a row that was not committed).
+    for signal, entity_label, rationale in pending_alerts:
+        send_crush_skew_alert(signal, entity_label, rationale)
