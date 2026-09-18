@@ -77,6 +77,23 @@ def test_save_ssh_source(dashboard_client, monkeypatch):
     assert settings.log_intel_source == "ssh"
 
 
+def test_save_only_does_not_restart_watcher(dashboard_client, monkeypatch):
+    _no_env_write(monkeypatch)
+    called = []
+    import dashboard.routes.settings as settings_routes
+
+    monkeypatch.setattr(settings_routes, "restart_watcher", lambda: called.append("watcher"))
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/log-intel", data=_form(log_intel_enabled="1", save_action="save")
+    )
+
+    assert response.status_code == 200
+    assert called == []
+    assert "Cấu hình sẽ được áp dụng khi Watcher khởi động lại" in response.text
+
+
 def test_unchecked_switch_saves_as_false(dashboard_client, monkeypatch):
     """Checkbox không tick thì trình duyệt không gửi field — phải hiểu là
     TẮT, không phải giữ nguyên giá trị cũ."""

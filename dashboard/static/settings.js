@@ -24,6 +24,7 @@
 
   function renderCodexStatus(data) {
     if (!codexStatus) return;
+    window.dispatchEvent(new CustomEvent("ceph-ai-account-state", { detail: { provider: "openai", enabled: !!data.enabled, configured: !!data.authenticated || !!data.enabled } }));
     if (data.installed === false) {
       codexStatus.textContent = "⚠️ Chưa cài Codex CLI trên server.";
       if (codexInstallPrompt) codexInstallPrompt.hidden = false;
@@ -83,13 +84,9 @@
       panel.appendChild(unavailable);
     }
     limits.forEach(function (limit) {
-      var remaining = limit.remaining_percent == null ? NaN : Number(limit.remaining_percent);
+      var remaining = Math.max(0, Math.min(100, Number(limit.remaining_percent) || 0));
       var used = limit.used_percent == null ? NaN : Number(limit.used_percent);
-      if (!Number.isFinite(used) && Number.isFinite(remaining)) used = 100 - remaining;
-      if (!Number.isFinite(remaining) && Number.isFinite(used)) remaining = 100 - used;
-      if (!Number.isFinite(remaining)) remaining = 0;
       if (!Number.isFinite(used)) used = 100 - remaining;
-      remaining = Math.max(0, Math.min(100, remaining));
       used = Math.max(0, Math.min(100, used));
       var severity = used < 50 ? "ok" : (used <= 80 ? "warning" : "danger");
       var row = document.createElement("div");
@@ -173,6 +170,7 @@
   if (codexLogoutBtn) codexLogoutBtn.addEventListener("click", function () {
     codexRequest("/settings/codex/logout", { method: "POST" }).then(function () {
       renderCodexStatus({ authenticated: false, enabled: false });
+      window.dispatchEvent(new CustomEvent("ceph-ai-account-state", { detail: { provider: "openai", enabled: false, configured: true, loggedOut: true } }));
     }).catch(function (err) { codexStatus.textContent = "❌ " + err.message; });
   });
   if (codexModelSaveBtn) codexModelSaveBtn.addEventListener("click", function () {
@@ -199,6 +197,7 @@
 
   function renderClaudeStatus(data) {
     if (!claudeStatus) return;
+    window.dispatchEvent(new CustomEvent("ceph-ai-account-state", { detail: { provider: "anthropic", enabled: !!data.enabled, configured: !!data.authenticated || !!data.enabled } }));
     if (data.installed === false) {
       claudeStatus.textContent = "⚠️ Chưa cài Claude Code CLI trên server.";
       if (claudeInstallPrompt) claudeInstallPrompt.hidden = false;
@@ -300,6 +299,7 @@
   if (claudeLogoutBtn) claudeLogoutBtn.addEventListener("click", function () {
     codexRequest("/settings/claude/logout", { method: "POST" }).then(function () {
       renderClaudeStatus({ installed: true, authenticated: false, enabled: false });
+      window.dispatchEvent(new CustomEvent("ceph-ai-account-state", { detail: { provider: "anthropic", enabled: false, configured: true, loggedOut: true } }));
     }).catch(function (err) { claudeStatus.textContent = "❌ " + err.message; });
   });
   if (claudeModelSaveBtn) claudeModelSaveBtn.addEventListener("click", function () {
@@ -1506,4 +1506,155 @@
   document.addEventListener("keydown", function (event) {
     if (event.key === "Escape") closeAll(null);
   });
+})();
+
+// AI API only: switch service content without reloading the Settings page.
+(function () {
+  var panel = document.querySelector('[data-panel="router"]');
+  if (!panel) return;
+  var tabs = Array.prototype.slice.call(panel.querySelectorAll("[data-ai-tab]"));
+  var tabPanels = Array.prototype.slice.call(panel.querySelectorAll("[data-ai-tab-panel]"));
+  var sharedConfig = panel.querySelector("#router-shared-config");
+  var warning = panel.querySelector("#ai-service-tab-warning");
+  var baseUrl = panel.querySelector("#router-base-url-input");
+  var apiKey = panel.querySelector("#router-api-key-input");
+  var step2Provider = panel.querySelector("#router-step2-provider");
+  var step2Form = panel.querySelector("#router-step2-form");
+  var configState = {};
+  var dirty = {};
+  var suppressDirty = false;
+  var routerConfiguredProvider = panel.getAttribute("data-router-configured-provider") || "";
+  function accountWasConfigured(provider) {
+    try { return window.localStorage.getItem("ceph-ai-ai-account-configured-" + provider) === "true"; }
+    catch (error) { return false; }
+  }
+  function rememberAccountConfigured(provider) {
+    try { window.localStorage.setItem("ceph-ai-ai-account-configured-" + provider, "true"); }
+    catch (error) { /* localStorage can be unavailable in private browsing */ }
+  }
+  var accountState = {
+    openai: {
+      enabled: panel.getAttribute("data-codex-enabled") === "true",
+      configured: panel.getAttribute("data-codex-enabled") === "true" || accountWasConfigured("openai")
+    },
+    anthropic: {
+      enabled: panel.getAttribute("data-claude-enabled") === "true",
+      configured: panel.getAttribute("data-claude-enabled") === "true" || accountWasConfigured("anthropic")
+    }
+  };
+  var active = (tabs.filter(function (tab) { return tab.classList.contains("is-active"); })[0] || tabs[0]);
+  var activeProvider = active ? active.getAttribute("data-ai-tab") : "9router";
+
+  function findRadio(provider) {
+    return panel.querySelector('input[name="router_provider"][value="' + provider + '"]');
+  }
+
+  function remember(provider) {
+    if (!baseUrl || !apiKey) return;
+    configState[provider] = { baseUrl: baseUrl.value, apiKey: apiKey.value };
+  }
+
+  function setProvider(provider) {
+    var radio = findRadio(provider);
+    if (!radio) return;
+    suppressDirty = true;
+    radio.checked = true;
+    radio.dispatchEvent(new Event("change", { bubbles: true }));
+    var state = configState[provider];
+    if (state) {
+      baseUrl.value = state.baseUrl;
+      apiKey.value = state.apiKey;
+      if (step2Form && step2Form.querySelector("option")) step2Form.hidden = false;
+    } else if (apiKey) {
+      apiKey.value = "";
+    }
+    if (step2Provider) step2Provider.value = provider;
+    suppressDirty = false;
+  }
+
+  function moveSharedConfig(provider) {
+    var slot = panel.querySelector('[data-ai-config-slot="' + provider + '"]');
+    if (sharedConfig && slot) slot.appendChild(sharedConfig);
+  }
+
+  function updateConfigCopy(provider) {
+    var title = panel.querySelector("#router-config-title");
+    var description = panel.querySelector("#router-config-description");
+    var copy = {
+      openai: ["API config · Codex", "Kết nối API OpenAI cho các luồng AI dùng chung."],
+      anthropic: ["API config · Claude", "Kết nối Anthropic API cho các luồng AI dùng chung."],
+      "9router": ["API config · 9Router", "Cấu hình proxy 9Router tự triển khai và xác nhận endpoint."],
+      openrouter: ["API config · OpenRouter", "Kết nối OpenRouter API và chọn model muốn sử dụng."]
+    }[provider] || ["API config", "Cấu hình endpoint và xác nhận kết nối với dịch vụ AI đang chọn."];
+    if (title) title.textContent = copy[0];
+    if (description) description.textContent = copy[1];
+  }
+
+  function updateConfigurationBadges() {
+    tabs.forEach(function (tab) {
+      var badge = tab.querySelector(".ai-service-tab-status");
+      if (!badge) return;
+      var provider = tab.getAttribute("data-ai-tab");
+      var account = accountState[provider];
+      var routerUsing = provider === routerConfiguredProvider;
+      var isUsing = !!(account && account.enabled) || routerUsing;
+      var isConfigured = isUsing || !!(account && account.configured);
+      var status = isUsing ? "ĐANG DÙNG" : (isConfigured ? "KHÔNG DÙNG" : "CHƯA CẤU HÌNH");
+      badge.textContent = status;
+      badge.classList.toggle("is-configured", isUsing);
+      badge.classList.toggle("is-not-using", !isUsing && isConfigured);
+      badge.classList.toggle("is-unconfigured", !isUsing && !isConfigured);
+      badge.hidden = false;
+    });
+  }
+
+  window.addEventListener("ceph-ai-account-state", function (event) {
+    var detail = event.detail || {};
+    if (detail.provider !== "openai" && detail.provider !== "anthropic") return;
+    accountState[detail.provider].enabled = !!detail.enabled;
+    if (detail.configured) {
+      accountState[detail.provider].configured = true;
+      rememberAccountConfigured(detail.provider);
+    }
+    updateConfigurationBadges();
+  });
+
+  function selectTab(provider) {
+    if (!provider || provider === activeProvider) return;
+    remember(activeProvider);
+    tabs.forEach(function (tab) {
+      var selected = tab.getAttribute("data-ai-tab") === provider;
+      tab.classList.toggle("is-active", selected);
+      tab.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+    tabPanels.forEach(function (tabPanel) {
+      tabPanel.hidden = tabPanel.getAttribute("data-ai-tab-panel") !== provider;
+    });
+    setProvider(provider);
+    moveSharedConfig(provider);
+    updateConfigCopy(provider);
+    if (dirty[activeProvider]) {
+      warning.hidden = false;
+      warning.textContent = "⚠ Có thay đổi chưa lưu trong tab " + activeProvider + ".";
+    } else {
+      warning.hidden = true;
+    }
+    activeProvider = provider;
+  }
+
+  tabs.forEach(function (tab) {
+    tab.addEventListener("click", function () { selectTab(tab.getAttribute("data-ai-tab")); });
+  });
+  panel.addEventListener("input", function (event) {
+    if (suppressDirty || !event.target.matches("input:not([type=radio]), textarea")) return;
+    dirty[activeProvider] = true;
+  });
+  panel.addEventListener("change", function (event) {
+    if (suppressDirty || event.target.matches('input[name="router_provider"]')) return;
+    if (event.target.matches("select, input:not([type=radio]), textarea")) dirty[activeProvider] = true;
+  });
+  moveSharedConfig(activeProvider);
+  if (step2Provider) step2Provider.value = activeProvider;
+  updateConfigCopy(activeProvider);
+  updateConfigurationBadges();
 })();

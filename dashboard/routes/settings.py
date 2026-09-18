@@ -3667,6 +3667,7 @@ async def log_intel_settings_submit(
     log_intel_max_lines_per_daemon: str = Form("5000"),
     log_intel_loki_url: str = Form(""),
     log_intel_loki_tenant: str = Form(""),
+    save_action: str = Form("save-restart"),
 ):
     """Cấu hình Log Intelligence (Plan/log-intelligence-rca-plan.md).
 
@@ -3743,9 +3744,14 @@ async def log_intel_settings_submit(
         logger.exception("log_intel_settings_submit: failed to persist config to .env")
         return _fail("Không ghi được file cấu hình — kiểm tra quyền ghi trên server")
 
-    # Watcher là tiến trình chạy vòng quét này, nên nó (không phải Worker)
-    # mới là cái cần khởi động lại để áp dụng ngay.
-    await asyncio.to_thread(restart_watcher)
+    # Watcher là tiến trình chạy vòng quét này, nên chỉ nút xác nhận restart
+    # mới khởi động lại nó. Nút lưu cấu hình giữ nguyên tiến trình đang chạy.
+    restart_requested = save_action != "save"
+    if restart_requested:
+        await asyncio.to_thread(restart_watcher)
+        action_message = " Watcher đã khởi động lại để áp dụng ngay."
+    else:
+        action_message = " Cấu hình sẽ được áp dụng khi Watcher khởi động lại."
 
     note = ""
     if submitted["log_intel_enabled"] and submitted["log_intel_ai_enabled"]:
@@ -3757,7 +3763,7 @@ async def log_intel_settings_submit(
         request, "settings.html",
         _settings_context(
             user,
-            log_intel_success=f"Đã lưu cấu hình — Watcher đã khởi động lại để áp dụng ngay.{note}",
+            log_intel_success=f"Đã lưu cấu hình —{action_message}{note}",
         ),
     )
 

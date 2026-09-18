@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Settings — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}-settings-v2">
-  <link rel="stylesheet" href="/static/settings_redesign.css?v={{ static_version }}-settings-v3">
+  <link rel="stylesheet" href="/static/settings_redesign.css?v={{ static_version }}-settings-v4">
 </head>
 <body class="settings-redesign">
   {% include "_nav.html" %}
@@ -257,75 +257,65 @@
       <div class="card-body">
         {% if log_intel_error %}<p class="error">{{ log_intel_error }}</p>{% endif %}
         {% if log_intel_success %}<p class="success">{{ log_intel_success }}</p>{% endif %}
-        <p class="hint">
-          Đọc log mon/mgr/osd/rgw theo chu kỳ, gom thành mẫu, phát hiện bất thường và (tuỳ chọn)
-          nhờ AI đoán nguyên nhân gốc. Kết quả xem ở trang
-          <a href="/log-intelligence">Log Intelligence</a>.
-          <strong>Không có gì tự chạy ra cụm</strong> — mọi đề xuất đều phải Duyệt thủ công.
-        </p>
-        <p class="hint">
-          <strong>Thứ tự bật được khuyến nghị:</strong> bật "Thu thập" trước, chạy 3–7 ngày, xem cột
-          <em>Gắn cờ</em> trên trang Log Intelligence (khoẻ mạnh là 0–5 mẫu mỗi lần quét). Chỉnh
-          nhiễu xong mới bật "Phân tích AI" — chi phí token tỉ lệ thuận đúng con số đó.
-          Chi tiết: <code>docs/runbook-log-intelligence.md</code>.
-        </p>
+        <div class="log-intel-section log-intel-intro">
+          <p class="log-intel-description">Log Intelligence thu thập log Ceph, phát hiện bất thường và (tuỳ chọn) dùng AI để phân tích nguyên nhân gốc. Kết quả hiển thị tại <a href="/log-intelligence">Log Intelligence</a>; mọi đề xuất đều phải được duyệt thủ công.</p>
+          <div class="log-intel-tip"><strong>Thứ tự bật được khuyến nghị:</strong> bật Thu thập trước 3–7 ngày, xem cột <em>Gắn cờ</em>, chỉnh nhiễu rồi mới bật Phân tích AI. <a href="https://github.com/PHAMXUANKHIEM/ceph-ai/blob/main/docs/runbook-log-intelligence.md" target="_blank" rel="noopener">Mở docs/runbook-log-intelligence.md</a>.</div>
+        </div>
 
-        <form class="login-box" method="post" action="/settings/log-intel">
-          <label class="settings-checkbox">
-            <input type="checkbox" name="log_intel_enabled" value="1"
-                   {% if log_intel_values.log_intel_enabled %}checked{% endif %}>
-            Bật thu thập log (không tốn token)
-          </label>
-          <label class="settings-checkbox">
-            <input type="checkbox" name="log_intel_ai_enabled" value="1"
-                   {% if log_intel_values.log_intel_ai_enabled %}checked{% endif %}>
-            Bật phân tích AI (tốn token — bật sau khi đã chỉnh nhiễu)
-          </label>
+        <form class="login-box log-intel-form" method="post" action="/settings/log-intel">
+          <div class="log-intel-section log-intel-toggles">
+            <label class="log-intel-toggle-row">
+              <span class="log-intel-toggle-copy"><strong>Bật thu thập log</strong><small>Bật thu thập log (không tốn token)</small></span>
+              <input class="log-intel-toggle-input" type="checkbox" name="log_intel_enabled" value="1" {% if log_intel_values.log_intel_enabled %}checked{% endif %}>
+              <span class="log-intel-toggle-track" aria-hidden="true"><span></span></span>
+            </label>
+            <label class="log-intel-toggle-row">
+              <span class="log-intel-toggle-copy"><strong>Bật phân tích AI</strong><small>Bật phân tích AI (tốn token — bật sau khi đã chỉnh nhiễu)</small></span>
+              <input class="log-intel-toggle-input" type="checkbox" name="log_intel_ai_enabled" value="1" {% if log_intel_values.log_intel_ai_enabled %}checked{% endif %}>
+              <span class="log-intel-toggle-track" aria-hidden="true"><span></span></span>
+            </label>
+          </div>
 
-          <label>Nguồn log
-            <select name="log_intel_source">
-              <option value="ssh" {% if log_intel_values.log_intel_source == 'ssh' %}selected{% endif %}>
-                ssh — đọc trực tiếp trên node, không cần hạ tầng thêm
-              </option>
-              <option value="loki" {% if log_intel_values.log_intel_source == 'loki' %}selected{% endif %}>
-                loki — đọc từ kho log tập trung
-              </option>
-            </select>
-          </label>
+          <div class="log-intel-section log-intel-source-section">
+            <div class="log-intel-source-field">
+              <label for="log-intel-source-trigger">Nguồn log</label>
+              <div class="log-intel-custom-select" data-log-intel-select>
+                <input type="hidden" name="log_intel_source" value="{{ log_intel_values.log_intel_source }}">
+                <button type="button" class="log-intel-select-trigger" id="log-intel-source-trigger" aria-haspopup="listbox" aria-expanded="false"><span data-log-intel-select-label>{% if log_intel_values.log_intel_source == 'loki' %}loki — đọc từ kho log tập trung{% else %}ssh — đọc trực tiếp trên node, không cần hạ tầng thêm{% endif %}</span><span aria-hidden="true">⌄</span></button>
+                <div class="log-intel-select-menu" role="listbox" hidden>
+                  <button type="button" role="option" data-log-intel-option="ssh">ssh — đọc trực tiếp trên node, không cần hạ tầng thêm</button>
+                  <button type="button" role="option" data-log-intel-option="loki">loki — đọc từ kho log tập trung</button>
+                </div>
+              </div>
+            </div>
 
-          <label>Loki URL (chỉ dùng khi chọn nguồn loki)
-            <input type="text" name="log_intel_loki_url" id="log-intel-loki-url"
-                   value="{{ log_intel_values.log_intel_loki_url }}"
-                   placeholder="http://loki.observability:3100">
-          </label>
-          <label>Loki tenant (để trống nếu Loki chạy single-tenant)
-            <input type="text" name="log_intel_loki_tenant" id="log-intel-loki-tenant"
-                   value="{{ log_intel_values.log_intel_loki_tenant }}">
-          </label>
-          <p class="hint">
-            Bên ship log phải gắn nhãn <code>{cluster, host, daemon_type}</code>.
-            <strong>Đừng lưu chunk Loki lên chính cụm Ceph đang giám sát</strong> — Ceph sập thì
-            mất luôn log cần để chẩn đoán tại sao Ceph sập.
-          </p>
-          <p>
-            <button type="button" class="btn btn-ghost btn-sm" id="log-intel-test-loki">Kiểm tra kết nối Loki</button>
-            <span id="log-intel-test-loki-result" class="muted"></span>
-          </p>
+            <div class="log-intel-loki-config">
+              <div class="log-intel-url-row">
+                <label>Loki URL (chỉ dùng khi chọn nguồn loki)
+                  <input type="text" name="log_intel_loki_url" id="log-intel-loki-url" value="{{ log_intel_values.log_intel_loki_url }}" placeholder="http://loki.observability:3100">
+                </label>
+                <div class="log-intel-test-action"><button type="button" class="log-intel-test-button" id="log-intel-test-loki">🔗 Kiểm tra kết nối Loki</button><span id="log-intel-test-loki-result" class="muted"></span></div>
+              </div>
+              <div class="log-intel-label-alert"><span aria-hidden="true">⚠️</span><span>Bên ship log phải gắn nhãn <code>{cluster, host, daemon_type}</code>. <strong>Đừng lưu chunk Loki lên chính cụm Ceph đang giám sát</strong> — Ceph sập thì mất luôn log cần để chẩn đoán tại sao Ceph sập.</span></div>
+              <label>Loki tenant (để trống nếu Loki chạy single-tenant)
+                <input type="text" name="log_intel_loki_tenant" id="log-intel-loki-tenant" value="{{ log_intel_values.log_intel_loki_tenant }}" placeholder="tenant-a">
+              </label>
+            </div>
+          </div>
 
-          <label>Chu kỳ quét (giây)
-            <input type="number" name="log_intel_scan_interval_seconds" min="60"
-                   value="{{ log_intel_values.log_intel_scan_interval_seconds }}">
-          </label>
-          <label>Cửa sổ thời gian mỗi lần quét (phút) — phải LỚN HƠN chu kỳ quét
-            <input type="number" name="log_intel_window_minutes" min="1"
-                   value="{{ log_intel_values.log_intel_window_minutes }}">
-          </label>
-          <label>Số dòng tối đa mỗi daemon mỗi lần quét
-            <input type="number" name="log_intel_max_lines_per_daemon" min="100"
-                   value="{{ log_intel_values.log_intel_max_lines_per_daemon }}">
-          </label>
+          <section class="log-intel-scan-card">
+            <h3>Cấu hình quét</h3>
+            <div class="log-intel-scan-grid">
+              <label>Chu kỳ quét (giây)<span class="log-intel-unit">giây</span><input type="number" name="log_intel_scan_interval_seconds" min="60" value="{{ log_intel_values.log_intel_scan_interval_seconds }}"></label>
+              <label>Cửa sổ thời gian (phút)<span class="log-intel-unit">phút</span><input type="number" name="log_intel_window_minutes" min="1" value="{{ log_intel_values.log_intel_window_minutes }}"><small>Phải lớn hơn chu kỳ quét</small></label>
+              <label>Số dòng tối đa mỗi daemon<span class="log-intel-unit">dòng</span><input type="number" name="log_intel_max_lines_per_daemon" min="100" value="{{ log_intel_values.log_intel_max_lines_per_daemon }}"></label>
+            </div>
+          </section>
 
-          <button type="submit" class="btn btn-primary btn-sm">Lưu &amp; khởi động lại Watcher</button>
+          <div class="log-intel-actions">
+            <button type="submit" name="save_action" value="save" class="log-intel-save-button">Lưu cấu hình</button>
+            <button type="submit" name="save_action" value="save-restart" class="log-intel-restart-button" title="Hành động này sẽ khởi động lại Watcher service">↻ Lưu &amp; khởi động lại Watcher</button>
+          </div>
         </form>
       </div>
     </section>
@@ -777,189 +767,107 @@
       </div>
     </section>
 
-    <section class="card settings-panel" data-panel="router" {% if active_section != 'router' %}hidden{% endif %}>
+    <section class="card settings-panel" data-panel="router" data-configured-provider="{{ router_provider if router_connected else '' }}" {% if active_section != 'router' %}hidden{% endif %}>
       <div class="card-header"><h2>Kết nối AI</h2></div>
       <div class="card-body">
-        {% if error %}
-          <p class="error">{{ error }}</p>
-        {% endif %}
-        {% if success %}
-          <p class="success">{{ success }}</p>
-        {% endif %}
-        {% if worker_restart_error %}
-          <p class="error">{{ worker_restart_error }}</p>
-        {% endif %}
-        <div class="settings-api-layout">
-        <div class="login-box settings-api-account-card" id="codex-account-box">
-          <h3>Tài khoản Codex</h3>
-          <p class="hint settings-api-description">Dùng tài khoản ChatGPT Codex cho Chat-with-AI.</p>
-          <p class="hint settings-api-technical-note">Codex CLI quản lý token riêng trên server; worker chẩn đoán vẫn dùng API AI bên dưới.</p>
-          <p id="codex-account-status" class="hint">Đang kiểm tra trạng thái...</p>
-          {% if is_admin %}
-          <div id="codex-install-prompt" hidden>
-            <p><strong>Codex CLI chưa được cài trên server. Bạn có muốn cài đặt ngay không?</strong></p>
-            <div class="ai-test-row">
-              <button type="button" class="btn btn-primary btn-sm" id="codex-install-yes-btn">Có, cài đặt</button>
-              <button type="button" class="btn btn-sm" id="codex-install-no-btn">Không</button>
-            </div>
-          </div>
-          <div class="ai-test-row">
-            <button type="button" class="btn btn-primary btn-sm" id="codex-login-btn">Đăng nhập bằng Codex</button>
-            <button type="button" class="btn btn-sm settings-api-logout" id="codex-logout-btn" hidden>Đăng xuất</button>
-          </div>
-          <div id="codex-model-panel" hidden>
-            <label>Model Codex
-              <select id="codex-model-select"></select>
-            </label>
-            <div class="ai-test-row">
-              <button type="button" class="btn btn-sm settings-api-secondary" id="codex-model-save-btn">Lưu model</button>
-              <span id="codex-model-result" class="ai-test-result" hidden></span>
-            </div>
-          </div>
-          <div id="codex-limit-panel" class="ai-limit-panel" hidden></div>
-          <div id="codex-device-flow" hidden>
-            <p>Codex CLI trên server đã tạo mã. Mở <a id="codex-verification-link" href="#" target="_blank" rel="noopener">trang xác thực Codex</a> và nhập:</p>
-            <p><code id="codex-user-code" style="font-size:1.25rem"></code></p>
-            <p class="hint">Trang này sẽ tự kiểm tra và kích hoạt sau khi bạn đăng nhập xong.</p>
-          </div>
-          {% endif %}
-        </div>
+        {% if error %}<p class="error">{{ error }}</p>{% endif %}
+        {% if success %}<p class="success">{{ success }}</p>{% endif %}
+        {% if worker_restart_error %}<p class="error">{{ worker_restart_error }}</p>{% endif %}
 
-        <div class="login-box settings-api-account-card" id="claude-account-box">
-          <h3>Tài khoản Claude</h3>
-          <p class="hint settings-api-description">Dùng Claude Code với tài khoản Claude Pro/Max hoặc Anthropic Console.</p>
-          <p class="hint settings-api-technical-note">Claude CLI quản lý credential OAuth trong thư mục riêng trên server; không ghi vào <code>.env</code>.</p>
-          <p id="claude-account-status" class="hint">Đang kiểm tra trạng thái...</p>
-          {% if is_admin %}
-          <div id="claude-install-prompt" hidden>
-            <p><strong>Claude Code CLI chưa được cài trên server. Bạn có muốn cài đặt ngay không?</strong></p>
-            <div class="ai-test-row">
-              <button type="button" class="btn btn-primary btn-sm" id="claude-install-yes-btn">Có, cài đặt</button>
-              <button type="button" class="btn btn-sm" id="claude-install-no-btn">Không</button>
-            </div>
+        <div class="ai-service-tabs-shell">
+          <div class="ai-service-tabs" role="tablist" aria-label="Dịch vụ AI">
+            <button type="button" class="ai-service-tab{% if router_provider == 'openai' %} is-active{% endif %}" role="tab" aria-selected="{{ 'true' if router_provider == 'openai' else 'false' }}" data-ai-tab="openai">
+              <span>Codex (OpenAI)</span><span class="ai-service-tab-status {% if router_connected and router_provider == 'openai' %}is-configured{% else %}is-unconfigured{% endif %}">{{ 'ĐANG DÙNG' if router_connected and router_provider == 'openai' else 'CHƯA CẤU HÌNH' }}</span>
+            </button>
+            <button type="button" class="ai-service-tab{% if router_provider == 'anthropic' %} is-active{% endif %}" role="tab" aria-selected="{{ 'true' if router_provider == 'anthropic' else 'false' }}" data-ai-tab="anthropic">
+              <span>Claude (Anthropic)</span><span class="ai-service-tab-status {% if router_connected and router_provider == 'anthropic' %}is-configured{% else %}is-unconfigured{% endif %}">{{ 'ĐANG DÙNG' if router_connected and router_provider == 'anthropic' else 'CHƯA CẤU HÌNH' }}</span>
+            </button>
+            <button type="button" class="ai-service-tab{% if router_provider not in ['openai', 'anthropic', 'openrouter'] %} is-active{% endif %}" role="tab" aria-selected="{{ 'true' if router_provider not in ['openai', 'anthropic', 'openrouter'] else 'false' }}" data-ai-tab="9router">
+              <span>9Router (tự triển khai)</span><span class="ai-service-tab-status {% if router_connected and router_provider == '9router' %}is-configured{% else %}is-unconfigured{% endif %}">{{ 'ĐANG DÙNG' if router_connected and router_provider == '9router' else 'CHƯA CẤU HÌNH' }}</span>
+            </button>
+            {% if router_providers|selectattr('id', 'equalto', 'openrouter')|list %}
+            <button type="button" class="ai-service-tab{% if router_provider == 'openrouter' %} is-active{% endif %}" role="tab" aria-selected="{{ 'true' if router_provider == 'openrouter' else 'false' }}" data-ai-tab="openrouter">
+              <span>OpenRouter</span><span class="ai-service-tab-status {% if router_connected and router_provider == 'openrouter' %}is-configured{% else %}is-unconfigured{% endif %}">{{ 'ĐANG DÙNG' if router_connected and router_provider == 'openrouter' else 'CHƯA CẤU HÌNH' }}</span>
+            </button>
+            {% endif %}
           </div>
-          <div class="ai-test-row">
-            <button type="button" class="btn btn-primary btn-sm" id="claude-login-btn">Đăng nhập bằng Claude</button>
-            <button type="button" class="btn btn-sm settings-api-logout" id="claude-logout-btn" hidden>Đăng xuất</button>
-          </div>
-          <div id="claude-model-panel" hidden>
-            <label>Model Claude
-              <select id="claude-model-select"></select>
-            </label>
-            <label>Effort
-              <select id="claude-effort-select"></select>
-            </label>
-            <div class="ai-test-row">
-              <button type="button" class="btn btn-sm settings-api-secondary" id="claude-model-save-btn">Lưu model và effort</button>
-              <span id="claude-model-result" class="ai-test-result" hidden></span>
-            </div>
-          </div>
-          <div id="claude-limit-panel" class="ai-limit-panel" hidden></div>
-          <div id="claude-device-flow" hidden>
-            <p>Mở <a id="claude-verification-link" href="#" target="_blank" rel="noopener">trang xác thực Claude</a>, đăng nhập và sao chép Authentication code.</p>
-            <label>
-              Authentication code
-              <input type="text" id="claude-authentication-code" autocomplete="one-time-code" placeholder="Dán mã Claude trả về" spellcheck="false">
-            </label>
-            <div class="ai-test-row">
-              <button type="button" class="btn btn-primary btn-sm" id="claude-connect-btn">Nhập mã &amp; kết nối</button>
-            </div>
-            <p class="hint">Mã chỉ được chuyển trực tiếp cho Claude CLI và không được lưu vào cấu hình.</p>
-          </div>
-          {% endif %}
-        </div>
+          <p id="ai-service-tab-warning" class="ai-service-tab-warning" hidden>⚠ Có thay đổi chưa lưu trong tab này.</p>
 
-        <hr>
-
-        <div id="router-connected-view" class="settings-api-connection-card" {% if not router_connected %}hidden{% endif %}>
-          <p class="success">✅ {{ router_provider_label }} đã kết nối</p>
-          <p class="hint">Base URL: <code id="router-connected-base-url">{{ router_base_url }}</code></p>
-          <p class="hint">Model: <code id="router-connected-model">{{ router_model }}</code></p>
-          <p class="hint">Key hiện tại: <code>{{ masked_key }}</code></p>
-          <div class="ai-test-row">
-            <button type="button" class="btn btn-sm" id="router-change-model-btn">Đổi model</button>
-            <form
-              method="post"
-              action="/settings/9router/disconnect"
-              onsubmit="return confirm('Huỷ kết nối API AI? Chatbox sẽ ngừng hoạt động cho tới khi kết nối lại.');"
-              style="display:inline"
-            >
-              <button type="submit" class="btn btn-sm btn-danger">Huỷ kết nối</button>
-            </form>
-          </div>
-        </div>
-
-        <div id="router-wizard-view" class="settings-api-connection-card" {% if router_connected %}hidden{% endif %}>
-          <p class="hint">Chọn nơi gửi yêu cầu AI (chẩn đoán sự cố &amp; Chat-with-AI dùng chung một kết nối này).</p>
-          <form class="login-box" id="router-step1-form">
-            <div class="ai-provider-field">
-              <span class="ai-provider-field-label">Loại kết nối</span>
-              <div class="ai-provider-options" id="router-provider-options">
-                {% for p in router_providers %}
-                  <label class="ai-provider-option">
-                    <input
-                      type="radio"
-                      name="router_provider"
-                      value="{{ p.id }}"
-                      data-base-url="{{ p.base_url or '' }}"
-                      data-base-url-placeholder="{{ p.base_url_placeholder }}"
-                      {% if p.id == router_provider %}checked{% endif %}
-                    >
-                    <span class="ai-provider-logo" aria-hidden="true">{{ "9router" if p.id == "9router" else ("Claude" if p.id == "anthropic" else ("Codex" if p.id == "openai" else "OpenRouter")) }}</span>
-                  </label>
-                {% endfor %}
-              </div>
-            </div>
-            <label>Base URL
-              <input
-                type="text"
-                name="router_base_url"
-                id="router-base-url-input"
-                value="{{ router_base_url }}"
-                placeholder="http://localhost:20128"
-                required
-              >
-            </label>
-            <label>API Key
-              <input
-                type="password"
-                name="router_api_key"
-                id="router-api-key-input"
-                placeholder="{% if masked_key %}để trống để giữ nguyên key hiện tại ({{ masked_key }}){% else %}sk-...{% endif %}"
-                autocomplete="off"
-              >
-            </label>
-            <div class="ai-test-row">
-              <button type="button" class="btn btn-primary btn-sm" id="router-verify-btn">Xác nhận kết nối</button>
-              <span id="router-verify-result" class="ai-test-result" hidden></span>
-            </div>
-          </form>
-
-          <form
-            class="login-box"
-            id="router-step2-form"
-            method="post"
-            action="/settings/9router/save"
-            {% if not router_models %}hidden{% endif %}
-          >
-            <input type="hidden" name="router_base_url" id="router-step2-base-url" value="{{ router_base_url }}">
-            <input type="hidden" name="router_api_key" id="router-step2-api-key">
-            <input type="hidden" name="router_provider" id="router-step2-provider" value="{{ router_provider }}">
-            <label>Model
-              <input type="text" id="router-model-filter" placeholder="Lọc model..." autocomplete="off" hidden>
-              <select name="router_model_id" id="router-model-select" required>
-                {% if router_models %}
-                  {% for m in router_models %}
-                    <option value="{{ m }}" {% if m == router_model %}selected{% endif %}>{{ m }}</option>
-                  {% endfor %}
-                {% elif router_model %}
-                  <option value="{{ router_model }}" selected>{{ router_model }}</option>
+          <div class="ai-service-tab-panels">
+            <div class="ai-service-tab-panel" role="tabpanel" data-ai-tab-panel="openai" {% if router_provider != 'openai' %}hidden{% endif %}>
+              <div class="ai-service-section settings-api-account-card" id="codex-account-box">
+                <div class="ai-service-section-heading"><div><h3>Tài khoản</h3><p class="hint">Tài khoản Codex dùng cho Chat-with-AI.</p></div></div>
+                <p class="hint settings-api-technical-note">Codex CLI quản lý token riêng trên server; worker chẩn đoán vẫn dùng API AI bên dưới.</p>
+                <p id="codex-account-status" class="hint">Đang kiểm tra trạng thái...</p>
+                {% if is_admin %}
+                <div id="codex-install-prompt" hidden>
+                  <p><strong>Codex CLI chưa được cài trên server. Bạn có muốn cài đặt ngay không?</strong></p>
+                  <div class="ai-test-row"><button type="button" class="btn btn-primary btn-sm" id="codex-install-yes-btn">Có, cài đặt</button><button type="button" class="btn btn-sm" id="codex-install-no-btn">Không</button></div>
+                </div>
+                <div class="ai-test-row"><button type="button" class="btn btn-primary btn-sm" id="codex-login-btn">Đăng nhập bằng Codex</button><button type="button" class="btn btn-sm settings-api-logout" id="codex-logout-btn" hidden>Đăng xuất</button></div>
+                <div id="codex-model-panel" class="ai-inline-model" hidden>
+                  <label>Model Codex<select id="codex-model-select"></select></label>
+                  <div class="ai-test-row"><button type="button" class="btn btn-sm settings-api-secondary" id="codex-model-save-btn">Lưu model</button><span id="codex-model-result" class="ai-test-result" hidden></span></div>
+                </div>
+                <div id="codex-limit-panel" class="ai-limit-panel" hidden></div>
+                <div id="codex-device-flow" hidden><p>Codex CLI trên server đã tạo mã. Mở <a id="codex-verification-link" href="#" target="_blank" rel="noopener">trang xác thực Codex</a> và nhập:</p><p><code id="codex-user-code" style="font-size:1.25rem"></code></p><p class="hint">Trang này sẽ tự kiểm tra và kích hoạt sau khi bạn đăng nhập xong.</p></div>
                 {% endif %}
-              </select>
-            </label>
-            <button type="submit" class="btn btn-primary">Lưu cấu hình</button>
-          </form>
-        </div>
+              </div>
+              <div data-ai-config-slot="openai"></div>
+            </div>
+
+            <div class="ai-service-tab-panel" role="tabpanel" data-ai-tab-panel="anthropic" {% if router_provider != 'anthropic' %}hidden{% endif %}>
+              <div class="ai-service-section settings-api-account-card" id="claude-account-box">
+                <div class="ai-service-section-heading"><div><h3>Tài khoản</h3><p class="hint">Tài khoản Claude dùng cho Chat và phân tích hiệu năng.</p></div></div>
+                <p class="hint settings-api-technical-note">Claude CLI quản lý credential OAuth trong thư mục riêng trên server; không ghi vào <code>.env</code>.</p>
+                <p id="claude-account-status" class="hint">Đang kiểm tra trạng thái...</p>
+                {% if is_admin %}
+                <div id="claude-install-prompt" hidden><p><strong>Claude Code CLI chưa được cài trên server. Bạn có muốn cài đặt ngay không?</strong></p><div class="ai-test-row"><button type="button" class="btn btn-primary btn-sm" id="claude-install-yes-btn">Có, cài đặt</button><button type="button" class="btn btn-sm" id="claude-install-no-btn">Không</button></div></div>
+                <div class="ai-test-row"><button type="button" class="btn btn-primary btn-sm" id="claude-login-btn">Đăng nhập bằng Claude</button><button type="button" class="btn btn-sm settings-api-logout" id="claude-logout-btn" hidden>Đăng xuất</button></div>
+                <div id="claude-model-panel" class="ai-inline-model" hidden><label>Model Claude<select id="claude-model-select"></select></label><label>Effort<select id="claude-effort-select"></select></label><div class="ai-test-row"><button type="button" class="btn btn-sm settings-api-secondary" id="claude-model-save-btn">Lưu model và effort</button><span id="claude-model-result" class="ai-test-result" hidden></span></div></div>
+                <div id="claude-limit-panel" class="ai-limit-panel" hidden></div>
+                <div id="claude-device-flow" hidden><p>Mở <a id="claude-verification-link" href="#" target="_blank" rel="noopener">trang xác thực Claude</a>, đăng nhập và sao chép Authentication code.</p><label>Authentication code<input type="text" id="claude-authentication-code" autocomplete="one-time-code" placeholder="Dán mã Claude trả về" spellcheck="false"></label><div class="ai-test-row"><button type="button" class="btn btn-primary btn-sm" id="claude-connect-btn">Nhập mã &amp; kết nối</button></div><p class="hint">Mã chỉ được chuyển trực tiếp cho Claude CLI và không được lưu vào cấu hình.</p></div>
+                {% endif %}
+              </div>
+              <div data-ai-config-slot="anthropic"></div>
+            </div>
+
+            <div class="ai-service-tab-panel" role="tabpanel" data-ai-tab-panel="9router" {% if router_provider in ['openai', 'anthropic', 'openrouter'] %}hidden{% endif %}>
+              <div class="ai-service-section ai-service-description-section"><h3>9Router (tự triển khai)</h3><p>Proxy router tự triển khai, chuyển tiếp request đến backend AI. Dùng khi muốn kiểm soát traffic hoặc chạy offline.</p></div>
+              <div data-ai-config-slot="9router"></div>
+            </div>
+            {% if router_providers|selectattr('id', 'equalto', 'openrouter')|list %}
+            <div class="ai-service-tab-panel" role="tabpanel" data-ai-tab-panel="openrouter" {% if router_provider != 'openrouter' %}hidden{% endif %}>
+              <div class="ai-service-section ai-service-description-section"><h3>OpenRouter</h3><p>Kết nối nhiều model AI qua OpenRouter API.</p></div>
+              <div data-ai-config-slot="openrouter"></div>
+            </div>
+            {% endif %}
+          </div>
+
+          <div id="router-shared-config" class="ai-service-config-shell">
+            <div id="router-connected-view" class="settings-api-connection-card" {% if not router_connected %}hidden{% endif %}>
+              <div class="ai-service-section-heading"><div><h3>API config</h3><p class="success">✅ {{ router_provider_label }} đã kết nối</p></div><span class="ai-service-connected-badge">ĐANG KẾT NỐI</span></div>
+              <p class="hint">Base URL: <code id="router-connected-base-url">{{ router_base_url }}</code></p><p class="hint">Model: <code id="router-connected-model">{{ router_model }}</code></p><p class="hint">Key hiện tại: <code>{{ masked_key }}</code></p>
+              <div class="ai-test-row"><button type="button" class="btn btn-sm" id="router-change-model-btn">Đổi model</button><form method="post" action="/settings/9router/disconnect" onsubmit="return confirm('Huỷ kết nối API AI? Chatbox sẽ ngừng hoạt động cho tới khi kết nối lại.');" style="display:inline"><button type="submit" class="btn btn-sm btn-danger">Huỷ kết nối</button></form></div>
+            </div>
+            <div id="router-wizard-view" class="settings-api-connection-card" {% if router_connected %}hidden{% endif %}>
+              <div class="ai-service-section-heading"><div><h3 id="router-config-title">API config</h3><p id="router-config-description" class="hint">Cấu hình endpoint và xác nhận kết nối với dịch vụ AI đang chọn.</p></div></div>
+              <form class="login-box" id="router-step1-form">
+                <div class="ai-provider-field" aria-hidden="true"><span class="ai-provider-field-label">Loại kết nối</span><div class="ai-provider-options" id="router-provider-options">
+                  {% for p in router_providers %}<label class="ai-provider-option"><input type="radio" name="router_provider" value="{{ p.id }}" data-base-url="{{ p.base_url or ('http://localhost:20128' if p.id == '9router' else '') }}" data-base-url-placeholder="{{ p.base_url_placeholder }}" {% if p.id == router_provider or (not router_provider and p.id == '9router') %}checked{% endif %}><span class="ai-provider-logo" aria-hidden="true">{{ "9router" if p.id == "9router" else ("Claude" if p.id == "anthropic" else ("Codex" if p.id == "openai" else "OpenRouter")) }}</span></label>{% endfor %}
+                </div></div>
+                <label>Base URL<input type="text" name="router_base_url" id="router-base-url-input" value="{{ router_base_url }}" placeholder="http://localhost:20128" required></label>
+                <label>API Key<input type="password" name="router_api_key" id="router-api-key-input" placeholder="{% if masked_key %}để trống để giữ nguyên key hiện tại ({{ masked_key }}){% else %}sk-...{% endif %}" autocomplete="off"></label>
+                <div class="ai-test-row"><button type="button" class="btn btn-primary btn-sm" id="router-verify-btn">Xác nhận kết nối</button><span id="router-verify-result" class="ai-test-result" hidden></span></div>
+              </form>
+              <form class="login-box" id="router-step2-form" method="post" action="/settings/9router/save" {% if not router_models %}hidden{% endif %}>
+                <input type="hidden" name="router_base_url" id="router-step2-base-url" value="{{ router_base_url }}"><input type="hidden" name="router_api_key" id="router-step2-api-key"><input type="hidden" name="router_provider" id="router-step2-provider" value="{{ router_provider }}">
+                <label>Model<input type="text" id="router-model-filter" placeholder="Lọc model..." autocomplete="off" hidden><select name="router_model_id" id="router-model-select" required>{% if router_models %}{% for m in router_models %}<option value="{{ m }}" {% if m == router_model %}selected{% endif %}>{{ m }}</option>{% endfor %}{% elif router_model %}<option value="{{ router_model }}" selected>{{ router_model }}</option>{% endif %}</select></label>
+                <button type="submit" class="btn btn-primary">Lưu cấu hình</button>
+              </form>
+            </div>
+            <p class="ai-service-default-setting"><label><input type="checkbox" id="ai-service-default-toggle" checked> Đặt làm dịch vụ mặc định cho chẩn đoán sự cố &amp; Chat-with-AI</label></p>
+          </div>
         </div>
       </div>
     </section>
@@ -1205,7 +1113,7 @@
     </div>
   </main>
   <script src="/static/pagination.js?v={{ static_version }}"></script>
-  <script src="/static/settings.js?v={{ static_version }}-settings-v2"></script>
+  <script src="/static/settings.js?v={{ static_version }}-settings-v3"></script>
   <script src="/static/settings_navigation.js?v={{ static_version }}"></script>
   <script src="/static/settings_logs.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>
