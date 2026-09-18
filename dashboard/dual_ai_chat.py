@@ -64,7 +64,9 @@ TOKEN_STOP_RE = re.compile(
 )
 PROCESS_STOP_TIMEOUT_SECONDS = 3
 AGENT_STATUS_RE = re.compile(r"(?im)^\s*STATUS\s*:\s*(DONE|CONTINUE)\s*$")
-DUAL_EXECUTION_LOCK_PATH = Path("/var/lib/ceph-ai/dual-ai-execution.lock")
+DUAL_EXECUTION_LOCK_PATH = Path(
+    os.environ.get("CEPH_AI_DUAL_EXECUTION_LOCK_PATH", "/var/lib/ceph-ai/dual-ai-execution.lock")
+)
 DUAL_AGENT_UID = "10001"
 DUAL_WORKSPACE_ENV = "CEPH_AI_DUAL_WORKSPACE"
 DEFAULT_DUAL_WORKSPACE = Path("/var/lib/ceph-ai/dual-workspace")
@@ -118,11 +120,13 @@ hay deploy.
 """ + UNTRUSTED_CONTENT_POLICY
 
 SINGLE_FULL_ACCESS_INSTRUCTIONS = """Bạn là Single Full, AI vận hành chính của Ceph-AI.
-Bạn đang chạy trực tiếp trên server với quyền đầy đủ theo yêu cầu rõ ràng của
-operator Telegram đã được allow-list riêng. Tự đọc repository, logs và trạng
-thái dịch vụ cần thiết rồi thực hiện trọn vẹn yêu cầu: bạn được sửa source,
-chạy test, quản lý service và chạy lệnh hệ thống/Ceph khi cần. Không chỉ mô tả
-kế hoạch. Giữ nguyên thay đổi không thuộc yêu cầu; không reset/xoá diff sẵn có.
+Bạn đang chạy trên server với quyền vận hành đã được operator Telegram
+allow-list riêng. Tự đọc repository, logs và trạng thái dịch vụ cần thiết rồi
+thực hiện trọn vẹn yêu cầu: được chạy lệnh quản trị Ceph/SSH và quản lý service
+khi cần. Source/deployment image trong container là read-only; không sửa, xoá,
+commit hoặc push source trực tiếp trong production. Code change phải đi qua
+Dual workspace và deployment pipeline được kiểm soát. Không chỉ mô tả kế hoạch.
+Giữ nguyên thay đổi không thuộc yêu cầu; không reset/xoá diff sẵn có.
 Không tiết lộ secrets trong phản hồi. Không commit, push hay gọi dịch vụ bên
 ngoài trừ khi người dùng yêu cầu rõ. Trước các thao tác phá huỷ hoặc làm mất dữ
 liệu, nêu chính xác tác động và yêu cầu người dùng xác nhận trong Telegram.
@@ -353,6 +357,52 @@ def _provider_candidates(role: str) -> list[tuple[str, str]]:
     return deduplicated
 
 
+_FULL_ACCESS_ENV_ALLOWLIST = frozenset({
+    "CEPH_AI_ENVIRONMENT",
+    "CEPH_AI_RUNTIME_DIR",
+    "CEPH_AI_CONTAINERIZED",
+    "CEPH_AI_ENV_FILE",
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "DATABASE_URL",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "NO_PROXY",
+    "PATH",
+    "PYTHONPATH",
+    "TERM",
+    "TMPDIR",
+})
+
+
+def _provider_process_environment(
+    *, full_access: bool, extra_env: dict[str, str] | None,
+) -> dict[str, str]:
+    """Build the provider environment without forwarding service secrets.
+
+    The full executor still needs the selected database URL and cluster scope
+    to perform the operator's request. It must not hand Telegram tokens,
+    session secrets, executor credentials, or the host's complete env to the
+    provider CLI, where a prompt-injection payload could ask the CLI to print
+    them. The container boundary provides a second layer: this allow-list
+    keeps the child environment small even when compose receives a broad env
+    file for the parent service.
+    """
+    if not full_access:
+        process_env = os.environ.copy()
+    else:
+        process_env = {
+            key: value for key, value in os.environ.items()
+            if key in _FULL_ACCESS_ENV_ALLOWLIST
+        }
+        process_env["CEPH_AI_ENV_FILE"] = "/dev/null"
+    if extra_env:
+        process_env.update(extra_env)
+    return process_env
+
+
 async def _ask(
     role: str,
     prompt: str,
@@ -407,9 +457,10 @@ async def _ask(
         )
         if allow_writes and not full_access:
             command = _unprivileged_dual_command(command)
-        process_env = os.environ.copy()
-        if extra_env:
-            process_env.update(extra_env)
+        process_env = _provider_process_environment(
+            full_access=full_access,
+            extra_env=extra_env,
+        )
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=repo,
@@ -794,7 +845,10 @@ async def run_single_full_access_chat(
         "CEPH_RGW_CONTAINER_NAME": selected_scope.get("ceph_rgw_container_name", ""),
         "CEPH_KEYRING_PATH": selected_scope.get("ceph_keyring_path", ""),
         "SSH_USER": selected_scope.get("ssh_user", ""),
-        "SSH_KEY_PATH": selected_scope.get("ssh_key_path", ""),
+        "SSH_KEY_PATH": os.environ.get(
+            "CEPH_AI_EXECUTOR_SSH_KEY_PATH",
+            selected_scope.get("ssh_key_path", ""),
+        ),
         "CEPH_AI_SELECTED_DATABASE_SOURCE": selected_scope["database_source"],
         "DATABASE_URL": selected_scope["database_url"],
     }

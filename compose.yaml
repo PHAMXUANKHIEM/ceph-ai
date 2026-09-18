@@ -118,23 +118,38 @@ services:
     mem_limit: 2g
     memswap_limit: 2g
     pids_limit: 256
+    user: "10001:10001"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
     command: ["python", "-m", "uvicorn", "worker.full_executor:app", "--host", "0.0.0.0", "--port", "8787"]
-    privileged: true
     volumes:
-      - ./:/app:rw
-      - /run/ceph-ai:/run/ceph-ai:rw
-      - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
-      - /root/.local:/root/.local:ro
-      - /root/.codex/packages:/root/.codex/packages:ro
-      - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
-      - ${SSH_KEY_PATH}.pub:${SSH_KEY_PATH}.pub:ro
-      - /etc/ceph-ai-secrets/single-full-executor.token:/run/secrets/single-full-executor.token:ro
+      # The deployed image/source and database/config state are immutable from
+      # this container. Ceph mutations use the selected cluster's SSH boundary.
+      - ./:/app:ro
+      - /var/lib/ceph-ai:/var/lib/ceph-ai:ro
+      - /root/.local:/opt/ai-tools:ro
+      - /root/.codex/packages:/opt/codex-packages:ro
+      - /var/lib/ceph-ai/full-executor-accounts:/opt/full-executor-accounts:ro
+      - /var/lib/ceph-ai/full-executor-ssh/id_ed25519:/tmp/full-executor-id_ed25519:ro
+      - /var/lib/ceph-ai/full-executor-ssh/id_ed25519.pub:/tmp/full-executor-id_ed25519.pub:ro
+      - /var/lib/ceph-ai/full-executor-secrets/token:/tmp/single-full-executor.token:ro
     environment:
-      CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
-      CEPH_AI_RUNTIME_DIR: /run/ceph-ai
+      CEPH_AI_ENV_FILE: /dev/null
+      CEPH_AI_RUNTIME_DIR: /tmp/ceph-ai
+      CEPH_AI_DUAL_EXECUTION_LOCK_PATH: /tmp/ceph-ai/dual-ai-execution.lock
       CEPH_AI_CONTAINERIZED: "true"
-      SINGLE_FULL_EXECUTOR_TOKEN_FILE: /run/secrets/single-full-executor.token
+      HOME: /home/aiagent
+      PATH: /opt/ai-tools/bin:/opt/codex-packages/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      CODEX_HOME: /opt/full-executor-accounts/codex
+      CLAUDE_CONFIG_DIR: /opt/full-executor-accounts/claude
+      SSH_KEY_PATH: /tmp/full-executor-id_ed25519
+      CEPH_AI_EXECUTOR_SSH_KEY_PATH: /tmp/full-executor-id_ed25519
+      SINGLE_FULL_EXECUTOR_TOKEN_FILE: /tmp/single-full-executor.token
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('full-executor', stale_after_seconds=30)['healthy'])\" && curl -fsS http://127.0.0.1:8787/healthz"]
       interval: 15s

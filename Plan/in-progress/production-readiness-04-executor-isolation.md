@@ -4,6 +4,19 @@
 
 Giảm blast radius nếu Dashboard, Telegram, AI provider hoặc executor bị khai thác; không cho AI có quyền vượt quá action đã được policy duyệt.
 
+## Trạng thái thực hiện — 2026-09-18
+
+- [x] `full-executor` không còn chạy `privileged`; chạy bằng `aiagent` (`10001:10001`), `read_only`, `no-new-privileges` và drop toàn bộ capability.
+- [x] Bỏ mount D-Bus/system bus và bỏ source/config mount ghi; `/app` và state production được mount read-only.
+- [x] Provider child process dùng environment allow-list; không kế thừa Telegram token, executor token, session secret hoặc toàn bộ environment của service.
+- [x] SSH key và provider account của executor được provision vào cây credential riêng, owner là `aiagent`, rồi mount read-only.
+- [ ] Tách hoàn toàn deployment artifact khỏi source checkout bằng immutable image; hiện tại source được bind-mount read-only để giữ quy trình deploy hiện hữu.
+- [ ] Giới hạn network egress của executor theo allow-list Ceph nodes, broker và provider.
+- [ ] Hoàn tất proof-of-containment thực tế cho filesystem, network, process và secret boundary trên host production.
+
+Evidence: `tests/test_executor_isolation.py`, `tests/test_full_executor.py`,
+`tests/test_resource_limits.py`; focused suite `9 passed`.
+
 ## Việc cần làm
 
 - Loại bỏ privileged: true khỏi full-executor hoặc tách executor sang host/VM riêng.
