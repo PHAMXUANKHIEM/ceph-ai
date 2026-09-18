@@ -20,7 +20,7 @@
   function normalizeRange(value) {
     value = String(value || "5m").toLowerCase();
     if (RANGE_CONFIG[value]) return value;
-    var aliases = { "120": "2m", "300": "5m", "900": "15m", "3600": "1h", "86400": "24h" };
+    var aliases = { "120": "2m", "300": "5m", "900": "15m", "3600": "1h", "86400": "24h", "604800": "7d", "1209600": "14d" };
     return aliases[value] || "5m";
   }
 

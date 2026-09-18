@@ -13,7 +13,7 @@ from shared.cluster_nodes import resolve_ssh_creds
 from shared.cluster_snapshot import DEFAULT_MAX_STALE_SECONDS, read_section_snapshot
 from shared import db
 from shared.models import HostMetricSample
-from shared.object_storage_cache import get_or_load
+from shared.object_storage_cache import get_or_load, state as cache_state
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics, collect_node_metrics_with
 from watcher.ceph_log import CephLogError, fetch_ceph_log, fetch_ceph_log_with
 from watcher.rgw_log import RgwLogError, fetch_rgw_log, fetch_rgw_log_with
@@ -227,6 +227,13 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
             background_on_miss=True,
             fallback=None,
         )
+        # ``background_on_miss`` deliberately hides loader exceptions from
+        # the request thread. Inspect the cache state so a completed failed
+        # refresh is reported as a stale/error state instead of remaining
+        # stuck at ``live_pending`` forever.
+        live_cache_state = cache_state("node-metrics", f"{cluster.id}:{host}")
+        if live_cache_state["error"] and not live_cache_state["refreshing"]:
+            metrics_error = "Không thể lấy telemetry realtime từ node"
     except NodeMetricsError as exc:
         logger.warning("node_metrics_api: %s", exc)
         metrics = None
