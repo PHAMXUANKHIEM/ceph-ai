@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 2b9229de
+  commit_sha: 329f09f5
   rollback_candidate_sha: 9573816c4b106fe55434d2118bd9ab45f2127928
   worktree: concurrent_uncommitted_changes
-  release_commit: 2b9229de
+  release_commit: 329f09f5
   pushed_to_origin: true
 
 migrations:
@@ -62,6 +62,9 @@ message_broker:
 
 verification:
   focused_feature_gate: 176_passed_12_warnings_current_wave_modules
+  settings_ai_provider_and_log_intel_gate: 14_passed_1_warning
+  watcher_host_telemetry_cadence_gate: 38_passed_1_warning
+  action_state_event_gate: 11_passed_1_warning
   broad_deterministic_gate: 3390_passed_13_deselected_12_warnings
   broad_gate_note: full_canonical_suite_passed_with_isolated_temporary_rabbitmq_vhost; temporary_broker_user_and_vhost_removed_after_gate
   broad_gate_environment: production_code_repair_lock_isolated_to_temporary_gate_lock
