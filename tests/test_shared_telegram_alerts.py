@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import time
 
 import shared.telegram_alerts as telegram_alerts
@@ -304,10 +305,10 @@ def test_common_ai_pipeline_keeps_concurrent_alert_contexts_separate(monkeypatch
 
     assert [message_id for message_id, _text in sent] == [100, 101, 102, 103]
     assert len(queued) == 4
-    for callback in queued:
-        callback()
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(lambda callback: callback(), queued))
 
-    assert [message_id for message_id, _text in edited] == [100, 101, 102, 103]
+    assert sorted(message_id for message_id, _text in edited) == [100, 101, 102, 103]
     for message_id, text in edited:
         marker = chr(ord("A") + message_id - 100)
         assert f"marker {marker}" in text

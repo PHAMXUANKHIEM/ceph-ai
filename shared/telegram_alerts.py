@@ -388,6 +388,7 @@ def _process_ai_enrichment_group(
             source_text,
             context=context,
             limit=_MAX_EXCERPT_CHARS,
+            timeout_seconds=HUMANIZER_ALERT_MAX_WAIT_SECONDS,
         )
     except Exception:
         logger.exception("Telegram AI humanization failed")
