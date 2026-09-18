@@ -34,6 +34,7 @@ from watcher import (
     verify,
     volume_monitor,
     host_metrics,
+    learning_retention,
     performance_rca_monitor,
     volume_topology,
     vitastor_monitor,
@@ -1428,6 +1429,11 @@ def run(
             )
             last_log_intel_scan_at = now
 
+        # Learning retention is independent from Log Intelligence and must
+        # continue even when log collection is disabled. The helper has its
+        # own process-wide cadence guard, so this remains cheap on each poll.
+        learning_retention.prune_old_rows()
+
         iterations += 1
         time.sleep(max(0, settings.watcher_poll_interval_seconds))
 
@@ -1921,6 +1927,7 @@ def run_observed_cluster_loop(
                         "run_observed_cluster_loop(%r): log intelligence scan failed", cluster.name
                     )
                 last_log_intel_scan_at = now
+            learning_retention.prune_old_rows()
         except CephQueryError as exc:
             _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster.id)
             logger.warning("run_observed_cluster_loop(%r): %s", cluster.name, exc)

@@ -40,6 +40,19 @@ def test_reconcile_template_requires_protected_snapshot():
                   '[{"name":"gold","protected":false}]')
 
 
+def test_reconcile_qos_requires_all_approved_values_and_read_only_recovery_command():
+    params = {
+        "pool_name": "vms", "image": "vm-01", "rbd_qos_iops_limit": 500,
+        "rbd_qos_bps_limit": 0, "rbd_qos_iops_burst": 600, "rbd_qos_bps_burst": 0,
+    }
+    reconcile("rbd_qos_set", params, json.dumps({"options": {
+        "rbd_qos_iops_limit": "500", "rbd_qos_iops_burst": "600",
+    }}))
+    with pytest.raises(ExecutorError, match="QoS post-check mismatch"):
+        reconcile("rbd_qos_set", params, '{"options":{"rbd_qos_iops_limit":"400"}}')
+    assert reconciliation_command("rbd_qos_set", params) == "rbd config image list vms/vm-01 --format json"
+
+
 def test_reconcile_trash_move_and_purge_verify_membership():
     trash = json.dumps([{"id": "id-1", "name": "vm-old"}, {"id": "keep", "name": "other"}])
 

@@ -14,7 +14,7 @@ from config.settings import settings
 from dashboard.cluster_scope import cluster_selection
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from shared import db, forecast_feedback, model_registry, remediation_feedback
+from shared import canary, db, forecast_feedback, model_registry, remediation_feedback
 from shared.models import (
     Action,
     Cluster,
@@ -710,6 +710,16 @@ async def ai_learning_api(request: Request, _user: str = Depends(require_login))
     return {"cluster_id": cluster.id, "cluster_name": cluster.name, **learning_status(cluster.id, cluster.name), "large_omap_readiness": large_omap_readiness(cluster.id)}
 
 
+@router.get("/api/ai-learning/canary")
+async def ai_learning_canary_api(request: Request, _user: str = Depends(require_login)):
+    """Return read-only canary acceptance evidence for the selected cluster."""
+    _clusters, cluster = cluster_selection(request)
+    with db.SessionLocal() as session:
+        return canary.build_canary_report(
+            session, cluster_id=cluster.id, cluster_name=cluster.name,
+        )
+
+
 @router.post("/api/ai-learning/replay")
 async def ai_learning_replay(request: Request, _user: str = Depends(require_login)):
     """Run a bounded, read-only historical replay; never persists or remediates."""
@@ -762,7 +772,9 @@ async def ai_learning_replay(request: Request, _user: str = Depends(require_logi
             HostMetricSample.host == host,
             HostMetricSample.collected_at >= start_at,
             HostMetricSample.collected_at <= end_at,
-        ).order_by(HostMetricSample.collected_at.desc()).limit(5000).all()
+        ).order_by(HostMetricSample.collected_at.desc()).limit(
+            settings.learning_job_max_batch_size
+        ).all()
 
     if not rows:
         raise HTTPException(status_code=422, detail="Không có host metric trong khoảng thời gian đã chọn.")

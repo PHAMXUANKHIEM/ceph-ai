@@ -21,6 +21,7 @@ from sqlalchemy.orm import object_session
 
 from config.settings import settings
 from shared import db
+from shared.learning_safety import CircuitBreaker
 from shared.predictive_alert_lifecycle import (
     AlertLifecycleState,
     NotificationState,
@@ -34,10 +35,39 @@ from shared.models import (
     NodeResourceForecastTransition,
     NodeResourceModelState,
 )
+from shared.retry import RetryPolicy, retry_sync
 from shared.telegram_alerts import send_node_forecast_alert
 
 logger = logging.getLogger(__name__)
 JOB = "ceph-ai-node-metrics"
+_LOKI_FETCH_BREAKER = CircuitBreaker(
+    failure_threshold=settings.learning_job_circuit_breaker_failures,
+    cooldown_seconds=settings.learning_job_circuit_breaker_cooldown_seconds,
+)
+_LOKI_PUSH_BREAKER = CircuitBreaker(
+    failure_threshold=settings.learning_job_circuit_breaker_failures,
+    cooldown_seconds=settings.learning_job_circuit_breaker_cooldown_seconds,
+)
+
+
+def _loki_timeout_seconds() -> float:
+    return float(min(settings.log_intel_loki_timeout_seconds, settings.learning_job_timeout_seconds))
+
+
+def _loki_retry_policy() -> RetryPolicy:
+    return RetryPolicy(
+        max_retries=settings.learning_job_max_retries,
+        base_delay_seconds=0.25,
+        max_delay_seconds=min(5.0, max(0.25, _loki_timeout_seconds())),
+    )
+
+
+def _bounded_loki_call(operation):
+    return retry_sync(
+        operation,
+        _loki_retry_policy(),
+        deadline=time.monotonic() + _loki_timeout_seconds(),
+    )
 
 
 @dataclass(frozen=True)
@@ -133,12 +163,23 @@ def push_sample(cluster: str, host: str, metrics: dict, *, timestamp_ns: int | N
         "job": JOB, "cluster": cluster or "default", "host": host,
         "metric_type": "node_resource",
     }, "values": [[str(timestamp_ns or time.time_ns()), line]]}]}
+    if not _LOKI_PUSH_BREAKER.allow():
+        logger.warning("node forecast: Loki push circuit is open; skipping %s", host)
+        return False
     try:
-        response = httpx.post(f"{_base_url()}/loki/api/v1/push", json=payload,
-                              headers=_headers(), timeout=settings.log_intel_loki_timeout_seconds)
-        response.raise_for_status()
+        def request():
+            response = httpx.post(
+                f"{_base_url()}/loki/api/v1/push", json=payload,
+                headers=_headers(), timeout=_loki_timeout_seconds(),
+            )
+            response.raise_for_status()
+            return response
+
+        _bounded_loki_call(request)
+        _LOKI_PUSH_BREAKER.record_success()
         return True
     except Exception:
+        _LOKI_PUSH_BREAKER.record_failure()
         logger.warning("node forecast: cannot push sample for %s to Loki", host, exc_info=True)
         return False
 
@@ -156,13 +197,23 @@ def fetch_samples(cluster: str, host: str, *, now: datetime | None = None) -> li
     selector = '{job="%s", cluster="%s", host="%s"}' % (
         JOB, cluster.replace('"', '\\"'), host.replace('"', '\\"'))
     params = {"query": selector, "start": str(int(start.timestamp() * 1e9)),
-              "end": str(int(end.timestamp() * 1e9)), "limit": "5000", "direction": "forward"}
+              "end": str(int(end.timestamp() * 1e9)),
+              "limit": str(settings.learning_job_max_batch_size), "direction": "forward"}
+    if not _LOKI_FETCH_BREAKER.allow():
+        raise NodeResourceLokiError("Loki query circuit is open; retry after cooldown")
     try:
-        response = httpx.get(f"{_base_url()}/loki/api/v1/query_range", params=params,
-                             headers=_headers(), timeout=settings.log_intel_loki_timeout_seconds)
-        response.raise_for_status()
-        payload = response.json()
-    except (httpx.HTTPError, TypeError, ValueError) as exc:
+        def request():
+            response = httpx.get(
+                f"{_base_url()}/loki/api/v1/query_range", params=params,
+                headers=_headers(), timeout=_loki_timeout_seconds(),
+            )
+            response.raise_for_status()
+            return response.json()
+
+        payload = _bounded_loki_call(request)
+        _LOKI_FETCH_BREAKER.record_success()
+    except Exception as exc:
+        _LOKI_FETCH_BREAKER.record_failure()
         # Callers use NodeResourceLokiError to isolate one unavailable Loki
         # query from the remaining nodes in a health scan.  Do not leak a
         # transport, status, or malformed-JSON exception across that boundary.

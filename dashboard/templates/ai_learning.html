@@ -84,6 +84,20 @@
   </section>
 
   <section class="card">
+    <div class="card-header">
+      <div>
+        <h2>Canary acceptance</h2>
+        <p class="hint">Báo cáo read-only từ dữ liệu live: xem candidate, chất lượng dự báo và các guard trước khi operator nghiệm thu. Không tự promote, không đổi policy và không chạy remediation.</p>
+      </div>
+      <button type="button" class="btn btn-secondary" id="load-canary-report">↻ Tải báo cáo</button>
+    </div>
+    <div class="card-body">
+      <p id="canary-report-status" class="hint" role="status" aria-live="polite">Đang tải báo cáo canary…</p>
+      <div id="canary-report-result" hidden></div>
+    </div>
+  </section>
+
+  <section class="card">
     <div class="card-header"><div><h2>Readiness LARGE_OMAP_OBJECTS</h2><p class="hint">Commissioning report chỉ đọc: không tự bật policy, không tự promotion, không tạo case giả.</p></div></div>
     <div class="card-body">
       <p><strong>Autoremediation:</strong> {% if large_omap_readiness.autoremediation_enabled %}<span class="badge badge-ok">Bật</span>{% else %}<span class="badge badge-warn">Tắt</span>{% endif %}
@@ -247,6 +261,40 @@ if (replayForm) {
       status.textContent = error.message || "Replay thất bại";
     }
   });
+}
+
+const canaryButton = document.getElementById("load-canary-report");
+if (canaryButton) {
+  const status = document.getElementById("canary-report-status");
+  const result = document.getElementById("canary-report-result");
+  const escapeCanaryHtml = value => String(value ?? "—").replace(/[&<>'"]/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"}[character]));
+  const canaryNumber = value => value === null || value === undefined ? "—" : Number.isFinite(Number(value)) ? Number(value).toFixed(3) : escapeCanaryHtml(value);
+  const loadCanaryReport = async () => {
+    canaryButton.disabled = true;
+    status.textContent = "Đang tải báo cáo canary read-only…";
+    result.hidden = true;
+    try {
+      const response = await fetch("/api/ai-learning/canary");
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "Không tải được báo cáo canary");
+      const scopes = (body.scopes || []).map(scope => {
+        const comparison = scope.comparison || {};
+        const guard = comparison.promotion_guard || {};
+        const operational = scope.operational_metrics || {};
+        const quality = operational.data_quality_rate === null || operational.data_quality_rate === undefined ? null : Number(operational.data_quality_rate) * 100;
+        return `<tr><td><code>${escapeCanaryHtml(scope.candidate_model && scope.candidate_model.version)}</code><div class="hint">${escapeCanaryHtml(scope.candidate_model && scope.candidate_model.algorithm)} · ${escapeCanaryHtml(scope.candidate_model && scope.candidate_model.status)}</div></td><td>${comparison.evaluation_count || 0}</td><td>${canaryNumber(comparison.active_mae)} / ${canaryNumber(comparison.candidate_mae)}</td><td>${canaryNumber(comparison.active_smape)} / ${canaryNumber(comparison.candidate_smape)}</td><td>${canaryNumber(quality)}%</td><td>${operational.alert_volume || 0}</td><td><span class="badge ${guard.allowed ? "badge-ok" : "badge-warn"}">${guard.allowed ? "Đủ điều kiện" : "Đang bị chặn"}</span><div class="hint">${escapeCanaryHtml(guard.reason)}</div></td></tr>`;
+      }).join("");
+      result.innerHTML = `<p><span class="badge badge-ok">READ-ONLY</span> ${body.candidate_count || 0} candidate · operator approval required · auto-promotion: false · remediation: false.</p><div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Evaluations</th><th>MAE active/candidate</th><th>SMAPE active/candidate</th><th>Data quality</th><th>Alert volume</th><th>Promotion gate</th></tr></thead><tbody>${scopes || '<tr class="empty-row"><td colspan="7">Chưa có shadow candidate.</td></tr>'}</tbody></table></div>`;
+      result.hidden = false;
+      status.textContent = "Đã tải báo cáo canary; không thay đổi model, policy hoặc remediation.";
+    } catch (error) {
+      status.textContent = error.message || "Không tải được báo cáo canary";
+    } finally {
+      canaryButton.disabled = false;
+    }
+  };
+  canaryButton.addEventListener("click", loadCanaryReport);
+  loadCanaryReport();
 }
 </script>
 </body></html>

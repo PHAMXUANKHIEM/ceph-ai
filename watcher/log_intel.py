@@ -483,7 +483,10 @@ def _scan_and_store_unlocked(
                 len(flagged), max_flagged,
             )
         else:
-            batch_size = max(1, settings.log_intel_ai_batch_size)
+            batch_size = min(
+                max(1, settings.log_intel_ai_batch_size),
+                settings.learning_job_max_batch_size,
+            )
             batch_count = (len(flagged) + batch_size - 1) // batch_size
             if batch_count > 1:
                 logger.warning(

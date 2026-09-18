@@ -63,12 +63,7 @@ class Settings(BaseSettings):
     ceph_command_timeout: int = Field(default=15, gt=0, le=3600)
     ceph_health_timeout: int = Field(default=8, gt=0, le=300)
     ceph_inventory_timeout: int = Field(default=20, gt=0, le=3600)
-    # Hard wall-clock bound for backup/restore SSH streaming. Large transfers
-    # need a longer budget than read-only Ceph commands, but must still fail
-    # instead of leaving a Worker task blocked forever.
     ceph_backup_operation_timeout: int = Field(default=3600, gt=0, le=86400)
-    # Approved Worker remediation commands can legitimately run longer than
-    # read-only collection, but their channel timeout must remain explicit.
     ceph_worker_command_timeout: int = Field(default=1800, gt=0, le=86400)
     ceph_log_query_timeout: int = Field(default=20, gt=0, le=3600)
     ceph_refresh_interval: int = Field(default=5, gt=0, le=3600)
@@ -126,9 +121,6 @@ class Settings(BaseSettings):
     # (ignored for "cephadm"/"none", same as ceph_osd_container_name).
     ceph_rgw_nodes: str = ""
     ceph_rgw_container_name: str = ""
-    # Optional read-only S3 credential used by the Buckets inventory. This is
-    # deliberately separate from backup S3 credentials. When blank, Buckets
-    # keeps the SSH/radosgw-admin fallback.
     ceph_rgw_s3_endpoint: str = ""
     ceph_rgw_s3_access_key: str = ""
     ceph_rgw_s3_secret_key: str = ""
@@ -287,8 +279,6 @@ class Settings(BaseSettings):
     # The runtime enforces both this and the character ceiling because exact
     # tokenization differs between Codex, Claude and router models.
     ai_incident_max_context_tokens: int = Field(default=6000, ge=1000, le=20000)
-    # Keep structured incident answers bounded so a verbose model cannot
-    # consume the entire budget after the evidence has already been collected.
     ai_incident_max_output_tokens: int = Field(default=1536, ge=256, le=8192)
     # Chat history is persisted indefinitely, so a message-count-only window
     # still allows a few large tool/evidence replies to consume the whole
@@ -296,17 +286,9 @@ class Settings(BaseSettings):
     # most recent useful history within both hard ceilings.
     ai_chat_max_context_chars: int = Field(default=12000, ge=4000, le=50000)
     ai_chat_max_context_tokens: int = Field(default=6000, ge=1000, le=20000)
-    # A normal operator chat should answer concisely after the requested
-    # evidence is available; callers may still override this per turn.
     ai_chat_max_output_tokens: int = Field(default=1536, ge=256, le=8192)
     ai_chat_max_tool_iterations: int = Field(default=4, ge=1, le=6)
 
-    # Controlled cost routing. Advisory is the safe default: the dashboard
-    # can show cheaper candidates, but production keeps the configured model.
-    # Canary routing is opt-in, same-provider only, and requires an explicit
-    # percentage plus a minimum estimated saving. A canary candidate must also
-    # be listed here after the operator has verified it in the provider catalog
-    # (format: provider:model, comma-separated).
     ai_cost_routing_mode: str = "advisory"
     ai_cost_routing_canary_percent: int = Field(default=0, ge=0, le=100)
     ai_cost_routing_min_savings_percent: float = Field(default=15.0, ge=0, le=100)
@@ -675,14 +657,32 @@ class Settings(BaseSettings):
     # trend.  Disabled by default so an existing SSH-only deployment does
     # not unexpectedly start writing to Loki.
     node_resource_forecast_enabled: bool = False
-    # Phase 0.2: independent safety gate for the future River/online learner.
-    # Existing deterministic forecast collection remains controlled by
-    # node_resource_forecast_enabled above.
+    # Phase 0.2: the future River/online learner has an independent safety
+    # gate. Existing deterministic forecast collection remains controlled by
+    # node_resource_forecast_enabled above; these flags only control online
+    # model state updates and must stay disabled until a canary is approved.
     online_learning_enabled: bool = False
     online_learning_mode: str = "AUDIT_ONLY"
     online_learning_kill_switch: bool = False
     online_learning_watcher_failure_threshold: int = Field(default=3, ge=1, le=100)
     online_learning_watcher_staleness_seconds: int = Field(default=120, ge=15, le=86400)
+    online_learning_max_samples_per_cycle: int = Field(default=100, ge=1, le=10000)
+    online_learning_timeout_seconds: float = Field(default=5.0, gt=0, le=300)
+    online_learning_circuit_breaker_failures: int = Field(default=3, ge=1, le=100)
+    online_learning_cooldown_seconds: int = Field(default=60, ge=1, le=86400)
+    online_learning_require_verified_label: bool = True
+    online_learning_sample_max_age_seconds: int = Field(default=120, ge=15, le=86400)
+    online_learning_sample_max_gap_seconds: int = Field(default=900, ge=30, le=604800)
+    learning_job_min_interval_seconds: int = Field(default=300, ge=0, le=86400)
+    learning_job_max_batch_size: int = Field(default=5000, ge=1, le=5000)
+    learning_job_timeout_seconds: int = Field(default=60, ge=1, le=3600)
+    learning_job_max_retries: int = Field(default=2, ge=0, le=5)
+    learning_job_circuit_breaker_failures: int = Field(default=3, ge=1, le=20)
+    learning_job_circuit_breaker_cooldown_seconds: int = Field(default=300, ge=1, le=86400)
+    learning_raw_sample_retention_days: int = Field(default=30, ge=1, le=3650)
+    learning_forecast_retention_days: int = Field(default=180, ge=1, le=3650)
+    learning_audit_retention_days: int = Field(default=365, ge=1, le=3650)
+    learning_retention_interval_seconds: int = Field(default=3600, ge=60, le=86400)
     # Optional self-contained ingestion path for deployments without Alloy:
     # Watcher samples /proc over its existing read-only SSH path and pushes
     # the fresh CPU/RAM sample to Loki before analysing the node. Keep this
@@ -733,7 +733,11 @@ class Settings(BaseSettings):
     # The first bounded RGW reshard must be operator-approved so its
     # verified post-check can bootstrap trust without an unobserved write.
     large_omap_bootstrap_requires_approval: bool = True
+    # Legacy fallback for deployments that have not set severity-specific
+    # values yet. WARNING is intentionally quiet; CRITICAL is retried sooner.
     node_resource_forecast_alert_cooldown_seconds: int = 86400
+    node_resource_forecast_warning_cooldown_seconds: int = 86400
+    node_resource_forecast_critical_cooldown_seconds: int = 3600
 
     # Per-RBD-volume seasonal baseline learning. Predictions are audit-only:
     # they may change the selected baseline, never policy or action rights.

@@ -367,6 +367,14 @@ _RBD_QOS_BOUNDS = {
     "rbd_qos_write_bps_limit": (0, 10_000_000_000_000),
 }
 
+
+def _rbd_qos_unsupported(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(token in message for token in (
+        "unknown command", "unrecognized", "invalid command", "unsupported",
+        "no such command", "not found",
+    ))
+
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 _RBD_VOLUME_MUTATION_ACTION_IDS = (
     "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume", "rbd_clone_volume", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
@@ -1109,6 +1117,10 @@ async def volume_qos_api(request: Request, pool: str, image: str, user: str = De
     try:
         values = query(pool, image) if cluster.is_default else query(pool, image, *cluster_connection(cluster))
     except CephQueryError as exc:
+        if _rbd_qos_unsupported(exc):
+            return {"cluster_id": cluster.id, "pool": pool, "image": image,
+                    "supported": False, "values": None, "read_only": True,
+                    "error": "Ceph release không hỗ trợ per-image QoS inventory"}
         raise HTTPException(status_code=502, detail=f"Không đọc được QoS của Volume: {exc}") from exc
     return {"cluster_id": cluster.id, "pool": pool, "image": image, "values": values,
             "units": {"*_iops_*": "IOPS", "*_bps_*": "bytes/s", "0": "unlimited"},
@@ -1139,6 +1151,11 @@ async def propose_volume_qos(
     try:
         before = query(pool, image) if cluster.is_default else query(pool, image, *cluster_connection(cluster))
     except CephQueryError as exc:
+        if _rbd_qos_unsupported(exc):
+            raise HTTPException(status_code=409, detail={
+                "message": "Ceph release không hỗ trợ per-image QoS",
+                "supported": False,
+            }) from exc
         raise HTTPException(status_code=502, detail=f"Không đọc được QoS hiện tại; không tạo proposal: {exc}") from exc
     action_id = _propose_rbd_volume_mutation(
         cluster=cluster, pool=pool, image=image, action_id="rbd_qos_set",
@@ -1147,7 +1164,17 @@ async def propose_volume_qos(
         extra_params={**values, "qos_before": before},
         idempotency_key=request.headers.get("Idempotency-Key"),
     )
-    return {"action_id": action_id, "before": before, "after": values, "requires_approval": True}
+    return {
+        "action_id": action_id,
+        "before": before,
+        "after": values,
+        "impact_preview": {
+            "limited": any(values[name] > 0 for name in _RBD_QOS_BOUNDS),
+            "unlimited_options": [name for name in _RBD_QOS_BOUNDS if values[name] == 0],
+            "note": "Đây là preview cấu hình; hiệu năng thực tế còn phụ thuộc workload và pool.",
+        },
+        "requires_approval": True,
+    }
 
 
 def _propose_rbd_volume_mutation(

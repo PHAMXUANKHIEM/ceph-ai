@@ -3138,6 +3138,110 @@ class CapacityAlertState(Base):
     )
 
 
+class OnlineLearnerState(Base):
+    """Durable, validated state for one bounded online learner.
+
+    ``cluster_key`` intentionally uses a normalized string instead of a
+    nullable foreign key: the default cluster is represented by
+    ``__default__`` and therefore remains unique on both SQLite and
+    PostgreSQL.  The payload is JSON only; executable/model objects are never
+    persisted.
+    """
+
+    __tablename__ = "online_learner_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_key", "host", "metric", "model_version",
+            name="uq_online_learner_state_identity",
+        ),
+        Index(
+            "ix_online_learner_state_lookup",
+            "cluster_key", "host", "metric",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(64), nullable=False)
+    feature_schema: Mapped[str] = mapped_column(String(64), nullable=False)
+    state_json: Mapped[str] = mapped_column(Text, nullable=False)
+    state_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_learned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow,
+    )
+
+
+class OnlineLearnerAudit(Base):
+    """Append-only decision record for each online-learning sample."""
+
+    __tablename__ = "online_learner_audit"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_key", "host", "metric", "sample_id",
+            name="uq_online_learner_audit_sample",
+        ),
+        Index(
+            "ix_online_learner_audit_stream_time",
+            "cluster_key", "host", "metric", "observed_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    label: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quality_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    quality_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    runtime_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    runtime_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    update_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class OnlineLearnerLabel(Base):
+    """Verified ground-truth queue for a previously audited sample."""
+
+    __tablename__ = "online_learner_labels"
+    __table_args__ = (
+        UniqueConstraint("source_run_id", name="uq_online_learner_label_source_run"),
+        UniqueConstraint(
+            "cluster_key", "host", "metric", "sample_id",
+            name="uq_online_learner_label_sample",
+        ),
+        Index(
+            "ix_online_learner_label_queue",
+            "status", "cluster_key", "host", "metric",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("node_resource_forecast_runs.id"), nullable=False,
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    label_value: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="READY")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class ChangeRiskAssessment(Base):
     """Evidence-backed risk assessment captured before an Action executes."""
 

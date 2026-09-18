@@ -26,7 +26,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from config.settings import settings
+from shared.learning_safety import CircuitBreaker
 from shared.models import Cluster
+from shared.retry import RetryPolicy, retry_sync
 from watcher.log_source.base import LogRecord, LogSourceError, LogSourceResult
 
 SOURCE_NAME = "loki"
@@ -34,6 +36,25 @@ SOURCE_NAME = "loki"
 # Loki's own server-side cap is 5000 by default; asking for more just gets
 # silently truncated, so the adapter stays under it per request.
 LOKI_MAX_LIMIT = 5000
+_LOKI_BREAKER = CircuitBreaker(
+    failure_threshold=settings.learning_job_circuit_breaker_failures,
+    cooldown_seconds=settings.learning_job_circuit_breaker_cooldown_seconds,
+)
+
+
+def _timeout_seconds() -> float:
+    return float(min(settings.log_intel_loki_timeout_seconds, settings.learning_job_timeout_seconds))
+
+
+def _request_with_bounds(operation):
+    return retry_sync(
+        operation,
+        RetryPolicy(
+            max_retries=settings.learning_job_max_retries,
+            base_delay_seconds=0.25,
+            max_delay_seconds=min(5.0, max(0.25, _timeout_seconds())),
+        ),
+    )
 
 
 def _utc_nanoseconds(value: datetime) -> str:
@@ -93,20 +114,31 @@ def fetch(
         "query": _selector(host, daemon_type, cluster),
         "start": _utc_nanoseconds(window_start),
         "end": _utc_nanoseconds(window_end),
-        "limit": str(min(max(1, settings.log_intel_max_lines_per_daemon), LOKI_MAX_LIMIT)),
+        "limit": str(min(
+            max(1, settings.log_intel_max_lines_per_daemon),
+            settings.learning_job_max_batch_size,
+            LOKI_MAX_LIMIT,
+        )),
         "direction": "forward",
     }
 
+    if not _LOKI_BREAKER.allow():
+        return LogSourceResult(records=[], error="Loki query circuit is open; retry after cooldown")
     try:
-        response = httpx.get(
-            f"{base_url}/loki/api/v1/query_range",
-            params=params,
-            headers=headers,
-            timeout=settings.log_intel_loki_timeout_seconds,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        def request():
+            response = httpx.get(
+                f"{base_url}/loki/api/v1/query_range",
+                params=params,
+                headers=headers,
+                timeout=_timeout_seconds(),
+            )
+            response.raise_for_status()
+            return response.json()
+
+        payload = _request_with_bounds(request)
+        _LOKI_BREAKER.record_success()
     except Exception as exc:
+        _LOKI_BREAKER.record_failure()
         return LogSourceResult(records=[], error=f"{host}/{daemon_type}: Loki: {exc}")
 
     records: list[LogRecord] = []
@@ -162,9 +194,7 @@ def check_reachable() -> None:
     if not base_url:
         raise LogSourceError("Chưa cấu hình log_intel_loki_url")
     try:
-        response = httpx.get(
-            f"{base_url}/ready", timeout=settings.log_intel_loki_timeout_seconds
-        )
+        response = httpx.get(f"{base_url}/ready", timeout=_timeout_seconds())
         response.raise_for_status()
     except Exception as exc:
         raise LogSourceError(f"Không kết nối được Loki tại {base_url}: {exc}") from exc

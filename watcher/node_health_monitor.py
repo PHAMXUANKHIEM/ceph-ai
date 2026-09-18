@@ -33,6 +33,7 @@ from shared import alert_lifecycle, audit, db
 from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
+from shared.online_learning_consumer import consume_samples
 from shared.telegram_alerts import send_node_alert
 from watcher import ceph_client, node_metrics, node_resource_forecast
 from worker.policy import gate
@@ -134,7 +135,6 @@ def create_or_resolve_node_unreachable_incidents(
     current: dict[str, dict], still_unreachable: set[str] | None = None,
 ) -> None:
     """Persist one approval-gated incident and Telegram alert per outage."""
-    pending_alerts = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -179,10 +179,8 @@ def create_or_resolve_node_unreachable_incidents(
                 actor=audit.ACTOR_SYSTEM,
             )
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                pending_alerts.append((detail["host"], rationale))
+                send_node_alert(detail["host"], rationale)
         session.commit()
-    for host, rationale in pending_alerts:
-        send_node_alert(host, rationale)
 
 def ceph_code_for(host: str) -> str:
     return f"{NODE_RESOURCE_HIGH_PREFIX}{host}"
@@ -265,6 +263,35 @@ def check_node_resources(
 
         cpu = metrics["cpu_percent"]
         mem = metrics["mem_percent"]
+        if settings.online_learning_enabled:
+            observed_raw = metrics.get("observed_at")
+            try:
+                observed_at = (
+                    datetime.fromisoformat(str(observed_raw).replace("Z", "+00:00"))
+                    if observed_raw else datetime.utcnow()
+                )
+                consume_samples([
+                    {
+                        "cluster_id": None,
+                        "host": host,
+                        "metric": "cpu",
+                        "value": cpu,
+                        "observed_at": observed_at,
+                        "sample_id": f"{host}:cpu:{observed_at.isoformat()}",
+                    },
+                    {
+                        "cluster_id": None,
+                        "host": host,
+                        "metric": "memory",
+                        "value": mem,
+                        "observed_at": observed_at,
+                        "sample_id": f"{host}:memory:{observed_at.isoformat()}",
+                    },
+                ])
+            except Exception:
+                # Online learning is advisory and must never suppress the
+                # node threshold monitor or make the Watcher poll fail.
+                logger.warning("check_node_resources: online learning sample failed for %s", host, exc_info=True)
         if settings.node_resource_forecast_enabled:
             try:
                 forecasts = node_resource_forecast.adaptive_forecast(
@@ -345,7 +372,6 @@ def create_or_resolve_node_health_incidents(
     Telegram mới ngay sau đó. Cùng một lỗi, cùng một cách vá như
     watcher/crush_skew_monitor.py (xem docstring hàm tương ứng ở đó, kèm số
     liệu đo được). Mặc định None giữ nguyên hành vi cũ."""
-    pending_alerts = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -420,7 +446,5 @@ def create_or_resolve_node_health_incidents(
             )
 
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                pending_alerts.append((detail["host"], rationale))
+                send_node_alert(detail["host"], rationale)
         session.commit()
-    for host, rationale in pending_alerts:
-        send_node_alert(host, rationale)
