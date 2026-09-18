@@ -33,6 +33,7 @@ from shared.router_client import (
     build_router_client,
     readable_exception_message,
 )
+from shared.telegram_client import sanitize_telegram_text
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ def _canonical(value: str | None) -> str:
 def _compact_input(value: str | None) -> str:
     lines = [" ".join(line.split()) for line in (value or "").splitlines()]
     compact = "\n".join(line for line in lines if line)
+    compact = sanitize_telegram_text(compact, limit=HUMANIZER_MAX_INPUT_CHARS)
     if len(compact) <= HUMANIZER_MAX_INPUT_CHARS:
         return compact
     return compact[: HUMANIZER_MAX_INPUT_CHARS - 1].rstrip() + "…"

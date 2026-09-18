@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import shared.telegram_alerts as telegram_alerts
 import shared.telegram_humanizer as telegram_humanizer
@@ -216,6 +217,79 @@ def test_humanizer_skips_disabled_router_without_building_client(monkeypatch):
     )
 
     assert result == "OSD 2 DOWN"
+
+
+def test_humanize_telegram_alert_detail_returns_ai_text_and_flag(monkeypatch):
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", True)
+    monkeypatch.setattr(
+        telegram_alerts,
+        "_humanize_sync",
+        lambda value, **kwargs: "RGW trên host rgw-1 không lấy được khóa từ Vault.",
+    )
+
+    detail, was_humanized = telegram_alerts.humanize_telegram_alert_detail(
+        "ERROR: retrieve actual key from Vault failed on host rgw-1",
+        context="lỗi RGW trên host rgw-1",
+    )
+
+    assert was_humanized is True
+    assert detail == "RGW trên host rgw-1 không lấy được khóa từ Vault."
+
+
+def test_humanize_telegram_alert_detail_keeps_short_detail_without_ai(monkeypatch):
+    def unexpected_humanizer(*_args, **_kwargs):
+        raise AssertionError("short deterministic detail must not call the AI")
+
+    monkeypatch.setattr(telegram_alerts, "_humanize_sync", unexpected_humanizer)
+    detail, was_humanized = telegram_alerts.humanize_telegram_alert_detail(
+        "Vault timeout", context="lỗi RGW"
+    )
+
+    assert was_humanized is False
+    assert detail == "Vault timeout"
+
+
+def test_humanize_telegram_alert_detail_has_bounded_wait(monkeypatch):
+    def slow_humanizer(*_args, **_kwargs):
+        time.sleep(0.2)
+        return "OSD 2 đã dừng hoạt động trên node rgw-1."
+
+    monkeypatch.setattr(telegram_alerts, "_humanize_sync", slow_humanizer)
+    started = time.monotonic()
+    detail, was_humanized = telegram_alerts.humanize_telegram_alert_detail(
+        "status: DOWN\n" + ("daemon output " * 40),
+        context="RGW error",
+        timeout_seconds=0.01,
+    )
+
+    assert time.monotonic() - started < 0.15
+    assert was_humanized is False
+    assert "status: DOWN" in detail
+
+
+def test_humanizer_redacts_secret_before_provider(monkeypatch):
+    monkeypatch.setattr(telegram_humanizer.settings, "telegram_ai_humanize_enabled", True)
+    monkeypatch.setattr(telegram_humanizer.settings, "codex_chat_enabled", False)
+    monkeypatch.setattr(telegram_humanizer.settings, "claude_chat_enabled", False)
+    monkeypatch.setattr(telegram_humanizer.settings, "router_enabled", True)
+    monkeypatch.setattr(telegram_humanizer.settings, "router_model", "model")
+    captured = []
+
+    async def fake_router(source, _context):
+        captured.append(source)
+        return "OSD 2 đang không hoạt động trên node rgw-1."
+
+    monkeypatch.setattr(telegram_humanizer, "_call_router", fake_router)
+    result = asyncio.run(
+        telegram_humanizer.humanize_log_for_telegram(
+            "status: DOWN\nosd.2 trên node rgw-1 token=supersecretvalue",
+            context="RGW error",
+        )
+    )
+
+    assert result == "OSD 2 đang không hoạt động trên node rgw-1."
+    assert captured and "supersecretvalue" not in captured[0]
+    assert "<REDACTED>" in captured[0]
 
 
 def test_humanizer_skips_router_without_model(monkeypatch):

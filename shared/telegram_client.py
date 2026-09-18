@@ -125,7 +125,7 @@ def _call_telegram_api(bot_token: str, method: str, payload: dict, *, timeout: f
     return body
 
 
-def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
+def send_telegram_message(bot_token: str, chat_id: str, text: str) -> int | None:
     """POSTs `text` to `chat_id` via the Telegram Bot API's sendMessage.
     Plain text, no parse_mode — alert text here is built from dynamic,
     operator/AI-generated strings (error messages, log excerpts) that may
@@ -134,10 +134,16 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
     losing italics/bold formatting."""
     if not bot_token or not chat_id:
         raise TelegramSendError("Chưa cấu hình Telegram bot token / chat id")
-    _call_telegram_api(
+    body = _call_telegram_api(
         bot_token, "sendMessage", {"chat_id": chat_id, "text": sanitize_telegram_text(text)},
         timeout=TELEGRAM_TIMEOUT_SECONDS
     )
+    # Existing callers ignore the return value. Returning the message ID is
+    # backward-compatible and lets alert producers edit a placeholder after
+    # an asynchronous AI humanization pass completes.
+    result = body.get("result") if isinstance(body, dict) else None
+    message_id = result.get("message_id") if isinstance(result, dict) else None
+    return int(message_id) if message_id is not None else None
 
 
 def set_telegram_commands(bot_token: str, commands: list[dict[str, str]]) -> None:

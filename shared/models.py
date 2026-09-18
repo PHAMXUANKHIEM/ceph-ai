@@ -713,6 +713,8 @@ class RgwAccessAuditEvent(Base):
     telegram_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     telegram_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     telegram_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    external_alert_queued: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    external_alert_queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -734,6 +736,14 @@ class RgwErrorNotification(Base):
     telegram_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     telegram_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     telegram_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    telegram_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    telegram_humanization_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="not_started"
+    )
+    telegram_humanization_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    telegram_humanized_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    external_alert_queued: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    external_alert_queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

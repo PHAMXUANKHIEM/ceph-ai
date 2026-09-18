@@ -54,6 +54,24 @@ def test_alembic_upgrade_head_creates_object_storage_audit_table(tmp_path, monke
     assert columns == {column.name for column in ObjectStorageAuditEntry.__table__.columns}
 
 
+def test_alembic_upgrade_head_creates_rgw_delivery_state(tmp_path, monkeypatch):
+    db_path = tmp_path / "migration_rgw_delivery.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+    con = sqlite3.connect(db_path)
+    access_columns = {row[1] for row in con.execute("PRAGMA table_info(rgw_access_audit_events)")}
+    error_columns = {row[1] for row in con.execute("PRAGMA table_info(rgw_error_notifications)")}
+    con.close()
+    assert {"external_alert_queued", "external_alert_queued_at"} <= access_columns
+    assert {
+        "telegram_message_id",
+        "telegram_humanization_status",
+        "telegram_humanization_error",
+        "telegram_humanized_at",
+        "external_alert_queued",
+        "external_alert_queued_at",
+    } <= error_columns
+
+
 def test_alembic_upgrade_head_creates_patch_documents_table_matching_model(tmp_path, monkeypatch):
     db_path = tmp_path / "migration_test.db"
     _run_alembic_upgrade(db_path, monkeypatch)

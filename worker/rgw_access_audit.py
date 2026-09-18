@@ -9,10 +9,12 @@ import logging
 import re
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
@@ -22,8 +24,17 @@ from shared.models import (
     Cluster, LogFinding, LogIngestRun, LogPattern, RgwAccessAuditEvent, RgwAnalysisJob,
     RgwErrorNotification,
 )
-from shared.telegram_client import TelegramSendError, send_telegram_message
+from shared.telegram_client import (
+    TelegramSendError,
+    edit_telegram_message,
+    sanitize_telegram_text,
+    send_telegram_message,
+)
 from shared.notification_channels import enqueue_external_alert
+from shared.telegram_alerts import (
+    HUMANIZER_ALERT_MAX_WAIT_SECONDS,
+    humanize_telegram_alert_detail,
+)
 from watcher.rgw_access_log import (
     fetch_rgw_audit_log, fetch_rgw_audit_log_with,
     fetch_rgw_error_log, fetch_rgw_error_log_with,
@@ -36,6 +47,11 @@ _VIETNAM_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 _ANALYSIS_DEBOUNCE_SECONDS = 60
 _ANALYSIS_PROGRESS_SECONDS = 600
 _USE_EVENT_TRANSFER_SIZE = object()
+_RGW_HUMANIZER_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="rgw-alert-humanizer"
+)
+_RGW_HUMANIZATION_IN_FLIGHT: set[str] = set()
+_RGW_HUMANIZATION_LOCK = threading.Lock()
 
 
 def _analysis_signature(cluster_id: str, host: str, message: str) -> str:
@@ -61,6 +77,108 @@ def _operator_error_context(message: str) -> tuple[str, str, str]:
         "Ảnh hưởng chưa xác định; cần đối chiếu request thất bại và trạng thái RGW.",
         "Kiểm tra log RGW trên host được báo và tình trạng cụm tại cùng thời điểm.",
     )
+
+
+def _update_error_alert_with_ai(
+    event_id: str,
+    bot_token: str,
+    chat_id: str,
+    message_id: int,
+    event_message: str,
+    host: str,
+    problem: str,
+    impact: str,
+    action: str,
+    analysis_status: str,
+    timestamp_lines: tuple[str, str],
+) -> None:
+    """Humanize an already-delivered RGW alert and edit it in place."""
+    try:
+        humanized_detail, was_humanized = humanize_telegram_alert_detail(
+            event_message,
+            context=f"lỗi RGW trên host {host}",
+            limit=_MAX_ERROR_CHARS,
+            timeout_seconds=HUMANIZER_ALERT_MAX_WAIT_SECONDS,
+        )
+        detail_label = "🧠 Diễn giải AI" if was_humanized else "🔧 Chi tiết kỹ thuật"
+        text = "\n".join((
+            "🚨 CEPH RGW GẶP LỖI",
+            "━━━━━━━━━━━━━━━━━━",
+            f"📍 Host: {host}",
+            f"📌 Vấn đề: {problem}",
+            f"💥 Ảnh hưởng: {impact}",
+            f"🛠 Cần làm: {action}",
+            f"🧠 Phân tích: {analysis_status}",
+            f"{detail_label}: {humanized_detail}",
+            *timestamp_lines,
+        ))
+        edit_telegram_message(bot_token, chat_id, message_id, text)
+        with db.SessionLocal() as session:
+            event = session.get(RgwErrorNotification, event_id)
+            if event is not None:
+                event.telegram_humanization_status = "completed"
+                event.telegram_humanization_error = None
+                event.telegram_humanized_at = datetime.utcnow()
+                session.commit()
+    except Exception as exc:
+        logger.exception("RGW alert AI update failed for message %s", message_id)
+        try:
+            with db.SessionLocal() as session:
+                event = session.get(RgwErrorNotification, event_id)
+                if event is not None:
+                    event.telegram_humanization_status = "failed"
+                    event.telegram_humanization_error = sanitize_telegram_text(
+                        str(exc or "AI alert update failed"), limit=500
+                    )
+                    session.commit()
+        except Exception:
+            logger.exception("could not persist RGW alert AI failure for %s", event_id)
+    finally:
+        with _RGW_HUMANIZATION_LOCK:
+            _RGW_HUMANIZATION_IN_FLIGHT.discard(event_id)
+
+
+def _queue_error_humanization(
+    session,
+    event: RgwErrorNotification,
+    *,
+    bot_token: str,
+    chat_id: str,
+    problem: str,
+    impact: str,
+    action: str,
+    analysis_status: str,
+    timestamp_lines: tuple[str, str],
+) -> None:
+    """Persist and queue one edit, with in-process duplicate suppression."""
+    with _RGW_HUMANIZATION_LOCK:
+        if event.id in _RGW_HUMANIZATION_IN_FLIGHT:
+            return
+        _RGW_HUMANIZATION_IN_FLIGHT.add(event.id)
+    event.telegram_humanization_status = "pending"
+    event.telegram_humanization_error = None
+    try:
+        session.commit()
+        _RGW_HUMANIZER_EXECUTOR.submit(
+            _update_error_alert_with_ai,
+            event.id,
+            bot_token,
+            chat_id,
+            int(event.telegram_message_id),
+            event.message,
+            event.rgw_host,
+            problem,
+            impact,
+            action,
+            analysis_status,
+            timestamp_lines,
+        )
+    except Exception as exc:
+        with _RGW_HUMANIZATION_LOCK:
+            _RGW_HUMANIZATION_IN_FLIGHT.discard(event.id)
+        event.telegram_humanization_status = "failed"
+        event.telegram_humanization_error = sanitize_telegram_text(str(exc), limit=500)
+        session.commit()
 
 
 def _inconclusive_analysis_text(message: str, patterns_flagged: int) -> str:
@@ -316,33 +434,75 @@ def _deliver_pending(session) -> None:
     external_configured = bool(settings.alert_webhook_url or settings.alert_slack_webhook_url or (settings.alert_email_smtp_host and settings.alert_email_from and settings.alert_email_to))
     if not telegram_configured and not external_configured:
         return
-    pending = session.query(RgwAccessAuditEvent).filter_by(telegram_sent=False).order_by(
+    access_filter = or_(
+        RgwAccessAuditEvent.telegram_sent.is_(False),
+        RgwAccessAuditEvent.external_alert_queued.is_(False),
+    ) if external_configured else RgwAccessAuditEvent.telegram_sent.is_(False)
+    pending = session.query(RgwAccessAuditEvent).filter(access_filter).order_by(
         RgwAccessAuditEvent.event_at, RgwAccessAuditEvent.created_at
     ).limit(500).all()
     cluster_names = {row.id: row.name for row in session.query(Cluster).all()}
     for event in pending:
-        event.telegram_attempts += 1
+        needs_telegram = not event.telegram_sent
+        needs_external = external_configured and not event.external_alert_queued
+        if not needs_telegram and not needs_external:
+            continue
         text = _message(event, cluster_names.get(event.cluster_id, event.cluster_id), _notification_size(session, event))
-        external_queued = enqueue_external_alert(category="rgw-access", severity="info", message=text, cluster_name=cluster_names.get(event.cluster_id, "")) if external_configured else False
+        external_queued = False
+        if needs_external:
+            external_queued = enqueue_external_alert(
+                category="rgw-access", severity="info", message=text,
+                cluster_name=cluster_names.get(event.cluster_id, ""),
+            )
+            if external_queued:
+                event.external_alert_queued = True
+                event.external_alert_queued_at = datetime.utcnow()
+        if not telegram_configured:
+            event.telegram_sent = True
+            event.telegram_sent_at = datetime.utcnow()
+            event.telegram_error = None
+            session.commit()
+            continue
+        if not needs_telegram:
+            session.commit()
+            continue
+        event.telegram_attempts += 1
         try:
-            if telegram_configured:
-                send_telegram_message(settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id, text)
+            send_telegram_message(settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id, text)
         except TelegramSendError as exc:
+            event.telegram_sent = False
             event.telegram_error = str(exc)[:_MAX_ERROR_CHARS]
             session.commit()
-            logger.warning("RGW audit Telegram delivery failed for %s: %s", event.id, exc)
-            if not external_queued:
+            logger.warning("RGW audit Telegram delivery failed for %s", event.id)
+            if not external_queued and not event.external_alert_queued:
                 break
+            continue
         event.telegram_sent = True
         event.telegram_sent_at = datetime.utcnow()
         event.telegram_error = None
         session.commit()
 
-    errors = session.query(RgwErrorNotification).filter_by(telegram_sent=False).order_by(
+    error_filter_parts = [RgwErrorNotification.telegram_sent.is_(False)]
+    error_filter_parts.append(and_(
+        RgwErrorNotification.telegram_sent.is_(True),
+        RgwErrorNotification.telegram_message_id.is_not(None),
+        RgwErrorNotification.telegram_humanization_status.in_(("pending", "failed")),
+    ))
+    if external_configured:
+        error_filter_parts.append(RgwErrorNotification.external_alert_queued.is_(False))
+    errors = session.query(RgwErrorNotification).filter(or_(*error_filter_parts)).order_by(
         RgwErrorNotification.event_at
     ).limit(200).all()
     for event in errors:
-        event.telegram_attempts += 1
+        needs_telegram = not event.telegram_sent
+        needs_ai = bool(
+            event.telegram_sent
+            and event.telegram_message_id is not None
+            and event.telegram_humanization_status in ("pending", "failed")
+        )
+        needs_external = external_configured and not event.external_alert_queued
+        if not needs_telegram and not needs_ai and not needs_external:
+            continue
         local_time = event.event_at.replace(tzinfo=timezone.utc).astimezone(_VIETNAM_TZ)
         job = session.query(RgwAnalysisJob).filter_by(source_event_id=event.id).first()
         problem, impact, action = _operator_error_context(event.message)
@@ -351,7 +511,7 @@ def _deliver_pending(session) -> None:
             if job else
             "Cùng sự cố vừa báo — không tạo thêm job phân tích trùng."
         )
-        text = "\n".join((
+        common_lines = (
             "🚨 CEPH RGW GẶP LỖI",
             "━━━━━━━━━━━━━━━━━━",
             f"📍 Host: {event.rgw_host}",
@@ -359,23 +519,92 @@ def _deliver_pending(session) -> None:
             f"💥 Ảnh hưởng: {impact}",
             f"🛠 Cần làm: {action}",
             f"🧠 Phân tích: {analysis_status}",
-            f"🔧 Chi tiết kỹ thuật: {event.message}",
+        )
+        timestamp_lines = (
             f"⏰ Giờ VN: {local_time:%H:%M:%S - %d/%m/%Y}",
             "━━━━━━━━━━━━━━━━━━",
+        )
+        external_text = "\n".join((*common_lines,
+            f"🔧 Chi tiết kỹ thuật: {sanitize_telegram_text(event.message, limit=_MAX_ERROR_CHARS)}",
+            *timestamp_lines,
         ))
-        external_queued = enqueue_external_alert(category="rgw-error", severity="critical", message=text) if external_configured else False
+        external_queued = False
+        if needs_external:
+            external_queued = enqueue_external_alert(
+                category="rgw-error", severity="critical", message=external_text
+            )
+            if external_queued:
+                event.external_alert_queued = True
+                event.external_alert_queued_at = datetime.utcnow()
+
+        if needs_ai:
+            if not telegram_configured:
+                event.telegram_humanization_status = "failed"
+                event.telegram_humanization_error = "Kênh Telegram đã tắt; bỏ qua cập nhật AI."
+                session.commit()
+                continue
+            session.commit()
+            if event.telegram_message_id is not None:
+                _queue_error_humanization(
+                    session,
+                    event,
+                    bot_token=settings.telegram_rgw_bot_token,
+                    chat_id=settings.telegram_rgw_chat_id,
+                    problem=problem,
+                    impact=impact,
+                    action=action,
+                    analysis_status=analysis_status,
+                    timestamp_lines=timestamp_lines,
+                )
+            continue
+
+        if not telegram_configured:
+            event.telegram_sent = True
+            event.telegram_sent_at = datetime.utcnow()
+            event.telegram_error = None
+            session.commit()
+            continue
+        event.telegram_attempts += 1
+        placeholder_text = "\n".join((*common_lines,
+            "🧠 Đang phân tích log bằng AI…",
+            *timestamp_lines,
+        ))
         try:
-            if telegram_configured:
-                send_telegram_message(settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id, text)
+            message_id = send_telegram_message(
+                settings.telegram_rgw_bot_token,
+                settings.telegram_rgw_chat_id,
+                placeholder_text,
+            )
         except TelegramSendError as exc:
+            event.telegram_sent = False
             event.telegram_error = str(exc)[:_MAX_ERROR_CHARS]
             session.commit()
-            if not external_queued:
+            if not external_queued and not event.external_alert_queued:
                 break
+            continue
         event.telegram_sent = True
         event.telegram_sent_at = datetime.utcnow()
         event.telegram_error = None
+        if message_id is None:
+            event.telegram_humanization_status = "failed"
+            event.telegram_humanization_error = "Telegram không trả về message_id; không thể cập nhật bản AI."
+            session.commit()
+            continue
+        event.telegram_message_id = int(message_id)
+        event.telegram_humanization_status = "pending"
+        event.telegram_humanization_error = None
         session.commit()
+        _queue_error_humanization(
+            session,
+            event,
+            bot_token=settings.telegram_rgw_bot_token,
+            chat_id=settings.telegram_rgw_chat_id,
+            problem=problem,
+            impact=impact,
+            action=action,
+            analysis_status=analysis_status,
+            timestamp_lines=timestamp_lines,
+        )
 
 
 def _send_analysis_status(text: str) -> None:
