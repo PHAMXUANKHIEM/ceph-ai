@@ -31,7 +31,7 @@
           <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Pipeline</button>
           <button type="button" class="settings-nav-item {% if active_section == 'log-intel' %}active{% endif %}" data-section="log-intel">Phân tích nhật ký</button>
           <button type="button" class="settings-nav-item {% if active_section == 'dual-ai' %}active{% endif %}" data-section="dual-ai">Hai AI trao đổi</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'code-repair' %}active{% endif %}" data-section="code-repair">Sửa mã bằng AI</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'code-repair' %}active{% endif %}" data-section="code-repair"><span>Sửa mã bằng AI</span><span class="sr-only">AI Code Repair</span></button>
           <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Cấu hình lưu trữ</button>
         </div>
       </section>
@@ -60,7 +60,7 @@
     </nav>
     <div class="settings-content">
     <nav class="settings-breadcrumb-bar" id="settings-breadcrumb-bar" aria-label="Breadcrumb">
-      <a href="/settings">Cài đặt</a><span aria-hidden="true">›</span><a href="#" id="settings-breadcrumb-group">Hệ thống</a><span aria-hidden="true">›</span><strong id="settings-breadcrumb-current">Tiến trình hệ thống</strong>
+      <a href="/settings">Cài đặt</a><span aria-hidden="true">›</span><a href="#" id="settings-breadcrumb-group">Hệ thống</a><span aria-hidden="true">›</span><strong id="settings-breadcrumb-current">{{ 'Tiến trình hệ thống' if is_admin else 'API AI' }}</strong>
     </nav>
     {% if containerized_deployment %}
     <div class="settings-container-banner" id="settings-container-banner" role="alert">
@@ -173,7 +173,7 @@
             {% else %}<span class="learning-unverified">Chưa verify</span>{% endif %}
           </td>
           <td class="action-policy-change-cell">
-            {% if row.immutable %}<span class="policy-note" title="Policy mặc định là DESTRUCTIVE">Note: mặc định DESTRUCTIVE</span>{% endif %}
+            {% if row.immutable %}<span class="policy-note" title="Policy mặc định là DESTRUCTIVE">Note: policy mặc định là DESTRUCTIVE.</span>{% endif %}
             <form method="post" action="/settings/autopilot/action-policy" class="action-policy-change-form" data-action-name="{{ row.action_id }}">
               <input type="hidden" name="action_id" value="{{ row.action_id }}">
               <div class="policy-change-control"><button type="button" class="policy-filter-trigger" data-policy-trigger aria-expanded="false"><span data-policy-label class="policy-{{ row.effective|lower }}">{{ row.effective }}</span><span aria-hidden="true">⌄</span></button><div class="policy-filter-menu" data-policy-menu hidden><button type="button" data-policy-option="SAFE">SAFE</button><button type="button" data-policy-option="RISKY">RISKY</button><button type="button" data-policy-option="DESTRUCTIVE">DESTRUCTIVE</button></div></div>
@@ -338,37 +338,23 @@
     </section>
 
     <section class="card settings-panel" data-panel="patch-pipeline" {% if active_section != 'patch-pipeline' %}hidden{% endif %}>
-      <div class="card-header"><h2>Build &amp; Copy Patch Ceph</h2></div>
-      <div class="card-body">
-        {% if patch_pipeline_error %}
-          <p class="error">{{ patch_pipeline_error }}</p>
+      <div class="card-header pipeline-panel-title"><div><h2>Build &amp; Copy Patch Ceph</h2><p class="hint">Build RPM từ patch và triển khai tới các node Ceph.</p></div><div class="pipeline-status-chip"><i></i><span>Sẵn sàng cấu hình</span><small>Build gần nhất: chưa ghi nhận</small></div></div>
+      <div class="card-body pipeline-panel-body">
+          {% if patch_pipeline_error %}
+          <p class="pipeline-feedback error">{{ patch_pipeline_error }}</p>
+          {% endif %}
+          {% if patch_pipeline_success %}
+          <p class="pipeline-feedback success">{{ patch_pipeline_success }}</p>
         {% endif %}
-        {% if patch_pipeline_success %}
-          <p class="success">{{ patch_pipeline_success }}</p>
-        {% endif %}
-        <p class="hint">
-          Cấu hình cho trang <a href="/patch">Patch Ceph</a> — build server KHÔNG phải node Ceph,
-          là một máy riêng dùng để build RPM từ patch đã upload rồi tự <code>scp</code> sang từng
-          node Ceph. Dùng chung SSH user/key đã cấu hình ở "Kết nối cụm Ceph" — cần copy thêm 1 bản
-          private key đó lên chính build server này (một lần), để nó tự SSH được sang các node Ceph.
-        </p>
-        <form class="login-box" method="post" action="/settings/patch-pipeline">
-          <label>IP/hostname build server
-            <input type="text" name="ceph_patch_build_node" value="{{ ceph_patch_build_node }}" placeholder="10.0.0.20">
-          </label>
-          <label>Thư mục source Ceph trên build server
-            <input type="text" name="ceph_patch_source_dir" value="{{ ceph_patch_source_dir }}" placeholder="/root/ceph">
-          </label>
-          <label>Lệnh build (chạy trong thư mục trên, sau khi patch đã được áp)
-            <textarea name="ceph_patch_build_command" rows="3" placeholder="./make-srpm.sh &amp;&amp; rpmbuild --rebuild ceph.src.rpm">{{ ceph_patch_build_command }}</textarea>
-          </label>
-          <label>Thư mục chứa file .rpm sau khi build xong
-            <input type="text" name="ceph_patch_output_dir" value="{{ ceph_patch_output_dir }}" placeholder="/root/rpmbuild/RPMS/x86_64">
-          </label>
-          <label>Thư mục tạm trên MỖI node Ceph để nhận file .rpm (trước khi cài)
-            <input type="text" name="ceph_patch_node_staging_dir" value="{{ ceph_patch_node_staging_dir }}" placeholder="/opt/ceph-aiops-patch-staging">
-          </label>
-          <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
+        <div class="pipeline-summary"><strong>Cấu hình build server để build RPM từ patch và deploy sang các node Ceph.</strong><details><summary>Chi tiết kỹ thuật</summary><p>Build server là máy riêng, không phải node Ceph. Worker dùng <code>scp</code> và SSH để chuyển RPM; private key phải được đặt trên build server theo quyền an toàn. Xem workflow tại <a class="pipeline-patch-link" href="/patch">Mở Patch Ceph →</a></p></details></div>
+        <form class="login-box pipeline-form" id="patch-pipeline-form" method="post" action="/settings/patch-pipeline">
+          <label>IP/hostname build server <span class="required-mark">*</span><input type="text" name="ceph_patch_build_node" id="pipeline-build-node" value="{{ ceph_patch_build_node }}" placeholder="10.0.0.20 hoặc build.ceph.local" required><small class="pipeline-field-error" data-error-for="pipeline-build-node"></small></label>
+          <label>Thư mục source Ceph trên build server <span class="required-mark">*</span><input class="pipeline-path-input" type="text" name="ceph_patch_source_dir" id="pipeline-source-dir" value="{{ ceph_patch_source_dir }}" placeholder="/root/ceph" required><small class="pipeline-field-error" data-error-for="pipeline-source-dir"></small></label>
+          <label>Lệnh build <span class="required-mark">*</span><textarea class="pipeline-command-input" name="ceph_patch_build_command" id="pipeline-build-command" rows="1" placeholder="./make-srpm.sh &amp;&amp; rpmbuild --rebuild ceph.src.rpm" required>{{ ceph_patch_build_command }}</textarea><small class="pipeline-field-error" data-error-for="pipeline-build-command"></small></label>
+          <label>Thư mục chứa file .rpm sau khi build xong <span class="required-mark">*</span><input class="pipeline-path-input" type="text" name="ceph_patch_output_dir" id="pipeline-output-dir" value="{{ ceph_patch_output_dir }}" placeholder="/root/rpmbuild/RPMS/x86_64" required><small class="pipeline-field-error" data-error-for="pipeline-output-dir"></small></label>
+          <label>Thư mục tạm trên mỗi node Ceph <span class="required-mark">*</span><input class="pipeline-path-input" type="text" name="ceph_patch_node_staging_dir" id="pipeline-staging-dir" value="{{ ceph_patch_node_staging_dir }}" placeholder="/opt/ceph-aiops-patch-staging" required><small class="pipeline-field-error" data-error-for="pipeline-staging-dir"></small></label>
+          <input type="hidden" name="save_action" id="pipeline-save-action" value="save-restart">
+          <div class="pipeline-form-actions"><button type="submit" data-save-action="save" class="pipeline-save-button">Lưu cấu hình</button><button type="submit" data-save-action="save-restart" class="pipeline-restart-button" id="pipeline-restart-button">↻ Lưu &amp; restart Worker</button></div>
         </form>
       </div>
     </section>

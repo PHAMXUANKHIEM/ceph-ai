@@ -859,6 +859,120 @@
   }
 })();
 
+// --- Patch pipeline: compact command input, validation and explicit restart flow ---
+(function () {
+  var form = document.getElementById("patch-pipeline-form");
+  if (!form) return;
+
+  var commandInput = document.getElementById("pipeline-build-command");
+  var actionInput = document.getElementById("pipeline-save-action");
+  var statusChip = document.querySelector(".pipeline-status-chip");
+  var fields = [
+    { id: "pipeline-build-node", message: "Nhập IP hoặc hostname của build server." },
+    { id: "pipeline-source-dir", message: "Đường dẫn phải bắt đầu bằng '/'." },
+    { id: "pipeline-build-command", message: "Nhập lệnh build." },
+    { id: "pipeline-output-dir", message: "Đường dẫn phải bắt đầu bằng '/'." },
+    { id: "pipeline-staging-dir", message: "Đường dẫn phải bắt đầu bằng '/'." },
+  ];
+
+  function errorNode(id) {
+    return form.querySelector('[data-error-for="' + id + '"]');
+  }
+
+  function setError(id, message) {
+    var node = errorNode(id);
+    if (node) node.textContent = message || "";
+    var input = document.getElementById(id);
+    if (input) input.setAttribute("aria-invalid", message ? "true" : "false");
+  }
+
+  function validHost(value) {
+    var hostname = /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$/;
+    var parts = value.split(".");
+    var dottedQuad = /^\d+(?:\.\d+){3}$/.test(value);
+    if (dottedQuad) return parts.every(function (part) {
+      return /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255;
+    });
+    return hostname.test(value) || value.indexOf(":") !== -1;
+  }
+
+  function validate() {
+    var valid = true;
+    fields.forEach(function (field) {
+      var input = document.getElementById(field.id);
+      var value = input ? input.value.trim() : "";
+      var message = "";
+      if (!value) message = field.message;
+      else if (field.id === "pipeline-build-node" && !validHost(value)) {
+        message = "IP/hostname không hợp lệ. Ví dụ: 10.0.0.20 hoặc build.ceph.local.";
+      } else if (field.id !== "pipeline-build-node" && field.id !== "pipeline-build-command" && value.charAt(0) !== "/") {
+        message = field.message;
+      }
+      setError(field.id, message);
+      if (message) valid = false;
+    });
+    return valid;
+  }
+
+  function resizeCommand() {
+    if (!commandInput) return;
+    commandInput.style.height = "auto";
+    var maxHeight = 220;
+    commandInput.style.height = Math.min(commandInput.scrollHeight, maxHeight) + "px";
+    commandInput.style.overflowY = commandInput.scrollHeight > maxHeight ? "auto" : "hidden";
+  }
+
+  if (commandInput) {
+    commandInput.addEventListener("input", resizeCommand);
+    resizeCommand();
+  }
+
+  form.addEventListener("submit", function (event) {
+    if (!validate()) {
+      event.preventDefault();
+      return;
+    }
+    var submitter = event.submitter;
+    var action = submitter && submitter.getAttribute("data-save-action") === "save" ? "save" : "save-restart";
+    if (actionInput) actionInput.value = action;
+    if (action === "save-restart" && !window.confirm("Lưu cấu hình pipeline và khởi động lại Worker? Service sẽ tạm gián đoạn vài giây.")) {
+      event.preventDefault();
+      return;
+    }
+    if (submitter) {
+      submitter.disabled = true;
+      submitter.classList.add("is-loading");
+      submitter.textContent = action === "save-restart" ? "Đang lưu & restart…" : "Đang lưu…";
+    }
+  });
+
+  function updateStatus(data) {
+    if (!statusChip) return;
+    var label = statusChip.querySelector("span");
+    var detail = statusChip.querySelector("small");
+    ["is-ready", "is-missing", "is-running", "is-error", "is-waiting"].forEach(function (name) {
+      statusChip.classList.remove(name);
+    });
+    var visualState = data.state === "not_configured" ? "missing" : (data.state || (data.configured ? "ready" : "missing"));
+    statusChip.classList.add("is-" + visualState);
+    if (label) label.textContent = data.state_label || (data.configured ? "Sẵn sàng chạy pipeline" : "Chưa cấu hình đầy đủ");
+    if (detail) detail.textContent = data.last_build ? "Build gần nhất: " + data.last_build : "Build gần nhất: chưa ghi nhận";
+  }
+
+  function refreshStatus() {
+    fetch("/api/settings/patch-pipeline/status", { credentials: "same-origin" })
+      .then(function (response) {
+        if (!response.ok) throw new Error("status unavailable");
+        return response.json();
+      })
+      .then(updateStatus)
+      .catch(function () { /* Keep the server-rendered fallback status. */ });
+  }
+
+  refreshStatus();
+  window.setInterval(refreshStatus, 30000);
+})();
+
 (function () {
   var groupLink = document.getElementById("settings-breadcrumb-group");
   var currentLabel = document.getElementById("settings-breadcrumb-current");

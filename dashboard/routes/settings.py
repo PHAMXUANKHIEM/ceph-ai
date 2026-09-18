@@ -53,7 +53,7 @@ from shared.clusters import sync_default_cluster_from_settings
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.ai_limits import normalize_rate_limits
 from shared.models import (
-    ActionPolicyOverride, ActionPolicyOverrideAudit,
+    Action, ActionPolicyOverride, ActionPolicyOverrideAudit, ActionStatus,
     AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, PlaybookStat,
 )
 from shared.router_client import list_router_models, readable_exception_message
@@ -450,6 +450,42 @@ PATCH_PIPELINE_ENV_NAMES = {
     # (see config/settings.py's ceph_patch_build_node docstring), not a
     # separate one for this form to manage.
 }
+
+_PIPELINE_HOSTNAME_RE = re.compile(
+    r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*"
+)
+
+
+def _valid_pipeline_host(value: str) -> bool:
+    """Accept an IPv4/IPv6 address or a DNS hostname for the build server."""
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        # Do not let an invalid dotted-quad such as 999.3.55.213 pass as a
+        # hostname just because DNS labels may contain digits.
+        if re.fullmatch(r"\d+(?:\.\d+){3}", value):
+            return False
+        return bool(_PIPELINE_HOSTNAME_RE.fullmatch(value))
+
+
+def _pipeline_validation_error(values: dict[str, str]) -> str | None:
+    if not values["ceph_patch_build_node"]:
+        return "Cần nhập IP hoặc hostname của build server."
+    if not _valid_pipeline_host(values["ceph_patch_build_node"]):
+        return "IP/hostname build server không hợp lệ. Ví dụ: 10.0.0.20 hoặc build.ceph.local."
+    if not values["ceph_patch_build_command"]:
+        return "Cần nhập lệnh build."
+    for field, label in (
+        ("ceph_patch_source_dir", "Thư mục source Ceph"),
+        ("ceph_patch_output_dir", "Thư mục chứa file .rpm"),
+        ("ceph_patch_node_staging_dir", "Thư mục tạm trên node Ceph"),
+    ):
+        if not values[field]:
+            return f"{label} không được để trống."
+        if not values[field].startswith("/"):
+            return f"{label} phải là đường dẫn tuyệt đối, bắt đầu bằng '/'."
+    return None
 
 # AI Code Repair supervisor roles are separate from Chat-with-AI/provider
 # settings: Planner/Reviewer asks, plans and audits; Implementer edits the
@@ -2910,6 +2946,7 @@ async def patch_pipeline_settings_submit(
     ceph_patch_build_command: str = Form(""),
     ceph_patch_output_dir: str = Form(""),
     ceph_patch_node_staging_dir: str = Form(""),
+    save_action: str = Form("save-restart"),
 ):
     """Configures the Ceph patch build & deploy pipeline (Vá lỗi Ceph page,
     dashboard/routes/patch.py) — where the build server is and how to build
@@ -2934,6 +2971,18 @@ async def patch_pipeline_settings_submit(
         "ceph_patch_node_staging_dir": ceph_patch_node_staging_dir.strip(),
     }
 
+    validation_error = _pipeline_validation_error(submitted)
+    if validation_error:
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                patch_pipeline_error=validation_error,
+                patch_pipeline_values=submitted,
+            ),
+        )
+
     try:
         _update_env_file_batch(
             {env_name: submitted[field] for field, env_name in PATCH_PIPELINE_ENV_NAMES.items()}
@@ -2952,6 +3001,16 @@ async def patch_pipeline_settings_submit(
             ),
         )
 
+    if save_action != "save-restart":
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                patch_pipeline_success="Đã lưu cấu hình pipeline. Worker chưa được restart.",
+            ),
+        )
+
     worker_restart = await asyncio.to_thread(restart_worker)
     restart_suffix = (
         " Worker đã khởi động lại để áp dụng ngay."
@@ -2967,6 +3026,45 @@ async def patch_pipeline_settings_submit(
             patch_pipeline_success="Đã lưu cấu hình —" + restart_suffix,
         ),
     )
+
+
+@router.get("/api/settings/patch-pipeline/status")
+async def patch_pipeline_status(user: str = Depends(require_login)):
+    """Return the non-secret runtime/configuration status for the Pipeline card."""
+    _require_admin_privilege(user)
+    configured = not _pipeline_validation_error(_patch_pipeline_form_values())
+    state = "ready" if configured else "not_configured"
+    state_label = "Sẵn sàng chạy pipeline" if configured else "Chưa cấu hình đầy đủ"
+    last_build = None
+    try:
+        with db.SessionLocal() as session:
+            action = (
+                session.query(Action)
+                .filter(Action.action_id == "patch_build_and_stage")
+                .order_by(Action.created_at.desc())
+                .first()
+            )
+            if action is not None:
+                status = action.status or ""
+                status_display = {
+                    ActionStatus.PENDING_APPROVAL.value: ("Đang chờ duyệt", "waiting"),
+                    ActionStatus.APPROVED.value: ("Đã duyệt, chờ chạy", "waiting"),
+                    ActionStatus.EXECUTING.value: ("Đang chạy", "running"),
+                    ActionStatus.EXECUTED.value: ("Build thành công", "success"),
+                    ActionStatus.FAILED.value: ("Build thất bại", "error"),
+                    ActionStatus.REJECTED.value: ("Đã từ chối", "error"),
+                }.get(status, (status or "Chưa xác định", "ready"))
+                state_label, state = status_display
+                timestamp = action.created_at.strftime("%d/%m %H:%M") if action.created_at else "—"
+                last_build = f"{timestamp} · {state_label}"
+    except Exception:
+        logger.exception("patch_pipeline_status: failed to read latest pipeline action")
+    return {
+        "configured": configured,
+        "state": state,
+        "state_label": state_label,
+        "last_build": last_build,
+    }
 
 
 @router.post("/settings/dual-ai", response_class=HTMLResponse)
