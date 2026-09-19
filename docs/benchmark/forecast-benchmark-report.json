@@ -1,39 +1,56 @@
 {
-  "format": "NAB-like",
+  "anomaly_events": 3,
+  "anomaly_points": 3,
   "dataset": "ceph-node-cpu-anonymized.csv",
   "dataset_points": 72,
-  "anomaly_events": 3,
-  "history_size": 12,
+  "format": "NAB-like",
+  "history_size": 24,
   "lead_window_seconds": 3600,
+  "threshold": 3.5,
   "results": [
     {
       "detector": "robust_baseline",
+      "evaluated": 72,
+      "predicted_alerts": 3,
+      "true_positives": 3,
+      "false_positives": 0,
+      "false_negatives": 0,
       "precision": 1.0,
       "recall": 1.0,
       "false_positive_rate": 0.0,
       "event_recall": 1.0,
       "mean_detection_delay_seconds": 0.0,
-      "cpu_time_ms": 0.231
+      "cpu_time_ms": 0.175
     },
     {
       "detector": "river_half_space_trees",
+      "evaluated": 72,
+      "predicted_alerts": 0,
+      "true_positives": 0,
+      "false_positives": 0,
+      "false_negatives": 3,
       "precision": null,
       "recall": 0.0,
       "false_positive_rate": 0.0,
       "event_recall": 0.0,
       "mean_detection_delay_seconds": null,
-      "cpu_time_ms": 3252.851
+      "cpu_time_ms": 2747.968
     },
     {
       "detector": "pyod_iforest",
-      "precision": null,
-      "recall": 0.0,
+      "evaluated": 72,
+      "predicted_alerts": 2,
+      "true_positives": 2,
+      "false_positives": 0,
+      "false_negatives": 1,
+      "precision": 1.0,
+      "recall": 0.6666666667,
       "false_positive_rate": 0.0,
-      "event_recall": 0.0,
-      "mean_detection_delay_seconds": null,
-      "cpu_time_ms": 438.058
+      "event_recall": 0.6666666667,
+      "mean_detection_delay_seconds": 0.0,
+      "cpu_time_ms": 2980.658
     }
   ],
-  "interpretation": "The benchmark harness is operational, but this dataset does not justify promoting River or PyOD. Both candidates missed the labeled events with the current thresholds; the robust baseline remains the only passing detector in this fixture.",
+  "interpretation": "The benchmark harness and all three detectors ran successfully. The robust baseline is the only detector that catches all labeled events in this synthetic fixture; River and PyOD remain shadow-only candidates and are not justified for production promotion.",
   "side_effects": "read-only; no database, alert, notification, remediation, or model-state writes"
 }

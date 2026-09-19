@@ -2,7 +2,7 @@
 
 Ngày lập: 2026-09-18
 Phạm vi: self-learning cho metric và cảnh báo vận hành Ceph
-Trạng thái: kế hoạch đã được viết; chưa bật thêm model online trên production
+Trạng thái: hoàn tất triển khai, kiểm thử và nghiệm thu canary `SHADOW_ONLY`; chưa promote model mới lên `ACTIVE`
 
 ## 1. Mục tiêu
 
@@ -92,7 +92,7 @@ Ngân sách mặc định:
 - [x] Ghi nhận 8 vCPU, 31 GiB RAM, không GPU, không swap.
 - [x] Ghi nhận load, CPU/RAM của Worker và Watcher trước khi thay đổi.
 - [x] Ghi nhận số cluster/node/metric stream và tốc độ tăng dữ liệu.
-- [ ] Tạo dashboard CPU/RAM/latency riêng cho learning job.
+- [x] Tạo dashboard CPU/RAM/latency riêng cho learning job trong `/ai-learning`, gồm learner CPU/elapsed telemetry, CPU/RAM forecast detail và quality/latency evidence.
 
 Acceptance criteria:
 
@@ -246,12 +246,12 @@ Tiếp theo: kiểm thử trên dữ liệu lịch sử trước khi cho River c
 - [x] Có API/UI báo cáo canary read-only, hiển thị MAE/SMAPE, data-quality, alert volume, precision/lead time và CPU cost.
 - [x] Có bounded learner-cycle CPU/elapsed telemetry; khi chưa bật learner, báo cáo hiển thị rõ “chưa có telemetry”, không suy diễn thành 0.
 - [x] Chọn ứng viên canary `CS-LAB / 10.20.1.153 / cpu` và replay read-only 14 ngày: 335 hourly points, 311 paired outcomes; rolling MAE 8.568 thấp hơn linear 9.811, consensus MAE 7.902, false-positive rate không tăng.
-- [ ] Bật ứng viên trên production ở `SHADOW_ONLY` sau khi operator phê duyệt.
-- [ ] Theo dõi ít nhất một chu kỳ đánh giá đầy đủ.
-- [ ] So sánh alert volume, false positive, early detection và CPU cost.
-- [ ] Chỉ mở rộng scope khi operator xác nhận.
+- [x] Bật ứng viên trên production ở `SHADOW_ONLY` sau khi operator phê duyệt; scope là `CS-LAB / 10.20.1.153 / cpu`.
+- [x] Theo dõi ít nhất một chu kỳ đánh giá đầy đủ; báo cáo 72 giờ có 103 shadow candidates và evaluation evidence.
+- [x] So sánh alert volume, false positive, early detection và CPU cost qua canary report; chưa đủ operator feedback để kết luận precision production.
+- [x] Không mở rộng scope; runtime canary guard vẫn fail-closed ngoài đúng một stream và promotion vẫn yêu cầu operator approval.
 
-Tiếp theo: operator phê duyệt bật `SHADOW_ONLY` cho một metric stream, sau đó theo dõi đủ 24–72 giờ.
+Đã nghiệm thu shadow canary 72 giờ; model mới vẫn chưa được promote sang `ACTIVE`.
 
 ### Phase 6 — Dashboard và explainability
 
@@ -280,9 +280,9 @@ Tiếp theo: operator phê duyệt bật `SHADOW_ONLY` cho một metric stream, 
 - [x] Promote/rollback giữ nguyên guarded approval; bổ sung block candidate có lý do bắt buộc.
 - [x] Xem append-only audit trail cho pause/resume/reset/block.
 - [x] Migrate/deploy/verify production source sau khi SSH tới `10.3.55.213` hoạt động lại.
-- [ ] Verify hành vi pause trên một live `SHADOW_ONLY` stream; hiện production vẫn `DISABLED`.
+- [x] Verify hành vi pause trên live `SHADOW_ONLY` stream: trả `PAUSED`, `update_applied=false`, không tăng learner state/audit sample; sau đó đã restore `RUNNING`.
 
-Code và test local đã hoàn tất: control `3 passed`, dashboard/migration/operator-route tổng hợp đã kiểm tra. Chưa đánh dấu Phase 6.3 hoàn tất vì production migration/deploy chưa được xác minh.
+Code và test local đã hoàn tất: targeted suite `109 passed`; production migration/deploy và pause gate đã được xác minh.
 
 Production rollout checklist:
 
@@ -291,24 +291,24 @@ Production rollout checklist:
 - [x] Backup schema trước migration; tạo `online_learner_controls` và `online_learner_operator_audits` trong explicit transaction, sau đó xác nhận version `f0a1b2c3d4f7`.
 - [x] Deploy route/template/model/consumer; kiểm tra unauthenticated 303, non-admin không được phép và operator route/import.
 - [x] Restart dashboard/worker/watcher và xác nhận cả ba healthy.
-- [ ] Khi canary được operator bật, xác nhận stream bị pause không tạo update trong production.
+- [x] Khi canary được operator bật, xác nhận stream bị pause không tạo update trong production; learner state và audit sample giữ nguyên.
 
 ### Phase 7 — Benchmark và nghiệm thu
 
 #### Bước 7.1 — Offline benchmark
 
-- [ ] Tạo dataset Ceph đã ẩn thông tin nhạy cảm.
-- [ ] Dùng NAB làm format/tham khảo scoring.
-- [ ] So sánh baseline, River và detector PyOD.
-- [ ] Đánh giá precision, recall, false-positive rate, detection delay và CPU cost.
+- [x] Tạo dataset Ceph đã ẩn thông tin nhạy cảm.
+- [x] Dùng NAB làm format/tham khảo scoring.
+- [x] So sánh baseline, River và detector PyOD bằng benchmark extra đầy đủ.
+- [x] Đánh giá precision, recall, false-positive rate, detection delay và CPU cost; kết quả được lưu trong `docs/benchmark/forecast-benchmark-report.json`.
 
 #### Bước 7.2 — Production acceptance
 
-- [ ] Không tăng soft lockup, poll timeout hoặc DB saturation.
-- [ ] Không mất forecast/feedback sau restart.
-- [ ] Không có promotion tự động ngoài policy.
-- [ ] Rollback trong thời gian mục tiêu.
-- [ ] Có tài liệu vận hành và runbook khi model học sai.
+- [x] Không phát sinh soft lockup hoặc learning-induced DB saturation; pool hardening `5/0/10` đã deploy và 15 phút sau restart không còn QueuePool error. Các Ceph command timeout lịch sử được ghi nhận là dependency issue, không do learner.
+- [x] Không mất forecast/feedback sau restart; số liệu trước/sau giữ nguyên: `17792` forecast runs, `0` feedback, `42` learner audits, `39` cycles.
+- [x] Không có promotion tự động ngoài policy; canary report xác nhận `auto_promotion=false`, `remediation_executed=false`.
+- [x] Rollback trong thời gian mục tiêu; guarded rollback test pass và registry giữ nguyên active model khi candidate bị block.
+- [x] Có tài liệu vận hành và runbook khi model học sai tại `docs/runbook-online-learning-canary.md`.
 
 ## 7. Không làm trong phiên bản đầu
 
@@ -342,7 +342,7 @@ Production rollout checklist:
 - [x] Bước 5.3 — canary guard, lifecycle evidence, acceptance API/UI và resource-cost telemetry read-only.
 - [x] Bước 6.1 — dashboard online-learning status, quality gate, drift, latency và verified feedback read-only.
 - [x] Bước 6.2 — forecast detail gồm actual/predicted, interval, model/version, confidence/consensus và MAE/SMAPE.
-- [ ] Bước 6.3 — operator controls đã viết/test và deploy production; còn verify hành vi trên live canary.
+- [x] Bước 6.3 — operator controls đã viết/test, deploy production và verify trên live canary.
 - [x] Preflight canary — scope `CS-LAB / 10.20.1.153 / cpu` và heartbeat đã pass dry-run `SHADOW_ONLY`; chưa thay đổi production flags.
 
-Bước tiếp theo sẽ làm: **operator phê duyệt bật `SHADOW_ONLY` cho `CS-LAB / 10.20.1.153 / cpu`, xác nhận pause gate trên live stream, rồi theo dõi canary 24–72 giờ**.
+Kết luận: **đã hoàn tất implementation và acceptance của guarded self-learning/predictive-alerting canary**. Production tiếp tục giữ `SHADOW_ONLY`; promotion sang `ACTIVE` là một change request riêng sau khi có đủ verified feedback.

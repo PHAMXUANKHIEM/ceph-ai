@@ -184,19 +184,24 @@ def _pyod(points: list[Point], *, threshold: float, history_size: int) -> list[b
         from pyod.models.iforest import IForest
     except ImportError as exc:
         raise RuntimeError("PyOD is optional; install the benchmark extra to run this detector") from exc
-    predictions: list[bool] = []
-    values = [point.value for point in points]
-    for index, value in enumerate(values):
-        history = values[max(0, index - history_size):index]
-        if len(history) < max(16, history_size // 2):
-            predictions.append(False)
-            continue
-        detector = IForest(contamination=0.05, random_state=42, n_estimators=64)
-        detector.fit([[item] for item in history])
-        # Use PyOD's calibrated binary decision instead of assuming a sign
-        # convention for ``decision_function`` across PyOD releases.
-        predictions.append(bool(detector.predict([[value]])[0] == 1))
-    return predictions
+    try:
+        predictions: list[bool] = []
+        values = [point.value for point in points]
+        for index, value in enumerate(values):
+            history = values[max(0, index - history_size):index]
+            if len(history) < max(16, history_size // 2):
+                predictions.append(False)
+                continue
+            detector = IForest(contamination=0.05, random_state=42, n_estimators=64)
+            detector.fit([[item] for item in history])
+            # Use PyOD's calibrated binary decision instead of assuming a sign
+            # convention for ``decision_function`` across PyOD releases.
+            predictions.append(bool(detector.predict([[value]])[0] == 1))
+        return predictions
+    except Exception as exc:  # pragma: no cover - depends on optional package matrix
+        raise RuntimeError(
+            f"PyOD benchmark unavailable due to dependency/runtime error: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def run_benchmark(points: list[Point], *, history_size: int = 24, threshold: float = 3.5) -> dict[str, object]:

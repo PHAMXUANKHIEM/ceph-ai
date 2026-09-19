@@ -31,6 +31,12 @@ def get_control(session, *, cluster_id: str | None, host: str, metric: str):
     ).one_or_none()
 
 
+def is_paused(session, *, cluster_id: str | None, host: str, metric: str) -> bool:
+    """Return whether exactly one learner stream is currently paused."""
+    control = get_control(session, cluster_id=cluster_id, host=host, metric=metric)
+    return bool(control and control.status == PAUSED)
+
+
 def _audit(session, *, cluster_key: str, host: str, metric: str, action: str,
            actor: str, reason: str, target_id: str | None = None,
            now: datetime | None = None):
