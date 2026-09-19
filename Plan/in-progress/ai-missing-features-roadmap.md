@@ -127,7 +127,7 @@ và nguyên nhân tăng trưởng; không biến cảnh báo ngưỡng hiện t�
   - Đề xuất retain, snapshot, backup, flatten, move-to-trash hoặc resize nhưng chưa
     thực thi trong pha này.
   - Mỗi đề xuất có evidence, expected saving, tác động và TTL.
-- [~] **2.5 Kiểm thử** — đã test attached volume, thiếu lịch sử, zero-I/O stale, snapshot protection, snapshot policy, clone parent/child, partial evidence, bounded route và protection gap (missing/stale/failed backup, restore drill); còn thiếu tenant-isolation integration và dữ liệu clone/backup thực tế trên nhiều Ceph release.
+- [~] **2.5 Kiểm thử** — đã test attached volume, thiếu lịch sử, zero-I/O stale, snapshot protection, snapshot policy, clone parent/child, partial evidence, bounded route, protection gap (missing/stale/failed backup, restore drill) và cluster/tenant isolation giữa default và secondary cluster; còn thiếu dữ liệu clone/backup thực tế trên nhiều Ceph release.
   - Volume đang attach, metadata giả mạo, clone dependency, snapshot được bảo vệ,
     stale cache và tenant isolation.
 
@@ -337,6 +337,7 @@ Một tính năng chỉ được coi là hoàn thành khi đáp ứng đủ:
 
 | Ngày | Hạng mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---|---|---|---|---|
+| 2026-09-19 | Pha 2.5 — cluster isolation test | Một phần | Thêm integration test với cùng pool/image xuất hiện ở default và secondary cluster, xác nhận protection API lọc chính xác `BackupJob`/restore drill theo `cluster_id`, không rò FAILED hoặc gap giữa các cluster. | `pytest tests/test_block_storage_insights.py` (15/15 pass) | Chờ commit |
 | 2026-09-19 | Pha 2.4 — advisory recommendation contract | Một phần | Thêm metadata chuẩn cho mọi block-storage insight: `recommendation_mode=ADVISORY`, `read_only`, `action_id=null`, `expected_saving_bytes`, `impact`, `ttl_seconds=900` và `evidence_expires_at`; UI protection hiển thị advisory/expiry. Không tạo Action và không có mutation path. | `pytest tests/test_block_storage_insights.py tests/test_volume_dependency_ui.py` (16/16 pass) + compileall + `git diff --check` | Chờ commit |
 | 2026-09-19 | Pha 2.3 — backup protection gap | Một phần | Thêm `build_protection_gap_insights` và API `/api/volumes/{pool}/protection-insights`: đối chiếu inventory với `BackupJob`, snapshot policy và restore drill; phát hiện `NO_SUCCESSFUL_BACKUP`, `BACKUP_FAILED`, `BACKUP_STALE`, `RESTORE_DRILL_GAP`, trả evidence gaps rõ ràng. Dashboard Volumes có panel advisory; không tạo Action, không chạy backup/restore và fail closed khi thiếu lịch sử. | `pytest tests/test_block_storage_insights.py tests/test_volume_dependency_ui.py` (16/16 pass) | Chờ commit |
 | 2026-09-19 | Pha 2.2 — persist dependency history | Một phần | Thêm bảng `volume_dependency_snapshots` (migration `f5a6b7c8d9e0`) và collector lưu parent/children/snapshot count/partial errors theo cluster, tự prune quá 30 ngày. API snapshot-clone ghi observation sau mỗi lần quét bounded; không lưu object data/secret và không mutation Ceph. | `pytest tests/test_block_storage_insights.py` (10/10 pass) + compileall; migration suite đã chạy nhưng timeout do chuỗi migration toàn repo dài, không ghi nhận assertion failure | Chờ commit |

@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import dashboard.routes.volumes as volumes_route
 from shared import db as db_module
-from shared.models import Cluster, VolumeDependencySnapshot, VolumeMetric
+from shared.models import BackupJob, Cluster, VolumeDependencySnapshot, VolumeMetric
 from watcher.block_storage_insights import (
     build_inventory_insights,
     build_protection_gap_insights,
@@ -206,6 +206,53 @@ def test_protection_insights_api_is_read_only_and_exposes_coverage(dashboard_cli
     assert payload["summary"]["no_successful_backup"] == 1
     assert payload["summary"]["restore_drill_gap"] == 1
     assert payload["coverage"]["restore_drill_per_volume"] is False
+
+
+def test_protection_insights_does_not_leak_backup_history_between_clusters(dashboard_client, monkeypatch):
+    monkeypatch.setattr(volumes_route, "_rbd_pools_for_request", lambda request: ["images"])
+    monkeypatch.setattr(
+        volumes_route, "_cached_rbd_inventory_with_state",
+        lambda cluster, pool: ([_inventory()], {
+            "stale": False, "refreshing": False, "age_seconds": 1.0,
+            "source": "cache",
+        }),
+    )
+    with db_module.SessionLocal() as session:
+        default = session.query(Cluster).filter_by(is_default=True).one()
+        secondary = Cluster(
+            name="protection-secondary", ceph_mon_nodes="10.2.0.2", ceph_container_name="mon",
+            ssh_user="ceph", ssh_key_path="/key", ceph_exec_mode="cephadm",
+            is_default=False, is_active=True,
+        )
+        session.add(secondary)
+        session.flush()
+        session.add_all([
+            BackupJob(
+                cluster_id=default.id, run_id="run-default-failed", pool="images", image="volume-a",
+                job_type="full", status="FAILED", created_at=datetime.utcnow() - timedelta(hours=1),
+            ),
+            BackupJob(
+                cluster_id=secondary.id, run_id="run-secondary-success", pool="images", image="volume-a",
+                job_type="full", status="SUCCESS", created_at=datetime.utcnow() - timedelta(hours=1),
+            ),
+            BackupJob(
+                cluster_id=secondary.id, run_id="run-secondary-drill", pool="images", image="drill",
+                job_type="restore_drill", status="SUCCESS", created_at=datetime.utcnow() - timedelta(hours=1),
+            ),
+        ])
+        session.commit()
+        secondary_id = secondary.id
+
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    response = dashboard_client.get(f"/api/volumes/images/protection-insights?cluster={secondary_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cluster_id"] == secondary_id
+    kinds = {item["kind"] for item in payload["insights"]}
+    assert "BACKUP_FAILED" not in kinds
+    assert "NO_SUCCESSFUL_BACKUP" not in kinds
+    assert "RESTORE_DRILL_GAP" not in kinds
 
 
 def test_snapshot_clone_insights_api_is_bounded_and_read_only(dashboard_client, monkeypatch):
