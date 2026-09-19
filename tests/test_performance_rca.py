@@ -64,6 +64,12 @@ def test_report_ranks_pool_contention_and_marks_missing_layers(db_session):
     assert result["hot_resources"]["osds"][0]["osd_id"] == 3
     assert result["hot_resources"]["pg_candidates"][0]["pgid"] == "1.2a"
     assert result["hot_resources"]["pg_candidates"][0]["status"] == "candidate_only"
+    assert result["analyses"][0]["investigation_steps"]
+    assert result["analyses"][0]["investigation_steps"][0]["read_only"] is True
+    assert result["analyses"][0]["investigation_steps"][0]["action_id"] is None
+    assert result["ranked_options"][0]["target"] == "rbd/vm-a"
+    assert result["ranked_options"][0]["recommendation_mode"] == "READ_ONLY_REPORT"
+    assert result["ranked_options"][0]["action_id"] is None
 
 
 def test_report_is_cluster_isolated_and_fails_closed_without_history(db_session):
@@ -77,6 +83,7 @@ def test_report_is_cluster_isolated_and_fails_closed_without_history(db_session)
 
     assert result["status"] == "insufficient_evidence"
     assert result["analyses"] == []
+    assert result["ranked_options"] == []
     assert all(item["cluster_id"] == "c1" for item in [result])
 
 
