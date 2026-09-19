@@ -35,6 +35,8 @@ FRESH_HOST_SECONDS = 5 * 60
 HOST_CPU_HIGH_PERCENT = 85.0
 HOST_MEM_HIGH_PERCENT = 90.0
 HOST_DISK_LATENCY_HIGH_MS = 20.0
+NETWORK_PEER_ELEVATED_RATIO = 2.0
+NETWORK_MIN_BYTES_PER_SEC = 1024 * 1024
 PERFORMANCE_RCA_PREFIX = "PERFORMANCE_RCA:"
 
 
@@ -116,6 +118,20 @@ def _host_evidence(
         return []
     evidence = []
     seen_hosts: set[str] = set()
+    peer_samples = []
+    seen_samples: set[int] = set()
+    for sample in host_samples.values():
+        sample_id = id(sample)
+        if sample_id in seen_samples or (_age(now, sample.collected_at) or 0) > FRESH_HOST_SECONDS:
+            continue
+        seen_samples.add(sample_id)
+        peer_samples.append(sample)
+    peer_network_values = [
+        max(0.0, float(sample.network_rx_bytes_per_sec or 0))
+        + max(0.0, float(sample.network_tx_bytes_per_sec or 0))
+        for sample in peer_samples
+    ]
+    peer_network_median = _median(peer_network_values)
     for osd_id in topology.get("acting_osds", []):
         host = host_by_osd.get(osd_id)
         if not host:
@@ -134,6 +150,21 @@ def _host_evidence(
             flags.append("memory_high")
         if sample.disk_latency_ms >= HOST_DISK_LATENCY_HIGH_MS:
             flags.append("disk_latency_high")
+        network_total = max(0.0, float(sample.network_rx_bytes_per_sec or 0)) + max(
+            0.0, float(sample.network_tx_bytes_per_sec or 0),
+        )
+        network_ratio = (
+            round(network_total / peer_network_median, 3)
+            if peer_network_median and peer_network_median > 0
+            else None
+        )
+        network_contention_candidate = bool(
+            network_total >= NETWORK_MIN_BYTES_PER_SEC
+            and network_ratio is not None
+            and network_ratio >= NETWORK_PEER_ELEVATED_RATIO
+        )
+        if network_contention_candidate:
+            flags.append("network_peer_high")
         evidence.append({
             "host": host,
             "sample_host": sample.host,
@@ -146,11 +177,26 @@ def _host_evidence(
             "disk_write_iops": round(sample.disk_write_iops, 1),
             "network_rx_bytes_per_sec": round(sample.network_rx_bytes_per_sec, 1),
             "network_tx_bytes_per_sec": round(sample.network_tx_bytes_per_sec, 1),
+            "network_total_bytes_per_sec": round(network_total, 1),
+            "network_peer_median_bytes_per_sec": peer_network_median,
+            "network_ratio": network_ratio,
+            "network_contention_candidate": network_contention_candidate,
             "flags": flags,
             "bottleneck": bool(flags),
             "observed_at": _iso(sample.collected_at),
         })
     return evidence
+
+
+def _recovery_summary(live_signals: dict | None) -> dict:
+    recovery = (live_signals or {}).get("recovery")
+    if not isinstance(recovery, dict):
+        return {
+            "status": "not_available",
+            "reason": "Chưa có ceph -s pgmap recovery/backfill evidence.",
+            "source": "ceph_status_pgmap",
+        }
+    return recovery
 
 
 def _investigation_steps(hypothesis: str) -> list[dict]:
@@ -596,7 +642,14 @@ def build_report(
     analyses = analyses[:MAX_VOLUME_REPORTS]
     hot_resources = _hot_resource_summary(latest_map, analyses, osd_summary)
     ranked_options = _ranked_options(analyses)
+    recovery = _recovery_summary(live_signals)
     host_join_count = sum(1 for item in analyses if item.get("host_evidence"))
+    network_evidence = [
+        host
+        for analysis in analyses
+        for host in analysis.get("host_evidence", [])
+        if host.get("network_total_bytes_per_sec") is not None
+    ]
 
     chain, distribution_citation = _distribution_chain(session, cluster_id, now)
     if topology_by_key:
@@ -667,6 +720,16 @@ def build_report(
             "source": "host_metric_samples",
             "freshness": _freshness(now, max(row.collected_at for row in host_rows), FRESH_HOST_SECONDS),
         }
+    chain["recovery"] = {
+        "layer": "recovery",
+        "status": recovery.get("status", "not_available"),
+        "detail": recovery.get(
+            "detail",
+            recovery.get("reason", "Chưa có recovery/backfill evidence."),
+        ),
+        "source": recovery.get("source", "ceph_status_pgmap"),
+        "freshness": recovery.get("freshness"),
+    }
 
     citations = [{
         "source_id": "volume_metrics",
@@ -706,12 +769,18 @@ def build_report(
         gaps.append("Có host metrics nhưng tất cả sample đã stale quá 5 phút; không dùng để suy luận.")
     elif not host_join_count:
         gaps.append("Có host metrics nhưng chưa join được với acting OSD của volume nào trong cửa sổ.")
-    gaps.append(
-        "Chưa có recovery/backfill/slow-ops evidence được thu thập cùng thời điểm; không dùng để kết luận tải nền."
-    )
-    gaps.append(
-        "Chưa có network contention evidence theo OSD/host; network counters hiện tại không đủ chứng minh nghẽn mạng."
-    )
+    if recovery.get("status") == "not_available":
+        gaps.append(
+            "Chưa có recovery/backfill/slow-ops evidence được thu thập cùng thời điểm; không dùng để kết luận tải nền."
+        )
+    if not network_evidence:
+        gaps.append(
+            "Chưa có network contention evidence theo OSD/host; network counters hiện tại không đủ chứng minh nghẽn mạng."
+        )
+    else:
+        gaps.append(
+            "Network evidence hiện chỉ là peer-relative host counters; chưa có interface capacity để chứng minh nghẽn tuyệt đối."
+        )
     if stale_distribution_rows:
         gaps.append(
             f"Có {stale_distribution_rows} OSD→host mapping stale/thiếu host; không dùng cho host correlation."
@@ -726,7 +795,8 @@ def build_report(
         "analyses": analyses,
         "hot_resources": hot_resources,
         "ranked_options": ranked_options,
-        "chain": [chain[layer] for layer in ("volume", "pool", "pg", "osd", "disk", "host")],
+        "recovery": recovery,
+        "chain": [chain[layer] for layer in ("volume", "pool", "pg", "osd", "disk", "host", "recovery")],
         "evidence_gaps": gaps,
         "_citations": citations,
     }
@@ -775,18 +845,75 @@ def collect_live_osd_signals(cluster) -> dict:
                     "ratio": round(ratio, 3),
                 })
         outliers.sort(key=lambda item: item["ratio"], reverse=True)
+        recovery = _collect_recovery_evidence(connection, captured_at)
         return {
             "status": "ready",
             "measured_osds": len(values),
             "median_commit_latency_ms": round(median, 3),
             "outliers": outliers,
             "freshness": _freshness(captured_at, captured_at, 300),
+            "recovery": recovery,
         }
     except (CephQueryError, ValueError, KeyError, TypeError, AttributeError) as exc:
         logger.info("performance RCA live OSD evidence unavailable: %s", exc)
         return {
             "status": "unavailable",
             "reason": "Không lấy được ceph osd perf ở thời điểm report.",
+            "freshness": _freshness(captured_at, captured_at, 300),
+        }
+
+
+def _collect_recovery_evidence(connection: tuple, captured_at: datetime) -> dict:
+    """Read recovery/backfill state from the cluster status, fail-closed."""
+    try:
+        _stdout, payload = ceph_client.run_ceph_json_command_with(*connection, "ceph -s")
+        pgmap = payload.get("pgmap") if isinstance(payload, dict) else None
+        if not isinstance(pgmap, dict):
+            raise ValueError("ceph -s thiếu pgmap")
+        numeric_fields = (
+            "recovering_bytes_per_sec",
+            "recovering_objects_per_sec",
+            "num_objects_degraded",
+            "num_objects_misplaced",
+        )
+        values = {
+            field: float(pgmap[field])
+            for field in numeric_fields
+            if isinstance(pgmap.get(field), (int, float))
+        }
+        state_counts = {}
+        for item in pgmap.get("pgs_by_state", []) or []:
+            if not isinstance(item, dict):
+                continue
+            state = item.get("state_name") or item.get("state")
+            count = item.get("count")
+            if isinstance(state, str) and isinstance(count, int):
+                state_counts[state] = count
+        active_states = {
+            name: count for name, count in state_counts.items()
+            if any(token in name.lower() for token in ("recover", "backfill", "degraded", "misplaced"))
+            and count > 0
+        }
+        active = bool(active_states) or any(value > 0 for value in values.values())
+        return {
+            "status": "active" if active else "idle",
+            "active": active,
+            "state_counts": active_states,
+            **{key: round(value, 3) for key, value in values.items()},
+            "detail": (
+                f"Recovery/backfill state đang active: {', '.join(f'{key}={value}' for key, value in active_states.items())}."
+                if active_states
+                else "ceph -s ghi nhận recovery/backfill counters đang bằng 0."
+            ),
+            "source": "ceph_status_pgmap",
+            "freshness": _freshness(captured_at, captured_at, 300),
+        }
+    except (CephQueryError, ValueError, TypeError, AttributeError) as exc:
+        logger.info("performance RCA recovery evidence unavailable: %s", exc)
+        return {
+            "status": "not_available",
+            "reason": "Không lấy được ceph -s pgmap recovery/backfill evidence.",
+            "source": "ceph_status_pgmap",
             "freshness": _freshness(captured_at, captured_at, 300),
         }
 
