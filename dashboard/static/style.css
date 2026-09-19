@@ -1746,6 +1746,10 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .chat-evidence-sources strong { color: #75df99; font-size: 11px; }
 .chat-evidence-sources ul { display: grid; gap: 5px; margin: 7px 0 0; padding-left: 16px; }
 .chat-evidence-sources li { color: #9fb2c8; font: 10px/1.4 var(--font-mono); overflow-wrap: anywhere; }
+.chat-nl-evidence-detail { margin-top: 7px; max-width: 100%; color: var(--text-faint); font-size: 10px; }
+.chat-nl-evidence-detail summary { cursor: pointer; color: #8fb9ff; }
+.chat-nl-evidence-body { display: grid; gap: 4px; margin-top: 5px; padding: 7px 8px; border-left: 2px solid #3f7efe; background: rgba(63,126,254,.08); overflow-wrap: anywhere; }
+.chat-nl-evidence-body strong { color: var(--text-muted); }
 
 .chat-msg { display: flex; flex-direction: column; }
 .chat-msg-user { align-self: flex-end; align-items: flex-end; max-width: 80%; }
@@ -1768,6 +1772,16 @@ tbody tr:hover td { background: var(--bg-surface-2); }
   border: 1px solid var(--border-strong);
   border-radius: 12px 12px 12px 2px;
 }
+.chat-nl-observed, .chat-nl-inferred, .chat-nl-recommended {
+  margin: 8px 0 4px;
+  padding: 4px 7px;
+  border-left: 3px solid;
+  border-radius: 3px;
+  font-weight: 700;
+}
+.chat-nl-observed { border-color: #4ade80; background: rgba(74,222,128,.08); color: #bbf7d0; }
+.chat-nl-inferred { border-color: #fbbf24; background: rgba(251,191,36,.08); color: #fde68a; }
+.chat-nl-recommended { border-color: #60a5fa; background: rgba(96,165,250,.08); color: #bfdbfe; }
 .chat-delegated-progress {
   align-self: flex-start;
   max-width: 85%;
@@ -6782,6 +6796,19 @@ body:not(.dashboard-page-shell) .chat-fab,
   }
 }
 
+
+/* Keep the inline Chat panel inside the dashboard grid so it cannot cover
+   KPI/action columns or widen the page when evidence contains a large table. */
+.dashboard-page-shell .chat-panel-inline {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.dashboard-page-shell .chat-panel-inline .chat-messages,
+.dashboard-page-shell .chat-panel-inline .chat-context-panel {
+  min-width: 0;
+  max-width: 100%;
+}
 
 /* Trash table final layout overrides. */
 .trash-page .trash-table-wrap { overflow-x: auto; overflow-y: visible; }

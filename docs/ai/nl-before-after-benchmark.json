@@ -1,0 +1,46 @@
+{
+  "base_commit": "55a510cd",
+  "case_count": 100,
+  "delta": {
+    "latency_p50_ms": -0.0379,
+    "latency_p95_ms": -0.0606,
+    "output_tokens_estimated": 1990,
+    "reference_cost_usd": 0.004975
+  },
+  "fixture": "tests/fixtures/nl_queries_vi.yaml",
+  "new": {
+    "clarification_accuracy": 1.0,
+    "entity_accuracy": 1.0,
+    "input_tokens_estimated": 681,
+    "intent_accuracy": 1.0,
+    "language_accuracy": 1.0,
+    "latency_ms_p50": 0.0237,
+    "latency_ms_p95": 0.0443,
+    "output_tokens_estimated": 12040,
+    "reference_cost_usd": 0.0303043,
+    "reference_input_usd_per_million": 0.3,
+    "reference_model": "gc/gemini-2.5-flash",
+    "reference_output_usd_per_million": 2.5,
+    "reference_provider": "9router",
+    "samples": 2500
+  },
+  "old": {
+    "clarification_accuracy": 0.89,
+    "entity_accuracy": 0.77,
+    "input_tokens_estimated": 681,
+    "intent_accuracy": 0.83,
+    "language_accuracy": 0.54,
+    "latency_ms_p50": 0.0616,
+    "latency_ms_p95": 0.1049,
+    "output_tokens_estimated": 10050,
+    "reference_cost_usd": 0.0253293,
+    "reference_input_usd_per_million": 0.3,
+    "reference_model": "gc/gemini-2.5-flash",
+    "reference_output_usd_per_million": 2.5,
+    "reference_provider": "9router",
+    "samples": 2500
+  },
+  "samples_per_case": 25,
+  "schema_version": "nl-before-after-v1",
+  "scope": "parser_and_normalizer_only; no provider, SSH, Ceph command, database or mutation executor"
+}

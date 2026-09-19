@@ -13,20 +13,50 @@ from .retrieval import (
     RetrievalResult,
     build_default_knowledge_store,
 )
+from .rca import (
+    RcaReport,
+    build_read_only_rca,
+    render_read_only_rca,
+    validate_citation_ids,
+    validate_read_only_rca,
+)
+from .conversation import (
+    NaturalLanguageConversationState,
+    conversation_state_from_intent,
+    resolve_natural_language_turn,
+)
+from .action_planner import ActionPlanningError, ActionPreview, validate_action_preview
+from .answer import (
+    NaturalLanguageAnswer,
+    NaturalLanguageAnswerError,
+    parse_provider_answer,
+    render_provider_answer,
+    validate_provider_answer,
+)
+from .incident_bridge import IncidentCandidateSignal, build_incident_candidate_signals
+from .nl_metrics import get_natural_language_metrics, record_natural_language_metric
+from .mcp_adapter import McpAdapterError, ReadOnlyMcpAdapter
 from .tool_registry import FIXED_READ_ONLY_TOOL_REGISTRY, ToolSpec
 
 __all__ = [
     "FIXED_READ_ONLY_TOOL_REGISTRY",
     "ANALYZERS",
+    "ActionPlanningError",
+    "ActionPreview",
+    "NaturalLanguageAnswer",
+    "NaturalLanguageAnswerError",
+    "IncidentCandidateSignal",
     "Finding",
     "KnowledgeCitation",
     "KnowledgeIngestError",
     "KnowledgeStore",
+    "NaturalLanguageConversationState",
     "NaturalLanguageIntent",
     "PlannedToolCall",
     "QueryExecutionResult",
     "QueryPlan",
     "RetrievalResult",
+    "RcaReport",
     "SnapshotQueryRunner",
     "TimeRange",
     "ToolEvidence",
@@ -35,6 +65,21 @@ __all__ = [
     "analyze_evidence",
     "analyze_evidence_bundle",
     "build_default_knowledge_store",
+    "build_read_only_rca",
+    "render_read_only_rca",
+    "conversation_state_from_intent",
     "plan_query",
     "route_natural_language",
+    "resolve_natural_language_turn",
+    "validate_citation_ids",
+    "validate_read_only_rca",
+    "validate_action_preview",
+    "parse_provider_answer",
+    "render_provider_answer",
+    "validate_provider_answer",
+    "build_incident_candidate_signals",
+    "get_natural_language_metrics",
+    "record_natural_language_metric",
+    "McpAdapterError",
+    "ReadOnlyMcpAdapter",
 ]

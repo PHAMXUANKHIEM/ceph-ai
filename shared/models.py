@@ -916,6 +916,10 @@ class ChatMessage(Base):
     # live API response) so it still renders after a page reload, same as
     # every other field on this row.
     tools_used: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON-encoded provider-independent natural-language context. This stores
+    # only parsed/safe metadata (never the raw prompt), so follow-up routing can
+    # audit the cluster/resource/time scope used for this message.
+    nl_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 

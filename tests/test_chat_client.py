@@ -127,6 +127,51 @@ def _install_fake_client(monkeypatch, responses):
     monkeypatch.setattr(chat_client, "_get_client", lambda: FakeClient())
 
 
+def test_natural_language_rollout_evidence_is_redacted_and_reconstructable(monkeypatch):
+    class Cluster:
+        id = "canary-cluster"
+
+    monkeypatch.setattr(chat_client.auth, "is_admin_user", lambda actor: False)
+    monkeypatch.setattr(chat_client.settings, "ai_natural_language_admin_only", False)
+    monkeypatch.setattr(chat_client.settings, "ai_natural_language_query_planner_enabled", True)
+    monkeypatch.setattr(chat_client.settings, "ai_natural_language_snapshot_runner_enabled", True)
+    monkeypatch.setattr(chat_client.settings, "ai_natural_language_rag_enabled", False)
+    monkeypatch.setattr(chat_client.settings, "ai_natural_language_fast_path_enabled", False)
+    monkeypatch.setattr(chat_client.settings, "ai_natural_language_structured_output_enabled", True)
+    monkeypatch.setattr(chat_client.settings, "ai_natural_language_snapshot_refresh_enabled", False)
+    monkeypatch.setattr(chat_client.settings, "ai_natural_language_mcp_enabled", False)
+
+    evidence = chat_client._natural_language_rollout_evidence(
+        "operator", Cluster(), allowed=True
+    )
+
+    assert evidence == {
+        "scope": "canary",
+        "rollout_allowed": True,
+        "admin_only": False,
+        "feature_flags": {
+            "query_planner": True,
+            "snapshot_runner": True,
+            "rag": False,
+            "fast_path": False,
+            "structured_output": True,
+            "snapshot_refresh": False,
+            "mcp": False,
+        },
+    }
+    assert "allowlist" not in json.dumps(evidence).lower()
+    assert "prompt" not in json.dumps(evidence).lower()
+
+
+def test_natural_language_rollout_evidence_marks_non_allowlisted_turn_shadow(monkeypatch):
+    monkeypatch.setattr(chat_client.auth, "is_admin_user", lambda actor: False)
+    evidence = chat_client._natural_language_rollout_evidence(
+        "operator", type("Cluster", (), {"id": "other-cluster"})(), allowed=False
+    )
+    assert evidence["scope"] == "shadow"
+    assert evidence["rollout_allowed"] is False
+
+
 # --- _validate_proposal -----------------------------------------------------
 
 
@@ -432,11 +477,14 @@ def test_run_chat_turn_rejects_non_ceph_question_without_calling_ai(monkeypatch)
 
     result = asyncio.run(chat_client.run_chat_turn([], "Thời tiết hôm nay thế nào?", "admin"))
 
+    nl_context = result.pop("nl_context")
     assert result == {
         "reply_text": chat_client.with_romantic_address(chat_client.OUT_OF_SCOPE_MESSAGE, "AI"),
         "proposal": None,
         "tools_used": [],
     }
+    assert nl_context["schema_version"] == "nl-context-v1"
+    assert nl_context["rollout"]["scope"] == "admin"
 
 
 def test_run_chat_turn_unrestricted_user_can_ask_non_ceph_question(monkeypatch):
@@ -512,11 +560,15 @@ def test_run_chat_turn_plain_text_answer(monkeypatch):
 
     result = asyncio.run(chat_client.run_chat_turn([], "cluster có khoẻ không?", "admin"))
 
+    nl_context = result.pop("nl_context")
     assert result == {
         "reply_text": "Mình yêu ơi, em là AI. Cluster đang HEALTH_OK.",
         "proposal": None,
         "tools_used": [],
     }
+    assert nl_context["intent"] == "unknown_or_ambiguous"
+    assert nl_context["rollout"]["scope"] == "admin"
+    assert nl_context["telemetry"]["intent_latency_ms"] >= 0
 
 
 def test_operations_evidence_tools_are_exposed_to_all_authenticated_users():

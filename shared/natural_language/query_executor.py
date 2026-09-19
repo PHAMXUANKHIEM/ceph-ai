@@ -50,6 +50,7 @@ class QueryExecutionResult:
     partial: bool = False
     stale: bool | None = None
     refreshing: bool = False
+    findings: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +63,7 @@ class QueryExecutionResult:
             "partial": self.partial,
             "stale": self.stale,
             "refreshing": self.refreshing,
+            "findings": [dict(item) for item in self.findings],
         }
 
 
@@ -69,13 +71,51 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _summarize_large_collections(value: Any, *, max_items: int = 20) -> tuple[Any, bool]:
+    """Replace oversized list fields with bounded count/sample summaries."""
+
+    def summarize(items: list[Any]) -> dict[str, Any]:
+        sample = items[:max_items]
+        summary: dict[str, Any] = {
+            "count": len(items),
+            "sample_count": len(sample),
+        }
+        if all(isinstance(item, dict) for item in sample):
+            for field in ("status", "state", "type", "severity", "host"):
+                counts: dict[str, int] = {}
+                for item in sample:
+                    key = str(item.get(field) or "")
+                    if key:
+                        counts[key] = counts.get(key, 0) + 1
+                if counts:
+                    summary[f"{field}_counts_in_sample"] = counts
+        return {"summary": summary, "sample": sample}
+
+    if isinstance(value, list) and len(value) > max_items:
+        return summarize(value), True
+    if not isinstance(value, dict):
+        return value, False
+    result = dict(value)
+    changed = False
+    summaries: dict[str, Any] = {}
+    for key, item in value.items():
+        if isinstance(item, list) and len(item) > max_items:
+            result[key] = summarize(item)
+            summaries[str(key)] = result[key]["summary"]
+            changed = True
+    if changed:
+        result["_collection_summaries"] = summaries
+    return result, changed
+
+
 def _bounded_result(value: Any, max_bytes: int) -> tuple[Any, bool]:
+    value, summarized = _summarize_large_collections(value)
     try:
         encoded = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
     except (TypeError, ValueError):
         encoded = json.dumps(str(value), ensure_ascii=False)
     if len(encoded.encode("utf-8")) <= max_bytes:
-        return value, False
+        return value, summarized
     preview = encoded.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
     return {"truncated": True, "preview": preview}, True
 
@@ -91,6 +131,66 @@ def _extract_metadata(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict) or not isinstance(value.get("meta"), dict):
         return None
     return dict(value["meta"])
+
+
+_TOOL_TO_ANALYZER = {
+    "get_cluster_status": "health",
+    "get_health_detail": "health",
+    "get_osd_stat": "osd_health",
+    "get_osd_tree": "crush_analysis",
+    "get_pg_stat": "pg_health",
+    "get_pool_list": "pool_capacity",
+    "get_mon_stat": "mon_health",
+}
+
+
+def _analysis_snapshot(tool_name: str, result: Any) -> dict[str, Any] | None:
+    """Adapt fixed-tool evidence to the deterministic analyzer contract."""
+
+    if not isinstance(result, dict) or not isinstance(result.get("meta"), dict):
+        return None
+    data = result.get("data")
+    analyzer = _TOOL_TO_ANALYZER.get(tool_name)
+    if analyzer == "pool_capacity" and isinstance(data, list):
+        data = {"pools": data}
+    elif analyzer == "pg_health" and isinstance(data, list):
+        data = {"pgs": data}
+    if not isinstance(data, dict):
+        return None
+    return {"data": data, "meta": dict(result["meta"])}
+
+
+def _deterministic_findings(
+    evidence: tuple[ToolEvidence, ...],
+    *,
+    cluster_id: str | None,
+) -> tuple[dict[str, Any], ...]:
+    """Analyze collected evidence without calling an LLM or command runner."""
+
+    from .analyzers import analyze_evidence_bundle
+
+    snapshots: dict[str, dict[str, Any]] = {}
+    for item in evidence:
+        if item.status != "ok":
+            continue
+        analyzer = _TOOL_TO_ANALYZER.get(item.tool_name)
+        snapshot = _analysis_snapshot(item.tool_name, item.result)
+        if analyzer and snapshot is not None:
+            # Prefer health detail over the summary when both are present.
+            if (
+                analyzer not in snapshots
+                or (
+                    item.tool_name == "get_health_detail"
+                    and bool(snapshot["meta"].get("available"))
+                )
+            ):
+                snapshots[analyzer] = snapshot
+    if not snapshots:
+        return ()
+    findings = analyze_evidence_bundle(
+        snapshots, cluster_id=cluster_id, analyzers=tuple(snapshots)
+    )
+    return tuple(item.to_dict() for item in findings)
 
 
 async def _invoke_runner(
@@ -191,6 +291,7 @@ async def execute_query_plan(
         remaining_bytes -= consumed
         ordered_list.append(replace(item, result=bounded, truncated=item.truncated or truncated))
     ordered = tuple(ordered_list)
+    findings = _deterministic_findings(ordered_raw, cluster_id=plan.cluster_id)
     errors = tuple(
         {"tool": item.tool_name, "kind": item.status, "message": item.error or item.status}
         for item in ordered if item.status != "ok"
@@ -215,5 +316,5 @@ async def execute_query_plan(
         plan_version=plan.plan_version, status=status, cluster_id=plan.cluster_id,
         evidence=ordered, errors=errors + metadata_errors,
         duration_ms=int((time.monotonic() - started) * 1000), partial=status == "partial" or bool(metadata_errors),
-        stale=stale if metadata else None, refreshing=refreshing,
+        stale=stale if metadata else None, refreshing=refreshing, findings=findings,
     )

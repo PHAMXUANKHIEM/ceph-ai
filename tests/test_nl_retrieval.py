@@ -64,6 +64,27 @@ def test_version_mismatch_fails_closed():
     assert result.hits == ()
 
 
+def test_index_manifest_has_version_checksum_and_rebuild_signal():
+    store = KnowledgeStore()
+    store.ingest_text(
+        document_id="runbook", source="docs/runbook.md", title="Runbook",
+        content="# OSD\nCheck OSD_DOWN.", components=("osd",),
+    )
+
+    manifest = store.manifest()
+
+    assert manifest["index_format_version"] == "lexical-v1"
+    assert manifest["index_revision"] == store.index_revision
+    assert manifest["chunk_count"] == 1
+    assert store.manifest_is_current(manifest)
+
+    store.ingest_text(
+        document_id="runbook", source="docs/runbook.md", title="Runbook",
+        content="# OSD\nCheck OSD_DOWN and OSD_OUT.", components=("osd",),
+    )
+    assert store.manifest_is_current(manifest) is False
+
+
 def test_component_and_language_filters_are_applied():
     result = _store().retrieve("PG degraded", ceph_version="reef", component="pg", language="en")
 

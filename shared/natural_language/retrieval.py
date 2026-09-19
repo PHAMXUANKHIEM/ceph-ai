@@ -12,7 +12,7 @@ import re
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 class KnowledgeIngestError(ValueError):
@@ -31,6 +31,7 @@ _MAJOR_TO_CODENAME = {
     "14": "nautilus", "15": "octopus", "16": "pacific", "17": "quincy",
     "18": "reef", "19": "squid", "20": "tentacle",
 }
+INDEX_FORMAT_VERSION = "lexical-v1"
 _SECRET_PATTERNS = (
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"(?i)\b(?:password|passwd|secret|api[_ -]?key|access[_ -]?key|bot[_ -]?token)\s*[:=]\s*[^\s`]+"),
@@ -166,6 +167,28 @@ class KnowledgeStore:
     @property
     def index_revision(self) -> str:
         return _revision(*sorted(chunk.chunk_id + chunk.revision for chunk in self._chunks.values()))
+
+    def manifest(self) -> dict[str, Any]:
+        """Return a rebuild/audit manifest for the in-process lexical index."""
+
+        return {
+            "index_format_version": INDEX_FORMAT_VERSION,
+            "index_revision": self.index_revision,
+            "chunk_count": len(self._chunks),
+            "documents": [
+                {"document_id": document_id, "revision": revision}
+                for document_id, revision in sorted(self._documents.items())
+            ],
+        }
+
+    def manifest_is_current(self, manifest: Mapping[str, Any] | None) -> bool:
+        """Check whether a previously persisted manifest matches this index."""
+
+        return bool(
+            isinstance(manifest, Mapping)
+            and manifest.get("index_format_version") == INDEX_FORMAT_VERSION
+            and manifest.get("index_revision") == self.index_revision
+        )
 
     def ingest_text(
         self,

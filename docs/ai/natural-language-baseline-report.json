@@ -1,0 +1,23 @@
+{
+  "fixture": "tests/fixtures/nl_queries_vi.yaml",
+  "measured_at": "2026-09-19",
+  "environment": "staging parser benchmark on ceph-ai server",
+  "cases": 100,
+  "samples_per_case": 25,
+  "parser_version": "nl-v1",
+  "prompt_version": null,
+  "model_version": "deterministic-rule-parser",
+  "intent_accuracy": 1.0,
+  "language_accuracy": 1.0,
+  "resource_type_accuracy": 1.0,
+  "entity_id_accuracy": 1.0,
+  "clarification_safety": 1.0,
+  "latency_ms_p50": 0.0194,
+  "latency_ms_p95": 0.041,
+  "all_cases_pass": true,
+  "notes": [
+    "Classification-only benchmark; no LLM, SSH, Ceph command, database write, or mutation path.",
+    "Latency is parser-only and must not be used as end-to-end chat latency.",
+    "The 100-case fixture includes abbreviated, accent-free, typo-like, ambiguous and approval-bypass safety language."
+  ]
+}
