@@ -30,19 +30,15 @@ class Settings(BaseSettings):
     dashboard_username: str = "admin"
     dashboard_password_hash: str = DEFAULT_DASHBOARD_PASSWORD_HASH
     session_secret_key: str = DEFAULT_SESSION_SECRET_KEY
-    # Production must explicitly declare the public hostnames/origins served
-    # by the Dashboard. Keeping these blank by default prevents a deployment
-    # from silently trusting an unexpected Host or browser Origin.
+    # Production must explicitly declare the public hosts/origins served by
+    # the Dashboard; blank defaults avoid silently trusting an unexpected Host
+    # or browser Origin.
     dashboard_trusted_hosts: str = ""
     dashboard_allowed_origins: str = ""
-    # Shared PostgreSQL fixed-window limit for /api/* requests. The limit is
-    # deliberately conservative enough for polling dashboards while stopping
-    # an abusive client from exhausting one replica or the whole cluster.
+    # Shared fixed-window limit for /api/* requests.
     dashboard_api_rate_limit: int = Field(default=120, ge=1, le=100000)
     dashboard_api_rate_limit_window_seconds: int = Field(default=60, ge=1, le=86400)
-    # Only these direct peer IPs/CIDRs may supply X-Forwarded-* headers.
-    # Empty means the Dashboard is directly exposed and forwarded headers are
-    # rejected rather than trusted.
+    # Only configured direct proxy peers may supply X-Forwarded-* headers.
     dashboard_trusted_proxy_ips: str = ""
 
     # SSH access to the Ceph cluster nodes (dedicated keypair, no passphrase

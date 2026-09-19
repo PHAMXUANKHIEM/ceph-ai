@@ -59,6 +59,11 @@ def test_report_ranks_pool_contention_and_marks_missing_layers(db_session):
     assert result["chain"][2]["status"] == "mapped"
     assert result["chain"][4]["status"] == "proxy_only"  # OSD latency proxy, not diskstats
     assert "latest snapshot" in " ".join(result["evidence_gaps"])
+    assert result["hot_resources"]["volumes"][0]["image"] == "vm-a"
+    assert result["hot_resources"]["pools"][0]["pool"] == "rbd"
+    assert result["hot_resources"]["osds"][0]["osd_id"] == 3
+    assert result["hot_resources"]["pg_candidates"][0]["pgid"] == "1.2a"
+    assert result["hot_resources"]["pg_candidates"][0]["status"] == "candidate_only"
 
 
 def test_report_is_cluster_isolated_and_fails_closed_without_history(db_session):

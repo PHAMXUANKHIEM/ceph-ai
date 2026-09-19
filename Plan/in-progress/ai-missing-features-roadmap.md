@@ -136,20 +136,20 @@ và nguyên nhân tăng trưởng; không biến cảnh báo ngưỡng hiện t�
 
 ### Pha 3 — AI Performance Diagnosis và Recommendation Simulation — P1
 
-- [ ] **3.1 Correlation engine**
+- [~] **3.1 Correlation engine** — đã có read-only Performance RCA theo cửa sổ thời gian, nối volume metrics với pool peer, PG/acting OSD mapping, live OSD perf và host metrics khi còn fresh; fail-closed cho mapping/host evidence stale. Còn thiếu recovery/backfill, network contention và correlation lịch sử acting-set.
   - Tương quan volume → pool → PG → OSD → disk → host/network trong cùng cửa sổ thời gian.
   - Phân biệt consumer bottleneck, contention, recovery/backfill, capacity pressure,
     slow disk và network latency.
-- [ ] **3.2 Hot resource detection**
+- [~] **3.2 Hot resource detection** — báo cáo hiện tách hot volume, hot pool, OSD latency outlier và PG candidate từ mapping, kèm confidence/top signals; PG vẫn được gắn rõ `candidate_only` vì chưa có PG latency/queue metric trực tiếp. Còn thiếu baseline động theo PG/OSD và so sánh trước/sau sự kiện.
   - Phát hiện hot volume, hot pool, hot PG/OSD và phân bố lệch theo baseline động.
   - Có confidence, top contributing signals và so sánh trước/sau sự kiện.
-- [ ] **3.3 Recommendation simulation**
+- [~] **3.3 Recommendation simulation** — thêm deterministic read-only `POST /api/performance-rca/simulate` và form Preview trên Performance RCA cho resize, QoS, flatten, retention, placement, replica/EC và PG change. Kết quả có expected benefit, rebalance estimate, failure-domain risk, TTL/evidence gaps; không tạo Action/command. Còn thiếu recovery throughput thật để ước lượng duration và simulation topology đầy đủ từ CRUSH/autoscaler.
   - Mô phỏng resize, QoS, flatten, retention, placement, replica/EC và PG change.
   - Tính expected benefit, rebalance volume, thời gian ước lượng và failure-domain risk.
-- [ ] **3.4 Read-only report**
+- [~] **3.4 Read-only report** — đã có `/performance-rca` và `/api/performance-rca`, hiển thị hypothesis, evidence chain, freshness, evidence gaps và hot resources; không tạo Action hay thay đổi PG/CRUSH/replica/EC.
   - Sinh báo cáo nguyên nhân, bằng chứng, bước kiểm tra và phương án xếp hạng.
   - Không tự đổi PG/CRUSH/replica/EC trong pha này.
-- [ ] **3.5 Kiểm thử**
+- [~] **3.5 Kiểm thử** — đã có test pool contention, cluster isolation, stale mapping/host, host disk signal, bounded correlation và hot-resource ranking; còn thiếu recovery/mất node/network và benchmark false-positive.
   - Workload tổng hợp có bottleneck đã biết, dữ liệu metric lệch thời gian, mất node,
     recovery đang chạy và false-positive benchmark.
 
@@ -337,6 +337,8 @@ Một tính năng chỉ được coi là hoàn thành khi đáp ứng đủ:
 
 | Ngày | Hạng mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---|---|---|---|---|
+| 2026-09-19 | Pha 3.3 — recommendation simulation | Một phần | Thêm `watcher/performance_simulation.py`, API `POST /api/performance-rca/simulate` và form Preview; scenario được allowlist/validate, evidence quá cũ hoặc thiếu trả `INSUFFICIENT_EVIDENCE`. Resize/QoS/flatten/retention/placement/replica-EC/PG change chỉ trả ước lượng và failure-domain risk, không tạo Action hay Ceph command. | `pytest tests/test_performance_simulation.py tests/test_performance_rca.py tests/test_performance_rca_monitor.py` (16/16 pass) + compileall | Chờ commit |
+| 2026-09-19 | Pha 3.1/3.2 — performance correlation và hot resources | Một phần | Mở rộng `watcher/performance_rca.py` để xếp hạng hot volume/pool/OSD và PG candidate dựa trên evidence hiện có; thêm UI Hot resources và ghi rõ PG candidate không phải PG metric trực tiếp. Không tạo Action, không mutation. | `pytest tests/test_performance_rca.py tests/test_performance_rca_monitor.py` (11/11 pass) + compileall | Chờ commit |
 | 2026-09-19 | Pha 2.5 — cluster isolation test | Một phần | Thêm integration test với cùng pool/image xuất hiện ở default và secondary cluster, xác nhận protection API lọc chính xác `BackupJob`/restore drill theo `cluster_id`, không rò FAILED hoặc gap giữa các cluster. | `pytest tests/test_block_storage_insights.py` (15/15 pass) | Chờ commit |
 | 2026-09-19 | Pha 2.4 — advisory recommendation contract | Một phần | Thêm metadata chuẩn cho mọi block-storage insight: `recommendation_mode=ADVISORY`, `read_only`, `action_id=null`, `expected_saving_bytes`, `impact`, `ttl_seconds=900` và `evidence_expires_at`; UI protection hiển thị advisory/expiry. Không tạo Action và không có mutation path. | `pytest tests/test_block_storage_insights.py tests/test_volume_dependency_ui.py` (16/16 pass) + compileall + `git diff --check` | Chờ commit |
 | 2026-09-19 | Pha 2.3 — backup protection gap | Một phần | Thêm `build_protection_gap_insights` và API `/api/volumes/{pool}/protection-insights`: đối chiếu inventory với `BackupJob`, snapshot policy và restore drill; phát hiện `NO_SUCCESSFUL_BACKUP`, `BACKUP_FAILED`, `BACKUP_STALE`, `RESTORE_DRILL_GAP`, trả evidence gaps rõ ràng. Dashboard Volumes có panel advisory; không tạo Action, không chạy backup/restore và fail closed khi thiếu lịch sử. | `pytest tests/test_block_storage_insights.py tests/test_volume_dependency_ui.py` (16/16 pass) | Chờ commit |
