@@ -159,7 +159,14 @@ Scope: RT-05 through RT-09.
 - [x] Add a shared frontend snapshot/freshness hook and status component. The
   Node 20 build includes `useClusterSnapshotEvents`, shared snapshot state,
   and status labels for the migrated React pages.
-- [ ] Remove page reload and independent polling loops.
+- [x] Remove page reloads and independent polling loops from the migrated
+  health, Pools, PGs, CRUSH, and Nodes snapshot views. They now share one
+  cluster-state WebSocket and re-read only the invalidated API section; HTTP
+  polling remains bounded fallback behavior. Evidence: commit `38ecab34`,
+  Node20 syntax checks, and navigation/WebSocket gate (`47 passed, 1 warning`).
+- [ ] Migrate remaining mutation/progress and non-snapshot pages away from
+  intentional post-action reloads or page-local polling where an equivalent
+  event contract exists.
 - [x] Add WebSocket or SSE invalidation events with HTTP polling fallback.
   Evidence: `tests/test_dashboard_ws.py` and Node 20 build.
 - [x] Enforce HTTP-equivalent authentication and cluster isolation for events.
