@@ -15,10 +15,11 @@ Biến các cảnh báo bảo mật thành startup gate và middleware policy b�
       `DASHBOARD_TRUSTED_HOSTS`/`DASHBOARD_ALLOWED_ORIGINS` và không tin
       `X-Forwarded-*` nếu chưa có proxy boundary được cấu hình. Trusted
       reverse-proxy boundary và header policy vẫn còn phải nghiệm thu.
-- [~] Login rate limit đã chuyển sang shared PostgreSQL store cho multi-replica;
-      failed-login state được khóa theo row và không còn phụ thuộc process memory.
-      API rate limit dùng chung vẫn còn mở.
-- [ ] Hoàn tất security regression cho session fixation, CSRF, host header và brute force.
+- [x] Login và API rate limit đã chuyển sang shared PostgreSQL store cho
+      multi-replica; failed-login/API request state được khóa theo row và không
+      còn phụ thuộc process memory.
+- [x] Security regression cho session fixation, CSRF, host header và brute force
+      đã có test coverage.
 
 Evidence hiện tại: `tests/test_production_readiness.py`. Gate chỉ được kích hoạt
 khi `CEPH_AI_ENVIRONMENT=production`; các môi trường development/test/lab giữ hành
@@ -32,6 +33,9 @@ Evidence bổ sung — 2026-09-19:
 - `tests/test_dashboard_auth.py`: 22 passed, bao gồm lockout và persistence của
   failed-login state trong database.
 - Dashboard container đã restart và health check chuyển sang healthy.
+- Migration `f2c3d4e5f6a7` tạo `api_rate_limits`; API production mặc định giới hạn
+  120 request/phút/client, store lỗi thì fail-closed 503 và vượt ngưỡng trả 429.
+- Security/rate-limit regression suite: `35 passed`.
 
 ## Việc cần làm
 

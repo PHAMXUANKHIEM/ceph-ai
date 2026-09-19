@@ -76,6 +76,7 @@ from shared.codex_app_server import codex_app_server
 from shared.clusters import sync_default_cluster_from_settings
 from shared.logging_redaction import install_logging_redaction
 from shared.api_observability import record_request
+from shared.api_rate_limit import RateLimitStoreUnavailable, allow_api_request
 from shared.request_context import reset_request_id, set_request_id
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -386,6 +387,26 @@ def create_app() -> FastAPI:
         product = request.session.get("product")
         path = request.url.path
         shared_path = path.startswith("/static/") or path in {"/logout", "/login"}
+        is_api_request = path == "/api" or path.startswith("/api/")
+        if settings.ceph_ai_environment == "production" and is_api_request:
+            client_key = request.client.host if request.client else "unknown"
+            try:
+                allowed = allow_api_request(
+                    client_key,
+                    limit=settings.dashboard_api_rate_limit,
+                    window_seconds=settings.dashboard_api_rate_limit_window_seconds,
+                )
+            except RateLimitStoreUnavailable:
+                return JSONResponse(
+                    {"detail": "API rate-limit store không khả dụng"},
+                    status_code=503,
+                )
+            if not allowed:
+                return JSONResponse(
+                    {"detail": "Quá nhiều yêu cầu API — thử lại sau ít phút"},
+                    status_code=429,
+                    headers={"Retry-After": str(settings.dashboard_api_rate_limit_window_seconds)},
+                )
         csrf_token = _ensure_csrf_token(request) if settings.ceph_ai_environment == "production" else None
         if (
             settings.ceph_ai_environment == "production"

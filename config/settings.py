@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # from silently trusting an unexpected Host or browser Origin.
     dashboard_trusted_hosts: str = ""
     dashboard_allowed_origins: str = ""
+    # Shared PostgreSQL fixed-window limit for /api/* requests. The limit is
+    # deliberately conservative enough for polling dashboards while stopping
+    # an abusive client from exhausting one replica or the whole cluster.
+    dashboard_api_rate_limit: int = Field(default=120, ge=1, le=100000)
+    dashboard_api_rate_limit_window_seconds: int = Field(default=60, ge=1, le=86400)
 
     # SSH access to the Ceph cluster nodes (dedicated keypair, no passphrase
     # so the services can run unattended) — shared by BOTH Watcher (read-only

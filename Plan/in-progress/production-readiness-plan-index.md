@@ -34,5 +34,5 @@
 ## Trạng thái cập nhật — 2026-09-18
 
 - Production 03 — PostgreSQL/migration foundation: **đang triển khai**; database gate, pool bounds, backup và restore/downgrade drill đã có evidence.
-- Production 05 — Security baseline: **đang triển khai**; production credential/database startup gates, CSRF và multi-replica login rate limit đã có; API rate limit, security regression và trusted proxy boundary còn mở.
+- Production 05 — Security baseline: **đang triển khai**; production credential/database startup gates, CSRF, login/API rate limit và security regression đã có; trusted proxy boundary vẫn còn mở.
 - Production 01/02/04/06/07/08/09/10: **chưa nghiệm thu**; không bật LIMITED_AUTOPILOT.

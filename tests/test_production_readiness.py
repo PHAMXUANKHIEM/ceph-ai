@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from fastapi.testclient import TestClient
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
@@ -118,6 +119,39 @@ def test_production_html_response_gets_csrf_form_and_script():
     assert 'name="_csrf_token"' in body
     assert "X-CSRF-Token" in body
     assert "Secure" in response.headers["set-cookie"]
+
+
+def test_production_api_rate_limit_is_shared_by_app_requests(monkeypatch, dashboard_client):
+    monkeypatch.setattr(settings, "ceph_ai_environment", "production")
+    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
+    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_trusted_hosts", "testserver")
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "http://testserver")
+    monkeypatch.setattr(settings, "dashboard_api_rate_limit", 2)
+    monkeypatch.setattr(settings, "dashboard_api_rate_limit_window_seconds", 60)
+
+    with TestClient(dashboard_app.create_app()) as client:
+        first = client.get("/api/system/health")
+        second = client.get("/api/system/health")
+        third = client.get("/api/system/health")
+
+    assert first.status_code != 429
+    assert second.status_code != 429
+    assert third.status_code == 429
+    assert third.headers["retry-after"] == "60"
+
+
+def test_production_trusted_host_rejects_unlisted_host(monkeypatch, dashboard_client):
+    monkeypatch.setattr(settings, "ceph_ai_environment", "production")
+    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
+    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_trusted_hosts", "testserver")
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "http://testserver")
+
+    with TestClient(dashboard_app.create_app()) as client:
+        response = client.get("/login", headers={"Host": "evil.example"})
+
+    assert response.status_code == 400
 
 
 def test_non_production_dashboard_keeps_dev_warning_only(monkeypatch, caplog):

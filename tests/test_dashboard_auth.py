@@ -1,6 +1,8 @@
 import bcrypt
+import asyncio
+from starlette.requests import Request
 
-from dashboard.routes.auth import is_admin_user
+from dashboard.routes.auth import is_admin_user, login_submit
 from shared import db as db_module
 from shared.models import AuthLoginRateLimit, User
 
@@ -116,6 +118,24 @@ def test_logout_invalidates_session(dashboard_client):
     response = dashboard_client.get("/", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
+
+
+def test_successful_login_replaces_preexisting_session_state(dashboard_client):
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/login",
+            "headers": [],
+            "client": ("testclient", 12345),
+            "session": {"user": "attacker", "product": "vitastor", "stale": "value"},
+        }
+    )
+
+    response = asyncio.run(login_submit(request, "admin", "admin", "ceph"))
+
+    assert response.status_code == 303
+    assert request.session == {"user": "admin", "product": "ceph"}
 
 
 def test_already_logged_in_get_login_redirects_to_index(dashboard_client):

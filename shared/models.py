@@ -1096,6 +1096,17 @@ class AuthLoginRateLimit(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class ApiRateLimit(Base):
+    """Shared fixed-window request counter for production API throttling."""
+
+    __tablename__ = "api_rate_limits"
+
+    client_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class VitastorUser(Base):
     """Login accounts owned exclusively by the Vitastor control plane.
 
