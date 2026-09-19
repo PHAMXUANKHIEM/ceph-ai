@@ -50,6 +50,32 @@ def test_production_dashboard_rejects_missing_host_and_origin_policy(monkeypatch
         dashboard_app._warn_if_using_dev_defaults()
 
 
+def test_every_mutation_route_has_authentication_guard():
+    from dashboard.app import app
+
+    public_mutations = {"/login", "/logout", "/product/select"}
+    unguarded = []
+    for route in app.routes:
+        methods = getattr(route, "methods", set()) or set()
+        if not methods.intersection({"POST", "PUT", "PATCH", "DELETE"}):
+            continue
+        if route.path in public_mutations:
+            continue
+        names = []
+        dependant = getattr(route, "dependant", None)
+        pending = list(getattr(dependant, "dependencies", []) or [])
+        while pending:
+            dependency = pending.pop()
+            call = getattr(dependency, "call", None)
+            if call is not None:
+                names.append(getattr(call, "__name__", str(call)))
+            pending.extend(getattr(dependency, "dependencies", []) or [])
+        if not any("login" in name or "admin" in name for name in names):
+            unguarded.append(route.path)
+
+    assert unguarded == []
+
+
 def _request(headers: dict[str, str], scheme: str = "https", session: dict | None = None) -> Request:
     raw_headers = [(key.lower().encode(), value.encode()) for key, value in headers.items()]
     return Request({

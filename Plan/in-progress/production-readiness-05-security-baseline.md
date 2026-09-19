@@ -40,6 +40,12 @@ Evidence bổ sung — 2026-09-19:
 - Reverse-proxy/header regression suite: `38 passed`; production response có
   `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` và HSTS khi
   request dùng HTTPS.
+- Bổ sung `security_audit_events` và middleware audit tập trung cho mọi POST/
+  PUT/PATCH/DELETE; chỉ lưu actor, method, path, status và request-id, không lưu
+  body/query secret. Runtime đã xác nhận `POST /logout` tạo event PostgreSQL.
+- Route inventory regression xác nhận mọi mutation route (ngoại trừ login/
+  logout/product-select public) có login/admin guard; security suite đạt
+  `40 passed`.
 
 ## Việc cần làm
 
@@ -51,7 +57,8 @@ Evidence bổ sung — 2026-09-19:
   không có proxy, để `DASHBOARD_TRUSTED_PROXY_IPS` trống; khi có proxy, chỉ
   khai báo IP/CIDR của proxy tại biến này.
 - Đưa login/API rate limit vào shared store khi chạy nhiều replica.
-- Kiểm tra RBAC, cluster scope, tenant isolation và audit cho mọi route ghi.
+- [~] RBAC guard và audit tập trung đã có regression; cluster scope/tenant
+  isolation cần tiếp tục nghiệm thu theo từng nhóm route.
 - Thêm security regression cho session fixation, CSRF, host header, cookie flags, brute force và secret redaction.
 
 ## Definition of Done

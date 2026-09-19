@@ -78,6 +78,7 @@ from shared.clusters import sync_default_cluster_from_settings
 from shared.logging_redaction import install_logging_redaction
 from shared.api_observability import record_request
 from shared.api_rate_limit import RateLimitStoreUnavailable, allow_api_request
+from shared.security_audit import record_mutation
 from shared.request_context import reset_request_id, set_request_id
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -412,6 +413,8 @@ def create_app() -> FastAPI:
             raise
         finally:
             reset_request_id(request_context_token)
+        if request.method in _UNSAFE_METHODS:
+            record_mutation(request, response)
         response.headers["X-Request-ID"] = request_id
         if not request.url.path.startswith("/static/"):
             record_request(

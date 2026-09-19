@@ -1107,6 +1107,20 @@ class ApiRateLimit(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class SecurityAuditEvent(Base):
+    """Append-only metadata for every Dashboard HTTP mutation."""
+
+    __tablename__ = "security_audit_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    actor: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    method: Mapped[str] = mapped_column(String(8), nullable=False)
+    path: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
 class VitastorUser(Base):
     """Login accounts owned exclusively by the Vitastor control plane.
 
@@ -2777,7 +2791,7 @@ class LogFinding(Base):
     # Truy vết được model nào/prompt nào đã kết luận -- bắt buộc khi kết
     # luận của AI được đem ra trước người vận hành.
     model_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    prompt_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Lý do server hạ cấp/sửa câu trả lời của model (bịa evidence id, đề
     # xuất action_id không hợp lệ, lần quét PARTIAL...). Có giá trị nghĩa là
     # đã có ít nhất một lần can thiệp -- đọc được ngay trên Dashboard thay
