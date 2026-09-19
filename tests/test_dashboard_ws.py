@@ -81,6 +81,7 @@ def test_cluster_state_websocket_receives_scoped_event(
 ):
     monkeypatch.setattr(ws_module, "POLL_INTERVAL_SECONDS", 0.05)
     dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    before = ws_module.get_metrics()
 
     with dashboard_client.websocket_connect(
         f"/ws/cluster-state?cluster_id={default_cluster_id}"
@@ -92,6 +93,10 @@ def test_cluster_state_websocket_receives_scoped_event(
     assert message["cluster_id"] == default_cluster_id
     assert message["sections"] == ["pools"]
     assert isinstance(message["generation"], int)
+    after = ws_module.get_metrics()
+    assert after["cluster_state_connections_total"] >= before["cluster_state_connections_total"] + 1
+    assert after["cluster_state_messages_total"] >= before["cluster_state_messages_total"] + 1
+    assert after["cluster_state_disconnects_total"] >= before["cluster_state_disconnects_total"] + 1
 
 
 def test_action_state_event_is_published_after_database_commit(

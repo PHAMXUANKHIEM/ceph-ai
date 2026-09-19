@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from copy import deepcopy
+from threading import Lock
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, or_
@@ -15,6 +17,24 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 2
 WS_POLICY_VIOLATION = 1008
+_METRICS_LOCK = Lock()
+_METRICS = {
+    "cluster_state_connections_total": 0,
+    "cluster_state_messages_total": 0,
+    "cluster_state_disconnects_total": 0,
+    "cluster_state_policy_rejections_total": 0,
+}
+
+
+def _record_metric(name: str) -> None:
+    with _METRICS_LOCK:
+        _METRICS[name] += 1
+
+
+def get_metrics() -> dict:
+    """Return bounded WebSocket transport counters for admin observability."""
+    with _METRICS_LOCK:
+        return deepcopy(_METRICS)
 
 
 def _snapshot(cluster_id: str | None = None, is_default_cluster: bool = True) -> tuple[object, ...]:
@@ -55,6 +75,7 @@ async def incidents_ws(websocket: WebSocket) -> None:
     # to the "websocket" scope too) — same require_login check as / , just
     # not expressible as a FastAPI Depends on a websocket route.
     if not websocket.session.get("user") or websocket.session.get("product") == "vitastor":
+        _record_metric("cluster_state_policy_rejections_total")
         await websocket.close(code=WS_POLICY_VIOLATION)
         return
 
@@ -116,10 +137,13 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
         selected_id = selected.id
     requested_id = websocket.query_params.get("cluster_id") or websocket.query_params.get("cluster")
     if requested_id and requested_id != selected_id:
+        _record_metric("cluster_state_policy_rejections_total")
         await websocket.close(code=WS_POLICY_VIOLATION)
         return
 
     await websocket.accept()
+    _record_metric("cluster_state_connections_total")
+    connection_open = True
     last_event_id = None
     initial = read_latest_event(selected_id)
     if initial:
@@ -142,7 +166,11 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
                     **({"action_id": current["action_id"]} if current.get("action_id") else {}),
                 }
             )
+            _record_metric("cluster_state_messages_total")
     except WebSocketDisconnect:
         pass
     except Exception:
         logger.exception("cluster_state_ws: unexpected error, closing connection")
+    finally:
+        if connection_open:
+            _record_metric("cluster_state_disconnects_total")
