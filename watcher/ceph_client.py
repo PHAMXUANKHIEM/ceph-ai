@@ -967,6 +967,22 @@ def query_rbd_pool_dependency_health_with(
     return {"health": payloads[0], "pg": payloads[1], "osd_tree": payloads[2]}
 
 
+def query_crush_rules() -> dict | list:
+    """Read the current CRUSH rule inventory without changing placement."""
+    return run_ceph_json_command("ceph osd crush rule dump")[1]
+
+
+def query_crush_rules_with(
+    mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> dict | list:
+    """Cluster-scoped variant of :func:`query_crush_rules`."""
+    return run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        "ceph osd crush rule dump",
+    )[1]
+
+
 def query_rbd_mirror_pool_info(pool: str) -> dict:
     """Read-only RBD mirroring capability/configuration for one pool."""
     _host, payload = run_ceph_json_command(f"rbd mirror pool info {shlex.quote(pool)}")

@@ -2135,6 +2135,40 @@ def test_volume_dependency_health_api_is_pool_scoped_and_read_only(dashboard_cli
     assert payload["read_only"] is True
 
 
+def test_volume_durability_policy_api_checks_replica_and_crush_domains(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_overview",
+        lambda pool: {"pool": pool, "type": "replicated", "replica_size": 3,
+                      "min_size": 2, "crush_rule": 0},
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_dependency_health",
+        lambda pool: {"osd_tree": {"nodes": [
+            {"id": -1, "type": "root", "children": [-2, -3, -4]},
+            {"id": -2, "type": "host", "name": "node-a", "children": [1]},
+            {"id": -3, "type": "host", "name": "node-b", "children": [2]},
+            {"id": -4, "type": "host", "name": "node-c", "children": [3]},
+        ]}},
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_crush_rules",
+        lambda: {"rules": [{"rule_id": 0, "rule_name": "replicated_rule", "steps": [
+            {"op": "chooseleaf_firstn", "type": "host"},
+        ]}]},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/durability-policy")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "HEALTHY"
+    assert payload["crush"]["available_domains"] == 3
+    assert payload["crush"]["required_domains"] == 3
+    assert payload["policy_change_supported"] is False
+
+
 def test_volume_replication_api_is_read_only_and_exposes_disabled_mode(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_info", lambda pool: {"mode": "disabled"})

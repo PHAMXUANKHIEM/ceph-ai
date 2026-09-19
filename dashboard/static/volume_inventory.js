@@ -16,6 +16,7 @@
   var overviewError = document.getElementById("volume-pool-overview-error"), healthChecks = document.getElementById("volume-pool-health-checks");
   var capacityRisk = document.getElementById("volume-capacity-risk");
   var dependencyHealth = document.getElementById("volume-dependency-health");
+  var policyHealth = document.getElementById("volume-policy-health");
   var dependencyStatus = document.getElementById("volume-dependency-status"), dependencyList = document.getElementById("volume-dependency-list"), dependencyRefresh = document.getElementById("volume-dependency-refresh");
   var protectionStatus = document.getElementById("volume-protection-status"), protectionList = document.getElementById("volume-protection-list"), protectionRefresh = document.getElementById("volume-protection-refresh");
   var state = { page: 1, pages: 1, loading: false, sort: "name", order: "asc" }, PAGE_SIZE = 10;
@@ -106,6 +107,27 @@
       }
     }).catch(function (exc) { setDependencyField("status", "Không đọc được"); setDependencyField("details", exc.message); });
   }
+  function policyField(name) { return policyHealth && policyHealth.querySelector('[data-policy-field="' + name + '"]'); }
+  function setPolicyField(name, value) { var target = policyField(name); if (target) target.textContent = value; }
+  function loadPolicyHealth() {
+    if (!policyHealth) return;
+    requestJson("/api/volumes/" + encodeURIComponent(pool) + "/durability-policy").then(function (data) {
+      var policy = data.policy || {}, crush = data.crush || {}, gaps = (data.evidence || {}).gaps || [], notes = data.notes || [];
+      var status = policyField("status");
+      if (status) { status.textContent = data.status || "INSUFFICIENT_EVIDENCE"; status.className = "volume-capacity-status status-" + String(data.status || "insufficient").toLowerCase(); }
+      if (policy.mode === "replicated") { setPolicyField("policy", "Replica x" + (policy.size == null ? "?" : policy.size)); setPolicyField("policy-detail", "min_size " + (policy.min_size == null ? "?" : policy.min_size)); }
+      else if (policy.mode === "erasure_coded") { setPolicyField("policy", "EC " + (policy.k == null ? "?" : policy.k) + "+" + (policy.m == null ? "?" : policy.m)); setPolicyField("policy-detail", policy.profile || "profile chưa rõ"); }
+      else { setPolicyField("policy", "Chưa rõ"); setPolicyField("policy-detail", "Không xác định được mode"); }
+      setPolicyField("rule", crush.rule_name || String(crush.rule_id || "Chưa rõ"));
+      setPolicyField("rule-detail", crush.failure_domain ? "chooseleaf " + crush.failure_domain : "Failure domain chưa rõ");
+      setPolicyField("domains", String(crush.available_domains || 0) + " / " + String(crush.required_domains || 0));
+      setPolicyField("domains-detail", crush.failure_domain ? crush.failure_domain + " domains" : "Topology chưa đủ evidence");
+      setPolicyField("migration", data.migration_required ? "Cần plan" : "Không tự động");
+      setPolicyField("migration-detail", data.policy_change_supported ? "Có capability" : "Chỉ review/read-only");
+      var details = policyField("details");
+      if (details) details.textContent = (notes.concat(gaps.map(function (gap) { return "Evidence gap: " + gap; }))).length ? notes.concat(gaps.map(function (gap) { return "Evidence gap: " + gap; })).join(" · ") : "Policy hiện tại phù hợp với failure-domain evidence.";
+    }).catch(function (exc) { setPolicyField("status", "Không đọc được"); setPolicyField("details", exc.message); });
+  }
   function loadPoolCounts() { Array.prototype.forEach.call(document.querySelectorAll(".volumes-pool-tab"), function (tab) { var tabPool = tab.dataset.pool, target = tab.querySelector("[data-pool-count]"); requestJson("/api/volumes/" + encodeURIComponent(tabPool) + "/inventory?page=1&page_size=1").then(function (data) { target.textContent = "(" + data.total + ")"; }).catch(function () { target.textContent = ""; }); }); }
   function renderDependencyInsights(data) {
     if (!dependencyList || !dependencyStatus) return;
@@ -154,5 +176,5 @@
   if (selectedImage) { window.location.replace(detailUrl(selectedImage)); return; }
   if (dependencyRefresh) dependencyRefresh.addEventListener("click", loadDependencyInsights);
   if (protectionRefresh) protectionRefresh.addEventListener("click", loadProtectionInsights);
-  loadOverview(); loadCapacityRisk(); loadDependencyHealth(); loadInventory(); loadPoolCounts(); loadDependencyInsights(); loadProtectionInsights();
+  loadOverview(); loadCapacityRisk(); loadDependencyHealth(); loadPolicyHealth(); loadInventory(); loadPoolCounts(); loadDependencyInsights(); loadProtectionInsights();
 }());

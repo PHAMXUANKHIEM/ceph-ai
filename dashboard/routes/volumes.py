@@ -61,6 +61,7 @@ from watcher.block_storage_insights import (
 )
 from watcher.block_storage_capacity import build_capacity_risk
 from watcher.block_storage_dependencies import build_pool_dependency_health
+from watcher.block_storage_policy import build_durability_policy
 from watcher.capacity_failure_simulation import simulate as simulate_capacity_failure
 from watcher.capacity_forecast import forecasts as capacity_forecasts
 from worker.executor import commands as executor_commands
@@ -1221,6 +1222,56 @@ async def volume_dependency_health_api(
         **build_pool_dependency_health(
             pool, evidence.get("health"), evidence.get("pg"), evidence.get("osd_tree"),
             volume_count=len(inventory),
+        ),
+    }
+
+
+@router.get("/api/volumes/{pool}/durability-policy")
+async def volume_durability_policy_api(
+    request: Request, pool: str, user: str = Depends(require_login)
+):
+    """Return read-only replica/EC policy and CRUSH failure-domain posture."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        overview = (
+            ceph_client.query_rbd_pool_overview(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_pool_overview_with(pool, *cluster_connection(cluster))
+        )
+        dependency_evidence = (
+            ceph_client.query_rbd_pool_dependency_health(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_pool_dependency_health_with(pool, *cluster_connection(cluster))
+        )
+        crush_rules = (
+            ceph_client.query_crush_rules()
+            if cluster.is_default
+            else ceph_client.query_crush_rules_with(*cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        logger.warning("volume_durability_policy_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được durability policy: {exc}") from exc
+
+    profile = None
+    if str(overview.get("type") or "").lower() in {"erasure", "erasure-coded", "erasure_coded", "ec"}:
+        profile_name = overview.get("erasure_code_profile")
+        try:
+            profile = (
+                ceph_client.query_erasure_code_profile(str(profile_name))
+                if cluster.is_default
+                else ceph_client.query_erasure_code_profile_with(str(profile_name), *cluster_connection(cluster))
+            ) if profile_name else None
+        except CephQueryError as exc:
+            logger.warning("volume_durability_policy_api: EC profile %s unavailable: %s", profile_name, exc)
+
+    return {
+        "cluster_id": cluster.id,
+        "pool": pool,
+        "collected_at": datetime.utcnow().isoformat() + "Z",
+        **build_durability_policy(
+            overview, crush_rules, dependency_evidence.get("osd_tree"), ec_profile=profile,
         ),
     }
 

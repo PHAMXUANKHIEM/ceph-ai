@@ -44,6 +44,7 @@
 .volume-dependency-health { margin: 0 0 22px; padding: 16px; border: 1px solid #334155; border-radius: 12px; background: rgba(15,23,42,.56); }
 .volume-dependency-health-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .volume-dependency-health-details { margin-top: 12px; padding-top: 12px; border-top: 1px solid #334155; color: #94a3b8; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.volume-policy-health { margin: 0 0 22px; padding: 16px; border: 1px solid #334155; border-radius: 12px; background: rgba(30,41,59,.45); }
 .volume-inventory-filters { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin: 0 0 14px; padding: 0; }
 .volume-inventory-filters > div:first-child { display: flex; flex-direction: column; gap: 4px; }
 .volume-inventory-filters > div:first-child strong { color: #e2e8f0; font-size: 16px; }

@@ -110,6 +110,22 @@
           </div>
           <div class="volume-dependency-health-details" data-dependency-field="details"></div>
         </section>
+        <section class="volume-policy-health" id="volume-policy-health" aria-live="polite">
+          <div class="volume-capacity-risk-header">
+            <div>
+              <h2>Durability policy</h2>
+              <p class="hint">Kiểm tra replica/EC, CRUSH rule và số failure domain khả dụng. Không tự thay đổi policy.</p>
+            </div>
+            <span class="volume-capacity-status" data-policy-field="status">Đang tải…</span>
+          </div>
+          <div class="volume-dependency-health-grid">
+            <div class="volume-capacity-metric"><span>Policy</span><strong data-policy-field="policy">—</strong><small data-policy-field="policy-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>CRUSH rule</span><strong data-policy-field="rule">—</strong><small data-policy-field="rule-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>Failure domains</span><strong data-policy-field="domains">—</strong><small data-policy-field="domains-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>Migration</span><strong data-policy-field="migration">—</strong><small data-policy-field="migration-detail">—</small></div>
+          </div>
+          <div class="volume-dependency-health-details" data-policy-field="details"></div>
+        </section>
         <div id="volume-pool-health-checks" class="hint"></div>
         <p class="error" id="volume-pool-overview-error" hidden></p>
         {% if is_admin %}<p id="volume-mutation-result" class="hint" hidden></p>{% endif %}
