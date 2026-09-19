@@ -37,6 +37,7 @@ from dashboard.cluster_scope import cluster_connection
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 from watcher.rgw_evidence import get_rgw_evidence
+from watcher.rgw_bucket_diagnosis import build_bucket_access_diagnosis
 from watcher.rgw_access_log import (
     RgwLogError,
     fetch_bucket_access_log,
@@ -1601,6 +1602,66 @@ async def capabilities_api(request: Request, user: str = Depends(require_login))
 async def rgw_evidence_api(request: Request, user: str = Depends(require_login)):
     del user
     return await asyncio.to_thread(get_rgw_evidence, selected_cluster(request))
+
+
+@router.get("/api/object-storage/buckets/{bucket}/diagnosis")
+async def bucket_access_diagnosis_api(
+    request: Request,
+    bucket: str,
+    operation: str = Query("access", max_length=16),
+    user: str = Depends(require_login),
+):
+    del user
+    cluster = selected_cluster(request)
+    hosts = _rgw_hosts(cluster)
+    records = []
+    bucket_stats = None
+    collection_gaps = []
+    admin_query_status = "not_attempted"
+    if not hosts:
+        collection_gaps.append("Chưa cấu hình node RGW để đọc access log.")
+    else:
+        host = hosts[0]["host"]
+        try:
+            if cluster.is_default:
+                records = await asyncio.to_thread(fetch_bucket_access_log, host, bucket)
+            else:
+                ssh_user, ssh_key_path, exec_mode, _container = resolve_ssh_creds(cluster)
+                records = await asyncio.to_thread(
+                    fetch_bucket_access_log_with,
+                    host, bucket, ssh_user, ssh_key_path, exec_mode, cluster.ceph_rgw_container_name,
+                )
+        except RgwLogError:
+            collection_gaps.append("Không đọc được access log RGW từ node đã chọn.")
+        try:
+            if cluster.is_default:
+                raw_stats = await asyncio.to_thread(fetch_bucket_stats, host, bucket)
+            else:
+                ssh_user, ssh_key_path, exec_mode, _container = resolve_ssh_creds(cluster)
+                raw_stats = await asyncio.to_thread(
+                    fetch_bucket_stats_with,
+                    host, bucket, ssh_user, ssh_key_path, exec_mode, cluster.ceph_rgw_container_name,
+                )
+            if raw_stats:
+                bucket_stats = summarize_bucket_stats(raw_stats)
+            admin_query_status = "observed"
+        except RgwLogError:
+            admin_query_status = "error"
+            collection_gaps.append("Không đọc được bucket stats bằng radosgw-admin.")
+    rgw_evidence = await asyncio.to_thread(get_rgw_evidence, cluster)
+    diagnosis = build_bucket_access_diagnosis(
+        records,
+        bucket=bucket,
+        operation=operation,
+        bucket_stats=bucket_stats,
+        rgw_evidence=rgw_evidence,
+        admin_query_status=admin_query_status,
+    )
+    diagnosis["evidence_gaps"] = collection_gaps + diagnosis["evidence_gaps"]
+    diagnosis["cluster_id"] = cluster.id
+    diagnosis["captured_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    diagnosis["rgw_evidence_status"] = rgw_evidence.get("status")
+    return diagnosis
 
 
 @router.post("/api/object-storage/buckets/actions/preview")
