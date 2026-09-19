@@ -188,8 +188,15 @@ def _sections_for_resolved_incident(incident: object) -> tuple[str, ...]:
         sections.add("pools")
     if "PG" in code:
         sections.add("pgs")
+    if "CRUSH" in code:
+        sections.add("crush")
     if "OSD" in code or "NODE" in code or "HOST" in code:
         sections.add("nodes")
+    if any(token in code for token in ("DEPLOY", "UPGRADE", "SERVICE")):
+        sections.add("nodes")
+    # RGW/bucket incidents intentionally invalidate the bounded cluster
+    # status section; no raw object-storage payload is sent through this
+    # event channel.
     return tuple(section for section in ("health", "status", "pools", "pgs", "crush", "nodes") if section in sections)
 
 

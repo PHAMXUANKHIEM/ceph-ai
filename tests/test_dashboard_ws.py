@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pytest
+
 import dashboard.ws as ws_module
 from shared import db as db_module
 from shared.cluster_snapshot import publish_snapshot
@@ -184,6 +186,35 @@ def test_resolved_incident_publishes_snapshot_invalidation_after_commit(
     assert event["event"] == "snapshot_changed"
     assert event["cluster_id"] == default_cluster_id
     assert event["sections"] == ["health", "status", "pools"]
+
+
+@pytest.mark.parametrize(
+    ("ceph_code", "expected_section"),
+    [("CRUSH_MAP_DRIFT", "crush"), ("RGW_BUCKET_QUOTA", "status"), ("DEPLOY_FAILED", "nodes")],
+)
+def test_resolved_incident_maps_mutation_scope_to_snapshot_section(
+    dashboard_client, default_cluster_id, ceph_code, expected_section
+):
+    from shared import ceph_query_cache
+    from shared.cluster_events import EVENT_NAMESPACE, read_latest_event
+
+    ceph_query_cache.invalidate(EVENT_NAMESPACE, default_cluster_id)
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id=default_cluster_id,
+            ceph_code=ceph_code,
+            status="NEW",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.commit()
+        ceph_query_cache.invalidate(EVENT_NAMESPACE, default_cluster_id)
+        incident.status = "RESOLVED"
+        session.commit()
+
+    event = read_latest_event(default_cluster_id)
+    assert event["event"] == "snapshot_changed"
+    assert expected_section in event["sections"]
 
 
 def test_poller_detects_changes_without_deserializing_snapshots(
