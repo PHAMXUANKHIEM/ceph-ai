@@ -28,19 +28,16 @@ relevant gates pass.
 
 ## 2. Current baseline
 
-- At the latest review, `main` and `origin/main` both resolve to
-  `d5a414a3f3699d48e0f48a32ba364feb49181854`; the release-candidate worktree
-  is clean after three reviewed commits containing the Natural Language Ceph
-  slice, its migration/evidence, realtime frontend hardening, and the
-  dashboard corrective fix. Classification is recorded in
+- At the latest review, `main` and `origin/main` are equal and the
+  release-candidate worktree is clean after the reviewed feature, observability,
+  and evidence commits. Classification is recorded in
   `docs/ai/end-to-end-change-classification.md`.
 - The systemd Dashboard, Worker, and Watcher units are disabled/inactive, but
   independently managed Podman containers are running, including a healthy
   Watcher. This runtime ownership conflict must be resolved by an operator
   before any restart or rollout.
-- The current deterministic release command is being rerun after fixing the
-  admin Ceph latency debug return path; the result is recorded in the release
-  manifest when the server-side log completes. The isolated Alert Center
+- The deterministic release command and the focused hardening gate pass after
+  fixing the admin Ceph latency debug return path. The isolated Alert Center
   unique-index regression tests pass (`2 passed, 35 deselected`).
 - Python compilation, `git diff --check`, the Node 20 frontend production
   build, and the single Alembic-head check pass for the current worktree.
@@ -55,8 +52,9 @@ relevant gates pass.
 - Existing deployment entry point:
   `bash scripts/deploy/restart_services.sh`.
 
-The first work item is to preserve and review the current dirty changes before
-creating additional commits.
+The next work items are the remaining live-browser, deployment-approval, and
+operational-readiness gates; code and evidence changes must remain reviewable
+and pushed before deployment is considered.
 
 ## 3. Non-negotiable engineering rules
 
@@ -345,17 +343,29 @@ the action executor.
 
 ### Phase 7 — Cross-cutting hardening and operational readiness
 
-- [ ] Complete security review for RBAC, CSRF, rate limits, validation,
-  redaction, encryption, key rotation, and tenant isolation.
-- [ ] Complete audit viewer and retention/export policy.
-- [ ] Add dashboards for API/job latency, queue depth, collector lag, stale age,
-  provider usage, action outcomes, and service health.
+- [x] Verify RBAC, CSRF, rate limits, validation, secret redaction, and
+  tenant/product authorization tests. Evidence: the deterministic suite plus
+  the hardening gate (`110 passed, 1 warning`) and AI security gate (`248
+  passed, 1 warning`).
+- [ ] Complete security review for encryption, key rotation, and production
+  tenant-isolation sign-off.
+- [x] Verify the audit viewer, audit filtering, mutation metadata, and
+  runbook-evidence validation paths. Evidence: hardening gate (`110 passed, 1
+  warning`).
+- [ ] Complete audit retention/export policy and operator sign-off.
+- [ ] Add operator dashboards for API/job latency, queue depth, collector lag,
+  stale age, provider usage, action outcomes, and service health. Backend
+  collector/API/WebSocket counters are instrumented, but the operator-facing
+  dashboard is not complete.
 - [ ] Add alerts for stale snapshots, dead collectors, failed post-checks,
   budget exhaustion, backup gaps, and event-bus failure.
 - [ ] Complete runbooks for deploy, rollback, Ceph outage, stale data, backup
   restore, RGW failure, Cinder dependency, DR failover, and credential loss.
-- [ ] Add health checks and smoke tests for Dashboard, Worker, Watcher, database,
-  cache, message broker, and frontend assets.
+- [x] Add deterministic health and smoke coverage for Dashboard APIs, service
+  heartbeats, frontend navigation/assets, and stale/dead process handling.
+  Evidence: hardening gate (`110 passed, 1 warning`).
+- [ ] Run live production-like health checks and smoke tests for Dashboard,
+  Worker, Watcher, database, cache, message broker, and frontend assets.
 - [ ] Document supported Ceph releases and fail-closed behavior for unsupported
   releases.
 - [ ] Add retention and disk-growth controls for snapshots, logs, audit records,
@@ -368,19 +378,28 @@ recover the service without manual source edits.
 
 Each feature slice must pass all applicable gates:
 
-- [ ] Unit and regression tests.
-- [ ] API contract and schema tests.
-- [ ] Frontend type-check and production build with Node 20.
-- [ ] RBAC, cluster-scope, CSRF, secret-redaction, and prompt-injection tests.
-- [ ] Timeout, retry, stale-data, partial-data, and backend-unavailable tests.
-- [ ] Migration upgrade/downgrade and restart-recovery tests.
+- [x] Unit and regression tests. Evidence: deterministic suite (`3817 passed,
+  47 deselected, 235 warnings`; RC=0).
+- [x] API contract and schema tests. Evidence: deterministic API/dashboard
+  gates and the full release suite passed.
+- [x] Frontend type-check and production build with Node 20.
+- [x] RBAC, cluster-scope, CSRF, secret-redaction, and prompt-injection tests.
+  Evidence: deterministic suite, AI gate, and hardening gate passed.
+- [x] Timeout, retry, stale-data, partial-data, and backend-unavailable tests.
+  Evidence: deterministic suite and realtime/storage focused gates passed.
+- [x] Migration upgrade/downgrade and restart-recovery tests. Evidence: the
+  disposable SQLite round-trip passed; restart/stale-state coverage passed in
+  the deterministic suite.
 - [ ] Default, secondary, inactive, and mixed-version cluster tests.
-- [ ] Mutation preview, approval, idempotency, audit, post-check, and rollback
-  tests.
+- [x] Mutation preview, approval, idempotency, audit, post-check, and rollback
+  tests. Evidence: block/RBD, backup/restore, object/RGW, and AI focused gates
+  passed.
 - [ ] Browser smoke tests and multi-tab load tests.
-- [ ] Backup/restore and DR drill evidence where applicable.
-- [ ] Full release suite completes within the agreed CI timeout with no
-  unexplained failures.
+- [x] Backup/restore evidence where applicable. Evidence: deterministic backup
+  gate (`218 passed, 1 warning`).
+- [ ] Live DR drill evidence.
+- [x] Full release suite completes with no unexplained failures. Evidence:
+  `3817 passed, 47 deselected, 235 warnings`; RC=0.
 - [ ] Security and operations review is recorded.
 
 ## 6. Deployment waves
