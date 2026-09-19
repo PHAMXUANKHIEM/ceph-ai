@@ -47,5 +47,6 @@ dashboard = ["templates/*.html", "static/*"]
 testpaths = ["tests"]
 markers = [
     "live: makes real network/SSH calls to the Ceph lab cluster — excluded by default, run with `pytest -m live`",
+    "integration: requires an external service such as RabbitMQ",
 ]
-addopts = "-m 'not live'"
+addopts = "-m 'not live and not integration'"

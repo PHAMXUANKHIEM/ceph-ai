@@ -1,4 +1,4 @@
-from shared.natural_language import Finding, analyze_evidence
+from shared.natural_language import Finding, analyze_evidence, analyze_evidence_bundle
 
 
 def _snap(data, *, stale=False, available=True, partial=False):
@@ -40,6 +40,15 @@ def test_osd_analyzer_finds_down_out_and_nearfull():
 
     assert {"OSD_DOWN", "OSD_OUT", "OSD_NEARFULL"} <= codes
     assert all(item.recommended_action is None for item in findings)
+
+
+def test_osd_analyzer_detects_down_from_aggregate_counters():
+    findings = analyze_evidence("osd_health", _snap({
+        "status": {"osdmap": {"num_osds": 5, "num_up_osds": 4}},
+    }), cluster_id="prod")
+
+    assert findings[0].code == "OSD_DOWN"
+    assert findings[0].entities["count"] == 1
 
 
 def test_pg_analyzer_counts_bad_states():
@@ -111,3 +120,13 @@ def test_to_dict_is_json_friendly_and_unknown_analyzer_fails_closed():
     else:
         raise AssertionError("unknown analyzer must fail closed")
 
+
+def test_bundle_sorts_severity_and_keeps_missing_evidence_explicit():
+    findings = analyze_evidence_bundle({
+        "health": _snap({"health": {"status": "HEALTH_OK"}}),
+        "osd_health": _snap({"osds": [{"osd": 1, "up": 0}]}),
+    }, analyzers=("health", "osd_health", "pg_health"), cluster_id="prod")
+
+    assert findings[0].severity == "critical"
+    assert any(item.code == "PG_EVIDENCE_MISSING" for item in findings)
+    assert len({item.finding_id for item in findings}) == len(findings)

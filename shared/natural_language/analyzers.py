@@ -176,6 +176,16 @@ class OSDAnalyzer:
                 confidence=0.99, next_checks=("Đối chiếu OSD tree, host và log daemon.",),
                 evidence_gaps=gaps, stale=stale, cluster_id=cluster_id,
             ))
+        up = _first_number(osdmap, "num_up_osds", "num_osds_up")
+        if down is None and total is not None and up is not None and total > up:
+            down = total - up
+            findings.append(_finding(
+                self.name, "OSD_DOWN", "critical", "OBSERVED",
+                f"Có {int(down)} OSD không up ({int(up)}/{int(total)} OSD up).",
+                entities={"count": int(down)}, evidence=[{"num_osds": total, "num_up_osds": up}],
+                confidence=0.98, next_checks=("Đối chiếu OSD tree và health detail.",),
+                evidence_gaps=gaps, stale=stale, cluster_id=cluster_id,
+            ))
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
@@ -475,3 +485,29 @@ def analyze_evidence(
         raise ValueError(f"unknown deterministic analyzer: {analyzer!r}") from exc
     return selected.analyze(snapshot, cluster_id=cluster_id)
 
+
+def analyze_evidence_bundle(
+    snapshots: Mapping[str, Mapping[str, Any]],
+    *,
+    cluster_id: str | None = None,
+    analyzers: tuple[str, ...] | None = None,
+) -> list[Finding]:
+    """Run a deterministic analyzer bundle and return stable severity order.
+
+    ``snapshots`` is keyed by analyzer name. Missing keys are still analyzed so
+    the result reports an evidence gap instead of silently omitting a check.
+    Duplicate finding IDs are removed deterministically.
+    """
+
+    selected_names = analyzers or tuple(ANALYZERS)
+    findings: list[Finding] = []
+    for name in selected_names:
+        findings.extend(analyze_evidence(name, snapshots.get(name, {}), cluster_id=cluster_id))
+    severity_order = {"critical": 0, "warning": 1, "unknown": 2, "info": 3}
+    unique: dict[str, Finding] = {}
+    for finding in findings:
+        unique.setdefault(finding.finding_id, finding)
+    return sorted(
+        unique.values(),
+        key=lambda item: (severity_order.get(item.severity, 9), item.analyzer, item.finding_id),
+    )

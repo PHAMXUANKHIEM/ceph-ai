@@ -795,7 +795,12 @@ def build_and_publish_incident(
                     ceph_code,
                 )
                 continue
-            session.refresh(incident)
+            # The INSERT has already been flushed by commit, but explicitly
+            # flush before reading the generated id so this path does not need
+            # a second SELECT/refresh against a SQLite StaticPool connection.
+            # That extra round trip is unnecessary and can race with another
+            # worker using the same test/development connection.
+            session.flush()
             incident_id = incident.id
             notification_muted = alert_lifecycle.inherit_active_mute(
                 session, incident, now=detected_at,

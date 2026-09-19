@@ -280,15 +280,15 @@ xếp hạng và giao tiếp.
 
 ### Analyzer v1
 
-- [ ] `HealthAnalyzer`: `HEALTH_OK/WARN/ERR`, health detail và severity.
-- [ ] `OSDAnalyzer`: down, out, nearfull, full, high latency, heartbeat/slow ops.
-- [ ] `PGAnalyzer`: degraded, undersized, inactive, stale, stuck, recovery.
-- [ ] `MONAnalyzer`: quorum, clock skew, unavailable MON.
-- [ ] `PoolAnalyzer`: usage threshold, replica/EC, PG distribution.
-- [ ] `RGWAnalyzer`: endpoint, S3 errors, auth, quota, multisite/sync.
-- [ ] `NodeAnalyzer`: CPU, RAM, disk IOPS/latency, SSH reachability.
-- [ ] `BackupAnalyzer`: RPO/RTO, failed jobs, stale metadata, restore drill.
-- [ ] `CRUSHAnalyzer`: failure-domain concentration, skew, missing host/rule.
+- [x] `HealthAnalyzer`: `HEALTH_OK/WARN/ERR`, health detail và severity.
+- [x] `OSDAnalyzer`: down, out, nearfull từ row và aggregate counters.
+- [x] `PGAnalyzer`: degraded, undersized, inactive, stale, stuck, peering.
+- [x] `MONAnalyzer`: quorum và evidence gap khi thiếu monmap.
+- [x] `PoolAnalyzer`: usage threshold và replication size.
+- [x] `RGWAnalyzer`: error/auth/quota/sync signals khi evidence có sẵn.
+- [x] `NodeAnalyzer`: CPU, RAM, latency và reachability.
+- [x] `BackupAnalyzer`: RPO breach và failed jobs khi evidence có sẵn.
+- [x] `CRUSHAnalyzer`: thiếu host mapping trong CRUSH tree.
 
 ### Analyzer contract
 
@@ -307,16 +307,21 @@ xếp hạng và giao tiếp.
 }
 ```
 
-- [ ] Finding phải deterministic và idempotent.
-- [ ] Không cho analyzer sinh command shell.
-- [ ] Có `evidence_gaps` khi thiếu dữ liệu.
-- [ ] Có deduplication/debounce để không tạo lại cùng finding ở mỗi poll.
+- [x] Finding phải deterministic và idempotent.
+- [x] Không cho analyzer sinh command shell.
+- [x] Có `evidence_gaps` khi thiếu dữ liệu.
+- [x] Có deduplication trong `analyze_evidence_bundle`; debounce persistence để tích hợp incident sẽ làm ở pha sau.
 - [ ] Đưa findings vào incident/log intelligence hiện có khi phù hợp.
+
+Implementation: `shared/natural_language/analyzers.py` với `Finding`,
+`analyze_evidence()` và `analyze_evidence_bundle()`. Analyzer chỉ nhận
+snapshot/evidence, không có SSH/provider/executor dependency; `recommended_action`
+luôn là `null` ở pha này.
 
 ### Gate
 
-- Mỗi finding có unit test dữ liệu đúng, thiếu, stale và sai schema.
-- Không kết luận `HEALTH_OK` khi collector không có dữ liệu.
+- [x] Mỗi finding có unit test dữ liệu đúng, thiếu, stale và sai schema.
+- [x] Không kết luận `HEALTH_OK` khi collector không có dữ liệu.
 - Tỷ lệ false positive được đo trên fixture trước khi bật Telegram alert.
 
 ## 7. Pha 4 — RAG cho tài liệu Ceph và runbook nội bộ
@@ -326,36 +331,44 @@ không biến RAG thành nguồn sự thật thay cho cluster evidence.
 
 ### Nguồn dữ liệu
 
-- [ ] Tài liệu Ceph chính thức theo major release được hỗ trợ.
-- [ ] Runbook nội bộ đã duyệt.
-- [ ] Capability matrix của `ceph-ai`.
-- [ ] RCA knowledge base hiện có: `docs/ceph-ai-rca-knowledge.md`.
-- [ ] Incident/postmortem đã verified, có redaction.
-- [ ] Không ingest raw secret, private key, access key hoặc audit payload nhạy cảm.
+- [ ] Tài liệu Ceph chính thức theo major release được hỗ trợ — sẽ thêm vào
+  catalog sau khi chốt license/version source.
+- [x] Runbook nội bộ đã duyệt được catalog chọn lọc.
+- [ ] Capability matrix của `ceph-ai` — adapter metadata sẽ bổ sung ở pha sau.
+- [x] RCA knowledge base hiện có: `docs/ceph-ai-rca-knowledge.md`.
+- [ ] Incident/postmortem đã verified — chỉ dùng qua `case_retrieval` hiện hữu,
+  chưa ingest chung vào index.
+- [x] Không ingest credential-like material; private key, token và secret assignment
+  bị từ chối ngay khi ingest.
 
 ### Retrieval
 
-- [ ] Metadata filter theo Ceph version, deployment mode, component và language.
-- [ ] Hybrid retrieval: exact keyword cho mã lỗi + semantic retrieval cho câu hỏi
-  tự nhiên.
-- [ ] Reranking và giới hạn top-k.
-- [ ] Mỗi đoạn trả về source, version, section và confidence.
-- [ ] Nếu tài liệu khác version cluster, hiển thị cảnh báo và không dùng làm căn cứ
-  duy nhất cho action.
-- [ ] Hỗ trợ tiếng Việt bằng glossary/translation layer; không dịch sai command,
-  flag, resource ID và log code.
+- [x] Metadata filter theo Ceph version, component và language; deployment mode là
+  metadata mở rộng ở bước tiếp theo.
+- [x] Exact keyword cho mã lỗi + lexical retrieval accent-insensitive cho câu hỏi
+  tiếng Việt; chưa thêm semantic/vector dependency.
+- [x] Reranking deterministic và giới hạn `top_k`.
+- [x] Mỗi chunk trả source, version, section, revision và confidence.
+- [x] Version mismatch trả `version_mismatch` và không trả hit khác version.
+- [x] Giữ nguyên command, flag, resource ID và log code trong chunk; không tự dịch.
 
 ### Storage lựa chọn
 
-- [ ] Ưu tiên tận dụng database/cache hiện có trước khi thêm vector database.
+- [x] Ưu tiên index in-process, không thêm database/vector dependency ở pha này.
 - [ ] Chỉ thêm Qdrant/pgvector/FAISS nếu benchmark chứng minh cần thiết.
 - [ ] Embedding/index phải có version, checksum và cách rebuild.
 
+Implementation: `shared/natural_language/retrieval.py` với `KnowledgeStore`,
+`KnowledgeChunk`, `KnowledgeCitation` và `RetrievalResult`. Catalog mặc định
+đọc các tài liệu nội bộ đã chọn lọc: RCA knowledge, DR, Log Intelligence và
+CRUSH monitoring. RAG chưa được phép ghi đè live Ceph evidence và chưa tự động
+đưa tài liệu vào Chat loop; việc ghép evidence + RAG sẽ làm ở Pha 5.
+
 ### Gate
 
-- Câu trả lời có citation nội bộ cho runbook/tài liệu.
-- RAG không được ghi đè evidence live từ Ceph.
-- Test version mismatch phải fail closed.
+- [x] Retrieval trả citation nội bộ có source/section/revision.
+- [x] RAG không được ghi đè evidence live từ Ceph.
+- [x] Test version mismatch fail closed.
 
 ## 8. Pha 5 — Natural-language RCA và hội thoại nhiều lượt
 

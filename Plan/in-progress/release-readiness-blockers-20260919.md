@@ -164,16 +164,27 @@ upgrade, successful production-like upgrade, and documented rollback.
   cluster/host/metric scope.
 - [x] Run migration tests against SQLite and PostgreSQL disposable databases;
   upgrade and downgrade both pass for the new event migration.
-- [ ] Run the complete forecast test suite after the existing four
+- [x] Run the complete forecast test suite after the existing four
   node-resource alert regressions are repaired.
 
 ### 5.3 RR-03 verification result
 
 - `5 passed` for the new event/fallback/migration-focused test set.
-- Full selected run: `38 passed, 4 failed`; the four failures are existing
-  `sync_forecast_alerts` behavior regressions and are tracked separately from
-  the event-table contract.
+- Full selected run after the fix: `27 passed` including the complete
+  `test_node_resource_forecast.py` module, canary tests, event fallback tests,
+  and the forecast-event migration test.
 - No production database was migrated.
+
+### 5.4 Forecast regression root cause
+
+- The runtime schema check used `inspect(engine)` after pending ORM writes.
+  With SQLite `StaticPool`, the inspector reused the session connection and
+  rolled back the pending alert insert. The transition/event rows could then
+  remain without their parent alert because SQLite test foreign keys were not
+  enforced.
+- The check now uses the session connection and is evaluated once before
+  writes. This preserves the transaction and works for pre- and post-RR-03
+  schemas.
 
 **Exit criteria:** no missing import, migration table and ORM model agree, and
 all forecast event tests pass without compatibility hacks.

@@ -1,5 +1,10 @@
 import asyncio
 
+import pytest
+
+
+pytestmark = pytest.mark.integration
+
 from aiormq.exceptions import ChannelNotFoundEntity
 
 from shared.mq import DLQ_NAME, DLX_NAME, QUEUE_NAME, declare_topology, get_connection
