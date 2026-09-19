@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from config.settings import settings
 from dashboard import volume_perf_analysis
 from dashboard.cinder_discovery import (
+    build_attachment_remediation,
     discover_cinder_snapshots,
     discover_cinder_volume,
     reconcile_cinder_attachment,
@@ -2548,6 +2549,9 @@ async def volume_inventory_detail_api(
         cinder, detail.get("watchers") or [], detail.get("locks") or []
     )
     detail["attachment_reconciliation"] = reconciliation
+    detail["attachment_remediation"] = build_attachment_remediation(
+        cinder, detail.get("watchers") or [], detail.get("locks") or [], reconciliation,
+    )
     if cinder.get("verified"):
         summary = detail.setdefault("attachment_summary", {})
         summary["management_source"] = "openstack_cinder"

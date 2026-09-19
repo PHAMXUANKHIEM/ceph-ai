@@ -164,6 +164,60 @@ def reconcile_cinder_attachment(cinder: dict, watchers: list, locks: list) -> di
     return {"status": "healthy", "safe": True, "evidence": evidence}
 
 
+def build_attachment_remediation(
+    cinder: dict, watchers: list, locks: list, reconciliation: dict,
+) -> dict:
+    """Return a read-only remediation posture for stale watcher/lock evidence.
+
+    This intentionally never recommends ``rbd lock rm`` or direct force-detach
+    as an automatic action.  A watcher/lock has no reliable age in the RBD
+    response, so ``stale_attachment`` means a Cinder/Ceph state mismatch, not
+    proof that the client process is dead.
+    """
+    status = str(reconciliation.get("status") or "unknown")
+    evidence = reconciliation.get("evidence") if isinstance(reconciliation.get("evidence"), dict) else {}
+    if status == "healthy":
+        posture, severity, recommendation = (
+            "NO_REMEDIATION", "info", "Cinder và Ceph attachment evidence đang khớp.",
+        )
+    elif status == "stale_attachment":
+        posture, severity, recommendation = (
+            "REVIEW_BEFORE_DETACH", "high",
+            "Xác minh instance/host và Cinder attachment trước khi detach có kiểm soát; không tự xóa lock.",
+        )
+    elif status == "orphan":
+        posture, severity, recommendation = (
+            "ORPHAN_REVIEW", "high",
+            "RBD có evidence watcher/lock nhưng không còn volume Cinder; cần xác minh owner và backup trước remediation.",
+        )
+    elif status == "mismatch":
+        posture, severity, recommendation = (
+            "RECONCILE_CONTROL_PLANE", "high",
+            "Dừng thao tác destructive và đối soát Cinder với client/host trước khi xử lý watcher hoặc lock.",
+        )
+    else:
+        posture, severity, recommendation = (
+            "INSUFFICIENT_EVIDENCE", "unknown",
+            "Chưa đủ bằng chứng để remediation an toàn; giữ nguyên lock/watcher và thu thập lại evidence.",
+        )
+    return {
+        "posture": posture,
+        "severity": severity,
+        "reconciliation_status": status,
+        "recommendation": recommendation,
+        "automatic_remediation": False,
+        "direct_lock_removal_supported": False,
+        "stale_age_available": False,
+        "evidence": {
+            "watcher_count": len(watchers) if isinstance(watchers, list) else 0,
+            "lock_count": len(locks) if isinstance(locks, list) else 0,
+            "cinder_attachment_count": len(cinder.get("attachments") or []) if isinstance(cinder, dict) else 0,
+            **evidence,
+        },
+        "read_only": True,
+    }
+
+
 def _is_not_found_error(message: str) -> bool:
     lowered = message.lower()
     return "no volume with a name or id" in lowered or "could not find resource" in lowered

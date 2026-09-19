@@ -140,3 +140,20 @@ def test_reconcile_cinder_attachment_is_fail_closed(cinder, watchers, locks, exp
 
     assert result["status"] == expected
     assert result["safe"] is (expected == "healthy")
+
+
+def test_attachment_remediation_never_authorizes_direct_lock_removal():
+    result = cinder_discovery.build_attachment_remediation(
+        {"status": "managed", "verified": True, "attachments": []},
+        [{"client": "client.1"}], [{"locker_id": "client.1"}],
+        {"status": "stale_attachment", "safe": False,
+         "reason": "Cinder không có attachment nhưng Ceph vẫn còn watcher/lock.",
+         "evidence": {"cinder_attachment_count": 0}},
+    )
+
+    assert result["posture"] == "REVIEW_BEFORE_DETACH"
+    assert result["severity"] == "high"
+    assert result["automatic_remediation"] is False
+    assert result["direct_lock_removal_supported"] is False
+    assert result["stale_age_available"] is False
+    assert result["read_only"] is True

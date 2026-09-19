@@ -1701,6 +1701,7 @@ def test_volume_inventory_detail_rejects_invalid_name_and_returns_dependencies(d
     assert response.json()["snapshots"] == [{"name": "daily"}]
     assert response.json()["children"] == ["vms/clone"]
     assert response.json()["attachment_summary"]["mutation_supported"] is False
+    assert response.json()["attachment_remediation"]["posture"] == "INSUFFICIENT_EVIDENCE"
 
 
 def test_volume_dependency_graph_api_is_cluster_scoped_and_read_only(dashboard_client, monkeypatch):
@@ -1770,6 +1771,7 @@ def test_volume_inventory_detail_marks_verified_cinder_consumer(dashboard_client
     assert payload["attachment_summary"]["consumer_count"] == 1
     assert payload["attachment_summary"]["mutation_supported"] is False
     assert payload["attachment_reconciliation"]["status"] == "mismatch"
+    assert payload["attachment_remediation"]["posture"] == "RECONCILE_CONTROL_PLANE"
     assert payload["cinder_snapshots"]["items"][0]["snapshot_id"] == "snap-1"
 
 
