@@ -245,6 +245,8 @@ def collect_rgw_evidence(cluster) -> dict:
     zonegroup = _read_rgw_command(cluster, hosts, "radosgw-admin zonegroup get --format json", "rgw_zonegroup") if hosts else _section_unavailable("rgw_zonegroup", "Chưa cấu hình node RGW.")
     zone = _read_rgw_command(cluster, hosts, "radosgw-admin zone get --format json", "rgw_zone") if hosts else _section_unavailable("rgw_zone", "Chưa cấu hình node RGW.")
     sync = _read_rgw_command(cluster, hosts, "radosgw-admin sync status --format json", "rgw_sync_status") if hosts else _section_unavailable("rgw_sync_status", "Chưa cấu hình node RGW.")
+    sync_errors = _read_rgw_command(cluster, hosts, "radosgw-admin sync error list --format json", "rgw_sync_errors") if hosts else _section_unavailable("rgw_sync_errors", "Chưa cấu hình node RGW.")
+    period = _read_rgw_command(cluster, hosts, "radosgw-admin period get --format json", "rgw_period") if hosts else _section_unavailable("rgw_period", "Chưa cấu hình node RGW.")
     df = _read_mon_command(cluster, "ceph df", "ceph_df")
 
     daemons = _normalize_daemons(orch)
@@ -257,7 +259,7 @@ def collect_rgw_evidence(cluster) -> dict:
         "zonegroup": zonegroup,
         "zone": zone,
     }
-    observed = [daemons, endpoints, frontend, sync_view, capacity, realm, zonegroup, zone]
+    observed = [daemons, endpoints, frontend, sync_view, capacity, realm, zonegroup, zone, period]
     observed_count = sum(section.get("status") in {"observed", "inferred"} for section in observed)
     status = "ready" if observed_count >= 4 else "partial" if observed_count else "unavailable"
     gaps = []
@@ -269,6 +271,10 @@ def collect_rgw_evidence(cluster) -> dict:
         gaps.append("Endpoint được suy ra từ node RGW và port mặc định 7480, chưa xác nhận bằng mgr service.")
     if sync_view["status"] == "not_available":
         gaps.append("Chưa đọc được sync status; không suy luận RGW multisite đang đồng bộ.")
+    if period.get("status") == "not_available":
+        gaps.append("Chưa đọc được period get; không xác nhận được epoch/master state multisite.")
+    if sync_errors.get("status") == "not_available":
+        gaps.append("Chưa đọc được sync error list; shard error có thể chưa đầy đủ.")
     if capacity["status"] == "not_available":
         gaps.append("Chưa map được RGW placement pool với ceph df để tính capacity dependency.")
     return {
@@ -284,6 +290,18 @@ def collect_rgw_evidence(cluster) -> dict:
         "frontend": frontend,
         "topology": topology,
         "sync": sync_view,
+        "sync_errors": {
+            "status": sync_errors.get("status"),
+            "source": sync_errors.get("source"),
+            "details": sync_errors.get("payload", {}),
+            "errors": sync_errors.get("errors", []),
+        },
+        "period": {
+            "status": period.get("status"),
+            "source": period.get("source"),
+            "details": period.get("payload", {}),
+            "errors": period.get("errors", []),
+        },
         "capacity": capacity,
         "evidence_gaps": gaps,
     }

@@ -42,6 +42,8 @@ def test_collect_rgw_evidence_normalizes_topology_sync_and_capacity(monkeypatch)
                 "placement_pools": [{"key": "default", "val": {"data_pool": "default.rgw.buckets.data"}}],
             },
             "rgw_sync_status": {"sync_status": "disabled"},
+            "rgw_sync_errors": {"errors": []},
+            "rgw_period": {"id": "period-1", "epoch": 1, "master_zone": "zone-1"},
         }
         return {"status": "observed", "source": source, "host": "rgw-1", "payload": payloads[source]}
 

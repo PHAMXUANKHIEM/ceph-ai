@@ -38,6 +38,7 @@ from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 from watcher.rgw_evidence import get_rgw_evidence
 from watcher.rgw_bucket_diagnosis import build_bucket_access_diagnosis
+from watcher.rgw_multisite_diagnosis import build_multisite_diagnosis
 from watcher.rgw_access_log import fetch_rgw_error_log, fetch_rgw_error_log_with
 from watcher.rgw_connectivity import probe_endpoint
 from watcher.rgw_access_log import (
@@ -1604,6 +1605,21 @@ async def capabilities_api(request: Request, user: str = Depends(require_login))
 async def rgw_evidence_api(request: Request, user: str = Depends(require_login)):
     del user
     return await asyncio.to_thread(get_rgw_evidence, selected_cluster(request))
+
+
+@router.get("/api/object-storage/multisite-diagnosis")
+async def multisite_diagnosis_api(request: Request, user: str = Depends(require_login)):
+    del user
+    cluster = selected_cluster(request)
+    rgw_evidence = await asyncio.to_thread(get_rgw_evidence, cluster)
+    diagnosis = await asyncio.to_thread(build_multisite_diagnosis, rgw_evidence)
+    diagnosis.update({
+        "cluster_id": cluster.id,
+        "captured_at": rgw_evidence.get("captured_at"),
+        "rgw_evidence_status": rgw_evidence.get("status"),
+        "cache": rgw_evidence.get("cache", {}),
+    })
+    return diagnosis
 
 
 @router.get("/api/object-storage/buckets/{bucket}/diagnosis")

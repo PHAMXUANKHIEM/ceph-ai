@@ -166,7 +166,7 @@ và nguyên nhân tăng trưởng; không biến cảnh báo ngưỡng hiện t�
   - Chẩn đoán lỗi list/create/delete/access bucket từ RGW, auth, endpoint, DNS/TLS,
     quota, policy và backend pool.
   - Phân biệt CephX admin lỗi với S3 credential hoặc bucket policy lỗi.
-- [ ] **4.3 Multi-site diagnosis**
+- [~] **4.3 Multi-site diagnosis** — thêm read-only `GET /api/object-storage/multisite-diagnosis`, bổ sung evidence `sync error list` và `period get`, phân tích deterministic replication lag, shard error, master state, period/epoch mismatch và conflict; mọi finding đều có evidence, next check, `action_id=null` và không tự resync/resolve/commit period. Còn thiếu kiểm chứng trực tiếp trên nhiều Ceph release và dữ liệu multisite thật.
   - Phân tích replication lag, shard error, master state, period/epoch mismatch và
     conflict; chỉ đưa hướng dẫn read-only ở pha đầu.
 - [ ] **4.4 Security insight**
