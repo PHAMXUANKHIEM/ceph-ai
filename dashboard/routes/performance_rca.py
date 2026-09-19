@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import HTMLResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -6,6 +6,7 @@ from dashboard.cluster_scope import cluster_selection
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from watcher.performance_rca import report
+from watcher.performance_simulation import simulate_scenario
 
 router = APIRouter()
 templates = make_templates()
@@ -21,6 +22,20 @@ async def performance_rca_api(
 ):
     _clusters, cluster = cluster_selection(request)
     return await run_in_threadpool(report, cluster, pool=pool, image=image, window_hours=window_hours)
+
+
+@router.post("/api/performance-rca/simulate")
+async def performance_rca_simulation_api(
+    request: Request,
+    body: dict = Body(...),
+    _user: str = Depends(require_login),
+):
+    """Return a typed, read-only recommendation simulation preview."""
+    _clusters, cluster = cluster_selection(request)
+    result = await run_in_threadpool(simulate_scenario, body)
+    result["cluster_id"] = cluster.id
+    result["cluster_scoped"] = True
+    return result
 
 
 @router.get("/performance-rca", response_class=HTMLResponse)
