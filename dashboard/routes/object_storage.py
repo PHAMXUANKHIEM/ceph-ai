@@ -36,6 +36,7 @@ from shared.object_storage_cache import (
 from dashboard.cluster_scope import cluster_connection
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
+from watcher.rgw_evidence import get_rgw_evidence
 from watcher.rgw_access_log import (
     RgwLogError,
     fetch_bucket_access_log,
@@ -1594,6 +1595,12 @@ async def capabilities_api(request: Request, user: str = Depends(require_login))
         return await asyncio.to_thread(_cached_capabilities, selected_cluster(request))
     except ObjectStorageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/api/object-storage/rgw-evidence")
+async def rgw_evidence_api(request: Request, user: str = Depends(require_login)):
+    del user
+    return await asyncio.to_thread(get_rgw_evidence, selected_cluster(request))
 
 
 @router.post("/api/object-storage/buckets/actions/preview")
