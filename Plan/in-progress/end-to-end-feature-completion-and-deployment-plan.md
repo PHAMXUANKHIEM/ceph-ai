@@ -170,8 +170,11 @@ Scope: RT-05 through RT-09.
   invalidations are published after the database commit that records the
   post-check-confirmed `RESOLVED` state. Evidence: `tests/test_dashboard_ws.py`
   (`9 passed`).
-- [ ] Add mutation-to-invalidation mapping for pool, CRUSH, OSD, RGW, node, and
-  deployment changes.
+- [x] Add mutation-to-invalidation mapping for pool, CRUSH, OSD, RGW, node, and
+  deployment changes. The committed post-check hook maps resolved incident
+  codes to bounded snapshot sections and keeps RGW changes on the status hint
+  without sending object data through the event channel. Evidence:
+  `tests/test_dashboard_ws.py` (`12 passed`).
 - [ ] Add bounded retries, circuit breakers, concurrency limits, correlation
   IDs, stale alerts, cache-size monitoring, and event reconnect metrics.
 - [ ] Execute the RT-05 through RT-09 exit-gate browser and load tests.
