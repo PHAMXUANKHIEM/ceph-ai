@@ -29,10 +29,10 @@ relevant gates pass.
 ## 2. Current baseline
 
 - At the latest review, `main` and `origin/main` both resolve to
-  `55a510cd6b205e3ea3e1a6606dad6571197eb266`; the release-candidate worktree
-  is dirty with the Natural Language Ceph slice, its migration/evidence, one
-  dashboard corrective fix, and a pre-existing dashboard-node test change.
-  Classification is recorded in
+  `d5a414a3f3699d48e0f48a32ba364feb49181854`; the release-candidate worktree
+  is clean after three reviewed commits containing the Natural Language Ceph
+  slice, its migration/evidence, realtime frontend hardening, and the
+  dashboard corrective fix. Classification is recorded in
   `docs/ai/end-to-end-change-classification.md`.
 - The systemd Dashboard, Worker, and Watcher units are disabled/inactive, but
   independently managed Podman containers are running, including a healthy
@@ -79,8 +79,12 @@ creating additional commits.
 
 - [x] Review and classify every current uncommitted change. Evidence:
   `docs/ai/end-to-end-change-classification.md`.
-- [ ] Separate unrelated changes into isolated commits.
-- [ ] Push the three local commits only after review and release-gate tests.
+- [x] Separate unrelated changes into isolated commits. The release
+  foundation, Natural Language slice, and conversation regression are in
+  separate commits.
+- [x] Push the three local commits only after review and release-gate tests.
+  `HEAD=origin/main=d5a414a3` after the full suite, focused gate, migration
+  round-trip, and Node 20 build passed.
 - [x] Reproduce and fix the Alert Center unique-index test failure. The
   suspected unique-index regression was not reproducible; the focused
   concurrency/unique-index tests pass (`2 passed, 35 deselected`). The full

@@ -11,9 +11,9 @@ credentials or provider content.
 - Host: `10.3.55.213`
 - Repository: `/root/ceph-ai`
 - Branch: `main`
-- Observed application commit: `55a510cd6b205e3ea3e1a6606dad6571197eb266`
-- Rollback candidate: `origin/main` at the same commit
-- Worktree: dirty; review and commit separation are still required
+- Observed application commit: `d5a414a3f3699d48e0f48a32ba364feb49181854`
+- Rollback candidate: `55a510cd6b205e3ea3e1a6606dad6571197eb266`
+- Worktree: clean; three reviewed commits are pushed to `origin/main`
 - Deployment: not approved; running Podman services are externally managed
 
 ## Migration and artifacts
@@ -53,7 +53,7 @@ credentials or provider content.
 ## Approval and rollback
 
 - Operator approval: `PENDING`
-- Approved deploy commit: `PENDING`
+- Approved deploy commit: `PENDING` (code is pushed but deployment is not authorized)
 - Migration backup/rehearsal: `PENDING`
 - Rollback procedure: `Plan/in-progress/end-to-end-feature-completion-and-deployment-plan.md`
 - Automatic destructive remediation: disabled pending explicit per-cluster approval
