@@ -15,6 +15,7 @@
   var sortLabel = document.getElementById("volume-inventory-sort-label"), overview = document.getElementById("volume-pool-overview");
   var overviewError = document.getElementById("volume-pool-overview-error"), healthChecks = document.getElementById("volume-pool-health-checks");
   var capacityRisk = document.getElementById("volume-capacity-risk");
+  var dependencyHealth = document.getElementById("volume-dependency-health");
   var dependencyStatus = document.getElementById("volume-dependency-status"), dependencyList = document.getElementById("volume-dependency-list"), dependencyRefresh = document.getElementById("volume-dependency-refresh");
   var protectionStatus = document.getElementById("volume-protection-status"), protectionList = document.getElementById("volume-protection-list"), protectionRefresh = document.getElementById("volume-protection-refresh");
   var state = { page: 1, pages: 1, loading: false, sort: "name", order: "asc" }, PAGE_SIZE = 10;
@@ -82,6 +83,29 @@
       if (evidence) evidence.textContent = gaps.length ? "Giới hạn evidence: " + gaps.join(" · ") : "Evidence đầy đủ trong phạm vi snapshot hiện có.";
     }).catch(function (exc) { setCapacityField("status", "Không đọc được"); setCapacityField("evidence", exc.message); });
   }
+  function dependencyField(name) { return dependencyHealth && dependencyHealth.querySelector('[data-dependency-field="' + name + '"]'); }
+  function setDependencyField(name, value) { var target = dependencyField(name); if (target) target.textContent = value; }
+  function loadDependencyHealth() {
+    if (!dependencyHealth) return;
+    requestJson("/api/volumes/" + encodeURIComponent(pool) + "/dependency-health").then(function (data) {
+      var pg = data.pg || {}, osd = data.osd || {}, domains = data.failure_domains || {};
+      var status = dependencyField("status");
+      if (status) { status.textContent = data.status || "INSUFFICIENT_EVIDENCE"; status.className = "volume-capacity-status status-" + String(data.status || "insufficient").toLowerCase(); }
+      setDependencyField("pg", String(pg.total || 0));
+      setDependencyField("pg-detail", String(pg.affected_count || 0) + " affected · " + String(pg.bad_count || 0) + " critical");
+      setDependencyField("osd", String(osd.acting_set_osd_count || 0));
+      setDependencyField("osd-detail", (osd.down_osd_ids || []).length ? "Down: " + osd.down_osd_ids.map(function (id) { return "osd." + id; }).join(", ") : "Không có OSD down trong acting sets");
+      setDependencyField("hosts", String(domains.host_count || 0));
+      setDependencyField("hosts-detail", (domains.down_hosts || []).length ? "Down: " + domains.down_hosts.join(", ") : (domains.hosts || []).join(", ") || "Chưa có topology");
+      setDependencyField("cluster-health", data.cluster_health || "UNKNOWN");
+      setDependencyField("cluster-health-detail", data.volume_count == null ? "—" : String(data.volume_count) + " volume trong pool");
+      var details = dependencyField("details"), affected = pg.affected || [], gaps = (data.evidence || {}).gaps || [];
+      if (details) {
+        details.textContent = affected.length ? "PG cần chú ý: " + affected.slice(0, 8).map(function (item) { return item.pg_id + " (" + item.state + ")"; }).join(" · ") : "Không có PG degraded/stale/undersized trong snapshot này.";
+        if (gaps.length) details.textContent += " · Giới hạn evidence: " + gaps.join(" · ");
+      }
+    }).catch(function (exc) { setDependencyField("status", "Không đọc được"); setDependencyField("details", exc.message); });
+  }
   function loadPoolCounts() { Array.prototype.forEach.call(document.querySelectorAll(".volumes-pool-tab"), function (tab) { var tabPool = tab.dataset.pool, target = tab.querySelector("[data-pool-count]"); requestJson("/api/volumes/" + encodeURIComponent(tabPool) + "/inventory?page=1&page_size=1").then(function (data) { target.textContent = "(" + data.total + ")"; }).catch(function () { target.textContent = ""; }); }); }
   function renderDependencyInsights(data) {
     if (!dependencyList || !dependencyStatus) return;
@@ -130,5 +154,5 @@
   if (selectedImage) { window.location.replace(detailUrl(selectedImage)); return; }
   if (dependencyRefresh) dependencyRefresh.addEventListener("click", loadDependencyInsights);
   if (protectionRefresh) protectionRefresh.addEventListener("click", loadProtectionInsights);
-  loadOverview(); loadCapacityRisk(); loadInventory(); loadPoolCounts(); loadDependencyInsights(); loadProtectionInsights();
+  loadOverview(); loadCapacityRisk(); loadDependencyHealth(); loadInventory(); loadPoolCounts(); loadDependencyInsights(); loadProtectionInsights();
 }());

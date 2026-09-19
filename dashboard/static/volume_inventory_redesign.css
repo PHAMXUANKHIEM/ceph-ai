@@ -41,6 +41,9 @@
 .volume-capacity-metric small { display: block; margin-top: 4px; color: #94a3b8; font-size: 11px; line-height: 1.35; }
 .volume-capacity-risk-footer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, .8fr); gap: 14px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #334155; color: #cbd5e1; font-size: 12px; line-height: 1.5; }
 .volume-capacity-evidence { color: #64748b; overflow-wrap: anywhere; }
+.volume-dependency-health { margin: 0 0 22px; padding: 16px; border: 1px solid #334155; border-radius: 12px; background: rgba(15,23,42,.56); }
+.volume-dependency-health-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.volume-dependency-health-details { margin-top: 12px; padding-top: 12px; border-top: 1px solid #334155; color: #94a3b8; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .volume-inventory-filters { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin: 0 0 14px; padding: 0; }
 .volume-inventory-filters > div:first-child { display: flex; flex-direction: column; gap: 4px; }
 .volume-inventory-filters > div:first-child strong { color: #e2e8f0; font-size: 16px; }
@@ -82,6 +85,7 @@
 .volumes-redesign-page .error { margin-top: 12px; }
 @media (max-width: 1200px) { .volumes-redesign-page .volume-inventory-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 900px) { .volume-capacity-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.volume-capacity-risk-footer { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .volume-dependency-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 1024px) { .volume-image-id-column, .volume-logic-column { display: none !important; } }
 @media (max-width: 760px) {
   .volumes-page-header { align-items: flex-start; flex-direction: column; gap: 12px; }
@@ -91,7 +95,7 @@
   .volume-filter-form { max-width: none; width: 100%; }
   .volume-search-field { min-width: 0; }
   .volume-sort-dropdown { min-width: 165px; }
-  .volume-capacity-risk-header { flex-direction: column; }.volume-capacity-grid { grid-template-columns: 1fr; }
+  .volume-capacity-risk-header { flex-direction: column; }.volume-capacity-grid, .volume-dependency-health-grid { grid-template-columns: 1fr; }
 }
 
 .volume-detail-page { max-width: 1180px; }

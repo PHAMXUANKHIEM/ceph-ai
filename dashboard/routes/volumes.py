@@ -60,6 +60,7 @@ from watcher.block_storage_insights import (
     persist_dependency_snapshots,
 )
 from watcher.block_storage_capacity import build_capacity_risk
+from watcher.block_storage_dependencies import build_pool_dependency_health
 from watcher.capacity_failure_simulation import simulate as simulate_capacity_failure
 from watcher.capacity_forecast import forecasts as capacity_forecasts
 from worker.executor import commands as executor_commands
@@ -1192,6 +1193,34 @@ async def volume_capacity_risk_api(
             inventory_state=inventory_state,
             forecast=pool_forecast,
             failure_simulation=simulate_capacity_failure(cluster.id),
+        ),
+    }
+
+
+@router.get("/api/volumes/{pool}/dependency-health")
+async def volume_dependency_health_api(
+    request: Request, pool: str, user: str = Depends(require_login)
+):
+    """Return pool-scoped Volume → PG/OSD/failure-domain health evidence."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        inventory, _inventory_state = _cached_rbd_inventory_with_state(cluster, pool)
+        evidence = (
+            ceph_client.query_rbd_pool_dependency_health(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_pool_dependency_health_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        logger.warning("volume_dependency_health_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được dependency health của Pool: {exc}") from exc
+    return {
+        "cluster_id": cluster.id,
+        "collected_at": datetime.utcnow().isoformat() + "Z",
+        **build_pool_dependency_health(
+            pool, evidence.get("health"), evidence.get("pg"), evidence.get("osd_tree"),
+            volume_count=len(inventory),
         ),
     }
 

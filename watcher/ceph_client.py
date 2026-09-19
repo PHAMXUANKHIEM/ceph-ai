@@ -929,6 +929,44 @@ def query_erasure_code_profile_with(
     return payload if isinstance(payload, dict) else {"raw": payload}
 
 
+def query_rbd_pool_dependency_health(pool: str) -> dict:
+    """Read health, PG membership and OSD topology for one RBD pool."""
+    if not pool or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", pool):
+        raise CephQueryError("invalid RBD pool name")
+    _host, payloads = run_ceph_json_batch_command_with(
+        get_mon_nodes(), settings.ceph_container_name, settings.ssh_user,
+        settings.ssh_key_path, settings.ceph_exec_mode,
+        [
+            "ceph health detail --format json",
+            f"ceph pg ls-by-pool {shlex.quote(pool)} --format json",
+            "ceph osd tree --format json",
+        ],
+    )
+    if any(payload is None for payload in payloads):
+        raise CephQueryError("one or more pool dependency queries failed")
+    return {"health": payloads[0], "pg": payloads[1], "osd_tree": payloads[2]}
+
+
+def query_rbd_pool_dependency_health_with(
+    pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> dict:
+    """Cluster-scoped variant of :func:`query_rbd_pool_dependency_health`."""
+    if not pool or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", pool):
+        raise CephQueryError("invalid RBD pool name")
+    _host, payloads = run_ceph_json_batch_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        [
+            "ceph health detail --format json",
+            f"ceph pg ls-by-pool {shlex.quote(pool)} --format json",
+            "ceph osd tree --format json",
+        ],
+    )
+    if any(payload is None for payload in payloads):
+        raise CephQueryError("one or more pool dependency queries failed")
+    return {"health": payloads[0], "pg": payloads[1], "osd_tree": payloads[2]}
+
+
 def query_rbd_mirror_pool_info(pool: str) -> dict:
     """Read-only RBD mirroring capability/configuration for one pool."""
     _host, payload = run_ceph_json_command(f"rbd mirror pool info {shlex.quote(pool)}")

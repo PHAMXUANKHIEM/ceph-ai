@@ -94,6 +94,22 @@
             <div class="volume-capacity-evidence" data-capacity-field="evidence"></div>
           </div>
         </section>
+        <section class="volume-dependency-health" id="volume-dependency-health" aria-live="polite">
+          <div class="volume-capacity-risk-header">
+            <div>
+              <h2>Volume dependency health</h2>
+              <p class="hint">Volume → pool → PG/OSD/failure domain. Evidence PG/OSD được tính theo pool; không suy diễn mapping object-level cho từng volume.</p>
+            </div>
+            <span class="volume-capacity-status" data-dependency-field="status">Đang tải…</span>
+          </div>
+          <div class="volume-dependency-health-grid">
+            <div class="volume-capacity-metric"><span>PG</span><strong data-dependency-field="pg">—</strong><small data-dependency-field="pg-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>OSD acting set</span><strong data-dependency-field="osd">—</strong><small data-dependency-field="osd-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>Failure domain</span><strong data-dependency-field="hosts">—</strong><small data-dependency-field="hosts-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>Cluster health</span><strong data-dependency-field="cluster-health">—</strong><small data-dependency-field="cluster-health-detail">—</small></div>
+          </div>
+          <div class="volume-dependency-health-details" data-dependency-field="details"></div>
+        </section>
         <div id="volume-pool-health-checks" class="hint"></div>
         <p class="error" id="volume-pool-overview-error" hidden></p>
         {% if is_admin %}<p id="volume-mutation-result" class="hint" hidden></p>{% endif %}

@@ -1206,6 +1206,25 @@ def test_erasure_code_profile_query_is_read_only_and_validates_name(monkeypatch)
         ceph_client.query_erasure_code_profile("ec profile; rm -rf")
 
 
+def test_pool_dependency_health_uses_bounded_read_only_batch(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.0.0.1")
+    calls = []
+
+    def fake_batch(*args):
+        calls.append(args[-1])
+        return "mon-1", [{"status": "HEALTH_OK"}, {"pg_stats": []}, {"nodes": []}]
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_batch_command_with", fake_batch)
+    result = ceph_client.query_rbd_pool_dependency_health("vms")
+
+    assert result["health"]["status"] == "HEALTH_OK"
+    assert calls == [[
+        "ceph health detail --format json",
+        "ceph pg ls-by-pool vms --format json",
+        "ceph osd tree --format json",
+    ]]
+
+
 def test_normalize_rbd_pool_overview_combines_durability_and_usage():
     overview = ceph_client._normalize_rbd_pool_overview(
         "vms",

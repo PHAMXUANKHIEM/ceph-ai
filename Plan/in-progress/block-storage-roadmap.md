@@ -394,8 +394,13 @@ capacity và không áp QoS hoặc benchmark sai target.
 
 ### 6. Tính sẵn sàng, tính toàn vẹn và Pool Governance — ưu tiên P1
 
-- [ ] **6.1 Health/dependency view** từ volume tới pool, PG, OSD và failure
+- [~] **6.1 Health/dependency view** từ volume tới pool, PG, OSD và failure
   domain; chỉ ra degraded/undersized/inconsistent state có ảnh hưởng.
+  - Đã có `/api/volumes/{pool}/dependency-health` và panel Block Storage
+    Overview đọc health, PG state, acting OSD, host/failure domain; thiếu PG/OSD
+    topology trả `INSUFFICIENT_EVIDENCE`.
+  - Phạm vi hiện tại là pool-scoped. Không tuyên bố mapping chính xác
+    volume→PG ở mức object khi chưa có evidence object-level.
 - [ ] **6.2 Replication/EC policy inventory** và kiểm tra độ bền so với failure
   domain; thay đổi policy chỉ qua migration plan riêng.
 - [ ] **6.3 Watcher/lock và stale attachment remediation**
@@ -545,6 +550,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-09-18 | BS-05.3 QoS policy | Đang làm | Thêm read-only `rbd config image list` API/UI theo volume; proposal QoS gồm tổng/read/write IOPS/BPS và burst, giới hạn server-side, zero = unlimited, action `rbd_qos_set` RISKY qua Worker, approval/audit, impact preview theo workload, cache invalidation và post-check/reconciliation; browser không có đường chạy trực tiếp. API trả `supported=false` rõ khi Ceph release không nhận QoS inventory. | Affected suite: `447 passed` plus QoS route smoke `2 passed`; `py_compile`, `node --check`, `git diff --check`; Worker và Dashboard healthy sau restart. | Còn live Ceph output validation và rollback proposal từ `qos_before`. |
 | 2026-09-18 | BS-04.4 Replication posture | Đang làm | Thêm Ceph client và `/api/volumes/{pool}/replication` read-only cho `rbd mirror pool info/status`, không truyền duplicate `--format`, cluster scoped; Volume Detail hiển thị mode, peer/status và khóa failover/fencing. Live default cluster xác nhận pool `images` đang `mode=disabled`; không bật mirroring hay failover. | `tests/test_ceph_client.py tests/test_dashboard_volumes.py`: `250 passed`; live CLI info/status read-only; `node --check`, `py_compile`, `git diff --check` đạt. | Còn peer configuration, lag/RPO, failover/failback/fencing và multi-site acceptance. |
 | 2026-09-19 | BS-05.4 Capacity risk guard | Đang làm | Bổ sung `watcher/block_storage_capacity.py` và `/api/volumes/{pool}/capacity-risk`; Block Storage Overview hiển thị physical used/available, logical provisioned/used, raw-equivalent replica/EC overhead, thin-provisioning overcommit, forecast pool và reserve sau failure-domain simulation. Mọi kết quả là advisory/read-only; thiếu EC k/m, forecast hoặc topology evidence đều được công bố trong `evidence.gaps`. | `tests/test_block_storage_capacity.py tests/test_block_storage_insights.py tests/test_dashboard_volumes.py`: `151 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn live Ceph acceptance, capability/profile parsing theo release và hoàn tất test matrix 5.7 trước khi đóng mục 5.4. |
+| 2026-09-19 | BS-06.1 Dependency health view | Đang làm | Bổ sung `watcher/block_storage_dependencies.py`, batch query read-only health/PG/OSD tree và `/api/volumes/{pool}/dependency-health`; UI hiển thị PG affected, acting OSD, down host/failure domain và scope evidence. Missing topology fail-closed thành `INSUFFICIENT_EVIDENCE`; không suy diễn exact volume→PG. | `tests/test_block_storage_dependencies.py` + route/Ceph client smoke: `4 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn live validation với degraded/undersized/stale PG, correlation object-level nếu thực sự cần và các mục 6.2–6.6. |
 
 | 2026-09-18 | 0.4 Regression baseline | Hoàn thành phần test | Cập nhật test contract từ query `image=...` cũ sang deep-link `/volumes/{pool}/{image}` đang được UI sử dụng; không thay đổi hành vi production. | `.venv/bin/pytest -q tests/test_dashboard_block_storage.py tests/test_dashboard_volumes.py tests/test_rbd_reconciliation.py tests/test_volume_monitor.py tests/test_volume_perf.py tests/test_volume_perf_analysis.py tests/test_volume_snapshot_policy.py tests/test_volume_snapshot_scheduler.py tests/test_cinder_discovery.py tests/test_cinder_reconciliation.py`: `216 passed, 1 warning`. | Còn live Ceph audit và full repository/Alembic regression trước khi đóng toàn bộ mục 0.4. |
 ## Ghi chú bàn giao

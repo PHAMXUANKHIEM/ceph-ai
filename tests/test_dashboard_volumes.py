@@ -2104,6 +2104,37 @@ def test_volume_capacity_risk_api_combines_logical_physical_and_forecast_evidenc
     assert payload["read_only"] is True
 
 
+def test_volume_dependency_health_api_is_pool_scoped_and_read_only(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route, "_cached_rbd_inventory_with_state",
+        lambda cluster, pool: ([{"name": "volume-a"}, {"name": "volume-b"}], {"source": "cache", "stale": False}),
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_dependency_health",
+        lambda pool: {
+            "health": {"status": "HEALTH_OK"},
+            "pg": {"pg_stats": [{"pgid": "3.a", "state": "active+clean", "acting": [1], "up": [1]}]},
+            "osd_tree": {"nodes": [
+                {"id": -1, "type": "root", "children": [-2]},
+                {"id": -2, "type": "host", "name": "node-a", "children": [1]},
+                {"id": 1, "type": "osd", "status": "up"},
+            ]},
+        },
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/dependency-health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "HEALTHY"
+    assert payload["volume_count"] == 2
+    assert payload["pg"]["total"] == 1
+    assert payload["dependency_scope"]["exact_volume_to_pg"] is False
+    assert payload["read_only"] is True
+
+
 def test_volume_replication_api_is_read_only_and_exposes_disabled_mode(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_info", lambda pool: {"mode": "disabled"})
