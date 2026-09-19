@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from config.settings import settings
 from shared import db
@@ -33,6 +33,7 @@ from shared.learning_runtime import evaluate as evaluate_learning_runtime
 from shared.models import (
     Cluster,
     NodeResourceForecastAlert,
+    NodeResourceForecastAlertEvent,
     NodeResourceForecastRun,
     NodeResourceForecastTransition,
     NodeResourceModelState,
@@ -42,6 +43,14 @@ from shared.telegram_alerts import send_node_forecast_alert
 
 logger = logging.getLogger(__name__)
 JOB = "ceph-ai-node-metrics"
+
+
+def _forecast_alert_events_table_available(session) -> bool:
+    """Return whether the post-RR-03 event table is installed."""
+    try:
+        return bool(inspect(session.get_bind()).has_table("node_resource_forecast_alert_events"))
+    except Exception:
+        return False
 
 
 @dataclass(frozen=True)
@@ -1264,4 +1273,17 @@ def sync_forecast_alerts(
                 evidence_version=alert.evidence_version,
                 changed_at=now_naive,
             ))
+            if _forecast_alert_events_table_available(session):
+                session.add(NodeResourceForecastAlertEvent(
+                    alert_id=alert.id,
+                    cluster_name=alert.cluster_name,
+                    host=alert.host,
+                    metric=alert.metric,
+                    from_state=previous_state,
+                    to_state=new_state,
+                    notification_state=alert.notification_state,
+                    reason=alert.state_reason or "lifecycle transition",
+                    evidence_fingerprint=alert.evidence_fingerprint,
+                    occurred_at=now_naive,
+                ))
         session.commit()

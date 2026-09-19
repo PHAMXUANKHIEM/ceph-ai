@@ -14,6 +14,7 @@ from shared.models import (
     WatcherHeartbeat,
 )
 from shared.online_learning_consumer import consume_sample, consume_samples
+from shared.online_learning_controls import PAUSED, set_status
 from shared.online_learning_labels import enqueue_verified_outcomes
 
 
@@ -70,6 +71,38 @@ def test_consumer_requires_healthy_runtime_before_shadow_update(monkeypatch):
     assert result is not None
     assert result.quality.status == "READY_TO_LEARN"
     assert result.update_applied is False  # AUDIT_ONLY remains fail-closed
+
+
+def test_paused_scope_skips_audit_and_learning_write(monkeypatch):
+    factory = _session(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_enabled", True)
+    now = datetime.now(timezone.utc)
+    with factory() as session:
+        set_status(
+            session,
+            cluster_id="cluster-paused",
+            host="node-1",
+            metric="cpu",
+            status=PAUSED,
+            actor="admin",
+            reason="operator is investigating drift",
+        )
+        session.commit()
+
+    result = consume_sample(
+        cluster_id="cluster-paused",
+        host="node-1",
+        metric="cpu",
+        value=42.0,
+        observed_at=now,
+        sample_id="paused-scope",
+        label=42.0,
+    )
+
+    assert result.runtime_mode == "PAUSED"
+    assert result.update_applied is False
+    with factory() as session:
+        assert session.query(OnlineLearnerAudit).filter_by(sample_id="paused-scope").count() == 0
 
 
 def test_consumer_uses_bounded_batch_runner(monkeypatch):

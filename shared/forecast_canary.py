@@ -12,30 +12,36 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from statistics import mean
 
+from sqlalchemy import inspect
+
 from config.settings import settings
 from shared.learning_runtime import canary_scope_allows
 from shared.models import (
     NodeResourceForecastAlert,
+    NodeResourceForecastAlertEvent,
     NodeResourceForecastRun,
+    NodeResourceForecastTransition,
     OnlineLearnerAudit,
     OnlineLearnerCycleAudit,
 )
-
-try:
-    from shared.models import NodeResourceForecastAlertEvent
-    _EVENT_HAS_SCOPE_COLUMNS = True
-except ImportError:
-    # Production may still be on the earlier lifecycle table. Keep the
-    # read-only canary report compatible with both schemas while the
-    # migration from ``transitions`` to ``alert_events`` is staged.
-    from shared.models import NodeResourceForecastTransition as NodeResourceForecastAlertEvent
-    _EVENT_HAS_SCOPE_COLUMNS = False
-
 
 def _utc_naive(value: datetime) -> datetime:
     if value.tzinfo is not None:
         value = value.astimezone(timezone.utc).replace(tzinfo=None)
     return value
+
+
+def _alert_event_table_available(session) -> bool:
+    """Use the new event table only after its migration is present.
+
+    The application can be deployed before the database migration during a
+    controlled rollout. In that window the ORM model exists, but the table
+    does not, so import-time model detection is not sufficient.
+    """
+    try:
+        return bool(inspect(session.get_bind()).has_table("node_resource_forecast_alert_events"))
+    except Exception:
+        return False
 
 
 def _configured_scope() -> dict:
@@ -89,7 +95,7 @@ def build_canary_report(
         NodeResourceForecastRun.predicted_at >= start,
         NodeResourceForecastRun.predicted_at <= reference,
     ).order_by(NodeResourceForecastRun.predicted_at).all()
-    if _EVENT_HAS_SCOPE_COLUMNS:
+    if _alert_event_table_available(session):
         events_query = session.query(NodeResourceForecastAlertEvent).filter(
             NodeResourceForecastAlertEvent.cluster_name == cluster_name,
             NodeResourceForecastAlertEvent.host == selected_host,
@@ -103,19 +109,19 @@ def build_canary_report(
     else:
         # Older production schema stores scope on the parent alert and the
         # transition timestamp/state under changed_at/new_state.
-        events_query = session.query(NodeResourceForecastAlertEvent).join(
+        events_query = session.query(NodeResourceForecastTransition).join(
             NodeResourceForecastAlert,
-            NodeResourceForecastAlert.id == NodeResourceForecastAlertEvent.alert_id,
+            NodeResourceForecastAlert.id == NodeResourceForecastTransition.alert_id,
         ).filter(
             NodeResourceForecastAlert.cluster_name == cluster_name,
             NodeResourceForecastAlert.host == selected_host,
             NodeResourceForecastAlert.metric == selected_metric,
-            NodeResourceForecastAlertEvent.changed_at >= start,
-            NodeResourceForecastAlertEvent.changed_at <= reference,
+            NodeResourceForecastTransition.changed_at >= start,
+            NodeResourceForecastTransition.changed_at <= reference,
         )
         event_time = lambda row: row.changed_at
         event_state = lambda row: row.new_state
-        events = events_query.order_by(NodeResourceForecastAlertEvent.changed_at).all()
+        events = events_query.order_by(NodeResourceForecastTransition.changed_at).all()
 
     evaluated = [row for row in runs if row.status == "EVALUATED" and row.absolute_error is not None]
     errors = [float(row.absolute_error) for row in evaluated]

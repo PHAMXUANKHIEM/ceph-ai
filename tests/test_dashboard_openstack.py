@@ -232,7 +232,8 @@ def test_create_auth_user_page_has_create_form(dashboard_client, monkeypatch):
     assert 'class="auth-users-table"' in response.text
     assert "client." in response.text
     assert 'action="/openstack/auth-user/create?' in response.text
-    assert 'href="/volumes"' in response.text
+    assert 'href="/block-storage"' in response.text
+    assert 'href="/volumes"' not in response.text
     assert 'href="/pgs"' not in response.text  # app.js adds PGs without deleting Pool/Volumes
 
 
