@@ -53,7 +53,11 @@ from shared.volume_snapshot_policy import next_run_at, snapshot_name, validate_s
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher.volume_monitor import ceph_code_for
-from watcher.block_storage_insights import build_inventory_insights, build_snapshot_clone_insights
+from watcher.block_storage_insights import (
+    build_inventory_insights,
+    build_snapshot_clone_insights,
+    persist_dependency_snapshots,
+)
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
@@ -1279,11 +1283,15 @@ async def volume_snapshot_clone_insights_api(
     # A pool may contain hundreds of images. Keep the endpoint bounded and
     # avoid one slow image delaying all other evidence unnecessarily.
     details = await asyncio.gather(*(read_detail(row) for row in candidates))
+    persisted_count = await asyncio.to_thread(
+        persist_dependency_snapshots, cluster.id, details,
+    )
     insights = build_snapshot_clone_insights(details, policy_keys=policy_keys)
     return {
         "cluster_id": cluster.id,
         "pool": pool,
         "queried_images": len(candidates),
+        "persisted_observations": persisted_count,
         "max_images": max_images,
         "insights": insights,
         "coverage": {

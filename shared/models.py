@@ -1612,6 +1612,32 @@ class VolumeOsdMapping(Base):
     captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
 
 
+class VolumeDependencySnapshot(Base):
+    """Append-only bounded RBD snapshot/clone dependency observation.
+
+    This stores metadata only (parent/children and partial-read errors), never
+    object contents or credentials. The collector prunes observations older
+    than its retention window so repeated read-only dashboard scans cannot
+    grow the application database without bound.
+    """
+
+    __tablename__ = "volume_dependency_snapshots"
+    __table_args__ = (
+        Index("ix_volume_dependency_snapshots_scope", "cluster_id", "pool", "image", "captured_at"),
+        Index("ix_volume_dependency_snapshots_captured", "captured_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    image: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    parent_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    children_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    partial_errors_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
 class HostMetricSample(Base):
     """Timestamped read-only host telemetry used by performance RCA.
 

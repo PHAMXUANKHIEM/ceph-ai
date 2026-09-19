@@ -2,8 +2,12 @@ from datetime import datetime, timedelta
 
 import dashboard.routes.volumes as volumes_route
 from shared import db as db_module
-from shared.models import Cluster, VolumeMetric
-from watcher.block_storage_insights import build_inventory_insights, build_snapshot_clone_insights
+from shared.models import Cluster, VolumeDependencySnapshot, VolumeMetric
+from watcher.block_storage_insights import (
+    build_inventory_insights,
+    build_snapshot_clone_insights,
+    persist_dependency_snapshots,
+)
 
 
 NOW = datetime(2026, 9, 19, 12, 0, 0)
@@ -157,5 +161,31 @@ def test_snapshot_clone_insights_api_is_bounded_and_read_only(dashboard_client, 
 
     assert response.status_code == 200
     assert response.json()["queried_images"] == 1
+    assert response.json()["persisted_observations"] == 1
     assert response.json()["insights"][0]["kind"] == "SNAPSHOT_RETENTION_GAP"
     assert calls == [("images", "base")]
+
+
+def test_dependency_snapshots_are_persisted_and_pruned(dashboard_client):
+    with db_module.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        session.add(VolumeDependencySnapshot(
+            cluster_id=cluster.id, pool="images", image="old", snapshot_count=1,
+            parent_json="null", children_json="[]", partial_errors_json="{}",
+            captured_at=NOW - timedelta(days=31),
+        ))
+        session.commit()
+        cluster_id = cluster.id
+
+    count = persist_dependency_snapshots(cluster_id, [{
+        "pool": "images", "name": "base", "snapshots": [{"name": "gold"}],
+        "parent": None, "children": [{"pool": "images", "image": "clone-a"}],
+        "partial_errors": {},
+    }], captured_at=NOW)
+
+    assert count == 1
+    with db_module.SessionLocal() as session:
+        rows = session.query(VolumeDependencySnapshot).filter_by(cluster_id=cluster_id).all()
+        assert {row.image for row in rows} == {"base"}
+        assert rows[0].snapshot_count == 1
+        assert "clone-a" in rows[0].children_json

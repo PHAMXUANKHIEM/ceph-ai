@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
+import json
 from typing import Iterable, Mapping
+
+from sqlalchemy import delete
+
+from shared import db
+from shared.models import VolumeDependencySnapshot
 
 
 @dataclass(frozen=True)
@@ -230,3 +236,42 @@ def build_snapshot_clone_insights(
             continue
     order = {"INSUFFICIENT_EVIDENCE": 0, "CLONE_PARENT": 1, "CLONE_CHILD": 2, "SNAPSHOT_RETENTION_GAP": 3}
     return sorted(result, key=lambda row: (order.get(row["kind"], 9), row["pool"], row["image"], row["kind"]))
+
+
+def persist_dependency_snapshots(
+    cluster_id: str,
+    detail_rows: Iterable[Mapping[str, object]],
+    *,
+    captured_at: datetime | None = None,
+    retention_days: int = 30,
+) -> int:
+    """Persist one bounded observation per queried image and prune old rows."""
+
+    captured = (captured_at or datetime.utcnow()).replace(tzinfo=None)
+    rows = []
+    for detail in detail_rows:
+        pool = str(detail.get("pool") or "")
+        image = str(detail.get("name") or detail.get("image") or "")
+        if not pool or not image:
+            continue
+        snapshots = detail.get("snapshots") if isinstance(detail.get("snapshots"), list) else []
+        children = detail.get("children") if isinstance(detail.get("children"), list) else []
+        errors = detail.get("partial_errors") if isinstance(detail.get("partial_errors"), Mapping) else {}
+        rows.append(VolumeDependencySnapshot(
+            cluster_id=cluster_id, pool=pool, image=image,
+            snapshot_count=len(snapshots),
+            parent_json=json.dumps(detail.get("parent"), ensure_ascii=False, sort_keys=True),
+            children_json=json.dumps(children, ensure_ascii=False, sort_keys=True),
+            partial_errors_json=json.dumps(errors, ensure_ascii=False, sort_keys=True),
+            captured_at=captured,
+        ))
+    cutoff = captured - timedelta(days=max(1, int(retention_days)))
+    with db.SessionLocal() as session:
+        if rows:
+            session.add_all(rows)
+        session.execute(delete(VolumeDependencySnapshot).where(
+            VolumeDependencySnapshot.cluster_id == cluster_id,
+            VolumeDependencySnapshot.captured_at < cutoff,
+        ))
+        session.commit()
+    return len(rows)
