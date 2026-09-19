@@ -154,6 +154,69 @@ def test_production_trusted_host_rejects_unlisted_host(monkeypatch, dashboard_cl
     assert response.status_code == 400
 
 
+def test_production_response_has_security_headers(monkeypatch, dashboard_client):
+    monkeypatch.setattr(settings, "ceph_ai_environment", "production")
+    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
+    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_trusted_hosts", "testserver")
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "http://testserver")
+
+    with TestClient(dashboard_app.create_app()) as client:
+        response = client.get("/login")
+
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "same-origin"
+
+
+def test_forwarded_headers_from_direct_client_are_rejected(monkeypatch, dashboard_client):
+    monkeypatch.setattr(settings, "ceph_ai_environment", "production")
+    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
+    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_trusted_hosts", "testserver")
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "http://testserver")
+    monkeypatch.setattr(settings, "dashboard_trusted_proxy_ips", "")
+
+    with TestClient(dashboard_app.create_app()) as client:
+        response = client.get(
+            "/login",
+            headers={"X-Forwarded-Host": "admin.example", "X-Forwarded-Proto": "https"},
+        )
+
+    assert response.status_code == 400
+
+
+def test_forwarded_headers_are_used_only_from_configured_proxy(monkeypatch, dashboard_client):
+    monkeypatch.setattr(settings, "ceph_ai_environment", "production")
+    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
+    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_trusted_hosts", "internal.example")
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "https://admin.example")
+    monkeypatch.setattr(settings, "dashboard_trusted_proxy_ips", "10.0.0.0/8")
+
+    request = _request(
+        {
+            "Host": "internal.example",
+            "X-Forwarded-Host": "admin.example",
+            "X-Forwarded-Proto": "https",
+            "Origin": "https://admin.example",
+        }
+    )
+    assert dashboard_app._forwarded_headers_allowed(request) is False
+    # Only a configured source IP/CIDR is accepted as the proxy boundary.
+    monkeypatch.setattr(settings, "dashboard_trusted_proxy_ips", "127.0.0.1")
+    request = _request(
+        {
+            "Host": "internal.example",
+            "X-Forwarded-Host": "admin.example",
+            "X-Forwarded-Proto": "https",
+            "Origin": "https://admin.example",
+        }
+    )
+    assert dashboard_app._forwarded_headers_allowed(request) is True
+    assert dashboard_app._request_origin(request) == "https://admin.example"
+
+
 def test_non_production_dashboard_keeps_dev_warning_only(monkeypatch, caplog):
     monkeypatch.setattr(settings, "ceph_ai_environment", "development")
     monkeypatch.setattr(settings, "dashboard_password_hash", DEFAULT_DASHBOARD_PASSWORD_HASH)

@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     # an abusive client from exhausting one replica or the whole cluster.
     dashboard_api_rate_limit: int = Field(default=120, ge=1, le=100000)
     dashboard_api_rate_limit_window_seconds: int = Field(default=60, ge=1, le=86400)
+    # Only these direct peer IPs/CIDRs may supply X-Forwarded-* headers.
+    # Empty means the Dashboard is directly exposed and forwarded headers are
+    # rejected rather than trusted.
+    dashboard_trusted_proxy_ips: str = ""
 
     # SSH access to the Ceph cluster nodes (dedicated keypair, no passphrase
     # so the services can run unattended) — shared by BOTH Watcher (read-only

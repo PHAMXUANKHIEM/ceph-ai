@@ -11,10 +11,11 @@ Biến các cảnh báo bảo mật thành startup gate và middleware policy b�
 - [x] Bật CSRF protection thống nhất cho mọi mutation của Dashboard bằng token
       double-submit (session + cookie), form hidden field và `X-CSRF-Token` cho
       API/fetch; thiếu hoặc sai token bị từ chối trong production.
-- [~] Đã hoàn tất Origin/Referer policy và Trusted Host; production bắt buộc khai báo
-      `DASHBOARD_TRUSTED_HOSTS`/`DASHBOARD_ALLOWED_ORIGINS` và không tin
-      `X-Forwarded-*` nếu chưa có proxy boundary được cấu hình. Trusted
-      reverse-proxy boundary và header policy vẫn còn phải nghiệm thu.
+- [x] Đã hoàn tất Origin/Referer policy, Trusted Host và reverse-proxy boundary;
+      production bắt buộc khai báo `DASHBOARD_TRUSTED_HOSTS`/
+      `DASHBOARD_ALLOWED_ORIGINS`, chỉ tin `X-Forwarded-*` từ
+      `DASHBOARD_TRUSTED_PROXY_IPS`, còn client trực tiếp gửi forwarded header
+      sẽ bị từ chối.
 - [x] Login và API rate limit đã chuyển sang shared PostgreSQL store cho
       multi-replica; failed-login/API request state được khóa theo row và không
       còn phụ thuộc process memory.
@@ -36,6 +37,9 @@ Evidence bổ sung — 2026-09-19:
 - Migration `f2c3d4e5f6a7` tạo `api_rate_limits`; API production mặc định giới hạn
   120 request/phút/client, store lỗi thì fail-closed 503 và vượt ngưỡng trả 429.
 - Security/rate-limit regression suite: `35 passed`.
+- Reverse-proxy/header regression suite: `38 passed`; production response có
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` và HSTS khi
+  request dùng HTTPS.
 
 ## Việc cần làm
 
@@ -43,7 +47,9 @@ Evidence bổ sung — 2026-09-19:
 - Bật Secure, HttpOnly và cấu hình SameSite phù hợp với HTTPS.
 - Thêm CSRF protection thống nhất cho mọi mutation của Dashboard.
 - Xác thực Origin/Referer và CSRF token theo cùng policy cho HTTP/API mutation.
-- Khai báo Trusted Host, reverse-proxy trust và security headers rõ ràng.
+- Khai báo Trusted Host, reverse-proxy trust và security headers rõ ràng. Khi
+  không có proxy, để `DASHBOARD_TRUSTED_PROXY_IPS` trống; khi có proxy, chỉ
+  khai báo IP/CIDR của proxy tại biến này.
 - Đưa login/API rate limit vào shared store khi chạy nhiều replica.
 - Kiểm tra RBAC, cluster scope, tenant isolation và audit cho mọi route ghi.
 - Thêm security regression cho session fixation, CSRF, host header, cookie flags, brute force và secret redaction.

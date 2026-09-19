@@ -1,5 +1,6 @@
 import asyncio
 import html
+import ipaddress
 import json
 import logging
 import re
@@ -115,6 +116,10 @@ def _warn_if_using_dev_defaults() -> None:
             errors.append("DASHBOARD_TRUSTED_HOSTS is not configured")
         if not _configured_values(settings.dashboard_allowed_origins):
             errors.append("DASHBOARD_ALLOWED_ORIGINS is not configured")
+        try:
+            _trusted_proxy_networks()
+        except RuntimeError as exc:
+            errors.append(str(exc))
         if errors:
             raise RuntimeError(
                 "Production security configuration rejected: " + "; ".join(errors)
@@ -137,6 +142,45 @@ def _configured_values(raw: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value.strip() for value in str(raw or "").split(",") if value.strip()))
 
 
+def _trusted_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    networks = []
+    for value in _configured_values(settings.dashboard_trusted_proxy_ips):
+        try:
+            networks.append(ipaddress.ip_network(value, strict=False))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Invalid DASHBOARD_TRUSTED_PROXY_IPS entry: {value}"
+            ) from exc
+    return tuple(networks)
+
+
+def _request_from_trusted_proxy(request) -> bool:
+    client_host = request.client.host if request.client else ""
+    try:
+        client_ip = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    return any(client_ip in network for network in _trusted_proxy_networks())
+
+
+def _forwarded_headers_allowed(request) -> bool:
+    forwarded_names = (
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+    )
+    if not any(request.headers.get(name) for name in forwarded_names):
+        return True
+    if not _request_from_trusted_proxy(request):
+        return False
+    proto = request.headers.get("x-forwarded-proto", "").split(",")[-1].strip().lower()
+    if proto and proto not in {"http", "https"}:
+        return False
+    forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[-1].strip()
+    return not forwarded_host or bool(re.fullmatch(r"[^\s/:]+(?::\d{1,5})?", forwarded_host))
+
+
 def _source_origin(request) -> str | None:
     """Return the Origin/Referer origin supplied by a browser request."""
     source = request.headers.get("origin") or request.headers.get("referer")
@@ -157,9 +201,16 @@ def _request_origin(request) -> str | None:
     DASHBOARD_ALLOWED_ORIGINS.
     """
     host = request.headers.get("host", "").strip().lower()
+    scheme = request.url.scheme.lower()
+    if _request_from_trusted_proxy(request):
+        forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[-1].strip()
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[-1].strip().lower()
+        if forwarded_host:
+            host = forwarded_host.lower()
+        if forwarded_proto:
+            scheme = forwarded_proto
     if not host:
         return None
-    scheme = request.url.scheme.lower()
     if scheme not in {"http", "https"}:
         return None
     return f"{scheme}://{host}"
@@ -386,6 +437,11 @@ def create_app() -> FastAPI:
         user = request.session.get("user")
         product = request.session.get("product")
         path = request.url.path
+        if settings.ceph_ai_environment == "production" and not _forwarded_headers_allowed(request):
+            return JSONResponse(
+                {"detail": "Forwarded headers chỉ được phép từ trusted proxy"},
+                status_code=400,
+            )
         shared_path = path.startswith("/static/") or path in {"/logout", "/login"}
         is_api_request = path == "/api" or path.startswith("/api/")
         if settings.ceph_ai_environment == "production" and is_api_request:
@@ -435,6 +491,11 @@ def create_app() -> FastAPI:
                 from fastapi.responses import RedirectResponse
                 return RedirectResponse("/", status_code=303)
         response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        if request.url.scheme == "https":
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
         if csrf_token is not None:
             return await _protect_html_response(
                 response,
