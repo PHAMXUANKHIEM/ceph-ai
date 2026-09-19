@@ -14,6 +14,7 @@
   var pageSummary = document.getElementById("volume-inventory-summary"), sortMenu = document.getElementById("volume-inventory-sort-menu");
   var sortLabel = document.getElementById("volume-inventory-sort-label"), overview = document.getElementById("volume-pool-overview");
   var overviewError = document.getElementById("volume-pool-overview-error"), healthChecks = document.getElementById("volume-pool-health-checks");
+  var dependencyStatus = document.getElementById("volume-dependency-status"), dependencyList = document.getElementById("volume-dependency-list"), dependencyRefresh = document.getElementById("volume-dependency-refresh");
   var state = { page: 1, pages: 1, loading: false, sort: "name", order: "asc" }, PAGE_SIZE = 10;
 
   function bytes(value) { var n = Number(value || 0), units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"], i = 0; while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; } return (i === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[i]; }
@@ -58,10 +59,30 @@
   function setOverview(field, value) { var target = overview.querySelector('[data-field="' + field + '"]'); if (!target) return; if (field === "health") { var warn = /warn|near|full|error|fail/i.test(String(value)); target.innerHTML = '<span class="volume-health-value"><i class="volume-health-dot' + (warn ? ' warn' : '') + '"></i>' + String(value || "—") + '</span>'; } else target.textContent = value; }
   function loadOverview() { requestJson("/api/volumes/" + encodeURIComponent(pool) + "/inventory-overview").then(function (data) { setOverview("type", data.pool_type || data.type || "—"); setOverview("durability", data.durability || (data.replica_size ? "Replica " + data.replica_size + ", min " + (data.min_size || "—") : (data.erasure_code_profile ? "EC " + data.erasure_code_profile : "—"))); setOverview("pg", data.pg_num ? data.pg_num + " / " + (data.pgp_num || data.pg_num) : "—"); setOverview("physical", bytes(data.physical_used_bytes || data.bytes_used)); setOverview("rbd", data.rbd_enabled === false ? "Disabled" : "Enabled"); setOverview("health", data.health || "ok"); healthChecks.textContent = (data.health_checks || []).map(function (item) { return item.summary || item.code || String(item); }).join(" · "); }).catch(function (exc) { overviewError.textContent = "Không lấy được tổng quan Pool: " + exc.message; overviewError.hidden = false; }); }
   function loadPoolCounts() { Array.prototype.forEach.call(document.querySelectorAll(".volumes-pool-tab"), function (tab) { var tabPool = tab.dataset.pool, target = tab.querySelector("[data-pool-count]"); requestJson("/api/volumes/" + encodeURIComponent(tabPool) + "/inventory?page=1&page_size=1").then(function (data) { target.textContent = "(" + data.total + ")"; }).catch(function () { target.textContent = ""; }); }); }
+  function renderDependencyInsights(data) {
+    if (!dependencyList || !dependencyStatus) return;
+    dependencyList.innerHTML = "";
+    var items = data.insights || [];
+    dependencyStatus.textContent = items.length ? (items.length + " cảnh báo dependency · đã quét " + (data.queried_images || 0) + " volume") : "Không phát hiện snapshot/clone dependency trong phạm vi đã quét.";
+    if (data.stale) dependencyStatus.textContent += " · dữ liệu cache đang cũ, sẽ refresh nền.";
+    if (!items.length) return;
+    items.forEach(function (item) {
+      var card = document.createElement("article"); card.className = "volume-dependency-item";
+      var title = document.createElement("div"); title.className = "volume-dependency-item-title";
+      var name = document.createElement("strong"); name.textContent = (item.pool || pool) + "/" + (item.image || "—"); title.appendChild(name);
+      var kind = document.createElement("span"); kind.className = "volume-dependency-kind " + (item.kind === "INSUFFICIENT_EVIDENCE" ? "warning" : "danger"); kind.textContent = item.kind; title.appendChild(kind); card.appendChild(title);
+      var reason = document.createElement("p"); reason.textContent = item.reason || "—"; card.appendChild(reason);
+      var recommendation = document.createElement("small"); recommendation.textContent = item.recommendation || "Không có recommendation."; card.appendChild(recommendation);
+      if (item.parent || (item.children || []).length) { var dependency = document.createElement("small"); dependency.className = "hint"; dependency.textContent = item.parent ? "Parent: " + item.parent : "Children: " + item.children.length; card.appendChild(dependency); }
+      dependencyList.appendChild(card);
+    });
+  }
+  function loadDependencyInsights() { if (!dependencyStatus) return; dependencyStatus.textContent = "Đang kiểm tra dependency…"; requestJson("/api/volumes/" + encodeURIComponent(pool) + "/snapshot-clone-insights?max_images=20").then(renderDependencyInsights).catch(function (exc) { dependencyStatus.textContent = "Không đọc được snapshot/clone dependency: " + exc.message; }); }
   form.addEventListener("submit", function (event) { event.preventDefault(); state.page = 1; loadInventory(); });
   var searchTimer; search.addEventListener("input", function () { clearTimeout(searchTimer); searchTimer = setTimeout(function () { state.page = 1; loadInventory(); }, 260); });
   Array.prototype.forEach.call(sortMenu.querySelectorAll("[data-sort]"), function (button) { button.addEventListener("click", function () { state.sort = button.dataset.sort; state.order = button.dataset.order; sortLabel.textContent = button.textContent; sortMenu.open = false; state.page = 1; loadInventory(); }); });
   prev.addEventListener("click", function () { if (state.page > 1) { state.page -= 1; loadInventory(); } }); next.addEventListener("click", function () { if (state.page < state.pages) { state.page += 1; loadInventory(); } });
   if (selectedImage) { window.location.replace(detailUrl(selectedImage)); return; }
-  loadOverview(); loadInventory(); loadPoolCounts();
+  if (dependencyRefresh) dependencyRefresh.addEventListener("click", loadDependencyInsights);
+  loadOverview(); loadInventory(); loadPoolCounts(); loadDependencyInsights();
 }());

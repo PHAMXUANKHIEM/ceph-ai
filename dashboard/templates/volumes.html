@@ -111,6 +111,14 @@
             <button type="button" class="pagination-next" id="volume-inventory-next" aria-label="Trang sau">›</button>
           </div>
         </div>
+        <section class="volume-dependency-insights" id="volume-dependency-insights" aria-live="polite">
+          <div class="volume-dependency-header">
+            <div><h2>Snapshot &amp; clone dependencies</h2><p class="hint">Kiểm tra read-only trước khi flatten, xoá hoặc thay đổi retention.</p></div>
+            <button type="button" class="btn btn-ghost btn-sm" id="volume-dependency-refresh">Quét lại</button>
+          </div>
+          <p class="hint" id="volume-dependency-status">Đang kiểm tra dependency…</p>
+          <div class="volume-dependency-list" id="volume-dependency-list"></div>
+        </section>
       </div>
     </section>
 
