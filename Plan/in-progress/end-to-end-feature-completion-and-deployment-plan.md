@@ -374,7 +374,10 @@ the action executor.
   Evidence: hardening gate (`110 passed, 1 warning`).
 - [ ] Run live production-like health checks and smoke tests for Dashboard,
   Worker, Watcher, database, cache, message broker, and frontend assets.
-- [ ] Document supported Ceph releases and fail-closed behavior for unsupported
+- [x] Document supported Ceph releases and fail-closed behavior for unsupported
+  releases. Evidence: `docs/ai/ceph-official-docs-manifest.md` lists Reef 18,
+  Squid 19, and Tentacle 20 with version-filtered official sources; capability
+  inventory/matrix and preflight tests reject unknown, mixed, and uncovered
   releases.
 - [ ] Add retention and disk-growth controls for snapshots, logs, audit records,
   and generated reports.
