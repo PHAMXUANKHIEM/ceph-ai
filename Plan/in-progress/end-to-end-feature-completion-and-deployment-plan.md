@@ -270,8 +270,10 @@ restore drill, retention, audit, and recovery evidence.
 
 Scope: `Plan/object-storage-roadmap.md`.
 
-- [ ] Finish S3 user/access-key regression coverage, including rollback and
-  audit failure cases.
+- [x] Finish S3 user/access-key regression coverage, including rollback and
+  audit failure cases. Evidence: deterministic object/RGW gate (`216 passed,
+  1 warning`) covering Dashboard user/key, policy, audit, cache, S3 and RGW
+  connectivity/diagnosis paths.
 - [ ] Implement object version delete/restore with confirmation, policy checks,
   Object Lock handling, and audit.
 - [ ] Add bounded RGW, bucket, and user metrics: requests, bytes, errors,
