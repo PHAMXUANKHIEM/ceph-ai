@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import statistics
+import json
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -10,6 +11,9 @@ from sqlalchemy import func
 
 from config.settings import settings
 from shared import db, telegram_alerts
+from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
+from shared.forecast_metrics import update_rolling_metrics
+from shared.metric_quality import MetricQuality, assess_metric_quality
 from shared.models import (
     Cluster,
     VolumeEarlyForecast, VolumeForecastRun, VolumeMetric, VolumeModelState,
@@ -20,6 +24,45 @@ ALGORITHM = "seasonal_median"
 FORECAST_MODEL_VERSION = "seasonal-trend-v1"
 METRICS = ("iops", "read_latency_ms", "write_latency_ms")
 _last_attempt_bucket: dict[tuple[str, str, str], datetime] = {}
+
+
+def _quality_for_points(
+    points: list[tuple[datetime, float]],
+    observed_at: datetime,
+    window_hours: int,
+) -> MetricQuality:
+    """Apply one quality contract to a volume metric training window."""
+
+    minimum_samples = max(3, settings.volume_learning_min_samples)
+    return assess_metric_quality(
+        [timestamp for timestamp, _value in points],
+        now=observed_at,
+        max_age_seconds=max(60, settings.volume_forecast_max_staleness_minutes * 60),
+        minimum_samples=minimum_samples,
+        expected_interval_seconds=3600,
+        minimum_coverage_ratio=settings.volume_learning_min_coverage,
+        maximum_gap_seconds=max(3600, settings.volume_learning_max_gap_hours * 3600),
+        minimum_history_seconds=min(
+            max(0, (minimum_samples - 1) * 3600),
+            max(0, window_hours * 3600),
+        ),
+    )
+
+
+def _quality_reason(quality: MetricQuality) -> str:
+    return f"{quality.status}: {quality.reason}"
+
+
+def _volume_consensus(values: list[float]) -> ForecastConsensus:
+    """Aggregate independent window forecasts with the shared fail-closed rule."""
+
+    return aggregate_forecasts(
+        values,
+        minimum_candidates=max(1, settings.volume_forecast_min_consensus_candidates),
+        minimum_ratio=settings.volume_forecast_min_consensus_ratio,
+        absolute_tolerance=max(0.0, settings.volume_forecast_consensus_tolerance_percent),
+        relative_tolerance=max(0.0, settings.volume_forecast_consensus_relative_tolerance),
+    )
 
 
 def _candidate_windows() -> list[int]:
@@ -90,6 +133,17 @@ def _evaluate_due(
             old_mape * old_count + percentage_error
         ) / state.evaluated_count
         state.last_absolute_error = error
+        state.rolling_metrics_json, rolling = update_rolling_metrics(
+            state.rolling_metrics_json,
+            run.predicted_value,
+            actual_value,
+            limit=settings.volume_learning_rolling_samples,
+        )
+        state.rolling_sample_count = int(rolling["count"])
+        state.rolling_mae = float(rolling["mae"])
+        state.rolling_rmse = float(rolling["rmse"])
+        state.rolling_smape = float(rolling["smape"])
+        state.rolling_bias = float(rolling["bias"])
         state.updated_at = observed_at
     return len(due)
 
@@ -232,21 +286,26 @@ def _record_early_forecasts(
         session, cluster_id, pool, image,
         observed_at - timedelta(hours=max_window), observed_at,
     )
-    if not history:
-        return 0
     source_latest_at = session.query(func.max(VolumeMetric.polled_at)).filter(
         VolumeMetric.cluster_id == cluster_id,
         VolumeMetric.pool == pool,
         VolumeMetric.image == image,
         VolumeMetric.polled_at <= observed_at,
-    ).scalar() or history[-1][0]
-    stale = observed_at - source_latest_at > timedelta(
-        minutes=max(1, settings.volume_forecast_max_staleness_minutes)
-    )
+    ).scalar() or (history[-1][0] if history else observed_at)
     for metric in METRICS:
-        window = _selected_window(session, cluster_id, pool, image, metric)
-        cutoff = observed_at - timedelta(hours=window)
-        points = [(timestamp, values[metric]) for timestamp, values in history if timestamp >= cutoff]
+        candidate_rows = []
+        quality_rows = []
+        for window in _candidate_windows():
+            cutoff = observed_at - timedelta(hours=window)
+            points = [
+                (timestamp, values[metric])
+                for timestamp, values in history if timestamp >= cutoff
+            ]
+            quality = _quality_for_points(points, observed_at, window)
+            quality_rows.append((window, quality))
+            if not quality.usable:
+                continue
+            candidate_rows.append((window, points, quality))
         for horizon in horizons:
             key = (
                 f"{cluster_id}|{pool}|{image}|{metric}|{horizon}|"
@@ -255,17 +314,71 @@ def _record_early_forecasts(
             if key in existing_keys:
                 continue
             target_at = observed_at + timedelta(hours=horizon)
-            baseline = _baseline(points, target_at)
-            if baseline is None:
+            if not candidate_rows:
+                selected_window = _selected_window(session, cluster_id, pool, image, metric)
+                selected_quality = next(
+                    (quality for window, quality in quality_rows if window == selected_window),
+                    quality_rows[-1][1] if quality_rows else assess_metric_quality(
+                        [], now=observed_at, max_age_seconds=0, minimum_samples=1,
+                        expected_interval_seconds=3600, minimum_coverage_ratio=1.0,
+                        maximum_gap_seconds=0,
+                    ),
+                )
+                session.add(VolumeEarlyForecast(
+                    cluster_id=cluster_id, pool=pool, image=image, metric=metric,
+                    horizon_hours=horizon, generated_at=observed_at, target_at=target_at,
+                    source_latest_at=source_latest_at, current_value=actual[metric],
+                    predicted_value=actual[metric], threshold_type=None, threshold_value=None,
+                    consensus_status="DATA_QUALITY", consensus_ratio=0.0,
+                    consensus_candidate_count=0, predicted_low=None, predicted_high=None,
+                    model_votes_json="[]",
+                    confidence=0.0, training_samples=selected_quality.sample_count,
+                    training_window_hours=selected_window,
+                    seasonal_scope="none",
+                    model_version=FORECAST_MODEL_VERSION, status="DATA_QUALITY",
+                    reason=_quality_reason(selected_quality), idempotency_key=key,
+                ))
+                created += 1
                 continue
-            seasonal, baseline_confidence, scope, sample_count = baseline
-            predicted = max(0.0, seasonal + _robust_hourly_slope(points) * horizon)
+            candidates = []
+            for window, points, quality in candidate_rows:
+                baseline = _baseline(points, target_at)
+                if baseline is None:
+                    continue
+                seasonal, baseline_confidence, scope, sample_count = baseline
+                predicted = max(0.0, seasonal + _robust_hourly_slope(points) * horizon)
+                candidate_confidence = round(
+                    baseline_confidence * max(0.5, 1.0 - horizon / 96.0), 6
+                )
+                candidates.append({
+                    "window": window,
+                    "predicted": predicted,
+                    "confidence": candidate_confidence,
+                    "scope": scope,
+                    "samples": sample_count,
+                })
+            if not candidates:
+                continue
+            consensus = _volume_consensus([row["predicted"] for row in candidates])
+            model_votes = json.dumps(candidates, separators=(",", ":"), sort_keys=True)
+            preferred_window = _selected_window(session, cluster_id, pool, image, metric)
+            selected = next(
+                (row for row in candidates if row["window"] == preferred_window),
+                max(candidates, key=lambda row: row["confidence"]),
+            )
+            predicted = consensus.value
             confidence = round(
-                baseline_confidence * max(0.5, 1.0 - horizon / 96.0), 6
+                statistics.median(row["confidence"] for row in candidates)
+                * consensus.ratio,
+                6,
             )
             threshold_type, threshold_value = _threshold(session, pool, metric)
-            if stale:
-                status, reason = "STALE", "Mẫu mới nhất đã quá hạn; không phát cảnh báo."
+            if not consensus.usable:
+                status = "LOW_CONFIDENCE"
+                reason = (
+                    f"Consensus không đủ: {consensus.agreeing_count}/"
+                    f"{consensus.candidate_count} candidate đồng thuận."
+                )
             elif confidence < settings.volume_forecast_min_confidence:
                 status, reason = "LOW_CONFIDENCE", "Confidence dưới ngưỡng; không phát cảnh báo."
             elif threshold_value is None:
@@ -279,9 +392,14 @@ def _record_early_forecasts(
                 horizon_hours=horizon, generated_at=observed_at, target_at=target_at,
                 source_latest_at=source_latest_at, current_value=actual[metric],
                 predicted_value=predicted, threshold_type=threshold_type,
-                threshold_value=threshold_value, confidence=confidence,
-                training_samples=sample_count, training_window_hours=window,
-                seasonal_scope=scope, model_version=FORECAST_MODEL_VERSION,
+                threshold_value=threshold_value, consensus_status=consensus.status,
+                consensus_ratio=consensus.ratio,
+                consensus_candidate_count=consensus.candidate_count,
+                predicted_low=consensus.lower, predicted_high=consensus.upper,
+                model_votes_json=model_votes,
+                confidence=confidence, training_samples=selected["samples"],
+                training_window_hours=selected["window"],
+                seasonal_scope=selected["scope"], model_version=FORECAST_MODEL_VERSION,
                 status=status, reason=reason, idempotency_key=key,
             ))
             created += 1
@@ -330,6 +448,8 @@ def observe_sample(
                 continue
             cutoff = observed_at - timedelta(hours=window)
             points = [(timestamp, values[metric]) for timestamp, values in history if timestamp >= cutoff]
+            if not _quality_for_points(points, observed_at, window).usable:
+                continue
             baseline = _baseline(points, target_at)
             if baseline is None:
                 continue

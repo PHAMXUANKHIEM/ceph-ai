@@ -1,0 +1,39 @@
+{
+  "format": "NAB-like",
+  "dataset": "ceph-node-cpu-anonymized.csv",
+  "dataset_points": 72,
+  "anomaly_events": 3,
+  "history_size": 12,
+  "lead_window_seconds": 3600,
+  "results": [
+    {
+      "detector": "robust_baseline",
+      "precision": 1.0,
+      "recall": 1.0,
+      "false_positive_rate": 0.0,
+      "event_recall": 1.0,
+      "mean_detection_delay_seconds": 0.0,
+      "cpu_time_ms": 0.231
+    },
+    {
+      "detector": "river_half_space_trees",
+      "precision": null,
+      "recall": 0.0,
+      "false_positive_rate": 0.0,
+      "event_recall": 0.0,
+      "mean_detection_delay_seconds": null,
+      "cpu_time_ms": 3252.851
+    },
+    {
+      "detector": "pyod_iforest",
+      "precision": null,
+      "recall": 0.0,
+      "false_positive_rate": 0.0,
+      "event_recall": 0.0,
+      "mean_detection_delay_seconds": null,
+      "cpu_time_ms": 438.058
+    }
+  ],
+  "interpretation": "The benchmark harness is operational, but this dataset does not justify promoting River or PyOD. Both candidates missed the labeled events with the current thresholds; the robust baseline remains the only passing detector in this fixture.",
+  "side_effects": "read-only; no database, alert, notification, remediation, or model-state writes"
+}

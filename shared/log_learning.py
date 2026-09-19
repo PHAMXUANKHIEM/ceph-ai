@@ -73,6 +73,41 @@ def _fingerprint(finding: LogFinding, run: LogIngestRun, pattern_ids: list[str])
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _remediation_case_for_sample(session, sample: LogLearningSample, finding: LogFinding | None):
+    """Resolve one sample to its exact Action/RemediationCase pair.
+
+    An Incident may legitimately contain more than one Action.  Selecting
+    the newest case for the Incident alone can therefore attach a log finding
+    to an unrelated playbook.  Prefer the finding's recommended logical
+    action id; fall back only when the Incident has exactly one case.  An
+    ambiguous Incident stays unverified instead of contaminating learning.
+    """
+    incident_id = sample.incident_id
+    if not incident_id:
+        return None, None, "no correlated incident"
+    pairs = (
+        session.query(RemediationCase, Action)
+        .join(Action, RemediationCase.action_id == Action.id)
+        .filter(Action.incident_id == incident_id)
+        .order_by(RemediationCase.created_at.desc(), RemediationCase.id.desc())
+        .all()
+    )
+    if not pairs:
+        return None, None, "awaiting Remediation Case"
+    recommended = finding.recommended_action_id if finding is not None else sample.recommended_playbook_id
+    if recommended:
+        matching = [(case, action) for case, action in pairs if action.action_id == recommended]
+        if len(matching) == 1:
+            case, action = matching[0]
+            return case, action, None
+        if len(matching) > 1:
+            return None, None, "multiple Remediation Cases match the recommended action"
+    if len(pairs) == 1:
+        case, action = pairs[0]
+        return case, action, None
+    return None, None, "multiple Remediation Cases; action mapping unavailable"
+
+
 def record_finding_sample(session, finding: LogFinding, *, now: datetime | None = None) -> LogLearningSample:
     """Idempotently snapshot a finding. Never grants trust or executes actions."""
     existing = session.query(LogLearningSample).filter_by(log_finding_id=finding.id).one_or_none()
@@ -149,17 +184,8 @@ def evaluate_sample(session, sample: LogLearningSample, *, now: datetime | None 
     else:
         finding = session.get(LogFinding, sample.log_finding_id)
         sample.incident_id = finding.correlated_incident_id if finding else sample.incident_id
-        case = None
-        action = None
-        if sample.incident_id:
-            case = (
-                session.query(RemediationCase)
-                .filter_by(incident_id=sample.incident_id)
-                .order_by(RemediationCase.created_at.desc())
-                .first()
-            )
+        case, action, case_reason = _remediation_case_for_sample(session, sample, finding)
         if case:
-            action = session.get(Action, case.action_id)
             sample.remediation_case_id = case.id
             sample.action_id = case.action_id
             sample.recommended_playbook_id = action.action_id if action else sample.recommended_playbook_id
@@ -187,6 +213,20 @@ def evaluate_sample(session, sample: LogLearningSample, *, now: datetime | None 
                 sample.exclusion_reason = None
                 sample.outcome_source = "TELEMETRY_POST_CHECK"
                 sample.verified_at = case.verified_at
+            elif case.outcome == "INCONCLUSIVE":
+                sample.state = "INCONCLUSIVE"
+                sample.label = "UNVERIFIED"
+                sample.eligible_for_learning = False
+                sample.exclusion_reason = "remediation outcome is INCONCLUSIVE; side effect is unknown"
+                sample.outcome_source = "TELEMETRY_POST_CHECK"
+                sample.verified_at = None
+            elif case.outcome == "EXECUTION_FAILED":
+                sample.state = "EXECUTION_FAILED"
+                sample.label = "VERIFIED_FAILED"
+                sample.eligible_for_learning = True
+                sample.exclusion_reason = None
+                sample.outcome_source = "EXECUTION_RESULT"
+                sample.verified_at = case.verified_at or (now or datetime.utcnow())
             else:
                 sample.state = "DIAGNOSED"
                 sample.label = "UNVERIFIED"
@@ -196,7 +236,7 @@ def evaluate_sample(session, sample: LogLearningSample, *, now: datetime | None 
             sample.state = "CORRELATED"
             sample.label = "UNVERIFIED"
             sample.eligible_for_learning = False
-            sample.exclusion_reason = "awaiting Remediation Case"
+            sample.exclusion_reason = case_reason or "awaiting Remediation Case"
         else:
             sample.state = "CANDIDATE"
             sample.label = "UNVERIFIED"

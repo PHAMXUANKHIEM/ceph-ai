@@ -21,8 +21,78 @@
       <p><strong>Dự báo sớm RBD:</strong> {{ volume_learning.early_forecasts|length }} forecast mới nhất · {{ volume_learning.forecast_warning_count }} cảnh báo.</p>
       <p><strong>Log daemon:</strong> {{ log_learning.sample_count }} mẫu · {{ log_learning.eligible_count }} đủ điều kiện học · {{ log_learning.blocked_count }} bị chặn.</p>
       <p><strong>AI remediation:</strong> {{ remediation_feedback.labeled }}/{{ remediation_feedback.total_cases }} case đã được operator đánh giá · precision {{ (remediation_feedback.precision_percent|string + '%') if remediation_feedback.precision_percent is not none else 'chưa đủ nhãn' }}.</p>
+      <p class="hint">Telemetry đã xác minh: {{ remediation_feedback.telemetry_labeled }} case · {{ remediation_feedback.telemetry_scored }} case có thể chấm điểm · precision {{ (remediation_feedback.telemetry_precision_percent|string + '%') if remediation_feedback.telemetry_precision_percent is not none else 'chưa đủ outcome' }}. Hai số liệu này tách biệt để không nhầm “chưa có operator verdict” với “chưa có dữ liệu outcome”.</p>
       <p class="hint">“Độ chính xác ước tính” = 100 − MAE, chỉ để dễ đọc. Chỉ đánh dấu đáng tin khi có ít nhất 20 outcome và đạt từ 80%.</p>
     </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>Operator controls</h2><p class="hint">Chỉ admin mới dùng được. Các thao tác này không promote model và không chạy remediation.</p></div></div>
+    <div class="card-body learner-controls">
+      <p><strong>Canary stream:</strong> <code>{{ online_learning.canary_scope.host or 'chưa cấu hình host' }}</code> / <code>{{ online_learning.canary_scope.metric }}</code>
+        {% if online_learning.control.status == 'PAUSED' %}<span class="badge badge-warn">PAUSED</span>{% else %}<span class="badge badge-ok">RUNNING</span>{% endif %}
+        <span class="hint">{{ online_learning.control.reason }}</span></p>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" onclick="setLearnerControl('pause')" {% if not online_learning.canary_scope.host %}disabled{% endif %}>Pause stream</button>
+        <button type="button" class="btn btn-secondary" onclick="setLearnerControl('resume')" {% if not online_learning.canary_scope.host %}disabled{% endif %}>Resume stream</button>
+        <button type="button" class="btn btn-danger-outline" onclick="resetLearner()" {% if not online_learning.canary_scope.host %}disabled{% endif %}>Reset state</button>
+      </div>
+      <details class="operator-audit-details"><summary>Operator audit trail ({{ online_learning.operator_audits|length }})</summary>
+        <div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Action</th><th>Scope</th><th>Actor</th><th>Lý do</th></tr></thead><tbody>
+        {% for audit in online_learning.operator_audits %}<tr><td>{{ audit.created_at|vntime }}</td><td><code>{{ audit.action }}</code></td><td><code>{{ audit.host }}/{{ audit.metric }}</code></td><td>{{ audit.actor }}</td><td>{{ audit.reason }}</td></tr>
+        {% else %}<tr class="empty-row"><td colspan="5">Chưa có operator control audit.</td></tr>{% endfor %}
+        </tbody></table></div>
+      </details>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>Telemetry job tự học</h2><p class="hint">Chỉ scope canary hiện tại · đo số cycle, thời gian xử lý và CPU time; không có dữ liệu thì hiển thị rõ thay vì suy diễn thành 0.</p></div></div>
+    <div class="card-body">
+      {% if online_learning.telemetry.has_data %}
+      <p><span class="badge">{{ online_learning.telemetry.cycle_count }} cycles</span>
+        <span class="badge">{{ online_learning.telemetry.processed }} samples</span>
+        <span class="badge badge-ok">{{ online_learning.telemetry.applied }} updates</span>
+        {% if online_learning.telemetry.failed %}<span class="badge badge-err">{{ online_learning.telemetry.failed }} failures</span>{% else %}<span class="badge badge-ok">0 failures</span>{% endif %}
+        <span class="hint">avg elapsed {{ online_learning.telemetry.average_elapsed_ms }} ms · avg CPU {{ online_learning.telemetry.average_cpu_time_ms }} ms</span></p>
+      {% else %}<p class="hint">Chưa có telemetry learner cycle cho canary scope.</p>{% endif %}
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Runtime</th><th>Kết quả</th><th>Elapsed</th><th>CPU time</th></tr></thead><tbody>
+      {% for cycle in online_learning.telemetry.recent_cycles %}<tr><td>{{ cycle.created_at|vntime }}</td><td><code>{{ cycle.runtime_mode }}</code></td><td>{{ cycle.reason }} · {{ cycle.processed }} processed · {{ cycle.applied }} applied · {{ cycle.failed }} failed</td><td>{{ cycle.elapsed_ms }} ms</td><td>{{ cycle.cpu_time_ms }} ms</td></tr>
+      {% else %}<tr class="empty-row"><td colspan="5">Chưa có learner cycle nào.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>Evidence canary 72 giờ</h2><p class="hint">Báo cáo chỉ đọc cho đúng cluster/host/metric; outcome còn trong horizon được giữ là pending, không bị tính nhầm thành false positive.</p></div></div>
+    <div class="card-body">
+      <p><strong>Forecast:</strong> {{ online_learning.evidence_report.forecast_quality.run_count }} runs · {{ online_learning.evidence_report.forecast_quality.evaluated_count }} evaluated · MAE {{ online_learning.evidence_report.forecast_quality.mae if online_learning.evidence_report.forecast_quality.mae is not none else '—' }} · data-quality {{ online_learning.evidence_report.forecast_quality.data_quality_count }}</p>
+      <p><strong>Alert lifecycle:</strong> {{ online_learning.evidence_report.alert_lifecycle.event_count }} events · warning {{ online_learning.evidence_report.alert_lifecycle.warning_events }} · recovery {{ online_learning.evidence_report.alert_lifecycle.recovery_events }}</p>
+      <p><strong>Early detection:</strong> {{ online_learning.evidence_report.early_detection.detected_breaches }} detections · false positive {{ online_learning.evidence_report.early_detection.false_positive_events }} · pending {{ online_learning.evidence_report.early_detection.pending_outcome_events }} · lead time {{ online_learning.evidence_report.early_detection.average_lead_time_hours if online_learning.evidence_report.early_detection.average_lead_time_hours is not none else '—' }} giờ</p>
+      <p><strong>Resource cost:</strong> {% if online_learning.evidence_report.resource_cost.available %}{{ online_learning.evidence_report.resource_cost.cpu_time_ms }} ms CPU · {{ online_learning.evidence_report.resource_cost.elapsed_ms }} ms elapsed · {{ online_learning.evidence_report.resource_cost.cycle_count }} cycles{% else %}<span class="hint">Chưa có learner cycle telemetry</span>{% endif %}</p>
+      <p class="hint">Bước tiếp theo: {{ online_learning.evidence_report.next_step }}</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>Guarded model promotion</h2><p class="hint">Candidate chỉ được promote sau đủ outcome, thắng active liên tiếp và operator xác nhận. Không có promotion tự động.</p></div></div>
+    <div class="card-body">
+      <p class="hint">Tối thiểu {{ model_promotion.policy.minimum_outcomes }} outcome · {{ model_promotion.policy.required_consecutive_evaluations }} evaluation liên tiếp · false-positive rate không được tăng quá {{ (model_promotion.policy.max_false_positive_rate_increase * 100)|round(2) }} điểm %.</p>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Scope</th><th>Model</th><th>Trạng thái</th><th>Shadow evidence</th><th>Guard</th><th>Thao tác</th></tr></thead><tbody>
+    {% for model in model_promotion.models %}
+      <tr>
+        <td><code>{{ model.scope_type }}</code><br><span class="hint">{{ model.scope_key }}</span></td>
+        <td><code>{{ model.algorithm }}</code><br><span class="hint">{{ model.training_window_hours }}h · {{ model.version }}</span></td>
+        <td>{% if model.status == 'ACTIVE' %}<span class="badge badge-ok">ACTIVE</span>{% elif model.status == 'SHADOW' %}<span class="badge badge-warn">SHADOW</span>{% elif model.status == 'BLOCKED' %}<span class="badge badge-err">BLOCKED</span>{% else %}<span class="badge">{{ model.status }}</span>{% endif %}<div class="hint">{{ model.blocked_reason or model.promotion_reason or '—' }}</div></td>
+        <td>{{ model.evaluation_count }} mốc{% if model.latest_evaluation %}<br><span class="hint">{{ model.latest_evaluation.status }} · {{ model.latest_evaluation.target_at|vntime }}</span>{% endif %}</td>
+        <td>{% if model.guard %}{% if model.guard.allowed %}<span class="badge badge-ok">Đủ điều kiện</span>{% else %}<span class="badge badge-warn">{{ model.guard.status }}</span>{% endif %}<div class="hint">{{ model.guard.reason }}</div>{% else %}<span class="hint">—</span>{% endif %}</td>
+        <td class="actions">
+          {% if model.status in ['CANDIDATE', 'SHADOW'] %}<button type="button" class="btn btn-secondary" onclick="guardedPromotion('{{ model.id }}','promotion-request')">Đề xuất</button>{% if model.guard and model.guard.allowed %}<button type="button" class="btn btn-primary" onclick="guardedPromotion('{{ model.id }}','promote')">Duyệt & promote</button>{% endif %}<button type="button" class="btn btn-danger-outline" onclick="blockCandidate('{{ model.id }}')">Block</button>{% elif model.status == 'ACTIVE' and model.can_rollback %}<button type="button" class="btn btn-secondary" onclick="guardedPromotion('{{ model.id }}','rollback')">Rollback</button>{% else %}<span class="hint">Chưa có thao tác</span>{% endif %}
+        </td>
+      </tr>
+    {% else %}<tr class="empty-row"><td colspan="6"><div class="empty-state">Worker chưa ghi nhận model vào registry.</div></td></tr>{% endfor %}
+    </tbody></table></div>
   </section>
 
   <section class="card">
@@ -48,11 +118,12 @@
   <section class="card">
     <div class="card-header"><div><h2>Phản hồi & precision AI remediation</h2><p class="hint">Precision = verdict đúng / tổng verdict đúng hoặc sai. INCONCLUSIVE được tính vào coverage nhưng không làm tăng hoặc giảm precision.</p></div></div>
     <div class="card-body">
-      <p><span class="badge">Coverage {{ (remediation_feedback.coverage_percent|string + '%') if remediation_feedback.coverage_percent is not none else '—' }}</span>
+      <p><span class="badge">Operator coverage {{ (remediation_feedback.coverage_percent|string + '%') if remediation_feedback.coverage_percent is not none else '—' }}</span>
         <span class="badge badge-ok">Đúng {{ remediation_feedback.correct }}</span>
         <span class="badge badge-err">Sai {{ remediation_feedback.incorrect }}</span>
         <span class="badge">Chưa kết luận {{ remediation_feedback.inconclusive }}</span>
-        <span class="badge badge-warn">Chưa đánh giá {{ remediation_feedback.unlabeled }}</span></p>
+        <span class="badge badge-warn">Chưa đánh giá {{ remediation_feedback.unlabeled }}</span>
+        <span class="badge">Telemetry {{ remediation_feedback.telemetry_scored }}/{{ remediation_feedback.total_cases }}</span></p>
       <p><strong>30 ngày gần nhất:</strong> {{ remediation_feedback.recent_30d.scored }} nhãn có kết luận · precision {{ (remediation_feedback.recent_30d.precision_percent|string + '%') if remediation_feedback.recent_30d.precision_percent is not none else '—' }}.</p>
     </div>
     <div class="table-wrap"><table><thead><tr><th>Fault family</th><th>Đúng</th><th>Sai</th><th>Tổng có kết luận</th><th>Precision</th></tr></thead><tbody>
@@ -133,4 +204,44 @@
   </section>
 </main>
 <script src="/static/app.js?v={{ static_version }}"></script>
+<script>
+async function guardedPromotion(modelId, action) {
+  const labels = {"promotion-request": "đề xuất promotion", promote: "promote model", rollback: "rollback model"};
+  if (!window.confirm("Xác nhận " + (labels[action] || action) + "?")) return;
+  const response = await fetch("/api/ai-learning/models/" + encodeURIComponent(modelId) + "/" + action, {method: "POST"});
+  const payload = await response.json();
+  if (!response.ok) { window.alert(payload.detail || "Thao tác bị chặn"); return; }
+  window.alert(payload.reason || "Đã ghi nhận thao tác");
+  window.location.reload();
+}
+async function postLearnerControl(path, values) {
+  const response = await fetch(path, {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: new URLSearchParams(values)});
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || "Thao tác bị chặn");
+  return payload;
+}
+async function setLearnerControl(action) {
+  const reason = window.prompt("Nhập lý do operator:");
+  if (!reason || !reason.trim()) return;
+  const host = {{ (online_learning.canary_scope.host or '')|tojson }};
+  const metric = {{ online_learning.canary_scope.metric|tojson }};
+  try { await postLearnerControl("/api/ai-learning/learner/" + action, {cluster_id: {{ cluster.id|tojson }}, host, metric, reason}); window.location.reload(); }
+  catch (error) { window.alert(error.message); }
+}
+async function resetLearner() {
+  if (window.prompt("Nhập RESET để xác nhận xóa durable learner state:") !== "RESET") return;
+  const reason = window.prompt("Nhập lý do operator:");
+  if (!reason || !reason.trim()) return;
+  const host = {{ (online_learning.canary_scope.host or '')|tojson }};
+  const metric = {{ online_learning.canary_scope.metric|tojson }};
+  try { await postLearnerControl("/api/ai-learning/learner/reset", {cluster_id: {{ cluster.id|tojson }}, host, metric, reason, confirmation: "RESET"}); window.location.reload(); }
+  catch (error) { window.alert(error.message); }
+}
+async function blockCandidate(modelId) {
+  const reason = window.prompt("Nhập lý do block candidate:");
+  if (!reason || !reason.trim()) return;
+  try { await postLearnerControl("/api/ai-learning/models/" + encodeURIComponent(modelId) + "/block", {reason}); window.location.reload(); }
+  catch (error) { window.alert(error.message); }
+}
+</script>
 </body></html>

@@ -455,6 +455,29 @@ class Action(Base):
     )
 
 
+class RbdTrashUsage(Base):
+    """Durable usage snapshot keyed by the concrete Ceph Trash ID."""
+
+    __tablename__ = "rbd_trash_usages"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_id", "pool", "trash_id", name="uq_rbd_trash_usages_cluster_pool_id"
+        ),
+        Index("ix_rbd_trash_usages_cluster_pool", "cluster_id", "pool"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    trash_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    image: Mapped[str] = mapped_column(String(128), nullable=False)
+    provisioned_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    used_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    used_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class AuditEntry(Base):
     """Append-only (AD-7) — `shared/audit.py::record()` is the only place
     that ever inserts a row here, and nothing in this codebase ever
@@ -661,6 +684,19 @@ class ObjectStorageAuditEntry(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class BucketInventorySnapshot(Base):
+    """Last successful bucket-name inventory for one Ceph cluster."""
+
+    __tablename__ = "bucket_inventory_snapshots"
+
+    cluster_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("clusters.id"), primary_key=True
+    )
+    rgw_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    bucket_names_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class RgwAccessAuditEvent(Base):
     """Durable, de-duplicated copy of every parsed RGW HTTP request."""
 
@@ -690,6 +726,8 @@ class RgwAccessAuditEvent(Base):
     telegram_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     telegram_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     telegram_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    external_alert_queued: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    external_alert_queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -711,6 +749,14 @@ class RgwErrorNotification(Base):
     telegram_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     telegram_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     telegram_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    telegram_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    telegram_humanization_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="not_started"
+    )
+    telegram_humanization_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    telegram_humanized_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    external_alert_queued: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    external_alert_queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -1002,6 +1048,11 @@ class WatcherHeartbeat(Base):
     mon_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # Durable safety signal for online learning.  Keeping the streak on the
+    # singleton-per-cluster heartbeat row means a Worker restart cannot
+    # accidentally forget that Watcher has been failing repeatedly.
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class User(Base):
@@ -1572,10 +1623,123 @@ class VolumeModelState(Base):
     mean_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     mean_percentage_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rolling_mae: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_rmse: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_smape: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_bias: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_metrics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class ForecastModelRegistry(Base):
+    """Versioned metadata for forecast candidates and selected models.
+
+    This registry is deliberately separate from the online error state tables:
+    a model may be registered, shadowed or retired without changing the
+    production selector.  Promotion and rollback guards are implemented in a
+    later phase and must never be inferred from this row alone.
+    """
+
+    __tablename__ = "forecast_model_registry"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('CANDIDATE','SHADOW','ACTIVE','RETIRED','BLOCKED')",
+            name="ck_forecast_model_registry_status_valid",
+        ),
+        UniqueConstraint(
+            "scope_type", "scope_key", "name", "version",
+            name="uq_forecast_model_registry_identity",
+        ),
+        Index("ix_forecast_model_registry_scope_status", "scope_type", "scope_key", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False)
+    feature_schema: Mapped[str] = mapped_column(String(64), nullable=False)
+    training_window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="CANDIDATE", index=True)
+    promotion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class ForecastModelEvaluation(Base):
+    """Append-only paired evidence used by guarded model promotion.
+
+    Each row compares one candidate with the active model against the same
+    observed target timestamp.  It is intentionally separate from the
+    mutable registry state so a later promotion cannot rewrite the evidence
+    that justified it.
+    """
+
+    __tablename__ = "forecast_model_evaluations"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_model_id", "active_model_id", "target_at",
+            name="uq_forecast_model_evaluation_target",
+        ),
+        Index("ix_forecast_model_evaluation_candidate_time", "candidate_model_id", "target_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    candidate_model_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("forecast_model_registry.id"), nullable=False
+    )
+    active_model_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("forecast_model_registry.id"), nullable=False
+    )
+    target_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    active_evaluated: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_evaluated: Mapped[int] = mapped_column(Integer, nullable=False)
+    active_mae: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_mae: Mapped[float | None] = mapped_column(Float, nullable=True)
+    active_rmse: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_rmse: Mapped[float | None] = mapped_column(Float, nullable=True)
+    active_smape: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_smape: Mapped[float | None] = mapped_column(Float, nullable=True)
+    active_bias: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_bias: Mapped[float | None] = mapped_column(Float, nullable=True)
+    active_false_positive_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_false_positive_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ForecastModelPromotionAudit(Base):
+    """Append-only audit trail for guarded promotion and rollback decisions."""
+
+    __tablename__ = "forecast_model_promotion_audits"
+    __table_args__ = (
+        Index("ix_forecast_model_promotion_audit_candidate_time", "candidate_model_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    candidate_model_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("forecast_model_registry.id"), nullable=False
+    )
+    previous_active_model_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("forecast_model_registry.id"), nullable=True
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class VolumeEarlyForecast(Base):
@@ -1601,6 +1765,12 @@ class VolumeEarlyForecast(Base):
     predicted_value: Mapped[float] = mapped_column(Float, nullable=False)
     threshold_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     threshold_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consensus_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    consensus_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consensus_candidate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    predicted_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    predicted_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    model_votes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     training_samples: Mapped[int] = mapped_column(Integer, nullable=False)
     training_window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -1611,6 +1781,45 @@ class VolumeEarlyForecast(Base):
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class VolumeSnapshotPolicy(Base):
+    """Per-volume scheduled Cinder snapshot policy."""
+
+    __tablename__ = "volume_snapshot_policies"
+    __table_args__ = (
+        CheckConstraint(
+            "retention_count >= 1 AND retention_count <= 365",
+            name="ck_volume_snapshot_policy_retention",
+        ),
+        CheckConstraint(
+            "capacity_guard_percent > 0 AND capacity_guard_percent < 100",
+            name="ck_volume_snapshot_policy_capacity_guard",
+        ),
+        Index("ix_volume_snapshot_policies_cluster_enabled", "cluster_id", "enabled"),
+        Index("ix_volume_snapshot_policies_next_run", "next_run_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    image: Mapped[str] = mapped_column(String(128), nullable=False)
+    volume_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    snapshot_prefix: Mapped[str] = mapped_column(String(48), nullable=False, default="scheduled")
+    cron_expression: Mapped[str] = mapped_column(String(128), nullable=False, default="0 2 * * *")
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    retention_count: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
+    capacity_guard_percent: Mapped[float] = mapped_column(Float, nullable=False, default=85.0)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class VolumePerfSweep(Base):
@@ -2045,6 +2254,39 @@ class TelegramChannelConfigChange(Base):
     bot_token_masked: Mapped[str] = mapped_column(String(32), nullable=False)
     actor: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class TelegramManagedChannel(Base):
+    """Admin-managed Telegram channel created from the Alert Telegram UI."""
+
+    __tablename__ = "telegram_managed_channels"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    bot_token: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    chat_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    template: Mapped[str] = mapped_column(String(64), nullable=False, default="custom")
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class TelegramChannelLayout(Base):
+    """Persistent ordering, aliases, and hidden state for Telegram cards."""
+
+    __tablename__ = "telegram_channel_layouts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="default")
+    order_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    hidden_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    display_names_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    updated_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class CapabilityStatus(str, enum.Enum):
@@ -2522,7 +2764,9 @@ class LogFinding(Base):
     # Truy vết được model nào/prompt nào đã kết luận -- bắt buộc khi kết
     # luận của AI được đem ra trước người vận hành.
     model_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    prompt_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The log-analysis prompt identifier is versioned text, not a short enum.
+    # Keep enough room for names such as ``v2-ceph-rca-knowledge``.
+    prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Lý do server hạ cấp/sửa câu trả lời của model (bịa evidence id, đề
     # xuất action_id không hợp lệ, lần quét PARTIAL...). Có giá trị nghĩa là
     # đã có ít nhất một lần can thiệp -- đọc được ngay trên Dashboard thay
@@ -2667,6 +2911,19 @@ class NodeResourceForecastRun(Base):
     current_percent: Mapped[float] = mapped_column(Float, nullable=False)
     predicted_percent: Mapped[float] = mapped_column(Float, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    consensus_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    consensus_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consensus_candidate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    predicted_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    predicted_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    residual_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    model_votes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    coverage_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=1.0, server_default="1")
+    max_gap_hours: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
+    drift_status: Mapped[str] = mapped_column(String(24), nullable=False, default="INSUFFICIENT_DATA", server_default="INSUFFICIENT_DATA")
+    drift_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
+    drift_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     actual_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING", index=True)
@@ -2695,6 +2952,12 @@ class NodeResourceModelState(Base):
     evaluated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     mean_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rolling_mae: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_rmse: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_smape: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_bias: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_metrics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -2728,6 +2991,76 @@ class NodeResourceForecastAlert(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     samples: Mapped[int] = mapped_column(Integer, nullable=False)
     window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    consensus_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    consensus_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consensus_candidate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    predicted_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    predicted_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lifecycle_state: Mapped[str] = mapped_column(String(16), nullable=False, default="NORMAL")
+    notification_state: Mapped[str] = mapped_column(String(16), nullable=False, default="IDLE")
+    state_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    state_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    last_notified_evidence_fingerprint: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+    )
+    suppressed_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consecutive_breach_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    consecutive_healthy_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class NodeResourceForecastAlertEvent(Base):
+    """Append-only lifecycle transition evidence for predictive alerts."""
+
+    __tablename__ = "node_resource_forecast_alert_events"
+    __table_args__ = (
+        Index(
+            "ix_node_resource_forecast_alert_event_stream_time",
+            "cluster_name", "host", "metric", "occurred_at",
+        ),
+        Index(
+            "ix_node_resource_forecast_alert_event_state",
+            "to_state", "occurred_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    alert_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("node_resource_forecast_alerts.id"), nullable=False,
+    )
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    metric: Mapped[str] = mapped_column(String(8), nullable=False)
+    from_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    to_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    notification_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class NodeResourceForecastFeedback(Base):
+    """Append-only operator verdicts for predictive resource alerts."""
+
+    __tablename__ = "node_resource_forecast_feedback"
+    __table_args__ = (
+        Index("ix_node_resource_forecast_feedback_alert_created", "alert_id", "created_at"),
+        Index("ix_node_resource_forecast_feedback_verdict", "verdict"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    alert_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("node_resource_forecast_alerts.id"), nullable=False,
+    )
+    verdict: Mapped[str] = mapped_column(String(24), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    impact_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    incident_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    remediation_case_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    submitted_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class AIInvocation(Base):
@@ -2832,6 +3165,221 @@ class CapacityAlertState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow,
     )
+
+
+class OnlineLearnerState(Base):
+    """Durable, validated state for one bounded online learner.
+
+    ``cluster_key`` intentionally uses a normalized string instead of a
+    nullable foreign key: the default cluster is represented by
+    ``__default__`` and therefore remains unique on both SQLite and
+    PostgreSQL.  The payload is JSON only; executable/model objects are never
+    persisted.
+    """
+
+    __tablename__ = "online_learner_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_key", "host", "metric", "model_version",
+            name="uq_online_learner_state_identity",
+        ),
+        Index(
+            "ix_online_learner_state_lookup",
+            "cluster_key", "host", "metric",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(64), nullable=False)
+    feature_schema: Mapped[str] = mapped_column(String(64), nullable=False)
+    state_json: Mapped[str] = mapped_column(Text, nullable=False)
+    state_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_learned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow,
+    )
+
+
+class OnlineLearnerAudit(Base):
+    """Append-only decision record for each online-learning sample."""
+
+    __tablename__ = "online_learner_audit"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_key", "host", "metric", "sample_id",
+            name="uq_online_learner_audit_sample",
+        ),
+        Index(
+            "ix_online_learner_audit_stream_time",
+            "cluster_key", "host", "metric", "observed_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    label: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quality_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    quality_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    runtime_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    runtime_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    update_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class OnlineLearnerCycleAudit(Base):
+    """Bounded learner-cycle resource telemetry for canary review."""
+
+    __tablename__ = "online_learner_cycle_audit"
+    __table_args__ = (
+        Index("ix_online_learner_cycle_audit_created_at", "created_at"),
+        Index(
+            "ix_online_learner_cycle_audit_scope_time",
+            "cluster_key", "host", "metric", "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    applied: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    elapsed_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    cpu_time_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    runtime_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class OnlineLearnerControl(Base):
+    """Durable operator pause state for one learner stream.
+
+    This is deliberately separate from environment feature flags: an
+    operator can pause one canary stream without changing the global runtime
+    configuration.  Missing rows mean RUNNING, so a failed read remains
+    fail-closed in the consumer rather than silently enabling a new scope.
+    """
+
+    __tablename__ = "online_learner_controls"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_key", "host", "metric",
+            name="uq_online_learner_control_scope",
+        ),
+        Index(
+            "ix_online_learner_control_scope",
+            "cluster_key", "host", "metric",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="RUNNING")
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow,
+    )
+
+
+class OnlineLearnerOperatorAudit(Base):
+    """Append-only audit trail for learner controls and candidate blocking."""
+
+    __tablename__ = "online_learner_operator_audits"
+    __table_args__ = (
+        Index(
+            "ix_online_learner_operator_audit_scope_time",
+            "cluster_key", "host", "metric", "created_at",
+        ),
+        Index("ix_online_learner_operator_audit_action_time", "action", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class OnlineLearnerLabel(Base):
+    """Verified ground-truth queue for a previously audited sample."""
+
+    __tablename__ = "online_learner_labels"
+    __table_args__ = (
+        UniqueConstraint("source_run_id", name="uq_online_learner_label_source_run"),
+        UniqueConstraint(
+            "cluster_key", "host", "metric", "sample_id",
+            name="uq_online_learner_label_sample",
+        ),
+        Index(
+            "ix_online_learner_label_queue",
+            "status", "cluster_key", "host", "metric",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("node_resource_forecast_runs.id"), nullable=False,
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    label_value: Mapped[float] = mapped_column(Float, nullable=False)
+    predicted_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    outcome: Mapped[str] = mapped_column(String(24), nullable=False, default="VERIFIED_SUCCESS")
+    evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source_actor: Mapped[str] = mapped_column(String(64), nullable=False, default="forecast-evaluator")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="READY")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class OnlineLearnerLabelEvent(Base):
+    """Append-only audit for label creation, blocking, consumption and revocation."""
+
+    __tablename__ = "online_learner_label_events"
+    __table_args__ = (
+        Index("ix_online_learner_label_event_source_action", "source_run_id", "action"),
+        Index("ix_online_learner_label_event_created_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    label_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("online_learner_labels.id"), nullable=True,
+    )
+    source_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("node_resource_forecast_runs.id"), nullable=True,
+    )
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class ChangeRiskAssessment(Base):

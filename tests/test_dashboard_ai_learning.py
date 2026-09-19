@@ -98,6 +98,36 @@ def test_ai_learning_empty_state_is_readable(dashboard_client):
     assert "AUDIT_ONLY" in response.text
 
 
+def test_operator_controls_pause_resume_reset_are_admin_and_audited(dashboard_client):
+    _login(dashboard_client)
+    cluster_id = _seed_learning()
+    scope = {"cluster_id": cluster_id, "host": "10.3.53.69", "metric": "cpu"}
+
+    paused = dashboard_client.post(
+        "/api/ai-learning/learner/pause",
+        data={**scope, "reason": "investigate candidate drift"},
+    )
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "PAUSED"
+
+    status = dashboard_client.get("/api/ai-learning").json()["online_learning"]
+    assert status["control"]["status"] == "RUNNING"  # UI reports configured canary, not arbitrary scope
+
+    resumed = dashboard_client.post(
+        "/api/ai-learning/learner/resume",
+        data={**scope, "reason": "investigation complete"},
+    )
+    assert resumed.status_code == 200
+    reset = dashboard_client.post(
+        "/api/ai-learning/learner/reset",
+        data={**scope, "reason": "rebuild state", "confirmation": "RESET"},
+    )
+    assert reset.status_code == 200
+    audit = dashboard_client.get(f"/api/ai-learning/operator-audit?cluster_id={cluster_id}")
+    assert audit.status_code == 200
+    assert [row["action"] for row in audit.json()[:3]] == ["RESET_STATE", "RESUME", "PAUSE"]
+
+
 def test_ai_learning_reports_large_omap_readiness_without_mutating_state(dashboard_client):
     _login(dashboard_client)
 
@@ -172,6 +202,10 @@ def test_remediation_feedback_reports_cluster_precision_and_unlabeled_queue(dash
     assert payload["labeled"] == 2
     assert payload["unlabeled"] == 1
     assert payload["precision_percent"] == 50.0
+    assert payload["telemetry_labeled"] == 3
+    assert payload["telemetry_scored"] == 3
+    assert payload["telemetry_precision_percent"] == 100.0
+    assert payload["outcome_counts"]["VERIFIED_SUCCESS"] == 3
     assert payload["by_fault_family"][0]["precision_percent"] == 50.0
     page = dashboard_client.get(f"/ai-learning?cluster={cluster_id}")
     assert "precision AI remediation" in page.text
@@ -249,3 +283,29 @@ def test_ai_learning_shows_auditable_volume_early_warning(dashboard_client):
     assert "seasonal-trend-v1" in response.text
     payload = dashboard_client.get(f"/api/ai-learning?cluster={cluster_id}").json()
     assert payload["volume_learning"]["forecast_warning_count"] == 1
+
+
+def test_ai_learning_shows_volume_data_quality_reason(dashboard_client):
+    with db.SessionLocal() as session:
+        cluster = ensure_default_cluster(session)
+        session.add(VolumeEarlyForecast(
+            cluster_id=cluster.id, pool="vms", image="sparse-disk",
+            metric="write_latency_ms", horizon_hours=6,
+            generated_at=NOW, target_at=NOW + timedelta(hours=6),
+            source_latest_at=NOW - timedelta(hours=3), current_value=12.0,
+            predicted_value=12.0, threshold_type=None, threshold_value=None,
+            confidence=0.0, training_samples=18, training_window_hours=24,
+            seasonal_scope="none", model_version="seasonal-trend-v1",
+            status="DATA_QUALITY",
+            reason="GAP_DETECTED: longest gap is 25200.0s; limit is 21600.0s",
+            idempotency_key="dashboard-data-quality",
+        ))
+        session.commit()
+        cluster_id = cluster.id
+    _login(dashboard_client)
+
+    response = dashboard_client.get(f"/ai-learning?cluster={cluster_id}")
+
+    assert response.status_code == 200
+    assert "DATA_QUALITY" in response.text
+    assert "GAP_DETECTED" in response.text

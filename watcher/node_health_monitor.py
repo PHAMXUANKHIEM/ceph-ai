@@ -33,6 +33,7 @@ from shared import alert_lifecycle, audit, db
 from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
+from shared.online_learning_consumer import consume_samples
 from shared.telegram_alerts import send_node_alert
 from watcher import ceph_client, node_metrics, node_resource_forecast
 from worker.policy import gate
@@ -262,6 +263,35 @@ def check_node_resources(
 
         cpu = metrics["cpu_percent"]
         mem = metrics["mem_percent"]
+        if settings.online_learning_enabled:
+            observed_raw = metrics.get("observed_at")
+            try:
+                observed_at = (
+                    datetime.fromisoformat(str(observed_raw).replace("Z", "+00:00"))
+                    if observed_raw else datetime.utcnow()
+                )
+                consume_samples([
+                    {
+                        "cluster_id": None,
+                        "host": host,
+                        "metric": "cpu",
+                        "value": cpu,
+                        "observed_at": observed_at,
+                        "sample_id": f"{host}:cpu:{observed_at.isoformat()}",
+                    },
+                    {
+                        "cluster_id": None,
+                        "host": host,
+                        "metric": "memory",
+                        "value": mem,
+                        "observed_at": observed_at,
+                        "sample_id": f"{host}:memory:{observed_at.isoformat()}",
+                    },
+                ])
+            except Exception:
+                # Online learning is advisory and must never suppress the
+                # node threshold monitor or make the Watcher poll fail.
+                logger.warning("check_node_resources: online learning sample failed for %s", host, exc_info=True)
         if settings.node_resource_forecast_enabled:
             try:
                 forecasts = node_resource_forecast.adaptive_forecast(
@@ -274,7 +304,10 @@ def check_node_resources(
                     logger.warning(
                         "node forecast: %s %s may reach 90%% in %.1fh "
                         "(slope=%.3f%%/h confidence=%.2f samples=%d)",
-                        host, prediction.metric.upper(), prediction.hours_to_90,
+                        host, prediction.metric.upper(),
+                        prediction.hours_to_90
+                        if prediction.hours_to_90 is not None
+                        else settings.node_resource_forecast_horizon_hours,
                         prediction.slope_percent_per_hour, prediction.confidence,
                         prediction.samples,
                     )

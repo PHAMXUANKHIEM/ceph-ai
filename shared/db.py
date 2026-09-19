@@ -32,16 +32,20 @@ def make_engine(database_url: str | None = None):
         # preventing Dashboard startup at pg_catalog.version().
         connect_args = {"connect_timeout": 5}
         engine_options = {
-            "pool_size": 3,
+            "pool_size": max(1, int(settings.database_pool_size)),
             "max_overflow": 0,
-            "pool_timeout": 5,
+            "pool_timeout": max(1, int(settings.database_pool_timeout_seconds)),
             "pool_pre_ping": True,
         }
     else:
         connect_args = {}
         engine_options = {}
     if not is_sqlite:
-        engine_options.update(pool_pre_ping=True, pool_timeout=5, pool_recycle=300)
+        engine_options.update(
+            pool_pre_ping=True,
+            pool_timeout=max(1, int(settings.database_pool_timeout_seconds)),
+            pool_recycle=300,
+        )
     engine = create_engine(url, connect_args=connect_args, **engine_options)
     if url.startswith("sqlite"):
         # SQLite ignores FK constraints by default — without this, the

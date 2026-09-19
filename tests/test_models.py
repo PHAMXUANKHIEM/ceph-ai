@@ -250,7 +250,10 @@ def test_audit_entry_foreign_key_is_actually_enforced_by_sqlite(db_session):
 
 def test_watcher_heartbeat_has_required_columns():
     columns = {c.name for c in WatcherHeartbeat.__table__.columns}
-    assert columns == {"id", "cluster_id", "success", "mon_node", "error_message", "polled_at"}
+    assert columns == {
+        "id", "cluster_id", "success", "mon_node", "error_message", "polled_at",
+        "consecutive_failures", "last_success_at",
+    }
 
 
 def test_watcher_heartbeat_insert_and_query(db_session):

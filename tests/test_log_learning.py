@@ -25,7 +25,7 @@ from shared.models import (
     LogLearningAudit,
     LogPattern,
 )
-from shared.remediation_cases import create_for_action, record_verified
+from shared.remediation_cases import create_for_action, record_inconclusive, record_verified
 
 
 def _session():
@@ -197,6 +197,92 @@ def test_delayed_loki_sample_correlates_to_resolved_verified_incident():
     assert evaluate_sample(session, sample, now=now + timedelta(minutes=11)) is True
     assert sample.incident_id == incident.id
     assert sample.label == "VERIFIED_SUCCESS"
+    assert sample.eligible_for_learning is True
+
+
+def test_reconcile_uses_recommended_action_instead_of_latest_case():
+    session = _session()
+    now, _cluster, incident, finding = _seed(session)
+    first = Action(
+        incident_id=incident.id, action_id="restart_osd_daemon",
+        classification="SAFE", status="AUTO_EXECUTED", target_nodes='["node-a"]',
+    )
+    second = Action(
+        incident_id=incident.id, action_id="resync_ntp",
+        classification="SAFE", status="AUTO_EXECUTED", target_nodes='["node-a"]',
+    )
+    session.add_all((first, second)); session.flush()
+    case_first = create_for_action(
+        session, incident=incident, action=first,
+        redacted_envelope={"nodes": ["node-a"], "cluster_snapshot": {}},
+        diagnosis="heartbeat", model_provider="test",
+    )
+    case_second = create_for_action(
+        session, incident=incident, action=second,
+        redacted_envelope={"nodes": ["node-a"], "cluster_snapshot": {}},
+        diagnosis="clock", model_provider="test",
+    )
+    record_verified(session, incident_id=incident.id, succeeded=True, verified_at=now, post_state={})
+    finding.recommended_action_id = "restart_osd_daemon"
+    sample = record_finding_sample(session, finding)
+
+    evaluate_sample(session, sample, now=now)
+
+    assert sample.remediation_case_id == case_first.id
+    assert sample.action_id == first.id
+    assert sample.label == "VERIFIED_SUCCESS"
+    assert sample.remediation_case_id != case_second.id
+
+
+def test_inconclusive_and_execution_failure_are_explicit_and_not_silent():
+    session = _session()
+    now, _cluster, incident, finding = _seed(session)
+    action = Action(
+        incident_id=incident.id, action_id="restart_osd_daemon",
+        classification="SAFE", status="INCONCLUSIVE", target_nodes='["node-a"]',
+    )
+    session.add(action); session.flush()
+    case = create_for_action(
+        session, incident=incident, action=action,
+        redacted_envelope={"nodes": ["node-a"], "cluster_snapshot": {}},
+        diagnosis="heartbeat", model_provider="test",
+    )
+    record_inconclusive(session, action_id=action.id, at=now, reason="post-check timeout")
+    sample = record_finding_sample(session, finding)
+    evaluate_sample(session, sample, now=now)
+    assert sample.state == "INCONCLUSIVE"
+    assert sample.eligible_for_learning is False
+    assert "side effect is unknown" in sample.exclusion_reason
+
+    case.outcome = "EXECUTION_FAILED"
+    case.verified_at = now
+    evaluate_sample(session, sample, now=now)
+    assert sample.state == "EXECUTION_FAILED"
+    assert sample.label == "VERIFIED_FAILED"
+    assert sample.eligible_for_learning is True
+
+
+def test_regression_is_a_verified_negative_learning_outcome():
+    session = _session()
+    now, _cluster, incident, finding = _seed(session)
+    action = Action(
+        incident_id=incident.id, action_id="restart_osd_daemon",
+        classification="SAFE", status="AUTO_EXECUTED", target_nodes='["node-a"]',
+    )
+    session.add(action); session.flush()
+    case = create_for_action(
+        session, incident=incident, action=action,
+        redacted_envelope={"nodes": ["node-a"], "cluster_snapshot": {}},
+        diagnosis="heartbeat", model_provider="test",
+    )
+    record_verified(session, incident_id=incident.id, succeeded=True, verified_at=now, post_state={})
+    case.regressed_1h = True
+    sample = record_finding_sample(session, finding)
+
+    evaluate_sample(session, sample, now=now)
+
+    assert sample.state == "REGRESSED"
+    assert sample.label == "VERIFIED_FAILED"
     assert sample.eligible_for_learning is True
 
 

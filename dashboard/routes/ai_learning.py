@@ -5,24 +5,38 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func
 
 from config.settings import settings
 from dashboard.cluster_scope import cluster_selection
-from dashboard.routes.auth import require_login
+from dashboard.routes.auth import is_admin_user, require_login
 from dashboard.templating import make_templates
-from shared import db, remediation_feedback
+from shared import (
+    db,
+    forecast_canary,
+    forecast_feedback,
+    learning_runtime,
+    model_registry,
+    online_learning_controls,
+    remediation_feedback,
+)
 from shared.models import (
     Action,
     ChangeRiskAssessment,
+    ForecastModelEvaluation,
     Incident,
     LogFaultStat,
     LogFinding,
     LogLearningSample,
     NodeResourceForecastRun,
+    NodeResourceForecastAlert,
+    NodeResourceForecastFeedback,
     NodeResourceModelState,
+    OnlineLearnerCycleAudit,
+    ForecastModelPromotionAudit,
+    ForecastModelRegistry,
     PlaybookStat,
     RemediationCase,
     VolumeEarlyForecast,
@@ -198,15 +212,141 @@ def _volume_quality(mape: float | None, outcomes: int) -> tuple[str, str, float 
     return "NEEDS_IMPROVEMENT", "MAPE còn lớn hơn 20%.", accuracy
 
 
+def model_promotion_status(cluster_id: str, cluster_name: str) -> dict:
+    """Return registry state and guarded-promotion evidence for the UI.
+
+    This is read-only.  It never changes selected models or creates audit
+    rows; only the explicit request/approve/rollback endpoints can do that.
+    """
+    node_prefix = f"{cluster_name}|"
+    volume_prefix = f"{cluster_id}|"
+    with db.SessionLocal() as session:
+        rows = session.query(ForecastModelRegistry).filter(
+            ((ForecastModelRegistry.scope_type == "NODE_RESOURCE")
+             & ForecastModelRegistry.scope_key.startswith(node_prefix))
+            | ((ForecastModelRegistry.scope_type == "VOLUME")
+               & ForecastModelRegistry.scope_key.startswith(volume_prefix))
+        ).order_by(ForecastModelRegistry.scope_type, ForecastModelRegistry.scope_key,
+                   ForecastModelRegistry.created_at).all()
+        output = []
+        for row in rows:
+            evaluations = session.query(ForecastModelEvaluation).filter_by(
+                candidate_model_id=row.id,
+            ).order_by(ForecastModelEvaluation.target_at.desc()).limit(20).all()
+            audits = session.query(ForecastModelPromotionAudit).filter_by(
+                candidate_model_id=row.id,
+            ).order_by(ForecastModelPromotionAudit.created_at.desc()).limit(5).all()
+            active = session.query(ForecastModelRegistry).filter_by(
+                scope_type=row.scope_type, scope_key=row.scope_key, status="ACTIVE",
+            ).one_or_none()
+            decision = model_registry.evaluate_guarded_promotion(
+                list(reversed(evaluations)),
+            ) if row.status in {"CANDIDATE", "SHADOW"} and active else None
+            output.append({
+                "id": row.id,
+                "scope_type": row.scope_type,
+                "scope_key": row.scope_key,
+                "version": row.version,
+                "algorithm": row.algorithm,
+                "training_window_hours": row.training_window_hours,
+                "status": row.status,
+                "promotion_reason": row.promotion_reason,
+                "blocked_reason": row.blocked_reason,
+                "evaluation_count": len(evaluations),
+                "latest_evaluation": {
+                    "target_at": evaluations[0].target_at,
+                    "status": evaluations[0].status,
+                    "reason": evaluations[0].reason,
+                } if evaluations else None,
+                "guard": {
+                    "status": decision.status,
+                    "allowed": decision.allowed,
+                    "reason": decision.reason,
+                    "checks": decision.checks,
+                } if decision else None,
+                "recent_audits": [{
+                    "event_type": audit.event_type,
+                    "actor": audit.actor,
+                    "reason": audit.reason,
+                    "created_at": audit.created_at,
+                } for audit in audits],
+                "can_rollback": any(audit.event_type == model_registry.PROMOTED for audit in audits),
+            })
+    return {
+        "policy": {
+            "minimum_outcomes": settings.forecast_promotion_min_outcomes,
+            "required_consecutive_evaluations": settings.forecast_promotion_required_evaluations,
+            "max_false_positive_rate_increase": settings.forecast_promotion_max_false_positive_rate_increase,
+        },
+        "models": output,
+    }
+
+
 def learning_status(cluster_id: str, cluster_name: str) -> dict:
     """Build a JSON-safe snapshot. No learning state is changed here."""
     with db.SessionLocal() as session:
+        canary_metric = next(
+            (item.strip().lower() for item in str(settings.online_learning_canary_metrics or "").split(",")
+             if item.strip()),
+            "cpu",
+        )
+        canary_host = str(settings.online_learning_canary_host or "").strip()
+        online_learning_runtime = learning_runtime.evaluate(
+            session, cluster_id, host=canary_host or None, metric=canary_metric,
+        )
+        canary_control = (
+            online_learning_controls.get_control(
+                session,
+                cluster_id=cluster_id,
+                host=canary_host,
+                metric=canary_metric,
+            ) if canary_host else None
+        )
+        operator_audits = online_learning_controls.list_audit(
+            session, cluster_id=cluster_id, limit=50,
+        )
+        learner_cycles_query = session.query(OnlineLearnerCycleAudit).filter_by(
+            cluster_key=str(cluster_id),
+            host=canary_host,
+            metric=canary_metric,
+        ) if canary_host else session.query(OnlineLearnerCycleAudit).filter_by(
+            cluster_key=str(cluster_id),
+            host="",
+            metric=canary_metric,
+        )
+        learner_cycle_count = learner_cycles_query.count()
+        learner_cycle_totals = learner_cycles_query.with_entities(
+            func.coalesce(func.sum(OnlineLearnerCycleAudit.processed), 0),
+            func.coalesce(func.sum(OnlineLearnerCycleAudit.applied), 0),
+            func.coalesce(func.sum(OnlineLearnerCycleAudit.failed), 0),
+            func.avg(OnlineLearnerCycleAudit.elapsed_ms),
+            func.avg(OnlineLearnerCycleAudit.cpu_time_ms),
+        ).one()
+        recent_learner_cycles = learner_cycles_query.order_by(
+            OnlineLearnerCycleAudit.created_at.desc()
+        ).limit(12).all()
+        canary_report = forecast_canary.build_canary_report(
+            session,
+            cluster_id=cluster_id,
+            cluster_name=cluster_name,
+            host=canary_host or None,
+            metric=canary_metric,
+            lookback_hours=72,
+        )
         states = session.query(NodeResourceModelState).filter_by(cluster_name=cluster_name).all()
         run_counts = dict(
             session.query(NodeResourceForecastRun.status, func.count(NodeResourceForecastRun.id))
             .filter(NodeResourceForecastRun.cluster_name == cluster_name)
             .group_by(NodeResourceForecastRun.status)
             .all()
+        )
+        forecast_alert_count = session.query(NodeResourceForecastAlert).filter_by(
+            cluster_name=cluster_name,
+        ).count()
+        feedback_summary = forecast_feedback.summarize_feedback(
+            session,
+            cluster_name=cluster_name,
+            trigger_threshold=settings.node_resource_forecast_trigger_threshold_percent,
         )
 
         resource_models = []
@@ -269,6 +409,7 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 & (VolumeForecastRun.predicted_at == latest_volume_times.c.latest_at),
             ).filter(VolumeForecastRun.cluster_id == cluster_id).all()
         }
+
         volume_models = []
         for state in sorted(
             volume_states,
@@ -392,6 +533,62 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
         } for sample, title in recent_rows]
 
         return {
+            "online_learning": {
+                **online_learning_runtime.as_dict(),
+                "canary_scope": {
+                    "host": canary_host or None,
+                    "metric": canary_metric,
+                },
+                "control": {
+                    "status": canary_control.status,
+                    "reason": canary_control.reason,
+                    "updated_by": canary_control.updated_by,
+                    "updated_at": canary_control.updated_at,
+                } if canary_control else {
+                    "status": online_learning_controls.RUNNING,
+                    "reason": "no explicit operator pause",
+                    "updated_by": None,
+                    "updated_at": None,
+                },
+                "operator_audits": [{
+                    "action": row.action,
+                    "actor": row.actor,
+                    "host": row.host,
+                    "metric": row.metric,
+                    "reason": row.reason,
+                    "target_id": row.target_id,
+                    "created_at": row.created_at,
+                } for row in operator_audits],
+                "telemetry": {
+                    "has_data": learner_cycle_count > 0,
+                    "cycle_count": learner_cycle_count,
+                    "processed": int(learner_cycle_totals[0] or 0),
+                    "applied": int(learner_cycle_totals[1] or 0),
+                    "failed": int(learner_cycle_totals[2] or 0),
+                    "average_elapsed_ms": round(float(learner_cycle_totals[3]), 2)
+                    if learner_cycle_totals[3] is not None else None,
+                    "average_cpu_time_ms": round(float(learner_cycle_totals[4]), 2)
+                    if learner_cycle_totals[4] is not None else None,
+                    "recent_cycles": [{
+                        "created_at": row.created_at,
+                        "reason": row.reason,
+                        "runtime_mode": row.runtime_mode,
+                        "processed": row.processed,
+                        "applied": row.applied,
+                        "failed": row.failed,
+                        "elapsed_ms": row.elapsed_ms,
+                        "cpu_time_ms": row.cpu_time_ms,
+                    } for row in recent_learner_cycles],
+                },
+                "evidence_report": canary_report,
+            },
+            "forecast_feedback": {
+                **feedback_summary,
+                "coverage": (
+                    round(feedback_summary["labeled_count"] / max(1, forecast_alert_count), 4)
+                    if forecast_alert_count else 0.0
+                ),
+            },
             "remediation_feedback": remediation_feedback.summary(
                 session, cluster_id=cluster_id
             ),
@@ -444,13 +641,253 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "recent_samples": recent_samples,
                 "mode": "AUDIT_ONLY",
             },
+            "model_promotion": model_promotion_status(cluster_id, cluster_name),
         }
+
+
+def _require_admin(user: str) -> None:
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin mới được điều khiển online learner.")
+
+
+def _control_scope(cluster_id: str, host: str, metric: str) -> tuple[str, str, str]:
+    try:
+        return online_learning_controls.normalize_scope(
+            cluster_id=cluster_id, host=host, metric=metric,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/api/ai-learning")
 async def ai_learning_api(request: Request, _user: str = Depends(require_login)):
     _clusters, cluster = cluster_selection(request)
     return {"cluster_id": cluster.id, "cluster_name": cluster.name, **learning_status(cluster.id, cluster.name), "large_omap_readiness": large_omap_readiness(cluster.id)}
+
+
+@router.post("/api/ai-learning/models/{model_id}/promotion-request")
+async def request_model_promotion(
+    model_id: str, user: str = Depends(require_login),
+):
+    """Ask for promotion; this never changes the active model."""
+    with db.SessionLocal() as session:
+        try:
+            decision = model_registry.request_promotion(
+                session, candidate_id=model_id, actor=user,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "allowed": decision.allowed,
+            "status": decision.status,
+            "reason": decision.reason,
+            "checks": decision.checks,
+        }
+
+
+@router.post("/api/ai-learning/models/{model_id}/promote")
+async def approve_model_promotion(
+    model_id: str, user: str = Depends(require_login),
+):
+    """Explicit operator approval required before a model becomes active."""
+    with db.SessionLocal() as session:
+        try:
+            row = model_registry.approve_promotion(
+                session, candidate_id=model_id, actor=user,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"id": row.id, "status": row.status, "version": row.version}
+
+
+@router.post("/api/ai-learning/models/{model_id}/rollback")
+async def rollback_model_promotion(
+    model_id: str, user: str = Depends(require_login),
+):
+    """Restore the exact previous active model recorded in promotion audit."""
+    with db.SessionLocal() as session:
+        try:
+            row = model_registry.rollback_promotion(
+                session, candidate_id=model_id, actor=user,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"id": row.id, "status": row.status, "version": row.version}
+
+
+@router.post("/api/ai-learning/learner/pause")
+async def pause_online_learner(
+    cluster_id: str = Form(...),
+    host: str = Form(...),
+    metric: str = Form(...),
+    reason: str = Form(...),
+    user: str = Depends(require_login),
+):
+    """Pause exactly one learner stream; no global flag or model is changed."""
+
+    _require_admin(user)
+    _control_scope(cluster_id, host, metric)
+    with db.SessionLocal() as session:
+        try:
+            row = online_learning_controls.set_status(
+                session,
+                cluster_id=cluster_id,
+                host=host,
+                metric=metric,
+                status=online_learning_controls.PAUSED,
+                actor=user,
+                reason=reason,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"status": row.status, "host": row.host, "metric": row.metric, "reason": row.reason}
+
+
+@router.post("/api/ai-learning/learner/resume")
+async def resume_online_learner(
+    cluster_id: str = Form(...),
+    host: str = Form(...),
+    metric: str = Form(...),
+    reason: str = Form(...),
+    user: str = Depends(require_login),
+):
+    """Resume exactly one previously paused stream after explicit approval."""
+
+    _require_admin(user)
+    _control_scope(cluster_id, host, metric)
+    with db.SessionLocal() as session:
+        try:
+            row = online_learning_controls.set_status(
+                session,
+                cluster_id=cluster_id,
+                host=host,
+                metric=metric,
+                status=online_learning_controls.RUNNING,
+                actor=user,
+                reason=reason,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"status": row.status, "host": row.host, "metric": row.metric, "reason": row.reason}
+
+
+@router.post("/api/ai-learning/learner/reset")
+async def reset_online_learner(
+    cluster_id: str = Form(...),
+    host: str = Form(...),
+    metric: str = Form(...),
+    reason: str = Form(...),
+    confirmation: str = Form(...),
+    user: str = Depends(require_login),
+):
+    """Reset one durable state only after an explicit RESET confirmation."""
+
+    _require_admin(user)
+    if confirmation.strip().upper() != "RESET":
+        raise HTTPException(status_code=422, detail="Nhập chính xác RESET để xác nhận.")
+    _control_scope(cluster_id, host, metric)
+    with db.SessionLocal() as session:
+        try:
+            removed = online_learning_controls.reset_state(
+                session,
+                cluster_id=cluster_id,
+                host=host,
+                metric=metric,
+                actor=user,
+                reason=reason,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"status": "RESET", "removed_states": removed, "host": host, "metric": metric}
+
+
+@router.get("/api/ai-learning/operator-audit")
+async def online_learner_operator_audit(
+    request: Request,
+    _user: str = Depends(require_login),
+):
+    cluster_id = str(request.query_params.get("cluster_id") or "").strip()
+    if not cluster_id:
+        raise HTTPException(status_code=422, detail="cluster_id là bắt buộc.")
+    with db.SessionLocal() as session:
+        rows = online_learning_controls.list_audit(
+            session,
+            cluster_id=cluster_id,
+            limit=int(request.query_params.get("limit") or 100),
+        )
+        return [{
+            "action": row.action,
+            "actor": row.actor,
+            "host": row.host,
+            "metric": row.metric,
+            "reason": row.reason,
+            "target_id": row.target_id,
+            "created_at": row.created_at,
+        } for row in rows]
+
+
+@router.post("/api/ai-learning/models/{model_id}/block")
+async def block_model_candidate(
+    model_id: str,
+    reason: str = Form(...),
+    user: str = Depends(require_login),
+):
+    """Block one candidate and append the guarded-promotion audit event."""
+
+    _require_admin(user)
+    with db.SessionLocal() as session:
+        try:
+            row = model_registry.block_candidate(
+                session, candidate_id=model_id, actor=user, reason=reason,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"id": row.id, "status": row.status, "version": row.version}
+
+
+@router.post("/api/ai-learning/node-alerts/{alert_id}/feedback")
+async def node_forecast_feedback(
+    alert_id: str,
+    verdict: str = Form(...),
+    note: str = Form(""),
+    impact_percent: float | None = Form(None),
+    incident_id: str = Form(""),
+    remediation_case_id: str = Form(""),
+    user: str = Depends(require_login),
+):
+    """Append an operator verdict; this never changes lifecycle or policy."""
+    with db.SessionLocal() as session:
+        feedback = forecast_feedback.add_feedback(
+            session,
+            alert_id=alert_id,
+            verdict=verdict,
+            submitted_by=user,
+            note=note,
+            impact_percent=impact_percent,
+            incident_id=incident_id,
+            remediation_case_id=remediation_case_id,
+        )
+        session.commit()
+        return {
+            "id": feedback.id,
+            "alert_id": feedback.alert_id,
+            "verdict": feedback.verdict,
+            "submitted_by": feedback.submitted_by,
+        }
 
 
 @router.get("/ai-learning", response_class=HTMLResponse)

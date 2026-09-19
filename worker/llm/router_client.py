@@ -2778,6 +2778,35 @@ def _process_approved_actions_once() -> None:
         promotion_updated = trust_engine.evaluate_promotion_candidates(session, now=datetime.utcnow())
         log_learning_updated = log_learning.reconcile_samples(session, now=datetime.utcnow())
         log_fault_stats_updated = log_learning.recompute_fault_stats(session, now=datetime.utcnow())
+        from watcher.forecast_replay import compare_persisted_forecast_runs
+        shadow_results = compare_persisted_forecast_runs(session)
+    shadow_evaluations_persisted = 0
+    if shadow_results:
+        from shared import model_registry
+        with db.SessionLocal() as session:
+            for shadow in shadow_results:
+                if not shadow.scope_type or not shadow.scope_key:
+                    continue
+                try:
+                    active_model, candidate_model = model_registry.ensure_shadow_model_pair(
+                        session, shadow, now=datetime.utcnow(),
+                    )
+                    evaluation = model_registry.record_shadow_evaluation(
+                        session,
+                        active_model=active_model,
+                        candidate_model=candidate_model,
+                        comparison=shadow,
+                        now=datetime.utcnow(),
+                    )
+                    if evaluation is not None:
+                        shadow_evaluations_persisted += 1
+                except Exception as exc:
+                    session.rollback()
+                    logger.exception(
+                        "forecast shadow registry skipped scope=%s: %s",
+                        shadow.scope_key, exc,
+                    )
+            session.commit()
     if recovered:
         logger.warning(
             "reconciled %d expired autonomous execution(s) as INCONCLUSIVE; none were retried",
@@ -2797,6 +2826,23 @@ def _process_approved_actions_once() -> None:
         logger.info("updated %d daemon-log learning sample(s)", log_learning_updated)
     if log_fault_stats_updated:
         logger.info("recomputed %d daemon-log fault aggregate(s)", log_fault_stats_updated)
+    if shadow_results:
+        status_counts = {}
+        for shadow in shadow_results:
+            status_counts[shadow.status] = status_counts.get(shadow.status, 0) + 1
+        logger.info(
+            "forecast shadow evaluation: comparisons=%d statuses=%s mode=SHADOW_ONLY; "
+            "persisted_new_evaluations=%d; no promotion, notification or remediation",
+            len(shadow_results), status_counts, shadow_evaluations_persisted,
+        )
+        for shadow in [item for item in shadow_results if item.status == "PROMISING"][:10]:
+            logger.info(
+                "forecast shadow candidate promising: active=%s candidate=%s "
+                "samples=%d/%d mae_delta=%s reason=%s",
+                shadow.active_algorithm, shadow.candidate_algorithm,
+                shadow.active_evaluated, shadow.candidate_evaluated,
+                shadow.mae_delta, shadow.reason,
+            )
     _reconcile_stuck_rbd_actions_once()
     _process_due_grace_actions_once()
     with db.SessionLocal() as session:

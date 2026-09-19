@@ -8,7 +8,9 @@ from alembic.config import Config
 from config.settings import settings
 from shared.models import (
     Action, Incident, ObjectStorageAuditEntry, PatchDocument, PlaybookStat,
-    RemediationCase, User,
+    RemediationCase, User, VolumeEarlyForecast, ForecastModelEvaluation,
+    ForecastModelPromotionAudit, NodeResourceForecastAlertEvent,
+    OnlineLearnerControl, OnlineLearnerCycleAudit, OnlineLearnerOperatorAudit,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -76,6 +78,62 @@ def test_alembic_upgrade_head_creates_actions_table_matching_model(tmp_path, mon
 
     model_columns = {c.name for c in Action.__table__.columns}
     assert columns == model_columns
+
+
+@pytest.mark.parametrize("table_name, model", [
+    ("forecast_model_evaluations", ForecastModelEvaluation),
+    ("forecast_model_promotion_audits", ForecastModelPromotionAudit),
+])
+def test_alembic_upgrade_head_creates_guarded_promotion_tables(
+    tmp_path, monkeypatch, table_name, model,
+):
+    db_path = tmp_path / "migration_test.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+    con = sqlite3.connect(db_path)
+    columns = {row[1] for row in con.execute(f"PRAGMA table_info({table_name})")}
+    con.close()
+    assert columns == {column.name for column in model.__table__.columns}
+
+
+def test_alembic_upgrade_head_creates_forecast_alert_event_table(tmp_path, monkeypatch):
+    db_path = tmp_path / "migration_forecast_alert_events.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+    con = sqlite3.connect(db_path)
+    columns = {
+        row[1] for row in con.execute(
+            "PRAGMA table_info(node_resource_forecast_alert_events)"
+        )
+    }
+    con.close()
+    assert columns == {column.name for column in NodeResourceForecastAlertEvent.__table__.columns}
+
+
+def test_alembic_upgrade_head_creates_online_learner_cycle_audit_table(tmp_path, monkeypatch):
+    db_path = tmp_path / "migration_online_learner_cycles.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+    con = sqlite3.connect(db_path)
+    columns = {
+        row[1] for row in con.execute(
+            "PRAGMA table_info(online_learner_cycle_audit)"
+        )
+    }
+    con.close()
+    assert columns == {column.name for column in OnlineLearnerCycleAudit.__table__.columns}
+
+
+@pytest.mark.parametrize("table_name, model", [
+    ("online_learner_controls", OnlineLearnerControl),
+    ("online_learner_operator_audits", OnlineLearnerOperatorAudit),
+])
+def test_alembic_upgrade_head_creates_online_learner_operator_tables(
+    tmp_path, monkeypatch, table_name, model,
+):
+    db_path = tmp_path / f"migration_{table_name}.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+    con = sqlite3.connect(db_path)
+    columns = {row[1] for row in con.execute(f"PRAGMA table_info({table_name})")}
+    con.close()
+    assert columns == {column.name for column in model.__table__.columns}
 
 
 def test_alembic_upgrade_preserves_legacy_telegram_message_id(tmp_path, monkeypatch):
@@ -158,3 +216,12 @@ def test_alembic_upgrade_head_accepts_database_url_containing_percent_characters
     tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     con.close()
     assert "incidents" in tables
+
+
+def test_alembic_upgrade_head_creates_volume_forecast_consensus_columns(tmp_path, monkeypatch):
+    db_path = tmp_path / "migration_volume_forecast.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+    con = sqlite3.connect(db_path)
+    columns = {row[1] for row in con.execute("PRAGMA table_info(volume_early_forecasts)")}
+    con.close()
+    assert columns == {column.name for column in VolumeEarlyForecast.__table__.columns}

@@ -13,7 +13,15 @@ DEFAULT_SESSION_SECRET_KEY = "dev-only-insecure-secret-change-me"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=os.environ.get("CEPH_AI_ENV_FILE", ".env"), extra="forbid")
 
+    # Kept for compatibility with the production dashboard's startup guard;
+    # the deployment environment may override it with CEPH_AI_ENVIRONMENT.
+    ceph_ai_environment: str = "development"
     database_url: str = "sqlite:///./ceph_aiops.db"
+    # The Watcher has several bounded auxiliary monitor threads. Keep the
+    # PostgreSQL pool finite, but large enough that one slow collector cannot
+    # starve the other collectors; overflow remains disabled in shared/db.py.
+    database_pool_size: int = Field(default=5, ge=1, le=20)
+    database_pool_timeout_seconds: int = Field(default=10, gt=0, le=120)
     rabbitmq_url: str = "amqp://guest:guest@localhost/"
 
     # Dashboard auth (single static account — AD from Architecture, no RBAC in v1).
@@ -63,6 +71,8 @@ class Settings(BaseSettings):
     ceph_command_timeout: int = Field(default=15, gt=0, le=3600)
     ceph_health_timeout: int = Field(default=8, gt=0, le=300)
     ceph_inventory_timeout: int = Field(default=20, gt=0, le=3600)
+    ceph_backup_operation_timeout: int = Field(default=3600, gt=0, le=86400)
+    ceph_worker_command_timeout: int = Field(default=1800, gt=0, le=86400)
     ceph_log_query_timeout: int = Field(default=20, gt=0, le=3600)
     ceph_refresh_interval: int = Field(default=5, gt=0, le=3600)
     ceph_snapshot_max_age: int = Field(default=30, gt=0, le=86400)
@@ -119,6 +129,9 @@ class Settings(BaseSettings):
     # (ignored for "cephadm"/"none", same as ceph_osd_container_name).
     ceph_rgw_nodes: str = ""
     ceph_rgw_container_name: str = ""
+    ceph_rgw_s3_endpoint: str = ""
+    ceph_rgw_s3_access_key: str = ""
+    ceph_rgw_s3_secret_key: str = ""
 
     # 2026-07-28: RBD pools to poll for per-image performance (IOPS/latency)
     # and saturation detection (watcher/volume_monitor.py) — comma-separated
@@ -274,12 +287,22 @@ class Settings(BaseSettings):
     # The runtime enforces both this and the character ceiling because exact
     # tokenization differs between Codex, Claude and router models.
     ai_incident_max_context_tokens: int = Field(default=6000, ge=1000, le=20000)
+    ai_incident_max_output_tokens: int = Field(default=1536, ge=256, le=8192)
     # Chat history is persisted indefinitely, so a message-count-only window
     # still allows a few large tool/evidence replies to consume the whole
     # provider context. Keep the current turn separate and pack only the
     # most recent useful history within both hard ceilings.
     ai_chat_max_context_chars: int = Field(default=12000, ge=4000, le=50000)
     ai_chat_max_context_tokens: int = Field(default=6000, ge=1000, le=20000)
+    ai_chat_max_output_tokens: int = Field(default=1536, ge=256, le=8192)
+    ai_chat_max_tool_iterations: int = Field(default=4, ge=1, le=6)
+
+    ai_cost_routing_mode: str = "advisory"
+    ai_cost_routing_canary_percent: int = Field(default=0, ge=0, le=100)
+    ai_cost_routing_min_savings_percent: float = Field(default=15.0, ge=0, le=100)
+    ai_cost_routing_same_provider_only: bool = True
+    ai_cost_routing_model_allowlist: str = ""
+    ai_cost_routing_features: str = "ceph_chat,incident_diagnosis"
 
     # Delegated AI guardrails. These limits are deliberately independent from
     # the normal chat turn so one delegated request cannot fan out without a
@@ -642,6 +665,51 @@ class Settings(BaseSettings):
     # trend.  Disabled by default so an existing SSH-only deployment does
     # not unexpectedly start writing to Loki.
     node_resource_forecast_enabled: bool = False
+    # Phase 0.2: the future River/online learner has an independent safety
+    # gate. Existing deterministic forecast collection remains controlled by
+    # node_resource_forecast_enabled above; these flags only control online
+    # model state updates and must stay disabled until a canary is approved.
+    online_learning_enabled: bool = False
+    online_learning_mode: str = "AUDIT_ONLY"
+    online_learning_kill_switch: bool = False
+    # Canary scope: when enabled, exactly one cluster/host/metric stream may
+    # reach the learner. Empty scope values fail closed instead of widening
+    # the rollout accidentally.
+    online_learning_canary_enabled: bool = False
+    online_learning_canary_cluster_id: str = ""
+    online_learning_canary_host: str = ""
+    online_learning_canary_metrics: str = "cpu"
+    online_learning_watcher_failure_threshold: int = Field(default=3, ge=1, le=100)
+    online_learning_watcher_staleness_seconds: int = Field(default=120, ge=15, le=86400)
+    online_learning_max_samples_per_cycle: int = Field(default=100, ge=1, le=10000)
+    online_learning_timeout_seconds: float = Field(default=5.0, gt=0, le=300)
+    online_learning_circuit_breaker_failures: int = Field(default=3, ge=1, le=100)
+    online_learning_cooldown_seconds: int = Field(default=60, ge=1, le=86400)
+    online_learning_require_verified_label: bool = True
+    online_learning_min_verified_evidence: int = Field(default=3, ge=1, le=100)
+    online_learning_label_tolerance_percent: float = Field(default=5.0, ge=0, le=100)
+    online_learning_drift_threshold_percent: float = Field(default=20.0, ge=0, le=100)
+    online_learning_label_rate_limit: int = Field(default=100, ge=1, le=10000)
+    online_learning_label_rate_window_seconds: int = Field(default=3600, ge=60, le=86400)
+    forecast_drift_minimum_samples: int = Field(default=10, ge=2, le=10000)
+    forecast_drift_baseline_shift_threshold: float = Field(default=15.0, ge=0, le=100)
+    forecast_drift_residual_shift_threshold: float = Field(default=15.0, ge=0, le=100)
+    forecast_drift_coverage_drop_threshold: float = Field(default=0.20, ge=0, le=1)
+    forecast_drift_alert_rate_increase_threshold: float = Field(default=0.25, ge=0, le=1)
+    forecast_drift_history_runs: int = Field(default=100, ge=20, le=10000)
+    forecast_drift_confidence_multiplier: float = Field(default=0.5, ge=0, le=1)
+    online_learning_sample_max_age_seconds: int = Field(default=120, ge=15, le=86400)
+    online_learning_sample_max_gap_seconds: int = Field(default=900, ge=30, le=604800)
+    learning_job_min_interval_seconds: int = Field(default=300, ge=0, le=86400)
+    learning_job_max_batch_size: int = Field(default=5000, ge=1, le=5000)
+    learning_job_timeout_seconds: int = Field(default=60, ge=1, le=3600)
+    learning_job_max_retries: int = Field(default=2, ge=0, le=5)
+    learning_job_circuit_breaker_failures: int = Field(default=3, ge=1, le=20)
+    learning_job_circuit_breaker_cooldown_seconds: int = Field(default=300, ge=1, le=86400)
+    learning_raw_sample_retention_days: int = Field(default=30, ge=1, le=3650)
+    learning_forecast_retention_days: int = Field(default=180, ge=1, le=3650)
+    learning_audit_retention_days: int = Field(default=365, ge=1, le=3650)
+    learning_retention_interval_seconds: int = Field(default=3600, ge=60, le=86400)
     # Optional self-contained ingestion path for deployments without Alloy:
     # Watcher samples /proc over its existing read-only SSH path and pushes
     # the fresh CPU/RAM sample to Loki before analysing the node. Keep this
@@ -651,6 +719,14 @@ class Settings(BaseSettings):
     node_resource_forecast_horizon_hours: int = 168
     node_resource_forecast_min_samples: int = 24
     node_resource_forecast_min_confidence: float = 0.5
+    node_resource_forecast_trigger_threshold_percent: float = 90.0
+    node_resource_forecast_recovery_threshold_percent: float = 85.0
+    node_resource_forecast_breach_consecutive_scans: int = 2
+    node_resource_forecast_recovery_consecutive_scans: int = 2
+    node_resource_forecast_min_consensus_ratio: float = 0.67
+    node_resource_forecast_min_consensus_candidates: int = 2
+    node_resource_forecast_consensus_tolerance_percent: float = 5.0
+    node_resource_forecast_consensus_relative_tolerance: float = 0.10
     # A forecast must cover enough of its requested training window and may
     # not bridge an excessively long Loki/Alloy outage.
     node_resource_forecast_min_coverage: float = 0.6
@@ -664,6 +740,18 @@ class Settings(BaseSettings):
     node_resource_learning_max_outcome_gap_hours: float = 3.0
     node_resource_learning_min_outcomes: int = 3
     node_resource_learning_candidate_hours: str = "24,72,168,720"
+    node_resource_learning_rolling_samples: int = 50
+
+    # Guarded forecast promotion is operator-approved only.  A candidate must
+    # beat the active model across several newly observed target timestamps;
+    # missing metrics fail closed and never trigger an automatic promotion.
+    forecast_promotion_min_outcomes: int = 20
+    forecast_promotion_required_evaluations: int = 3
+    forecast_promotion_max_false_positive_rate_increase: float = 0.0
+    forecast_promotion_min_mae_improvement: float = 0.0
+    forecast_promotion_min_smape_improvement: float = 0.0
+    forecast_promotion_max_poll_latency_ms: float = Field(default=5000.0, ge=1, le=600000)
+    forecast_promotion_max_drift_score: float = Field(default=0.0, ge=0, le=100)
 
     # LARGE_OMAP_OBJECTS auto-remediation is opt-in and bucket-scoped.
     # test-* remains the built-in lab-only path; production buckets must be
@@ -674,7 +762,11 @@ class Settings(BaseSettings):
     # The first bounded RGW reshard must be operator-approved so its
     # verified post-check can bootstrap trust without an unobserved write.
     large_omap_bootstrap_requires_approval: bool = True
+    # Legacy fallback for deployments that have not set severity-specific
+    # values yet. WARNING is intentionally quiet; CRITICAL is retried sooner.
     node_resource_forecast_alert_cooldown_seconds: int = 86400
+    node_resource_forecast_warning_cooldown_seconds: int = 86400
+    node_resource_forecast_critical_cooldown_seconds: int = 3600
 
     # Per-RBD-volume seasonal baseline learning. Predictions are audit-only:
     # they may change the selected baseline, never policy or action rights.
@@ -684,10 +776,20 @@ class Settings(BaseSettings):
     volume_learning_min_samples: int = 24
     volume_learning_min_outcomes: int = 10
     volume_learning_candidate_hours: str = "24,72,168,720"
+    volume_learning_rolling_samples: int = 50
+    # Quality gate for hourly RBD metric history. Coverage/gap checks are
+    # separate from source freshness because a recent sample can coexist
+    # with a long outage earlier in the selected training window.
+    volume_learning_min_coverage: float = 0.6
+    volume_learning_max_gap_hours: float = 6.0
     # Read-only early warning generated from the selected seasonal baseline.
     volume_forecast_enabled: bool = True
     volume_forecast_horizons: str = "1,6,24"
     volume_forecast_min_confidence: float = 0.5
+    volume_forecast_min_consensus_ratio: float = 0.67
+    volume_forecast_min_consensus_candidates: int = 2
+    volume_forecast_consensus_tolerance_percent: float = 5.0
+    volume_forecast_consensus_relative_tolerance: float = 0.10
     volume_forecast_max_staleness_minutes: int = 30
     volume_forecast_latency_slo_ms: float = 20.0
     volume_forecast_knee_warning_ratio: float = 0.9
