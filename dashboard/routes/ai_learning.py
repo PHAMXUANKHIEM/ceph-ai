@@ -829,6 +829,43 @@ def _control_scope(cluster_id: str, host: str, metric: str) -> tuple[str, str, s
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _require_selected_cluster(request: Request, cluster_id: str):
+    """Reject cross-cluster mutations instead of trusting a posted id."""
+    requested = str(cluster_id or "").strip()
+    if not requested:
+        raise HTTPException(status_code=422, detail="cluster_id là bắt buộc.")
+    _clusters, selected = cluster_selection(request)
+    if requested != selected.id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Thao tác chỉ được phép trên cụm đang được chọn; "
+                "hãy tải lại trang sau khi chuyển cụm."
+            ),
+        )
+    return selected
+
+
+def _model_belongs_to_cluster(row: ForecastModelRegistry, cluster) -> bool:
+    """Match the registry's historical scope key to the selected cluster."""
+    scope_key = str(row.scope_key or "")
+    if row.scope_type == "VOLUME":
+        return scope_key.split("|", 1)[0] == cluster.id
+    if row.scope_type == "NODE_RESOURCE":
+        return scope_key.split("|", 1)[0] == cluster.name
+    return False
+
+
+def _require_model_scope(session, model_id: str, cluster) -> ForecastModelRegistry:
+    row = session.get(ForecastModelRegistry, model_id)
+    if row is None or not _model_belongs_to_cluster(row, cluster):
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy model trong cụm đang được chọn.",
+        )
+    return row
+
+
 @router.get("/api/ai-learning")
 async def ai_learning_api(request: Request, _user: str = Depends(require_login)):
     _clusters, cluster = cluster_selection(request)
@@ -857,6 +894,11 @@ async def ai_learning_replay(request: Request, _user: str = Depends(require_logi
 
     _clusters, selected_cluster = cluster_selection(request)
     cluster_id = str(payload.get("cluster_id") or selected_cluster.id).strip()
+    if cluster_id != selected_cluster.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Replay chỉ được phép trên cụm đang được chọn.",
+        )
     host = str(payload.get("host") or "").strip()
     metric = str(payload.get("metric") or "").strip().lower()
     if metric not in _REPLAY_COLUMNS:
@@ -946,10 +988,12 @@ async def ai_learning_replay(request: Request, _user: str = Depends(require_logi
 
 @router.post("/api/ai-learning/models/{model_id}/promotion-request")
 async def request_model_promotion(
-    model_id: str, user: str = Depends(require_login),
+    model_id: str, request: Request, user: str = Depends(require_login),
 ):
     """Ask for promotion; this never changes the active model."""
+    _clusters, cluster = cluster_selection(request)
     with db.SessionLocal() as session:
+        _require_model_scope(session, model_id, cluster)
         try:
             decision = model_registry.request_promotion(
                 session, candidate_id=model_id, actor=user,
@@ -968,10 +1012,13 @@ async def request_model_promotion(
 
 @router.post("/api/ai-learning/models/{model_id}/promote")
 async def approve_model_promotion(
-    model_id: str, user: str = Depends(require_login),
+    model_id: str, request: Request, user: str = Depends(require_login),
 ):
     """Explicit operator approval required before a model becomes active."""
+    _require_admin(user)
+    _clusters, cluster = cluster_selection(request)
     with db.SessionLocal() as session:
+        _require_model_scope(session, model_id, cluster)
         try:
             row = model_registry.approve_promotion(
                 session, candidate_id=model_id, actor=user,
@@ -985,10 +1032,13 @@ async def approve_model_promotion(
 
 @router.post("/api/ai-learning/models/{model_id}/rollback")
 async def rollback_model_promotion(
-    model_id: str, user: str = Depends(require_login),
+    model_id: str, request: Request, user: str = Depends(require_login),
 ):
     """Restore the exact previous active model recorded in promotion audit."""
+    _require_admin(user)
+    _clusters, cluster = cluster_selection(request)
     with db.SessionLocal() as session:
+        _require_model_scope(session, model_id, cluster)
         try:
             row = model_registry.rollback_promotion(
                 session, candidate_id=model_id, actor=user,
@@ -1002,11 +1052,13 @@ async def rollback_model_promotion(
 
 @router.post("/api/ai-learning/learner/pause")
 async def pause_online_learner(
+    request: Request,
     cluster_id: str = Form(...), host: str = Form(...), metric: str = Form(...),
     reason: str = Form(...), user: str = Depends(require_login),
 ):
     """Pause exactly one learner stream; no global flag or model is changed."""
     _require_admin(user)
+    _require_selected_cluster(request, cluster_id)
     _control_scope(cluster_id, host, metric)
     with db.SessionLocal() as session:
         try:
@@ -1023,11 +1075,13 @@ async def pause_online_learner(
 
 @router.post("/api/ai-learning/learner/resume")
 async def resume_online_learner(
+    request: Request,
     cluster_id: str = Form(...), host: str = Form(...), metric: str = Form(...),
     reason: str = Form(...), user: str = Depends(require_login),
 ):
     """Resume exactly one paused stream after explicit operator approval."""
     _require_admin(user)
+    _require_selected_cluster(request, cluster_id)
     _control_scope(cluster_id, host, metric)
     with db.SessionLocal() as session:
         try:
@@ -1044,6 +1098,7 @@ async def resume_online_learner(
 
 @router.post("/api/ai-learning/learner/reset")
 async def reset_online_learner(
+    request: Request,
     cluster_id: str = Form(...), host: str = Form(...), metric: str = Form(...),
     reason: str = Form(...), confirmation: str = Form(...),
     user: str = Depends(require_login),
@@ -1052,6 +1107,7 @@ async def reset_online_learner(
     _require_admin(user)
     if confirmation.strip().upper() != "RESET":
         raise HTTPException(status_code=422, detail="Nhập chính xác RESET để xác nhận.")
+    _require_selected_cluster(request, cluster_id)
     _control_scope(cluster_id, host, metric)
     with db.SessionLocal() as session:
         try:
@@ -1071,8 +1127,7 @@ async def online_learner_operator_audit(
     request: Request, _user: str = Depends(require_login),
 ):
     cluster_id = str(request.query_params.get("cluster_id") or "").strip()
-    if not cluster_id:
-        raise HTTPException(status_code=422, detail="cluster_id là bắt buộc.")
+    _require_selected_cluster(request, cluster_id)
     try:
         limit = int(request.query_params.get("limit") or 100)
     except ValueError as exc:
@@ -1088,11 +1143,14 @@ async def online_learner_operator_audit(
 
 @router.post("/api/ai-learning/models/{model_id}/block")
 async def block_model_candidate(
+    request: Request,
     model_id: str, reason: str = Form(...), user: str = Depends(require_login),
 ):
     """Block one candidate and append the guarded-promotion audit event."""
     _require_admin(user)
+    _clusters, cluster = cluster_selection(request)
     with db.SessionLocal() as session:
+        _require_model_scope(session, model_id, cluster)
         try:
             row = model_registry.block_candidate(
                 session, candidate_id=model_id, actor=user, reason=reason,
@@ -1106,6 +1164,7 @@ async def block_model_candidate(
 
 @router.post("/api/ai-learning/node-alerts/{alert_id}/feedback")
 async def node_forecast_feedback(
+    request: Request,
     alert_id: str,
     verdict: str = Form(...),
     note: str = Form(""),
@@ -1115,7 +1174,14 @@ async def node_forecast_feedback(
     user: str = Depends(require_login),
 ):
     """Append an operator verdict; this never changes lifecycle or policy."""
+    _clusters, selected_cluster = cluster_selection(request)
     with db.SessionLocal() as session:
+        alert = session.get(NodeResourceForecastAlert, alert_id)
+        if alert is not None and alert.cluster_name != selected_cluster.name:
+            raise HTTPException(
+                status_code=404,
+                detail="Không tìm thấy forecast alert trong cụm đang được chọn.",
+            )
         feedback = forecast_feedback.add_feedback(
             session,
             alert_id=alert_id,

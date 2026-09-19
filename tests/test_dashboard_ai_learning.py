@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 from config.settings import settings
+import dashboard.routes.ai_learning as ai_learning_route
 from shared import db
 from shared.clusters import ensure_default_cluster
 from shared.models import (
@@ -90,6 +91,40 @@ def test_ai_learning_requires_login(dashboard_client):
     response = dashboard_client.get("/ai-learning", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
+
+
+def test_ai_learning_model_mutations_require_admin(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    monkeypatch.setattr(ai_learning_route, "is_admin_user", lambda _user: False)
+
+    assert dashboard_client.post(
+        "/api/ai-learning/models/unknown/promote"
+    ).status_code == 403
+    assert dashboard_client.post(
+        "/api/ai-learning/models/unknown/rollback"
+    ).status_code == 403
+    assert dashboard_client.post(
+        "/api/ai-learning/models/unknown/block", data={"reason": "test"}
+    ).status_code == 403
+
+
+def test_ai_learning_controls_reject_a_different_selected_cluster(dashboard_client):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        selected_cluster_id = ensure_default_cluster(session).id
+
+    response = dashboard_client.post(
+        "/api/ai-learning/learner/pause",
+        data={
+            "cluster_id": "another-cluster-id",
+            "host": "10.20.1.153",
+            "metric": "cpu",
+            "reason": "scope regression test",
+        },
+    )
+
+    assert response.status_code == 409
+    assert selected_cluster_id != "another-cluster-id"
 
 
 def test_ai_learning_empty_state_is_readable(dashboard_client):
