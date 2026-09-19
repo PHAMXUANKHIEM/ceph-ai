@@ -159,6 +159,33 @@ def test_action_state_event_is_not_published_for_rolled_back_transition(
     assert event["action_status"] == "PENDING"
 
 
+def test_resolved_incident_publishes_snapshot_invalidation_after_commit(
+    dashboard_client, default_cluster_id
+):
+    from shared import ceph_query_cache
+    from shared.cluster_events import EVENT_NAMESPACE, read_latest_event
+
+    ceph_query_cache.invalidate(EVENT_NAMESPACE, default_cluster_id)
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id=default_cluster_id,
+            ceph_code="POOL_FULL",
+            status="NEW",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.commit()
+        ceph_query_cache.invalidate(EVENT_NAMESPACE, default_cluster_id)
+
+        incident.status = "RESOLVED"
+        session.commit()
+
+    event = read_latest_event(default_cluster_id)
+    assert event["event"] == "snapshot_changed"
+    assert event["cluster_id"] == default_cluster_id
+    assert event["sections"] == ["health", "status", "pools"]
+
+
 def test_poller_detects_changes_without_deserializing_snapshots(
     dashboard_client, default_cluster_id, monkeypatch
 ):

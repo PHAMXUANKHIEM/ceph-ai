@@ -13,6 +13,7 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 _ACTION_STATE_EVENTS_KEY = "ceph_ai_action_state_events"
+_CLUSTER_STATE_EVENTS_KEY = "ceph_ai_cluster_state_events"
 
 
 def _validate_production_database_url(url: str) -> None:
@@ -174,6 +175,40 @@ def _collect_action_state_events(session: Session, _flush_context) -> None:
         pending[(cluster_id, str(action.id))] = str(state)
 
 
+def _sections_for_resolved_incident(incident: object) -> tuple[str, ...]:
+    """Map a post-check-confirmed Incident to bounded snapshot sections.
+
+    The Worker/Watcher owns the authoritative refresh. This hook only emits a
+    small invalidation hint after the database commit that records RESOLVED;
+    it never claims that a command succeeded before the post-check.
+    """
+    code = str(getattr(incident, "ceph_code", "") or "").upper()
+    sections = {"health", "status"}
+    if "POOL" in code:
+        sections.add("pools")
+    if "PG" in code:
+        sections.add("pgs")
+    if "OSD" in code or "NODE" in code or "HOST" in code:
+        sections.add("nodes")
+    return tuple(section for section in ("health", "status", "pools", "pgs", "crush", "nodes") if section in sections)
+
+
+@event.listens_for(Session, "after_flush")
+def _collect_cluster_state_events(session: Session, _flush_context) -> None:
+    pending = session.info.setdefault(_CLUSTER_STATE_EVENTS_KEY, {})
+    for incident in set(session.dirty):
+        if incident.__class__.__name__ != "Incident":
+            continue
+        inspected = inspect(incident)
+        if not inspected.attrs.status.history.has_changes():
+            continue
+        if str(getattr(incident, "status", "")) not in {"RESOLVED", "IncidentStatus.RESOLVED"}:
+            continue
+        cluster_id = str(getattr(incident, "cluster_id", "") or "").strip()
+        if cluster_id:
+            pending[cluster_id] = _sections_for_resolved_incident(incident)
+
+
 @event.listens_for(Session, "after_commit")
 def _publish_action_state_events(session: Session) -> None:
     pending = session.info.pop(_ACTION_STATE_EVENTS_KEY, {})
@@ -187,6 +222,20 @@ def _publish_action_state_events(session: Session) -> None:
             logger.exception("could not publish committed Action state for %s", action_id)
 
 
+@event.listens_for(Session, "after_commit")
+def _publish_cluster_state_events(session: Session) -> None:
+    pending = session.info.pop(_CLUSTER_STATE_EVENTS_KEY, {})
+    if not pending:
+        return
+    from shared.cluster_events import publish_event
+    for cluster_id, sections in pending.items():
+        try:
+            publish_event(cluster_id, "snapshot_changed", sections=sections)
+        except Exception:
+            logger.exception("could not publish post-check snapshot invalidation for %s", cluster_id)
+
+
 @event.listens_for(Session, "after_rollback")
 def _discard_action_state_events(session: Session) -> None:
     session.info.pop(_ACTION_STATE_EVENTS_KEY, None)
+    session.info.pop(_CLUSTER_STATE_EVENTS_KEY, None)
