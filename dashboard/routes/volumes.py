@@ -55,6 +55,7 @@ from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher.volume_monitor import ceph_code_for
 from watcher.block_storage_insights import (
     build_inventory_insights,
+    build_protection_gap_insights,
     build_snapshot_clone_insights,
     persist_dependency_snapshots,
 )
@@ -1299,6 +1300,129 @@ async def volume_snapshot_clone_insights_api(
             "clone_children": True,
             "owner_project": False,
             "note": "Ownership/tenant metadata remains outside the RBD dependency response.",
+        },
+        "collected_at": _cache_collected_at(cache_state),
+        "stale": bool(cache_state["stale"]),
+        "refreshing": bool(cache_state["refreshing"]),
+        "cache_age_seconds": cache_state["age_seconds"],
+        "cache_source": cache_state["source"],
+    }
+
+
+@router.get("/api/volumes/{pool}/protection-insights")
+async def volume_protection_insights_api(
+    request: Request,
+    pool: str,
+    max_images: int = Query(50, ge=1, le=100),
+    user: str = Depends(require_login),
+):
+    """Return bounded, read-only backup and recovery protection gaps."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        inventory, cache_state = _cached_rbd_inventory_with_state(cluster, pool)
+    except CephQueryError as exc:
+        logger.warning("volume_protection_insights_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}") from exc
+
+    candidates = sorted(
+        (row for row in inventory if isinstance(row, dict)),
+        key=lambda row: str(row.get("name") or ""),
+    )[:max_images]
+    candidate_keys = {
+        (pool, str(row.get("name") or "")) for row in candidates if row.get("name")
+    }
+    backup_rows: dict[tuple[str, str], list[dict]] = {key: [] for key in candidate_keys}
+    restore_rows: list[dict] = []
+    with db.SessionLocal() as session:
+        jobs = (
+            session.query(BackupJob)
+            .filter(
+                BackupJob.pool == pool,
+                _cluster_row_filter(BackupJob.cluster_id, cluster),
+                BackupJob.job_type.in_(("full", "incremental", "metadata")),
+            )
+            .order_by(BackupJob.created_at.desc())
+            .limit(max(500, max_images * 30))
+            .all()
+        )
+        drills = (
+            session.query(BackupJob)
+            .filter(
+                BackupJob.job_type == "restore_drill",
+                _cluster_row_filter(BackupJob.cluster_id, cluster),
+            )
+            .order_by(BackupJob.created_at.desc())
+            .limit(30)
+            .all()
+        )
+        policies = session.query(VolumeSnapshotPolicy.pool, VolumeSnapshotPolicy.image).filter(
+            VolumeSnapshotPolicy.pool == pool,
+            _cluster_row_filter(VolumeSnapshotPolicy.cluster_id, cluster),
+            VolumeSnapshotPolicy.enabled.is_(True),
+        ).all()
+
+    for row in jobs:
+        key = (str(row.pool or ""), str(row.image or ""))
+        if key not in backup_rows:
+            continue
+        backup_rows[key].append({
+            "job_type": row.job_type,
+            "status": row.status,
+            "created_at": row.created_at,
+            "finished_at": row.finished_at,
+        })
+    for row in drills:
+        restore_rows.append({
+            "pool": row.pool,
+            "image": row.image,
+            "status": row.status,
+            "created_at": row.created_at,
+            "finished_at": row.finished_at,
+        })
+
+    now = datetime.utcnow()
+    backup_rpo_hours = 24
+    if not cluster.is_default:
+        try:
+            backup_rpo_hours = max(1, min(int(cluster.backup_rpo_hours or 24), 24 * 365))
+        except (TypeError, ValueError):
+            backup_rpo_hours = 24
+    insights = build_protection_gap_insights(
+        candidates,
+        backup_rows,
+        policy_keys={(row[0], row[1]) for row in policies},
+        restore_drill_rows=restore_rows,
+        now=now,
+        backup_max_age_hours=backup_rpo_hours,
+        restore_drill_max_age_hours=192,
+    )
+    return {
+        "cluster_id": cluster.id,
+        "pool": pool,
+        "queried_images": len(candidates),
+        "max_images": max_images,
+        "insights": insights,
+        "summary": {
+            "total": len(insights),
+            "no_successful_backup": sum(item["kind"] == "NO_SUCCESSFUL_BACKUP" for item in insights),
+            "backup_failed": sum(item["kind"] == "BACKUP_FAILED" for item in insights),
+            "backup_stale": sum(item["kind"] == "BACKUP_STALE" for item in insights),
+            "restore_drill_gap": sum(item["kind"] == "RESTORE_DRILL_GAP" for item in insights),
+            "insufficient_evidence": sum(item["kind"] == "INSUFFICIENT_EVIDENCE" for item in insights),
+        },
+        "coverage": {
+            "backup_history": True,
+            "snapshot_policy": True,
+            "restore_drill": True,
+            "owner_project": False,
+            "restore_drill_per_volume": False,
+            "note": "BackupJob và RestoreDrill là bằng chứng nội bộ; chưa xác minh artifact ngoài target hoặc ownership theo tenant.",
+        },
+        "thresholds": {
+            "backup_max_age_hours": backup_rpo_hours,
+            "restore_drill_max_age_hours": 192,
         },
         "collected_at": _cache_collected_at(cache_state),
         "stale": bool(cache_state["stale"]),

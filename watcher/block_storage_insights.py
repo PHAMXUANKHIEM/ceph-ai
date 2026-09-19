@@ -19,6 +19,8 @@ from sqlalchemy import delete
 from shared import db
 from shared.models import VolumeDependencySnapshot
 
+_ADVISORY_TTL_SECONDS = 15 * 60
+
 
 @dataclass(frozen=True)
 class InventoryInsight:
@@ -55,6 +57,37 @@ def _as_datetime(value: object) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
     except ValueError:
         return None
+
+
+def _with_advisory(
+    payload: dict,
+    *,
+    evidence_at: object,
+    expected_saving_bytes: int | None = None,
+    impact: str = "Không thay đổi Ceph; cần operator review trước mọi mutation.",
+) -> dict:
+    """Attach a stable, non-executable recommendation contract.
+
+    These fields make it explicit that an insight is not an Action.  The
+    evidence TTL prevents a UI consumer from treating a stale read-only scan
+    as a current approval to mutate the cluster.
+    """
+    captured = _as_datetime(evidence_at) or datetime.utcnow()
+    payload.update({
+        "recommendation_mode": "ADVISORY",
+        "read_only": True,
+        "action_id": None,
+        "expected_saving_bytes": (
+            max(0, int(expected_saving_bytes))
+            if expected_saving_bytes is not None else None
+        ),
+        "impact": impact,
+        "ttl_seconds": _ADVISORY_TTL_SECONDS,
+        "evidence_expires_at": (
+            captured + timedelta(seconds=_ADVISORY_TTL_SECONDS)
+        ).isoformat() + "Z",
+    })
+    return payload
 
 
 def _metric_summary(rows: Iterable[Mapping[str, object]], since: datetime) -> tuple[datetime | None, bool]:
@@ -121,7 +154,7 @@ def build_inventory_insights(
             )
             if snapshots:
                 reason += f"; {snapshots} snapshot(s) still protect the image"
-            result.append(asdict(InventoryInsight(
+            result.append(_with_advisory(asdict(InventoryInsight(
                 pool=pool, image=image, kind="STALE_UNATTACHED", confidence=0.9,
                 reason=reason,
                 recommendation="Review owner and backup status before any retain/trash decision",
@@ -130,9 +163,10 @@ def build_inventory_insights(
                 attachment_state=attachment, watcher_count=watcher_count,
                 last_io_at=None, evidence_at=now.isoformat() + "Z",
                 evidence_gaps=tuple(gaps),
-            )))
+            )), evidence_at=now, expected_saving_bytes=reclaimable,
+                impact="Không tự detach/trash; reclaim chỉ là ước tính cần owner và backup review."))
         elif snapshots and not policy:
-            result.append(asdict(InventoryInsight(
+            result.append(_with_advisory(asdict(InventoryInsight(
                 pool=pool, image=image, kind="SNAPSHOT_REVIEW", confidence=0.85,
                 reason=f"{snapshots} snapshot(s) detected without a configured snapshot policy",
                 recommendation="Review snapshot retention and clone dependencies; do not delete automatically",
@@ -141,9 +175,10 @@ def build_inventory_insights(
                 attachment_state=attachment, watcher_count=watcher_count,
                 last_io_at=last_io.isoformat() + "Z" if last_io else None,
                 evidence_at=now.isoformat() + "Z", evidence_gaps=tuple(gaps),
-            )))
+            )), evidence_at=now,
+                impact="Không tự xóa snapshot; cần kiểm tra retention và clone dependency."))
         elif not has_metrics or attachment == "unknown":
-            result.append(asdict(InventoryInsight(
+            result.append(_with_advisory(asdict(InventoryInsight(
                 pool=pool, image=image, kind="INSUFFICIENT_EVIDENCE", confidence=None,
                 reason="Không đủ bằng chứng để kết luận volume stale hoặc có thể thu hồi",
                 recommendation="Collect attachment and I/O evidence before making an inventory recommendation",
@@ -152,7 +187,8 @@ def build_inventory_insights(
                 attachment_state=attachment, watcher_count=watcher_count,
                 last_io_at=last_io.isoformat() + "Z" if last_io else None,
                 evidence_at=now.isoformat() + "Z", evidence_gaps=tuple(gaps),
-            )))
+            )), evidence_at=now,
+                impact="Không có mutation; chỉ yêu cầu thu thập thêm evidence."))
 
     order = {"STALE_UNATTACHED": 0, "SNAPSHOT_REVIEW": 1, "INSUFFICIENT_EVIDENCE": 2}
     return sorted(result, key=lambda row: (order.get(row["kind"], 9), row["pool"], row["image"]))
@@ -192,7 +228,7 @@ def build_snapshot_clone_insights(
         dependency = bool(parent or children)
         snapshot_count = len(snapshots)
         if errors.get("snapshots") or errors.get("children"):
-            result.append({
+            result.append(_with_advisory({
                 "pool": pool, "image": image, "kind": "INSUFFICIENT_EVIDENCE",
                 "confidence": None,
                 "reason": "Không đọc đủ snapshot/clone dependency từ RBD",
@@ -200,10 +236,11 @@ def build_snapshot_clone_insights(
                 "snapshot_count": snapshot_count, "parent": parent,
                 "children": children, "evidence_at": captured,
                 "evidence_gaps": sorted(str(name) for name in errors if name in {"snapshots", "children"}),
-            })
+            }, evidence_at=captured,
+                impact="Không tự flatten/xóa; partial evidence phải được đọc lại trước khi review."))
             continue
         if snapshot_count and key not in policy_keys:
-            result.append({
+            result.append(_with_advisory({
                 "pool": pool, "image": image, "kind": "SNAPSHOT_RETENTION_GAP",
                 "confidence": 0.95,
                 "reason": f"Có {snapshot_count} snapshot nhưng chưa có snapshot policy trong ceph-ai",
@@ -211,9 +248,10 @@ def build_snapshot_clone_insights(
                 "snapshot_count": snapshot_count, "parent": parent,
                 "children": children, "evidence_at": captured,
                 "evidence_gaps": ["Cinder/tenant ownership is not part of this RBD response"],
-            })
+            }, evidence_at=captured,
+                impact="Không tự xóa snapshot; cần owner, retention và clone review."))
         if parent:
-            result.append({
+            result.append(_with_advisory({
                 "pool": pool, "image": image, "kind": "CLONE_CHILD",
                 "confidence": 0.95,
                 "reason": f"Volume phụ thuộc parent clone {parent}",
@@ -221,9 +259,10 @@ def build_snapshot_clone_insights(
                 "snapshot_count": snapshot_count, "parent": parent,
                 "children": children, "evidence_at": captured,
                 "evidence_gaps": [],
-            })
+            }, evidence_at=captured,
+                impact="Không tự flatten/xóa parent; child dependency có thể làm gián đoạn clone."))
         if children:
-            result.append({
+            result.append(_with_advisory({
                 "pool": pool, "image": image, "kind": "CLONE_PARENT",
                 "confidence": 0.95,
                 "reason": f"Có {len(children)} clone child đang phụ thuộc volume này",
@@ -231,11 +270,170 @@ def build_snapshot_clone_insights(
                 "snapshot_count": snapshot_count, "parent": parent,
                 "children": children, "evidence_at": captured,
                 "evidence_gaps": [],
-            })
+            }, evidence_at=captured,
+                impact="Không tự flatten/xóa volume; cần xử lý child dependency có kiểm soát."))
         if not snapshot_count and not dependency and not errors:
             continue
     order = {"INSUFFICIENT_EVIDENCE": 0, "CLONE_PARENT": 1, "CLONE_CHILD": 2, "SNAPSHOT_RETENTION_GAP": 3}
     return sorted(result, key=lambda row: (order.get(row["kind"], 9), row["pool"], row["image"], row["kind"]))
+
+
+def build_protection_gap_insights(
+    inventory_rows: Iterable[Mapping[str, object]],
+    backup_rows: Mapping[tuple[str, str], Iterable[Mapping[str, object]]],
+    *,
+    policy_keys: set[tuple[str, str]] | None = None,
+    restore_drill_rows: Iterable[Mapping[str, object]] = (),
+    now: datetime | None = None,
+    backup_max_age_hours: int = 24,
+    restore_drill_max_age_hours: int = 192,
+    backup_history_available: bool = True,
+) -> list[dict]:
+    """Find conservative, read-only backup and restore protection gaps.
+
+    ``BackupJob`` is application history, not proof that an external target
+    still contains the artifact.  The output therefore keeps that limitation
+    in ``evidence_gaps`` and never turns a missing row into an execution
+    action.  RestoreDrill is currently cluster-scoped; at most one finding is
+    emitted for it instead of pretending that a global drill covers every
+    image individually.
+    """
+
+    now = (now or datetime.utcnow()).replace(tzinfo=None)
+    policy_keys = policy_keys or set()
+    backup_max_age_hours = max(1, int(backup_max_age_hours))
+    restore_drill_max_age_hours = max(1, int(restore_drill_max_age_hours))
+    result: list[dict] = []
+    inventory = [row for row in inventory_rows if isinstance(row, Mapping)]
+
+    def job_time(row: Mapping[str, object]) -> datetime | None:
+        return _as_datetime(row.get("finished_at") or row.get("created_at"))
+
+    def finding(
+        *, pool: str, image: str, kind: str, confidence: float | None,
+        reason: str, recommendation: str, snapshot_count: int,
+        snapshot_policy_enabled: bool, last_success_at: datetime | None,
+        last_failure_at: datetime | None, evidence_gaps: list[str],
+        scope: str = "volume",
+    ) -> dict:
+        return _with_advisory({
+            "pool": pool,
+            "image": image,
+            "scope": scope,
+            "kind": kind,
+            "confidence": confidence,
+            "reason": reason,
+            "recommendation": recommendation,
+            "snapshot_count": snapshot_count,
+            "snapshot_policy_enabled": snapshot_policy_enabled,
+            "last_success_at": last_success_at.isoformat() + "Z" if last_success_at else None,
+            "last_failure_at": last_failure_at.isoformat() + "Z" if last_failure_at else None,
+            "evidence_at": now.isoformat() + "Z",
+            "evidence_gaps": evidence_gaps,
+        }, evidence_at=now,
+            impact="Không tự chạy backup/restore và không thay đổi volume; operator cần review evidence.")
+
+    for raw in inventory:
+        pool = str(raw.get("pool") or "")
+        image = str(raw.get("name") or raw.get("image") or "")
+        if not pool or not image:
+            continue
+        key = (pool, image)
+        snapshot_count = _as_int(raw.get("snapshot_count"))
+        has_policy = key in policy_keys
+        entries = [row for row in (backup_rows.get(key, ()) or ()) if isinstance(row, Mapping)]
+        eligible = [
+            row for row in entries
+            if str(row.get("job_type") or "").lower() in {"full", "incremental"}
+        ]
+        successful = [row for row in eligible if str(row.get("status") or "").upper() == "SUCCESS"]
+        failures = [row for row in eligible if str(row.get("status") or "").upper() == "FAILED"]
+        latest_success = max(successful, key=lambda row: job_time(row) or datetime.min, default=None)
+        latest_failure = max(failures, key=lambda row: job_time(row) or datetime.min, default=None)
+        success_at = job_time(latest_success) if latest_success else None
+        failure_at = job_time(latest_failure) if latest_failure else None
+        evidence_gaps = [
+            "BackupJob chỉ phản ánh các job backup được ghi nhận trong ceph-ai; chưa xác minh artifact ở target ngoài.",
+        ]
+        if has_policy:
+            evidence_gaps.append("Snapshot policy không thay thế cho backup độc lập.")
+
+        if not backup_history_available:
+            result.append(finding(
+                pool=pool, image=image, kind="INSUFFICIENT_EVIDENCE", confidence=None,
+                reason="Không truy cập được lịch sử backup để đánh giá protection gap",
+                recommendation="Retry read-only backup history before changing retention or protection settings",
+                snapshot_count=snapshot_count, snapshot_policy_enabled=has_policy,
+                last_success_at=success_at, last_failure_at=failure_at,
+                evidence_gaps=evidence_gaps + ["Backup history query failed"],
+            ))
+            continue
+
+        if not successful:
+            kind = "BACKUP_FAILED" if failures else "NO_SUCCESSFUL_BACKUP"
+            reason = (
+                "Backup gần nhất thất bại và chưa có backup thành công mới hơn"
+                if failures else "Chưa có backup full/incremental thành công được ghi nhận"
+            )
+            result.append(finding(
+                pool=pool, image=image, kind=kind, confidence=0.92,
+                reason=reason,
+                recommendation="Verify backup target, schedule, and owner before considering this volume protected",
+                snapshot_count=snapshot_count, snapshot_policy_enabled=has_policy,
+                last_success_at=success_at, last_failure_at=failure_at,
+                evidence_gaps=evidence_gaps,
+            ))
+        elif failure_at and success_at and failure_at > success_at:
+            result.append(finding(
+                pool=pool, image=image, kind="BACKUP_FAILED", confidence=0.94,
+                reason="Có backup thất bại mới hơn lần backup thành công gần nhất",
+                recommendation="Review the failed backup and confirm a newer successful copy before treating the volume as protected",
+                snapshot_count=snapshot_count, snapshot_policy_enabled=has_policy,
+                last_success_at=success_at, last_failure_at=failure_at,
+                evidence_gaps=evidence_gaps,
+            ))
+        elif success_at is None or (now - success_at).total_seconds() > backup_max_age_hours * 3600:
+            age_hours = None if success_at is None else max(0, int((now - success_at).total_seconds() // 3600))
+            result.append(finding(
+                pool=pool, image=image, kind="BACKUP_STALE", confidence=0.9,
+                reason=(
+                    f"Backup thành công gần nhất đã cách {age_hours} giờ, vượt ngưỡng {backup_max_age_hours} giờ"
+                    if age_hours is not None else "Không xác định được thời điểm backup thành công gần nhất"
+                ),
+                recommendation="Run or schedule a backup after verifying target capacity and recent job failures",
+                snapshot_count=snapshot_count, snapshot_policy_enabled=has_policy,
+                last_success_at=success_at, last_failure_at=failure_at,
+                evidence_gaps=evidence_gaps,
+            ))
+
+    drills = [row for row in restore_drill_rows if isinstance(row, Mapping)]
+    latest_drill = max(drills, key=lambda row: job_time(row) or datetime.min, default=None)
+    drill_at = job_time(latest_drill) if latest_drill else None
+    drill_status = str(latest_drill.get("status") or "").upper() if latest_drill else ""
+    drill_stale = drill_at is None or (now - drill_at).total_seconds() > restore_drill_max_age_hours * 3600
+    if latest_drill is None or drill_status != "SUCCESS" or drill_stale:
+        first = inventory[0] if inventory else {}
+        drill_pool = str((latest_drill or {}).get("pool") or first.get("pool") or "")
+        result.append(finding(
+            pool=drill_pool, image=str((latest_drill or {}).get("image") or "cluster"),
+            scope="cluster", kind="RESTORE_DRILL_GAP", confidence=0.75 if latest_drill else None,
+            reason=(
+                "Restore drill gần nhất chưa thành công"
+                if latest_drill and drill_status != "SUCCESS" else
+                f"Chưa có restore drill thành công trong {restore_drill_max_age_hours} giờ"
+            ),
+            recommendation="Run a controlled restore drill and record its result before relying on backup recovery",
+            snapshot_count=0, snapshot_policy_enabled=False,
+            last_success_at=drill_at if drill_status == "SUCCESS" else None,
+            last_failure_at=drill_at if drill_status == "FAILED" else None,
+            evidence_gaps=["RestoreDrill hiện là bằng chứng cấp cluster, chưa map coverage theo từng volume"],
+        ))
+
+    order = {
+        "INSUFFICIENT_EVIDENCE": 0, "NO_SUCCESSFUL_BACKUP": 1,
+        "BACKUP_FAILED": 2, "BACKUP_STALE": 3, "RESTORE_DRILL_GAP": 4,
+    }
+    return sorted(result, key=lambda row: (order.get(row["kind"], 9), row["pool"], row["image"]))
 
 
 def persist_dependency_snapshots(
