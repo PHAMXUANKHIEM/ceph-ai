@@ -101,8 +101,14 @@ and pushed before deployment is considered.
   `m20260919nlcontext (head)`; disposable SQLite run completed
   `upgrade=0 downgrade=0 reupgrade=0`. The legacy `b5c6d7e8f9a0` downgrade
   was made SQLite-compatible with Alembic batch operations.
-- [ ] Confirm required secrets, service accounts, filesystem permissions, and
-  backup locations without exposing secret values.
+- [x] Inventory secret-file and runtime ownership permissions without exposing
+  secret values. Evidence: `/root/ceph-ai/.env` is `0600 root:root`; systemd
+  Dashboard/Worker/Watcher units are disabled/inactive; independently managed
+  Podman Dashboard/Worker/Watcher containers are healthy.
+- [ ] Resolve the backup location and service-account ownership policy before
+  deployment. `/var/backups/ceph-ai` is `0700 root:root`, while the documented
+  `/var/lib/ceph-ai/backups` path is absent; runtime ownership also remains
+  split between systemd and Podman.
 - [ ] Define staging/canary/production cluster IDs and ensure test data cannot
   reach production.
 - [x] Add a release manifest containing commit SHA, migration revision, image
