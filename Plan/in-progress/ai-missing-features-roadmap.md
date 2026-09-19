@@ -94,17 +94,17 @@ phê duyệt, post-check và audit.
   - Thu thập lịch sử raw/used/available, pool usage, thin provisioning, growth của
     volume/snapshot, replication/EC overhead và failure-domain reserve.
   - Chuẩn hóa timezone, khoảng trống dữ liệu, reset counter và retention.
-- [ ] **1.2 Forecast engine**
+- [~] **1.2 Forecast engine** — đã có bản forecast deterministic cho cluster/pool/OSD với xu hướng tuyến tính, weekly residual correction khi đủ lịch sử, spike guard, confidence interval và ngày chạm threshold trong horizon; còn thiếu các nguồn volume/snapshot/thin provisioning và mô hình replica/EC đầy đủ.
   - Dự báo ngày chạm 80%, 90%, 95% và ngày đầy với confidence interval.
   - Hỗ trợ xu hướng tuyến tính, seasonality và spike; không dự báo khi không đủ mẫu.
   - Backtest theo rolling window và lưu sai số dự báo.
-- [ ] **1.3 Risk explanation**
+- [~] **1.3 Risk explanation** — UI/API đã nêu method, confidence interval, spike warning, growth direction và giới hạn raw-capacity/replica/EC; còn thiếu attribution theo volume/snapshot/workload và tách overhead replica/EC từ collector thật.
   - Giải thích nguồn tăng trưởng chính theo pool, volume, snapshot hoặc workload.
   - Tách physical usage khỏi provisioned capacity và chỉ rõ ảnh hưởng replica/EC.
-- [ ] **1.4 Alert và Dashboard**
+- [~] **1.4 Alert và Dashboard** — Dashboard capacity forecast đã hiển thị confidence interval, forecast cuối horizon, risk explanation và backtest; còn thiếu lifecycle alert OPEN/RESOLVED, chống spam và biểu đồ actual/forecast/confidence.
   - Cảnh báo theo time-to-threshold, chống spam và có lifecycle OPEN/RESOLVED.
   - Biểu đồ actual/forecast/confidence cùng evidence timestamp.
-- [ ] **1.5 Kiểm thử**
+- [~] **1.5 Kiểm thử** — đã thêm test cho trend tuyến tính, flat growth, weekly correction, spike guard, confidence interval và rolling backtest; còn thiếu test counter reset, pool mới, missing sample và ngưỡng sai số đã được operator chấp thuận.
   - Dữ liệu tăng đều, seasonality, spike, thiếu mẫu, counter reset và pool mới.
   - Đặt ngưỡng sai số chấp nhận được trước khi bật cảnh báo production.
 
@@ -337,6 +337,7 @@ Một tính năng chỉ được coi là hoàn thành khi đáp ứng đủ:
 
 | Ngày | Hạng mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---|---|---|---|---|
+| 2026-09-19 | Pha 1 — capacity forecast quality/safety slice | Một phần | Bổ sung forecast method (linear/seasonal/spike-guarded), confidence interval, dự báo cuối horizon, risk explanation và rolling backtest; cập nhật Dashboard để hiển thị các trường này. Chưa đánh dấu hoàn thành vì collector hiện chưa có volume/snapshot/thin provisioning, replica/EC attribution và alert lifecycle đầy đủ. | `pytest tests/test_capacity_forecast.py` (10/10 pass) + compileall + `git diff --check` | Chờ commit |
 | 2026-08-17 | Khởi tạo roadmap | Hoàn thành | Tổng hợp riêng các năng lực AI chưa triển khai và thứ tự phát hành | Review tài liệu | Chờ commit |
 | 2026-08-17 | 0.1 Cluster capability inventory | Hoàn thành | Thêm bảng `cluster_capability_inventory` (migration `6b5e22967d5f`) + enum `CapabilityStatus`; collector `watcher/capability_inventory.py::scan_and_store` chạy theo cadence riêng (`capability_inventory_scan_interval_seconds`, mặc định 300s) trong cả 2 vòng lặp Watcher (cụm mặc định + cụm quan sát thêm), tái dùng `ceph_client.summarize_cluster_versions`/`summarize_versions_payload` đã có sẵn cho phần mixed-version; deployment mode lấy từ `cluster.ceph_exec_mode` (chưa tự dò `ceph orch`, để dành Pha 0.2+ nếu cần). Dashboard `/clusters` hiển thị version/trạng thái mới nhất mỗi cụm. | `pytest tests/test_capability_inventory.py` (9/9 pass) + toàn bộ suite `pytest -q` (2170 passed, 3 fail KHÔNG liên quan — `test_mq.py`/`test_dashboard_pools.py`, tái hiện y hệt trên `main` chưa sửa, do thiếu RabbitMQ broker thật trong môi trường) + `alembic upgrade heads` áp thành công vào Postgres dev thật | Chờ commit |
 | 2026-08-17 | 0.2 Capability matrix có nguồn kiểm chứng (hạ tầng) | Một phần | Thêm bảng `capability_matrix_entries` + `capability_matrix_changes` (migration `18f374b79a75`, lịch sử append-only, không upsert); `shared/capability_matrix.py::check_capability(command_id, ceph_major)` fail-closed đúng đặc tả (không có entry -> `UNKNOWN`, có entry nhưng không phủ version -> `UNSUPPORTED_VERSION`, có entry phủ version -> `SUPPORTED` kèm cờ `is_stale` theo `capability_matrix_max_age_days`, mặc định 180 ngày); trang admin `/capability-matrix` (`dashboard/routes/capability_matrix.py`) cho thêm/deprecate entry, `verified_by` luôn lấy từ user admin đang đăng nhập (không thể giả qua form), bắt buộc Doc URL dạng http(s), lưu lịch sử thay đổi. **Cố ý CHƯA seed dữ liệu thật** — bảng khởi tạo rỗng nên mọi capability check hiện tại trả `UNKNOWN` (đúng theo "fail closed" của roadmap), vì AI không tự xác minh tài liệu Ceph chính thức rồi tự nhận là "người duyệt" thay cho operator; cần operator tự kiểm tra docs.ceph.com/download.ceph.com và nhập entry qua trang admin. Đây là lý do đánh dấu `[~]` chứ không phải `[x]`. | `pytest tests/test_capability_matrix.py` (10/10 pass) + `pytest tests/test_dashboard_capability_matrix.py` (5/5 pass) + `alembic upgrade heads` áp thành công vào Postgres dev thật | Chờ commit |

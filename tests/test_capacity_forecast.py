@@ -39,6 +39,54 @@ def test_flat_growth_does_not_invent_threshold_date(monkeypatch):
     assert result.thresholds == {"80": None, "90": None, "95": None}
 
 
+def test_forecast_includes_confidence_interval_and_rolling_backtest(monkeypatch):
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_samples", 30)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_history_days", 30)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_confidence", .1)
+    result = subject._forecast(_rows(45, slope=.5), datetime(2026, 2, 15))
+
+    assert result is not None
+    assert result.forecast_method == "linear"
+    assert result.confidence_interval["low"] <= result.confidence_interval["high"]
+    assert result.predicted_percent_at_horizon is not None
+    assert result.backtest["status"] == "ready"
+    assert result.backtest["samples"] > 0
+
+
+def test_forecast_uses_weekly_correction_only_with_enough_history(monkeypatch):
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_samples", 30)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_history_days", 30)
+    rows = []
+    start = datetime(2026, 1, 1)
+    weekday_effect = {0: 3.0, 1: -2.0, 2: 1.0, 3: -1.0, 4: 2.0, 5: -3.0, 6: 0.0}
+    for index in range(35):
+        captured_at = start + timedelta(days=index)
+        rows.append(SimpleNamespace(
+            entity_type="pool", entity_name="images", used_percent=(40 + index * .5 + weekday_effect[captured_at.weekday()]),
+            used_bytes=500, total_bytes=1000, captured_at=captured_at,
+        ))
+
+    result = subject._forecast(rows, datetime(2026, 2, 5))
+
+    assert result is not None
+    assert result.forecast_method == "seasonal_linear"
+    assert result.spike_detected is False
+
+
+def test_forecast_marks_recent_spike_and_reduces_confidence(monkeypatch):
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_samples", 10)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_history_days", 10)
+    rows = _rows(20, slope=.2)
+    rows[-1].used_percent += 10
+
+    result = subject._forecast(rows, datetime(2026, 1, 20))
+
+    assert result is not None
+    assert result.spike_detected is True
+    assert result.forecast_method.endswith("spike_guarded")
+    assert any("spike" in line.lower() for line in result.risk_explanation)
+
+
 def test_collect_stores_cluster_all_pools_and_all_osds(dashboard_client, default_cluster_id, monkeypatch):
     df = {"stats": {"total_bytes": 1000, "total_used_bytes": 500, "total_avail_bytes": 500},
           "pools": [{"name": f"p{i}", "stats": {"bytes_used": 10, "max_avail": 90, "percent_used": .1}} for i in range(12)]}
