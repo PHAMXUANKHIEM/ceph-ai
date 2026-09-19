@@ -928,6 +928,7 @@ def sync_forecast_alerts(
         }
         for metric in ("cpu", "ram"):
             prediction = risky.get(metric)
+            candidate = values.get(metric)
             alert = existing.get(metric)
             if suppressed_until is not None and suppressed_until > now_naive:
                 if alert is not None:
@@ -943,8 +944,13 @@ def sync_forecast_alerts(
                     alert.status = "RESOLVED"
                     alert.notification_state = NotificationState.SUPPRESSED.value
                 continue
+            # Data-quality gates must take precedence over severity.  A
+            # prediction can still be above the alert threshold while its
+            # coverage/gap/drift evidence is unsafe to act on; do not let it
+            # enter the OPEN/CRITICAL path in that case.
+            if quality_blocked(candidate):
+                prediction = None
             if prediction is None:
-                candidate = values.get(metric)
                 if quality_blocked(candidate):
                     if (
                         alert is None
