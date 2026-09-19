@@ -257,8 +257,10 @@ Scope: `Plan/backup-roadmap.md`.
 - [ ] Finish Recovery Point, Target, and Policy workspaces in the Dashboard.
 - [ ] Complete restore verification, dependency-chain display, and stale/failed
   target handling.
-- [ ] Test concurrent backup/restore, retry idempotency, immutable targets,
-  insufficient capacity, checksum failure, and partial chain failure.
+- [x] Test concurrent backup/restore, retry idempotency, immutable targets,
+  insufficient capacity, checksum failure, and partial chain failure. Evidence:
+  deterministic backup/restore gate (`218 passed, 1 warning`), including engine,
+  integrity, storage, restore, drill, and Dashboard backup tests.
 - [ ] Complete cluster/site DR runbook and evidence capture.
 
 **Exit gate:** every cluster has independently scoped backup history, digest,
