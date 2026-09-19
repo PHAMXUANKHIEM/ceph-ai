@@ -29,6 +29,9 @@ dependencies = [
 dev = [
     "pytest==9.1.1",
 ]
+benchmark = [
+    "pyod==2.0.5",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
