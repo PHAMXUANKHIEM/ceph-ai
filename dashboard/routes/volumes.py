@@ -53,7 +53,7 @@ from shared.volume_snapshot_policy import next_run_at, snapshot_name, validate_s
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher.volume_monitor import ceph_code_for
-from watcher.block_storage_insights import build_inventory_insights
+from watcher.block_storage_insights import build_inventory_insights, build_snapshot_clone_insights
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
@@ -1217,6 +1217,80 @@ async def volume_inventory_insights_api(
             "owner_project": False,
             "backup_recency": False,
             "note": "Owner/project và backup recency chưa có evidence collector trong slice này.",
+        },
+        "collected_at": _cache_collected_at(cache_state),
+        "stale": bool(cache_state["stale"]),
+        "refreshing": bool(cache_state["refreshing"]),
+        "cache_age_seconds": cache_state["age_seconds"],
+        "cache_source": cache_state["source"],
+    }
+
+
+@router.get("/api/volumes/{pool}/snapshot-clone-insights")
+async def volume_snapshot_clone_insights_api(
+    request: Request,
+    pool: str,
+    max_images: int = Query(20, ge=1, le=50),
+    user: str = Depends(require_login),
+):
+    """Return bounded, read-only snapshot and clone dependency insights."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        inventory, cache_state = _cached_rbd_inventory_with_state(cluster, pool)
+    except CephQueryError as exc:
+        logger.warning("volume_snapshot_clone_insights_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}") from exc
+
+    with db.SessionLocal() as session:
+        policies = session.query(VolumeSnapshotPolicy.pool, VolumeSnapshotPolicy.image).filter(
+            VolumeSnapshotPolicy.pool == pool,
+            _cluster_row_filter(VolumeSnapshotPolicy.cluster_id, cluster),
+            VolumeSnapshotPolicy.enabled.is_(True),
+        ).all()
+    policy_keys = {(row[0], row[1]) for row in policies}
+    candidates = sorted(
+        (row for row in inventory if isinstance(row, dict)),
+        key=lambda row: (-int(row.get("snapshot_count") or 0), str(row.get("name") or "")),
+    )[:max_images]
+    detail_limit = asyncio.Semaphore(4)
+
+    async def read_detail(row: dict) -> dict:
+        image = str(row.get("name") or "")
+        async with detail_limit:
+            try:
+                if cluster.is_default:
+                    detail = await asyncio.to_thread(
+                        ceph_client.query_rbd_image_detail, pool, image,
+                    )
+                else:
+                    detail = await asyncio.to_thread(
+                        ceph_client.query_rbd_image_detail_with,
+                        pool, image, *cluster_connection(cluster),
+                    )
+            except CephQueryError as exc:
+                return {
+                    "pool": pool, "name": image, "snapshots": [], "children": [],
+                    "partial_errors": {"snapshots": str(exc), "children": str(exc)},
+                }
+        return detail
+
+    # A pool may contain hundreds of images. Keep the endpoint bounded and
+    # avoid one slow image delaying all other evidence unnecessarily.
+    details = await asyncio.gather(*(read_detail(row) for row in candidates))
+    insights = build_snapshot_clone_insights(details, policy_keys=policy_keys)
+    return {
+        "cluster_id": cluster.id,
+        "pool": pool,
+        "queried_images": len(candidates),
+        "max_images": max_images,
+        "insights": insights,
+        "coverage": {
+            "snapshot_list": True,
+            "clone_children": True,
+            "owner_project": False,
+            "note": "Ownership/tenant metadata remains outside the RBD dependency response.",
         },
         "collected_at": _cache_collected_at(cache_state),
         "stale": bool(cache_state["stale"]),

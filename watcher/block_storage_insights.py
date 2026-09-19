@@ -150,3 +150,83 @@ def build_inventory_insights(
 
     order = {"STALE_UNATTACHED": 0, "SNAPSHOT_REVIEW": 1, "INSUFFICIENT_EVIDENCE": 2}
     return sorted(result, key=lambda row: (order.get(row["kind"], 9), row["pool"], row["image"]))
+
+
+def build_snapshot_clone_insights(
+    detail_rows: Iterable[Mapping[str, object]],
+    *,
+    policy_keys: set[tuple[str, str]] | None = None,
+    evidence_at: datetime | None = None,
+) -> list[dict]:
+    """Turn bounded RBD detail responses into dependency warnings.
+
+    ``rbd snap ls`` and ``rbd children`` are authoritative for this report.
+    Partial command errors therefore produce ``INSUFFICIENT_EVIDENCE`` rather
+    than a false claim that a snapshot or clone dependency is absent.
+    """
+
+    policy_keys = policy_keys or set()
+    captured = (evidence_at or datetime.utcnow()).replace(tzinfo=None).isoformat() + "Z"
+    result: list[dict] = []
+    for detail in detail_rows:
+        pool = str(detail.get("pool") or "")
+        image = str(detail.get("name") or detail.get("image") or "")
+        if not pool or not image:
+            continue
+        key = (pool, image)
+        errors = detail.get("partial_errors")
+        errors = errors if isinstance(errors, Mapping) else {}
+        snapshots = detail.get("snapshots")
+        children = detail.get("children")
+        parent = detail.get("parent")
+        if not isinstance(snapshots, list):
+            snapshots = []
+        if not isinstance(children, list):
+            children = []
+        dependency = bool(parent or children)
+        snapshot_count = len(snapshots)
+        if errors.get("snapshots") or errors.get("children"):
+            result.append({
+                "pool": pool, "image": image, "kind": "INSUFFICIENT_EVIDENCE",
+                "confidence": None,
+                "reason": "Không đọc đủ snapshot/clone dependency từ RBD",
+                "recommendation": "Retry read-only inventory before flatten, delete, or retention changes",
+                "snapshot_count": snapshot_count, "parent": parent,
+                "children": children, "evidence_at": captured,
+                "evidence_gaps": sorted(str(name) for name in errors if name in {"snapshots", "children"}),
+            })
+            continue
+        if snapshot_count and key not in policy_keys:
+            result.append({
+                "pool": pool, "image": image, "kind": "SNAPSHOT_RETENTION_GAP",
+                "confidence": 0.95,
+                "reason": f"Có {snapshot_count} snapshot nhưng chưa có snapshot policy trong ceph-ai",
+                "recommendation": "Review retention and protection before deleting or flattening",
+                "snapshot_count": snapshot_count, "parent": parent,
+                "children": children, "evidence_at": captured,
+                "evidence_gaps": ["Cinder/tenant ownership is not part of this RBD response"],
+            })
+        if parent:
+            result.append({
+                "pool": pool, "image": image, "kind": "CLONE_CHILD",
+                "confidence": 0.95,
+                "reason": f"Volume phụ thuộc parent clone {parent}",
+                "recommendation": "Không flatten/xóa parent trước khi kiểm tra child dependency",
+                "snapshot_count": snapshot_count, "parent": parent,
+                "children": children, "evidence_at": captured,
+                "evidence_gaps": [],
+            })
+        if children:
+            result.append({
+                "pool": pool, "image": image, "kind": "CLONE_PARENT",
+                "confidence": 0.95,
+                "reason": f"Có {len(children)} clone child đang phụ thuộc volume này",
+                "recommendation": "Resolve child dependencies before deleting or flattening this image",
+                "snapshot_count": snapshot_count, "parent": parent,
+                "children": children, "evidence_at": captured,
+                "evidence_gaps": [],
+            })
+        if not snapshot_count and not dependency and not errors:
+            continue
+    order = {"INSUFFICIENT_EVIDENCE": 0, "CLONE_PARENT": 1, "CLONE_CHILD": 2, "SNAPSHOT_RETENTION_GAP": 3}
+    return sorted(result, key=lambda row: (order.get(row["kind"], 9), row["pool"], row["image"], row["kind"]))

@@ -116,7 +116,7 @@ và nguyên nhân tăng trưởng; không biến cảnh báo ngưỡng hiện t�
 - [~] **2.1 Stale và unattached volume** — đã có read-only `/api/volumes/{pool}/inventory-insights`, kết hợp inventory RBD có cache, trạng thái watcher/attachment và `VolumeMetric` trong 7 ngày; chỉ đánh dấu `STALE_UNATTACHED` khi có evidence zero-I/O, còn thiếu owner/project, backup recency và age metadata.
   - Kết hợp metadata, attachment, I/O, tuổi volume, owner/project và backup gần nhất.
   - Đưa ra lý do, confidence và mức dung lượng có thể thu hồi.
-- [ ] **2.2 Snapshot/clone intelligence**
+- [~] **2.2 Snapshot/clone intelligence** — thêm read-only `/api/volumes/{pool}/snapshot-clone-insights`, đọc bounded `rbd snap ls`/`rbd children`, phát hiện snapshot thiếu policy và parent/child clone dependency; partial evidence trả `INSUFFICIENT_EVIDENCE`, không đề xuất xóa/flatten tự động. Còn thiếu clone-chain persistence và dependency visualization trên UI.
   - Phát hiện snapshot quá hạn, snapshot không có policy, clone chain sâu và quan hệ
     parent-child cản trở flatten/xóa.
   - Vẽ dependency trước khi đề xuất thay đổi.
@@ -127,7 +127,7 @@ và nguyên nhân tăng trưởng; không biến cảnh báo ngưỡng hiện t�
   - Đề xuất retain, snapshot, backup, flatten, move-to-trash hoặc resize nhưng chưa
     thực thi trong pha này.
   - Mỗi đề xuất có evidence, expected saving, tác động và TTL.
-- [~] **2.5 Kiểm thử** — đã test attached volume, thiếu lịch sử, zero-I/O stale, snapshot protection và snapshot policy; còn thiếu integration test route/tenant isolation và clone dependency thực tế.
+- [~] **2.5 Kiểm thử** — đã test attached volume, thiếu lịch sử, zero-I/O stale, snapshot protection, snapshot policy, clone parent/child, partial evidence và bounded route; còn thiếu tenant-isolation integration và dữ liệu clone thực tế trên nhiều Ceph release.
   - Volume đang attach, metadata giả mạo, clone dependency, snapshot được bảo vệ,
     stale cache và tenant isolation.
 
@@ -337,6 +337,7 @@ Một tính năng chỉ được coi là hoàn thành khi đáp ứng đủ:
 
 | Ngày | Hạng mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---|---|---|---|---|
+| 2026-09-19 | Pha 2.2 — snapshot/clone dependency insight slice | Một phần | Thêm bounded API `/api/volumes/{pool}/snapshot-clone-insights`, chạy read-only `rbd snap ls`/`rbd children` qua detail adapter; cảnh báo snapshot không có policy, CLONE_PARENT/CLONE_CHILD và fail-closed khi query partial. Không thực thi delete/flatten. | `pytest tests/test_block_storage_insights.py` (9/9 pass) + compileall | Chờ commit |
 | 2026-09-19 | Pha 2 — block storage inventory insight slice | Một phần | Thêm `watcher/block_storage_insights.py` và API `/api/volumes/{pool}/inventory-insights`: kết hợp RBD inventory cache, watcher/attachment, I/O history 7 ngày và snapshot policy. Không suy đoán khi thiếu evidence; không tạo Action và không tự thu hồi volume. Owner/project, backup recency và clone dependency chưa có collector trong slice này. | `pytest tests/test_block_storage_insights.py tests/test_capacity_forecast.py tests/test_capacity_evidence.py tests/test_capacity_failure_simulation.py` (22/22 pass) + compileall | Chờ commit |
 | 2026-09-19 | Pha 1 — capacity forecast quality/safety slice | Một phần | Bổ sung forecast method (linear/seasonal/spike-guarded), confidence interval, dự báo cuối horizon, risk explanation và rolling backtest; cập nhật Dashboard để hiển thị các trường này. Chưa đánh dấu hoàn thành vì collector hiện chưa có volume/snapshot/thin provisioning, replica/EC attribution và alert lifecycle đầy đủ. | `pytest tests/test_capacity_forecast.py` (10/10 pass) + compileall + `git diff --check` | Chờ commit |
 | 2026-08-17 | Khởi tạo roadmap | Hoàn thành | Tổng hợp riêng các năng lực AI chưa triển khai và thứ tự phát hành | Review tài liệu | Chờ commit |

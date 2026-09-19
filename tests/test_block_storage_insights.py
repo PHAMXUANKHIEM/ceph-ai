@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import dashboard.routes.volumes as volumes_route
 from shared import db as db_module
 from shared.models import Cluster, VolumeMetric
-from watcher.block_storage_insights import build_inventory_insights
+from watcher.block_storage_insights import build_inventory_insights, build_snapshot_clone_insights
 
 
 NOW = datetime(2026, 9, 19, 12, 0, 0)
@@ -101,3 +101,61 @@ def test_inventory_insights_api_returns_evidence_and_coverage(dashboard_client, 
     assert payload["summary"]["stale_unattached"] == 1
     assert payload["coverage"]["owner_project"] is False
     assert payload["insights"][0]["kind"] == "STALE_UNATTACHED"
+
+
+def test_snapshot_and_clone_insights_report_protection_and_dependency():
+    result = build_snapshot_clone_insights([
+        {
+            "pool": "images", "name": "base", "snapshots": [{"name": "gold"}],
+            "children": [{"pool": "images", "image": "clone-a"}],
+            "parent": None, "partial_errors": {},
+        },
+        {
+            "pool": "images", "name": "clone-a", "snapshots": [],
+            "children": [], "parent": "images/base@gold", "partial_errors": {},
+        },
+    ])
+
+    assert {item["kind"] for item in result} == {
+        "SNAPSHOT_RETENTION_GAP", "CLONE_PARENT", "CLONE_CHILD",
+    }
+    assert any(item["recommendation"].startswith("Resolve child") for item in result)
+
+
+def test_snapshot_clone_insights_fail_closed_on_partial_evidence():
+    result = build_snapshot_clone_insights([{
+        "pool": "images", "name": "base", "snapshots": [], "children": [],
+        "parent": None, "partial_errors": {"children": "permission denied"},
+    }])
+
+    assert result[0]["kind"] == "INSUFFICIENT_EVIDENCE"
+    assert result[0]["confidence"] is None
+
+
+def test_snapshot_clone_insights_api_is_bounded_and_read_only(dashboard_client, monkeypatch):
+    monkeypatch.setattr(volumes_route, "_rbd_pools_for_request", lambda request: ["images"])
+    monkeypatch.setattr(
+        volumes_route, "_cached_rbd_inventory_with_state",
+        lambda cluster, pool: ([
+            {"name": "base", "snapshot_count": 1},
+            {"name": "idle", "snapshot_count": 0},
+        ], {"stale": False, "refreshing": False, "age_seconds": 1.0, "source": "cache"}),
+    )
+    calls = []
+
+    def detail(pool, image):
+        calls.append((pool, image))
+        return {
+            "pool": pool, "name": image,
+            "snapshots": [{"name": "gold"}] if image == "base" else [],
+            "children": [], "parent": None, "partial_errors": {},
+        }
+
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_image_detail", detail)
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    response = dashboard_client.get("/api/volumes/images/snapshot-clone-insights?max_images=1")
+
+    assert response.status_code == 200
+    assert response.json()["queried_images"] == 1
+    assert response.json()["insights"][0]["kind"] == "SNAPSHOT_RETENTION_GAP"
+    assert calls == [("images", "base")]
