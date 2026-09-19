@@ -11,9 +11,10 @@ credentials or provider content.
 - Host: `10.3.55.213`
 - Repository: `/root/ceph-ai`
 - Branch: `main`
-- Observed application commit: `d5a414a3f3699d48e0f48a32ba364feb49181854`
+- Observed application commit: `f94fb7260e7470e9da0813faa01d5afe0310acf6`
 - Rollback candidate: `55a510cd6b205e3ea3e1a6606dad6571197eb266`
-- Worktree: clean; three reviewed commits are pushed to `origin/main`
+- Worktree: clean; reviewed feature, observability, and evidence commits are
+  pushed to `origin/main`
 - Deployment: not approved; running Podman services are externally managed
 
 ## Migration and artifacts
@@ -25,6 +26,7 @@ credentials or provider content.
   `/opt/ceph-ai-node20/bin/node` (`npm run build`)
 - Full deterministic Python suite: `3817 passed, 47 deselected, 235
   warnings` in `1742.85s`; RC=0
+- Cross-cutting hardening gate: `110 passed, 1 warning` in `21.72s`; RC=0
 - Disposable SQLite migration round-trip: `upgrade=0 downgrade=0
   reupgrade=0`
 
@@ -49,6 +51,12 @@ credentials or provider content.
 - Disposable migration: upgrade head → downgrade base → upgrade head passed
 - Full suite command: `.venv/bin/pytest -q -k 'not live and not integration'`
 - Full suite result: passed; no unexplained failures
+- Hardening command: `.venv/bin/pytest -q tests/test_api_rate_limit.py
+  tests/test_audit.py tests/test_dashboard_audit.py tests/test_dashboard_auth.py
+  tests/test_dashboard_health_api.py tests/test_dashboard_navigation.py
+  tests/test_logging_redaction.py tests/test_nl_security.py tests/test_redaction.py
+  tests/test_remediation_runbook.py tests/test_security_audit.py
+  tests/test_service_health.py`
 
 ## Approval and rollback
 

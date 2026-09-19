@@ -80,9 +80,9 @@ and pushed before deployment is considered.
 - [x] Separate unrelated changes into isolated commits. The release
   foundation, Natural Language slice, and conversation regression are in
   separate commits.
-- [x] Push the three local commits only after review and release-gate tests.
-  `HEAD=origin/main=d5a414a3` after the full suite, focused gate, migration
-  round-trip, and Node 20 build passed.
+- [x] Push the reviewed commit series only after release-gate tests. `main` and
+  `origin/main` are equal after the full suite, focused gates, migration
+  round-trip, hardening gate, and Node 20 build passed.
 - [x] Reproduce and fix the Alert Center unique-index test failure. The
   suspected unique-index regression was not reproducible; the focused
   concurrency/unique-index tests pass (`2 passed, 35 deselected`). The full
