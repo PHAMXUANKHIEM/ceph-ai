@@ -128,9 +128,8 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=128m
     command: ["python", "-m", "uvicorn", "worker.full_executor:app", "--host", "0.0.0.0", "--port", "8787"]
     volumes:
-      # The deployed image/source and database/config state are immutable from
-      # this container. Ceph mutations use the selected cluster's SSH boundary.
-      - ./:/app:ro
+      # The application source is baked into the image. Ceph mutations use
+      # the selected cluster's SSH boundary; no live checkout is mounted.
       - /var/lib/ceph-ai:/var/lib/ceph-ai:ro
       - /root/.local:/opt/ai-tools:ro
       - /root/.codex/packages:/opt/codex-packages:ro

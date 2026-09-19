@@ -10,7 +10,7 @@ Giảm blast radius nếu Dashboard, Telegram, AI provider hoặc executor bị 
 - [x] Bỏ mount D-Bus/system bus và bỏ source/config mount ghi; `/app` và state production được mount read-only.
 - [x] Provider child process dùng environment allow-list; không kế thừa Telegram token, executor token, session secret hoặc toàn bộ environment của service.
 - [x] SSH key và provider account của executor được provision vào cây credential riêng, owner là `aiagent`, rồi mount read-only.
-- [ ] Tách hoàn toàn deployment artifact khỏi source checkout bằng immutable image; hiện tại source được bind-mount read-only để giữ quy trình deploy hiện hữu.
+- [x] Tách deployment artifact khỏi source checkout của `full-executor`; source được đóng gói trong image và không còn bind-mount `/app`.
 - [ ] Giới hạn network egress của executor theo allow-list Ceph nodes, broker và provider.
 - [ ] Hoàn tất proof-of-containment thực tế cho filesystem, network, process và secret boundary trên host production.
 

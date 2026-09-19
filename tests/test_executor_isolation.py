@@ -19,8 +19,8 @@ def test_full_executor_has_a_non_root_read_only_container_boundary():
     assert service["security_opt"] == ["no-new-privileges:true"]
     assert service["cap_drop"] == ["ALL"]
     assert "privileged" not in service or service["privileged"] is not True
-    assert "./:/app:rw" not in volumes
-    assert "./:/app:ro" in volumes
+    assert not any(volume.endswith(":/app:rw") for volume in volumes)
+    assert not any(volume.endswith(":/app:ro") for volume in volumes)
     assert "/run/dbus/system_bus_socket:/run/dbus/system_bus_socket" not in volumes
     assert "/var/lib/ceph-ai:/var/lib/ceph-ai:rw" not in volumes
 
