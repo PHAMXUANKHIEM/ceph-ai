@@ -370,15 +370,24 @@ job copy đã chạy, và mỗi failover/failback có runbook cùng audit đầy
   RISKY approval, Worker command và post-check/reconciliation. Còn capability
   detection/unsupported rõ theo từng Ceph release, preview tác động theo workload
   và rollback proposal từ cấu hình trước.
-- [ ] **5.4 Capacity forecasting**: dự báo mốc 80/90/95%, thin-provisioning risk,
+- [~] **5.4 Capacity forecasting**: dự báo mốc 80/90/95%, thin-provisioning risk,
   replica/EC overhead và failure-domain reserve.
+  - Đã có API/UI read-only `capacity-risk` phân biệt physical pool và logical
+    provisioned/used, cảnh báo overcommit, tính raw-equivalent theo replica xN,
+    nhận EC k/m khi evidence có sẵn, và fail-closed khi EC overhead chưa rõ.
+  - Đã nối forecast pool 80/90/95% và failure-domain simulation vào Block Storage
+    Overview; còn live acceptance, đọc EC profile k/m từ từng Ceph release và
+    policy threshold theo workload thực tế.
 - [~] **5.5 Benchmark an toàn**
   - Chỉ chạy trên volume test hoặc có xác nhận rõ; giới hạn tải/thời gian, không
     benchmark volume production đang attach mặc định.
 - [~] **5.6 Alerting**: latency/IOPS anomaly, quota/capacity threshold, stuck job,
   stale metric và noisy-neighbor candidate; dedup/resolve lifecycle.
-- [ ] **5.7 Test**: counter reset, missing/stale metric, percentile, threshold,
+- [~] **5.7 Test**: counter reset, missing/stale metric, percentile, threshold,
   timezone, QoS unsupported/rollback và benchmark guard.
+  - Thêm unit/route coverage cho logical-vs-physical, replica/EC unknown,
+    overcommit, stale evidence và reserve sau failure-domain simulation; còn
+    các nhóm test metric/QoS/benchmark chưa được gom thành acceptance matrix.
 
 **Hoàn thành khi:** dashboard phân biệt rõ dữ liệu mới/cũ, logical/physical
 capacity và không áp QoS hoặc benchmark sai target.
@@ -535,6 +544,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-09-18 | BS-04.5 Full + incremental drill | Đang làm | Nếu có incremental thành công cùng lineage với full mới nhất, RestoreDrill gọi shared `restore_image()` để restore scratch bằng full export rồi toàn bộ `import-diff`, hậu kiểm read-after-restore và ghi applied diff IDs vào progress; full-only vẫn giữ checksum byte-level path. Progress chain ghi mode/full lineage/applied diffs cả khi lỗi để retry không bị hiểu nhầm là thành công. Dashboard có nút admin `Chạy RestoreDrill`, chỉ queue approved Worker action khi policy scratch đầy đủ và cluster mặc định đang chọn. | `tests/test_restore_drill.py tests/test_backup_restore.py tests/test_backup_engine.py tests/test_dashboard_backups.py`: `80 passed`; worker và Dashboard healthy sau restart; `py_compile`, `node --check`, `git diff --check` đạt. | Còn live isolated-cluster acceptance; retry vẫn fail-closed nếu scratch cleanup không xác minh được. |
 | 2026-09-18 | BS-05.3 QoS policy | Đang làm | Thêm read-only `rbd config image list` API/UI theo volume; proposal QoS gồm tổng/read/write IOPS/BPS và burst, giới hạn server-side, zero = unlimited, action `rbd_qos_set` RISKY qua Worker, approval/audit, impact preview theo workload, cache invalidation và post-check/reconciliation; browser không có đường chạy trực tiếp. API trả `supported=false` rõ khi Ceph release không nhận QoS inventory. | Affected suite: `447 passed` plus QoS route smoke `2 passed`; `py_compile`, `node --check`, `git diff --check`; Worker và Dashboard healthy sau restart. | Còn live Ceph output validation và rollback proposal từ `qos_before`. |
 | 2026-09-18 | BS-04.4 Replication posture | Đang làm | Thêm Ceph client và `/api/volumes/{pool}/replication` read-only cho `rbd mirror pool info/status`, không truyền duplicate `--format`, cluster scoped; Volume Detail hiển thị mode, peer/status và khóa failover/fencing. Live default cluster xác nhận pool `images` đang `mode=disabled`; không bật mirroring hay failover. | `tests/test_ceph_client.py tests/test_dashboard_volumes.py`: `250 passed`; live CLI info/status read-only; `node --check`, `py_compile`, `git diff --check` đạt. | Còn peer configuration, lag/RPO, failover/failback/fencing và multi-site acceptance. |
+| 2026-09-19 | BS-05.4 Capacity risk guard | Đang làm | Bổ sung `watcher/block_storage_capacity.py` và `/api/volumes/{pool}/capacity-risk`; Block Storage Overview hiển thị physical used/available, logical provisioned/used, raw-equivalent replica/EC overhead, thin-provisioning overcommit, forecast pool và reserve sau failure-domain simulation. Mọi kết quả là advisory/read-only; thiếu EC k/m, forecast hoặc topology evidence đều được công bố trong `evidence.gaps`. | `tests/test_block_storage_capacity.py tests/test_block_storage_insights.py tests/test_dashboard_volumes.py`: `151 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn live Ceph acceptance, capability/profile parsing theo release và hoàn tất test matrix 5.7 trước khi đóng mục 5.4. |
 
 | 2026-09-18 | 0.4 Regression baseline | Hoàn thành phần test | Cập nhật test contract từ query `image=...` cũ sang deep-link `/volumes/{pool}/{image}` đang được UI sử dụng; không thay đổi hành vi production. | `.venv/bin/pytest -q tests/test_dashboard_block_storage.py tests/test_dashboard_volumes.py tests/test_rbd_reconciliation.py tests/test_volume_monitor.py tests/test_volume_perf.py tests/test_volume_perf_analysis.py tests/test_volume_snapshot_policy.py tests/test_volume_snapshot_scheduler.py tests/test_cinder_discovery.py tests/test_cinder_reconciliation.py`: `216 passed, 1 warning`. | Còn live Ceph audit và full repository/Alembic regression trước khi đóng toàn bộ mục 0.4. |
 ## Ghi chú bàn giao

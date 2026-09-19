@@ -905,6 +905,30 @@ def query_rbd_pool_overview_with(
     return _normalize_rbd_pool_overview(pool, detail, usage, health)
 
 
+def query_erasure_code_profile(profile: str) -> dict:
+    """Read one EC profile's k/m parameters without changing Ceph state."""
+    if not profile or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", profile):
+        raise CephQueryError("invalid erasure-code profile name")
+    _host, payload = run_ceph_json_command(
+        f"ceph osd erasure-code-profile get {shlex.quote(profile)}"
+    )
+    return payload if isinstance(payload, dict) else {"raw": payload}
+
+
+def query_erasure_code_profile_with(
+    profile: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> dict:
+    """Cluster-scoped variant of :func:`query_erasure_code_profile`."""
+    if not profile or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", profile):
+        raise CephQueryError("invalid erasure-code profile name")
+    _host, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"ceph osd erasure-code-profile get {shlex.quote(profile)}",
+    )
+    return payload if isinstance(payload, dict) else {"raw": payload}
+
+
 def query_rbd_mirror_pool_info(pool: str) -> dict:
     """Read-only RBD mirroring capability/configuration for one pool."""
     _host, payload = run_ceph_json_command(f"rbd mirror pool info {shlex.quote(pool)}")

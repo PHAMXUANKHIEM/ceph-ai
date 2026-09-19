@@ -1190,6 +1190,22 @@ def test_rbd_mirror_queries_do_not_duplicate_json_format(monkeypatch):
     assert all("--format" not in command for command in calls)
 
 
+def test_erasure_code_profile_query_is_read_only_and_validates_name(monkeypatch):
+    calls = []
+
+    def fake_query(command):
+        calls.append(command)
+        return "mon-1", {"k": "4", "m": "2"}
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command", fake_query)
+
+    assert ceph_client.query_erasure_code_profile("ec42") == {"k": "4", "m": "2"}
+    assert calls == ["ceph osd erasure-code-profile get ec42"]
+    assert "--format" not in calls[0]
+    with pytest.raises(ceph_client.CephQueryError):
+        ceph_client.query_erasure_code_profile("ec profile; rm -rf")
+
+
 def test_normalize_rbd_pool_overview_combines_durability_and_usage():
     overview = ceph_client._normalize_rbd_pool_overview(
         "vms",

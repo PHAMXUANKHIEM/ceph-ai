@@ -59,6 +59,9 @@ from watcher.block_storage_insights import (
     build_snapshot_clone_insights,
     persist_dependency_snapshots,
 )
+from watcher.block_storage_capacity import build_capacity_risk
+from watcher.capacity_failure_simulation import simulate as simulate_capacity_failure
+from watcher.capacity_forecast import forecasts as capacity_forecasts
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
@@ -1127,6 +1130,70 @@ async def volume_inventory_overview_api(
         logger.warning("volume_inventory_overview_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được tổng quan Pool: {exc}")
     return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **overview}
+
+
+@router.get("/api/volumes/{pool}/capacity-risk")
+async def volume_capacity_risk_api(
+    request: Request, pool: str, user: str = Depends(require_login)
+):
+    """Return read-only logical/physical capacity risk for one RBD pool.
+
+    The inventory and pool overview are intentionally read from their existing
+    sources.  Forecast and failure-domain simulation are database-backed and
+    are included only as evidence; this endpoint never proposes or executes a
+    mutation.
+    """
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        inventory, inventory_state = _cached_rbd_inventory_with_state(cluster, pool)
+        overview = (
+            ceph_client.query_rbd_pool_overview(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_pool_overview_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        logger.warning("volume_capacity_risk_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được evidence capacity: {exc}") from exc
+
+    # ``ceph osd pool ls detail`` exposes the EC profile name but not always
+    # its k/m values.  Fetch the profile separately only for EC pools; a
+    # profile-read failure remains an explicit evidence gap in the response.
+    if str(overview.get("type") or "").lower() in {"erasure", "erasure-coded", "erasure_coded", "ec"}:
+        profile = overview.get("erasure_code_profile")
+        try:
+            profile_payload = (
+                ceph_client.query_erasure_code_profile(str(profile))
+                if cluster.is_default
+                else ceph_client.query_erasure_code_profile_with(str(profile), *cluster_connection(cluster))
+            ) if profile else {}
+            overview = {
+                **overview,
+                "erasure_k": profile_payload.get("k"),
+                "erasure_m": profile_payload.get("m"),
+            }
+        except CephQueryError as exc:
+            logger.warning("volume_capacity_risk_api: EC profile %s unavailable: %s", profile, exc)
+
+    forecast_payload = capacity_forecasts(cluster.id)
+    pool_forecast = next(
+        (
+            row for row in forecast_payload.get("forecasts", [])
+            if row.get("entity_type") == "pool" and row.get("entity_name") == pool
+        ),
+        None,
+    )
+    return {
+        "cluster_id": cluster.id,
+        "collected_at": datetime.utcnow().isoformat() + "Z",
+        **build_capacity_risk(
+            pool, inventory, overview,
+            inventory_state=inventory_state,
+            forecast=pool_forecast,
+            failure_simulation=simulate_capacity_failure(cluster.id),
+        ),
+    }
 
 
 @router.get("/api/volumes/{pool}/replication")

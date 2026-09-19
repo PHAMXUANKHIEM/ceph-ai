@@ -25,6 +25,22 @@
 .volume-health-value { display: inline-flex; align-items: center; gap: 7px; }
 .volume-health-dot, .volume-status-dot { display: inline-block; width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #22c55e; }
 .volume-health-dot.warn { background: #f59e0b; }
+.volume-capacity-risk { margin: 0 0 22px; padding: 16px; border: 1px solid #334155; border-radius: 12px; background: rgba(30,41,59,.72); }
+.volume-capacity-risk-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.volume-capacity-risk-header h2 { margin: 0; color: #e2e8f0; font-size: 16px; }
+.volume-capacity-risk-header p { margin: 5px 0 0; }
+.volume-capacity-status { display: inline-flex; align-items: center; border-radius: 999px; padding: 5px 9px; color: #bbf7d0; background: rgba(34,197,94,.12); font-size: 11px; font-weight: 700; letter-spacing: .03em; }
+.volume-capacity-status.status-watch { color: #fde68a; background: rgba(245,158,11,.14); }
+.volume-capacity-status.status-high, .volume-capacity-status.status-overcommitted { color: #fed7aa; background: rgba(249,115,22,.15); }
+.volume-capacity-status.status-critical { color: #fecaca; background: rgba(239,68,68,.16); }
+.volume-capacity-status.status-insufficient_evidence { color: #cbd5e1; background: #334155; }
+.volume-capacity-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.volume-capacity-metric { min-width: 0; padding: 12px; border-radius: 8px; background: #0f172a; }
+.volume-capacity-metric span { display: block; color: #64748b; font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.volume-capacity-metric strong { display: block; margin-top: 6px; color: #e2e8f0; font-size: 15px; overflow-wrap: anywhere; }
+.volume-capacity-metric small { display: block; margin-top: 4px; color: #94a3b8; font-size: 11px; line-height: 1.35; }
+.volume-capacity-risk-footer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, .8fr); gap: 14px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #334155; color: #cbd5e1; font-size: 12px; line-height: 1.5; }
+.volume-capacity-evidence { color: #64748b; overflow-wrap: anywhere; }
 .volume-inventory-filters { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin: 0 0 14px; padding: 0; }
 .volume-inventory-filters > div:first-child { display: flex; flex-direction: column; gap: 4px; }
 .volume-inventory-filters > div:first-child strong { color: #e2e8f0; font-size: 16px; }
@@ -65,6 +81,7 @@
 .volumes-redesign-page .volume-inventory-pagination[hidden] { display: none; }
 .volumes-redesign-page .error { margin-top: 12px; }
 @media (max-width: 1200px) { .volumes-redesign-page .volume-inventory-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 900px) { .volume-capacity-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.volume-capacity-risk-footer { grid-template-columns: 1fr; } }
 @media (max-width: 1024px) { .volume-image-id-column, .volume-logic-column { display: none !important; } }
 @media (max-width: 760px) {
   .volumes-page-header { align-items: flex-start; flex-direction: column; gap: 12px; }
@@ -74,6 +91,7 @@
   .volume-filter-form { max-width: none; width: 100%; }
   .volume-search-field { min-width: 0; }
   .volume-sort-dropdown { min-width: 165px; }
+  .volume-capacity-risk-header { flex-direction: column; }.volume-capacity-grid { grid-template-columns: 1fr; }
 }
 
 .volume-detail-page { max-width: 1180px; }

@@ -2069,6 +2069,41 @@ def test_volume_pool_overview_api_returns_durability_and_capacity(dashboard_clie
     assert response.json()["near_full"] is True
 
 
+def test_volume_capacity_risk_api_combines_logical_physical_and_forecast_evidence(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route, "_cached_rbd_inventory_with_state",
+        lambda cluster, pool: ([
+            {"name": "volume-a", "provisioned_size": 900, "used_size": 300},
+        ], {"source": "cache", "stale": False, "age_seconds": 2.0}),
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_overview",
+        lambda pool: {"pool": pool, "type": "replicated", "replica_size": 3,
+                      "bytes_used": 500, "max_available": 500},
+    )
+    monkeypatch.setattr(
+        volumes_route, "capacity_forecasts",
+        lambda cluster_id: {"forecasts": [{"entity_type": "pool", "entity_name": "vms", "current_percent": 50}]},
+    )
+    monkeypatch.setattr(
+        volumes_route, "simulate_capacity_failure",
+        lambda cluster_id: {"status": "unavailable", "scenarios": []},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/capacity-risk")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["physical"]["total_bytes"] == 1000
+    assert payload["logical"]["provisioned_bytes"] == 900
+    assert payload["overhead"]["label"] == "Replica x3"
+    assert payload["thin_provisioning"]["overcommitted"] is True
+    assert payload["forecast"]["current_percent"] == 50
+    assert payload["read_only"] is True
+
+
 def test_volume_replication_api_is_read_only_and_exposes_disabled_mode(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_info", lambda pool: {"mode": "disabled"})

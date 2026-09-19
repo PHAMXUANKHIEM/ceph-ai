@@ -75,6 +75,25 @@
           <div class="summary-item"><span>RBD</span><strong data-field="rbd">—</strong></div>
           <div class="summary-item"><span>Health</span><strong data-field="health">—</strong></div>
         </div>
+        <section class="volume-capacity-risk" id="volume-capacity-risk" aria-live="polite">
+          <div class="volume-capacity-risk-header">
+            <div>
+              <h2>Capacity risk</h2>
+              <p class="hint">Đối chiếu physical pool, logical provisioned, dự báo và reserve failure domain. Chỉ đọc.</p>
+            </div>
+            <span class="volume-capacity-status" data-capacity-field="status">Đang tải…</span>
+          </div>
+          <div class="volume-capacity-grid">
+            <div class="volume-capacity-metric"><span>Physical</span><strong data-capacity-field="physical">—</strong><small data-capacity-field="physical-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>Logical provisioned</span><strong data-capacity-field="logical">—</strong><small data-capacity-field="logical-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>Overhead</span><strong data-capacity-field="overhead">—</strong><small data-capacity-field="overhead-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>Failure-domain reserve</span><strong data-capacity-field="reserve">—</strong><small data-capacity-field="reserve-detail">—</small></div>
+          </div>
+          <div class="volume-capacity-risk-footer">
+            <div class="volume-capacity-recommendations" data-capacity-field="recommendations"></div>
+            <div class="volume-capacity-evidence" data-capacity-field="evidence"></div>
+          </div>
+        </section>
         <div id="volume-pool-health-checks" class="hint"></div>
         <p class="error" id="volume-pool-overview-error" hidden></p>
         {% if is_admin %}<p id="volume-mutation-result" class="hint" hidden></p>{% endif %}
