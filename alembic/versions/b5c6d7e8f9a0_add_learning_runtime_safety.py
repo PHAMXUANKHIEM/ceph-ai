@@ -28,5 +28,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("watcher_heartbeat", "last_success_at")
-    op.drop_column("watcher_heartbeat", "consecutive_failures")
+    # SQLite versions used by the disposable migration gate do not support
+    # ALTER TABLE ... DROP COLUMN. Alembic's batch implementation rebuilds
+    # the table there and emits native drops on databases that support them.
+    with op.batch_alter_table("watcher_heartbeat") as batch_op:
+        batch_op.drop_column("last_success_at")
+        batch_op.drop_column("consecutive_failures")

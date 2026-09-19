@@ -28,19 +28,22 @@ relevant gates pass.
 
 ## 2. Current baseline
 
-- `main` contains six reviewed local commits not pushed to `origin/main`; no
-  deployment has been performed.
-- The release-candidate worktree is clean.
+- At the latest review, `main` and `origin/main` both resolve to
+  `55a510cd6b205e3ea3e1a6606dad6571197eb266`; the release-candidate worktree
+  is dirty with the Natural Language Ceph slice, its migration/evidence, one
+  dashboard corrective fix, and a pre-existing dashboard-node test change.
+  Classification is recorded in
+  `docs/ai/end-to-end-change-classification.md`.
 - The systemd Dashboard, Worker, and Watcher units are disabled/inactive, but
   independently managed Podman containers are running, including a healthy
   Watcher. This runtime ownership conflict must be resolved by an operator
   before any restart or rollout.
-- The deterministic release gate completed with `3184 passed, 4 deselected,
-  23 warnings` on the clean candidate. The isolated RabbitMQ release gate
-  completed with `3 passed`.
-- The affected feature gate passes `207 passed`.
+- The current deterministic release command is being rerun after fixing the
+  admin Ceph latency debug return path; the result is recorded in the release
+  manifest when the server-side log completes. The isolated Alert Center
+  unique-index regression tests pass (`2 passed, 35 deselected`).
 - Python compilation, `git diff --check`, the Node 20 frontend production
-  build, and the single Alembic-head check pass.
+  build, and the single Alembic-head check pass for the current worktree.
 - RabbitMQ credentials are valid for the runtime `ceph_ai` user. The minimal
   production permission update now allows writes through `amq.default`.
   Integration tests pass in an isolated temporary vhost (`3 passed`); direct
@@ -74,20 +77,35 @@ creating additional commits.
 
 ### Phase 0 — Stabilize the repository and deployment foundation
 
-- [ ] Review and classify every current uncommitted change.
+- [x] Review and classify every current uncommitted change. Evidence:
+  `docs/ai/end-to-end-change-classification.md`.
 - [ ] Separate unrelated changes into isolated commits.
 - [ ] Push the three local commits only after review and release-gate tests.
-- [ ] Reproduce and fix the Alert Center unique-index test failure.
-- [ ] Run the full Python suite from `.venv/bin/pytest`; record failures by
-  category instead of skipping them.
-- [ ] Use Node 20 for all frontend type-check and production builds.
-- [ ] Verify one Alembic head and test upgrade plus downgrade on a disposable DB.
+- [x] Reproduce and fix the Alert Center unique-index test failure. The
+  suspected unique-index regression was not reproducible; the focused
+  concurrency/unique-index tests pass (`2 passed, 35 deselected`). The full
+  run exposed and fixed a separate admin Ceph latency debug return-path bug,
+  covered by `tests/test_ceph_debug.py` (`4 passed`).
+- [x] Run the full Python suite from `.venv/bin/pytest`; record failures by
+  category instead of skipping them. Evidence:
+  `.venv/bin/pytest -q -k 'not live and not integration'` → `3817 passed,
+  47 deselected, 235 warnings` in `1742.85s`; RC=0. The only earlier failure
+  was the admin Ceph latency debug return path, fixed and covered by
+  `tests/test_ceph_debug.py` (`4 passed`).
+- [x] Use Node 20 for all frontend type-check and production builds. Evidence:
+  `/opt/ceph-ai-node20/bin/node` and the successful `npm run build`.
+- [x] Verify one Alembic head and test upgrade plus downgrade on a disposable DB.
+  Evidence: `alembic heads`/`alembic current` report
+  `m20260919nlcontext (head)`; disposable SQLite run completed
+  `upgrade=0 downgrade=0 reupgrade=0`. The legacy `b5c6d7e8f9a0` downgrade
+  was made SQLite-compatible with Alembic batch operations.
 - [ ] Confirm required secrets, service accounts, filesystem permissions, and
   backup locations without exposing secret values.
 - [ ] Define staging/canary/production cluster IDs and ensure test data cannot
   reach production.
-- [ ] Add a release manifest containing commit SHA, migration revision, image
-  versions, feature flags, and rollback SHA.
+- [x] Add a release manifest containing commit SHA, migration revision, image
+  versions, feature flags, and rollback SHA. Evidence:
+  `docs/ai/end-to-end-release-manifest.md`.
 
 **Exit gate:** clean release branch, full release-gate tests pass, migrations
 are reversible, and the deployment manifest is reviewable.
@@ -98,12 +116,19 @@ Scope: RT-00 through RT-04 in
 `Plan/realtime-cluster-status-update-plan.md`.
 
 - [ ] Complete multi-tab baseline measurements for 1, 5, and 10 browser tabs.
-- [ ] Finish snapshot lifecycle APIs:
-  `mark_refreshing`, `is_refreshing`, and `invalidate_snapshot`.
-- [ ] Complete cross-process refresh locking and checksum validation.
-- [ ] Add collector success/failure counters and per-command metrics.
-- [ ] Verify snapshot persistence across Watcher restart and stale UI behavior.
-- [ ] Keep the Watcher disabled during tests that could send real alerts.
+- [x] Finish snapshot lifecycle APIs:
+  `mark_refreshing`, `is_refreshing`, and `invalidate_snapshot`. Evidence:
+  `tests/test_cluster_snapshot.py` and `tests/test_nl_snapshot_runner.py`.
+- [x] Complete cross-process refresh locking and checksum validation. Evidence:
+  snapshot process/lock regression tests and persistent versioned cache tests.
+- [x] Add collector success/failure counters and per-command metrics. Evidence:
+  `tests/test_cluster_snapshot_collector.py`.
+- [x] Verify snapshot persistence across Watcher restart and stale UI behavior.
+  Evidence: `tests/test_cache_warmup.py`, `tests/test_cluster_snapshot.py`,
+  and the dashboard snapshot API tests.
+- [x] Keep the Watcher disabled during tests that could send real alerts. The
+  release run excludes `live` and `integration` tests; no live alert-producing
+  test is used in this gate.
 - [ ] Commit the current health snapshot, warmup, collector, and dashboard slice.
 - [ ] Record test evidence and query-rate comparison against the baseline.
 

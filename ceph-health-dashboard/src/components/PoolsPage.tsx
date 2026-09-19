@@ -23,6 +23,7 @@ import { EmptyState } from "./EmptyState";
 import { ErrorState } from "./ErrorState";
 import { PageHeader } from "./PageHeader";
 import { useClusterSnapshotEvents } from "../useClusterSnapshotEvents";
+import { getSnapshotState, SNAPSHOT_STATE_LABEL } from "../snapshotState";
 
 type PoolRow = {
   name: string;
@@ -95,6 +96,10 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [visible, setVisible] = useState<Record<string, boolean>>({ redundancy: true, pgs: true, used: true, objects: true, read_iops: true, write_iops: true });
   const selectedRow = useMemo(() => rows.find((row) => row.name === selected), [rows, selected]);
+  const snapshotState = getSnapshotState(snapshotMeta, {
+    error: bootstrap.queryError || snapshotError,
+    hasData: rows.length > 0,
+  });
   const filteredRows = useMemo(() => rows.filter((row) => `${row.name} ${row.redundancy} ${row.crush_rule}`.toLowerCase().includes(search.toLowerCase())), [rows, search]);
   const usedBytes = useMemo(() => rows.map((row) => Number(row.used_bytes)).filter((value) => Number.isFinite(value) && value >= 0), [rows]);
   const maxUsedBytes = Math.max(1, ...usedBytes);
@@ -191,7 +196,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
             <ErrorState message={<>Không lấy được snapshot Pool: {bootstrap.queryError || snapshotError || snapshotMeta.last_error}</>} />
           </div>
         )}
-        {snapshotMeta.collected_at && <div className="px-5 pt-3 text-xs text-slate-500" role="status" aria-live="polite"><RefreshCw size={13} className="mr-1 inline" />Snapshot generation {snapshotMeta.generation ?? 0} · {snapshotMeta.stale ? "stale" : "updated"} {snapshotMeta.age_seconds == null ? "" : `${Math.round(snapshotMeta.age_seconds)}s ago`}</div>}
+        <div className="px-5 pt-3 text-xs text-slate-500" role="status" aria-live="polite"><RefreshCw size={13} className="mr-1 inline" />{SNAPSHOT_STATE_LABEL[snapshotState]}{snapshotMeta.collected_at ? ` · generation ${snapshotMeta.generation ?? 0} · ${snapshotMeta.age_seconds == null ? "" : `${Math.round(snapshotMeta.age_seconds)}s ago`}` : ""}</div>
         {bootstrap.createSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu tạo pool đã được gửi tới Worker.</div>}
         {bootstrap.actionSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu {actionLabels[bootstrap.actionSuccess] || bootstrap.actionSuccess} pool đã được gửi tới Worker.</div>}
 

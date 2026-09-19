@@ -10,6 +10,7 @@ import { PlacementGroupsCard } from "./PlacementGroupsCard";
 import { StatusBadge } from "./StatusBadge";
 import { StatusCard } from "./StatusCard";
 import { useClusterSnapshotEvents } from "../useClusterSnapshotEvents";
+import { getSnapshotState, SNAPSHOT_STATE_LABEL } from "../snapshotState";
 
 type StatusDatum = { title: string; value: string; subtitle: string; icon: LucideIcon; meter?: number | null };
 type DashboardHealth = {
@@ -62,10 +63,7 @@ const formatAge = (age: number | null | undefined) => {
 };
 
 const formatSnapshotState = (health: DashboardHealth) => {
-  if (health.refreshing) return "Đang đồng bộ";
-  if (health.stale) return "Snapshot cũ";
-  if (health.health_available === false) return "Chưa sẵn sàng";
-  return "Đang cập nhật";
+  return SNAPSHOT_STATE_LABEL[getSnapshotState(health, { hasData: Boolean(health.collected_at) })];
 };
 
 const formatErrorValue = (value: unknown) => {
@@ -173,6 +171,10 @@ export function CephDashboard() {
     if (health.last_error && !entries.some(([key]) => key === "snapshot")) entries.unshift(["snapshot", health.last_error]);
     return entries.slice(0, 4);
   }, [health.last_error, health.partial_errors]);
+  const snapshotState = getSnapshotState(health, {
+    error: loadError,
+    hasData: Boolean(health.collected_at),
+  });
 
   return (
     <main className="ceph-dashboard">
@@ -184,8 +186,8 @@ export function CephDashboard() {
         actions={
           <>
             <StatusBadge
-              tone={loadError ? "critical" : health.stale ? "warning" : "healthy"}
-              label={loadError ? "Mất kết nối" : health.stale ? "Dữ liệu cũ" : "Đang kết nối"}
+              tone={snapshotState === "error" ? "critical" : snapshotState === "stale" || snapshotState === "refreshing" ? "warning" : snapshotState === "fresh" ? "healthy" : "neutral"}
+              label={SNAPSHOT_STATE_LABEL[snapshotState]}
               icon={Wifi}
             />
             <span className="snapshot-time">{formatAge(health.age_seconds)}</span>

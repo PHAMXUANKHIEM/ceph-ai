@@ -18,6 +18,7 @@ export function useClusterSnapshotEvents(clusterId: string): number {
     let stopped = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+    let coalesceTimer: number | null = null;
     let attempt = 0;
 
     const connect = () => {
@@ -30,7 +31,15 @@ export function useClusterSnapshotEvents(clusterId: string): number {
         try {
           const payload = JSON.parse(message.data) as SnapshotEvent;
           if (payload.event && (!payload.cluster_id || payload.cluster_id === clusterId)) {
-            setEventVersion((value) => value + 1);
+            // A collector can publish several section changes in one refresh.
+            // Coalesce them briefly so one commit does not trigger one HTTP
+            // read per event/tab while preserving the latest invalidation.
+            if (coalesceTimer === null) {
+              coalesceTimer = window.setTimeout(() => {
+                coalesceTimer = null;
+                if (!stopped) setEventVersion((value) => value + 1);
+              }, 150);
+            }
           }
         } catch {
           // Ignore malformed hints; the normal HTTP fallback remains active.
@@ -59,6 +68,7 @@ export function useClusterSnapshotEvents(clusterId: string): number {
     return () => {
       stopped = true;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      if (coalesceTimer !== null) window.clearTimeout(coalesceTimer);
       socket?.close();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
