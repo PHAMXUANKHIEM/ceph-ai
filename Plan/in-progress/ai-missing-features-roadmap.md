@@ -120,14 +120,14 @@ và nguyên nhân tăng trưởng; không biến cảnh báo ngưỡng hiện t�
   - Phát hiện snapshot quá hạn, snapshot không có policy, clone chain sâu và quan hệ
     parent-child cản trở flatten/xóa.
   - Vẽ dependency trước khi đề xuất thay đổi.
-- [ ] **2.3 Backup và protection gap**
+- [~] **2.3 Backup và protection gap** — thêm read-only `/api/volumes/{pool}/protection-insights`, đối chiếu inventory RBD với `BackupJob`, snapshot policy và lịch sử `restore_drill`; phát hiện volume chưa có backup full/incremental thành công, backup thất bại mới hơn, backup vượt RPO và restore drill cấp cluster quá hạn. Dashboard Volumes có panel hiển thị reason/recommendation/evidence gaps; chưa tự tạo backup, chưa xác minh artifact ngoài target và chưa map restore drill theo từng volume.
   - Phát hiện backup trễ, retention bất hợp lý, volume quan trọng chưa được bảo vệ
     và restore drill quá hạn.
 - [~] **2.4 Recommendation only** — endpoint chỉ trả recommendation advisory, estimated reclaim và evidence gaps; không tạo Action, không thực thi retain/trash/resize.
   - Đề xuất retain, snapshot, backup, flatten, move-to-trash hoặc resize nhưng chưa
     thực thi trong pha này.
   - Mỗi đề xuất có evidence, expected saving, tác động và TTL.
-- [~] **2.5 Kiểm thử** — đã test attached volume, thiếu lịch sử, zero-I/O stale, snapshot protection, snapshot policy, clone parent/child, partial evidence và bounded route; còn thiếu tenant-isolation integration và dữ liệu clone thực tế trên nhiều Ceph release.
+- [~] **2.5 Kiểm thử** — đã test attached volume, thiếu lịch sử, zero-I/O stale, snapshot protection, snapshot policy, clone parent/child, partial evidence, bounded route và protection gap (missing/stale/failed backup, restore drill); còn thiếu tenant-isolation integration và dữ liệu clone/backup thực tế trên nhiều Ceph release.
   - Volume đang attach, metadata giả mạo, clone dependency, snapshot được bảo vệ,
     stale cache và tenant isolation.
 
@@ -337,6 +337,7 @@ Một tính năng chỉ được coi là hoàn thành khi đáp ứng đủ:
 
 | Ngày | Hạng mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---|---|---|---|---|
+| 2026-09-19 | Pha 2.3 — backup protection gap | Một phần | Thêm `build_protection_gap_insights` và API `/api/volumes/{pool}/protection-insights`: đối chiếu inventory với `BackupJob`, snapshot policy và restore drill; phát hiện `NO_SUCCESSFUL_BACKUP`, `BACKUP_FAILED`, `BACKUP_STALE`, `RESTORE_DRILL_GAP`, trả evidence gaps rõ ràng. Dashboard Volumes có panel advisory; không tạo Action, không chạy backup/restore và fail closed khi thiếu lịch sử. | `pytest tests/test_block_storage_insights.py tests/test_volume_dependency_ui.py` (16/16 pass) | Chờ commit |
 | 2026-09-19 | Pha 2.2 — persist dependency history | Một phần | Thêm bảng `volume_dependency_snapshots` (migration `f5a6b7c8d9e0`) và collector lưu parent/children/snapshot count/partial errors theo cluster, tự prune quá 30 ngày. API snapshot-clone ghi observation sau mỗi lần quét bounded; không lưu object data/secret và không mutation Ceph. | `pytest tests/test_block_storage_insights.py` (10/10 pass) + compileall; migration suite đã chạy nhưng timeout do chuỗi migration toàn repo dài, không ghi nhận assertion failure | Chờ commit |
 | 2026-09-19 | Pha 2.2 — dependency UI | Một phần | Thêm panel Snapshot & clone dependencies vào trang Volumes, tự quét tối đa 20 image, hiển thị retention gap, clone parent/child và trạng thái cache; có nút quét lại, không có thao tác mutation. | `pytest tests/test_volume_dependency_ui.py tests/test_block_storage_insights.py tests/test_dashboard_volumes.py -k "volume_dependency_ui or block_storage_insights or inventory_detail or dependency_graph or propose_clone_volume or propose_flatten"` (17/17 pass) | Chờ commit |
 | 2026-09-19 | Pha 2.2 — snapshot/clone dependency insight slice | Một phần | Thêm bounded API `/api/volumes/{pool}/snapshot-clone-insights`, chạy read-only `rbd snap ls`/`rbd children` qua detail adapter; cảnh báo snapshot không có policy, CLONE_PARENT/CLONE_CHILD và fail-closed khi query partial. Không thực thi delete/flatten. | `pytest tests/test_block_storage_insights.py` (9/9 pass) + compileall | Chờ commit |

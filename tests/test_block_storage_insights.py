@@ -5,6 +5,7 @@ from shared import db as db_module
 from shared.models import Cluster, VolumeDependencySnapshot, VolumeMetric
 from watcher.block_storage_insights import (
     build_inventory_insights,
+    build_protection_gap_insights,
     build_snapshot_clone_insights,
     persist_dependency_snapshots,
 )
@@ -134,6 +135,64 @@ def test_snapshot_clone_insights_fail_closed_on_partial_evidence():
 
     assert result[0]["kind"] == "INSUFFICIENT_EVIDENCE"
     assert result[0]["confidence"] is None
+
+
+def test_protection_gap_reports_missing_backup_and_restore_drill():
+    result = build_protection_gap_insights(
+        [_inventory()], {("images", "volume-a"): []}, now=NOW,
+        restore_drill_rows=[],
+    )
+
+    assert {item["kind"] for item in result} == {"NO_SUCCESSFUL_BACKUP", "RESTORE_DRILL_GAP"}
+    assert result[0]["recommendation"]
+    assert result[0]["evidence_gaps"]
+
+
+def test_protection_gap_reports_stale_and_newer_failed_backup():
+    result = build_protection_gap_insights(
+        [_inventory()],
+        {("images", "volume-a"): [
+            {"job_type": "full", "status": "SUCCESS", "created_at": NOW - timedelta(days=3)},
+            {"job_type": "incremental", "status": "FAILED", "created_at": NOW - timedelta(days=1)},
+        ]},
+        now=NOW, backup_max_age_hours=24,
+        restore_drill_rows=[{"status": "SUCCESS", "created_at": NOW - timedelta(hours=1)}],
+    )
+
+    assert result[0]["kind"] == "BACKUP_FAILED"
+    assert result[0]["last_failure_at"].startswith("2026-09-18")
+
+
+def test_protection_gap_does_not_warn_for_recent_successful_backup_and_drill():
+    result = build_protection_gap_insights(
+        [_inventory()],
+        {("images", "volume-a"): [
+            {"job_type": "full", "status": "SUCCESS", "created_at": NOW - timedelta(hours=2)},
+        ]},
+        now=NOW, backup_max_age_hours=24,
+        restore_drill_rows=[{"status": "SUCCESS", "created_at": NOW - timedelta(hours=1)}],
+    )
+
+    assert result == []
+
+
+def test_protection_insights_api_is_read_only_and_exposes_coverage(dashboard_client, monkeypatch):
+    monkeypatch.setattr(volumes_route, "_rbd_pools_for_request", lambda request: ["images"])
+    monkeypatch.setattr(
+        volumes_route, "_cached_rbd_inventory_with_state",
+        lambda cluster, pool: ([_inventory()], {
+            "stale": False, "refreshing": False, "age_seconds": 2.0,
+            "source": "cache",
+        }),
+    )
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    response = dashboard_client.get("/api/volumes/images/protection-insights")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["no_successful_backup"] == 1
+    assert payload["summary"]["restore_drill_gap"] == 1
+    assert payload["coverage"]["restore_drill_per_volume"] is False
 
 
 def test_snapshot_clone_insights_api_is_bounded_and_read_only(dashboard_client, monkeypatch):

@@ -15,6 +15,7 @@
   var sortLabel = document.getElementById("volume-inventory-sort-label"), overview = document.getElementById("volume-pool-overview");
   var overviewError = document.getElementById("volume-pool-overview-error"), healthChecks = document.getElementById("volume-pool-health-checks");
   var dependencyStatus = document.getElementById("volume-dependency-status"), dependencyList = document.getElementById("volume-dependency-list"), dependencyRefresh = document.getElementById("volume-dependency-refresh");
+  var protectionStatus = document.getElementById("volume-protection-status"), protectionList = document.getElementById("volume-protection-list"), protectionRefresh = document.getElementById("volume-protection-refresh");
   var state = { page: 1, pages: 1, loading: false, sort: "name", order: "asc" }, PAGE_SIZE = 10;
 
   function bytes(value) { var n = Number(value || 0), units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"], i = 0; while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; } return (i === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[i]; }
@@ -78,11 +79,32 @@
     });
   }
   function loadDependencyInsights() { if (!dependencyStatus) return; dependencyStatus.textContent = "Đang kiểm tra dependency…"; requestJson("/api/volumes/" + encodeURIComponent(pool) + "/snapshot-clone-insights?max_images=20").then(renderDependencyInsights).catch(function (exc) { dependencyStatus.textContent = "Không đọc được snapshot/clone dependency: " + exc.message; }); }
+  function renderProtectionInsights(data) {
+    if (!protectionList || !protectionStatus) return;
+    protectionList.innerHTML = "";
+    var items = data.insights || [];
+    protectionStatus.textContent = items.length ? (items.length + " khoảng trống bảo vệ · đã kiểm tra " + (data.queried_images || 0) + " volume") : "Không phát hiện khoảng trống backup/recovery trong phạm vi đã kiểm tra.";
+    if (data.stale) protectionStatus.textContent += " · inventory cache đang cũ, sẽ refresh nền.";
+    items.forEach(function (item) {
+      var card = document.createElement("article"); card.className = "volume-protection-item";
+      var title = document.createElement("div"); title.className = "volume-dependency-item-title";
+      var name = document.createElement("strong"); name.textContent = item.scope === "cluster" ? "Cluster-level restore drill" : ((item.pool || pool) + "/" + (item.image || "—")); title.appendChild(name);
+      var kind = document.createElement("span"); kind.className = "volume-protection-kind " + (item.kind === "INSUFFICIENT_EVIDENCE" ? "warning" : "danger"); kind.textContent = item.kind; title.appendChild(kind); card.appendChild(title);
+      var reason = document.createElement("p"); reason.textContent = item.reason || "—"; card.appendChild(reason);
+      var recommendation = document.createElement("small"); recommendation.textContent = item.recommendation || "Không có recommendation."; card.appendChild(recommendation);
+      var evidence = document.createElement("small"); evidence.className = "hint"; evidence.textContent = item.last_success_at ? "Backup thành công: " + new Date(item.last_success_at).toLocaleString("vi-VN") : "Chưa có backup thành công được ghi nhận"; card.appendChild(evidence);
+      if (item.snapshot_policy_enabled) { var policy = document.createElement("small"); policy.className = "hint"; policy.textContent = "Có snapshot policy; policy không thay thế backup độc lập."; card.appendChild(policy); }
+      if ((item.evidence_gaps || []).length) { var gaps = document.createElement("small"); gaps.className = "hint"; gaps.textContent = "Giới hạn bằng chứng: " + item.evidence_gaps.join(" · "); card.appendChild(gaps); }
+      protectionList.appendChild(card);
+    });
+  }
+  function loadProtectionInsights() { if (!protectionStatus) return; protectionStatus.textContent = "Đang kiểm tra trạng thái bảo vệ…"; requestJson("/api/volumes/" + encodeURIComponent(pool) + "/protection-insights?max_images=50").then(renderProtectionInsights).catch(function (exc) { protectionStatus.textContent = "Không đọc được lịch sử backup/protection: " + exc.message; }); }
   form.addEventListener("submit", function (event) { event.preventDefault(); state.page = 1; loadInventory(); });
   var searchTimer; search.addEventListener("input", function () { clearTimeout(searchTimer); searchTimer = setTimeout(function () { state.page = 1; loadInventory(); }, 260); });
   Array.prototype.forEach.call(sortMenu.querySelectorAll("[data-sort]"), function (button) { button.addEventListener("click", function () { state.sort = button.dataset.sort; state.order = button.dataset.order; sortLabel.textContent = button.textContent; sortMenu.open = false; state.page = 1; loadInventory(); }); });
   prev.addEventListener("click", function () { if (state.page > 1) { state.page -= 1; loadInventory(); } }); next.addEventListener("click", function () { if (state.page < state.pages) { state.page += 1; loadInventory(); } });
   if (selectedImage) { window.location.replace(detailUrl(selectedImage)); return; }
   if (dependencyRefresh) dependencyRefresh.addEventListener("click", loadDependencyInsights);
-  loadOverview(); loadInventory(); loadPoolCounts(); loadDependencyInsights();
+  if (protectionRefresh) protectionRefresh.addEventListener("click", loadProtectionInsights);
+  loadOverview(); loadInventory(); loadPoolCounts(); loadDependencyInsights(); loadProtectionInsights();
 }());
