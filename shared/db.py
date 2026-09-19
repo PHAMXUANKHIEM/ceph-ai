@@ -21,10 +21,7 @@ def _validate_production_database_url(url: str) -> None:
         return
     normalized = url.lower()
     if not normalized.startswith((
-        "postgresql://",
-        "postgres://",
-        "postgresql+psycopg://",
-        "postgresql+psycopg2://",
+        "postgresql://", "postgres://", "postgresql+psycopg://", "postgresql+psycopg2://",
     )):
         raise RuntimeError(
             "Production requires a PostgreSQL DATABASE_URL; SQLite is only "
@@ -138,12 +135,7 @@ SessionLocal = _RoutedSessionLocal()
 
 
 def _action_cluster_id(session: Session, incident_id: str | None) -> str | None:
-    """Resolve an Action's effective cluster without importing models here.
-
-    ``shared.models`` imports ``Base`` from this module, so using a small
-    parameterized SQL lookup avoids a circular import while still mapping
-    legacy NULL-cluster incidents to the configured default cluster.
-    """
+    """Resolve an Action's effective cluster without importing models here."""
     if not incident_id:
         return None
     row = session.execute(
@@ -152,9 +144,8 @@ def _action_cluster_id(session: Session, incident_id: str | None) -> str | None:
     ).first()
     if row is None:
         return None
-    cluster_id = row[0]
-    if cluster_id:
-        return str(cluster_id)
+    if row[0]:
+        return str(row[0])
     default_row = session.execute(
         text("SELECT id FROM clusters WHERE is_default = :is_default LIMIT 1"),
         {"is_default": True},
@@ -164,7 +155,6 @@ def _action_cluster_id(session: Session, incident_id: str | None) -> str | None:
 
 @event.listens_for(Session, "after_flush")
 def _collect_action_state_events(session: Session, _flush_context) -> None:
-    """Collect Action transitions before SQLAlchemy expires the objects."""
     pending = session.info.setdefault(_ACTION_STATE_EVENTS_KEY, {})
     candidates = set(session.new).union(session.dirty)
     for action in candidates:
@@ -175,35 +165,26 @@ def _collect_action_state_events(session: Session, _flush_context) -> None:
             continue
         if action in session.dirty:
             inspected = inspect(action)
-            history = inspected.attrs.status.history
-            if not history.has_changes():
+            if not inspected.attrs.status.history.has_changes():
                 continue
         cluster_id = _action_cluster_id(session, getattr(action, "incident_id", None))
         if not cluster_id:
-            logger.warning(
-                "action state event skipped: no cluster for action %s",
-                getattr(action, "id", "unknown"),
-            )
+            logger.warning("action state event skipped: no cluster for action %s", getattr(action, "id", "unknown"))
             continue
         pending[(cluster_id, str(action.id))] = str(state)
 
 
 @event.listens_for(Session, "after_commit")
 def _publish_action_state_events(session: Session) -> None:
-    """Publish only after the DB commit succeeds; never affect the commit."""
     pending = session.info.pop(_ACTION_STATE_EVENTS_KEY, {})
     if not pending:
         return
     from shared.cluster_events import publish_action_state_event
-
     for (cluster_id, action_id), status in pending.items():
         try:
             publish_action_state_event(cluster_id, action_id, status)
         except Exception:
-            logger.exception(
-                "could not publish committed Action state event for %s",
-                action_id,
-            )
+            logger.exception("could not publish committed Action state for %s", action_id)
 
 
 @event.listens_for(Session, "after_rollback")

@@ -25,7 +25,9 @@ def test_production_database_accepts_postgresql(monkeypatch):
     monkeypatch.setattr(settings, "ceph_ai_environment", "production")
 
     engine = db.make_engine("postgresql+psycopg://user:password@db.example/ceph_aiops")
-    assert engine.pool.size() == 3
+    assert engine.pool.size() == 5
+    assert engine.pool._max_overflow == 0
+    assert engine.pool.timeout() == 10
     assert engine.pool._recycle == 300
     engine.dispose()
 
