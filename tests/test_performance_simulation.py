@@ -39,6 +39,23 @@ def test_replica_simulation_exposes_failure_domain_risk_and_move_estimate():
     assert "Review failure domain" in result["recommendation"]
 
 
+def test_replica_ec_simulation_uses_coding_width_and_recovery_throughput():
+    result = simulate_scenario(_payload("replica_ec", {
+        "current_replica": 3, "proposed_replica": 3,
+        "current_ec_k": 4, "current_ec_m": 2,
+        "proposed_ec_k": 6, "proposed_ec_m": 2,
+        "used_bytes": 8 * 1024 * 1024,
+        "failure_domain_count": 4, "proposed_failure_domain_count": 4,
+        "recovery_throughput_mib_s": 2,
+    }), now=NOW)
+
+    assert result["status"] == "ready"
+    assert result["expected_benefit"]["coding_width_delta"] == 2
+    assert result["rebalance"]["estimated_bytes_moved"] == 2796203
+    assert result["duration"]["status"] == "estimated"
+    assert result["duration"]["minutes"] == 0.02
+
+
 def test_pg_simulation_does_not_claim_direct_pg_evidence():
     result = simulate_scenario(_payload("pg_change", {
         "current_pg": 128, "proposed_pg": 256, "pool_bytes": 1000000, "osd_count": 6,
@@ -47,6 +64,7 @@ def test_pg_simulation_does_not_claim_direct_pg_evidence():
     assert result["status"] == "ready"
     assert result["failure_domain_risk"]["status"] == "unknown"
     assert result["rebalance"]["estimated_bytes_moved"] == 1000000
+    assert result["duration"]["status"] == "unknown"
     assert result["read_only"] is True
 
 

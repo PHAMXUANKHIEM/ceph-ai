@@ -117,6 +117,29 @@ def _domain_risk(result: dict, values: Mapping[str, object]) -> None:
         result["failure_domain_risk"] = {"status": "observed_low", "reason": "no reduction in supplied failure-domain count"}
 
 
+def _set_duration(result: dict, values: Mapping[str, object], bytes_to_move: float | int | None) -> None:
+    """Estimate duration only when recovery throughput is supplied as evidence."""
+    if bytes_to_move is None:
+        result["duration"] = {"status": "unknown", "reason": "estimated bytes moved are unavailable"}
+        return
+    throughput = _number(values, "recovery_throughput_mib_s")
+    if throughput is None or throughput <= 0:
+        result["duration"] = {
+            "status": "unknown",
+            "reason": "recovery_throughput_mib_s evidence is missing or non-positive",
+        }
+        result["evidence_gaps"].append("recovery throughput is required for duration estimate")
+        return
+    seconds = float(bytes_to_move) / (throughput * 1024 * 1024)
+    result["duration"] = {
+        "status": "estimated",
+        "seconds": round(seconds, 1),
+        "minutes": round(seconds / 60, 2),
+        "throughput_mib_s": throughput,
+        "basis": "estimated_bytes_moved / recovery_throughput_mib_s",
+    }
+
+
 def simulate_scenario(payload: Mapping[str, object], *, now: datetime | None = None) -> dict:
     """Return a typed simulation preview; never return an executable action."""
     now = (now or datetime.utcnow()).replace(tzinfo=None)
@@ -159,16 +182,34 @@ def simulate_scenario(payload: Mapping[str, object], *, now: datetime | None = N
         used = _number(values, "used_bytes")
         current_replica = _number(values, "current_replica", integer=True)
         proposed_replica = _number(values, "proposed_replica", integer=True)
-        factor = proposed_replica / max(current_replica, 1)
-        result["expected_benefit"] = {"replica_delta": proposed_replica - current_replica, "durability_change": proposed_replica - current_replica}
-        result["rebalance"] = {"status": "estimated", "estimated_bytes_moved": round(used * abs(factor - 1), 0)}
+        if scenario == "replica_ec":
+            current_k = _number(values, "current_ec_k")
+            current_m = _number(values, "current_ec_m")
+            proposed_k = _number(values, "proposed_ec_k")
+            proposed_m = _number(values, "proposed_ec_m")
+            current_width = (current_k + current_m) if current_k is not None and current_m is not None else current_replica
+            proposed_width = (proposed_k + proposed_m) if proposed_k is not None and proposed_m is not None else proposed_replica
+            factor = proposed_width / max(current_width, 1)
+            result["expected_benefit"] = {
+                "coding_width_delta": proposed_width - current_width,
+                "storage_overhead_factor": round(factor, 3),
+                "durability_change": proposed_width - current_width,
+            }
+        else:
+            factor = proposed_replica / max(current_replica, 1)
+            result["expected_benefit"] = {"replica_delta": proposed_replica - current_replica, "durability_change": proposed_replica - current_replica}
+        moved = round(used * abs(factor - 1), 0)
+        result["rebalance"] = {"status": "estimated", "estimated_bytes_moved": moved}
+        _set_duration(result, values, moved)
         _domain_risk(result, values)
         result["recommendation"] = "Review failure domain, capacity reserve and recovery budget before placement/replica changes."
     elif scenario == "pg_change":
         current, proposed, pool_bytes, osds = (_number(values, key, integer=True) if key in {"current_pg", "proposed_pg", "osd_count"} else _number(values, key) for key in ("current_pg", "proposed_pg", "pool_bytes", "osd_count"))
         ratio = proposed / max(current, 1)
         result["expected_benefit"] = {"pg_count_delta": proposed - current, "distribution_change": ratio}
-        result["rebalance"] = {"status": "estimated", "estimated_bytes_moved": round(pool_bytes * min(1.0, abs(ratio - 1)), 0), "osd_count": osds}
+        moved = round(pool_bytes * min(1.0, abs(ratio - 1)), 0)
+        result["rebalance"] = {"status": "estimated", "estimated_bytes_moved": moved, "osd_count": osds}
+        _set_duration(result, values, moved)
         result["failure_domain_risk"] = {"status": "unknown", "reason": "CRUSH rule, autoscaler state and recovery budget not supplied"}
         result["recommendation"] = "Compare autoscaler/CRUSH state and recovery budget; PG changes can trigger rebalance."
 
