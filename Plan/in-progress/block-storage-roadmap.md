@@ -425,9 +425,16 @@ capacity và không áp QoS hoặc benchmark sai target.
   - Còn live acceptance trên PG degraded/inconsistent thật, đối chiếu checksum
     backup/restore artifact theo backend và runbook/approval riêng trước khi
     có thể đóng mục này.
-- [ ] **6.5 Pool lifecycle**
-  - Create/configure/delete pool với preflight, PG/autoscaler recommendation,
-    application tag `rbd`, quota và xác nhận tài nguyên phụ thuộc.
+- [~] **6.5 Pool lifecycle**
+  - Đã có inventory read-only `/api/volumes/{pool}/pool-lifecycle` hiển thị
+    application tag/RBD capability, PG/PGP và autoscaler mode, quota, số volume
+    phụ thuộc, dependency health và operation guard.
+  - Pool còn volume bị đánh dấu `HAS_DEPENDENCIES`, dependency critical bị
+    `BLOCKED`; chưa có đường create/configure/delete trực tiếp và mọi mutation
+    tương lai phải qua Worker + approval + reconciliation.
+  - Còn preflight create/configure/delete, autoscaler recommendation có
+    capability detection theo release, quota/application tag action và live
+    acceptance trên pool non-empty/unsupported backend.
 - [ ] **6.6 Test**: degraded cluster, insufficient replica/failure domains,
   stale lock, pool non-empty, unsupported EC/RBD feature và action guard.
 
@@ -571,6 +578,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-09-19 | BS-06.2 Replication/EC policy inventory | Đang làm | Bổ sung `watcher/block_storage_policy.py`, read-only CRUSH rule query và `/api/volumes/{pool}/durability-policy`; evaluator kiểm tra replica/min_size hoặc EC k/m so với số failure domain khả dụng, thiếu evidence thì fail-closed, không tự tạo migration/action. UI hiển thị policy, CRUSH rule, domain requirement và migration posture. | `tests/test_block_storage_policy.py` + route/Ceph client smoke: `6 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn live validation theo Ceph release, policy migration plan và test degraded/failure-domain thực tế. |
 | 2026-09-19 | BS-06.3 Watcher/lock remediation posture | Đang làm | Bổ sung `build_attachment_remediation()` vào Cinder/Ceph reconciliation; Volume Detail hiển thị posture `REVIEW_BEFORE_DETACH`, `ORPHAN_REVIEW`, `RECONCILE_CONTROL_PLANE` hoặc `INSUFFICIENT_EVIDENCE`. Explicitly giữ `automatic_remediation=false`, `direct_lock_removal_supported=false` và công bố stale age unavailable. | `tests/test_cinder_discovery.py` + Volume Detail route: `14 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn remediation workflow có fencing/approval và live stale-lock acceptance; không triển khai force unlock tự động. |
 | 2026-09-19 | BS-06.4 Data integrity evidence | Đang làm | Thêm `build_integrity_evidence()` và API `/api/volumes/{pool}/inventory/{image}/integrity`; evidence được giới hạn theo volume/cluster, có health finding, PG scrub/deep-scrub freshness, checksum artifact, incident link và evidence gaps. Volume Detail có card integrity; repair luôn read-only và fail-closed khi thiếu dữ liệu. | `tests/test_block_storage_integrity.py` + dashboard/Ceph/Cinder focused suite: `278 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn live degraded/inconsistent PG acceptance, kiểm tra checksum artifact trên backend thật và runbook/approval cho repair; không tự repair production. |
+| 2026-09-19 | BS-06.5 Pool lifecycle inventory | Đang làm | Thêm `build_pool_lifecycle_inventory()` và API `/api/volumes/{pool}/pool-lifecycle`; mở rộng pool overview với application metadata, quota, PG autoscaler và target size. UI hiển thị capability, dependency count và guard: pool non-empty không được xóa trực tiếp, mutation vẫn disabled/read-only. | `tests/test_block_storage_pool_lifecycle.py` + dashboard/Ceph/Block Storage focused suite: `289 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn preflight và Worker/approval cho create/configure/delete, release capability detection, live pool lifecycle acceptance; chưa có thao tác ghi. |
 
 | 2026-09-18 | 0.4 Regression baseline | Hoàn thành phần test | Cập nhật test contract từ query `image=...` cũ sang deep-link `/volumes/{pool}/{image}` đang được UI sử dụng; không thay đổi hành vi production. | `.venv/bin/pytest -q tests/test_dashboard_block_storage.py tests/test_dashboard_volumes.py tests/test_rbd_reconciliation.py tests/test_volume_monitor.py tests/test_volume_perf.py tests/test_volume_perf_analysis.py tests/test_volume_snapshot_policy.py tests/test_volume_snapshot_scheduler.py tests/test_cinder_discovery.py tests/test_cinder_reconciliation.py`: `216 passed, 1 warning`. | Còn live Ceph audit và full repository/Alembic regression trước khi đóng toàn bộ mục 0.4. |
 ## Ghi chú bàn giao

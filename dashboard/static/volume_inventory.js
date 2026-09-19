@@ -17,6 +17,7 @@
   var capacityRisk = document.getElementById("volume-capacity-risk");
   var dependencyHealth = document.getElementById("volume-dependency-health");
   var policyHealth = document.getElementById("volume-policy-health");
+  var lifecycleHealth = document.getElementById("volume-pool-lifecycle");
   var dependencyStatus = document.getElementById("volume-dependency-status"), dependencyList = document.getElementById("volume-dependency-list"), dependencyRefresh = document.getElementById("volume-dependency-refresh");
   var protectionStatus = document.getElementById("volume-protection-status"), protectionList = document.getElementById("volume-protection-list"), protectionRefresh = document.getElementById("volume-protection-refresh");
   var state = { page: 1, pages: 1, loading: false, sort: "name", order: "asc" }, PAGE_SIZE = 10;
@@ -128,6 +129,29 @@
       if (details) details.textContent = (notes.concat(gaps.map(function (gap) { return "Evidence gap: " + gap; }))).length ? notes.concat(gaps.map(function (gap) { return "Evidence gap: " + gap; })).join(" · ") : "Policy hiện tại phù hợp với failure-domain evidence.";
     }).catch(function (exc) { setPolicyField("status", "Không đọc được"); setPolicyField("details", exc.message); });
   }
+  function lifecycleField(name) { return lifecycleHealth && lifecycleHealth.querySelector('[data-lifecycle-field="' + name + '"]'); }
+  function setLifecycleField(name, value) { var target = lifecycleField(name); if (target) target.textContent = value; }
+  function loadPoolLifecycle() {
+    if (!lifecycleHealth) return;
+    requestJson("/api/volumes/" + encodeURIComponent(pool) + "/pool-lifecycle").then(function (data) {
+      var application = data.application || {}, pg = data.pg || {}, quota = data.quota || {}, dependencies = data.dependencies || {}, capabilities = data.capabilities || {}, guard = data.operation_guard || {}, gaps = (data.evidence || {}).gaps || [], blockers = data.blockers || [];
+      var status = lifecycleField("status");
+      if (status) { status.textContent = data.status || "INSUFFICIENT_EVIDENCE"; status.className = "volume-capacity-status status-" + String(data.status || "insufficient").toLowerCase(); }
+      setLifecycleField("application", application.rbd_enabled ? "RBD enabled" : "Chưa xác nhận");
+      setLifecycleField("application-detail", (application.tags || []).join(", ") || "Không có application tag");
+      setLifecycleField("autoscale", pg.autoscale_mode || "UNKNOWN");
+      setLifecycleField("autoscale-detail", "PG " + (pg.pg_num == null ? "?" : pg.pg_num) + " / PGP " + (pg.pgp_num == null ? "?" : pg.pgp_num));
+      setLifecycleField("quota", quota.configured ? (quota.max_bytes == null ? "Object quota" : bytes(quota.max_bytes)) : "Không giới hạn");
+      setLifecycleField("quota-detail", quota.max_objects == null ? "Không có max objects" : quota.max_objects + " objects");
+      setLifecycleField("dependencies", dependencies.volume_count == null ? "UNKNOWN" : String(dependencies.volume_count) + " volume");
+      setLifecycleField("dependencies-detail", dependencies.health_status || "UNKNOWN");
+      var details = [];
+      if (blockers.length) details.push("Blocker: " + blockers.join(" · "));
+      if (gaps.length) details.push("Evidence gap: " + gaps.join(" · "));
+      details.push("Delete: " + (guard.delete || "approval_required") + " · direct mutation: " + (capabilities.direct_mutation_supported ? "enabled" : "disabled"));
+      setLifecycleField("details", details.join(" · "));
+    }).catch(function (exc) { setLifecycleField("status", "Không đọc được"); setLifecycleField("details", exc.message); });
+  }
   function loadPoolCounts() { Array.prototype.forEach.call(document.querySelectorAll(".volumes-pool-tab"), function (tab) { var tabPool = tab.dataset.pool, target = tab.querySelector("[data-pool-count]"); requestJson("/api/volumes/" + encodeURIComponent(tabPool) + "/inventory?page=1&page_size=1").then(function (data) { target.textContent = "(" + data.total + ")"; }).catch(function () { target.textContent = ""; }); }); }
   function renderDependencyInsights(data) {
     if (!dependencyList || !dependencyStatus) return;
@@ -176,5 +200,5 @@
   if (selectedImage) { window.location.replace(detailUrl(selectedImage)); return; }
   if (dependencyRefresh) dependencyRefresh.addEventListener("click", loadDependencyInsights);
   if (protectionRefresh) protectionRefresh.addEventListener("click", loadProtectionInsights);
-  loadOverview(); loadCapacityRisk(); loadDependencyHealth(); loadPolicyHealth(); loadInventory(); loadPoolCounts(); loadDependencyInsights(); loadProtectionInsights();
+  loadOverview(); loadCapacityRisk(); loadDependencyHealth(); loadPolicyHealth(); loadPoolLifecycle(); loadInventory(); loadPoolCounts(); loadDependencyInsights(); loadProtectionInsights();
 }());

@@ -2071,6 +2071,45 @@ def test_volume_pool_overview_api_returns_durability_and_capacity(dashboard_clie
     assert response.json()["near_full"] is True
 
 
+def test_volume_pool_lifecycle_api_is_read_only_and_blocks_non_empty_pool(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_overview",
+        lambda pool: {
+            "pool": pool, "rbd_enabled": True,
+            "application_metadata": {"rbd": {}}, "pg_num": 32, "pgp_num": 32,
+            "pg_autoscale_mode": "on", "quota_max_bytes": None,
+            "quota_max_objects": None,
+        },
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_dependency_health",
+        lambda pool: {
+            "health": {"status": "HEALTH_OK"},
+            "pg": {"pg_stats": [{"pgid": "3.a", "state": "active+clean", "acting": [1]}]},
+            "osd_tree": {"nodes": [{"id": -1, "type": "root", "children": [-2]},
+                                     {"id": -2, "type": "host", "name": "node-a", "children": [1]},
+                                     {"id": 1, "type": "osd", "status": "up"}]},
+        },
+    )
+    monkeypatch.setattr(
+        volumes_route, "_cached_rbd_inventory_with_state",
+        lambda cluster, pool: ([{"name": "volume-a"}], {"source": "cache", "stale": False, "age_seconds": 1}),
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/pool-lifecycle")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "HAS_DEPENDENCIES"
+    assert payload["application"]["rbd_enabled"] is True
+    assert payload["dependencies"]["volume_count"] == 1
+    assert payload["operation_guard"]["delete"] == "blocked_until_empty_and_approved"
+    assert payload["capabilities"]["direct_mutation_supported"] is False
+    assert payload["read_only"] is True
+
+
 def test_volume_capacity_risk_api_combines_logical_physical_and_forecast_evidence(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(

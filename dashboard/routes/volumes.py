@@ -63,6 +63,7 @@ from watcher.block_storage_insights import (
 from watcher.block_storage_capacity import build_capacity_risk
 from watcher.block_storage_dependencies import build_pool_dependency_health
 from watcher.block_storage_integrity import build_integrity_evidence
+from watcher.block_storage_pool_lifecycle import build_pool_lifecycle_inventory
 from watcher.block_storage_policy import build_durability_policy
 from watcher.capacity_failure_simulation import simulate as simulate_capacity_failure
 from watcher.capacity_forecast import forecasts as capacity_forecasts
@@ -1134,6 +1135,60 @@ async def volume_inventory_overview_api(
         logger.warning("volume_inventory_overview_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được tổng quan Pool: {exc}")
     return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **overview}
+
+
+@router.get("/api/volumes/{pool}/pool-lifecycle")
+async def volume_pool_lifecycle_api(
+    request: Request, pool: str, user: str = Depends(require_login)
+):
+    """Return read-only pool lifecycle capability and dependency evidence."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        if cluster.is_default:
+            overview_future = asyncio.to_thread(ceph_client.query_rbd_pool_overview, pool)
+            dependency_future = asyncio.to_thread(ceph_client.query_rbd_pool_dependency_health, pool)
+        else:
+            connection = cluster_connection(cluster)
+            overview_future = asyncio.to_thread(
+                ceph_client.query_rbd_pool_overview_with, pool, *connection
+            )
+            dependency_future = asyncio.to_thread(
+                ceph_client.query_rbd_pool_dependency_health_with, pool, *connection
+            )
+        inventory_future = asyncio.to_thread(_cached_rbd_inventory_with_state, cluster, pool)
+        overview, dependency_evidence, inventory_result = await asyncio.gather(
+            overview_future, dependency_future, inventory_future,
+        )
+    except (CephQueryError, CacheLockError) as exc:
+        logger.warning("volume_pool_lifecycle_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được pool lifecycle evidence: {exc}") from exc
+
+    inventory, inventory_state = inventory_result
+    dependency = build_pool_dependency_health(
+        pool,
+        dependency_evidence.get("health"),
+        dependency_evidence.get("pg"),
+        dependency_evidence.get("osd_tree"),
+        volume_count=len(inventory),
+    )
+    return {
+        "cluster_id": cluster.id,
+        "collected_at": datetime.utcnow().isoformat() + "Z",
+        "inventory_cache": {
+            "source": inventory_state.get("source"),
+            "stale": bool(inventory_state.get("stale")),
+            "age_seconds": inventory_state.get("age_seconds"),
+        },
+        **build_pool_lifecycle_inventory(
+            pool,
+            overview,
+            volume_count=len(inventory),
+            dependency=dependency,
+            inventory_stale=bool(inventory_state.get("stale")),
+        ),
+    }
 
 
 @router.get("/api/volumes/{pool}/capacity-risk")

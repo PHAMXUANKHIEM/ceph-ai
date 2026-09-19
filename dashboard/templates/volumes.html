@@ -126,6 +126,22 @@
           </div>
           <div class="volume-dependency-health-details" data-policy-field="details"></div>
         </section>
+        <section class="volume-policy-health" id="volume-pool-lifecycle" aria-live="polite">
+          <div class="volume-capacity-risk-header">
+            <div>
+              <h2>Pool lifecycle posture</h2>
+              <p class="hint">Inventory capability và dependency read-only trước khi tạo, cấu hình hoặc xóa Pool.</p>
+            </div>
+            <span class="volume-capacity-status" data-lifecycle-field="status">Đang tải…</span>
+          </div>
+          <div class="volume-dependency-health-grid">
+            <div class="volume-capacity-metric"><span>Application</span><strong data-lifecycle-field="application">—</strong><small data-lifecycle-field="application-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>PG autoscaler</span><strong data-lifecycle-field="autoscale">—</strong><small data-lifecycle-field="autoscale-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>Quota</span><strong data-lifecycle-field="quota">—</strong><small data-lifecycle-field="quota-detail">—</small></div>
+            <div class="volume-capacity-metric"><span>Dependencies</span><strong data-lifecycle-field="dependencies">—</strong><small data-lifecycle-field="dependencies-detail">—</small></div>
+          </div>
+          <div class="volume-dependency-health-details" data-lifecycle-field="details"></div>
+        </section>
         <div id="volume-pool-health-checks" class="hint"></div>
         <p class="error" id="volume-pool-overview-error" hidden></p>
         {% if is_admin %}<p id="volume-mutation-result" class="hint" hidden></p>{% endif %}

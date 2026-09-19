@@ -1248,7 +1248,11 @@ def test_normalize_rbd_pool_overview_combines_durability_and_usage():
     assert overview == {
         "pool": "vms", "pool_id": 4, "type": "replicated", "replica_size": 3,
         "min_size": 2, "pg_num": 64, "pgp_num": 64, "crush_rule": 1,
-        "erasure_code_profile": None, "rbd_enabled": True, "bytes_used": 1024,
+        "erasure_code_profile": None, "rbd_enabled": True,
+        "application_metadata": {"rbd": {}}, "quota_max_bytes": None,
+        "quota_max_objects": None, "pg_autoscale_mode": None,
+        "target_size_ratio": None, "target_size_bytes": None,
+        "bytes_used": 1024,
         "max_available": 8192, "percent_used": 12.5, "objects": 10,
         "health": "warning", "near_full": True,
         "health_checks": [{"code": "POOL_NEAR_FULL", "severity": "HEALTH_WARN", "summary": "pool 'vms' is near full"}],
