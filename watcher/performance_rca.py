@@ -706,6 +706,12 @@ def build_report(
         gaps.append("Có host metrics nhưng tất cả sample đã stale quá 5 phút; không dùng để suy luận.")
     elif not host_join_count:
         gaps.append("Có host metrics nhưng chưa join được với acting OSD của volume nào trong cửa sổ.")
+    gaps.append(
+        "Chưa có recovery/backfill/slow-ops evidence được thu thập cùng thời điểm; không dùng để kết luận tải nền."
+    )
+    gaps.append(
+        "Chưa có network contention evidence theo OSD/host; network counters hiện tại không đủ chứng minh nghẽn mạng."
+    )
     if stale_distribution_rows:
         gaps.append(
             f"Có {stale_distribution_rows} OSD→host mapping stale/thiếu host; không dùng cho host correlation."

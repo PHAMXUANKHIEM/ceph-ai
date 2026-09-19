@@ -87,6 +87,65 @@ def test_report_is_cluster_isolated_and_fails_closed_without_history(db_session)
     assert all(item["cluster_id"] == "c1" for item in [result])
 
 
+def test_report_exposes_recovery_and_network_evidence_gaps(db_session):
+    now = datetime(2026, 8, 28, 12, 0)
+    db_session.add(Cluster(id="c1", name="cluster-1", ceph_mon_nodes="", ssh_user="test", ssh_key_path="test"))
+    db_session.add_all(_volume("c1", "rbd", "vm-a", [10, 10, 10, 30], now - timedelta(minutes=3)))
+    db_session.commit()
+
+    result = build_report(db_session, "c1", now=now, live_signals={"status": "unavailable"})
+    gaps = " ".join(result["evidence_gaps"])
+
+    assert "recovery/backfill/slow-ops" in gaps
+    assert "network contention" in gaps
+    assert all(item["layer"] not in {"recovery", "network"} for item in result["chain"])
+
+
+def test_report_does_not_join_missing_node_or_network_evidence(db_session):
+    now = datetime(2026, 8, 28, 12, 0)
+    db_session.add(Cluster(id="c1", name="cluster-1", ceph_mon_nodes="", ssh_user="test", ssh_key_path="test"))
+    db_session.add_all(_volume("c1", "rbd", "vm-a", [10, 10, 10, 30], now - timedelta(minutes=3)))
+    db_session.add(VolumeOsdMapping(
+        cluster_id="c1", pool="rbd", image="vm-a", image_id="abc",
+        object_name="rbd_data.abc.0000000000000000", pgid="1.2a", acting_osds_json="[3]",
+        primary_osd=3, pgids_json='["1.2a"]', sampled_objects_json='["rbd_data.abc.0000000000000000"]',
+        data_object_count=1, mapping_scope="data_sample", captured_at=now,
+    ))
+    db_session.commit()
+
+    result = build_report(db_session, "c1", now=now, live_signals={"status": "unavailable"})
+
+    assert result["analyses"][0]["host_evidence"] == []
+    assert result["chain"][5]["status"] == "not_available"
+    assert "host disk/SMART/network" in " ".join(result["evidence_gaps"])
+
+
+def test_normal_latency_is_not_reported_as_hot_volume_false_positive(db_session):
+    now = datetime(2026, 8, 28, 12, 0)
+    db_session.add(Cluster(id="c1", name="cluster-1", ceph_mon_nodes="", ssh_user="test", ssh_key_path="test"))
+    db_session.add_all(_volume("c1", "rbd", "benchmark", [10, 10, 10, 10], now - timedelta(minutes=3)))
+    db_session.commit()
+
+    result = build_report(
+        db_session,
+        "c1",
+        now=now,
+        live_signals={
+            "status": "ready",
+            "measured_osds": 2,
+            "median_commit_latency_ms": 2,
+            "outliers": [{"osd_id": 7, "ratio": 5, "commit_latency_ms": 10}],
+            "freshness": {"observed_at": "2026-08-28T12:00:00Z", "age_seconds": 0, "status": "fresh"},
+        },
+    )
+
+    analysis = result["analyses"][0]
+    assert analysis["signals"]["volume"]["status"] == "normal"
+    assert result["hot_resources"]["volumes"] == []
+    assert result["hot_resources"]["pg_candidates"] == []
+    assert analysis["hypothesis"] == "osd_disk_latency_candidate_unscoped"
+
+
 def test_normalize_osd_map_requires_acting_set():
     assert normalize_osd_map_payload({"pgid": "2.4", "acting": [4, 7]}) == {
         "pgid": "2.4", "acting_osds": [4, 7], "primary_osd": 4,
