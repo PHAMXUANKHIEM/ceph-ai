@@ -1048,9 +1048,6 @@ class WatcherHeartbeat(Base):
     mon_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    # Durable safety signal for online learning.  Keeping the streak on the
-    # singleton-per-cluster heartbeat row means a Worker restart cannot
-    # accidentally forget that Watcher has been failing repeatedly.
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -1078,6 +1075,50 @@ class User(Base):
     ceph_chat_restricted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class AuthLoginRateLimit(Base):
+    """Shared failed-login state used by every Dashboard replica.
+
+    The client key is deliberately the only identity stored here.  Keeping
+    the limit keyed by source address preserves the existing brute-force
+    protection without storing usernames or passwords in the rate-limit
+    table.  PostgreSQL row locking in the login route makes increments
+    atomic across workers and processes.
+    """
+
+    __tablename__ = "auth_login_rate_limits"
+
+    client_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ApiRateLimit(Base):
+    """Shared fixed-window request counter for production API throttling."""
+
+    __tablename__ = "api_rate_limits"
+
+    client_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class SecurityAuditEvent(Base):
+    """Append-only metadata for every Dashboard HTTP mutation."""
+
+    __tablename__ = "security_audit_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    actor: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    method: Mapped[str] = mapped_column(String(8), nullable=False)
+    path: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 
 class VitastorUser(Base):
@@ -1507,6 +1548,37 @@ class VolumeMetric(Base):
     polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class VolumeSnapshotPolicy(Base):
+    """Per-Cinder-volume snapshot schedule and retention guard."""
+
+    __tablename__ = "volume_snapshot_policies"
+    __table_args__ = (
+        Index("ix_volume_snapshot_policies_cluster_enabled", "cluster_id", "enabled"),
+        Index("ix_volume_snapshot_policies_next_run", "next_run_at"),
+        CheckConstraint("retention_count >= 1 AND retention_count <= 365", name="ck_volume_snapshot_policy_retention"),
+        CheckConstraint("capacity_guard_percent > 0 AND capacity_guard_percent < 100", name="ck_volume_snapshot_policy_capacity_guard"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    image: Mapped[str] = mapped_column(String(128), nullable=False)
+    volume_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    snapshot_prefix: Mapped[str] = mapped_column(String(48), nullable=False, default="scheduled")
+    cron_expression: Mapped[str] = mapped_column(String(128), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    retention_count: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
+    capacity_guard_percent: Mapped[float] = mapped_column(Float, nullable=False, default=85.0)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class VolumeOsdMapping(Base):
     """Latest read-only RBD header-object placement for one volume.
 
@@ -1537,6 +1609,32 @@ class VolumeOsdMapping(Base):
     sampled_objects_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     data_object_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     mapping_scope: Mapped[str] = mapped_column(String(32), nullable=False, default="data_sample")
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
+class VolumeDependencySnapshot(Base):
+    """Append-only bounded RBD snapshot/clone dependency observation.
+
+    This stores metadata only (parent/children and partial-read errors), never
+    object contents or credentials. The collector prunes observations older
+    than its retention window so repeated read-only dashboard scans cannot
+    grow the application database without bound.
+    """
+
+    __tablename__ = "volume_dependency_snapshots"
+    __table_args__ = (
+        Index("ix_volume_dependency_snapshots_scope", "cluster_id", "pool", "image", "captured_at"),
+        Index("ix_volume_dependency_snapshots_captured", "captured_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    image: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    parent_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    children_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    partial_errors_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
 
 
@@ -1677,13 +1775,7 @@ class ForecastModelRegistry(Base):
 
 
 class ForecastModelEvaluation(Base):
-    """Append-only paired evidence used by guarded model promotion.
-
-    Each row compares one candidate with the active model against the same
-    observed target timestamp.  It is intentionally separate from the
-    mutable registry state so a later promotion cannot rewrite the evidence
-    that justified it.
-    """
+    """Append-only paired evidence used by guarded model promotion."""
 
     __tablename__ = "forecast_model_evaluations"
     __table_args__ = (
@@ -1781,45 +1873,6 @@ class VolumeEarlyForecast(Base):
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-
-
-class VolumeSnapshotPolicy(Base):
-    """Per-volume scheduled Cinder snapshot policy."""
-
-    __tablename__ = "volume_snapshot_policies"
-    __table_args__ = (
-        CheckConstraint(
-            "retention_count >= 1 AND retention_count <= 365",
-            name="ck_volume_snapshot_policy_retention",
-        ),
-        CheckConstraint(
-            "capacity_guard_percent > 0 AND capacity_guard_percent < 100",
-            name="ck_volume_snapshot_policy_capacity_guard",
-        ),
-        Index("ix_volume_snapshot_policies_cluster_enabled", "cluster_id", "enabled"),
-        Index("ix_volume_snapshot_policies_next_run", "next_run_at"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
-    pool: Mapped[str] = mapped_column(String(64), nullable=False)
-    image: Mapped[str] = mapped_column(String(128), nullable=False)
-    volume_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    snapshot_prefix: Mapped[str] = mapped_column(String(48), nullable=False, default="scheduled")
-    cron_expression: Mapped[str] = mapped_column(String(128), nullable=False, default="0 2 * * *")
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
-    retention_count: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
-    capacity_guard_percent: Mapped[float] = mapped_column(Float, nullable=False, default=85.0)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    last_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
 
 
 class VolumePerfSweep(Base):
@@ -2764,8 +2817,6 @@ class LogFinding(Base):
     # Truy vết được model nào/prompt nào đã kết luận -- bắt buộc khi kết
     # luận của AI được đem ra trước người vận hành.
     model_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # The log-analysis prompt identifier is versioned text, not a short enum.
-    # Keep enough room for names such as ``v2-ceph-rca-knowledge``.
     prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Lý do server hạ cấp/sửa câu trả lời của model (bịa evidence id, đề
     # xuất action_id không hợp lệ, lần quét PARTIAL...). Có giá trị nghĩa là
@@ -2911,6 +2962,9 @@ class NodeResourceForecastRun(Base):
     current_percent: Mapped[float] = mapped_column(Float, nullable=False)
     predicted_percent: Mapped[float] = mapped_column(Float, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    coverage_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_gap_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latest_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     consensus_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     consensus_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     consensus_candidate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -2919,8 +2973,6 @@ class NodeResourceForecastRun(Base):
     residual_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     model_votes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    coverage_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=1.0, server_default="1")
-    max_gap_hours: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
     drift_status: Mapped[str] = mapped_column(String(24), nullable=False, default="INSUFFICIENT_DATA", server_default="INSUFFICIENT_DATA")
     drift_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
     drift_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -2997,6 +3049,9 @@ class NodeResourceForecastAlert(Base):
     predicted_low: Mapped[float | None] = mapped_column(Float, nullable=True)
     predicted_high: Mapped[float | None] = mapped_column(Float, nullable=True)
     anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    coverage_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_gap_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latest_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     lifecycle_state: Mapped[str] = mapped_column(String(16), nullable=False, default="NORMAL")
     notification_state: Mapped[str] = mapped_column(String(16), nullable=False, default="IDLE")
     state_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -3011,34 +3066,23 @@ class NodeResourceForecastAlert(Base):
     consecutive_healthy_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
-class NodeResourceForecastAlertEvent(Base):
-    """Append-only lifecycle transition evidence for predictive alerts."""
+class NodeResourceForecastTransition(Base):
+    """Append-only lifecycle history for one node-resource forecast alert."""
 
-    __tablename__ = "node_resource_forecast_alert_events"
+    __tablename__ = "node_resource_forecast_transitions"
     __table_args__ = (
-        Index(
-            "ix_node_resource_forecast_alert_event_stream_time",
-            "cluster_name", "host", "metric", "occurred_at",
-        ),
-        Index(
-            "ix_node_resource_forecast_alert_event_state",
-            "to_state", "occurred_at",
-        ),
+        Index("ix_node_resource_forecast_transition_alert_time", "alert_id", "changed_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     alert_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("node_resource_forecast_alerts.id"), nullable=False,
     )
-    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    metric: Mapped[str] = mapped_column(String(8), nullable=False)
-    from_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    to_state: Mapped[str] = mapped_column(String(16), nullable=False)
-    notification_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    evidence_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    previous_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    new_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class NodeResourceForecastFeedback(Base):
@@ -3266,13 +3310,7 @@ class OnlineLearnerCycleAudit(Base):
 
 
 class OnlineLearnerControl(Base):
-    """Durable operator pause state for one learner stream.
-
-    This is deliberately separate from environment feature flags: an
-    operator can pause one canary stream without changing the global runtime
-    configuration.  Missing rows mean RUNNING, so a failed read remains
-    fail-closed in the consumer rather than silently enabling a new scope.
-    """
+    """Durable operator pause state for one learner stream."""
 
     __tablename__ = "online_learner_controls"
     __table_args__ = (

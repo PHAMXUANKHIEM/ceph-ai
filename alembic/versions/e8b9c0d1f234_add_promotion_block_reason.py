@@ -17,4 +17,5 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_column("playbook_stats", "promotion_blocked_reason")
+    with op.batch_alter_table("playbook_stats") as batch_op:
+        batch_op.drop_column("promotion_blocked_reason")

@@ -1,12 +1,14 @@
 import asyncio
 from datetime import datetime
 import ipaddress
+import json
 import logging
 import math
 import os
 import re
 import shlex
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -53,7 +55,7 @@ from shared.clusters import sync_default_cluster_from_settings
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.ai_limits import normalize_rate_limits
 from shared.models import (
-    ActionPolicyOverride, ActionPolicyOverrideAudit,
+    Action, ActionPolicyOverride, ActionPolicyOverrideAudit, ActionStatus,
     AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, PlaybookStat,
 )
 from shared.router_client import list_router_models, readable_exception_message
@@ -451,6 +453,42 @@ PATCH_PIPELINE_ENV_NAMES = {
     # separate one for this form to manage.
 }
 
+_PIPELINE_HOSTNAME_RE = re.compile(
+    r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*"
+)
+
+
+def _valid_pipeline_host(value: str) -> bool:
+    """Accept an IPv4/IPv6 address or a DNS hostname for the build server."""
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        # Do not let an invalid dotted-quad such as 999.3.55.213 pass as a
+        # hostname just because DNS labels may contain digits.
+        if re.fullmatch(r"\d+(?:\.\d+){3}", value):
+            return False
+        return bool(_PIPELINE_HOSTNAME_RE.fullmatch(value))
+
+
+def _pipeline_validation_error(values: dict[str, str]) -> str | None:
+    if not values["ceph_patch_build_node"]:
+        return "Cần nhập IP hoặc hostname của build server."
+    if not _valid_pipeline_host(values["ceph_patch_build_node"]):
+        return "IP/hostname build server không hợp lệ. Ví dụ: 10.0.0.20 hoặc build.ceph.local."
+    if not values["ceph_patch_build_command"]:
+        return "Cần nhập lệnh build."
+    for field, label in (
+        ("ceph_patch_source_dir", "Thư mục source Ceph"),
+        ("ceph_patch_output_dir", "Thư mục chứa file .rpm"),
+        ("ceph_patch_node_staging_dir", "Thư mục tạm trên node Ceph"),
+    ):
+        if not values[field]:
+            return f"{label} không được để trống."
+        if not values[field].startswith("/"):
+            return f"{label} phải là đường dẫn tuyệt đối, bắt đầu bằng '/'."
+    return None
+
 # AI Code Repair supervisor roles are separate from Chat-with-AI/provider
 # settings: Planner/Reviewer asks, plans and audits; Implementer edits the
 # isolated worktree.
@@ -467,6 +505,62 @@ DUAL_AI_PROVIDERS = ("auto", "codex", "claude")
 
 def _containerized_deployment() -> bool:
     return os.environ.get("CEPH_AI_CONTAINERIZED", "").lower() == "true"
+
+
+# Compose service names used by the host-side restart helper.  The helper is
+# intentionally allow-listed so an admin action can never turn into an
+# arbitrary ``podman restart`` command.
+CONTAINER_RESTART_SERVICES = {
+    "dashboard": "dashboard-web",
+    "worker": "worker",
+    "watcher": "watcher",
+    "code_repair": "code-repair",
+}
+CONTAINER_RESTART_SOCKET = "/run/ceph-ai/container-restart.sock"
+
+
+def _restart_container_service(kind: str, *, wait: bool = True) -> dict:
+    """Restart one compose container through the narrow host helper socket."""
+    service_name = CONTAINER_RESTART_SERVICES.get(kind)
+    if not service_name:
+        return {
+            "restarted": False,
+            "new_pid": None,
+            "error": "Dịch vụ này không có container riêng trong compose hiện tại.",
+        }
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(65 if wait else 10)
+            connection.connect(CONTAINER_RESTART_SOCKET)
+            payload = json.dumps({"service": service_name, "wait": wait}).encode("utf-8") + b"\n"
+            connection.sendall(payload)
+            response = b""
+            while not response.endswith(b"\n") and len(response) < 8192:
+                chunk = connection.recv(8192)
+                if not chunk:
+                    break
+                response += chunk
+        result = json.loads(response.decode("utf-8"))
+        if result.get("restarted") or result.get("accepted"):
+            return {
+                "restarted": bool(result.get("restarted")),
+                "accepted": bool(result.get("accepted")),
+                "new_pid": None,
+                "error": None,
+                **result,
+            }
+        return {
+            "restarted": False,
+            "new_pid": None,
+            "error": result.get("error") or "Host restart helper rejected the request.",
+        }
+    except Exception:
+        logger.exception("container restart request failed for %s", service_name)
+        return {
+            "restarted": False,
+            "new_pid": None,
+            "error": "Không kết nối được host restart helper — kiểm tra socket/systemd/podman.",
+        }
 
 
 def _code_repair_profile_dir(provider: str, profile: str) -> Path:
@@ -534,10 +628,7 @@ def _restart_managed_service(kind: str) -> dict | None:
     should use the existing detached-process fallback.
     """
     if _containerized_deployment():
-        return {
-            "restarted": False, "new_pid": None,
-            "error": "Container stack phải được restart bởi operator sau khi đổi cấu hình.",
-        }
+        return _restart_container_service(kind)
     owner = _current_systemd_service_unit()
     if not owner or "dashboard" not in owner:
         return None
@@ -583,6 +674,8 @@ ALEMBIC_INI_PATH = PROJECT_ROOT / "alembic.ini"
 ALEMBIC_SCRIPT_LOCATION = PROJECT_ROOT / "alembic"
 DEFAULT_POSTGRES_PORT = 5432
 DB_TEST_QUERY = text("SELECT 1")
+DB_SSL_MODES = ("disable", "allow", "prefer", "require", "verify-ca", "verify-full")
+DB_TEST_CONNECT_TIMEOUT_SECONDS = 5
 
 
 # Bare drivername values that mean "PostgreSQL, whatever driver's
@@ -607,7 +700,10 @@ def _normalize_postgres_driver(url):
     return url
 
 
-def _build_postgres_url(host: str, port: int, dbname: str, username: str, password: str) -> str:
+def _build_postgres_url(
+    host: str, port: int, dbname: str, username: str, password: str,
+    ssl_mode: str = "require", connect_timeout: int = DB_TEST_CONNECT_TIMEOUT_SECONDS,
+) -> str:
     return URL.create(
         "postgresql+psycopg",
         username=username,
@@ -615,6 +711,7 @@ def _build_postgres_url(host: str, port: int, dbname: str, username: str, passwo
         host=host,
         port=port,
         database=dbname,
+        query={"sslmode": ssl_mode, "connect_timeout": str(connect_timeout)},
     )
 
 
@@ -625,6 +722,8 @@ def _resolve_database_url(
     db_username: str,
     db_password: str,
     database_url_raw: str,
+    db_ssl_mode: str = "require",
+    db_connect_timeout: str = str(DB_TEST_CONNECT_TIMEOUT_SECONDS),
 ) -> tuple[object | None, str | None]:
     """Backs BOTH input modes the "Kết nối Database" form offers — "Nhập
     từng trường" (host/port/dbname/username/password, built via
@@ -651,10 +750,16 @@ def _resolve_database_url(
         port = int(db_port.strip())
     except ValueError:
         return None, f"Port không hợp lệ: {db_port!r}"
-    return _build_postgres_url(host, port, name, username, db_password), None
-
-
-DB_TEST_CONNECT_TIMEOUT_SECONDS = 5
+    ssl_mode = db_ssl_mode.strip().lower() or "require"
+    if ssl_mode not in DB_SSL_MODES:
+        return None, f"SSL mode không hợp lệ: {db_ssl_mode!r}"
+    try:
+        connect_timeout = int(str(db_connect_timeout).strip())
+    except ValueError:
+        return None, f"Connect timeout không hợp lệ: {db_connect_timeout!r}"
+    if not 1 <= connect_timeout <= 60:
+        return None, "Connect timeout phải nằm trong khoảng 1–60 giây."
+    return _build_postgres_url(host, port, name, username, db_password, ssl_mode, connect_timeout), None
 
 
 def _test_database_connection(url) -> tuple[bool, str]:
@@ -671,9 +776,12 @@ def _test_database_connection(url) -> tuple[bool, str]:
     psycopg's TCP connect against a silently-dropping host/port hangs for
     minutes before failing — a "Kiểm tra kết nối" click has to fail fast
     instead."""
-    connect_args = (
-        {"connect_timeout": DB_TEST_CONNECT_TIMEOUT_SECONDS} if url.get_backend_name() == "postgresql" else {}
-    )
+    timeout = url.query.get("connect_timeout", str(DB_TEST_CONNECT_TIMEOUT_SECONDS))
+    try:
+        timeout = max(1, min(60, int(timeout)))
+    except (TypeError, ValueError):
+        timeout = DB_TEST_CONNECT_TIMEOUT_SECONDS
+    connect_args = {"connect_timeout": timeout} if url.get_backend_name() == "postgresql" else {}
     engine = create_engine(url, connect_args=connect_args)
     try:
         with engine.connect() as conn:
@@ -719,12 +827,14 @@ def _database_form_values() -> dict:
     try:
         parsed = make_url(settings.database_url)
     except Exception:
-        return {"db_host": "", "db_port": "", "db_name": "", "db_username": ""}
+        return {"db_host": "", "db_port": "", "db_name": "", "db_username": "", "db_ssl_mode": "require", "db_connect_timeout": str(DB_TEST_CONNECT_TIMEOUT_SECONDS)}
     return {
         "db_host": parsed.host or "",
         "db_port": str(parsed.port) if parsed.port else "",
         "db_name": parsed.database or "",
         "db_username": parsed.username or "",
+        "db_ssl_mode": parsed.query.get("sslmode", "require"),
+        "db_connect_timeout": parsed.query.get("connect_timeout", str(DB_TEST_CONNECT_TIMEOUT_SECONDS)),
     }
 
 
@@ -917,7 +1027,10 @@ def restart_dashboard_process(host: str, port: int) -> None:
     the current connection, those don't).
     """
     if _containerized_deployment():
-        raise RuntimeError("Dashboard container phải được restart bởi container control-plane")
+        result = _restart_container_service("dashboard", wait=False)
+        if not (result["restarted"] or result.get("accepted")):
+            raise RuntimeError(result["error"] or "Không restart được Dashboard container")
+        return
     pid = os.getpid()
     systemd_unit = _current_systemd_service_unit()
     if systemd_unit:
@@ -947,6 +1060,9 @@ def _cluster_form_values() -> dict:
         "ceph_mgr_nodes": settings.ceph_mgr_nodes,
         "ceph_rgw_nodes": settings.ceph_rgw_nodes,
         "ceph_rgw_container_name": settings.ceph_rgw_container_name,
+        "ceph_rgw_s3_endpoint": settings.ceph_rgw_s3_endpoint,
+        "ceph_rgw_s3_access_key": settings.ceph_rgw_s3_access_key,
+        "ceph_rgw_s3_secret_key_configured": bool(settings.ceph_rgw_s3_secret_key),
         "ceph_exec_mode": settings.ceph_exec_mode,
         "ceph_keyring_path": settings.ceph_keyring_path,
         "ssh_user": settings.ssh_user,
@@ -1690,6 +1806,47 @@ async def settings_action_policy_submit(
     ))
 
 
+@router.post("/settings/autopilot/action-policy/bulk")
+async def settings_action_policy_bulk_submit(
+    request: Request, user: str = Depends(require_login),
+):
+    """Apply one policy to multiple actions and restart Worker only once."""
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được đổi Action Policy")
+    body = await request.json()
+    action_ids = body.get("action_ids")
+    classification = str(body.get("classification") or "").strip()
+    if not isinstance(action_ids, list) or not action_ids or len(action_ids) > 100:
+        raise HTTPException(status_code=400, detail="Danh sách action không hợp lệ")
+    action_ids = list(dict.fromkeys(str(action_id).strip() for action_id in action_ids))
+    known = action_gate.SAFE_ACTION_IDS | action_gate.RISKY_ACTION_IDS | action_gate.DESTRUCTIVE_ACTION_IDS
+    if any(action_id not in known for action_id in action_ids) or classification not in {"SAFE", "RISKY", "DESTRUCTIVE"}:
+        raise HTTPException(status_code=400, detail="Action hoặc classification không hợp lệ")
+    if str(body.get("confirmation") or "").strip() != "OK":
+        raise HTTPException(status_code=400, detail="Cần xác nhận OK để áp dụng policy")
+    reason = "Confirmed with OK in System Administration (bulk)"
+    with db.SessionLocal() as session:
+        for action_id in action_ids:
+            previous = action_gate.classify_action(action_id, session=session).value
+            row = session.get(ActionPolicyOverride, action_id)
+            if row is None:
+                row = ActionPolicyOverride(action_id=action_id)
+                session.add(row)
+            row.classification = classification
+            row.updated_by = user
+            row.reason = reason
+            session.add(ActionPolicyOverrideAudit(
+                action_id=action_id, actor=user, previous_classification=previous,
+                new_classification=classification, reason=reason,
+            ))
+        session.commit()
+    restart_result = await asyncio.to_thread(restart_worker)
+    if not restart_result["restarted"]:
+        return {"ok": True, "restarted": False, "updated": len(action_ids),
+                "message": "Đã lưu policy nhưng Worker không restart được."}
+    return {"ok": True, "restarted": True, "updated": len(action_ids)}
+
+
 @router.post("/settings/autopilot/promote-playbook", response_class=HTMLResponse)
 async def settings_promote_playbook_submit(
     request: Request, user: str = Depends(require_login),
@@ -2367,6 +2524,9 @@ async def cluster_settings_submit(
     ceph_mgr_nodes: str = Form(""),
     ceph_rgw_nodes: str = Form(""),
     ceph_rgw_container_name: str = Form(""),
+    ceph_rgw_s3_endpoint: str = Form(""),
+    ceph_rgw_s3_access_key: str = Form(""),
+    ceph_rgw_s3_secret_key: str = Form(""),
     ceph_exec_mode: str = Form("docker"),
     ceph_keyring_path: str = Form(""),
     ssh_user: str = Form(""),
@@ -2380,6 +2540,14 @@ async def cluster_settings_submit(
         "ceph_mgr_nodes": ceph_mgr_nodes.strip(),
         "ceph_rgw_nodes": ceph_rgw_nodes.strip(),
         "ceph_rgw_container_name": ceph_rgw_container_name.strip(),
+        "ceph_rgw_s3_endpoint": ceph_rgw_s3_endpoint.strip(),
+        "ceph_rgw_s3_access_key": ceph_rgw_s3_access_key.strip(),
+        # An empty secret means "keep the existing secret". Never render it
+        # back into the form; only expose the configured/not-configured flag.
+        "ceph_rgw_s3_secret_key": ceph_rgw_s3_secret_key.strip() or settings.ceph_rgw_s3_secret_key,
+        "ceph_rgw_s3_secret_key_configured": bool(
+            ceph_rgw_s3_secret_key.strip() or settings.ceph_rgw_s3_secret_key
+        ),
         "ceph_exec_mode": ceph_exec_mode.strip() or "docker",
         "ceph_keyring_path": ceph_keyring_path.strip(),
         "ssh_user": ssh_user.strip(),
@@ -2573,6 +2741,8 @@ async def settings_test_database(
     db_name: str = Form(""),
     db_username: str = Form(""),
     db_password: str = Form(""),
+    db_ssl_mode: str = Form("require"),
+    db_connect_timeout: str = Form(str(DB_TEST_CONNECT_TIMEOUT_SECONDS)),
     database_url_raw: str = Form(""),
 ):
     """Backs the "Kiểm tra kết nối" button — raw SELECT 1 only, no
@@ -2584,11 +2754,28 @@ async def settings_test_database(
     settings_save_database below), same privilege boundary as the manual
     restart buttons."""
     _require_admin_privilege(user)
-    url, error = _resolve_database_url(db_host, db_port, db_name, db_username, db_password, database_url_raw)
+    url, error = _resolve_database_url(db_host, db_port, db_name, db_username, db_password, database_url_raw, db_ssl_mode, db_connect_timeout)
     if error:
         return {"valid": False, "message": error}
     valid, message = await asyncio.to_thread(_test_database_connection, url)
     return {"valid": valid, "message": message}
+
+
+@router.get("/api/settings/database/status")
+async def settings_database_status(user: str = Depends(require_login)):
+    """Read-only live probe for the configured database connection."""
+    _require_admin_privilege(user)
+    started = time.perf_counter()
+    try:
+        url = make_url(settings.database_url)
+    except Exception as exc:
+        return {"connected": False, "latency_ms": None, "message": readable_exception_message(exc)}
+    valid, message = await asyncio.to_thread(_test_database_connection, url)
+    return {
+        "connected": valid,
+        "latency_ms": round((time.perf_counter() - started) * 1000, 1) if valid else None,
+        "message": message,
+    }
 
 
 @router.post("/settings/database/save", response_class=HTMLResponse)
@@ -2600,6 +2787,8 @@ async def settings_save_database(
     db_name: str = Form(""),
     db_username: str = Form(""),
     db_password: str = Form(""),
+    db_ssl_mode: str = Form("require"),
+    db_connect_timeout: str = Form(str(DB_TEST_CONNECT_TIMEOUT_SECONDS)),
     database_url_raw: str = Form(""),
 ):
     """Switches the app's storage backend to a PostgreSQL database — the
@@ -2633,9 +2822,11 @@ async def settings_save_database(
         "db_port": db_port.strip(),
         "db_name": db_name.strip(),
         "db_username": db_username.strip(),
+        "db_ssl_mode": db_ssl_mode.strip().lower() or "require",
+        "db_connect_timeout": db_connect_timeout.strip(),
     }
 
-    url, error = _resolve_database_url(db_host, db_port, db_name, db_username, db_password, database_url_raw)
+    url, error = _resolve_database_url(db_host, db_port, db_name, db_username, db_password, database_url_raw, db_ssl_mode, db_connect_timeout)
     if error:
         return templates.TemplateResponse(
             request,
@@ -2827,6 +3018,7 @@ async def patch_pipeline_settings_submit(
     ceph_patch_build_command: str = Form(""),
     ceph_patch_output_dir: str = Form(""),
     ceph_patch_node_staging_dir: str = Form(""),
+    save_action: str = Form("save-restart"),
 ):
     """Configures the Ceph patch build & deploy pipeline (Vá lỗi Ceph page,
     dashboard/routes/patch.py) — where the build server is and how to build
@@ -2851,6 +3043,18 @@ async def patch_pipeline_settings_submit(
         "ceph_patch_node_staging_dir": ceph_patch_node_staging_dir.strip(),
     }
 
+    validation_error = _pipeline_validation_error(submitted)
+    if validation_error:
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                patch_pipeline_error=validation_error,
+                patch_pipeline_values=submitted,
+            ),
+        )
+
     try:
         _update_env_file_batch(
             {env_name: submitted[field] for field, env_name in PATCH_PIPELINE_ENV_NAMES.items()}
@@ -2869,11 +3073,21 @@ async def patch_pipeline_settings_submit(
             ),
         )
 
+    if save_action != "save-restart":
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                patch_pipeline_success="Đã lưu cấu hình pipeline. Worker chưa được restart.",
+            ),
+        )
+
     worker_restart = await asyncio.to_thread(restart_worker)
     restart_suffix = (
         " Worker đã khởi động lại để áp dụng ngay."
         if worker_restart.get("restarted")
-        else " Chưa áp dụng vào Worker; operator cần chạy systemctl restart ceph-ai-containers."
+        else " Chưa áp dụng vào Worker: " + (worker_restart.get("error") or "hãy kiểm tra log dịch vụ.")
     )
 
     return templates.TemplateResponse(
@@ -2884,6 +3098,45 @@ async def patch_pipeline_settings_submit(
             patch_pipeline_success="Đã lưu cấu hình —" + restart_suffix,
         ),
     )
+
+
+@router.get("/api/settings/patch-pipeline/status")
+async def patch_pipeline_status(user: str = Depends(require_login)):
+    """Return the non-secret runtime/configuration status for the Pipeline card."""
+    _require_admin_privilege(user)
+    configured = not _pipeline_validation_error(_patch_pipeline_form_values())
+    state = "ready" if configured else "not_configured"
+    state_label = "Sẵn sàng chạy pipeline" if configured else "Chưa cấu hình đầy đủ"
+    last_build = None
+    try:
+        with db.SessionLocal() as session:
+            action = (
+                session.query(Action)
+                .filter(Action.action_id == "patch_build_and_stage")
+                .order_by(Action.created_at.desc())
+                .first()
+            )
+            if action is not None:
+                status = action.status or ""
+                status_display = {
+                    ActionStatus.PENDING_APPROVAL.value: ("Đang chờ duyệt", "waiting"),
+                    ActionStatus.APPROVED.value: ("Đã duyệt, chờ chạy", "waiting"),
+                    ActionStatus.EXECUTING.value: ("Đang chạy", "running"),
+                    ActionStatus.EXECUTED.value: ("Build thành công", "success"),
+                    ActionStatus.FAILED.value: ("Build thất bại", "error"),
+                    ActionStatus.REJECTED.value: ("Đã từ chối", "error"),
+                }.get(status, (status or "Chưa xác định", "ready"))
+                state_label, state = status_display
+                timestamp = action.created_at.strftime("%d/%m %H:%M") if action.created_at else "—"
+                last_build = f"{timestamp} · {state_label}"
+    except Exception:
+        logger.exception("patch_pipeline_status: failed to read latest pipeline action")
+    return {
+        "configured": configured,
+        "state": state,
+        "state_label": state_label,
+        "last_build": last_build,
+    }
 
 
 @router.post("/settings/dual-ai", response_class=HTMLResponse)
@@ -3257,7 +3510,7 @@ async def backup_targets_settings_submit(
     restart_suffix = (
         " Worker đã khởi động lại để áp dụng ngay."
         if worker_restart.get("restarted")
-        else " Chưa áp dụng vào Worker; operator cần chạy systemctl restart ceph-ai-containers."
+        else " Chưa áp dụng vào Worker: " + (worker_restart.get("error") or "hãy kiểm tra log dịch vụ.")
     )
 
     return templates.TemplateResponse(
@@ -3311,11 +3564,16 @@ async def restart_worker_submit(request: Request, user: str = Depends(require_lo
     _require_admin_privilege(user)
     result = await asyncio.to_thread(restart_worker)
     if result["restarted"]:
+        restart_label = (
+            f"container {result['container']}"
+            if result.get("container")
+            else f"PID {result['new_pid']}"
+        )
         return templates.TemplateResponse(
             request,
             "settings.html",
             _settings_context(
-                user, manual_worker_restart_success=f"Đã khởi động lại Worker (PID {result['new_pid']})."
+                user, manual_worker_restart_success=f"Đã khởi động lại Worker ({restart_label})."
             ),
         )
     return templates.TemplateResponse(
@@ -3337,11 +3595,16 @@ async def restart_watcher_submit(request: Request, user: str = Depends(require_l
     _require_admin_privilege(user)
     result = await asyncio.to_thread(restart_watcher)
     if result["restarted"]:
+        restart_label = (
+            f"container {result['container']}"
+            if result.get("container")
+            else f"PID {result['new_pid']}"
+        )
         return templates.TemplateResponse(
             request,
             "settings.html",
             _settings_context(
-                user, manual_watcher_restart_success=f"Đã khởi động lại Watcher (PID {result['new_pid']})."
+                user, manual_watcher_restart_success=f"Đã khởi động lại Watcher ({restart_label})."
             ),
         )
     return templates.TemplateResponse(
@@ -3364,13 +3627,18 @@ async def restart_remediation_watcher_submit(
     _require_admin_privilege(user)
     result = await asyncio.to_thread(restart_remediation_watcher)
     if result["restarted"]:
+        restart_label = (
+            f"container {result['container']}"
+            if result.get("container")
+            else f"PID {result['new_pid']}"
+        )
         return templates.TemplateResponse(
             request,
             "settings.html",
             _settings_context(
                 user,
                 manual_remediation_watcher_restart_success=(
-                    f"Đã khởi động lại AI Remediation Watcher (PID {result['new_pid']})."
+                    f"Đã khởi động lại AI Remediation Watcher ({restart_label})."
                 ),
             ),
         )
@@ -3399,6 +3667,7 @@ async def log_intel_settings_submit(
     log_intel_max_lines_per_daemon: str = Form("5000"),
     log_intel_loki_url: str = Form(""),
     log_intel_loki_tenant: str = Form(""),
+    save_action: str = Form("save-restart"),
 ):
     """Cấu hình Log Intelligence (Plan/log-intelligence-rca-plan.md).
 
@@ -3475,9 +3744,14 @@ async def log_intel_settings_submit(
         logger.exception("log_intel_settings_submit: failed to persist config to .env")
         return _fail("Không ghi được file cấu hình — kiểm tra quyền ghi trên server")
 
-    # Watcher là tiến trình chạy vòng quét này, nên nó (không phải Worker)
-    # mới là cái cần khởi động lại để áp dụng ngay.
-    await asyncio.to_thread(restart_watcher)
+    # Watcher là tiến trình chạy vòng quét này, nên chỉ nút xác nhận restart
+    # mới khởi động lại nó. Nút lưu cấu hình giữ nguyên tiến trình đang chạy.
+    restart_requested = save_action != "save"
+    if restart_requested:
+        await asyncio.to_thread(restart_watcher)
+        action_message = " Watcher đã khởi động lại để áp dụng ngay."
+    else:
+        action_message = " Cấu hình sẽ được áp dụng khi Watcher khởi động lại."
 
     note = ""
     if submitted["log_intel_enabled"] and submitted["log_intel_ai_enabled"]:
@@ -3489,7 +3763,7 @@ async def log_intel_settings_submit(
         request, "settings.html",
         _settings_context(
             user,
-            log_intel_success=f"Đã lưu cấu hình — Watcher đã khởi động lại để áp dụng ngay.{note}",
+            log_intel_success=f"Đã lưu cấu hình —{action_message}{note}",
         ),
     )
 

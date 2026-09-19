@@ -3,10 +3,10 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from config.settings import settings
-from dashboard.cluster_scope import require_default_cluster
+from dashboard.cluster_scope import cluster_selection, require_default_cluster
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
@@ -76,6 +76,120 @@ def _get_patch_document(session) -> PatchDocument | None:
     return session.get(PatchDocument, 1)
 
 
+def _decode_action_params(action: Action | None) -> dict:
+    if action is None or not action.action_params:
+        return {}
+    try:
+        value = json.loads(action.action_params)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _relative_patch_time(value: datetime | None) -> str:
+    if value is None:
+        return "—"
+    seconds = max(0, int((datetime.utcnow() - value).total_seconds()))
+    if seconds < 60:
+        return "vừa xong"
+    if seconds < 3600:
+        return f"{seconds // 60} phút trước"
+    if seconds < 86400:
+        return f"{seconds // 3600} giờ trước"
+    return f"{seconds // 86400} ngày trước"
+
+
+def _patch_status_display(status: str | None) -> tuple[str, str]:
+    labels = {
+        ActionStatus.EXECUTED.value: ("Thành công", "is-success"),
+        ActionStatus.FAILED.value: ("Lỗi", "is-failed"),
+        ActionStatus.REJECTED.value: ("Đã từ chối", "is-failed"),
+        ActionStatus.PENDING_APPROVAL.value: ("Chờ duyệt", "is-pending"),
+        ActionStatus.APPROVED.value: ("Đã duyệt", "is-pending"),
+        ActionStatus.EXECUTING.value: ("Đang chạy", "is-pending"),
+    }
+    return labels.get(status or "", ("Chưa có", "is-pending"))
+
+
+def _patch_history(session, limit: int = 10) -> list[dict]:
+    builds = (
+        session.query(Action)
+        .filter(Action.action_id == PATCH_BUILD_ACTION_ID)
+        .order_by(Action.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    installs = (
+        session.query(Action)
+        .filter(Action.action_id == PATCH_INSTALL_ACTION_ID)
+        .order_by(Action.created_at.desc())
+        .limit(max(20, limit * 2))
+        .all()
+    )
+    install_by_build = {}
+    for install in installs:
+        params = _decode_action_params(install)
+        build_id = params.get("patch_build_action_id")
+        if build_id and build_id not in install_by_build:
+            install_by_build[build_id] = install
+
+    history = []
+    for build in builds:
+        params = _decode_action_params(build)
+        incident = session.get(Incident, build.incident_id)
+        actor = params.get("patch_uploaded_by") or "admin"
+        if incident and incident.log_excerpt:
+            actor_match = re.search(r"\bbởi\s+(.+)$", incident.log_excerpt)
+            if actor_match:
+                actor = actor_match.group(1).strip()
+        install = install_by_build.get(build.id)
+        build_label, build_class = _patch_status_display(build.status)
+        install_label, install_class = _patch_status_display(install.status if install else None)
+        history.append({
+            "created_at": build.created_at.isoformat() if build.created_at else "",
+            "relative_time": _relative_patch_time(build.created_at),
+            "filename": params.get("patch_filename") or "patch không xác định",
+            "build_label": build_label,
+            "build_class": build_class,
+            "install_label": install_label if install else "Chưa áp",
+            "install_class": install_class,
+            "actor": actor,
+            "install_created_at": install.created_at.isoformat() if install and install.created_at else "",
+        })
+    return history
+
+
+def _progress_summary(action: Action | None) -> tuple[int, str, str]:
+    progress = _action_progress(action)
+    if action is None:
+        return 0, "Upload patch để bắt đầu.", ""
+    if action.status == ActionStatus.EXECUTED.value:
+        return 100, "Build & Copy hoàn tất.", ""
+    if action.status == ActionStatus.FAILED.value:
+        return 100, "Build & Copy thất bại.", ""
+    if action.status in _IN_FLIGHT_ACTION_STATUSES:
+        percent = 12
+        if progress:
+            done = sum(
+                item.get("status") == "done"
+                for item in progress
+                if isinstance(item, dict)
+            )
+            percent = max(12, min(90, round(100 * done / len(progress))))
+        return percent, "Đang chờ duyệt hoặc worker bắt đầu…", ""
+    return 0, "Chưa chạy Build & Copy.", ""
+
+
+def _action_progress(action: Action | None) -> list[dict]:
+    if action is None or not action.execution_progress:
+        return []
+    try:
+        value = json.loads(action.execution_progress)
+    except (TypeError, ValueError):
+        return []
+    return value if isinstance(value, list) else []
+
+
 def _latest_patch_action(session, action_id: str | None = None) -> tuple[Action | None, Incident | None]:
     query = session.query(Action).filter(Action.action_id.in_(PATCH_ACTION_IDS))
     if action_id is not None:
@@ -127,6 +241,7 @@ def _safe_command_preview(action_id: str, host: str, params: dict) -> str:
 
 
 def _patch_context(request: Request, user: str) -> dict:
+    clusters, cluster = cluster_selection(request)
     with db.SessionLocal() as session:
         document = _get_patch_document(session)
         build_action, build_incident = _latest_patch_action(session, PATCH_BUILD_ACTION_ID)
@@ -140,6 +255,8 @@ def _patch_context(request: Request, user: str) -> dict:
             and build_action.status == ActionStatus.EXECUTED.value
             and not any_in_flight
         )
+        progress = _action_progress(build_action)
+        progress_percent, progress_phase, progress_elapsed = _progress_summary(build_action)
 
         # Sidebar tab (2026-07-24) — lands on whichever step has an
         # in-flight proposal (so its approve/reject buttons are immediately
@@ -151,8 +268,14 @@ def _patch_context(request: Request, user: str) -> dict:
         else:
             active_tab = "upload"
 
+        history_limit = 50 if request.query_params.get("history") == "all" else 10
+        patch_history = _patch_history(session, history_limit)
         return {
             "user": user,
+            "clusters": clusters,
+            "selected_cluster": cluster,
+            "patch_history": patch_history,
+            "progress": progress,
             "is_admin": auth.is_admin_user(user),
             "active_tab": active_tab,
             "patch_document": document,
@@ -165,13 +288,31 @@ def _patch_context(request: Request, user: str) -> dict:
             "can_propose_build": can_propose_build,
             "can_propose_install": can_propose_install,
             "build_node": settings.ceph_patch_build_node,
+            "progress_percent": progress_percent,
+            "progress_phase": progress_phase,
+            "progress_elapsed": progress_elapsed,
         }
 
 
 @router.get("/patch", response_class=HTMLResponse)
 async def patch_page(request: Request, user: str = Depends(require_login)):
     require_default_cluster(request, "Patch Ceph")
-    return templates.TemplateResponse(request, "patch.html", _patch_context(request, user))
+    response = templates.TemplateResponse(request, "patch.html", _patch_context(request, user))
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
+@router.get("/patch/progress")
+async def patch_progress(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Patch Ceph")
+    with db.SessionLocal() as session:
+        action, _ = _latest_patch_action(session, PATCH_BUILD_ACTION_ID)
+        return JSONResponse({
+            "action_id": action.id if action else None,
+            "status": action.status if action else None,
+            "progress": _action_progress(action),
+            "updated_at": action.created_at.isoformat() if action and action.created_at else None,
+        })
 
 
 @router.post("/patch/upload")
@@ -228,7 +369,11 @@ async def propose_patch_build(request: Request, user: str = Depends(require_logi
         if document is None:
             raise HTTPException(status_code=400, detail="Chưa upload patch nào")
 
-        action_params = {"patch_content": document.content}
+        action_params = {
+            "patch_content": document.content,
+            "patch_filename": document.filename,
+            "patch_uploaded_by": document.uploaded_by,
+        }
         target_nodes = [build_node]
         preview_command = _safe_command_preview(PATCH_BUILD_ACTION_ID, build_node, action_params)
 
@@ -292,7 +437,10 @@ async def propose_patch_install(request: Request, user: str = Depends(require_lo
         if not target_nodes:
             raise HTTPException(status_code=400, detail="Chưa cấu hình node Ceph nào (xem trang Cài đặt)")
 
-        action_params: dict = {}
+        action_params: dict = {
+            "patch_build_action_id": build_action.id,
+            "patch_filename": _decode_action_params(build_action).get("patch_filename"),
+        }
         preview_command = _safe_command_preview(PATCH_INSTALL_ACTION_ID, target_nodes[0], action_params)
 
         incident = Incident(

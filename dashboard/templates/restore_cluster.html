@@ -5,179 +5,105 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Restore Cluster — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/restore_cluster.css?v={{ static_version }}">
 </head>
-<body>
-  {% include "_nav.html" %}
+<body class="restore-dr-page">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle active">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
+            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
+            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
+            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
+            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
+            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
+            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
+            <a href="/backups" class="nav-dropdown-item">Backup</a>
+            <a href="/restore-cluster" class="nav-dropdown-item nav-dropdown-item-active">Restore Cluster</a>
+            <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
+            <a href="/log-intelligence" class="nav-dropdown-item">Log Intelligence</a>
+          </div>
+        </div>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle">OpenStack <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu"><a href="/openstack/auth-pool" class="nav-dropdown-item">Auth-Pool</a></div>
+        </div>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+        {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
+        {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" class="nav-link">Capability Matrix</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button type="submit" class="btn btn-ghost btn-sm">Logout</button></form>
+    </div>
+  </header>
 
-  <main class="page">
-    <section class="card">
-      <div class="card-header"><h2>⚠️ Khôi phục cụm sau thảm họa (Disaster Recovery)</h2></div>
-      <div class="card-body">
-        <p class="hint">Chỉ dùng khi cụm Ceph cũ đã sập HOÀN TOÀN và cần dựng lại từ đầu bằng dữ liệu đã sao lưu (Epic 9). Nếu chỉ 1 volume bị hỏng trong khi cụm vẫn khỏe, dùng mục "Khôi phục 1 volume" ở trang <a href="/backups">Backup</a> thay vì trang này. Xem đầy đủ quy trình tại <code>docs/runbook-dr.md</code>.</p>
-      </div>
+  <main class="page restore-dr-shell">
+    <section class="restore-dr-alert" role="alert">
+      <span class="restore-dr-alert-icon" aria-hidden="true">⚠️</span>
+      <div class="restore-dr-alert-copy"><strong>Disaster Recovery — Khôi phục cụm</strong><span>Chỉ dùng khi cụm cũ đã sập hoàn toàn; thao tác sẽ dựng cụm mới từ backup.</span></div>
+      <div class="restore-dr-alert-links"><a href="https://github.com/PHAMXUANKHIEM/ceph-ai/blob/main/docs/runbook-dr.md" class="restore-dr-chip" target="_blank" rel="noopener">Xem runbook đầy đủ</a><a href="/backups" class="restore-dr-chip">Trang Backup</a></div>
     </section>
 
     {% if last_action and last_action.status in ("EXECUTED", "FAILED") and not pending_action %}
-    <section class="card">
-      <div class="card-header"><h2>{% if last_action.status == "EXECUTED" %}✅ Lần khôi phục gần nhất thành công{% else %}❌ Lần khôi phục gần nhất thất bại{% endif %}</h2></div>
-      <div class="card-body">
-        <p><strong>Phiên bản:</strong> Ceph {{ last_action_params.version or "?" }}</p>
-        {% if last_action_params.nodes %}
-        <p><strong>Số node:</strong> {{ last_action_params.nodes|length }}</p>
-        {% endif %}
-        {% if last_action.status == "EXECUTED" %}
-        <div class="pending-action-buttons">
-          <a href="/" class="btn btn-primary">→ Xem Dashboard</a>
-          {% if is_admin %}
-          <form method="post" action="/settings/restart-worker" class="inline-form">
-            <button type="submit" class="btn btn-sm">Khởi động lại Worker</button>
-          </form>
-          <form method="post" action="/settings/restart-watcher" class="inline-form">
-            <button type="submit" class="btn btn-sm">Khởi động lại Watcher</button>
-          </form>
-          {% endif %}
-        </div>
-        <p class="hint">Cấu hình cụm mới đã được ghi vào .env — khởi động lại Watcher &amp; Worker để bắt đầu theo dõi cụm này. Kiểm tra thủ công thêm theo mục 4 của <code>docs/runbook-dr.md</code> trước khi coi là hoàn tất.</p>
-        {% endif %}
-      </div>
+    <section class="restore-dr-result-banner {{ 'is-success' if last_action.status == 'EXECUTED' else 'is-failure' }}" role="status">
+      <span class="restore-dr-result-icon">{{ '✅' if last_action.status == 'EXECUTED' else '❌' }}</span><div><strong>{{ 'Lần khôi phục gần nhất thành công' if last_action.status == 'EXECUTED' else 'Lần khôi phục gần nhất thất bại' }}</strong><span>Ceph {{ last_action_params.version or '?' }}{% if last_action_params.nodes %} · {{ last_action_params.nodes|length }} node{% endif %}</span></div>{% if last_action.status == 'EXECUTED' %}<a href="/" class="btn btn-sm">Xem Dashboard</a>{% endif %}
     </section>
     {% endif %}
 
-    <div class="deploy-cluster-grid">
-      <section class="card">
-        <div class="card-header"><h2>Cấu hình</h2></div>
+    <div class="restore-dr-grid">
+      <section class="card restore-dr-config-card">
+        <div class="card-header restore-dr-config-header"><div><p class="restore-dr-eyebrow">DISASTER RECOVERY</p><h1><span class="restore-dr-title-mark">🔄</span> Cấu hình <span class="restore-dr-badge">DR</span></h1><p class="hint">Khôi phục cụm mới theo 2 bước. Kiểm tra kỹ node và mạng trước khi gửi đề xuất.</p></div><button type="button" class="btn btn-sm btn-ghost restore-dr-open-log" data-open-restore-log>Nhật ký</button></div>
         <div class="card-body">
           {% if pending_action %}
-          <p class="hint">Đã có một đề xuất khôi phục đang chờ xử lý — xem chi tiết bên phải.</p>
+          <div class="restore-dr-pending-state"><span>⏳</span><div><h2>Đề xuất đang chờ xử lý</h2><p class="hint">Đề xuất khôi phục đã được tạo. Xem kế hoạch ở panel tiến trình và chờ admin phê duyệt.</p></div></div>
           {% else %}
-          <form id="restore-form" class="login-box">
-            <label>
-              Dòng release
-              <select id="rf-codename">
-                <option value="">— Chọn dòng release —</option>
-                {% for codename, label in codenames %}
-                <option value="{{ codename }}">{{ label }}</option>
-                {% endfor %}
-              </select>
-            </label>
-            <label>
-              Phiên bản
-              <select id="rf-version-select" disabled>
-                <option value="">— Chọn dòng release trước —</option>
-              </select>
-            </label>
-            <label>
-              Phiên bản Ceph
-              <input type="text" id="rf-version" name="version" placeholder="17.2.6" pattern="\d+\.\d+\.\d+" required>
-            </label>
-            <p class="hint">Chọn dòng release rồi chọn phiên bản ở trên, hoặc tự nhập trực tiếp. Luôn dùng phương thức ceph-deploy (không chọn được cephadm/rpm-local ở đây).</p>
+          <form id="restore-form" class="restore-dr-wizard">
+            <nav class="restore-dr-stepper" aria-label="Các bước khôi phục"><button type="button" class="restore-dr-step is-active" data-step-nav="1"><span>1</span><strong>Phiên bản &amp; SSH</strong><small>Release và quyền truy cập</small></button><span class="restore-dr-step-line"></span><button type="button" class="restore-dr-step" data-step-nav="2"><span>2</span><strong>Nodes &amp; Network</strong><small>Vai trò và kết nối cụm</small></button></nav>
 
-            <label>
-              SSH User
-              <input type="text" id="rf-ssh-user" value="{{ default_ssh_user }}" disabled>
-            </label>
-            <label>
-              SSH Key Path
-              <input type="text" id="rf-ssh-key-path" value="{{ default_ssh_key_path }}" disabled>
-            </label>
-            <p class="hint">SSH User/Key Path lấy từ <a href="/settings">Settings</a> — sửa tại đó nếu cần đổi.</p>
+            <section class="restore-dr-step-panel is-active" data-step="1">
+              <div class="restore-dr-section-heading"><div><p class="restore-dr-section-kicker">BƯỚC 1 / 2</p><h2>Phiên bản &amp; SSH</h2><p class="hint">Chọn phiên bản tương thích với backup và xác nhận thông tin kết nối.</p></div></div>
+              <div class="restore-dr-field-grid restore-dr-version-fields"><label>Dòng release<select id="rf-codename"><option value="">— Chọn dòng release —</option>{% for codename, label in codenames %}<option value="{{ codename }}">{{ label }}</option>{% endfor %}</select></label><label>Chọn phiên bản<select id="rf-version-select" disabled><option value="">— Chọn dòng release trước —</option></select></label><label class="restore-dr-full-field">Phiên bản Ceph <span class="required-mark" aria-hidden="true">*</span><input type="text" id="rf-version" name="version" placeholder="18.2.8" pattern="\d+\.\d+\.\d+" required><small>Nhập trực tiếp nếu phiên bản chưa có trong danh sách.</small></label></div>
+              <div class="restore-dr-info-strip"><span>📦</span><span><strong>Phương thức triển khai</strong><small class="restore-dr-chip restore-dr-method-chip">ceph-deploy · bắt buộc</small></span><em>Restore luôn dùng ceph-deploy để giữ đúng workflow của backup.</em></div>
+              <div class="restore-dr-field-grid restore-dr-ssh-grid"><label>SSH User <span class="required-mark" aria-hidden="true">*</span><input type="text" id="rf-ssh-user" value="{{ default_ssh_user }}" disabled></label><label>SSH Key Path <span class="required-mark" aria-hidden="true">*</span><input type="text" id="rf-ssh-key-path" value="{{ default_ssh_key_path }}" disabled></label></div>
+              <p class="restore-dr-inline-help">SSH User và SSH Key Path lấy từ <a href="/settings">Settings</a>. Cập nhật tại đó nếu cần.</p>
+            </section>
 
-            <label>Nodes trong cụm MỚI</label>
-            <div class="table-wrap">
-              <table id="node-table">
-                <thead>
-                  <tr>
-                    <th>IP Address</th>
-                    <th>MON</th><th>MGR</th><th>OSD</th><th>MDS</th><th>RGW</th>
-                    <th>Đĩa OSD (1 hoặc nhiều)</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody id="node-rows"></tbody>
-              </table>
-            </div>
-            <button type="button" class="btn btn-sm" id="rf-add-node">+ Thêm node</button>
-            <p class="hint">Nhiều đĩa OSD trên cùng 1 node: phân tách bằng dấu phẩy (vd <code>/dev/vdc, /dev/vdd</code>).</p>
-            <p class="hint">Nên dùng CÙNG số lượng node MON như cụm cũ (giúp bước khôi phục monmap có ý nghĩa hơn — xem <code>docs/runbook-dr.md</code>).</p>
+            <section class="restore-dr-step-panel" data-step="2" hidden>
+              <div class="restore-dr-section-heading"><div><p class="restore-dr-section-kicker">BƯỚC 2 / 2</p><h2>Nodes &amp; Network</h2><p class="hint">Mỗi node có thể đảm nhiệm nhiều vai trò trong cụm mới.</p></div></div>
+              <div class="restore-dr-mon-alert" role="note"><span>⚠️</span><strong>Nên dùng cùng số lượng node MON như cụm cũ</strong><small>Điều này giúp khôi phục monmap chính xác hơn. Xem mục 4 trong runbook.</small></div>
+              <div class="restore-dr-node-heading"><div><h3>Nodes trong cụm mới</h3><p class="hint">Bật MON, MGR hoặc OSD bằng các nút chuyển đổi bên dưới.</p></div><span class="restore-dr-node-count" id="rf-node-count">0 node</span></div>
+              <div class="restore-dr-node-grid" id="node-rows" aria-live="polite"></div><button type="button" class="restore-dr-add-node" id="rf-add-node"><span>＋</span><strong>Thêm node</strong><small>Thêm IP và vai trò</small></button>
+              <div class="restore-dr-network-grid"><label>Public Network<input type="text" id="rf-public-network" name="public_network" placeholder="10.20.1.0/24"><small>Mạng client và traffic public của cụm.</small></label><label>Cluster Network<input type="text" id="rf-cluster-network" name="cluster_network" placeholder="Giống Public Network nếu để trống"><small>Mạng replication nội bộ giữa các OSD.</small></label></div>
+              <details class="restore-dr-advanced-panel"><summary><span><strong>Tùy chọn nâng cao</strong><small>Giá trị mặc định cho các pool mới</small></span><b>ADVANCED</b></summary><div class="restore-dr-advanced-grid"><label>Số bản replica mặc định<input type="number" id="rf-pool-size" value="3" min="1"><small>Giá trị Ceph mặc định: 3.</small></label><label>Số replica tối thiểu<input type="number" id="rf-pool-min-size" value="2" min="1"><small>Giá trị Ceph mặc định: 2.</small></label></div></details>
+            </section>
 
-            <label>
-              Public Network
-              <input type="text" id="rf-public-network" name="public_network" placeholder="10.20.1.0/24">
-            </label>
-            <label>
-              Cluster Network
-              <input type="text" id="rf-cluster-network" name="cluster_network" placeholder="(giống Public Network nếu để trống)">
-            </label>
-
-            <details>
-              <summary>Tùy chọn nâng cao</summary>
-              <label>
-                osd_pool_default_size
-                <input type="number" id="rf-pool-size" value="3" min="1">
-              </label>
-              <label>
-                osd_pool_default_min_size
-                <input type="number" id="rf-pool-min-size" value="2" min="1">
-              </label>
-            </details>
-
-            <p class="error" id="rf-error" hidden></p>
-            <button type="submit" class="btn btn-primary">Đề xuất khôi phục</button>
+            <p class="error" id="rf-error" hidden></p><footer class="restore-dr-wizard-footer"><button type="button" class="btn btn-ghost" id="rf-prev-step" disabled>← Quay lại</button><span class="restore-dr-footer-step" id="rf-footer-step">Bước 1 / 2</span><button type="button" class="btn restore-dr-next-button" id="rf-next-step">Tiếp theo →</button><button type="submit" class="btn restore-dr-submit-button" id="rf-submit" hidden><span>🔄</span> Đề xuất khôi phục</button></footer>
           </form>
           {% endif %}
         </div>
       </section>
 
-      <section class="card deploy-log-card">
-        <div class="card-header">
-          <h2 id="rf-log-title">
-            {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}Chờ duyệt
-            {% elif pending_action and pending_action.status == "APPROVED" %}● ĐANG KHÔI PHỤC...
-            {% elif last_action %}Nhật ký lần gần nhất
-            {% else %}Nhật ký tiến trình{% endif %}
-          </h2>
-          <div class="deploy-log-actions">
-            <button type="button" class="btn btn-sm btn-ghost" id="rf-log-clear">Clear</button>
-            <button type="button" class="btn btn-sm btn-ghost" id="rf-log-copy">Copy</button>
-          </div>
-        </div>
+      <section class="card restore-dr-log-card" id="restore-log-panel">
+        <div class="card-header"><div><p class="restore-dr-eyebrow">LIVE RESTORE LOG</p><h2 id="rf-log-title">{% if pending_action and pending_action.status == "PENDING_APPROVAL" %}Chờ duyệt{% elif pending_action and pending_action.status == "APPROVED" %}Đang khôi phục{% elif last_action %}Nhật ký lần gần nhất{% else %}Nhật ký tiến trình{% endif %}</h2></div><div class="restore-dr-log-actions"><button type="button" class="btn btn-sm btn-ghost" id="rf-log-clear">Clear</button><button type="button" class="btn btn-sm btn-ghost" id="rf-log-copy">Copy</button><button type="button" class="btn btn-sm btn-ghost restore-dr-log-close" data-close-restore-log>×</button></div></div>
         <div class="card-body">
           {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}
-          <p><strong>Quy trình sẽ thực hiện:</strong></p>
-          <pre class="upgrade-plan-text">{{ pending_action.rationale }}</pre>
-          {% if pending_action.proposed_command %}
-          <p><strong>Xem trước lệnh:</strong></p>
-          <pre class="upgrade-plan-text">{{ pending_action.proposed_command }}</pre>
-          {% endif %}
-          <div class="pending-action-buttons">
-            <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form">
-              <button type="submit" class="btn btn-approve">Duyệt — bắt đầu khôi phục</button>
-            </form>
-            <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form">
-              <button type="submit" class="btn btn-reject">Từ chối</button>
-            </form>
-          </div>
+          <div class="restore-dr-approval-box"><div class="restore-dr-approval-heading"><span>🔎</span><div><strong>Kế hoạch đã sẵn sàng</strong><small>Kiểm tra lệnh trước khi admin phê duyệt.</small></div></div><p><strong>Quy trình sẽ thực hiện</strong></p><pre class="upgrade-plan-text">{{ pending_action.rationale }}</pre>{% if pending_action.proposed_command %}<p><strong>Xem trước lệnh</strong></p><pre class="upgrade-plan-text">{{ pending_action.proposed_command }}</pre>{% endif %}<div class="pending-action-buttons"><form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form"><button type="submit" class="btn btn-approve">Duyệt — bắt đầu khôi phục</button></form><form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form"><button type="submit" class="btn btn-reject">Từ chối</button></form></div></div>
           {% else %}
-          <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="rf-progress-bar">
-            <div class="progress-bar-fill" id="rf-progress-bar-fill" style="width: 0%;"></div>
-          </div>
-          <p class="hint" id="rf-progress-label">&nbsp;</p>
-          <div class="deploy-log-box" id="rf-log-box">
-            <p class="hint">Chưa có tiến trình nào — điền form bên trái và bấm "Đề xuất khôi phục".</p>
-          </div>
+          <div class="restore-dr-progress-summary"><div><strong id="rf-progress-label">0% — Chưa bắt đầu</strong><span>Đang theo dõi tiến trình</span></div><div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="rf-progress-bar"><div class="progress-bar-fill" id="rf-progress-bar-fill" style="width: 0%;"></div></div></div><div class="restore-dr-empty-log" id="rf-log-box"><div class="restore-dr-empty-log-icon" aria-hidden="true">📋</div><strong>Chưa có tiến trình</strong><span>Điền form và bấm “Đề xuất khôi phục” để bắt đầu.</span></div>
           {% endif %}
         </div>
       </section>
     </div>
   </main>
 
-  <script type="application/json" id="restore-initial-state">
-    {{ {"status": pending_action.status if pending_action else (last_action.status if last_action else None), "progress": progress}|tojson }}
-  </script>
-  <script type="application/json" id="versions-by-codename-data">
-    {{ versions_by_codename|tojson }}
-  </script>
-  <script src="/static/restore_cluster.js?v={{ static_version }}"></script>
-  <script src="/static/app.js?v={{ static_version }}"></script>
+  <script type="application/json" id="restore-initial-state">{{ {"status": pending_action.status if pending_action else (last_action.status if last_action else None), "progress": progress}|tojson }}</script>
+  <script type="application/json" id="versions-by-codename-data">{{ versions_by_codename|tojson }}</script>
+  <script src="/static/restore_cluster.js?v={{ static_version }}"></script><script src="/static/app.js?v={{ static_version }}"></script>
 </body>
 </html>

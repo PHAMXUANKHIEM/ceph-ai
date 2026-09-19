@@ -250,13 +250,7 @@ def _consume_one(
             .order_by(desc(OnlineLearnerAudit.observed_at))
         )
         tracker = OnlineLearningInputTracker(
-            # SQLAlchemy returns naive UTC datetimes for the existing
-            # DateTime column, while live Loki/node samples may carry an
-            # explicit timezone.  Normalize both sides before the quality
-            # gate compares ordering; otherwise the first real batch after
-            # persistence fails with "can't compare offset-naive and
-            # offset-aware datetimes" and is recorded as update_failed.
-            last_observed_at=_utc(latest.observed_at) if latest else None,
+            last_observed_at=latest.observed_at if latest else None,
         )
         quality = evaluate_sample(
             OnlineLearningSample(
@@ -337,19 +331,9 @@ def consume_samples(samples: Iterable[dict]) -> list[ConsumedSample]:
     if not settings.online_learning_enabled:
         return []
     results: list[ConsumedSample] = []
-    # Keep the input bounded even when the caller passes a generator. The
-    # extra item lets the cycle runner report that its sample budget ended.
-    bounded_samples = list(islice(samples, settings.online_learning_max_samples_per_cycle + 1))
-    # Watcher callers may omit cluster_id because they operate on the default
-    # cluster. Resolve it once before the bounded runner so both per-sample
-    # audits and the cycle audit use the same durable cluster scope.
-    if any(item.get("cluster_id") is None for item in bounded_samples):
-        with db.SessionLocal() as session:
-            default_cluster_id = get_default_cluster_id(session)
-        bounded_samples = [
-            {**item, "cluster_id": item.get("cluster_id") or default_cluster_id}
-            for item in bounded_samples
-        ]
+    bounded_samples = list(islice(
+        samples, settings.online_learning_max_samples_per_cycle + 1,
+    ))
 
     def update(sample: dict) -> None:
         results.append(_consume_one(**sample))
@@ -362,51 +346,26 @@ def consume_samples(samples: Iterable[dict]) -> list[ConsumedSample]:
         circuit_breaker=_CIRCUIT_BREAKER,
     )
     if result.processed or result.failed:
-        # Persist one telemetry row per durable stream. A Watcher batch
-        # normally contains CPU and memory for one host; recording it as
-        # ``mixed`` would hide the CPU canary from the dashboard and make
-        # resource-cost evidence impossible to attribute.
-        processed_samples = bounded_samples[:result.processed]
-        results_by_sample = {item.sample_id: item for item in results}
-        groups: dict[tuple[str, str, str], dict] = {}
-        for sample in processed_samples:
-            key = (
-                str(sample.get("cluster_id") or "__default__"),
-                str(sample.get("host") or "*"),
-                normalize_metric(str(sample.get("metric") or "*")),
-            )
-            group = groups.setdefault(key, {
-                "processed": 0, "applied": 0, "failed": 0,
-                "runtime_modes": set(),
-            })
-            group["processed"] += 1
-            decision = results_by_sample.get(str(sample.get("sample_id") or ""))
-            if decision is None:
-                group["failed"] += 1
-                group["runtime_modes"].add("NO_RESULT")
-            else:
-                group["applied"] += int(decision.update_applied)
-                group["runtime_modes"].add(decision.runtime_mode)
-        total_processed = max(1, result.processed)
+        clusters = {str(item.get("cluster_id") or "__default__") for item in bounded_samples}
+        hosts = {str(item.get("host") or "*") for item in bounded_samples}
+        metrics = {str(item.get("metric") or "*").strip().lower() for item in bounded_samples}
+        runtime_modes = {item.runtime_mode for item in results}
         with db.SessionLocal() as session:
-            for (cluster_key, host, metric), group in groups.items():
-                share = group["processed"] / total_processed
-                modes = group["runtime_modes"]
-                session.add(OnlineLearnerCycleAudit(
-                    cluster_key=cluster_key,
-                    host=host,
-                    metric=metric,
-                    processed=group["processed"],
-                    applied=group["applied"],
-                    failed=group["failed"],
-                    skipped=0,
-                    elapsed_ms=round(result.elapsed_seconds * 1000 * share, 3),
-                    cpu_time_ms=round(result.cpu_time_seconds * 1000 * share, 3),
-                    reason=result.reason,
-                    runtime_mode=(
-                        next(iter(modes)) if len(modes) == 1 else "MIXED"
-                    ) if modes else "NO_RESULT",
-                ))
+            session.add(OnlineLearnerCycleAudit(
+                cluster_key=next(iter(clusters)) if len(clusters) == 1 else "*",
+                host=next(iter(hosts)) if len(hosts) == 1 else "*",
+                metric=next(iter(metrics)) if len(metrics) == 1 else "mixed",
+                processed=result.processed,
+                applied=sum(item.update_applied for item in results),
+                failed=result.failed,
+                skipped=result.skipped,
+                elapsed_ms=round(result.elapsed_seconds * 1000, 3),
+                cpu_time_ms=round(result.cpu_time_seconds * 1000, 3),
+                reason=result.reason,
+                runtime_mode=(
+                    next(iter(runtime_modes)) if len(runtime_modes) == 1 else "MIXED"
+                ) if runtime_modes else "NO_RESULT",
+            ))
             session.commit()
     return results
 

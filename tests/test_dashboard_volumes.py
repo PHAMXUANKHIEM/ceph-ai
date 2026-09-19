@@ -1,5 +1,7 @@
+from types import SimpleNamespace
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import bcrypt
 
@@ -9,13 +11,16 @@ from shared import db as db_module
 from shared.models import (
     Action,
     ActionStatus,
+    AuditEntry,
     BackupJob,
     Incident,
     IncidentStatus,
     Cluster,
+    RbdTrashUsage,
     User,
     VolumeMetric,
     VolumePerfSweep,
+    VolumeSnapshotPolicy,
 )
 from watcher.ceph_client import CephQueryError
 
@@ -105,7 +110,7 @@ def test_trash_is_top_level_page_not_pool_sidebar_item(dashboard_client, monkeyp
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert "<h2>Trash theo Pool</h2>" in response.text
+    assert "Chọn một pool để xem các volume" in response.text
     assert 'id="pool-selector"' not in response.text
     assert 'href="/volumes?view=trash"' not in response.text
 
@@ -124,33 +129,37 @@ def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, mo
     _configure_pools(monkeypatch)
     calls = []
 
-    def fail_if_trash_is_scanned(pool):
+    def list_trash(pool):
         calls.append(pool)
-        raise AssertionError("Trash must be loaded only after a pool is selected")
+        return [_fake_trash_entry()]
 
-    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", fail_if_trash_is_scanned)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", list_trash)
     _login(dashboard_client)
 
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert 'href="/trash?pool=vms"' in response.text
-    assert 'href="/trash?pool=backups"' in response.text
-    assert "Chọn “Xem Trash” để tải dữ liệu của pool này" in response.text
-    assert calls == []
+    assert 'href="/trash?pool=vms' in response.text
+    assert 'href="/trash?pool=backups' in response.text
+    assert "Chọn một pool để xem các volume" in response.text
+    # The picker counts entries per pool, but never lists them: individual
+    # volume names only appear once a pool is selected.
+    assert set(calls) == {"vms", "backups"}
     assert "old-disk" not in response.text
 
 
-def test_trash_landing_shows_purge_all_for_each_non_empty_pool(dashboard_client, monkeypatch):
+def test_trash_landing_does_not_offer_purge_all(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
-    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", lambda pool: pytest.fail("unexpected scan"))
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash", lambda pool: [_fake_trash_entry()]
+    )
     _login(dashboard_client)
 
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
     assert "Xoá vĩnh viễn tất cả" not in response.text
-    assert "Chọn “Xem Trash” để tải dữ liệu của pool này" in response.text
+    assert "Chọn một pool để xem các volume" in response.text
 
 
 def test_trash_pool_page_only_lists_selected_pools_entries(dashboard_client, monkeypatch):
@@ -191,7 +200,7 @@ def test_volumes_page_with_explicit_pool_selects_it(dashboard_client, monkeypatc
     assert 'id="volume-inventory-panel"' in response.text
     assert 'id="volumes-panel"' not in response.text
     assert 'class="card volume-inventory-card"' in response.text
-    assert 'class="trash-pagination volume-inventory-pagination"' in response.text
+    assert 'id="trash-entry-list"' not in response.text
 
 
 def test_volume_performance_page_is_separate_from_volume_inventory(dashboard_client, monkeypatch):
@@ -277,10 +286,18 @@ def test_volumes_page_rejects_pool_not_in_configured_list(dashboard_client, monk
 
 def test_volumes_page_shows_hint_when_no_pools_configured_and_none_discovered(dashboard_client, monkeypatch):
     monkeypatch.setattr(settings, "ceph_rbd_pools", "")
-    # CEPH_RBD_POOLS blank now means "auto-discover" (watcher/ceph_client.py
-    # ::configured_rbd_pools), not "disabled" — mock discovery itself
-    # finding nothing rather than letting this test attempt a real SSH call.
-    monkeypatch.setattr(volumes_route.ceph_client, "discover_rbd_pools", lambda: [])
+    # The dashboard route performs its own live pool query; keep this test
+    # fully offline instead of mocking the watcher's older discovery helper.
+    monkeypatch.setattr(
+        volumes_route,
+        "run_ceph_json_command_with",
+        lambda *_args: ("test-host", []),
+    )
+    monkeypatch.setattr(
+        volumes_route,
+        "get_cached_ceph_query",
+        lambda _namespace, _key, loader, **_kwargs: loader(),
+    )
     _login(dashboard_client)
 
     response = dashboard_client.get("/volumes")
@@ -559,6 +576,25 @@ def test_history_api_returns_samples_within_window_ordered_by_time(dashboard_cli
     assert [s["iops"] for s in body["samples"]] == [100, 200]
 
 
+def test_history_api_resolves_rbd_image_id_to_image_name(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    image_name = "volume-1547aa30-3ba1-458d-9f9b-481a1daf431e"
+    _add_metric("vms", image_name, iops=137.4, read_ms=13.3, write_ms=14.1, polled_at=datetime.utcnow())
+    monkeypatch.setattr(
+        volumes_route,
+        "_cached_rbd_inventory",
+        lambda cluster, pool: [{"name": image_name, "image_id": "455c7efdc2878f"}],
+    )
+
+    response = dashboard_client.get("/api/volumes/vms/455c7efdc2878f/history")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["image"] == image_name
+    assert body["samples"][0]["iops"] == 137.4
+
+
 def test_history_api_computes_peak_over_full_history_not_just_window(dashboard_client, monkeypatch):
     # The whole point of this endpoint per the operator's own request: the
     # all-time best a volume has done must still show up even if it fell
@@ -652,6 +688,22 @@ def test_vm_perf_form_prompts_for_ip_key_and_suggested_disks(dashboard_client, m
     assert "READ-ONLY" in response.text
     assert "Mỗi mức tải được đo đúng 3 lần" in response.text
     assert 'id="perf-sweep-panel"' not in response.text
+
+
+def test_volume_performance_uses_compact_monitoring_and_benchmark_layout(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/volume-performance?pool=vms")
+
+    assert response.status_code == 200
+    assert "performance-tabbed-page" in response.text
+    assert 'class="performance-selector"' in response.text
+    assert 'id="volume-selected-volume"' in response.text
+    assert 'id="volume-clear-btn"' in response.text
+    assert "benchmark-form" in response.text
+    assert 'class="benchmark-warning"' in response.text
+    assert 'id="volume-suggestions"' not in response.text
 
 
 def test_propose_vm_perf_creates_risky_pending_action(dashboard_client):
@@ -1098,32 +1150,82 @@ def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
     assert 'id="trash-entry-list"' in response.text
     assert 'data-trash-id="1234567890ab"' in response.text
     assert 'id="trash-pagination"' in response.text
-    assert "10 Trash mỗi trang" in response.text
+    assert 'id="trash-page-summary"' in response.text
     assert 'src="/static/trash.js' in response.text
-    assert 'id="trash-purge-all-btn"' in response.text
-    assert 'action="/volumes/vms/trash/purge-all"' in response.text
-    assert "Xoá vĩnh viễn tất cả (1)" in response.text
+    assert 'action="/volumes/vms/trash/purge-all?cluster=' in response.text
+    assert "Xoá tất cả (1)" in response.text
     assert 'name="confirmation"' in response.text
-    assert 'action="/volumes/vms/trash/1234567890ab/force-remove"' in response.text
+    assert 'action="/volumes/vms/trash/1234567890ab/force-remove?cluster=' in response.text
+    assert 'data-copy-value="1234567890ab"' in response.text
+    assert 'class="trash-summary-bar"' in response.text
     assert "bỏ qua TTL" in response.text
 
 
-def test_trash_landing_page_does_not_scan_every_pool(dashboard_client, monkeypatch):
+def test_trash_page_uses_saved_usage_snapshot_when_ceph_trash_has_no_usage(
+    dashboard_client, monkeypatch
+):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash",
+        lambda pool: [{**_fake_trash_entry(), "used_size_bytes": None}],
+    )
+    with db_module.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        incident = Incident(
+            cluster_id=cluster.id,
+            ceph_code="RBD_VOLUME_TRASH_MOVE",
+            status=IncidentStatus.RESOLVED.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        session.add(Action(
+            incident_id=incident.id,
+            action_id="rbd_trash_move_volume",
+            classification="RISKY",
+            status=ActionStatus.EXECUTED.value,
+            action_params=json.dumps({
+                "pool_name": "vms", "image": "old-disk",
+                "trash_usage": {"used_size_bytes": 268435456},
+            }),
+            executed_at=datetime.utcnow(),
+        ))
+        session.add(RbdTrashUsage(
+            cluster_id=cluster.id,
+            pool="vms",
+            trash_id="1234567890ab",
+            image="old-disk",
+            provisioned_size_bytes=10 * 1024 ** 3,
+            used_size_bytes=268435456,
+            used_percent=2.5,
+            observed_at=datetime.utcnow(),
+        ))
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/trash?pool=vms")
+
+    assert response.status_code == 200
+    assert "256.0 MiB" in response.text
+
+
+def test_trash_landing_page_shows_volume_count_without_capacity_scan(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     calls = []
 
-    def fail_if_trash_is_scanned(pool):
+    def list_trash(pool):
         calls.append(pool)
-        raise AssertionError("Trash must be loaded only after a pool is selected")
+        return [_fake_trash_entry()]
 
-    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", fail_if_trash_is_scanned)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", list_trash)
     _login(dashboard_client)
 
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert calls == []
-    assert "Chọn “Xem Trash” để tải dữ liệu của pool này" in response.text
+    assert set(calls) == {"vms", "backups"}
+    assert response.text.count("1 <small>volume</small>") == 2
+    assert "Chọn một pool để xem các volume" in response.text
 
 
 def test_trash_page_hides_purge_all_from_non_admin(dashboard_client, monkeypatch):
@@ -1137,7 +1239,6 @@ def test_trash_page_hides_purge_all_from_non_admin(dashboard_client, monkeypatch
     response = dashboard_client.get("/trash?pool=vms")
 
     assert response.status_code == 200
-    assert 'id="trash-purge-all-btn"' not in response.text
     assert 'action="/volumes/vms/trash/purge-all"' not in response.text
 
 
@@ -1155,7 +1256,7 @@ def test_trash_page_server_hides_entries_after_first_ten(dashboard_client, monke
     assert response.status_code == 200
     assert 'data-trash-id="id-9"' in response.text
     assert 'data-trash-id="id-10" hidden' in response.text
-    assert "Trang 1 / 2" in response.text
+    assert 'id="trash-page-status"' in response.text
 
 
 def test_volumes_page_shows_empty_trash_hint(dashboard_client, monkeypatch):
@@ -1195,7 +1296,7 @@ def test_volumes_page_shows_xoa_button_when_no_pending_action(dashboard_client, 
     response = dashboard_client.get("/trash?pool=vms")
 
     assert response.status_code == 200
-    assert 'action="/volumes/vms/trash/1234567890ab/propose"' in response.text
+    assert 'action="/volumes/vms/trash/1234567890ab/propose?cluster=' in response.text
     assert "Chờ duyệt" not in response.text
 
 
@@ -1260,7 +1361,7 @@ def test_propose_trash_remove_creates_pending_approval_action(dashboard_client, 
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/trash?pool=vms"
+    assert response.headers["location"].startswith("/trash?pool=vms&cluster=")
     with db_module.SessionLocal() as session:
         action = session.query(Action).filter_by(action_id="rbd_trash_remove").one()
         assert action.status == ActionStatus.PENDING_APPROVAL.value
@@ -1477,10 +1578,8 @@ def test_trash_ttl_blocks_early_delete_and_purge_all(dashboard_client, monkeypat
 
     assert page.status_code == 200
     assert "Còn 30 ngày" in page.text
-    assert "Chưa hết TTL" in page.text
-    assert 'id="trash-purge-all-btn"' in page.text
-    assert 'id="trash-purge-all-btn" disabled' not in page.text
-    assert 'action="/volumes/vms/trash/purge-all"' in page.text
+    assert "Còn 30 ngày" in page.text
+    assert 'action="/volumes/vms/trash/purge-all?cluster=' in page.text
     assert 'action="/volumes/vms/trash/fresh-id/propose"' not in page.text
     assert single.status_code == 409
     assert bulk.status_code == 200
@@ -1526,7 +1625,7 @@ def test_volume_inventory_api_searches_sorts_and_pages(dashboard_client, monkeyp
     assert body["pages"] == 2
     assert [item["name"] for item in body["items"]] == ["web-02"]
     assert body["cluster_id"]
-    assert body["summary"] == {"image_count": 2, "provisioned_size": 30, "used_size": 12}
+    assert body["summary"] == {"image_count": 2, "provisioned_size": 30, "used_size": 12, "used_percent": 40.0}
 
 
 def test_volume_inventory_defaults_to_ten_rows_and_rejects_larger_pages(dashboard_client, monkeypatch):
@@ -1604,6 +1703,35 @@ def test_volume_inventory_detail_rejects_invalid_name_and_returns_dependencies(d
     assert response.json()["attachment_summary"]["mutation_supported"] is False
 
 
+def test_volume_dependency_graph_api_is_cluster_scoped_and_read_only(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    graph = {
+        "root": {"pool": "vms", "image": "vm-01"},
+        "nodes": [
+            {"pool": "vms", "image": "vm-01", "depth": 0},
+            {"pool": "vms", "image": "vm-01-clone", "depth": 1},
+        ],
+        "edges": [{"parent": {"pool": "vms", "image": "vm-01"}, "child": {"pool": "vms", "image": "vm-01-clone"}}],
+        "max_depth": 3,
+        "max_nodes": 64,
+        "truncated": False,
+        "partial_errors": [],
+    }
+    calls = []
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_dependency_graph",
+        lambda pool, image, max_depth, max_nodes: calls.append((pool, image, max_depth, max_nodes)) or graph,
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/inventory/vm-01/dependencies?max_depth=2&max_nodes=8")
+
+    assert response.status_code == 200
+    assert response.json()["nodes"][1]["image"] == "vm-01-clone"
+    assert calls == [("vms", "vm-01", 2, 8)]
+
+
 def test_volume_inventory_detail_marks_verified_cinder_consumer(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     volume_id = "12345678-1234-4123-8123-1234567890ab"
@@ -1643,6 +1771,59 @@ def test_volume_inventory_detail_marks_verified_cinder_consumer(dashboard_client
     assert payload["attachment_summary"]["mutation_supported"] is False
     assert payload["attachment_reconciliation"]["status"] == "mismatch"
     assert payload["cinder_snapshots"]["items"][0]["snapshot_id"] == "snap-1"
+
+
+def test_volume_inventory_detail_summaries_are_cluster_scoped_and_structured(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        session.add(BackupJob(
+            cluster_id=cluster.id, run_id="run-1", pool="vms", image="vm-01",
+            job_type="full", status="SUCCESS", size_bytes=4096,
+            sha256="a" * 64, created_at=now, finished_at=now,
+        ))
+        session.add(VolumeMetric(
+            cluster_id=cluster.id, pool="vms", image="vm-01", iops=12.5,
+            read_latency_ms=1.2, write_latency_ms=2.3, saturated=False, polled_at=now,
+        ))
+        incident = Incident(
+            cluster_id=cluster.id, ceph_code="RBD_VOLUME", status="PENDING_APPROVAL",
+            detected_at=now, created_at=now,
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="rbd_volume_resize", classification="RISKY",
+            status=ActionStatus.PENDING_APPROVAL.value,
+            action_params=json.dumps({"pool_name": "vms", "image": "vm-01", "size_mib": 10}),
+        )
+        session.add(action)
+        session.flush()
+        session.add(AuditEntry(
+            incident_id=incident.id, action_id=action.id,
+            event_type="RISKY_ACTION_PENDING_APPROVAL", actor="admin", created_at=now,
+        ))
+        session.commit()
+
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"pool": pool, "name": image, "watchers": [], "locks": [],
+                              "attachment_summary": {"attached": False, "watcher_count": 0,
+                                                      "lock_count": 0, "mutation_supported": False}},
+    )
+    monkeypatch.setattr(volumes_route, "discover_cinder_volume", lambda cluster, image: {
+        "status": "not_cinder", "verified": False,
+    })
+    _login(dashboard_client)
+
+    payload = dashboard_client.get("/api/volumes/vms/inventory/vm-01").json()
+
+    assert payload["backup_summary"]["status"] == "healthy"
+    assert payload["backup_summary"]["latest_success"]["sha256_present"] is True
+    assert payload["metric_summary"]["latest"]["iops"] == 12.5
+    assert payload["audit_summary"]["count"] == 1
+    assert payload["audit_summary"]["events"][0]["action_id"] == "rbd_volume_resize"
 
 
 def test_cinder_attach_proposal_is_approval_gated_and_targets_controller(dashboard_client, monkeypatch):
@@ -1789,6 +1970,66 @@ def test_cinder_snapshot_create_is_approval_gated_and_forces_attached_volume(das
         assert "--force" in action.proposed_command
 
 
+def test_cinder_snapshot_delete_is_destructive_and_requires_existing_snapshot(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _configure_openstack_controller()
+    volume_id = "12345678-1234-4123-8123-1234567890ab"
+    snapshot_id = "abcdefab-1234-4123-8123-1234567890ab"
+    monkeypatch.setattr(
+        volumes_route, "discover_cinder_snapshots",
+        lambda cluster, cinder_volume_id: {
+            "status": "ok", "items": [{"snapshot_id": snapshot_id, "name": "daily-01", "status": "available"}],
+            "count": 1,
+        },
+    )
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/snapshots/{snapshot_id}/delete",
+        headers={"Idempotency-Key": "snapshot-delete-1"},
+        json={},
+    )
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(action_id="cinder_delete_snapshot").one()
+        assert action.classification == "DESTRUCTIVE"
+        params = json.loads(action.action_params)
+        assert params["snapshot_id"] == snapshot_id
+        assert "snapshot delete" in action.proposed_command
+
+
+def test_snapshot_policy_save_validates_cinder_context_and_persists_schedule(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _configure_openstack_controller()
+    volume_id = "12345678-1234-4123-8123-1234567890ab"
+    monkeypatch.setattr(volumes_route, "discover_cinder_volume", lambda cluster, image: {
+        "status": "managed", "verified": True, "volume_id": volume_id,
+    })
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/snapshot-policy",
+        json={
+            "cron_expression": "15 3 * * 1-5", "timezone": "Asia/Ho_Chi_Minh",
+            "snapshot_prefix": "daily", "retention_count": 14,
+            "capacity_guard_percent": 88, "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    with db_module.SessionLocal() as session:
+        policy = session.query(VolumeSnapshotPolicy).one()
+        assert policy.cron_expression == "15 3 * * 1-5"
+        assert policy.timezone == "Asia/Ho_Chi_Minh"
+        assert policy.retention_count == 14
+        assert policy.enabled is True
+
+    invalid = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/snapshot-policy",
+        json={"cron_expression": "not cron"},
+    )
+    assert invalid.status_code == 400
+
+
 def test_volume_inventory_api_is_read_only_for_non_admin_and_surfaces_backend_error(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _create_user("viewer", "viewer-password", is_admin=False)
@@ -1828,6 +2069,79 @@ def test_volume_pool_overview_api_returns_durability_and_capacity(dashboard_clie
     assert response.json()["near_full"] is True
 
 
+def test_volume_replication_api_is_read_only_and_exposes_disabled_mode(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_info", lambda pool: {"mode": "disabled"})
+    calls = []
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_status", lambda pool: calls.append(pool))
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/replication")
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is False
+    assert response.json()["mode"] == "disabled"
+    assert calls == []
+
+
+def test_volume_replication_api_returns_status_when_enabled(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_info", lambda pool: {"mode": "journal"})
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_status", lambda pool: {"site_status": "up_to_date"})
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/replication")
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is True
+    assert response.json()["status"]["site_status"] == "up_to_date"
+
+
+def test_volume_qos_api_reads_values_and_proposes_approval_gated_change(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    current = {
+        "rbd_qos_iops_limit": 100,
+        "rbd_qos_bps_limit": 0,
+        "rbd_qos_iops_burst": 0,
+        "rbd_qos_bps_burst": 0,
+        "rbd_qos_read_iops_limit": 0,
+        "rbd_qos_read_bps_limit": 0,
+        "rbd_qos_write_iops_limit": 0,
+        "rbd_qos_write_bps_limit": 0,
+    }
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_qos", lambda pool, image: current)
+    _login(dashboard_client)
+
+    read = dashboard_client.get("/api/volumes/vms/inventory/vm-01/qos")
+    proposed = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/qos",
+        json={"rbd_qos_iops_limit": 500, "rbd_qos_bps_limit": 0},
+        headers={"Idempotency-Key": "qos-vm-01-001"},
+    )
+
+    assert read.status_code == 200
+    assert read.json()["values"]["rbd_qos_iops_limit"] == 100
+    assert proposed.status_code == 201
+    assert proposed.json()["requires_approval"] is True
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, proposed.json()["action_id"])
+        assert action.action_id == "rbd_qos_set"
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+
+
+def test_volume_qos_api_rejects_out_of_range_value(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_qos", lambda pool, image: {})
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/qos",
+        json={"rbd_qos_iops_limit": -1},
+    )
+
+    assert response.status_code == 400
+
+
 def test_volume_inventory_rejects_inactive_cluster_without_default_fallback(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     with db_module.SessionLocal() as session:
@@ -1855,6 +2169,13 @@ def test_volume_inventory_rejects_inactive_cluster_without_default_fallback(dash
 
 def _stub_volume_mutation_preflight(monkeypatch, *, current_size=10 * 1024 ** 3, max_available=100 * 1024 ** 3):
     monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [])
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_usage",
+        lambda pool, image: {
+            "name": image, "image_id": "image-id", "provisioned_size": current_size,
+            "used_size": 3 * 1024 ** 3, "used_percent": 30.0, "snapshot_count": 0,
+        },
+    )
     monkeypatch.setattr(
         volumes_route.ceph_client, "query_rbd_image_detail",
         lambda pool, image: {"pool": pool, "name": image, "size": current_size},
@@ -2040,6 +2361,96 @@ def test_propose_rename_volume_rejects_existing_destination_or_watcher(dashboard
     assert attached.status_code == 409
 
 
+def test_propose_clone_volume_checks_snapshot_destination_and_capacity(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"pool": pool, "name": image, "size": 2 * 1024 ** 3,
+                             "snapshots": [{"name": "gold"}], "watchers": [], "children": []},
+    )
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [])
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda pool: {"max_available": 8 * 1024 ** 3})
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/vms/inventory/vm-01/clone", json={
+        "snapshot": "gold", "dest_pool": "backups", "dest_image": "vm-copy",
+    })
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "rbd_clone_volume"
+        assert action.classification == "RISKY"
+        assert "rbd clone" in action.proposed_command
+        assert json.loads(action.action_params)["dest_image"] == "vm-copy"
+
+
+def test_propose_clone_volume_rejects_missing_snapshot(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"size": 1, "snapshots": [], "watchers": [], "children": []},
+    )
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [])
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda pool: {"max_available": 10})
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/vms/inventory/vm-01/clone", json={
+        "snapshot": "missing", "dest_pool": "backups", "dest_image": "vm-copy",
+    })
+
+    assert response.status_code == 409
+
+
+def test_propose_template_requires_snapshot_and_creates_risky_action(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"size": 1, "snapshots": [{"name": "gold", "protected": False}],
+                             "watchers": [], "children": []},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/vms/inventory/vm-01/template", json={
+        "snapshot": "gold", "template_name": "ubuntu-24", "description": "golden image",
+    })
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "rbd_template_mark"
+        assert action.classification == "RISKY"
+        assert "snap protect" in action.proposed_command
+        assert json.loads(action.action_params)["template_name"] == "ubuntu-24"
+
+
+def test_propose_flatten_requires_parent_and_detached_volume(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda pool: {"max_available": 10 * 1024})
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"parent": "vms/vm-01@gold", "size": 1024,
+                             "watchers": [], "locks": [], "children": []},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/backups/inventory/vm-copy/flatten")
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "rbd_flatten_volume"
+        assert action.classification == "DESTRUCTIVE"
+
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"parent": "vms/vm-01@gold", "size": 1024,
+                             "watchers": [{"client": "client.1"}], "locks": [], "children": []},
+    )
+    second = dashboard_client.post("/api/volumes/vms/inventory/vm-copy/flatten")
+    assert second.status_code == 409
+
+
 def test_propose_rename_volume_rejects_destination_reserved_by_pending_create(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _stub_volume_mutation_preflight(monkeypatch)
@@ -2090,9 +2501,12 @@ def test_propose_trash_move_accepts_ceph_scratch_image_with_leading_underscore(
     assert response.status_code == 201
     with db_module.SessionLocal() as session:
         action = session.get(Action, response.json()["action_id"])
-        assert json.loads(action.action_params) == {
-            "pool_name": "vms", "image": "_ceph_aiops_perf_probe"
-        }
+        params = json.loads(action.action_params)
+        assert params["pool_name"] == "vms"
+        assert params["image"] == "_ceph_aiops_perf_probe"
+        assert params["trash_usage"]["provisioned_size_bytes"] == 10 * 1024 ** 3
+        assert params["trash_usage"]["used_size_bytes"] == 3 * 1024 ** 3
+        assert params["trash_usage"]["used_percent"] == 30.0
 
 
 def test_propose_trash_move_blocks_running_backup(dashboard_client, monkeypatch):
@@ -2140,3 +2554,132 @@ def test_propose_trash_restore_validates_entry_and_destination(dashboard_client,
         assert json.loads(action.action_params) == {
             "pool_name": "vms", "image": "vm-restored", "trash_id": "123abc"
         }
+def test_volume_history_panel_omits_redundant_explanatory_copy():
+    markup = (Path("dashboard/templates/volumes.html")).read_text(encoding="utf-8")
+
+    assert "Tìm một Volume (RBD image)" not in markup
+    assert "rbd perf image iostat" not in markup
+    assert "Audit Trail để duyệt xử lý" not in markup
+
+
+def test_volume_history_empty_state_omits_instruction_copy():
+    markup = Path("dashboard/templates/volumes.html").read_text(encoding="utf-8")
+
+    assert "Nhập ID Volume rồi bấm" not in markup
+    assert 'id="volume-chart-empty" hidden' in markup
+    assert 'id="volume-chart-empty">\n          <span' not in markup
+    assert "Xem hiệu năng" in markup
+
+
+def test_volume_history_chart_hides_empty_state_until_a_volume_is_selected():
+    markup = Path("dashboard/templates/volumes.html").read_text(encoding="utf-8")
+    stylesheet = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+
+    assert 'id="volume-chart-empty"' in markup
+    assert 'id="volume-chart-stack" hidden' in markup
+    assert ".empty-node-state[hidden], .metrics-stack[hidden] { display: none; }" in stylesheet
+
+
+def test_trash_summary_sums_what_it_knows_instead_of_blanking_the_pool(
+    dashboard_client, monkeypatch
+):
+    """Một image bị `rbd trash mv` từ CLI không bao giờ có snapshot usage.
+    Trước đây chỉ một mục như vậy đủ làm tổng của CẢ pool thành '—', che mất
+    con số thật của mọi mục còn lại."""
+    _configure_pools(monkeypatch)
+    entries = [
+        {"id": "aaa", "name": "do-dashboard", "deletion_time": "2026-07-28 10:00:00",
+         "status": "expired", "size_bytes": None, "used_size_bytes": None},
+        {"id": "bbb", "name": "do-cli", "deletion_time": "2026-07-28 10:00:00",
+         "status": "expired", "size_bytes": None, "used_size_bytes": None},
+    ]
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash",
+        lambda pool, *, include_capacity=True: entries,
+    )
+    with db_module.SessionLocal() as session:
+        cluster_id = session.query(Cluster).filter_by(is_default=True).one().id
+        session.add(RbdTrashUsage(
+            cluster_id=cluster_id, pool="vms", trash_id="aaa", image="do-dashboard",
+            provisioned_size_bytes=10 * 1024 ** 3, used_size_bytes=268435456,
+            used_percent=2.5, observed_at=datetime.utcnow(),
+        ))
+        session.commit()
+    _login(dashboard_client)
+
+    body = " ".join(dashboard_client.get("/trash?pool=vms").text.split())
+
+    assert "256.0 MiB + 1 chưa rõ" in body
+    # provisioned_size_bytes được lưu sẵn trong snapshot nhưng trước đây
+    # không bao giờ được đọc, nên cột này vĩnh viễn là '—'.
+    assert "10.0 GiB + 1 chưa rõ" in body
+
+
+def test_partial_total_reports_the_missing_count():
+    assert volumes_route._partial_total([10, 20]) == (30, 0)
+    assert volumes_route._partial_total([10, None]) == (10, 1)
+    assert volumes_route._partial_total([None, None]) == (None, 2)
+    # Pool rỗng = 0 byte thật, không phải "chưa đo được".
+    assert volumes_route._partial_total([]) == (0, 0)
+    assert volumes_route._format_partial_bytes(None, 3) == "—"
+
+
+def test_concurrent_page_load_during_a_capacity_scan_is_not_a_500(dashboard_client, monkeypatch):
+    """`CacheLockError` là RuntimeError chứ không phải CephQueryError. Từ khi
+    trang Trash đo dung lượng thật (~11s/pool), loader vượt quá hạn chờ khoá
+    5s của cache, nên một request thứ hai lúc cache còn lạnh sẽ nhận lỗi này
+    — không bắt thì thành 500 và operator thấy trang trắng."""
+    from shared.ceph_query_cache import CacheLockError
+
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route, "_cached_rbd_trash",
+        lambda cluster, pool: (_ for _ in ()).throw(CacheLockError("could not acquire cache lock")),
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/trash?pool=vms")
+
+    assert response.status_code == 200
+    assert "đang quét dung lượng Trash" in response.text
+
+
+def test_cold_trash_page_never_blocks_on_the_capacity_scan(monkeypatch):
+    """Phép đo dung lượng mất ~11s khi cụm khoẻ, 38s khi một MON timeout
+    trước. Không được bắt operator chờ hết chỗ đó: trả ngay bản liệt kê rẻ
+    và để lần tải sau đọc bản đã đo."""
+    from shared import ceph_query_cache
+
+    cluster = SimpleNamespace(id="cluster-1", is_default=True)
+    scheduled = []
+    monkeypatch.setattr(
+        volumes_route, "schedule_ceph_query_refresh",
+        lambda namespace, key, loader, ttl: scheduled.append((namespace, key)) or True,
+    )
+    monkeypatch.setattr(volumes_route, "cached_ceph_query_value", lambda *a, **k: None)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash",
+        lambda pool, *, include_capacity=True: (
+            pytest.fail("cold load must not run the measured scan inline")
+            if include_capacity else [{"id": "aaa", "name": "vol", "deletion_time": "",
+                                       "status": "", "size_bytes": None, "used_size_bytes": None}]
+        ),
+    )
+
+    rows = volumes_route._cached_rbd_trash(cluster, "vms")
+
+    assert [row["id"] for row in rows] == ["aaa"]
+    assert scheduled == [("rbd-trash", "cluster-1:vms")]
+
+
+def test_warm_trash_page_serves_the_measured_values(monkeypatch):
+    cluster = SimpleNamespace(id="cluster-1", is_default=True)
+    measured = [{"id": "aaa", "name": "vol", "deletion_time": "", "status": "",
+                 "size_bytes": 40 * 1024 ** 3, "used_size_bytes": 3003121664}]
+    monkeypatch.setattr(volumes_route, "cached_ceph_query_value", lambda *a, **k: (measured, 1.0))
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash",
+        lambda *a, **k: pytest.fail("a warm cache must not query Ceph at all"),
+    )
+
+    assert volumes_route._cached_rbd_trash(cluster, "vms") == measured

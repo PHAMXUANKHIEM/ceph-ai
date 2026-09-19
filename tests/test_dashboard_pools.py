@@ -21,6 +21,7 @@ def test_normalize_pool_rows_joins_config_capacity_and_iops():
         "pgs": 128,
         "crush_rule": "replicated-ssd",
         "used_bytes": 1073741824,
+        "total_bytes": None,
         "objects": 42,
         "read_iops": 17,
         "write_iops": 9,
@@ -91,10 +92,12 @@ def test_pools_page_shows_create_success_message(dashboard_client, monkeypatch):
 
 def test_pools_react_component_contains_requested_toolbar_and_table():
     source = open("ceph-health-dashboard/src/components/PoolsPage.tsx", encoding="utf-8").read()
-    for label in ("Metrics", "Create", "Edit", "Scrub", "Details", "Delete", "Search", "Columns"):
-        assert f'label="{label}"' in source
-    for heading in ("Pool Name", "Redundancy", "#PGs", "Crush Rule", "Used disk space", "Objects", "Read IOPS", "Write IOPS"):
+    for label in ("Metrics", "Create", "Edit", "Scrub", "Details", "Delete", "Actions", "Search", "Columns"):
+        assert label in source
+    for heading in ("Status", "Pool Name", "Redundancy", "#PGs", "Used disk space", "Objects", "Read IOPS", "Write IOPS"):
         assert heading in source
+    assert '"pool-row-selected"' in source
+    assert "pool-used-meter" in source
     assert "1 selected" in source
     assert 'aria-label="Phân trang Pools"' in source
     assert "Trang {currentPage} / {totalPages}" in source
@@ -102,9 +105,9 @@ def test_pools_react_component_contains_requested_toolbar_and_table():
     assert 'name="cluster_id"' in source
 
 
-def test_pools_react_component_limits_each_page_to_ten_rows():
+def test_pools_react_component_limits_each_page_to_twenty_five_rows():
     source = open("ceph-health-dashboard/src/components/PoolsPage.tsx", encoding="utf-8").read()
-    assert "const POOLS_PER_PAGE = 10;" in source
+    assert "const POOLS_PER_PAGE = 25;" in source
     assert "filteredRows.slice((currentPage - 1) * POOLS_PER_PAGE, currentPage * POOLS_PER_PAGE)" in source
     assert "paginatedRows.map" in source
     assert 'aria-label="Trang trước"' in source

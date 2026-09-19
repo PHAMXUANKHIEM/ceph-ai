@@ -217,16 +217,46 @@ def test_create_auth_user_page_has_create_form(dashboard_client, monkeypatch):
     def fake_query(*args):
         if args[-1] == "ceph osd pool ls detail":
             return "mon1", [{"pool_id": 1, "pool_name": "volumes"}]
-        return "mon1", {"auth_dump": []}
+        return "mon1", {"auth_dump": [{"entity": "client.cinder", "caps": {"mon": "profile rbd", "osd": "profile rbd pool=volumes"}}]}
 
     monkeypatch.setattr(openstack_route, "run_ceph_json_command_with", fake_query)
     _login(dashboard_client)
     response = dashboard_client.get("/openstack/auth-user/create")
     assert response.status_code == 200
-    assert "Tạo Ceph Auth User" in response.text
+    assert "Tạo Auth User mới" in response.text
+    assert "auth_user_create.css" in response.text
+    assert 'id="auth-create-title"' in response.text
+    assert 'id="auth-user-search"' in response.text
+    assert 'id="auth-user-type"' in response.text
+    assert 'id="auth-user-page-summary"' in response.text
+    assert 'class="auth-users-table"' in response.text
+    assert "client." in response.text
     assert 'action="/openstack/auth-user/create?' in response.text
     assert 'href="/volumes"' in response.text
     assert 'href="/pgs"' not in response.text  # app.js adds PGs without deleting Pool/Volumes
+
+
+def test_delete_auth_user_executes_scoped_command(dashboard_client, monkeypatch):
+    def fake_query(*args):
+        return "mon1", {"auth_dump": [{"entity": "client.cinder", "caps": {}}]}
+
+    executed = []
+    monkeypatch.setattr(openstack_route, "run_ceph_json_command_with", fake_query)
+    monkeypatch.setattr(
+        openstack_route,
+        "execute_command",
+        lambda host, command, **kwargs: executed.append((host, command, kwargs)) or "removed",
+    )
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/openstack/auth-user/delete",
+        data={"entity": "client.cinder"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "deleted=1" in response.headers["location"]
+    assert len(executed) == 1
+    assert "ceph auth rm client.cinder" in executed[0][1]
 
 
 def test_create_auth_user_executes_on_selected_cluster(dashboard_client, monkeypatch):

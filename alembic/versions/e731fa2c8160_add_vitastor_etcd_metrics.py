@@ -19,6 +19,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("vitastor_metric_samples", "etcd_leader_count")
-    op.drop_column("vitastor_metric_samples", "etcd_quorum")
-    op.drop_column("vitastor_metric_samples", "etcd_latency_ms")
+    with op.batch_alter_table("vitastor_metric_samples") as batch_op:
+        batch_op.drop_column("etcd_leader_count")
+    with op.batch_alter_table("vitastor_metric_samples") as batch_op:
+        batch_op.drop_column("etcd_quorum")
+    with op.batch_alter_table("vitastor_metric_samples") as batch_op:
+        batch_op.drop_column("etcd_latency_ms")

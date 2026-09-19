@@ -10,6 +10,10 @@ RBD_RECONCILED_ACTION_IDS = frozenset({
     "rbd_create_volume",
     "rbd_resize_volume",
     "rbd_rename_volume",
+    "rbd_clone_volume",
+    "rbd_flatten_volume",
+    "rbd_template_mark",
+    "rbd_qos_set",
     "rbd_trash_move_volume",
     "rbd_trash_restore_volume",
     "rbd_trash_purge_all",
@@ -46,10 +50,57 @@ def reconcile(action_id: str, params: dict, output: str) -> None:
             )
         return
 
-    if action_id in {"rbd_rename_volume", "rbd_trash_restore_volume"}:
-        expected_name = params.get("new_image") if action_id == "rbd_rename_volume" else params.get("image")
+    if action_id in {"rbd_rename_volume", "rbd_clone_volume", "rbd_flatten_volume", "rbd_trash_restore_volume"}:
+        expected_name = (
+            params.get("new_image") if action_id == "rbd_rename_volume"
+            else params.get("dest_image") if action_id == "rbd_clone_volume"
+            else params.get("image")
+        )
         if not isinstance(payload, dict) or payload.get("name") != expected_name:
             raise ExecutorError("RBD post-check did not find the expected destination image")
+        if action_id == "rbd_clone_volume" and params.get("size_bytes") is not None:
+            try:
+                actual_size = int(payload.get("size"))
+            except (TypeError, ValueError):
+                actual_size = -1
+            if actual_size != int(params["size_bytes"]):
+                raise ExecutorError("RBD clone post-check size mismatch")
+        return
+
+    if action_id == "rbd_template_mark":
+        if not isinstance(payload, list):
+            raise ExecutorError("RBD template post-check returned an unexpected snapshot payload")
+        expected = params.get("snapshot")
+        row = next((item for item in payload if isinstance(item, dict) and item.get("name") == expected), None)
+        protected = row.get("protected") if isinstance(row, dict) else None
+        if row is None or protected not in (True, "true", "True", 1, "1"):
+            raise ExecutorError("RBD template post-check did not confirm a protected snapshot")
+        return
+
+    if action_id == "rbd_qos_set":
+        rows = payload.get("options") if isinstance(payload, dict) else payload
+        values = {}
+        if isinstance(rows, dict):
+            values = rows
+        elif isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                key = row.get("name") or row.get("key") or row.get("option")
+                if key:
+                    values[str(key)] = row.get("value")
+        for option in (
+            "rbd_qos_iops_limit", "rbd_qos_bps_limit", "rbd_qos_iops_burst", "rbd_qos_bps_burst",
+            "rbd_qos_read_iops_limit", "rbd_qos_read_bps_limit",
+            "rbd_qos_write_iops_limit", "rbd_qos_write_bps_limit",
+        ):
+            expected = int(params.get(option, 0))
+            try:
+                actual = int(values.get(option, 0))
+            except (TypeError, ValueError):
+                actual = -1
+            if actual != expected:
+                raise ExecutorError(f"RBD QoS post-check mismatch for {option}: expected {expected}, got {actual}")
         return
 
     if not isinstance(payload, list):
@@ -85,7 +136,13 @@ def reconciliation_command(
     pool = shlex.quote(params["pool_name"])
     if action_id == "rbd_rename_volume":
         command = f"rbd info {pool}/{shlex.quote(params['new_image'])} --format json"
-    elif action_id in {"rbd_create_volume", "rbd_resize_volume", "rbd_trash_restore_volume"}:
+    elif action_id == "rbd_clone_volume":
+        command = f"rbd info {shlex.quote(params['dest_pool'])}/{shlex.quote(params['dest_image'])} --format json"
+    elif action_id == "rbd_template_mark":
+        command = f"rbd snap ls {pool}/{shlex.quote(params['image'])} --format json"
+    elif action_id == "rbd_qos_set":
+        command = f"rbd config image list {pool}/{shlex.quote(params['image'])} --format json"
+    elif action_id in {"rbd_create_volume", "rbd_resize_volume", "rbd_flatten_volume", "rbd_trash_restore_volume"}:
         command = f"rbd info {pool}/{shlex.quote(params['image'])} --format json"
     else:
         command = f"rbd trash ls {pool} --format json"

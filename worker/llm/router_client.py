@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from shared import alert_lifecycle, audit, change_risk, db, incident_events, log
 from shared.synthetic_incidents import is_synthetic_evidence
 from shared.case_retrieval import find_verified_cases
 from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
+from shared.ai_routing import choose_model
+from shared.ai_output import output_budget_instruction, trim_text_to_token_budget
 from shared.models import (
     Action,
     ActionClassification,
@@ -27,6 +30,7 @@ from shared.models import (
     Cluster,
     Incident,
     IncidentStatus,
+    RbdTrashUsage,
     RemediationCase,
     PlaybookStat,
 )
@@ -47,7 +51,7 @@ from shared.telegram_alerts import (
     send_update_failure_alert,
 )
 from worker.backup import engine as backup_engine
-from worker.executor import cinder_reconciliation, cluster_deploy, commands, rbd_reconciliation, vm_perf, volume_perf
+from worker.executor import bounded_job, cinder_reconciliation, cluster_deploy, commands, rbd_reconciliation, vm_perf, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
 from worker.policy.playbook_registry import evaluate_auto_execution, get_contract
@@ -643,6 +647,24 @@ async def _call_router(user_content: str) -> dict:
     too.
     """
     refresh_chat_provider_flags()
+    routing_request_id = uuid.uuid4().hex
+    output_limit = max(256, min(int(getattr(settings, "ai_incident_max_output_tokens", MAX_TOKENS)), MAX_TOKENS))
+
+    def routed_model(provider: str, configured_model: str) -> str | None:
+        decision = choose_model(
+            "incident_diagnosis", provider, configured_model or "default",
+            input_chars=len(user_content), output_tokens=output_limit,
+            request_id=routing_request_id,
+        )
+        if decision.get("recommended_model"):
+            logger.info(
+                "AI cost route feature=%s provider=%s current=%s recommended=%s selected=%s reason=%s",
+                decision["feature"], provider, decision["current_model"],
+                decision["recommended_model"], decision["selected_model"], decision["reason"],
+            )
+        selected = decision.get("selected_model")
+        return selected if selected and selected != (configured_model or "default") else None
+
     provider_errors: list[str] = []
     if settings.codex_chat_enabled:
         captured: dict = {}
@@ -651,15 +673,23 @@ async def _call_router(user_content: str) -> dict:
             if tool_name != TOOL_NAME:
                 return f"Tool không được phép: {tool_name}", False
             captured.update(arguments)
+            for key in ("diagnosis_text", "rationale"):
+                if key in captured:
+                    captured[key] = trim_text_to_token_budget(captured[key], output_limit)
             return "Đã ghi nhận chẩn đoán.", True
 
         prompt = (
             SYSTEM_PROMPT
             + "\n\nBạn BẮT BUỘC gọi tool report_diagnosis đúng một lần; không trả kết quả chỉ bằng văn bản.\n\n"
             + user_content
+            + output_budget_instruction(output_limit)
         )
         try:
-            await codex_app_server.run_turn(prompt, [_tool_schema()], capture, timeout=ROUTER_TIMEOUT_SECONDS)
+            codex_model = routed_model("codex", settings.codex_chat_model or "default")
+            run_kwargs = {"timeout": ROUTER_TIMEOUT_SECONDS}
+            if codex_model is not None:
+                run_kwargs["model"] = codex_model
+            await codex_app_server.run_turn(prompt, [_tool_schema()], capture, **run_kwargs)
         except CodexAppServerError as exc:
             # Codex can temporarily lose its OAuth session or quota.  Do not
             # make a separately authenticated Claude account unavailable in
@@ -678,11 +708,19 @@ async def _call_router(user_content: str) -> dict:
             + ", ".join(sorted(AI_EXECUTABLE_ACTION_IDS))
             + "\n\n"
             + user_content
+            + output_budget_instruction(output_limit)
         )
         try:
-            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+            claude_model = routed_model("claude", settings.claude_chat_model or "default")
+            if claude_model is None:
+                raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+            else:
+                raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS, model=claude_model)
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
             result = json.loads(clean)
+            for key in ("diagnosis_text", "rationale"):
+                if key in result:
+                    result[key] = trim_text_to_token_budget(result[key], output_limit)
         except (ClaudeCLIError, json.JSONDecodeError) as exc:
             provider_errors.append(f"Claude call failed: {exc}")
             logger.warning("%s; trying configured fallback", provider_errors[-1])
@@ -704,11 +742,12 @@ async def _call_router(user_content: str) -> dict:
         raise RouterDiagnosisError("Router đang tắt hoặc chưa cấu hình đầy đủ")
 
     client = _get_client()
+    selected_router_model = routed_model("9router", settings.router_model) or settings.router_model
     try:
-        mark_ai_provider("router", settings.router_model)
+        mark_ai_provider("router", selected_router_model)
         async with client.chat.completions.stream(
-            model=settings.router_model,
-            max_tokens=MAX_TOKENS,
+            model=selected_router_model,
+            max_tokens=output_limit,
             tools=[_tool_schema()],
             stream_options={"include_usage": True},
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
@@ -731,7 +770,7 @@ async def _call_router(user_content: str) -> dict:
     choice = completion.choices[0]
     if choice.finish_reason == "length":
         raise RouterDiagnosisError(
-            f"Router response truncated at max_tokens={MAX_TOKENS} — tool call args may be incomplete"
+            f"Router response truncated at max_tokens={output_limit} — tool call args may be incomplete"
         )
     for call in choice.message.tool_calls or []:
         if call.function.name == TOOL_NAME:
@@ -2973,13 +3012,17 @@ def _reconcile_stuck_rbd_actions_once(
                 "host": item["host"], "status": "failed", "phase": "reconciliation",
                 "command": command, "error": str(exc), "finished_at": datetime.utcnow().isoformat(),
             }])
-            _record_approved_execution_result(item["action_pk"], command=command, succeeded=False)
+            _record_approved_execution_result(
+                item["action_pk"], command=command, command_output=output, succeeded=False
+            )
         else:
             _write_action_progress(item["action_pk"], [{
                 "host": item["host"], "status": "done", "phase": "reconciliation",
                 "command": command, "finished_at": datetime.utcnow().isoformat(),
             }])
-            _record_approved_execution_result(item["action_pk"], command=command, succeeded=True)
+            _record_approved_execution_result(
+                item["action_pk"], command=command, command_output=output, succeeded=True
+            )
         resolved.append(item["action_pk"])
     return resolved
 
@@ -3297,15 +3340,17 @@ def _execute_approved_action(action_pk: str) -> None:
             )
             _record_approved_execution_result(action_pk, command=None, succeeded=False)
             return
-        executor = vm_perf if action_id_str == vm_perf.VM_PERF_ACTION_ID else volume_perf
-        if action_id_str == vm_perf.VM_PERF_ACTION_ID:
-            succeeded = executor.run(
-                action_pk, action_params, incident_id, _write_action_progress, cluster
-            )
-        else:
-            succeeded = executor.run(
-                action_pk, action_params, incident_id, _write_action_progress
-            )
+        is_vm_benchmark = action_id_str == vm_perf.VM_PERF_ACTION_ID
+        executor = vm_perf if is_vm_benchmark else volume_perf
+        succeeded = bounded_job.run_bounded_benchmark(
+            action_pk,
+            action_params,
+            incident_id,
+            _write_action_progress,
+            executor_module=executor,
+            executor_name="vm" if is_vm_benchmark else "volume",
+            cluster=cluster,
+        )
         _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
         return
 
@@ -3361,6 +3406,7 @@ def _execute_approved_action(action_pk: str) -> None:
     # discovered (see worker/executor/commands.py::get_command). Every
     # other action_id's command is identical regardless of host.
     last_command: str | None = None
+    last_command_output: str | None = None
     update_failures: list[str] = []
     update_rollback_summary: str | None = None
     total_nodes = len(nodes)
@@ -3427,6 +3473,7 @@ def _execute_approved_action(action_pk: str) -> None:
             executed_any = True
             rbd_reconciliation.reconcile(action_id_str, action_params or {}, command_output)
             cinder_reconciliation.reconcile(action_id_str, action_params or {}, command_output)
+            last_command_output = command_output
         except ExecutorError as exc:
             logger.exception(
                 "_execute_approved_action: execution of action_id=%s failed on node %s "
@@ -3496,7 +3543,8 @@ def _execute_approved_action(action_pk: str) -> None:
         )
 
     _record_approved_execution_result(
-        action_pk, command=last_command, succeeded=all_succeeded and executed_any
+        action_pk, command=last_command, command_output=last_command_output,
+        succeeded=all_succeeded and executed_any,
     )
     if update_failures:
         _notify_update_failure(
@@ -3551,11 +3599,108 @@ def _write_action_progress(action_pk: str, progress: list[dict]) -> None:
         )
 
 
+def _persist_rbd_trash_usage(session, action: Action, incident: Incident | None, command_output: str | None) -> None:
+    """Persist usage against the Trash ID returned by a successful move.
+
+    ``rbd trash mv`` allocates the authoritative Trash ID only after the
+    mutation succeeds. The proposal snapshot remains in action_params as the
+    input, but this table is the durable display record keyed by that ID.
+    """
+    if action.action_id != "rbd_trash_move_volume" or incident is None or not incident.cluster_id:
+        return
+    try:
+        params = json.loads(action.action_params or "{}")
+        snapshot = params.get("trash_usage") if isinstance(params, dict) else None
+        payload = json.loads(command_output or "")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("Could not persist RBD Trash usage for action %s: malformed snapshot/output", action.id)
+        return
+    if not isinstance(params, dict) or not isinstance(snapshot, dict):
+        logger.warning("Could not persist RBD Trash usage for action %s: snapshot is missing", action.id)
+        return
+    rows = payload if isinstance(payload, list) else payload.get("images", []) if isinstance(payload, dict) else []
+    image = params.get("image")
+    if not isinstance(image, str):
+        return
+    entry = next((row for row in rows if isinstance(row, dict) and row.get("name") == image), None)
+    if entry is None or not entry.get("id"):
+        logger.warning("Could not persist RBD Trash usage for action %s: moved image was not returned", action.id)
+        return
+    pool = params.get("pool_name")
+    if not isinstance(pool, str) or not pool:
+        logger.warning("Could not persist RBD Trash usage for action %s: pool is missing", action.id)
+        return
+    try:
+        provisioned = max(0, int(snapshot["provisioned_size_bytes"]))
+        used = max(0, int(snapshot["used_size_bytes"]))
+        observed_at = datetime.fromisoformat(str(snapshot["observed_at"]).replace("Z", "+00:00"))
+        observed_at = observed_at.replace(tzinfo=None)
+    except (KeyError, TypeError, ValueError):
+        logger.warning("Could not persist RBD Trash usage for action %s: invalid snapshot", action.id)
+        return
+    percent = round(used * 100.0 / provisioned, 2) if provisioned else 0.0
+    trash_id = str(entry["id"])
+    stored = (
+        session.query(RbdTrashUsage)
+        .filter_by(cluster_id=str(incident.cluster_id), pool=pool, trash_id=trash_id)
+        .one_or_none()
+    )
+    values = {
+        "image": image,
+        "provisioned_size_bytes": provisioned,
+        "used_size_bytes": used,
+        "used_percent": percent,
+        "observed_at": observed_at,
+    }
+    if stored is None:
+        session.add(RbdTrashUsage(
+            cluster_id=str(incident.cluster_id),
+            pool=pool,
+            trash_id=trash_id,
+            **values,
+        ))
+    else:
+        for key, value in values.items():
+            setattr(stored, key, value)
+
+
+def _delete_rbd_trash_usage(session, action: Action, incident: Incident | None) -> None:
+    """Remove durable snapshots after Ceph removes or restores the Trash item."""
+    if incident is None or not incident.cluster_id:
+        return
+    if action.action_id in {"rbd_trash_remove", "rbd_trash_restore_volume"}:
+        trash_ids_value = None
+        try:
+            params = json.loads(action.action_params or "{}")
+            trash_ids_value = params.get("trash_id") if isinstance(params, dict) else None
+        except (TypeError, ValueError):
+            return
+        trash_ids = [trash_ids_value] if isinstance(trash_ids_value, str) and trash_ids_value else []
+        pool = params.get("pool_name") if isinstance(params, dict) else None
+    elif action.action_id == "rbd_trash_purge_all":
+        try:
+            params = json.loads(action.action_params or "{}")
+        except (TypeError, ValueError):
+            return
+        trash_ids_value = params.get("trash_ids") if isinstance(params, dict) else None
+        trash_ids = [str(value) for value in trash_ids_value] if isinstance(trash_ids_value, list) else []
+        pool = params.get("pool_name") if isinstance(params, dict) else None
+    else:
+        return
+    if not isinstance(pool, str) or not pool or not trash_ids:
+        return
+    session.query(RbdTrashUsage).filter(
+        RbdTrashUsage.cluster_id == str(incident.cluster_id),
+        RbdTrashUsage.pool == pool,
+        RbdTrashUsage.trash_id.in_(trash_ids),
+    ).delete(synchronize_session=False)
+
+
 def _record_approved_execution_result(
-    action_pk: str, command: str | None, succeeded: bool
+    action_pk: str, command: str | None, succeeded: bool, command_output: str | None = None
 ) -> None:
     notify: dict | None = None
-    cache_invalidation: tuple[str, str] | None = None
+    cache_invalidation: tuple[str, tuple[str, ...]] | None = None
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)
         if action is None:
@@ -3566,17 +3711,21 @@ def _record_approved_execution_result(
             )
             return
         incident_id = action.incident_id
+        incident = session.get(Incident, incident_id)
         if command is not None:
             action.proposed_command = command
         action.status = ActionStatus.EXECUTED.value if succeeded else ActionStatus.FAILED.value
         if succeeded:
             action.executed_at = datetime.utcnow()
+            if action.action_id == "rbd_trash_move_volume":
+                _persist_rbd_trash_usage(session, action, incident, command_output)
+            else:
+                _delete_rbd_trash_usage(session, action, incident)
         remediation_cases.record_execution(
             session, action_id=action.id, succeeded=succeeded,
             executed_at=action.executed_at if succeeded else datetime.utcnow(),
         )
 
-        incident = session.get(Incident, incident_id)
         if incident is None:
             logger.warning(
                 "_record_approved_execution_result: no Incident row for id=%s — "
@@ -3681,6 +3830,7 @@ def _record_approved_execution_result(
                 )
         if succeeded and action.action_id in {
             "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume",
+            "rbd_clone_volume", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
             "rbd_trash_move_volume", "rbd_trash_restore_volume",
             "rbd_trash_remove", "rbd_trash_purge_all",
         }:
@@ -3688,18 +3838,24 @@ def _record_approved_execution_result(
                 params = json.loads(action.action_params or "{}")
             except (TypeError, ValueError):
                 params = {}
-            pool = params.get("pool_name") if isinstance(params, dict) else None
-            if isinstance(pool, str) and pool:
+            pool_names = set()
+            if isinstance(params, dict):
+                for key in ("pool_name", "dest_pool"):
+                    value = params.get(key)
+                    if isinstance(value, str) and value:
+                        pool_names.add(value)
+            if pool_names:
                 cluster_id = incident.cluster_id if incident is not None else None
                 if cluster_id is None:
                     cluster_id = session.query(Cluster.id).filter(Cluster.is_default.is_(True)).scalar()
                 if cluster_id is not None:
-                    cache_invalidation = (str(cluster_id), pool)
+                    cache_invalidation = (str(cluster_id), tuple(sorted(pool_names)))
         session.commit()
     if cache_invalidation is not None:
-        cluster_id, pool = cache_invalidation
-        for namespace in ("rbd-trash", "rbd-inventory", "rbd-iostat"):
-            invalidate_ceph_query_cache(namespace, f"{cluster_id}:{pool}")
+        cluster_id, pools = cache_invalidation
+        for pool in pools:
+            for namespace in ("rbd-trash", "rbd-inventory", "rbd-iostat"):
+                invalidate_ceph_query_cache(namespace, f"{cluster_id}:{pool}")
     if notify is not None:
         send_auto_remediation_alert(**notify)
 

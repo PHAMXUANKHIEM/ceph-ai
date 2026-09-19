@@ -24,6 +24,7 @@
 
   function renderCodexStatus(data) {
     if (!codexStatus) return;
+    window.dispatchEvent(new CustomEvent("ceph-ai-account-state", { detail: { provider: "openai", enabled: !!data.enabled, configured: !!data.authenticated || !!data.enabled } }));
     if (data.installed === false) {
       codexStatus.textContent = "⚠️ Chưa cài Codex CLI trên server.";
       if (codexInstallPrompt) codexInstallPrompt.hidden = false;
@@ -83,16 +84,24 @@
       panel.appendChild(unavailable);
     }
     limits.forEach(function (limit) {
+      var remaining = Math.max(0, Math.min(100, Number(limit.remaining_percent) || 0));
+      var used = limit.used_percent == null ? NaN : Number(limit.used_percent);
+      if (!Number.isFinite(used)) used = 100 - remaining;
+      used = Math.max(0, Math.min(100, used));
+      var severity = used < 50 ? "ok" : (used <= 80 ? "warning" : "danger");
       var row = document.createElement("div");
-      row.className = "ai-limit-row" + (limit.remaining_percent <= 15 ? " ai-limit-low" : "");
+      row.className = "ai-limit-row ai-limit-" + severity;
+      row.title = limit.resets_at ? "Reset: " + limit.resets_at : "Thời gian reset chưa được provider cung cấp";
       var label = document.createElement("span");
       label.textContent = limit.label;
       var value = document.createElement("strong");
-      value.textContent = limit.remaining_percent + "% còn lại";
-      var meter = document.createElement("progress");
-      meter.max = 100;
-      meter.value = limit.remaining_percent;
-      row.appendChild(label); row.appendChild(value); row.appendChild(meter);
+      value.textContent = remaining + "% còn · đã dùng " + used + "%";
+      var meter = document.createElement("div");
+      meter.className = "ai-limit-meter";
+      var fill = document.createElement("span");
+      fill.style.width = used + "%";
+      meter.appendChild(fill);
+      row.appendChild(label); row.appendChild(meter); row.appendChild(value);
       panel.appendChild(row);
     });
     panel.hidden = false;
@@ -161,6 +170,7 @@
   if (codexLogoutBtn) codexLogoutBtn.addEventListener("click", function () {
     codexRequest("/settings/codex/logout", { method: "POST" }).then(function () {
       renderCodexStatus({ authenticated: false, enabled: false });
+      window.dispatchEvent(new CustomEvent("ceph-ai-account-state", { detail: { provider: "openai", enabled: false, configured: true, loggedOut: true } }));
     }).catch(function (err) { codexStatus.textContent = "❌ " + err.message; });
   });
   if (codexModelSaveBtn) codexModelSaveBtn.addEventListener("click", function () {
@@ -187,6 +197,7 @@
 
   function renderClaudeStatus(data) {
     if (!claudeStatus) return;
+    window.dispatchEvent(new CustomEvent("ceph-ai-account-state", { detail: { provider: "anthropic", enabled: !!data.enabled, configured: !!data.authenticated || !!data.enabled } }));
     if (data.installed === false) {
       claudeStatus.textContent = "⚠️ Chưa cài Claude Code CLI trên server.";
       if (claudeInstallPrompt) claudeInstallPrompt.hidden = false;
@@ -288,6 +299,7 @@
   if (claudeLogoutBtn) claudeLogoutBtn.addEventListener("click", function () {
     codexRequest("/settings/claude/logout", { method: "POST" }).then(function () {
       renderClaudeStatus({ installed: true, authenticated: false, enabled: false });
+      window.dispatchEvent(new CustomEvent("ceph-ai-account-state", { detail: { provider: "anthropic", enabled: false, configured: true, loggedOut: true } }));
     }).catch(function (err) { claudeStatus.textContent = "❌ " + err.message; });
   });
   if (claudeModelSaveBtn) claudeModelSaveBtn.addEventListener("click", function () {
@@ -461,11 +473,8 @@
     });
   }
 
-  // Kết nối Database: "Kiểm tra kết nối" is a side-effect-free SELECT 1
-  // probe (no migration, no .env write — see /settings/database/test in
-  // dashboard/routes/settings.py) so an operator can try a few
-  // host/port/credential combos before the real "Lưu & chuyển database"
-  // submit, which does migrate + restart everything.
+  // Kết nối Database: side-effect-free probe plus UI-only controls for the
+  // Database panel. The Settings sidebar/navigation above remains untouched.
   var dbTestBtn = document.getElementById("db-test-btn");
   if (dbTestBtn) {
     var dbHostInput = document.getElementById("db-host-input");
@@ -474,15 +483,20 @@
     var dbUsernameInput = document.getElementById("db-username-input");
     var dbPasswordInput = document.getElementById("db-password-input");
     var dbUrlInput = document.getElementById("db-url-input");
+    var dbSslModeInput = document.getElementById("db-ssl-mode-input");
+    var dbSslLabel = document.getElementById("db-ssl-label");
+    var dbSslMenu = document.getElementById("db-ssl-menu");
+    var dbSslTrigger = document.querySelector("#db-ssl-select .db-select-trigger");
+    var dbTimeoutInput = document.getElementById("db-connect-timeout");
+    var dbPasswordToggle = document.getElementById("db-password-toggle");
     var dbResultEl = document.getElementById("db-test-result");
+    var dbStatusChip = document.getElementById("db-status-chip");
+    var dbStatusText = document.getElementById("db-status-text");
+    var dbStatusMeta = document.getElementById("db-status-meta");
+    var dbCopyBtn = document.getElementById("db-copy-btn");
 
-    // Two input modes for the same underlying DATABASE_URL — "Nhập từng
-    // trường" (5 separate inputs) or "Nhập Database URL" (one pasted
-    // connection string, see _resolve_database_url in
-    // dashboard/routes/settings.py, which prefers the raw URL whenever
-    // it's non-blank). Only toggles which group is VISIBLE — the server
-    // decides which one actually applies, so submitting with the "wrong"
-    // group hidden-but-filled from a previous edit still behaves correctly.
+    // Two input modes for the same underlying DATABASE_URL. Disable hidden
+    // controls so required fields in the inactive mode cannot block submit.
     var dbModeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="db_input_mode"]'));
     var dbModeFields = Array.prototype.slice.call(document.querySelectorAll("[data-db-modes]"));
     if (dbModeRadios.length) {
@@ -491,11 +505,27 @@
         var mode = checked ? checked.value : "fields";
         dbModeFields.forEach(function (field) {
           field.hidden = field.getAttribute("data-db-modes") !== mode;
+          field.querySelectorAll("input, textarea, select").forEach(function (control) { control.disabled = field.hidden; });
         });
       };
       dbModeRadios.forEach(function (r) { r.addEventListener("change", applyDbModeVisibility); });
       applyDbModeVisibility();
     }
+
+    if (dbSslTrigger && dbSslMenu && dbSslModeInput) {
+      dbSslTrigger.addEventListener("click", function () { var open = dbSslMenu.hidden; dbSslMenu.hidden = !open; dbSslTrigger.setAttribute("aria-expanded", open ? "true" : "false"); });
+      dbSslMenu.querySelectorAll("[data-ssl-mode]").forEach(function (option) { option.addEventListener("click", function () { dbSslModeInput.value = option.getAttribute("data-ssl-mode"); dbSslLabel.textContent = dbSslModeInput.value; dbSslMenu.hidden = true; dbSslTrigger.setAttribute("aria-expanded", "false"); }); });
+      document.addEventListener("click", function (event) { if (!event.target.closest("#db-ssl-select")) { dbSslMenu.hidden = true; dbSslTrigger.setAttribute("aria-expanded", "false"); } });
+    }
+    if (dbPasswordToggle && dbPasswordInput) dbPasswordToggle.addEventListener("click", function () { var hidden = dbPasswordInput.type === "password"; dbPasswordInput.type = hidden ? "text" : "password"; dbPasswordToggle.setAttribute("aria-label", hidden ? "Ẩn mật khẩu" : "Hiện mật khẩu"); });
+    if (dbCopyBtn) dbCopyBtn.addEventListener("click", function () { var value = document.getElementById("db-connection-value").textContent.trim(); var copied = function () { dbCopyBtn.classList.add("is-copied"); dbCopyBtn.textContent = "✓ Đã copy!"; setTimeout(function () { dbCopyBtn.classList.remove("is-copied"); dbCopyBtn.textContent = "▣ Copy"; }, 2000); }; if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(value).then(copied).catch(function () { fallback(value); }); else fallback(value); function fallback(text) { var area = document.createElement("textarea"); area.value = text; document.body.appendChild(area); area.select(); try { document.execCommand("copy"); copied(); } finally { area.remove(); } } });
+
+    function refreshDatabaseStatus() {
+      if (!dbStatusChip) return;
+      fetch("/api/settings/database/status", { credentials: "same-origin" }).then(handleAuthRedirect).then(function (response) { if (!response.ok) throw new Error("HTTP " + response.status); return response.json(); }).then(function (data) { var ok = !!data.connected; dbStatusChip.className = "db-status-chip " + (ok ? "is-ok" : "is-error"); dbStatusText.textContent = ok ? "Đang kết nối" : "Mất kết nối"; dbStatusMeta.textContent = ok && data.latency_ms != null ? "~" + data.latency_ms + "ms" : ""; }).catch(function () { dbStatusChip.className = "db-status-chip is-error"; dbStatusText.textContent = "Mất kết nối"; dbStatusMeta.textContent = "Không kiểm tra được"; });
+    }
+    refreshDatabaseStatus();
+    setInterval(refreshDatabaseStatus, 30000);
 
     dbTestBtn.addEventListener("click", function () {
       dbTestBtn.disabled = true;
@@ -509,6 +539,8 @@
       body.set("db_name", dbNameInput.value.trim());
       body.set("db_username", dbUsernameInput.value.trim());
       body.set("db_password", dbPasswordInput.value);
+      body.set("db_ssl_mode", dbSslModeInput ? dbSslModeInput.value : "require");
+      body.set("db_connect_timeout", dbTimeoutInput ? dbTimeoutInput.value : "5");
       body.set("database_url_raw", dbUrlInput.value.trim());
 
       fetch("/settings/database/test", { method: "POST", credentials: "same-origin", body: body })
@@ -568,9 +600,7 @@
       var DB_MIGRATE_CAP = 97;
 
       dbForm.addEventListener("submit", function (event) {
-        if (event.defaultPrevented) {
-          return; // the existing confirm() onsubmit handler already vetoed this submit
-        }
+        if (event.defaultPrevented) return;
         dbSaveBtn.disabled = true;
         if (dbTestBtn) dbTestBtn.disabled = true;
         dbProgressEl.hidden = false;
@@ -603,6 +633,12 @@
         }, 400);
       });
     }
+    var dbResetForm = document.getElementById("db-reset-form");
+    var dbResetBtn = document.getElementById("db-reset-btn");
+    if (dbResetForm && dbResetBtn) dbResetForm.addEventListener("submit", function (event) { if (event.defaultPrevented) return; dbResetBtn.disabled = true; dbResetBtn.textContent = "Đang reset..."; });
+    var dbMigrateForm = document.getElementById("db-migrate-form");
+    var dbMigrateBtn = document.getElementById("db-migrate-btn");
+    if (dbMigrateForm && dbMigrateBtn) dbMigrateForm.addEventListener("submit", function (event) { if (event.defaultPrevented) return; dbMigrateBtn.disabled = true; dbMigrateBtn.textContent = "Đang chạy migration..."; });
   }
 
   // OpenStack settings only contain node addresses; this verifies the
@@ -734,6 +770,7 @@
     });
   });
   if (settingsNavItems.length && settingsPanels.length) {
+    window.__settingsNavigationReady = true;
     settingsNavItems.forEach(function (item) {
       item.addEventListener("click", function () {
         var section = item.getAttribute("data-section");
@@ -804,9 +841,9 @@
       button.addEventListener("click", function () {
         pendingRestartButton = button;
         var service = button.getAttribute("data-restart-service");
-        dialogTitle.textContent = "Restart " + service + "?";
+        dialogTitle.textContent = "Khởi động lại " + service + "?";
         dialogDescription.textContent = button.getAttribute("data-restart-warning") || "This service will be briefly unavailable.";
-        dialogConfirm.textContent = "Restart " + service;
+        dialogConfirm.textContent = "Xác nhận";
         restartDialog.showModal();
       });
     });
@@ -820,12 +857,266 @@
       var form = document.getElementById("restart-form-" + service.toLowerCase());
       if (!form) return;
       dialogConfirm.disabled = true;
-      dialogConfirm.textContent = "Restarting...";
+      dialogConfirm.textContent = "Đang xử lý...";
       pendingRestartButton.classList.add("is-loading");
-      pendingRestartButton.innerHTML = "<span>↻</span> Restarting...";
+      pendingRestartButton.innerHTML = "<span>↻</span>Đang xử lý...";
       form.submit();
     });
   }
+})();
+
+// Cleanup panel: keep the selected scope visually clear and prevent a
+// duplicate submit while the destructive request is being sent.
+(function () {
+  var form = document.querySelector('[data-panel="cleanup"] .cleanup-form');
+  if (!form) return;
+  var cards = Array.prototype.slice.call(form.querySelectorAll(".cleanup-target-card"));
+  function sync() {
+    cards.forEach(function (card) {
+      var input = card.querySelector('input[type="checkbox"]');
+      card.classList.toggle("is-selected", !!(input && input.checked));
+    });
+  }
+  cards.forEach(function (card) {
+    var input = card.querySelector('input[type="checkbox"]');
+    if (input) input.addEventListener("change", sync);
+  });
+  form.addEventListener("submit", function (event) {
+    if (event.defaultPrevented) return;
+    var submit = form.querySelector(".cleanup-submit-button");
+    if (submit) {
+      submit.disabled = true;
+      submit.textContent = "Đang xóa…";
+    }
+  });
+  sync();
+})();
+
+// --- Telegram Chatbox dual-AI content controls ----------------------------
+// This block is scoped to the dual-AI panel and does not touch the Settings
+// sidebar or any other Settings form.
+(function () {
+  var panel = document.querySelector('[data-panel="dual-ai"]');
+  if (!panel) return;
+
+  var statusRequests = {};
+  var statusEndpoints = { codex: "/settings/codex/status", claude: "/settings/claude/status" };
+
+  function providerStatus(provider) {
+    if (provider === "auto") {
+      return Promise.all([providerStatus("codex"), providerStatus("claude")]).then(function (states) {
+        return states.some(Boolean);
+      });
+    }
+    if (!statusEndpoints[provider]) return Promise.resolve(false);
+    if (statusRequests[provider]) return statusRequests[provider];
+    statusRequests[provider] = fetch(statusEndpoints[provider], { credentials: "same-origin" })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) { return !!(data && data.authenticated === true && data.enabled !== false); })
+      .catch(function () { return false; });
+    return statusRequests[provider];
+  }
+
+  function syncDropdown(dropdown, select) {
+    var label = dropdown.querySelector("[data-dropdown-label]");
+    var selected = select.value || "auto";
+    if (label) label.textContent = selected;
+    Array.prototype.forEach.call(dropdown.querySelectorAll("[data-value]"), function (option) {
+      option.setAttribute("aria-selected", option.getAttribute("data-value") === selected ? "true" : "false");
+    });
+  }
+
+  function updateProviderStatus(card) {
+    var select = card.querySelector(".dual-ai-native-provider");
+    var status = card.querySelector("[data-provider-status]");
+    if (!select || !status) return;
+    status.className = "dual-ai-provider-status is-checking";
+    status.textContent = "● Đang kiểm tra";
+    providerStatus(select.value).then(function (connected) {
+      status.className = "dual-ai-provider-status " + (connected ? "is-connected" : "is-disconnected");
+      status.textContent = connected ? "● Đang hoạt động" : "● Chưa kết nối";
+    });
+  }
+
+  Array.prototype.forEach.call(panel.querySelectorAll(".dual-ai-role-card"), function (card) {
+    var select = card.querySelector(".dual-ai-native-provider");
+    var dropdown = card.querySelector("[data-dual-ai-dropdown]");
+    var trigger = dropdown && dropdown.querySelector(".dual-ai-dropdown-trigger");
+    var menu = dropdown && dropdown.querySelector(".dual-ai-dropdown-menu");
+    if (!select || !dropdown || !trigger || !menu) return;
+
+    syncDropdown(dropdown, select);
+    updateProviderStatus(card);
+    select.addEventListener("change", function () {
+      syncDropdown(dropdown, select);
+      updateProviderStatus(card);
+    });
+    trigger.addEventListener("click", function () {
+      var open = trigger.getAttribute("aria-expanded") === "true";
+      trigger.setAttribute("aria-expanded", open ? "false" : "true");
+      menu.hidden = open;
+    });
+    Array.prototype.forEach.call(menu.querySelectorAll("[data-value]"), function (option) {
+      option.addEventListener("click", function () {
+        select.value = option.getAttribute("data-value");
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        trigger.setAttribute("aria-expanded", "false");
+        menu.hidden = true;
+      });
+    });
+  });
+
+  document.addEventListener("click", function (event) {
+    if (panel.contains(event.target)) return;
+    Array.prototype.forEach.call(panel.querySelectorAll(".dual-ai-dropdown"), function (dropdown) {
+      var trigger = dropdown.querySelector(".dual-ai-dropdown-trigger");
+      var menu = dropdown.querySelector(".dual-ai-dropdown-menu");
+      if (trigger) trigger.setAttribute("aria-expanded", "false");
+      if (menu) menu.hidden = true;
+    });
+  });
+
+  var fallbackToggle = panel.querySelector("#dual-ai-fallback-toggle");
+  var fallbackConfig = panel.querySelector("#dual-ai-fallback-config");
+  if (fallbackToggle && fallbackConfig) {
+    fallbackToggle.addEventListener("change", function () { fallbackConfig.hidden = !fallbackToggle.checked; });
+  }
+})();
+
+// --- Patch pipeline: compact command input, validation and explicit restart flow ---
+(function () {
+  var form = document.getElementById("patch-pipeline-form");
+  if (!form) return;
+
+  var commandInput = document.getElementById("pipeline-build-command");
+  var actionInput = document.getElementById("pipeline-save-action");
+  var statusChip = document.querySelector(".pipeline-status-chip");
+  var fields = [
+    { id: "pipeline-build-node", message: "Nhập IP hoặc hostname của build server." },
+    { id: "pipeline-source-dir", message: "Đường dẫn phải bắt đầu bằng '/'." },
+    { id: "pipeline-build-command", message: "Nhập lệnh build." },
+    { id: "pipeline-output-dir", message: "Đường dẫn phải bắt đầu bằng '/'." },
+    { id: "pipeline-staging-dir", message: "Đường dẫn phải bắt đầu bằng '/'." },
+  ];
+
+  function errorNode(id) {
+    return form.querySelector('[data-error-for="' + id + '"]');
+  }
+
+  function setError(id, message) {
+    var node = errorNode(id);
+    if (node) node.textContent = message || "";
+    var input = document.getElementById(id);
+    if (input) input.setAttribute("aria-invalid", message ? "true" : "false");
+  }
+
+  function validHost(value) {
+    var hostname = /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$/;
+    var parts = value.split(".");
+    var dottedQuad = /^\d+(?:\.\d+){3}$/.test(value);
+    if (dottedQuad) return parts.every(function (part) {
+      return /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255;
+    });
+    return hostname.test(value) || value.indexOf(":") !== -1;
+  }
+
+  function validate() {
+    var valid = true;
+    fields.forEach(function (field) {
+      var input = document.getElementById(field.id);
+      var value = input ? input.value.trim() : "";
+      var message = "";
+      if (!value) message = field.message;
+      else if (field.id === "pipeline-build-node" && !validHost(value)) {
+        message = "IP/hostname không hợp lệ. Ví dụ: 10.0.0.20 hoặc build.ceph.local.";
+      } else if (field.id !== "pipeline-build-node" && field.id !== "pipeline-build-command" && value.charAt(0) !== "/") {
+        message = field.message;
+      }
+      setError(field.id, message);
+      if (message) valid = false;
+    });
+    return valid;
+  }
+
+  function resizeCommand() {
+    if (!commandInput) return;
+    commandInput.style.height = "auto";
+    var maxHeight = 220;
+    commandInput.style.height = Math.min(commandInput.scrollHeight, maxHeight) + "px";
+    commandInput.style.overflowY = commandInput.scrollHeight > maxHeight ? "auto" : "hidden";
+  }
+
+  if (commandInput) {
+    commandInput.addEventListener("input", resizeCommand);
+    resizeCommand();
+  }
+
+  form.addEventListener("submit", function (event) {
+    if (!validate()) {
+      event.preventDefault();
+      return;
+    }
+    var submitter = event.submitter;
+    var action = submitter && submitter.getAttribute("data-save-action") === "save" ? "save" : "save-restart";
+    if (actionInput) actionInput.value = action;
+    if (action === "save-restart" && !window.confirm("Lưu cấu hình pipeline và khởi động lại Worker? Service sẽ tạm gián đoạn vài giây.")) {
+      event.preventDefault();
+      return;
+    }
+    if (submitter) {
+      submitter.disabled = true;
+      submitter.classList.add("is-loading");
+      submitter.textContent = action === "save-restart" ? "Đang lưu & restart…" : "Đang lưu…";
+    }
+  });
+
+  function updateStatus(data) {
+    if (!statusChip) return;
+    var label = statusChip.querySelector("span");
+    var detail = statusChip.querySelector("small");
+    ["is-ready", "is-missing", "is-running", "is-error", "is-waiting"].forEach(function (name) {
+      statusChip.classList.remove(name);
+    });
+    var visualState = data.state === "not_configured" ? "missing" : (data.state || (data.configured ? "ready" : "missing"));
+    statusChip.classList.add("is-" + visualState);
+    if (label) label.textContent = data.state_label || (data.configured ? "Sẵn sàng chạy pipeline" : "Chưa cấu hình đầy đủ");
+    if (detail) detail.textContent = data.last_build ? "Build gần nhất: " + data.last_build : "Build gần nhất: chưa ghi nhận";
+  }
+
+  function refreshStatus() {
+    fetch("/api/settings/patch-pipeline/status", { credentials: "same-origin" })
+      .then(function (response) {
+        if (!response.ok) throw new Error("status unavailable");
+        return response.json();
+      })
+      .then(updateStatus)
+      .catch(function () { /* Keep the server-rendered fallback status. */ });
+  }
+
+  refreshStatus();
+  window.setInterval(refreshStatus, 30000);
+})();
+
+(function () {
+  var groupLink = document.getElementById("settings-breadcrumb-group");
+  var currentLabel = document.getElementById("settings-breadcrumb-current");
+  var items = Array.prototype.slice.call(document.querySelectorAll(".settings-nav-item[data-section]"));
+  if (!groupLink || !currentLabel || !items.length) return;
+  var labels = {
+    "restart-controls": ["Hệ thống", "Tiến trình hệ thống"], "action-policy": ["Hệ thống", "Chính sách hành động AI"],
+    database: ["Hệ thống", "Kết nối cơ sở dữ liệu"], "server-log": ["Hệ thống", "Nhật ký máy chủ"],
+    "patch-pipeline": ["Pipeline & lưu trữ", "Pipeline"], "log-intel": ["Pipeline & lưu trữ", "Phân tích nhật ký"],
+    "dual-ai": ["Pipeline & lưu trữ", "Hai AI trao đổi"], "code-repair": ["Pipeline & lưu trữ", "Sửa mã bằng AI"],
+    "backup-targets": ["Pipeline & lưu trữ", "Cấu hình lưu trữ"], router: ["Kết nối", "API AI"],
+    cost: ["Kết nối", "Chi phí"], cluster: ["Kết nối", "Cụm Ceph"], "ceph-host-keys": ["Kết nối", "Khóa SSH node Ceph"],
+    openstack: ["Kết nối", "OpenStack"], cleanup: ["Bảo trì", "Bảo trì hệ thống"]
+  };
+  function update(item) {
+    var data = labels[item.getAttribute("data-section")] || ["Cài đặt", item.textContent.trim()];
+    groupLink.textContent = data[0]; groupLink.href = "#" + item.getAttribute("data-section"); currentLabel.textContent = data[1];
+  }
+  items.forEach(function (item) { item.addEventListener("click", function () { update(item); }); });
+  update(items.filter(function (item) { return item.classList.contains("active"); })[0] || items[0]);
 })();
 
 // --- AI Code Repair role model catalog ------------------------------------
@@ -861,7 +1152,11 @@
     select.appendChild(option);
   }
 
-  function renderModelSelect(select, status, data, preserveCurrent) {
+  function renderModelSelect(select, status, data, preserveCurrent, retry) {
+    if (retry) {
+      retry.hidden = true;
+      if (retry.parentElement) retry.parentElement.classList.remove("is-error");
+    }
     var current = preserveCurrent ? (select.dataset.currentModel || "") : "";
     var models = data && Array.isArray(data.models) ? data.models : [];
     var seen = {};
@@ -894,11 +1189,11 @@
     }
   }
 
-  function loadRole(providerSelect, modelSelect, status, preserveCurrent) {
+  function loadRole(providerSelect, modelSelect, status, preserveCurrent, retry) {
     var provider = providerSelect.value;
     modelSelect.dataset.providerName = provider === "codex" ? "Codex" : "Claude";
     if (provider === "auto") {
-      renderModelSelect(modelSelect, status, { models: [] }, preserveCurrent);
+      renderModelSelect(modelSelect, status, { models: [] }, preserveCurrent, retry);
       status.textContent = "auto sẽ chọn provider khả dụng; chọn Codex hoặc Claude để xem catalog model.";
       status.className = "hint";
       return;
@@ -906,29 +1201,35 @@
     status.textContent = "Đang tải danh sách model " + modelSelect.dataset.providerName + "…";
     status.className = "hint";
     requestCatalog(provider).then(function (data) {
-      renderModelSelect(modelSelect, status, data, preserveCurrent);
+      renderModelSelect(modelSelect, status, data, preserveCurrent, retry);
     }).catch(function (error) {
-      renderModelSelect(modelSelect, status, { models: [] }, preserveCurrent);
-      status.textContent = "Không tải được catalog " + modelSelect.dataset.providerName + ": " + error.message;
+      renderModelSelect(modelSelect, status, { models: [] }, preserveCurrent, retry);
+      status.textContent = "Không tải được danh sách model " + modelSelect.dataset.providerName + ". Kiểm tra kết nối API tại trang API AI.";
       status.className = "hint error";
+      if (retry) {
+        retry.hidden = false;
+        if (retry.parentElement) retry.parentElement.classList.add("is-error");
+      }
     });
   }
 
-  function bindRole(providerSelect, modelId, statusId) {
+  function bindRole(providerSelect, modelId, statusId, retryId) {
     var modelSelect = document.getElementById(modelId);
     var status = document.getElementById(statusId);
+    var retry = document.querySelector('[data-retry-role="' + retryId + '"]');
     if (!modelSelect || !status) return;
     providerSelect.addEventListener("change", function () {
       // A model selected for one provider must not silently be submitted for
       // another provider. The operator can then choose from the new catalog.
       modelSelect.dataset.currentModel = "";
-      loadRole(providerSelect, modelSelect, status, false);
+      loadRole(providerSelect, modelSelect, status, false, retry);
     });
-    loadRole(providerSelect, modelSelect, status, true);
+    if (retry) retry.addEventListener("click", function () { loadRole(providerSelect, modelSelect, status, true, retry); });
+    loadRole(providerSelect, modelSelect, status, true, retry);
   }
 
-  bindRole(plannerProvider, "code-repair-planner-model", "code-repair-planner-model-status");
-  bindRole(implementerProvider, "code-repair-implementer-model", "code-repair-implementer-model-status");
+  bindRole(plannerProvider, "code-repair-planner-model", "code-repair-planner-model-status", "planner");
+  bindRole(implementerProvider, "code-repair-implementer-model", "code-repair-implementer-model-status", "implementer");
 
 })();
 
@@ -1035,8 +1336,99 @@
   bindAccount("implementer");
 })();
 
-// AI Action Policy: search and filters run locally so looking up an action
-// never reloads the page or disturbs a partially completed policy form.
+// AI Code Repair visual controls. Native selects remain in the form so the
+// existing account/catalog flows and server field names continue to work.
+(function () {
+  var panel = document.querySelector('[data-panel="code-repair"]');
+  if (!panel) return;
+
+  var openMenu = null;
+  function closeMenu() {
+    if (!openMenu) return;
+    openMenu.hidden = true;
+    var trigger = openMenu.parentNode && openMenu.parentNode.querySelector(".code-repair-select-trigger");
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+    openMenu = null;
+  }
+  function refresh(wrapper, select) {
+    var trigger = wrapper.querySelector(".code-repair-select-trigger");
+    var label = wrapper.querySelector("[data-custom-select-label]");
+    var menu = wrapper.querySelector(".code-repair-select-menu");
+    if (!trigger || !label || !menu) return;
+    var selected = select.options[select.selectedIndex];
+    label.textContent = selected ? selected.textContent : "Chọn một giá trị";
+    menu.innerHTML = "";
+    Array.prototype.forEach.call(select.options, function (option) {
+      var item = document.createElement("button");
+      item.type = "button";
+      item.textContent = option.textContent;
+      item.dataset.value = option.value;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", option.value === select.value ? "true" : "false");
+      item.addEventListener("click", function () {
+        select.value = option.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        refresh(wrapper, select);
+        closeMenu();
+      });
+      menu.appendChild(item);
+    });
+  }
+  function init(wrapper) {
+    var select = document.getElementById(wrapper.dataset.nativeSelectId);
+    if (!select) return;
+    var trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "code-repair-select-trigger";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    var label = document.createElement("span");
+    label.dataset.customSelectLabel = "true";
+    trigger.appendChild(label);
+    var menu = document.createElement("div");
+    menu.className = "code-repair-select-menu";
+    menu.hidden = true;
+    menu.setAttribute("role", "listbox");
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+    select.classList.add("code-repair-native-select");
+    trigger.addEventListener("click", function (event) {
+      event.stopPropagation();
+      if (openMenu && openMenu !== menu) closeMenu();
+      menu.hidden = !menu.hidden;
+      trigger.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+      openMenu = menu.hidden ? null : menu;
+    });
+    select.addEventListener("change", function () { refresh(wrapper, select); });
+    if (window.MutationObserver) new MutationObserver(function () { refresh(wrapper, select); }).observe(select, { childList: true });
+    refresh(wrapper, select);
+  }
+  panel.querySelectorAll(".code-repair-custom-select").forEach(init);
+  document.addEventListener("click", closeMenu);
+})();
+
+// Dependent execution permissions: without Push, the downstream actions are
+// unavailable and are cleared before the form can be submitted.
+(function () {
+  var panel = document.querySelector('[data-panel="code-repair"]');
+  if (!panel) return;
+  var push = panel.querySelector('input[name="code_repair_push"]');
+  var deploy = panel.querySelector('input[name="code_repair_deploy_staging"]');
+  var promote = panel.querySelector('input[name="code_repair_promote_main"]');
+  if (!push || !deploy || !promote) return;
+  function sync() {
+    [deploy, promote].forEach(function (input) {
+      var disabled = !push.checked;
+      input.disabled = disabled;
+      input.closest(".code-repair-policy-toggle").classList.toggle("is-disabled", disabled);
+      if (disabled) input.checked = false;
+    });
+  }
+  push.addEventListener("change", sync);
+  sync();
+})();
+
+// AI Action Policy: compact local filtering with custom dark dropdowns.
 (function () {
   var table = document.getElementById("action-policy-table");
   var tableWrap = document.getElementById("action-policy-table-wrap");
@@ -1050,8 +1442,10 @@
   var previous = document.getElementById("action-policy-page-previous");
   var next = document.getElementById("action-policy-page-next");
   var pageStatus = document.getElementById("action-policy-page-status");
+  var pageButtons = document.getElementById("action-policy-page-buttons");
+  var pageSummary = document.getElementById("action-policy-page-summary");
   if (!table || !search || !classification || !source || !reset || !result || !empty ||
-      !pagination || !previous || !next || !pageStatus) return;
+      !pagination || !previous || !next || !pageStatus || !pageButtons || !pageSummary) return;
 
   var rows = Array.prototype.slice.call(table.querySelectorAll("tbody tr"));
   var pageSize = 10;
@@ -1063,10 +1457,21 @@
   });
   rows.forEach(function (row) { table.tBodies[0].appendChild(row); });
   function normalize(value) { return String(value || "").trim().toLowerCase(); }
+  function filterValue(control) { return control.getAttribute("data-filter-value") || ""; }
+  function closeMenus(except) { document.querySelectorAll("[data-filter-menu], [data-policy-menu], [data-bulk-menu]").forEach(function (menu) { if (menu !== except) menu.hidden = true; }); }
+  function bindFilter(control) {
+    var trigger = control.querySelector("[data-filter-trigger]");
+    var menu = control.querySelector("[data-filter-menu]");
+    if (!trigger || !menu) return;
+    trigger.addEventListener("click", function (event) { event.stopPropagation(); var open = menu.hidden; closeMenus(menu); menu.hidden = !open; });
+    menu.querySelectorAll("[data-filter-option]").forEach(function (option) { option.addEventListener("click", function () { control.setAttribute("data-filter-value", option.getAttribute("data-filter-option") || ""); control.querySelector("[data-filter-label]").textContent = option.getAttribute("data-label") || option.textContent.trim(); menu.hidden = true; resetPageAndRender(); }); });
+  }
+  bindFilter(classification); bindFilter(source);
+  document.addEventListener("click", function () { closeMenus(null); });
   function render() {
     var query = normalize(search.value);
-    var wantedClassification = classification.value;
-    var wantedSource = source.value;
+    var wantedClassification = filterValue(classification);
+    var wantedSource = filterValue(source);
     var filtered = rows.filter(function (row) {
       return (!query || normalize(row.getAttribute("data-action-id")).indexOf(query) !== -1) &&
         (!wantedClassification || row.getAttribute("data-classification") === wantedClassification) &&
@@ -1078,12 +1483,16 @@
     var pageRows = filtered.slice(first, first + pageSize);
     rows.forEach(function (row) { row.hidden = pageRows.indexOf(row) === -1; });
     result.textContent = filtered.length + " / " + rows.length + " hành động";
+    var summaryText = "Hiển thị " + (filtered.length ? first + 1 : 0) + "–" + Math.min(first + pageSize, filtered.length) + " / " + filtered.length + " mục";
+    pageSummary.textContent = summaryText;
+    pageSummary.dataset.mobileSummary = (filtered.length ? first + 1 : 0) + "–" + Math.min(first + pageSize, filtered.length) + " / " + filtered.length;
     empty.hidden = filtered.length !== 0;
     if (tableWrap) tableWrap.hidden = filtered.length === 0;
     pagination.hidden = filtered.length === 0;
-    pageStatus.textContent = "Trang " + currentPage + " / " + pageCount;
+    pageStatus.textContent = "Trang " + currentPage + "/" + pageCount;
     previous.disabled = currentPage <= 1;
     next.disabled = currentPage >= pageCount;
+    if (window.DashboardPagination) window.DashboardPagination.renderPages(pageButtons, currentPage, pageCount, function (target) { currentPage = target; render(); });
     reset.disabled = !query && !wantedClassification && !wantedSource;
   }
   function resetPageAndRender() { currentPage = 1; render(); }
@@ -1099,28 +1508,66 @@
   });
   reset.addEventListener("click", function () {
     search.value = "";
-    classification.value = "";
-    source.value = "";
+    classification.setAttribute("data-filter-value", "");
+    source.setAttribute("data-filter-value", "");
+    classification.querySelector("[data-filter-label]").textContent = "Tất cả";
+    source.querySelector("[data-filter-label]").textContent = "Tất cả";
     resetPageAndRender();
     search.focus();
+  });
+  var selectAll = document.getElementById("action-policy-select-all");
+  var rowChecks = Array.prototype.slice.call(document.querySelectorAll("[data-action-select]"));
+  var bulkToolbar = document.getElementById("action-policy-bulk-toolbar");
+  var selectedCount = document.getElementById("action-policy-selected-count");
+  var bulkApply = document.getElementById("action-policy-bulk-apply");
+  var bulkValue = document.getElementById("action-policy-bulk-value");
+  function selectedRows() { return rowChecks.filter(function (check) { return check.checked; }); }
+  function bulkPolicy() { return bulkValue ? (bulkValue.getAttribute("data-policy-value") || "") : ""; }
+  function updateBulk() { var count = selectedRows().length; if (bulkToolbar) bulkToolbar.hidden = count === 0; if (selectedCount) selectedCount.textContent = "Đã chọn " + count + " action"; if (bulkApply) bulkApply.disabled = count === 0 || !bulkPolicy(); if (selectAll) selectAll.checked = count > 0 && count === rowChecks.length; }
+  rowChecks.forEach(function (check) { check.addEventListener("change", updateBulk); });
+  if (selectAll) selectAll.addEventListener("change", function () { rowChecks.forEach(function (check) { check.checked = selectAll.checked; }); updateBulk(); });
+  if (bulkValue) {
+    var bulkTrigger = bulkValue.querySelector("[data-bulk-trigger]");
+    var bulkMenu = bulkValue.querySelector("[data-bulk-menu]");
+    if (bulkTrigger && bulkMenu) {
+      bulkTrigger.addEventListener("click", function (event) { event.stopPropagation(); bulkMenu.hidden = !bulkMenu.hidden; });
+      bulkMenu.querySelectorAll("[data-bulk-option]").forEach(function (option) { option.addEventListener("click", function () { bulkValue.setAttribute("data-policy-value", option.getAttribute("data-bulk-option")); bulkValue.querySelector("[data-bulk-label]").textContent = "Đổi tất cả thành " + option.getAttribute("data-bulk-option"); bulkMenu.hidden = true; updateBulk(); }); });
+    }
+  }
+  if (bulkApply) bulkApply.addEventListener("click", function () {
+    var selected = selectedRows(); var policy = bulkPolicy(); if (!selected.length || !policy) return;
+    if (!window.confirm("Đổi policy của " + selected.length + " action thành " + policy + "?")) return;
+    bulkApply.disabled = true; bulkApply.textContent = "Đang áp dụng...";
+    fetch("/settings/autopilot/action-policy/bulk", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action_ids: selected.map(function (check) { return check.closest("tr").getAttribute("data-action-id"); }), classification: policy, confirmation: "OK" }) })
+      .then(function (response) { if (!response.ok) return response.json().then(function (data) { throw new Error(data.detail || "HTTP " + response.status); }); return response.json(); })
+      .then(function () { window.location.reload(); }).catch(function (error) { window.alert("Không thể áp dụng policy: " + error.message); bulkApply.disabled = false; bulkApply.textContent = "Áp dụng"; });
   });
   render();
 })();
 
-// Policy changes use one short, consistent confirmation for both SAFE and
-// RISKY. The server validates it again; this prompt is only the UI layer.
+// Policy changes use a clear confirmation naming both the action and target.
 (function () {
   var forms = document.querySelectorAll(".action-policy-change-form");
   Array.prototype.forEach.call(forms, function (form) {
     form.addEventListener("submit", function (event) {
       event.preventDefault();
-      var confirmation = window.prompt("Nhập OK để áp dụng policy");
-      if (confirmation !== "OK") return;
+      var actionName = form.getAttribute("data-action-name") || "action";
+      var value = form.querySelector("[data-policy-value]");
+      var classification = value ? value.value : "";
+      if (!window.confirm("Đổi policy của " + actionName + " thành " + classification + "?")) return;
       var field = form.querySelector('input[name="confirmation"]');
       if (!field) return;
-      field.value = confirmation;
+      field.value = "OK";
       form.submit();
     });
+    var trigger = form.querySelector("[data-policy-trigger]");
+    var menu = form.querySelector("[data-policy-menu]");
+    var value = form.querySelector("[data-policy-value]");
+    var label = form.querySelector("[data-policy-label]");
+    if (trigger && menu && value && label) {
+      trigger.addEventListener("click", function (event) { event.stopPropagation(); document.querySelectorAll("[data-policy-menu]").forEach(function (item) { if (item !== menu) item.hidden = true; }); menu.hidden = !menu.hidden; });
+      menu.querySelectorAll("[data-policy-option]").forEach(function (option) { option.addEventListener("click", function () { value.value = option.getAttribute("data-policy-option"); label.textContent = value.value; label.className = "policy-" + value.value.toLowerCase(); form.closest("tr").classList.add("is-policy-changed"); menu.hidden = true; }); });
+    }
   });
 })();
 
@@ -1134,6 +1581,38 @@
       form.querySelector('input[name="confirmation"]').value = confirmation;
       form.submit();
     });
+  });
+})();
+
+// --- Log Intelligence: custom source dropdown -----------------------------
+(function () {
+  var select = document.querySelector("[data-log-intel-select]");
+  if (!select) return;
+  var input = select.querySelector('input[name="log_intel_source"]');
+  var trigger = select.querySelector(".log-intel-select-trigger");
+  var label = select.querySelector("[data-log-intel-select-label]");
+  var menu = select.querySelector(".log-intel-select-menu");
+  var options = select.querySelectorAll("[data-log-intel-option]");
+  if (!input || !trigger || !label || !menu) return;
+  function close() { menu.hidden = true; trigger.setAttribute("aria-expanded", "false"); }
+  trigger.addEventListener("click", function () {
+    menu.hidden = !menu.hidden;
+    trigger.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+  });
+  Array.prototype.forEach.call(options, function (option) {
+    option.addEventListener("click", function () {
+      input.value = option.getAttribute("data-log-intel-option");
+      label.textContent = option.textContent;
+      Array.prototype.forEach.call(options, function (candidate) {
+        candidate.setAttribute("aria-selected", candidate === option ? "true" : "false");
+      });
+      close();
+    });
+  });
+  document.addEventListener("click", function (event) { if (!select.contains(event.target)) close(); });
+  document.addEventListener("keydown", function (event) { if (event.key === "Escape") close(); });
+  Array.prototype.forEach.call(options, function (option) {
+    option.setAttribute("aria-selected", option.getAttribute("data-log-intel-option") === input.value ? "true" : "false");
   });
 })();
 
@@ -1202,4 +1681,232 @@
         testBtn.disabled = false;
       });
   });
+})();
+
+// AI API only: replace the model selectors inside the router panel with dark-theme controls.
+(function () {
+  var routerPanel = document.querySelector('[data-panel="router"]');
+  if (!routerPanel) return;
+  var ids = ["codex-model-select", "claude-model-select", "claude-effort-select", "router-model-select"];
+
+  function closeAll(except) {
+    routerPanel.querySelectorAll(".settings-custom-select-menu").forEach(function (menu) {
+      if (menu !== except) menu.hidden = true;
+    });
+    routerPanel.querySelectorAll(".settings-custom-select-trigger").forEach(function (trigger) {
+      if (!except || trigger.nextElementSibling !== except) trigger.setAttribute("aria-expanded", "false");
+    });
+  }
+
+  function sync(select, trigger, menu) {
+    var current = select.options[select.selectedIndex];
+    trigger.textContent = current ? current.textContent : "Chọn...";
+    menu.innerHTML = "";
+    Array.prototype.forEach.call(select.options, function (option) {
+      var item = document.createElement("button");
+      item.type = "button";
+      item.className = "settings-custom-select-option";
+      item.textContent = option.textContent;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", option.selected ? "true" : "false");
+      item.addEventListener("click", function () {
+        select.value = option.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        sync(select, trigger, menu);
+        menu.hidden = true;
+        trigger.setAttribute("aria-expanded", "false");
+        trigger.focus();
+      });
+      menu.appendChild(item);
+    });
+  }
+
+  function init(select) {
+    if (!select || select.closest('[data-panel="router"]') !== routerPanel || select.dataset.customSelectReady) return;
+    select.dataset.customSelectReady = "true";
+    var wrapper = document.createElement("span");
+    wrapper.className = "settings-custom-select";
+    var trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "settings-custom-select-trigger";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    var menu = document.createElement("span");
+    menu.className = "settings-custom-select-menu";
+    menu.setAttribute("role", "listbox");
+    menu.hidden = true;
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+    select.classList.add("settings-native-select");
+    trigger.addEventListener("click", function () {
+      var opening = menu.hidden;
+      closeAll(menu);
+      menu.hidden = !opening;
+      trigger.setAttribute("aria-expanded", opening ? "true" : "false");
+    });
+    select.addEventListener("change", function () { sync(select, trigger, menu); });
+    new MutationObserver(function () { sync(select, trigger, menu); }).observe(select, { childList: true });
+    sync(select, trigger, menu);
+  }
+
+  ids.forEach(function (id) { init(document.getElementById(id)); });
+  routerPanel.addEventListener("click", function (event) {
+    if (!event.target.closest(".settings-custom-select")) closeAll(null);
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") closeAll(null);
+  });
+})();
+
+// AI API only: switch service content without reloading the Settings page.
+(function () {
+  var panel = document.querySelector('[data-panel="router"]');
+  if (!panel) return;
+  var tabs = Array.prototype.slice.call(panel.querySelectorAll("[data-ai-tab]"));
+  var tabPanels = Array.prototype.slice.call(panel.querySelectorAll("[data-ai-tab-panel]"));
+  var sharedConfig = panel.querySelector("#router-shared-config");
+  var warning = panel.querySelector("#ai-service-tab-warning");
+  var baseUrl = panel.querySelector("#router-base-url-input");
+  var apiKey = panel.querySelector("#router-api-key-input");
+  var step2Provider = panel.querySelector("#router-step2-provider");
+  var step2Form = panel.querySelector("#router-step2-form");
+  var configState = {};
+  var dirty = {};
+  var suppressDirty = false;
+  var routerConfiguredProvider = panel.getAttribute("data-router-configured-provider") || "";
+  function accountWasConfigured(provider) {
+    try { return window.localStorage.getItem("ceph-ai-ai-account-configured-" + provider) === "true"; }
+    catch (error) { return false; }
+  }
+  function rememberAccountConfigured(provider) {
+    try { window.localStorage.setItem("ceph-ai-ai-account-configured-" + provider, "true"); }
+    catch (error) { /* localStorage can be unavailable in private browsing */ }
+  }
+  var accountState = {
+    openai: {
+      enabled: panel.getAttribute("data-codex-enabled") === "true",
+      configured: panel.getAttribute("data-codex-enabled") === "true" || accountWasConfigured("openai")
+    },
+    anthropic: {
+      enabled: panel.getAttribute("data-claude-enabled") === "true",
+      configured: panel.getAttribute("data-claude-enabled") === "true" || accountWasConfigured("anthropic")
+    }
+  };
+  var active = (tabs.filter(function (tab) { return tab.classList.contains("is-active"); })[0] || tabs[0]);
+  var activeProvider = active ? active.getAttribute("data-ai-tab") : "9router";
+
+  function findRadio(provider) {
+    return panel.querySelector('input[name="router_provider"][value="' + provider + '"]');
+  }
+
+  function remember(provider) {
+    if (!baseUrl || !apiKey) return;
+    configState[provider] = { baseUrl: baseUrl.value, apiKey: apiKey.value };
+  }
+
+  function setProvider(provider) {
+    var radio = findRadio(provider);
+    if (!radio) return;
+    suppressDirty = true;
+    radio.checked = true;
+    radio.dispatchEvent(new Event("change", { bubbles: true }));
+    var state = configState[provider];
+    if (state) {
+      baseUrl.value = state.baseUrl;
+      apiKey.value = state.apiKey;
+      if (step2Form && step2Form.querySelector("option")) step2Form.hidden = false;
+    } else if (apiKey) {
+      apiKey.value = "";
+    }
+    if (step2Provider) step2Provider.value = provider;
+    suppressDirty = false;
+  }
+
+  function moveSharedConfig(provider) {
+    var slot = panel.querySelector('[data-ai-config-slot="' + provider + '"]');
+    if (sharedConfig && slot) slot.appendChild(sharedConfig);
+  }
+
+  function updateConfigCopy(provider) {
+    var title = panel.querySelector("#router-config-title");
+    var description = panel.querySelector("#router-config-description");
+    var copy = {
+      openai: ["API config · Codex", "Kết nối API OpenAI cho các luồng AI dùng chung."],
+      anthropic: ["API config · Claude", "Kết nối Anthropic API cho các luồng AI dùng chung."],
+      "9router": ["API config · 9Router", "Cấu hình proxy 9Router tự triển khai và xác nhận endpoint."],
+      openrouter: ["API config · OpenRouter", "Kết nối OpenRouter API và chọn model muốn sử dụng."]
+    }[provider] || ["API config", "Cấu hình endpoint và xác nhận kết nối với dịch vụ AI đang chọn."];
+    if (title) title.textContent = copy[0];
+    if (description) description.textContent = copy[1];
+  }
+
+  function updateConfigurationBadges() {
+    tabs.forEach(function (tab) {
+      var badge = tab.querySelector(".ai-service-tab-status");
+      if (!badge) return;
+      var provider = tab.getAttribute("data-ai-tab");
+      var account = accountState[provider];
+      var routerUsing = provider === routerConfiguredProvider;
+      var isUsing = !!(account && account.enabled) || routerUsing;
+      var isConfigured = isUsing || !!(account && account.configured);
+      var status = isUsing ? "ĐANG DÙNG" : (isConfigured ? "KHÔNG DÙNG" : "CHƯA CẤU HÌNH");
+      badge.textContent = status;
+      badge.classList.toggle("is-configured", isUsing);
+      badge.classList.toggle("is-not-using", !isUsing && isConfigured);
+      badge.classList.toggle("is-unconfigured", !isUsing && !isConfigured);
+      badge.hidden = false;
+    });
+  }
+
+  window.addEventListener("ceph-ai-account-state", function (event) {
+    var detail = event.detail || {};
+    if (detail.provider !== "openai" && detail.provider !== "anthropic") return;
+    accountState[detail.provider].enabled = !!detail.enabled;
+    if (detail.configured) {
+      accountState[detail.provider].configured = true;
+      rememberAccountConfigured(detail.provider);
+    }
+    updateConfigurationBadges();
+  });
+
+  function selectTab(provider) {
+    if (!provider || provider === activeProvider) return;
+    remember(activeProvider);
+    tabs.forEach(function (tab) {
+      var selected = tab.getAttribute("data-ai-tab") === provider;
+      tab.classList.toggle("is-active", selected);
+      tab.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+    tabPanels.forEach(function (tabPanel) {
+      tabPanel.hidden = tabPanel.getAttribute("data-ai-tab-panel") !== provider;
+    });
+    setProvider(provider);
+    moveSharedConfig(provider);
+    updateConfigCopy(provider);
+    if (dirty[activeProvider]) {
+      warning.hidden = false;
+      warning.textContent = "⚠ Có thay đổi chưa lưu trong tab " + activeProvider + ".";
+    } else {
+      warning.hidden = true;
+    }
+    activeProvider = provider;
+  }
+
+  tabs.forEach(function (tab) {
+    tab.addEventListener("click", function () { selectTab(tab.getAttribute("data-ai-tab")); });
+  });
+  panel.addEventListener("input", function (event) {
+    if (suppressDirty || !event.target.matches("input:not([type=radio]), textarea")) return;
+    dirty[activeProvider] = true;
+  });
+  panel.addEventListener("change", function (event) {
+    if (suppressDirty || event.target.matches('input[name="router_provider"]')) return;
+    if (event.target.matches("select, input:not([type=radio]), textarea")) dirty[activeProvider] = true;
+  });
+  moveSharedConfig(activeProvider);
+  if (step2Provider) step2Provider.value = activeProvider;
+  updateConfigCopy(activeProvider);
+  updateConfigurationBadges();
 })();

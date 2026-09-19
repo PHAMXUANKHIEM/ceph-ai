@@ -3,7 +3,7 @@ from datetime import datetime
 import dashboard.ws as ws_module
 from shared import db as db_module
 from shared.cluster_snapshot import publish_snapshot
-from shared.models import Incident, WatcherHeartbeat
+from shared.models import Action, ActionClassification, Incident, WatcherHeartbeat
 
 
 def test_unauthenticated_websocket_is_rejected(dashboard_client):
@@ -90,6 +90,73 @@ def test_cluster_state_websocket_receives_scoped_event(
     assert message["cluster_id"] == default_cluster_id
     assert message["sections"] == ["pools"]
     assert isinstance(message["generation"], int)
+
+
+def test_action_state_event_is_published_after_database_commit(
+    dashboard_client, default_cluster_id, monkeypatch
+):
+    from shared.cluster_events import read_latest_event
+
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id=default_cluster_id,
+            ceph_code="OSD_DOWN",
+            status="NEW",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id="restart_osd_daemon",
+            classification=ActionClassification.SAFE.value,
+            status="PENDING",
+        )
+        session.add(action)
+        session.commit()
+        action_id = action.id
+
+        action.status = "EXECUTING"
+        session.commit()
+
+    event = read_latest_event(default_cluster_id)
+    assert event["event"] == "action_state_changed"
+    assert event["action_id"] == action_id
+    assert event["action_status"] == "EXECUTING"
+
+
+def test_action_state_event_is_not_published_for_rolled_back_transition(
+    dashboard_client, default_cluster_id
+):
+    from shared.cluster_events import read_latest_event
+
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id=default_cluster_id,
+            ceph_code="PG_DEGRADED",
+            status="NEW",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id="pg_repair_force",
+            classification=ActionClassification.SAFE.value,
+            status="PENDING",
+        )
+        session.add(action)
+        session.commit()
+        action_id = action.id
+
+        action.status = "EXECUTING"
+        session.flush()
+        session.rollback()
+
+    event = read_latest_event(default_cluster_id)
+    assert event["event"] == "action_state_changed"
+    assert event["action_id"] == action_id
+    assert event["action_status"] == "PENDING"
 
 
 def test_poller_detects_changes_without_deserializing_snapshots(

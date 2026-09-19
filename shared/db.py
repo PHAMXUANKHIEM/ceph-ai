@@ -3,10 +3,33 @@ from contextvars import ContextVar
 from functools import lru_cache
 from typing import Iterator
 
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+import logging
+
+from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from config.settings import settings
+
+
+logger = logging.getLogger(__name__)
+_ACTION_STATE_EVENTS_KEY = "ceph_ai_action_state_events"
+
+
+def _validate_production_database_url(url: str) -> None:
+    environment = str(getattr(settings, "ceph_ai_environment", "development")).lower()
+    if environment != "production":
+        return
+    normalized = url.lower()
+    if not normalized.startswith((
+        "postgresql://",
+        "postgres://",
+        "postgresql+psycopg://",
+        "postgresql+psycopg2://",
+    )):
+        raise RuntimeError(
+            "Production requires a PostgreSQL DATABASE_URL; SQLite is only "
+            "allowed for development, test, or lab environments."
+        )
 
 
 class Base(DeclarativeBase):
@@ -21,6 +44,7 @@ def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
 
 def make_engine(database_url: str | None = None):
     url = database_url or settings.database_url
+    _validate_production_database_url(url)
     is_sqlite = url.startswith("sqlite")
     if is_sqlite:
         connect_args = {"check_same_thread": False}
@@ -111,3 +135,77 @@ class _RoutedSessionLocal:
 
 
 SessionLocal = _RoutedSessionLocal()
+
+
+def _action_cluster_id(session: Session, incident_id: str | None) -> str | None:
+    """Resolve an Action's effective cluster without importing models here.
+
+    ``shared.models`` imports ``Base`` from this module, so using a small
+    parameterized SQL lookup avoids a circular import while still mapping
+    legacy NULL-cluster incidents to the configured default cluster.
+    """
+    if not incident_id:
+        return None
+    row = session.execute(
+        text("SELECT cluster_id FROM incidents WHERE id = :incident_id"),
+        {"incident_id": incident_id},
+    ).first()
+    if row is None:
+        return None
+    cluster_id = row[0]
+    if cluster_id:
+        return str(cluster_id)
+    default_row = session.execute(
+        text("SELECT id FROM clusters WHERE is_default = :is_default LIMIT 1"),
+        {"is_default": True},
+    ).first()
+    return str(default_row[0]) if default_row and default_row[0] else None
+
+
+@event.listens_for(Session, "after_flush")
+def _collect_action_state_events(session: Session, _flush_context) -> None:
+    """Collect Action transitions before SQLAlchemy expires the objects."""
+    pending = session.info.setdefault(_ACTION_STATE_EVENTS_KEY, {})
+    candidates = set(session.new).union(session.dirty)
+    for action in candidates:
+        if action.__class__.__name__ != "Action":
+            continue
+        state = getattr(action, "status", None)
+        if state is None:
+            continue
+        if action in session.dirty:
+            inspected = inspect(action)
+            history = inspected.attrs.status.history
+            if not history.has_changes():
+                continue
+        cluster_id = _action_cluster_id(session, getattr(action, "incident_id", None))
+        if not cluster_id:
+            logger.warning(
+                "action state event skipped: no cluster for action %s",
+                getattr(action, "id", "unknown"),
+            )
+            continue
+        pending[(cluster_id, str(action.id))] = str(state)
+
+
+@event.listens_for(Session, "after_commit")
+def _publish_action_state_events(session: Session) -> None:
+    """Publish only after the DB commit succeeds; never affect the commit."""
+    pending = session.info.pop(_ACTION_STATE_EVENTS_KEY, {})
+    if not pending:
+        return
+    from shared.cluster_events import publish_action_state_event
+
+    for (cluster_id, action_id), status in pending.items():
+        try:
+            publish_action_state_event(cluster_id, action_id, status)
+        except Exception:
+            logger.exception(
+                "could not publish committed Action state event for %s",
+                action_id,
+            )
+
+
+@event.listens_for(Session, "after_rollback")
+def _discard_action_state_events(session: Session) -> None:
+    session.info.pop(_ACTION_STATE_EVENTS_KEY, None)

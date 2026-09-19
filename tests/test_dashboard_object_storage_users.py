@@ -3,6 +3,7 @@ from config.settings import settings
 from shared import db
 from shared.models import Cluster
 from shared.models import ObjectStorageAuditEntry
+from watcher.rgw_access_log import _fetch_s3_user_info_batch
 
 
 def _login(client):
@@ -63,6 +64,31 @@ def test_user_detail_is_secret_safe_in_api_and_html(dashboard_client, monkeypatc
     assert "SUPER-SECRET" not in api.text + page.text
 
 
+def test_user_detail_exposes_only_masked_key_metadata(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "fetch_s3_user_info", lambda host, uid: _raw(uid))
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/object-storage/users/alice")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["access_keys"][0]["access_key_masked"].endswith("LEAK")
+    assert "AKIA-DO-NOT-LEAK" not in response.text
+    assert "SUPER-SECRET" not in response.text
+
+
+def test_user_buckets_are_loaded_through_a_separate_scoped_endpoint(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "fetch_s3_user_bucket_list", lambda host, uid: ["photos", "backups"])
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/object-storage/users/alice/buckets")
+
+    assert response.status_code == 200
+    assert response.json() == {"uid": "alice", "buckets": ["photos", "backups"]}
+
+
 def test_users_page_search_and_empty_state(dashboard_client, monkeypatch):
     _configure(monkeypatch)
     monkeypatch.setattr(route, "fetch_s3_user_list", lambda host: ["alice", "bob"])
@@ -77,6 +103,19 @@ def test_users_page_search_and_empty_state(dashboard_client, monkeypatch):
     assert 'href="/deploy-cluster"' in response.text
 
 
+def test_users_page_search_matches_display_name_and_email(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "fetch_s3_user_list", lambda host: ["alice", "bob"])
+    monkeypatch.setattr(route, "fetch_s3_user_info", lambda host, uid: _raw(uid))
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/object-storage/users?query=alice@example.test")
+
+    assert response.status_code == 200
+    assert "User alice" in response.text
+    assert "User bob" not in response.text
+
+
 def test_s3_user_inventory_reuses_cluster_cache(dashboard_client, monkeypatch):
     _configure(monkeypatch)
     calls = []
@@ -88,6 +127,30 @@ def test_s3_user_inventory_reuses_cluster_cache(dashboard_client, monkeypatch):
 
     assert first.status_code == second.status_code == 200
     assert calls == ["10.20.1.90"]
+
+
+def test_user_search_during_cold_list_refresh_returns_pending_state(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "_cached_user_list", lambda _cluster: {"host": None, "uids": []})
+    monkeypatch.setattr(
+        route,
+        "cache_state",
+        lambda namespace, _key: {
+            "refreshing": namespace == "s3-user-list",
+            "error": False,
+            "available": False,
+            "age_seconds": None,
+        },
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/object-storage/users?query=alice")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["searching"] is True
+    assert body["refreshing"] is True
+    assert body["items"] == []
 
 
 def test_user_detail_rejects_path_like_uid(dashboard_client, monkeypatch):
@@ -146,28 +209,50 @@ def test_admin_page_exposes_two_step_action_form(dashboard_client, monkeypatch):
     assert response.status_code == 200
     assert 'id="s3-user-action-form"' in response.text
     assert 'id="s3-execute"' in response.text
-    assert 'id="s3-key-action-form"' in response.text
-    assert 'id="s3-one-time-secret"' in response.text
-    assert "Access-key lifecycle" in response.text
+    assert 'id="s3-open-create"' in response.text
+    assert 'id="s3-user-drawer"' in response.text
+    assert 'id="s3-key-wizard"' not in response.text
+    assert 'id="s3-user-modal"' in response.text
+    assert "detail drawer" in response.text
 
 
-def test_s3_user_features_are_presented_as_single_visible_tab():
+def test_s3_user_features_keep_users_and_audit_as_two_tabs():
     source = open("dashboard/static/object_storage_users.js", encoding="utf-8").read()
-    assert 'tabs.setAttribute("role", "tablist")' in source
-    assert '["Danh sách S3 user", "Quản lý S3 user", "Access-key lifecycle", "Object Storage Audit"]' in source
-    assert "panel.hidden = panel.id !== selected.dataset.s3UserTab" in source
-    assert 'tab.setAttribute("aria-selected", String(active))' in source
+    assert "data-s3-tab" in source
+    assert "s3-user-action-form" in source
+    assert "s3-key-action-form" not in source
+    template = open("dashboard/templates/object_storage_users.html", encoding="utf-8").read()
+    assert 'data-s3-tab="s3-users-panel"' in template
+    assert 'data-s3-tab="s3-audit-panel"' in template
 
 
-def test_object_storage_audit_filters_and_paginates_ten_rows_client_side():
+def test_object_storage_audit_filters_and_paginates_10_rows_client_side():
     source = open("dashboard/static/object_storage_users.js", encoding="utf-8").read()
-    assert 'var pageSize = 10;' in source
-    assert 'placeholder="Actor, action, target hoặc request ID"' in source
-    assert 'Tất cả action' in source
-    assert 'Tất cả kết quả' in source
-    assert "filtered.slice((page - 1) * pageSize, page * pageSize)" in source
-    assert '10 dòng/trang' in source
-    assert "Không có bản ghi audit phù hợp." in source
+    assert 'var auditSize = 10;' in source
+    assert "data-s3-audit-search" in source
+    assert "data-s3-audit-action" in source
+    assert "data-s3-audit-result" in source
+    assert "filtered.slice((auditPage - 1) * auditSize, auditPage * auditSize)" in source
+    assert "10 dòng/trang" in source
+    assert "classifyAction" in source
+
+
+def test_s3_user_batch_parser_keeps_users_separate_and_handles_missing_payload():
+    output = "\n".join([
+        "__CEPH_AIOPS_S3_USER__alice__",
+        '{"user_id":"alice","keys":[]}',
+        "__CEPH_AIOPS_S3_USER__bob__",
+        '{"user_id":"bob","keys":[]}',
+    ])
+
+    result = _fetch_s3_user_info_batch(
+        "test-host", ["alice", "bob", "missing"], "none", "",
+        lambda command: output,
+    )
+
+    assert result["alice"]["user_id"] == "alice"
+    assert result["bob"]["user_id"] == "bob"
+    assert result["missing"] is None
 
 
 def test_execute_requires_admin_and_exact_uid_confirmation(dashboard_client, monkeypatch):
@@ -248,6 +333,43 @@ def test_audit_api_is_admin_only_and_cluster_scoped(dashboard_client, monkeypatc
 
     monkeypatch.setattr(route.auth, "is_admin_user", lambda user: False)
     assert dashboard_client.get("/api/object-storage/audit").status_code == 403
+
+
+def test_audit_purge_requires_confirmation_and_is_cluster_scoped(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        selected = session.query(Cluster).filter_by(is_default=True).one()
+        other = Cluster(
+            name="other-cluster", ceph_mon_nodes="10.0.0.2", is_default=False,
+            is_active=True, ssh_user="root", ssh_key_path="/key",
+        )
+        session.add(other)
+        session.flush()
+        session.add_all([
+            ObjectStorageAuditEntry(
+                cluster_id=selected.id, actor="admin", action="create_user",
+                target_type="s3_user", target_id="alice", preview="create", result="succeeded",
+            ),
+            ObjectStorageAuditEntry(
+                cluster_id=other.id, actor="admin", action="create_user",
+                target_type="s3_user", target_id="bob", preview="create", result="succeeded",
+            ),
+        ])
+        session.commit()
+
+    missing_confirmation = dashboard_client.post("/api/object-storage/audit/purge", json={})
+    assert missing_confirmation.status_code == 400
+
+    response = dashboard_client.post(
+        "/api/object-storage/audit/purge",
+        json={"confirmation": "DELETE_ALL_AUDIT"},
+    )
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 1
+    with db.SessionLocal() as session:
+        assert session.query(ObjectStorageAuditEntry).filter_by(target_id="alice").count() == 0
+        assert session.query(ObjectStorageAuditEntry).filter_by(target_id="bob").count() == 1
 
 
 def test_create_access_key_returns_secret_once_but_never_persists_it(dashboard_client, monkeypatch):

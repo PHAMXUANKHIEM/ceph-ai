@@ -26,5 +26,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_column('chat_messages', 'proposed_action_params')
-    op.drop_column('actions', 'action_params')
+    with op.batch_alter_table("chat_messages") as batch_op:
+        batch_op.drop_column("proposed_action_params")
+    with op.batch_alter_table("actions") as batch_op:
+        batch_op.drop_column("action_params")

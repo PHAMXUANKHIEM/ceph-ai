@@ -765,6 +765,9 @@ def test_has_command_true_for_action_ids_with_a_real_command():
     assert commands_module.has_command("rbd_create_volume") is True
     assert commands_module.has_command("rbd_resize_volume") is True
     assert commands_module.has_command("rbd_rename_volume") is True
+    assert commands_module.has_command("rbd_clone_volume") is True
+    assert commands_module.has_command("rbd_flatten_volume") is True
+    assert commands_module.has_command("rbd_template_mark") is True
     assert commands_module.has_command("rbd_trash_move_volume") is True
     assert commands_module.has_command("rbd_trash_restore_volume") is True
     assert commands_module.has_command("rbd_trash_purge_all") is True
@@ -799,10 +802,69 @@ def test_rbd_rename_volume_command_validates_both_names_and_post_checks_destinat
         commands_module.get_command(
             "rbd_rename_volume", params={"pool_name": "vms", "image": "vm-old", "new_image": "vm-old"}
         )
+
+
+def test_rbd_clone_and_flatten_commands_are_closed_schema_and_post_checked():
+    clone = commands_module.get_command(
+        "rbd_clone_volume",
+        params={"pool_name": "vms", "image": "vm-old", "snapshot": "gold",
+                "dest_pool": "images", "dest_image": "vm-copy"},
+    )
+    assert "rbd snap protect vms/vm-old@gold" in clone
+    assert "rbd clone vms/vm-old@gold images/vm-copy" in clone
+    assert clone.endswith("rbd info images/vm-copy --format json")
+    flatten = commands_module.get_command(
+        "rbd_flatten_volume", params={"pool_name": "images", "image": "vm-copy"}
+    )
+    assert flatten == "rbd flatten images/vm-copy && rbd info images/vm-copy --format json"
+    with pytest.raises(ExecutorError):
+        commands_module.get_command(
+            "rbd_clone_volume", params={"pool_name": "vms", "image": "vm-old", "snapshot": "--bad",
+                                         "dest_pool": "images", "dest_image": "vm-copy"}
+        )
+
+
+def test_rbd_template_command_protects_snapshot_and_records_metadata():
+    command = commands_module.get_command(
+        "rbd_template_mark",
+        params={"pool_name": "vms", "image": "vm-old", "snapshot": "gold",
+                "template_name": "ubuntu-24", "description": "golden image"},
+    )
+    assert "rbd snap protect vms/vm-old@gold" in command
+    assert "rbd image-meta set vms/vm-old ceph.ai.template.gold" in command
+    assert command.endswith("rbd snap ls vms/vm-old --format json")
+    with pytest.raises(ExecutorError):
+        commands_module.get_command(
+            "rbd_template_mark", params={"pool_name": "vms", "image": "vm-old",
+                                          "snapshot": "gold", "template_name": "--bad"}
+        )
     with pytest.raises(ExecutorError):
         commands_module.get_command(
             "rbd_rename_volume", params={"pool_name": "vms", "image": "vm-old", "new_image": "--bad"}
         )
+
+
+def test_rbd_qos_command_sets_all_limits_and_is_closed_schema():
+    params = {
+        "pool_name": "images", "image": "vm-01",
+        "rbd_qos_iops_limit": 1000, "rbd_qos_bps_limit": 8 * 1024 * 1024,
+        "rbd_qos_iops_burst": 1200, "rbd_qos_bps_burst": 16 * 1024 * 1024,
+        "rbd_qos_read_iops_limit": 600, "rbd_qos_read_bps_limit": 4 * 1024 * 1024,
+        "rbd_qos_write_iops_limit": 400, "rbd_qos_write_bps_limit": 4 * 1024 * 1024,
+    }
+    command = commands_module.get_command("rbd_qos_set", params=params)
+
+    assert "rbd config image set images/vm-01 rbd_qos_iops_limit 1000" in command
+    assert "rbd config image set images/vm-01 rbd_qos_write_bps_limit 4194304" in command
+    assert command.endswith("rbd config image list images/vm-01 --format json")
+    assert commands_module.has_command("rbd_qos_set") is True
+
+
+def test_rbd_qos_command_rejects_negative_or_excessive_limit():
+    with pytest.raises(ExecutorError):
+        commands_module.get_command("rbd_qos_set", params={"pool_name": "images", "image": "vm-01", "rbd_qos_iops_limit": -1})
+    with pytest.raises(ExecutorError):
+        commands_module.get_command("rbd_qos_set", params={"pool_name": "images", "image": "vm-01", "rbd_qos_bps_limit": 10_000_000_000_001})
 
 
 def test_rbd_trash_move_and_restore_commands_are_guarded_and_post_checked():
@@ -912,6 +974,23 @@ def test_cinder_create_snapshot_command_uses_force_only_when_explicit():
     with pytest.raises(ExecutorError):
         commands_module.get_command(
             "cinder_create_snapshot", params={**params, "snapshot_name": "bad/name"}
+        )
+
+
+def test_cinder_delete_snapshot_command_polls_for_confirmed_deletion():
+    params = {
+        "volume_id": "12345678-1234-4123-8123-1234567890ab",
+        "snapshot_id": "abcdefab-1234-4123-8123-1234567890ab",
+        "openrc_path": "/root/admin-openrc",
+    }
+    command = commands_module.get_command("cinder_delete_snapshot", params=params)
+
+    assert "snapshot delete" in command
+    assert "snapshot show" in command
+    assert '"deleted":true' in command
+    with pytest.raises(ExecutorError):
+        commands_module.get_command(
+            "cinder_delete_snapshot", params={**params, "snapshot_id": "bad-id"}
         )
 
 

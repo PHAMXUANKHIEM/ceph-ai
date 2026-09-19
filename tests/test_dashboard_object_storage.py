@@ -2,9 +2,10 @@ import dashboard.routes.object_storage as object_storage_route
 from datetime import datetime, timezone
 import json
 import bcrypt
+from types import SimpleNamespace
 from config.settings import settings
 from shared import db
-from shared.models import Cluster, ObjectStorageAuditEntry, User
+from shared.models import BucketInventorySnapshot, Cluster, ObjectStorageAuditEntry, User
 from watcher.rgw_access_log import RgwLogError
 
 
@@ -58,11 +59,72 @@ def test_inventory_page_shows_empty_state_without_sample_buckets(dashboard_clien
     assert ".mgr" not in response.text
     assert 'href="/object-storage/buckets" class="nav-dropdown-item nav-dropdown-item-active">Buckets</a>' in response.text
     assert '>Object Storage</a>' not in response.text
-    assert 'role="tablist" aria-label="Tính năng Buckets"' in response.text
-    assert 'data-bucket-tab="bucket-overview-panel"' in response.text
-    assert 'data-bucket-tab="bucket-user-settings-panel"' in response.text
+    assert 'role="tablist" aria-label="Tính năng Buckets"' not in response.text
+    assert 'data-bucket-tab="bucket-overview-panel"' not in response.text
+    assert 'id="bucket-overview-panel" class="card bucket-overview-card"' in response.text
+    assert '<div class="app-body">' in response.text
+    assert 'id="bucket-render-guard"' in response.text
     assert 'id="s3-setting-form"' in response.text
-    assert 'id="bucket-create-panel" class="card bucket-feature-panel" role="tabpanel" hidden' in response.text
+    assert 'class="bucket-feature-panel"' not in response.text
+
+
+def test_inventory_page_shows_loading_state_instead_of_false_empty_state(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route, "_cached_inventory", lambda *args, **kwargs: {
+        "items": [], "query": "", "owner": "", "quota": "all", "usage": "all",
+        "sort": "name", "order": "asc", "page": 1, "page_count": 1, "page_size": 10,
+        "total": 0, "rgw_endpoint": "", "rgw_endpoints": [], "zonegroup_api_name": "default",
+        "refreshing": True,
+    })
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/object-storage/buckets")
+
+    assert response.status_code == 200
+    assert "bucket-loading-placeholder" in response.text
+    assert "Đang tải danh sách bucket…" in response.text
+    assert "bucket-inventory-loading" in response.text
+    assert '<span class="inventory-count">Đang tải…</span>' in response.text
+    assert ".bucket-empty-state-card:not(.bucket-loading-placeholder)" in response.text
+
+
+def test_inventory_refreshing_snapshot_does_not_render_second_loading_placeholder(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route, "_cached_inventory", lambda *args, **kwargs: {
+        "items": [{"name": "archive", "stats_pending": True, "stats_available": False}],
+        "query": "", "owner": "", "quota": "all", "usage": "all",
+        "sort": "name", "order": "asc", "page": 1, "page_count": 1, "page_size": 10,
+        "total": 1, "rgw_endpoint": "http://10.20.1.90:7480", "rgw_endpoints": [],
+        "zonegroup_api_name": "default", "refreshing": True, "refresh_error": False,
+        "stale": True,
+    })
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/object-storage/buckets")
+
+    assert response.status_code == 200
+    assert "Đang hiển thị snapshot cũ trong lúc làm mới." in response.text
+    assert '<div class="bucket-empty-state bucket-empty-state-card bucket-loading-placeholder"' not in response.text
+    assert 'data-bucket-name="archive"' in response.text
+
+
+def test_bucket_list_cache_is_invalidated_after_cluster_mutation(monkeypatch):
+    calls = []
+    cluster = SimpleNamespace(id="bucket-cache-regression", is_default=True)
+    monkeypatch.setattr(object_storage_route, "_uses_mocked_rgw_client", lambda: False)
+    monkeypatch.setattr(
+        object_storage_route,
+        "_load_bucket_list_from_first_reachable_rgw",
+        lambda current_cluster, hosts: calls.append(hosts) or (hosts[0], ["fresh-bucket"]),
+    )
+    object_storage_route.invalidate_object_storage_cache(cluster.id, "bucket-list")
+
+    first = object_storage_route._list_from_first_reachable_rgw(cluster, ["10.0.0.1"])
+    object_storage_route.invalidate_object_storage_cache(cluster.id, "bucket-list")
+    second = object_storage_route._list_from_first_reachable_rgw(cluster, ["10.0.0.1"])
+
+    assert first == second == ("10.0.0.1", ["fresh-bucket"])
+    assert len(calls) == 2
 
 
 def test_bucket_inventory_reuses_cluster_cache(dashboard_client, monkeypatch):
@@ -78,11 +140,148 @@ def test_bucket_inventory_reuses_cluster_cache(dashboard_client, monkeypatch):
     assert calls == ["10.20.1.90"]
 
 
-def test_bucket_feature_tabs_only_show_the_selected_panel():
+def test_production_inventory_defers_bucket_stats_until_detail_api(monkeypatch):
+    cluster = SimpleNamespace(id="lazy-inventory", is_default=True)
+    monkeypatch.setattr(object_storage_route, "_rgw_hosts", lambda current_cluster: ["10.20.1.90"])
+    monkeypatch.setattr(
+        object_storage_route,
+        "_list_from_first_reachable_rgw",
+        lambda current_cluster, hosts: (hosts[0], ["archive", "images"]),
+    )
+    monkeypatch.setattr(object_storage_route, "_uses_mocked_rgw_client", lambda: False)
+    monkeypatch.setattr(
+        object_storage_route,
+        "_bucket_summary",
+        lambda *args: (_ for _ in ()).throw(AssertionError("stats must be lazy")),
+    )
+
+    result = object_storage_route._inventory(cluster, "", 1)
+
+    assert [row["name"] for row in result["items"]] == ["archive", "images"]
+    assert all(row["stats_pending"] is True for row in result["items"])
+
+
+def test_inventory_uses_durable_snapshot_while_refresh_runs(dashboard_client, monkeypatch):
+    cluster = SimpleNamespace(id="durable-bucket-snapshot", is_default=True)
+    with db.SessionLocal() as session:
+        session.add(BucketInventorySnapshot(
+            cluster_id=cluster.id,
+            rgw_host="10.20.1.90",
+            bucket_names_json=json.dumps(["archive", "images"]),
+            captured_at=datetime.utcnow(),
+        ))
+        session.commit()
+
+    monkeypatch.setattr(object_storage_route, "_rgw_hosts", lambda current_cluster: ["10.20.1.90"])
+    monkeypatch.setattr(object_storage_route, "_uses_mocked_rgw_client", lambda: False)
+    monkeypatch.setattr(object_storage_route, "get_or_load", lambda namespace, key, loader, **kwargs: kwargs["fallback"])
+    monkeypatch.setattr(
+        object_storage_route,
+        "cache_state",
+        lambda namespace, key: {"refreshing": True, "error": False, "available": False, "age_seconds": None},
+    )
+
+    result = object_storage_route._cached_inventory(cluster, "", 1)
+
+    assert result["refreshing"] is True
+    assert result["stale"] is True
+    assert result["snapshot_available"] is True
+    assert result["total"] == 2
+    assert [row["name"] for row in result["items"]] == ["archive", "images"]
+    assert all(row["stats_pending"] is True for row in result["items"])
+
+
+def test_bucket_list_uses_configured_rgw_s3_api_before_ssh(monkeypatch):
+    cluster = SimpleNamespace(id="s3-inventory", is_default=True)
+    monkeypatch.setattr(settings, "ceph_rgw_s3_endpoint", "http://rgw.example:7480")
+    monkeypatch.setattr(settings, "ceph_rgw_s3_access_key", "inventory-key")
+    monkeypatch.setattr(settings, "ceph_rgw_s3_secret_key", "inventory-secret")
+
+    class FakeS3Client:
+        def list_buckets(self):
+            return {"Buckets": [{"Name": "Volumes"}, {"Name": "images"}, {"Name": "Volumes"}]}
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3Client())
+    monkeypatch.setattr(
+        object_storage_route,
+        "fetch_bucket_list",
+        lambda host: (_ for _ in ()).throw(AssertionError("SSH fallback must not run")),
+    )
+
+    host, names = object_storage_route._load_bucket_list_from_first_reachable_rgw(
+        cluster, ["10.20.1.90"]
+    )
+
+    assert host == "10.20.1.90"
+    assert names == ["images", "Volumes"]
+
+
+def test_bucket_list_falls_back_to_ssh_for_invalid_s3_response(monkeypatch):
+    cluster = SimpleNamespace(id="s3-invalid-response", is_default=True)
+    monkeypatch.setattr(settings, "ceph_rgw_s3_endpoint", "http://rgw.example:7480")
+    monkeypatch.setattr(settings, "ceph_rgw_s3_access_key", "inventory-key")
+    monkeypatch.setattr(settings, "ceph_rgw_s3_secret_key", "inventory-secret")
+
+    class FakeS3Client:
+        def list_buckets(self):
+            return {"unexpected": []}
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3Client())
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["ssh-bucket"])
+
+    host, names = object_storage_route._load_bucket_list_from_first_reachable_rgw(
+        cluster, ["10.20.1.90"]
+    )
+
+    assert host == "10.20.1.90"
+    assert names == ["ssh-bucket"]
+
+
+def test_bucket_list_prefers_last_successful_rgw_host(monkeypatch):
+    cluster = SimpleNamespace(id="preferred-rgw", is_default=True)
+    calls = []
+    monkeypatch.setattr(
+        object_storage_route,
+        "_load_bucket_inventory_snapshot",
+        lambda current_cluster: {"host": "10.20.1.91", "names": [], "captured_at": None},
+    )
+    monkeypatch.setattr(object_storage_route, "_uses_mocked_rgw_client", lambda: True)
+    monkeypatch.setattr(
+        object_storage_route,
+        "_load_bucket_list_from_first_reachable_rgw",
+        lambda current_cluster, hosts: calls.append(hosts) or (hosts[0], []),
+    )
+
+    result = object_storage_route._list_from_first_reachable_rgw(
+        cluster, ["10.20.1.90", "10.20.1.91"]
+    )
+
+    assert result == ("10.20.1.91", [])
+    assert calls == [["10.20.1.91", "10.20.1.90"]]
+
+
+def test_durable_snapshot_does_not_keep_removed_rgw_endpoint(monkeypatch):
+    cluster = SimpleNamespace(id="rotated-rgw", is_default=True)
+    monkeypatch.setattr(
+        object_storage_route,
+        "_load_bucket_inventory_snapshot",
+        lambda current_cluster: {"host": "10.20.1.90", "names": ["archive"], "captured_at": None},
+    )
+    monkeypatch.setattr(object_storage_route, "_rgw_hosts", lambda current_cluster: ["10.20.1.91"])
+
+    result = object_storage_route._durable_snapshot_fallback(
+        cluster, "", 1, "", "all", "all", "name", "asc", 10
+    )
+
+    assert result["host"] == "10.20.1.91"
+    assert result["rgw_endpoint"] == "http://10.20.1.91:7480"
+
+
+def test_bucket_inventory_is_not_dependent_on_hidden_feature_tabs():
     source = open("dashboard/static/object_storage_buckets.js", encoding="utf-8").read()
-    assert 'document.querySelectorAll("[data-bucket-tab]")' in source
-    assert "panel.hidden = panel.id !== tab.dataset.bucketTab" in source
-    assert 'item.setAttribute("aria-selected", String(active))' in source
+    assert 'document.querySelectorAll("[data-bucket-tab]")' not in source
+    assert "panel.hidden = panel.id !== tab.dataset.bucketTab" not in source
+    assert 'document.getElementById("bucket-action-drawer")' in source
 
 
 def test_lifecycle_and_policy_use_option_builders_instead_of_raw_json():
@@ -957,6 +1156,21 @@ def test_bucket_detail_shows_unknown_optional_capabilities_truthfully(dashboard_
     assert "Không có trong bucket stats" in response.text
 
 
+def test_bucket_detail_uses_background_loading_shell(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route, "_cached_detail", lambda *args: {
+        "loading": True, "name": "archive",
+    })
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/object-storage/buckets/archive")
+
+    assert response.status_code == 200
+    assert 'id="bucket-detail-loading"' in response.text
+    assert "Đang tải metadata từ RGW…" in response.text
+    assert 'id="object-browser"' not in response.text
+
+
 def test_bucket_detail_summarizes_request_and_error_trend(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["archive"])
@@ -971,10 +1185,63 @@ def test_bucket_detail_summarizes_request_and_error_trend(dashboard_client, monk
     response = dashboard_client.get("/object-storage/buckets/archive")
 
     assert response.status_code == 200
-    assert "3</strong> request" in response.text
-    assert "2</strong> lỗi HTTP 4xx/5xx" in response.text
-    assert "66.7%" in response.text
-    assert response.text.count("2026-08-17T0") >= 2
+    assert "Đang tải activity…" in response.text
+
+    activity = dashboard_client.get("/api/object-storage/buckets/archive/activity")
+    assert activity.status_code == 200
+    body = activity.json()["activity"]
+    assert body["total"] == 3
+    assert body["errors"] == 2
+    assert body["error_rate"] == 66.7
+    assert len(body["points"]) == 2
+
+
+def test_bucket_activity_cache_reuses_recent_read_and_invalidates(monkeypatch):
+    cluster = SimpleNamespace(id="activity-cache-regression", is_default=True)
+    calls = []
+    monkeypatch.setattr(
+        object_storage_route,
+        "_load_bucket_activity",
+        lambda current_cluster, host, name: calls.append((host, name)) or {
+            "available": True, "error": None, "total": 1, "errors": 0,
+            "error_rate": 0.0, "latest_request": None, "points": [],
+        },
+    )
+    object_storage_route.invalidate_object_storage_cache(cluster.id, "bucket-activity")
+
+    first = object_storage_route._bucket_activity(cluster, "10.0.0.1", "archive")
+    second = object_storage_route._bucket_activity(cluster, "10.0.0.1", "archive")
+
+    assert first == second
+    assert calls == [("10.0.0.1", "archive")]
+
+    object_storage_route.invalidate_object_storage_cache(cluster.id, "bucket-activity")
+    object_storage_route._bucket_activity(cluster, "10.0.0.1", "archive")
+    assert calls == [("10.0.0.1", "archive"), ("10.0.0.1", "archive")]
+
+
+def test_object_browser_default_page_fetches_only_one_probe_entry(monkeypatch):
+    cluster = SimpleNamespace(id="object-browser-regression", is_default=True)
+    monkeypatch.setattr(
+        object_storage_route, "_detail",
+        lambda current_cluster, bucket: {"host": "10.0.0.1"},
+    )
+    calls = []
+
+    def objects(host, bucket, marker, limit):
+        calls.append((host, bucket, marker, limit))
+        return [{"name": f"object-{index:02d}", "instance": "", "meta": {"size": index}}
+                for index in range(11)]
+
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_objects", objects)
+
+    result = object_storage_route._object_browser(
+        cluster, "archive", "", "", "", 10, "key", "asc"
+    )
+
+    assert calls == [("10.0.0.1", "archive", "", 11)]
+    assert len(result["items"]) == 10
+    assert result["truncated"] is True
 
 
 def test_object_browser_lists_bounded_metadata_and_continuation_marker(dashboard_client, monkeypatch):
@@ -1007,12 +1274,18 @@ def test_object_browser_lists_bounded_metadata_and_continuation_marker(dashboard
 
     assert response.status_code == 200
     body = response.json()
+    # ?page_size= is accepted but ignored — the browser serves a fixed page
+    # (bucket_objects_api), so both objects come back, sorted by size desc.
     assert body["items"] == [{
+        "key": "logs/b.json", "size_bytes": 8, "size": "8 B",
+        "content_type": "application/json",
+        "last_modified": "2026-08-17T02:00:00Z", "etag": None, "version_id": None,
+    }, {
         "key": "logs/a.txt", "size_bytes": 4, "size": "4 B", "content_type": "text/plain",
         "last_modified": "2026-08-17T01:00:00Z", "etag": "abc", "version_id": "v1",
     }]
-    assert body["truncated"] is True
-    assert body["next_marker"] == "logs/a.txt"
+    assert body["truncated"] is False
+    assert body["next_marker"] is None
     assert calls == [("10.20.1.90", "archive", "", 101)]
 
 

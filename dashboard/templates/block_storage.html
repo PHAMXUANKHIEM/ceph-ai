@@ -5,62 +5,111 @@
   <title>Block Storage — Ceph AIOps</title>
   {% if cache_loading %}<meta http-equiv="refresh" content="3">{% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/block_storage_overview.css?v={{ static_version }}">
 </head>
 <body>
   {% include "_nav.html" %}
-  <main class="page">
+  <main class="page block-storage-page">
+    <header class="block-storage-page-header">
+      <div>
+        <div class="block-storage-eyebrow">Storage / RBD</div>
+        <h1>Block Storage <span>— {{ selected_cluster.name }}</span></h1>
+        <p>Quản lý inventory RBD, theo dõi dung lượng và mở rộng thao tác volume theo flow phê duyệt.</p>
+      </div>
+      {% if is_admin and create_pools %}
+      <button type="button" class="btn btn-primary block-storage-create-open" id="block-storage-create-open"><span aria-hidden="true">+</span> Tạo Volume</button>
+      {% endif %}
+    </header>
+
+    {% if error %}<div class="state-banner state-banner--error"><span>Không tải được Block Storage: {{ error }}</span></div>{% endif %}
+    {% if cache_loading %}<div class="state-banner state-banner--loading"><span>Đang đồng bộ inventory Block Storage từ cụm…</span></div>{% endif %}
+
+    <section class="block-storage-summary" aria-label="Tổng quan Block Storage">
+      <article class="block-storage-summary-card">
+        <span>Volumes</span><strong>{{ total_images }}</strong><small>RBD image trong cluster</small>
+      </article>
+      <article class="block-storage-summary-card block-storage-capacity-card">
+        <div><span>Tổng cấp phát</span><strong>{{ inventory_summary.total_allocated }}</strong><small>Logical provisioned</small></div>
+        <span class="block-storage-donut" style="--used-angle: {{ (inventory_summary.used_ratio or 0) * 3.6 }}deg" role="img" aria-label="Đã dùng {{ inventory_summary.used_ratio if inventory_summary.used_ratio is not none else 'chưa có dữ liệu' }} phần trăm"><i></i></span>
+      </article>
+      <article class="block-storage-summary-card">
+        <span>Tổng đã dùng</span><strong>{{ inventory_summary.total_used }}</strong><small>Physical usage đã đo</small>
+      </article>
+      <article class="block-storage-summary-card">
+        <span>Tỷ lệ dùng trung bình</span><strong>{% if inventory_summary.average_used_percent is not none %}{{ inventory_summary.average_used_percent }}%{% else %}—{% endif %}</strong><small>Trên các volume có dữ liệu</small>
+        {% if inventory_summary.pool_counts and total_images %}
+        <div class="block-storage-pool-bar" aria-label="Phân bố volume theo pool">{% for pool in inventory_summary.pool_counts %}<i class="pool-color-{{ loop.index0 % 4 }}" style="width: {{ (pool.count * 100 / total_images)|round(1) }}%" title="{{ pool.name }}: {{ pool.count }}"></i>{% endfor %}</div>
+        <small>{% for pool in inventory_summary.pool_counts %}<span class="block-storage-pool-legend"><i class="pool-dot pool-color-{{ loop.index0 % 4 }}"></i>{{ pool.name }} {{ pool.count }}</span>{% endfor %}</small>
+        {% endif %}
+      </article>
+    </section>
+
     <section class="card block-storage-card">
       <div class="card-header block-storage-header">
-        <div><h2>Block Storage</h2><p class="hint">RBD images trên cụm <strong>{{ selected_cluster.name }}</strong>, bao gồm namespace mặc định và namespace riêng.</p></div>
-        <span class="summary-chip">{{ total_images }} image{% if total_images != 1 %}s{% endif %}</span>
+        <div><div class="block-storage-eyebrow">RBD INVENTORY</div><h2>Danh sách Volume</h2><p class="hint">{{ total_images }} images · trang {{ page }}/{{ total_pages }}</p></div>
+        <span class="block-storage-record-count">{{ total_images }} images</span>
       </div>
-      {% if error %}<div class="card-body"><p class="error">Không tải được Block Storage: {{ error }}</p></div>{% endif %}
-      {% if cache_loading %}<div class="card-body"><p class="hint">Đang tải dữ liệu Block Storage từ cụm… trang sẽ tự cập nhật.</p></div>{% endif %}
-      {% if is_admin and create_pools %}
-      <div class="card-body volume-inventory-create">
-        <div><strong>Tạo volume mới</strong></div>
-        <form class="audit-filters" id="block-storage-create-form">
-          <label>Pool<select name="pool" required>{% for pool in create_pools %}<option value="{{ pool }}">{{ pool }}</option>{% endfor %}</select></label>
-          <label>Tên Volume<input name="image" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" placeholder="vm-disk-01"></label>
-          <label>Dung lượng (GiB)<input name="size_gib" required type="number" min="1" max="65536" value="10"></label>
-          <button type="submit" class="btn btn-primary btn-sm">Đề xuất tạo Volume</button>
-        </form>
-        <p id="block-storage-create-result" class="hint" hidden></p>
-      </div>
-      {% endif %}
       <div class="card-body block-storage-filter-panel">
-        <form class="audit-filters" id="block-storage-filter" role="search">
-          <label>Tìm kiếm
-            <input type="search" id="block-storage-search" placeholder="Tên image, pool hoặc namespace" autocomplete="off">
-          </label>
+        <form class="block-storage-filter-bar" id="block-storage-filter" role="search">
+          <label class="block-storage-search"><span class="sr-only">Tìm kiếm volume</span><span aria-hidden="true">⌕</span><input type="search" id="block-storage-search" placeholder="Tên image, pool hoặc namespace" autocomplete="off"></label>
+          <label><span class="sr-only">Lọc theo pool</span><select id="block-storage-pool-filter" aria-label="Lọc theo pool"><option value="">Tất cả pool</option>{% for pool in create_pools %}<option value="{{ pool }}">{{ pool }}</option>{% endfor %}</select></label>
+          <label><span class="sr-only">Lọc theo mức sử dụng</span><select id="block-storage-use-filter" aria-label="Lọc theo mức sử dụng"><option value="">Mọi mức sử dụng</option><option value="used">Đang sử dụng</option><option value="empty">Trống</option></select></label>
+          <button type="submit" class="btn btn-primary btn-sm">Lọc</button>
           <button type="button" class="btn btn-ghost btn-sm" id="block-storage-filter-reset" disabled>Xóa bộ lọc</button>
-          <span class="hint" id="block-storage-filter-result" role="status" aria-live="polite">{{ images|length }} kết quả</span>
-          {% if total_pages > 1 %}<span class="hint">Trang {{ page }} / {{ total_pages }} · tối đa {{ overview_limit }} volume mỗi trang.</span>{% endif %}
         </form>
         {% if is_admin %}<p id="block-storage-mutation-result" class="hint" hidden></p>{% endif %}
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap block-storage-table-wrap">
         <table class="block-storage-table" id="block-storage-table">
-          <thead><tr><th>Name</th><th>Pool</th><th>Namespace</th><th class="num">Size</th>{% if is_admin %}<th>Thao tác</th>{% endif %}</tr></thead>
+          <thead><tr><th>Name</th><th>Pool</th><th>Namespace</th><th class="num">Cấp phát</th><th class="num">Đã dùng</th><th>Tỷ lệ dùng</th><th>Thao tác</th></tr></thead>
           <tbody>
           {% for image in images %}
-            <tr class="block-storage-image-row" data-name="{{ image.name }}" data-pool="{{ image.pool }}" data-namespace="{{ image.namespace or 'default' }}"><td><a href="/volumes?pool={{ image.pool }}&cluster={{ selected_cluster.id }}&image={{ image.name }}"><strong>{{ image.name }}</strong></a></td><td><code>{{ image.pool }}</code></td><td>{% if image.namespace %}<code>{{ image.namespace }}</code>{% else %}<span class="muted-value">Default</span>{% endif %}</td><td class="num" data-sort-value="{{ image.size_bytes }}">{{ image.size }}</td>{% if is_admin %}<td>{% if not image.namespace %}<button type="button" class="btn btn-reject btn-sm block-storage-trash-btn" data-pool="{{ image.pool }}" data-image="{{ image.name }}">Đề xuất xoá (Trash)</button>{% else %}<span class="hint">Namespace riêng — chưa hỗ trợ</span>{% endif %}</td>{% endif %}</tr>
+            {% set name = image.name|string %}
+            {% set short_name = name[:12] ~ '...' if name|length > 15 else name %}
+            {% set usage = image.get('used_percent') %}
+            <tr class="block-storage-image-row" data-name="{{ image.name }}" data-pool="{{ image.pool }}" data-namespace="{{ image.namespace or 'default' }}" data-used-percent="{{ usage if usage is not none else '' }}">
+              <td class="block-storage-name-cell"><a href="/volumes/{{ image.pool|urlencode }}/{{ image.name|urlencode }}?cluster={{ selected_cluster.id }}" title="Mở chi tiết {{ image.name }}"><span class="block-storage-volume-icon {% if name.startswith('csi-vol-') %}is-container{% elif name.startswith('volume-') %}is-disk{% endif %}" aria-hidden="true">{% if name.startswith('csi-vol-') %}▣{% elif name.startswith('volume-') %}◉{% else %}•{% endif %}</span><span><strong>{{ short_name }}</strong><small>{% if image.namespace %}{{ image.namespace }}{% else %}Default{% endif %}</small></span></a></td>
+              <td><span class="pool-badge pool-{{ image.pool|replace('_', '-')|replace(' ', '-') }}">{{ image.pool }}</span></td>
+              <td class="block-storage-namespace-cell">{% if image.namespace %}<span title="Namespace riêng — chưa hỗ trợ đầy đủ cho các mutation">{{ image.namespace }}</span>{% else %}Default{% endif %}</td>
+              <td class="num">{{ image.size }}</td>
+              <td class="num">{{ image.get('used_size') or '—' }}</td>
+              <td><div class="block-storage-usage {% if usage is none %}is-unknown{% elif usage > 80 %}is-critical{% elif usage >= 50 %}is-warning{% else %}is-healthy{% endif %}"><span class="block-storage-usage-track"><i style="width: {{ usage if usage is not none else 0 }}%"></i></span><strong>{% if usage is not none %}{{ usage|round(1) }}%{% else %}—{% endif %}</strong>{% if usage is not none and usage == 0 %}<small>Chưa sử dụng</small>{% endif %}</div></td>
+              <td><div class="block-storage-actions"><a class="block-storage-icon-action" href="/volumes/{{ image.pool|urlencode }}/{{ image.name|urlencode }}?cluster={{ selected_cluster.id }}" title="Chi tiết volume" aria-label="Chi tiết {{ image.name }}">↗</a><details class="block-storage-more"><summary title="Thao tác khác" aria-label="Thao tác khác cho {{ image.name }}">⋯</summary><div class="block-storage-menu"><a href="/volumes/{{ image.pool|urlencode }}/{{ image.name|urlencode }}?cluster={{ selected_cluster.id }}">Chi tiết</a><a href="/volumes/{{ image.pool|urlencode }}/{{ image.name|urlencode }}?cluster={{ selected_cluster.id }}#volume-resize-form">Resize</a><a href="/volumes/{{ image.pool|urlencode }}/{{ image.name|urlencode }}?cluster={{ selected_cluster.id }}#detail-tab-snapshots">Snapshot</a>{% if is_admin and not image.namespace %}<button type="button" class="block-storage-trash-btn" data-pool="{{ image.pool }}" data-image="{{ image.name }}">Đưa vào Trash</button>{% endif %}</div></details></div></td>
+            </tr>
           {% else %}
-            <tr class="empty-row"><td colspan="{{ 5 if is_admin else 4 }}"><div class="empty-state"><span class="empty-icon">▱</span>Không tìm thấy RBD image trên cụm đang chọn.</div></td></tr>
+            <tr class="empty-row"><td colspan="7"><div class="empty-state"><span class="empty-icon">▱</span>Không tìm thấy RBD image trên cụm đang chọn.</div></td></tr>
           {% endfor %}
           </tbody>
         </table>
       </div>
-      {% if total_pages > 1 %}
-      <div class="pagination" aria-label="Phân trang Block Storage">
-        {% if page > 1 %}<a class="btn btn-ghost btn-sm" href="/block-storage?cluster={{ selected_cluster.id }}&page={{ page - 1 }}">← Trước</a>{% endif %}
-        <span class="hint">Trang {{ page }} / {{ total_pages }}</span>
-        {% if page < total_pages %}<a class="btn btn-ghost btn-sm" href="/block-storage?cluster={{ selected_cluster.id }}&page={{ page + 1 }}">Sau →</a>{% endif %}
-      </div>
-      {% endif %}
-      <div class="empty-state" id="block-storage-filter-empty" hidden>Không tìm thấy image phù hợp với bộ lọc.</div>
+      <div class="block-storage-filter-empty" id="block-storage-filter-empty" hidden>Không tìm thấy volume phù hợp với bộ lọc.</div>
+      <footer class="dashboard-pagination block-storage-pagination pagination" aria-label="Phân trang Block Storage">
+        <span class="pagination-summary" data-mobile-summary="{{ ((page - 1) * page_size + 1) if total_images else 0 }}–{{ [page * page_size, total_images]|min }} / {{ total_images }}">Hiển thị {{ ((page - 1) * page_size + 1) if total_images else 0 }}–{{ [page * page_size, total_images]|min }} / {{ total_images }} mục</span>
+        <div class="pagination-controls block-storage-page-links">
+          {% if page > 1 %}<a class="pagination-prev" aria-label="Trang trước" href="/block-storage?cluster={{ selected_cluster.id }}&amp;page={{ page - 1 }}&amp;page_size={{ page_size }}">‹</a>{% else %}<button class="pagination-prev" disabled aria-label="Trang trước">‹</button>{% endif %}
+          <div class="pagination-pages">{% for number in range(1, total_pages + 1) %}<a class="pagination-page-number{% if number == page %} is-active{% endif %}"{% if number == page %} aria-current="page"{% endif %} href="/block-storage?cluster={{ selected_cluster.id }}&amp;page={{ number }}&amp;page_size={{ page_size }}">{{ number }}</a>{% endfor %}</div>
+          <span class="pagination-mobile-status">Trang {{ page }} / {{ total_pages }}</span>
+          {% if page < total_pages %}<a class="pagination-next" aria-label="Trang sau" href="/block-storage?cluster={{ selected_cluster.id }}&amp;page={{ page + 1 }}&amp;page_size={{ page_size }}">›</a>{% else %}<button class="pagination-next" disabled aria-label="Trang sau">›</button>{% endif %}
+        </div>
+      </footer>
     </section>
   </main>
-  <script src="/static/app.js?v={{ static_version }}"></script>
+
+  {% if is_admin and create_pools %}
+  <div class="block-storage-modal" id="block-storage-create-modal" hidden role="dialog" aria-modal="true" aria-labelledby="block-storage-create-title">
+    <div class="block-storage-modal-card">
+      <div class="block-storage-modal-header"><div><div class="block-storage-eyebrow">RBD INVENTORY</div><h2 id="block-storage-create-title">Tạo Volume</h2></div><button type="button" class="btn btn-ghost btn-sm" id="block-storage-create-close" aria-label="Đóng cửa sổ tạo Volume">×</button></div>
+      <p class="hint">Đề xuất tạo Volume sẽ được gửi qua Audit Trail để kiểm tra và phê duyệt.</p>
+      <form class="block-storage-create-form" id="block-storage-create-form">
+        <label>Pool<select name="pool" required>{% for pool in create_pools %}<option value="{{ pool }}">{{ pool }}</option>{% endfor %}</select></label>
+        <label>Tên Volume<input name="image" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" placeholder="vm-disk-01"></label>
+        <label>Dung lượng (GiB)<input name="size_gib" required type="number" min="1" max="65536" value="10"></label>
+        <div class="block-storage-modal-actions"><button type="button" class="btn btn-ghost" id="block-storage-create-cancel">Hủy</button><button type="submit" class="btn btn-primary">Tạo Volume</button></div>
+      </form>
+      <p id="block-storage-create-result" class="hint" hidden></p>
+    </div>
+  </div>
+  {% endif %}
+  <script src="/static/app.js?v={{ static_version }}"></script><script src="/static/pagination.js?v={{ static_version }}"></script>
   <script src="/static/block_storage.js?v={{ static_version }}"></script>
 </body></html>

@@ -18,6 +18,8 @@ from shared.models import (
     ChatMessage,
     ChatPreference,
     Cluster,
+    DelegatedAISubtask,
+    DelegatedAITask,
     Incident,
     IncidentStatus,
     User,
@@ -1518,7 +1520,7 @@ def test_confirm_action_risky_action_routes_to_pending_approval(dashboard_client
     # Browser approval controls are intentionally absent; Telegram owns the
     # second approval step for risky actions.
     home = dashboard_client.get("/")
-    assert "Risky Action" in home.text
+    assert "Duyệt/Từ chối đã chuyển sang" in home.text
     assert "Telegram" in home.text
     assert "restart_osd_daemon" not in home.text
 
@@ -1612,7 +1614,7 @@ def test_confirm_action_delete_pool_now_waits_for_a_second_approval(dashboard_cl
         assert "pool_bo_di" in (action.proposed_command or "")
 
     home = dashboard_client.get("/")
-    assert "Risky Action" in home.text
+    assert "Duyệt/Từ chối đã chuyển sang" in home.text
     assert "Telegram" in home.text
     assert "delete_pool" not in home.text
 
@@ -1762,6 +1764,79 @@ def test_delete_chat_session_unknown_session_returns_404(dashboard_client):
     _login(dashboard_client)
     response = dashboard_client.delete("/api/chat/sessions/does-not-exist")
     assert response.status_code == 404
+
+
+def test_delete_chat_session_removes_delegated_rows_before_messages(dashboard_client):
+    with db_module.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        session.add_all([
+            ChatMessage(
+                id="delegated-user", session_id="delegated-session", cluster_id=cluster.id,
+                role="user", content="Kiểm tra OSD", actor="admin",
+            ),
+            ChatMessage(
+                id="delegated-assistant", session_id="delegated-session", cluster_id=cluster.id,
+                role="assistant", content="Đang xử lý", actor="admin",
+            ),
+        ])
+        session.add(DelegatedAITask(
+            id="delegated-task", actor="admin", cluster_id=cluster.id,
+            session_id="delegated-session", assistant_message_id="delegated-assistant",
+            prompt="Kiểm tra OSD", status="QUEUED",
+        ))
+        session.add(DelegatedAISubtask(
+            id="delegated-subtask", task_id="delegated-task", role="cluster_health",
+            objective="Đọc health", allowed_tools_json="[]", status="QUEUED",
+        ))
+        session.commit()
+
+    _login(dashboard_client)
+    response = dashboard_client.delete("/api/chat/sessions/delegated-session")
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 2}
+    with db_module.SessionLocal() as session:
+        assert session.query(ChatMessage).filter_by(session_id="delegated-session").count() == 0
+        assert session.get(DelegatedAITask, "delegated-task") is None
+        assert session.get(DelegatedAISubtask, "delegated-subtask") is None
+
+
+def test_delete_chat_session_cleans_up_active_delegated_rows(dashboard_client):
+    with db_module.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        session.add_all([
+            ChatMessage(
+                id="active-delegated-user", session_id="active-delegated-session",
+                cluster_id=cluster.id, role="user", content="Kiểm tra health",
+                actor="admin",
+            ),
+            ChatMessage(
+                id="active-delegated-assistant", session_id="active-delegated-session",
+                cluster_id=cluster.id, role="assistant", content="Đang chạy",
+                actor="admin",
+            ),
+        ])
+        session.add(DelegatedAITask(
+            id="active-delegated-task", actor="admin", cluster_id=cluster.id,
+            session_id="active-delegated-session",
+            assistant_message_id="active-delegated-assistant",
+            prompt="Kiểm tra health", status="RUNNING", execution_owner="worker-test",
+        ))
+        session.add(DelegatedAISubtask(
+            id="active-delegated-subtask", task_id="active-delegated-task",
+            role="cluster_health", objective="Đọc health", allowed_tools_json="[]",
+            status="RUNNING", execution_owner="worker-test",
+        ))
+        session.commit()
+
+    _login(dashboard_client)
+    response = dashboard_client.delete("/api/chat/sessions/active-delegated-session")
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 2}
+    with db_module.SessionLocal() as session:
+        assert session.get(DelegatedAITask, "active-delegated-task") is None
+        assert session.get(DelegatedAISubtask, "active-delegated-subtask") is None
 
 
 def test_delete_chat_session_does_not_touch_incident_created_from_a_confirmed_proposal(dashboard_client):

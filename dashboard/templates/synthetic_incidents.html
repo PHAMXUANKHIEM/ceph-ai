@@ -18,4 +18,4 @@
     <div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Cluster</th><th>Scenario</th><th>Incident</th><th>Status</th><th>Run ID</th></tr></thead><tbody>
     {% for row in synthetic_rows %}<tr><td>{{ row.incident.created_at }}</td><td>{{ row.cluster_name }}</td><td><code>{{ row.scenario }}</code></td><td><a href="/incidents/{{ row.incident.id }}/timeline">{{ row.incident.id }}</a></td><td>{{ row.incident.status }}</td><td><code>{{ row.run_id }}</code></td></tr>{% else %}<tr><td colspan="6" class="empty-state">Chưa có synthetic run.</td></tr>{% endfor %}
     </tbody></table></div></section>
-</main></body></html>
+</main><script src="/static/app.js?v={{ static_version }}"></script></body></html>

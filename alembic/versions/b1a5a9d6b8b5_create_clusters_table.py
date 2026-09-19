@@ -70,11 +70,13 @@ def downgrade() -> None:
     with op.batch_alter_table('watcher_heartbeat') as batch_op:
         batch_op.drop_constraint('uq_watcher_heartbeat_cluster_id', type_='unique')
         batch_op.drop_constraint('fk_watcher_heartbeat_cluster_id', type_='foreignkey')
-    op.drop_column('watcher_heartbeat', 'cluster_id')
+    with op.batch_alter_table("watcher_heartbeat") as batch_op:
+        batch_op.drop_column("cluster_id")
 
     with op.batch_alter_table('incidents') as batch_op:
         batch_op.drop_constraint('fk_incidents_cluster_id', type_='foreignkey')
-    op.drop_column('incidents', 'cluster_id')
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_column("cluster_id")
 
     op.drop_index('uq_clusters_single_default', table_name='clusters')
     op.drop_table('clusters')

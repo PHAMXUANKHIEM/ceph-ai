@@ -165,7 +165,7 @@
   });
 
   var iconByPath = {
-    "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/volume-performance": "⌁", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
+    "/": "⌁", "/nodes": "◫", "/volume-performance": "⌁", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
@@ -268,6 +268,7 @@
       { label: "Block Storage", paths: ["/block-storage", "/volume-performance", "/trash"] },
       { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/config-dump", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
+      { label: "AI & Intelligence", paths: ["/ai-learning", "/log-intelligence", "/runbooks", "/alerts", "/synthetic-incidents"] },
       { label: "Backup", paths: ["/backups", "/cinder-backups", "/restore-cluster"] },
       { label: "Users & Notifications", paths: ["/telegram-alerts", "/users"] },
       { label: "System Administration", paths: ["/settings", "/clusters"] }
@@ -293,7 +294,7 @@
       available.forEach(function (path) {
         var link = linksByPath[path];
         if (link.classList.contains("nav-dropdown-item-active")) link.classList.add("active");
-        if (window.location.pathname === path) link.classList.add("active");
+        if (window.location.pathname === path || (path === "/block-storage" && window.location.pathname.indexOf("/volumes/") === 0)) link.classList.add("active");
         link.classList.remove("nav-dropdown-item", "nav-dropdown-item-active");
         link.classList.add("nav-link");
         if (path === "/block-storage") link.textContent = "Overview";
@@ -348,6 +349,8 @@
     var label = document.createElement("span");
     label.className = "nav-link-label";
     label.textContent = labelText;
+    link.setAttribute("aria-label", labelText);
+    link.removeAttribute("title");
     link.replaceChildren(icon, label);
   });
 })();
@@ -408,7 +411,7 @@
 })();
 
 (function () {
-  // "Tự động mở tab này khi có Risky Action mới" checkbox (Dashboard home
+  // "Tự động mở khi có yêu cầu duyệt mới" checkbox (Dashboard home
   // page only, 2026-07-28). dashboard/routes/incidents.py::index always
   // defaults active_tab to "pending" on a plain GET / — combined with the
   // Incident/Action changes system-wide (not just ones the operator is
@@ -476,7 +479,7 @@
 })();
 
 (function () {
-  // "Chờ duyệt — Risky Action" card (Dashboard home page only): pure
+  // "Chờ duyệt" card (Dashboard home page only): pure
   // in localStorage so it survives normal navigation and manual refreshes.
   var STORAGE_KEY = "pendingActionsCollapsed";
   var toggleBtn = document.getElementById("pending-actions-toggle");
@@ -616,4 +619,3 @@
     nav.appendChild(section);
   });
 })();
-(function(){var b=document.querySelector(".sidebar-collapse");if(!b)return;var key="ceph-sidebar-collapsed";var set=function(v){document.body.classList.toggle("sidebar-collapsed",v);b.setAttribute("aria-expanded",String(!v));b.setAttribute("aria-label",v?"Mở rộng thanh điều hướng":"Thu gọn thanh điều hướng");b.textContent=v?"›":"‹";};var saved=window.localStorage.getItem(key)==="1";set(saved);b.addEventListener("click",function(){var v=!document.body.classList.contains("sidebar-collapsed");set(v);window.localStorage.setItem(key,v?"1":"0");});})();

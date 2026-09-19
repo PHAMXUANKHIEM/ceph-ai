@@ -10,6 +10,9 @@ from __future__ import annotations
 import logging
 
 from config.settings import settings
+from shared import db
+from shared.clusters import ensure_default_cluster
+from shared.models import RbdTrashUsage
 from shared.telegram_alerts import send_trash_capacity_alert
 from watcher import ceph_client
 
@@ -29,6 +32,46 @@ def _cluster_connection(cluster) -> tuple[list[str], str, str, str, str]:
         cluster.ssh_key_path,
         cluster.ceph_exec_mode,
     )
+
+
+def _list_trash(pool: str, connection) -> list[dict]:
+    """List one pool's Trash with measured capacity.
+
+    This monitor's whole job is the trash/capacity ratio, so it needs the real
+    allocated bytes that ceph_client measures from the pool's RADOS object
+    listing. That scan costs one batched ``rbd info`` round trip plus one
+    ``rados ls`` per pool — not one round trip per entry — and ceph_client
+    skips it on a pool too large to list, in which case the saved snapshot
+    below fills the gap.
+    """
+    query = ceph_client.query_rbd_trash if connection is None else ceph_client.query_rbd_trash_with
+    args = (pool,) if connection is None else (pool, *connection)
+    return query(*args)
+
+
+def _saved_usage_by_trash_id(cluster, pool: str) -> dict[str, int]:
+    """Allocated bytes recorded when the Dashboard moved an image to Trash.
+
+    ``rbd trash ls``/``rbd info`` expose no allocated byte count for a trashed
+    image, so ceph_client reports ``used_size_bytes=None`` for every entry.
+    The ``rbd_trash_usages`` snapshot written at ``rbd trash mv`` time is the
+    only place this number exists; without consulting it this monitor marks
+    every scan incomplete and can never cross its own threshold.
+    """
+    try:
+        with db.SessionLocal() as session:
+            cluster_id = str(cluster.id) if cluster is not None else ensure_default_cluster(session).id
+            rows = (
+                session.query(RbdTrashUsage.trash_id, RbdTrashUsage.used_size_bytes)
+                .filter(RbdTrashUsage.cluster_id == cluster_id, RbdTrashUsage.pool == pool)
+                .all()
+            )
+        return {str(trash_id): int(used) for trash_id, used in rows}
+    except Exception:
+        # A snapshot lookup failure must degrade to "unknown usage" — the
+        # fail-closed path this module already handles — never to zero.
+        logger.exception("_saved_usage_by_trash_id: cannot read saved usage for pool %s", pool)
+        return {}
 
 
 def _cluster_pools(cluster) -> list[str]:
@@ -51,20 +94,26 @@ def check_trash_capacity(cluster=None) -> dict:
     usage_known = True
     for pool in pools:
         try:
-            entries = (
-                ceph_client.query_rbd_trash(pool)
-                if connection is None
-                else ceph_client.query_rbd_trash_with(pool, *connection)
-            )
+            entries = _list_trash(pool, connection)
         except ceph_client.CephQueryError as exc:
             logger.warning("check_trash_capacity: skipping pool %s: %s", pool, exc)
             errors.append(f"{pool}: {exc}")
             continue
         scanned_pools.append(pool)
         entry_count += len(entries)
+        # Only pay for the snapshot lookup when Ceph itself left a gap, which
+        # keeps a fully-populated listing (and the test doubles that emulate
+        # one) from touching the database at all.
+        saved_usage = (
+            _saved_usage_by_trash_id(cluster, pool)
+            if any(entry.get("used_size_bytes") is None for entry in entries)
+            else {}
+        )
         for entry in entries:
             try:
                 raw_used_size = entry.get("used_size_bytes")
+                if raw_used_size is None:
+                    raw_used_size = saved_usage.get(str(entry.get("id")))
                 if raw_used_size is None:
                     usage_known = False
                     continue

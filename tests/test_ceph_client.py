@@ -90,11 +90,13 @@ class FakeSSHClient:
 def fake_ssh(monkeypatch):
     FakeSSHClient.behavior = {}
     FakeSSHClient.calls = []
+    ceph_client._close_shared_health_pools()
     ceph_client.last_successful_mon_node = None
     FakeSSHClient.host_key_policies = []
     FakeSSHClient.saved_host_key_paths = []
     monkeypatch.setattr(ceph_client.paramiko, "SSHClient", FakeSSHClient)
     yield FakeSSHClient
+    ceph_client._close_shared_health_pools()
 
 
 def test_remote_commands_reject_unprovisioned_host_keys(fake_ssh):
@@ -204,6 +206,24 @@ def test_query_cluster_health_with_returns_parsed_json_from_first_node(fake_ssh)
     assert "10.9.9.1" in fake_ssh.calls
 
 
+def test_query_cluster_health_reuses_shared_ssh_connection(monkeypatch, fake_ssh):
+    fake_ssh.behavior = {"10.9.9.1": {"status": "HEALTH_OK", "checks": {}}}
+    monkeypatch.setattr(
+        ceph_client.CephConnectionPool,
+        "_is_healthy",
+        lambda _pool, _client: True,
+    )
+
+    query_cluster_health_with(
+        ["10.9.9.1"], "ceph-mon-B", "root", "/root/.ssh/some_key"
+    )
+    query_cluster_health_with(
+        ["10.9.9.1"], "ceph-mon-B", "root", "/root/.ssh/some_key"
+    )
+
+    assert fake_ssh.calls == ["10.9.9.1"]
+
+
 def test_query_cluster_health_with_falls_back_to_next_node(fake_ssh):
     fake_ssh.behavior = {
         "10.9.9.1": "unreachable",
@@ -240,7 +260,7 @@ def test_query_cluster_health_with_retries_transport_failure_before_success(monk
 
     def fake_run(host, command, user, key, timeout=None, *, pool=None):
         calls.append(host)
-        if len(calls) < 3:
+        if len(calls) < 2:
             raise CephQueryError(
                 "mon unavailable",
                 ) from ceph_client.CephRunnerError(
@@ -257,7 +277,7 @@ def test_query_cluster_health_with_retries_transport_failure_before_success(monk
     )
 
     assert result["status"] == "HEALTH_OK"
-    assert calls == ["10.9.9.1", "10.9.9.1", "10.9.9.1"]
+    assert calls == ["10.9.9.1", "10.9.9.1"]
 
 
 def test_query_cluster_health_with_raises_when_all_nodes_fail(fake_ssh):
@@ -560,7 +580,19 @@ def test_query_cluster_health_with_cephadm_mode_uses_shell_and_longer_timeout(fa
     )
 
     assert result["status"] == "HEALTH_OK"
-    assert captured_commands == [f"flock -w {ceph_client.CEPHADM_LOCK_WAIT_SECONDS} {ceph_client.CEPHADM_REMOTE_LOCK_PATH} cephadm shell -- ceph health detail --format json"]
+    assert len(captured_commands) == 1
+    command_parts = captured_commands[0].split(maxsplit=3)
+    assert command_parts[:3] == [
+        "timeout",
+        "--signal=TERM",
+        f"--kill-after={ceph_client.CEPHADM_REMOTE_TIMEOUT_GRACE_SECONDS}s",
+    ]
+    assert 0 < float(command_parts[3].split("s", 1)[0]) <= ceph_client.HEALTH_COMMAND_TIMEOUT_SECONDS
+    assert command_parts[3].endswith(
+        f"flock -w {ceph_client.CEPHADM_LOCK_WAIT_SECONDS} "
+        f"{ceph_client.CEPHADM_REMOTE_LOCK_PATH} "
+        "cephadm shell -- ceph health detail --format json"
+    )
     # cephadm shell spins up a fresh container per call — needs more headroom
     # than the docker/podman default (see CEPHADM_COMMAND_TIMEOUT_SECONDS).
     from watcher.ceph_client import CEPHADM_COMMAND_TIMEOUT_SECONDS, COMMAND_TIMEOUT_SECONDS
@@ -1046,9 +1078,66 @@ def test_normalize_rbd_inventory_includes_idle_images_and_snapshot_count():
     rows = ceph_client._normalize_rbd_inventory(payload)
 
     assert rows == [
-        {"name": "vm-01", "image_id": "abc", "provisioned_size": 10240, "used_size": 2048, "snapshot_count": 1},
-        {"name": "idle", "image_id": None, "provisioned_size": 4096, "used_size": 0, "snapshot_count": 0},
+        {"name": "vm-01", "image_id": "abc", "provisioned_size": 10240, "used_size": 2048,
+         "used_percent": 20.0, "snapshot_count": 1},
+        {"name": "idle", "image_id": None, "provisioned_size": 4096, "used_size": 0,
+         "used_percent": 0.0, "snapshot_count": 0},
     ]
+
+
+def test_normalize_rbd_ls_metadata_ignores_snapshot_rows_and_normalizes_features():
+    payload = {"images": [
+        {"image": "vm-01", "id": "abc", "format": 2, "features": "layering, fast-diff"},
+        {"image": "vm-01", "snapshot": "daily", "id": "abc", "format": 2},
+        {"name": "idle", "id": "def", "format": 1, "features": []},
+    ]}
+
+    assert ceph_client._normalize_rbd_ls_metadata(payload) == {
+        "vm-01": {"image_id": "abc", "format": 2, "features": ["layering", "fast-diff"]},
+        "idle": {"image_id": "def", "format": 1, "features": []},
+    }
+
+
+def test_enrich_rbd_inventory_does_not_duplicate_json_format_flag():
+    calls = []
+
+    def query_json(command):
+        calls.append(command)
+        return "mon", {"images": [{"image": "vm-01", "id": "abc", "format": 2, "features": []}]}
+
+    rows = [{"name": "vm-01", "image_id": None, "provisioned_size": 10,
+             "used_size": 1, "used_percent": 10.0, "snapshot_count": 0}]
+
+    enriched = ceph_client._enrich_rbd_inventory("vms", rows, query_json)
+
+    assert calls == ["rbd ls --long --pool vms"]
+    assert enriched[0]["image_id"] == "abc"
+
+
+def test_attachment_from_status_is_fail_visible():
+    assert ceph_client._attachment_from_status({"watchers": []}) == {
+        "attachment_state": "idle", "watcher_count": 0,
+    }
+    assert ceph_client._attachment_from_status({"watchers": [{"address": "1.2.3.4"}]}) == {
+        "attachment_state": "attached", "watcher_count": 1,
+    }
+    assert ceph_client._attachment_from_status({}) == {
+        "attachment_state": "unknown", "watcher_count": None,
+    }
+
+
+def test_query_rbd_image_usage_returns_one_image(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": {
+            "images": [{"name": "vm-01", "provisioned_size": 10 * 1024, "used_size": 2048}]
+        }
+    }
+
+    assert ceph_client.query_rbd_image_usage("vms", "vm-01") == {
+        "name": "vm-01", "image_id": None, "provisioned_size": 10240,
+        "used_size": 2048, "used_percent": 20.0, "snapshot_count": 0,
+    }
 
 
 def test_normalize_rbd_image_detail_exposes_dependencies_and_watchers():
@@ -1086,6 +1175,19 @@ def test_query_rbd_image_detail_keeps_info_when_optional_section_fails(monkeypat
     assert detail["image_id"] == "img-1"
     assert detail["watchers"] == [{"client": "client.7"}]
     assert set(detail["partial_errors"]) == {"snapshots", "children", "locks"}
+
+
+def test_rbd_mirror_queries_do_not_duplicate_json_format(monkeypatch):
+    calls = []
+    def fake_query(command):
+        calls.append(command)
+        return "mon-1", {"mode": "disabled"}
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command", fake_query)
+
+    assert ceph_client.query_rbd_mirror_pool_info("images")["mode"] == "disabled"
+    assert ceph_client.query_rbd_mirror_pool_status("images")["mode"] == "disabled"
+    assert calls == ["rbd mirror pool info images", "rbd mirror pool status images"]
+    assert all("--format" not in command for command in calls)
 
 
 def test_normalize_rbd_pool_overview_combines_durability_and_usage():
@@ -1385,12 +1487,17 @@ def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
     )
 
     commands = []
+    batches = []
 
     def routed_exec(self, command, timeout=None):
         commands.append(command)
         return None, _FakeStream(json.dumps(next(responses))), _FakeStream("")
 
     monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_batch_command_with",
+        lambda *args, **kwargs: (batches.append(args[-1]), ("10.20.1.150", [next(responses)]))[1],
+    )
     monkeypatch.setattr(ceph_client, "run_ceph_text_command", lambda command: ("10.20.1.150", "268435456\n"))
     fake_ssh.behavior = {"10.20.1.150": {}}
 
@@ -1407,24 +1514,23 @@ def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
         }
     ]
     assert "rbd trash ls --long vms --format json" in commands[0]
-    assert "rbd info --pool vms --image-id 1234567890ab --format json" in commands[1]
+    # Mọi `rbd info` đi chung MỘT phiên SSH, không còn một round trip mỗi mục.
+    assert batches == [["rbd info --pool vms --image-id 1234567890ab --format json"]]
+    # `rados df` đo pool trước khi quét object; fake này không có pool khớp
+    # nên bỏ qua vòng quét và used_size_bytes giữ nguyên None.
+    assert "rados df --format json" in commands[1]
     assert len(commands) == 2
 
 
 def test_query_rbd_trash_rejects_info_without_size(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
-    responses = iter(
-        [
-            [{"id": "abc123", "name": "old-disk", "deleted_at": "x", "status": "y"}],
-            {"id": "abc123"},
-        ]
+    fake_ssh.behavior = {
+        "10.20.1.150": [{"id": "abc123", "name": "old-disk", "deleted_at": "x", "status": "y"}]
+    }
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_batch_command_with",
+        lambda *args, **kwargs: ("10.20.1.150", [{"id": "abc123"}]),
     )
-
-    def routed_exec(self, command, timeout=None):
-        return None, _FakeStream(json.dumps(next(responses))), _FakeStream("")
-
-    monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
-    fake_ssh.behavior = {"10.20.1.150": {}}
 
     with pytest.raises(CephQueryError, match="incomplete capacity metadata"):
         query_rbd_trash("vms")
@@ -1432,16 +1538,12 @@ def test_query_rbd_trash_rejects_info_without_size(fake_ssh, monkeypatch):
 
 def test_query_rbd_trash_skips_entry_removed_during_scan(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
-    calls = []
-
-    def routed_exec(self, command, timeout=None):
-        calls.append(command)
-        if len(calls) == 1:
-            return None, _FakeStream(json.dumps([{"id": "gone123", "name": "gone-disk"}])), _FakeStream("")
-        raise CephQueryError("All MON nodes failed: rbd: error opening image: (2) No such file or directory")
-
-    monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
-    fake_ssh.behavior = {"10.20.1.150": {}}
+    fake_ssh.behavior = {"10.20.1.150": [{"id": "gone123", "name": "gone-disk"}]}
+    # Frame rỗng (None) chính là cách batch báo lệnh con thất bại.
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_batch_command_with",
+        lambda *args, **kwargs: ("10.20.1.150", [None]),
+    )
 
     # The stale listing entry is a normal restore/purge race, not a pool-wide
     # Trash failure.
@@ -1457,22 +1559,20 @@ def test_query_rbd_trash_returns_empty_list_for_unexpected_shape(fake_ssh, monke
 
 def test_query_rbd_trash_skips_entries_without_an_id(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
-    responses = iter(
-        [
-            [
-                {"name": "no-id-entry"},  # no "id" key
-                {"id": "abc123", "name": "real-entry", "deleted_at": "x", "status": "y"},
-            ],
-            {"size": 4096, "block_name_prefix": "rbd_data.abc123", "object_size": 4096},
+    fake_ssh.behavior = {
+        "10.20.1.150": [
+            {"name": "no-id-entry"},  # no "id" key
+            {"id": "abc123", "name": "real-entry", "deleted_at": "x", "status": "y"},
         ]
+    }
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_batch_command_with",
+        lambda *args, **kwargs: (
+            "10.20.1.150",
+            [{"size": 4096, "block_name_prefix": "rbd_data.abc123", "object_size": 4096}],
+        ),
     )
-
-    def routed_exec(self, command, timeout=None):
-        return None, _FakeStream(json.dumps(next(responses))), _FakeStream("")
-
-    monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
     monkeypatch.setattr(ceph_client, "run_ceph_text_command", lambda command: ("10.20.1.150", "1024\n"))
-    fake_ssh.behavior = {"10.20.1.150": {}}
 
     entries = query_rbd_trash("vms")
 
@@ -1595,3 +1695,151 @@ def test_query_rbd_trash_raises_when_all_mon_nodes_fail(fake_ssh, monkeypatch):
 
     with pytest.raises(CephQueryError):
         query_rbd_trash("vms")
+
+
+def test_normalize_rbd_inventory_ignores_rbd_du_snapshot_rows():
+    """`rbd du` trả một dòng cho mỗi snapshot rồi mới tới dòng head image,
+    tất cả cùng `name`. Đếm dòng snapshot như một image sẽ nhân bội mọi con
+    số: image 10 GiB có 2 snapshot từng bị báo thành 30 GiB provisioned."""
+    GiB = 1024 ** 3
+    payload = {"images": [
+        {"name": "vol-a", "snapshot": "snap1", "provisioned_size": 10 * GiB, "used_size": 1 * GiB},
+        {"name": "vol-a", "snapshot": "snap2", "provisioned_size": 10 * GiB, "used_size": 1 * GiB},
+        {"name": "vol-a", "provisioned_size": 10 * GiB, "used_size": 7 * GiB},
+        {"name": "vol-b", "provisioned_size": 5 * GiB, "used_size": 2 * GiB},
+    ]}
+
+    rows = ceph_client._normalize_rbd_inventory(payload)
+
+    assert [row["name"] for row in rows] == ["vol-a", "vol-b"]
+    assert sum(row["provisioned_size"] for row in rows) == 15 * GiB
+    assert sum(row["used_size"] for row in rows) == 9 * GiB
+    # Những dòng snapshot bị lọc ra chính là nguồn duy nhất cho số đếm này.
+    assert rows[0]["snapshot_count"] == 2
+    assert rows[1]["snapshot_count"] == 0
+
+
+def test_query_rbd_image_usage_reports_the_head_image_not_its_first_snapshot(fake_ssh, monkeypatch):
+    """`next(... name == image)` từng lấy dòng ĐẦU TIÊN, tức là một snapshot."""
+    GiB = 1024 ** 3
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": {"images": [
+            {"name": "vol-a", "snapshot": "snap1", "provisioned_size": 10 * GiB, "used_size": 1 * GiB},
+            {"name": "vol-a", "provisioned_size": 10 * GiB, "used_size": 7 * GiB},
+        ]}
+    }
+
+    assert ceph_client.query_rbd_image_usage("vms", "vol-a")["used_size"] == 7 * GiB
+
+
+def test_query_rbd_trash_measures_used_size_from_the_pool_object_listing(fake_ssh, monkeypatch):
+    """Không lệnh `rbd` nào (trừ `info`) nhận `--image-id`, và image trong
+    Trash đã rời khỏi directory của pool, nên `rbd du` không với tới được.
+    Đếm object `<block_name_prefix>.*` cho ra đúng con số của `rbd du` —
+    `rbd du` không có `--exact` cũng tính theo object nguyên."""
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": [{"id": "abc123", "name": "old-disk", "deleted_at": "x", "status": "y"}]
+    }
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_batch_command_with",
+        lambda *args, **kwargs: (
+            "10.20.1.150",
+            [{"size": 40 * 1024 ** 3, "block_name_prefix": "rbd_data.abc123",
+              "object_size": 8 * 1024 ** 2}],
+        ),
+    )
+    listings = {
+        "rados df": {"pools": [{"name": "vms", "num_objects": 4}]},
+    }
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_json_command",
+        lambda command: ("10.20.1.150", listings[command]) if command in listings
+        else ("10.20.1.150", fake_ssh.behavior["10.20.1.150"]),
+    )
+    monkeypatch.setattr(
+        ceph_client, "run_ceph_text_command",
+        lambda command: ("10.20.1.150", "\n".join([
+            "rbd_data.abc123.0000000000000000",
+            "rbd_data.abc123.0000000000000001",
+            "rbd_data.abc123.0000000000000002",
+            "rbd_data.other9.0000000000000000",   # image khác, không được tính
+        ])),
+    )
+
+    entries = ceph_client.query_rbd_trash("vms")
+
+    assert entries[0]["size_bytes"] == 40 * 1024 ** 3
+    assert entries[0]["used_size_bytes"] == 3 * 8 * 1024 ** 2
+
+
+def test_trash_usage_scan_is_skipped_on_an_oversized_pool(monkeypatch):
+    """Một `rados ls` trên pool hàng triệu object không đáng để treo một lần
+    render trang; khi đó UI phải giữ '—' thay vì số bịa."""
+    scanned = []
+    used = ceph_client._trash_used_sizes(
+        "vms",
+        [("abc123", "rbd_data.abc123", 4096)],
+        lambda command: {"pools": [{
+            "name": "vms",
+            "num_objects": ceph_client._TRASH_USAGE_MAX_POOL_OBJECTS + 1,
+        }]},
+        lambda command: scanned.append(command) or "",
+    )
+
+    assert used == {}
+    assert scanned == []
+
+
+def test_rbd_qos_normalizer_supports_mapping_and_list_payloads():
+    mapping = ceph_client._normalize_rbd_qos({"options": {"rbd_qos_iops_limit": "500"}})
+    rows = ceph_client._normalize_rbd_qos({"options": [{"name": "rbd_qos_bps_limit", "value": 4096}]})
+
+    assert mapping["rbd_qos_iops_limit"] == 500
+    assert mapping["rbd_qos_bps_limit"] == 0
+    assert rows["rbd_qos_bps_limit"] == 4096
+
+
+def test_rbd_dependency_graph_is_bounded_and_cycle_safe(monkeypatch):
+    payloads = {
+        "rbd children images/root": {"children": ["images/child", "images/child"]},
+        "rbd children images/child": {"children": ["images/grandchild", "images/root"]},
+        "rbd children images/grandchild": {"children": []},
+    }
+    calls = []
+
+    def fake_run(command):
+        calls.append(command)
+        return "mon-1", payloads[command]
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command", fake_run)
+
+    graph = ceph_client.query_rbd_dependency_graph("images", "root", max_depth=4, max_nodes=10)
+
+    assert [(node["pool"], node["image"], node["depth"]) for node in graph["nodes"]] == [
+        ("images", "root", 0), ("images", "child", 1), ("images", "grandchild", 2)
+    ]
+    assert len(graph["edges"]) == 3
+    assert graph["partial_errors"] == []
+    assert calls == [
+        "rbd children images/root",
+        "rbd children images/child",
+        "rbd children images/grandchild",
+    ]
+
+
+def test_rbd_dependency_graph_marks_node_limit_without_unbounded_queries(monkeypatch):
+    calls = []
+
+    def fake_run(command):
+        calls.append(command)
+        return "mon-1", {"children": [f"images/child-{index}" for index in range(10)]}
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command", fake_run)
+
+    graph = ceph_client.query_rbd_dependency_graph("images", "root", max_depth=3, max_nodes=2)
+
+    assert len(graph["nodes"]) == 2
+    assert graph["truncated"] is True
+    assert len(calls) == 2

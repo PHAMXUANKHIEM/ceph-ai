@@ -26,17 +26,20 @@ import logging
 import os
 import shlex
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 import paramiko
 
+from config.settings import settings
 from shared import db
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.models import BackupJob
 from worker.backup.cluster_scope import first_mon_node, get_cluster
 from worker.backup.storage.base import BackupStorageBackend
+from worker.backup.ssh_io import read_all, read_chunk, wait_exit_status, write_chunk
 from worker.executor.ssh_executor import KNOWN_HOSTS_PATH
 
 if TYPE_CHECKING:
@@ -44,8 +47,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CONNECT_TIMEOUT_SECONDS = 10
+CONNECT_TIMEOUT_SECONDS = settings.ceph_ssh_connect_timeout
 CHUNK_SIZE = 4 * 1024 * 1024  # matches every other streaming path in worker/backup/
+
+# Restore uses a raw SSH stream because the backup bytes must be piped into
+# `rbd import`/`rbd import-diff`.  Paramiko's channel timeout only stops local
+# I/O; it does not reliably terminate the remote process.  Keep the remote
+# command bounded and serialize it with the same node-local lock used by the
+# watcher so a timed-out restore cannot leave an unbounded RBD process behind.
+RESTORE_REMOTE_LOCK_PATH = "/run/ceph-ai-cephadm.lock"
+RESTORE_REMOTE_LOCK_WAIT_SECONDS = 30
+RESTORE_REMOTE_TIMEOUT_GRACE_SECONDS = 2
 
 
 class RestoreError(Exception):
@@ -175,6 +187,8 @@ def _ssh_connect(mon_ip: str, cluster: "Cluster | None" = None) -> paramiko.SSHC
         username=ssh_user,
         key_filename=ssh_key_path,
         timeout=CONNECT_TIMEOUT_SECONDS,
+        banner_timeout=settings.ceph_ssh_banner_timeout,
+        auth_timeout=settings.ceph_ssh_auth_timeout,
     )
     return client
 
@@ -231,18 +245,23 @@ def _stream_file_to_rbd(mon_ip: str, local_path: str, command: str, cluster: "Cl
     pattern as `restore_drill.py::_import_backup_to_scratch`, generalized
     to accept any destination command instead of a scratch-only one."""
     client = _ssh_connect(mon_ip, cluster)
+    deadline = time.monotonic() + float(settings.ceph_backup_operation_timeout)
     try:
-        stdin, stdout, stderr = client.exec_command(command)
+        remaining = max(0.1, deadline - time.monotonic())
+        remote_command = _bounded_restore_command(command, remaining)
+        stdin, stdout, stderr = client.exec_command(
+            remote_command, timeout=remaining
+        )
         with open(local_path, "rb") as f:
             while True:
                 chunk = f.read(CHUNK_SIZE)
                 if not chunk:
                     break
-                stdin.write(chunk)
+                write_chunk(stdin, chunk, deadline)
         stdin.close()
-        exit_status = stdout.channel.recv_exit_status()
+        exit_status = wait_exit_status(stdout.channel, deadline)
         if exit_status != 0:
-            error_output = stderr.read().decode(errors="replace")
+            error_output = read_all(stderr, deadline).decode(errors="replace")
             raise RestoreError(f"{command} exited {exit_status}: {error_output}")
     finally:
         client.close()
@@ -251,14 +270,37 @@ def _stream_file_to_rbd(mon_ip: str, local_path: str, command: str, cluster: "Cl
 def _run_rbd_command(mon_ip: str, command: str, cluster: "Cluster | None" = None) -> None:
     """Run a small non-streaming verification/cleanup command."""
     client = _ssh_connect(mon_ip, cluster)
+    deadline = time.monotonic() + float(settings.ceph_backup_operation_timeout)
     try:
-        _stdin, stdout, stderr = client.exec_command(command)
-        exit_status = stdout.channel.recv_exit_status()
+        remaining = max(0.1, deadline - time.monotonic())
+        remote_command = _bounded_restore_command(command, remaining)
+        _stdin, stdout, stderr = client.exec_command(
+            remote_command, timeout=remaining
+        )
+        exit_status = wait_exit_status(stdout.channel, deadline)
         if exit_status != 0:
-            error_output = stderr.read().decode(errors="replace")
+            error_output = read_all(stderr, deadline).decode(errors="replace")
             raise RestoreError(f"{command} exited {exit_status}: {error_output}")
     finally:
         client.close()
+
+
+def _bounded_restore_command(command: str, timeout_seconds: float) -> str:
+    """Bound and serialize one remote RBD command.
+
+    `timeout` owns the `flock` process, so TERM followed by KILL reaches a
+    command that is still waiting for the node-local Ceph lock as well as an
+    `rbd` process already running.  The command is passed through the remote
+    login shell; all caller-controlled pool/image components are already
+    shell-quoted before reaching this helper.
+    """
+    return (
+        "timeout --signal=TERM "
+        f"--kill-after={RESTORE_REMOTE_TIMEOUT_GRACE_SECONDS}s "
+        f"{float(timeout_seconds):g}s "
+        f"flock -w {RESTORE_REMOTE_LOCK_WAIT_SECONDS} "
+        f"{shlex.quote(RESTORE_REMOTE_LOCK_PATH)} {command}"
+    )
 
 
 def restore_image(
@@ -315,8 +357,12 @@ def restore_image(
             applied_diff_ids.append(diff_job.id)
 
         # Do not treat a successful import stream as sufficient evidence:
-        # Ceph must be able to resolve the resulting image afterwards.
+        # Ceph must resolve the resulting image and read its data afterwards.
+        # The export is directed to /dev/null, so no restored payload is
+        # retained or returned to the Dashboard; it verifies the RBD read path
+        # and catches an image that exists but cannot be read after import.
         _run_rbd_command(mon_ip, f"rbd info {destination_spec} --format json", cluster)
+        _run_rbd_command(mon_ip, f"rbd export {destination_spec} /dev/null", cluster)
 
         return RestoreResult(
             success=True,

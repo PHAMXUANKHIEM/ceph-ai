@@ -483,7 +483,10 @@ def _scan_and_store_unlocked(
                 len(flagged), max_flagged,
             )
         else:
-            batch_size = max(1, settings.log_intel_ai_batch_size)
+            batch_size = min(
+                max(1, settings.log_intel_ai_batch_size),
+                settings.learning_job_max_batch_size,
+            )
             batch_count = (len(flagged) + batch_size - 1) // batch_size
             if batch_count > 1:
                 logger.warning(
@@ -519,6 +522,16 @@ def _matches_focus(template: str, message: str) -> bool:
     """Keep only triage evidence related to an immediate detector message."""
     template_lower = template.lower()
     message_lower = message.lower()
+    if re.search(r"(?<!\d)-107\b", message_lower) or "transport endpoint is not connected" in message_lower:
+        return any(
+            marker in template_lower
+            for marker in (
+                "transport endpoint is not connected",
+                "rgw watcher",
+                "handle_error",
+                "librados",
+            )
+        )
     vault_markers = ("vault", "retrieve actual key", "error -13")
     if any(marker in message_lower for marker in vault_markers):
         return any(marker in template_lower for marker in vault_markers)

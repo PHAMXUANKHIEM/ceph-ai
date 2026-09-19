@@ -28,6 +28,7 @@ from shared import db
 from shared.clusters import list_active_clusters
 from shared.models import BackupJob
 from shared.notification_channels import enqueue_external_alert
+from shared.telegram_alerts import send_managed_channel_alert, send_telegram_alert_with_ai
 from shared.telegram_client import TelegramSendError, send_telegram_message
 from worker.backup.cluster_scope import parse_tracked_images
 from worker.backup.policy_config import load_backup_policy
@@ -111,10 +112,16 @@ def _send_telegram_alert(
     # rather than importing that helper across the watcher/worker boundary.
     if cluster_name:
         text = f"\U0001f4cd Cụm: {cluster_name}\n{text}"
-    try:
-        send_telegram_message(bot_token, chat_id, text)
-    except TelegramSendError:
-        logger.exception("send_alert: Telegram delivery failed — alert already logged above")
+    send_telegram_alert_with_ai(
+        bot_token,
+        chat_id,
+        True,
+        text,
+        context="cảnh báo backup Ceph",
+        send_func=send_telegram_message,
+    )
+    if cluster is None:
+        send_managed_channel_alert(text, cluster_name=cluster_name, category="backup")
 
 
 def send_alert(

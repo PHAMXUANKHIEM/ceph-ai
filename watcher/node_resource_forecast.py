@@ -33,8 +33,8 @@ from shared.learning_runtime import evaluate as evaluate_learning_runtime
 from shared.models import (
     Cluster,
     NodeResourceForecastAlert,
-    NodeResourceForecastAlertEvent,
     NodeResourceForecastRun,
+    NodeResourceForecastTransition,
     NodeResourceModelState,
 )
 from shared.online_learning import MODEL_VERSION, load_or_reset_state
@@ -1243,29 +1243,25 @@ def sync_forecast_alerts(
                 )
             else:
                 alert.notification_state = NotificationState.SUPPRESSED.value
-        # Persist exactly one append-only event for each lifecycle transition
-        # observed by this scan. Repeated scans with the same state are
-        # idempotent, while CANDIDATE/WARNING/RECOVERED/DATA_QUALITY changes
-        # remain measurable for canary alert-volume and early-detection SLOs.
+        # Keep an append-only history of lifecycle transitions. The mutable
+        # alert row is still the operational state; this history is what
+        # makes canary alert volume and recovery/early-detection metrics
+        # auditable over a 24–72 hour window.
         session.flush()
         current_alerts = session.query(NodeResourceForecastAlert).filter_by(
             cluster_name=cluster, host=host,
         ).all()
         for alert in current_alerts:
-            to_state = _legacy_lifecycle_state(alert)
-            from_state = previous_states.get(alert.metric)
-            if not to_state or from_state == to_state:
+            new_state = _legacy_lifecycle_state(alert)
+            previous_state = previous_states.get(alert.metric)
+            if not new_state or previous_state == new_state:
                 continue
-            session.add(NodeResourceForecastAlertEvent(
+            session.add(NodeResourceForecastTransition(
                 alert_id=alert.id,
-                cluster_name=alert.cluster_name,
-                host=alert.host,
-                metric=alert.metric,
-                from_state=from_state,
-                to_state=to_state,
-                notification_state=alert.notification_state,
-                reason=alert.state_reason,
-                evidence_fingerprint=alert.evidence_fingerprint,
-                occurred_at=now_naive,
+                previous_state=previous_state,
+                new_state=new_state,
+                reason=alert.state_reason or "lifecycle transition",
+                evidence_version=alert.evidence_version,
+                changed_at=now_naive,
             ))
         session.commit()

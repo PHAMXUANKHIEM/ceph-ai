@@ -1780,7 +1780,7 @@ async def handle_callback(callback_query: dict, bot_token: str) -> str | None:
                 send_telegram_message_with_keyboard,
                 bot_token,
                 chat_id,
-                "⚠️ Action RISKY/DESTRUCTIVE cần một lần duyệt cuối trước khi Worker thực hiện.",
+                "⚠️ Yêu cầu này cần Duyệt cuối trước khi Worker thực hiện.",
                 [
                     (
                         "✅ Duyệt cuối",

@@ -1,3 +1,4 @@
+import atexit
 import fcntl
 import base64
 import hashlib
@@ -7,6 +8,7 @@ import os
 import re
 import shlex
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from typing import Callable, TypedDict
@@ -25,6 +27,9 @@ CEPH_HEALTH_INNER_COMMAND = "ceph health detail --format json"
 CONNECT_TIMEOUT_SECONDS = settings.ceph_ssh_connect_timeout
 COMMAND_TIMEOUT_SECONDS = settings.ceph_command_timeout
 HEALTH_COMMAND_TIMEOUT_SECONDS = settings.ceph_health_timeout
+# Health is queried from alternate MONs, so retrying the same MON repeatedly
+# only amplifies cephadm/SSH load while that MON is already unhealthy.
+CEPH_HEALTH_MAX_RETRIES_PER_MON = 1
 # cephadm shell spins up a fresh container per invocation (infers fsid/config/
 # keyring itself) rather than exec-ing into an already-running one — measured
 # ~2.5s against a real cephadm/reef cluster, comfortably under this but with
@@ -79,6 +84,54 @@ CEPHADM_KEYRING_TARGET = "/etc/ceph/ceph.client.admin.keyring"
 # fail with exit 1 and caused false "Trash is below threshold" readings.
 CEPHADM_LOCK_WAIT_SECONDS = 30
 CEPHADM_REMOTE_LOCK_PATH = "/run/ceph-ai-cephadm.lock"
+CEPHADM_REMOTE_TIMEOUT_GRACE_SECONDS = 2
+
+_HEALTH_POOL_LOCK = threading.RLock()
+_HEALTH_POOLS: dict[tuple[object, ...], CephConnectionPool] = {}
+
+
+def _get_shared_health_pool(
+    ssh_user: str,
+    ssh_key_path: str,
+) -> CephConnectionPool:
+    """Return one reusable SSH pool for a credential/timeout profile."""
+    max_connections = max(1, settings.ceph_max_concurrency)
+    config = CephSSHConfig(
+        user=ssh_user,
+        key_path=ssh_key_path,
+        known_hosts_path=KNOWN_HOSTS_PATH,
+        connect_timeout=settings.ceph_ssh_connect_timeout,
+        banner_timeout=settings.ceph_ssh_banner_timeout,
+        auth_timeout=settings.ceph_ssh_auth_timeout,
+        max_connections=max_connections,
+    )
+    key = (
+        config.user,
+        config.key_path,
+        config.known_hosts_path,
+        config.connect_timeout,
+        config.banner_timeout,
+        config.auth_timeout,
+        config.max_connections,
+    )
+    with _HEALTH_POOL_LOCK:
+        pool = _HEALTH_POOLS.get(key)
+        if pool is None:
+            pool = CephConnectionPool(config)
+            _HEALTH_POOLS[key] = pool
+        return pool
+
+
+def _close_shared_health_pools() -> None:
+    """Close reusable health pools during orderly process shutdown."""
+    with _HEALTH_POOL_LOCK:
+        pools = list(_HEALTH_POOLS.values())
+        _HEALTH_POOLS.clear()
+    for pool in pools:
+        pool.close()
+
+
+atexit.register(_close_shared_health_pools)
 
 
 def _rbd_iostat_base_command(pool: str, keyring_path: str) -> str:
@@ -271,6 +324,7 @@ class RbdInventoryEntry(TypedDict):
     image_id: str | None
     provisioned_size: int
     used_size: int
+    used_percent: float
     snapshot_count: int
 
 
@@ -286,41 +340,205 @@ def _normalize_rbd_inventory(payload: dict | list) -> list[RbdInventoryEntry]:
     if not isinstance(rows, list):
         logger.warning("query_rbd_inventory: unexpected rbd du response shape")
         return []
+    # `rbd du` emits one row per snapshot and then one row for the head image,
+    # all sharing the same `name`. Treating a snapshot row as an image
+    # multiplies every total (a 10 GiB image with two snapshots reported 30 GiB
+    # provisioned) and makes query_rbd_image_usage's `next(... name == image)`
+    # return the FIRST row — a snapshot's used_size, not the image's. This is
+    # the same guard dashboard/routes/block_storage.py::_image_rows already
+    # applies to `rbd ls --long`; the two normalizers must not disagree.
+    snapshot_counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("snapshot") is None:
+            continue
+        snapshot_name = row.get("name") or row.get("image")
+        if snapshot_name:
+            key = str(snapshot_name)
+            snapshot_counts[key] = snapshot_counts.get(key, 0) + 1
     result: list[RbdInventoryEntry] = []
     for row in rows:
         if not isinstance(row, dict):
+            continue
+        if row.get("snapshot") is not None:
             continue
         name = row.get("name") or row.get("image")
         if not name:
             continue
         snapshots = row.get("snapshots")
+        provisioned_size = _as_int(row.get("provisioned_size") or row.get("size"))
+        used_size = _as_int(row.get("used_size"))
+        # Prefer whatever the payload states explicitly; only fall back to the
+        # snapshot rows we just filtered out, which is the sole source `rbd du`
+        # actually gives us for this count.
+        if isinstance(snapshots, list):
+            snapshot_count = len(snapshots)
+        elif row.get("snapshot_count") is not None:
+            snapshot_count = _as_int(row.get("snapshot_count"))
+        else:
+            snapshot_count = snapshot_counts.get(str(name), 0)
         result.append(
             RbdInventoryEntry(
                 name=str(name),
                 image_id=str(row.get("id")) if row.get("id") is not None else None,
-                provisioned_size=_as_int(row.get("provisioned_size") or row.get("size")),
-                used_size=_as_int(row.get("used_size")),
-                snapshot_count=len(snapshots) if isinstance(snapshots, list) else _as_int(row.get("snapshot_count")),
+                provisioned_size=provisioned_size,
+                used_size=used_size,
+                used_percent=round((used_size * 100.0 / provisioned_size), 2) if provisioned_size else 0.0,
+                snapshot_count=snapshot_count,
             )
         )
     return result
 
 
+def _normalize_rbd_ls_metadata(payload: dict | list) -> dict[str, dict]:
+    """Index image metadata from ``rbd ls --long`` without snapshot rows."""
+    rows = payload.get("images") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return {}
+    metadata: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("snapshot") is not None:
+            continue
+        name = row.get("image") or row.get("name")
+        if not name:
+            continue
+        features = row.get("features") or []
+        if isinstance(features, str):
+            features = [item.strip() for item in features.split(",") if item.strip()]
+        metadata[str(name)] = {
+            "image_id": str(row.get("id")) if row.get("id") is not None else None,
+            "format": row.get("format"),
+            "features": features if isinstance(features, list) else [],
+        }
+    return metadata
+
+
+def _merge_rbd_inventory_metadata(
+    rows: list[RbdInventoryEntry], metadata: dict[str, dict],
+) -> list[RbdInventoryEntry]:
+    """Add optional format/features while preserving the stable base schema."""
+    for row in rows:
+        extra = metadata.get(str(row["name"]))
+        if not extra:
+            continue
+        if row.get("image_id") is None and extra.get("image_id"):
+            row["image_id"] = extra["image_id"]
+        row["format"] = extra.get("format")
+        row["features"] = extra.get("features", [])
+    return rows
+
+
+def _enrich_rbd_inventory(
+    pool: str,
+    rows: list[RbdInventoryEntry],
+    query_json,
+) -> list[RbdInventoryEntry]:
+    """Best-effort metadata enrichment; usage data remains authoritative."""
+    if not rows:
+        return rows
+    try:
+        _host, payload = query_json(
+            # run_ceph_json_command[_with] appends the single JSON format
+            # flag. Keeping it out of the inner command is important for
+            # Ceph versions that reject duplicate --format options.
+            f"rbd ls --long --pool {shlex.quote(pool)}"
+        )
+        return _merge_rbd_inventory_metadata(rows, _normalize_rbd_ls_metadata(payload))
+    except CephQueryError as exc:
+        # ``rbd du`` is still useful when older Ceph versions or permissions do
+        # not expose long listing metadata. Detail API reports the partial error.
+        logger.warning("RBD inventory metadata enrichment failed for pool %s: %s", pool, exc)
+        return rows
+
+
+def _attachment_from_status(payload: dict | list | None) -> dict:
+    """Normalize one ``rbd status`` payload into a small safe summary."""
+    if not isinstance(payload, dict):
+        return {"attachment_state": "unknown", "watcher_count": None}
+    watchers = payload.get("watchers")
+    if not isinstance(watchers, list):
+        return {"attachment_state": "unknown", "watcher_count": None}
+    return {
+        "attachment_state": "attached" if watchers else "idle",
+        "watcher_count": len(watchers),
+    }
+
+
+def _enrich_rbd_attachment(
+    pool: str,
+    rows: list[RbdInventoryEntry],
+    query_batch,
+) -> list[RbdInventoryEntry]:
+    """Read attachment state with bounded parallel read-only commands."""
+    if not rows:
+        return rows
+    commands = [
+        f"rbd status {shlex.quote(pool)}/{shlex.quote(str(row['name']))} --format json"
+        for row in rows
+    ]
+    try:
+        payloads = query_batch(commands)
+    except CephQueryError as exc:
+        logger.warning("RBD attachment enrichment failed for pool %s: %s", pool, exc)
+        return rows
+    for row, payload in zip(rows, payloads):
+        row.update(_attachment_from_status(payload))
+    return rows
+
+
 def query_rbd_inventory(pool: str) -> list[RbdInventoryEntry]:
-    """Return every live image in one pool, including idle images."""
+    """Return every live image plus best-effort format/features metadata."""
     _, payload = run_ceph_json_command(f"rbd du --pool {shlex.quote(pool)}")
-    return _normalize_rbd_inventory(payload)
+    rows = _enrich_rbd_inventory(pool, _normalize_rbd_inventory(payload), run_ceph_json_command)
+    nodes = get_mon_nodes()
+    return _enrich_rbd_attachment(
+        pool,
+        rows,
+        lambda commands: run_ceph_json_batch_command_with(
+            nodes, settings.ceph_container_name, settings.ssh_user,
+            settings.ssh_key_path, settings.ceph_exec_mode, commands, parallel=True,
+        )[1],
+    )
 
 
 def query_rbd_inventory_with(
     pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
     ssh_key_path: str, exec_mode: str,
 ) -> list[RbdInventoryEntry]:
+    connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
     _, payload = run_ceph_json_command_with(
-        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        *connection,
         f"rbd du --pool {shlex.quote(pool)}",
     )
-    return _normalize_rbd_inventory(payload)
+    rows = _enrich_rbd_inventory(
+        pool,
+        _normalize_rbd_inventory(payload),
+        lambda command: run_ceph_json_command_with(*connection, command),
+    )
+    return _enrich_rbd_attachment(
+        pool,
+        rows,
+        lambda commands: run_ceph_json_batch_command_with(*connection, commands, parallel=True)[1],
+    )
+
+
+def query_rbd_image_usage(pool: str, image: str) -> RbdInventoryEntry | None:
+    """Return the latest provisioned/used byte counts for one live image."""
+    _, payload = run_ceph_json_command(
+        f"rbd du {shlex.quote(pool)}/{shlex.quote(image)} --format json"
+    )
+    return next((row for row in _normalize_rbd_inventory(payload) if row["name"] == image), None)
+
+
+def query_rbd_image_usage_with(
+    pool: str, image: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> RbdInventoryEntry | None:
+    """Cluster-scoped counterpart to :func:`query_rbd_image_usage`."""
+    _, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd du {shlex.quote(pool)}/{shlex.quote(image)} --format json",
+    )
+    return next((row for row in _normalize_rbd_inventory(payload) if row["name"] == image), None)
 
 
 def _normalize_rbd_image_detail(
@@ -424,6 +642,176 @@ def query_rbd_image_detail_with(
     )
 
 
+def _normalize_rbd_child_refs(payload: dict | list, default_pool: str) -> list[dict[str, str]]:
+    """Normalize the version-dependent output of ``rbd children``.
+
+    Ceph releases have returned both a list of strings and a mapping containing
+    ``children``.  Keep the graph contract stable and never trust an arbitrary
+    slash-delimited value as more than ``pool/image``.
+    """
+    values = payload.get("children", []) if isinstance(payload, dict) else payload
+    if not isinstance(values, list):
+        return []
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        if isinstance(value, dict):
+            child_pool = value.get("pool") or value.get("namespace") or default_pool
+            child_image = value.get("image") or value.get("name") or value.get("child")
+            token = f"{child_pool}/{child_image}" if child_image else ""
+        else:
+            token = str(value or "").strip()
+        parts = token.split("/", 1)
+        child_pool = (parts[0] or default_pool).strip()
+        child_image = (parts[1] if len(parts) == 2 else parts[0]).strip()
+        if not child_pool or not child_image or len(child_pool) > 128 or len(child_image) > 128:
+            continue
+        key = (child_pool, child_image)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"pool": child_pool, "image": child_image})
+    return result
+
+
+def _rbd_dependency_graph(
+    pool: str,
+    image: str,
+    run_command,
+    max_depth: int = 3,
+    max_nodes: int = 64,
+) -> dict:
+    """Build a bounded read-only parent-to-child graph from live RBD metadata."""
+    max_depth = max(0, min(int(max_depth), 5))
+    max_nodes = max(1, min(int(max_nodes), 128))
+    root = {"pool": pool, "image": image}
+    queue: list[tuple[str, str, int]] = [(pool, image, 0)]
+    visited: set[tuple[str, str]] = set()
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    errors: list[dict] = []
+    truncated = False
+
+    while queue:
+        current_pool, current_image, depth = queue.pop(0)
+        current_key = (current_pool, current_image)
+        if current_key in visited:
+            continue
+        visited.add(current_key)
+        nodes.append({"pool": current_pool, "image": current_image, "depth": depth})
+        if depth >= max_depth:
+            if depth == max_depth:
+                truncated = truncated or bool(queue)
+            continue
+        try:
+            payload = run_command(
+                f"rbd children {shlex.quote(current_pool)}/{shlex.quote(current_image)}"
+            )[1]
+            children = _normalize_rbd_child_refs(payload, current_pool)
+        except CephQueryError as exc:
+            errors.append({
+                "pool": current_pool,
+                "image": current_image,
+                "message": str(exc),
+            })
+            continue
+        for child in children:
+            child_key = (child["pool"], child["image"])
+            edges.append({
+                "parent": {"pool": current_pool, "image": current_image},
+                "child": child,
+            })
+            if child_key in visited or any(
+                item[0] == child_key[0] and item[1] == child_key[1] for item in queue
+            ):
+                continue
+            if len(nodes) + len(queue) >= max_nodes:
+                truncated = True
+                continue
+            queue.append((child_key[0], child_key[1], depth + 1))
+
+    return {
+        "root": root,
+        "nodes": nodes,
+        "edges": edges,
+        "max_depth": max_depth,
+        "max_nodes": max_nodes,
+        "truncated": truncated,
+        "partial_errors": errors,
+    }
+
+
+def query_rbd_dependency_graph(
+    pool: str, image: str, max_depth: int = 3, max_nodes: int = 64
+) -> dict:
+    return _rbd_dependency_graph(
+        pool, image, run_ceph_json_command, max_depth=max_depth, max_nodes=max_nodes
+    )
+
+
+def query_rbd_dependency_graph_with(
+    pool: str, image: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str, max_depth: int = 3, max_nodes: int = 64,
+) -> dict:
+    connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
+    return _rbd_dependency_graph(
+        pool,
+        image,
+        lambda command: run_ceph_json_command_with(*connection, command),
+        max_depth=max_depth,
+        max_nodes=max_nodes,
+    )
+
+
+_RBD_QOS_OPTION_NAMES = (
+    "rbd_qos_iops_limit", "rbd_qos_bps_limit", "rbd_qos_iops_burst", "rbd_qos_bps_burst",
+    "rbd_qos_read_iops_limit", "rbd_qos_read_bps_limit",
+    "rbd_qos_write_iops_limit", "rbd_qos_write_bps_limit",
+)
+
+
+def _normalize_rbd_qos(payload: dict | list) -> dict[str, int]:
+    rows = payload.get("options") if isinstance(payload, dict) else payload
+    values: dict[str, int] = {}
+    if isinstance(rows, dict):
+        pairs = rows.items()
+    elif isinstance(rows, list):
+        pairs = []
+        for row in rows:
+            if isinstance(row, dict):
+                key = row.get("name") or row.get("key") or row.get("option")
+                if key:
+                    pairs.append((key, row.get("value")))
+    else:
+        pairs = []
+    for key, raw in pairs:
+        if key not in _RBD_QOS_OPTION_NAMES:
+            continue
+        try:
+            values[key] = int(raw)
+        except (TypeError, ValueError):
+            continue
+    return {key: values.get(key, 0) for key in _RBD_QOS_OPTION_NAMES}
+
+
+def query_rbd_qos(pool: str, image: str) -> dict[str, int]:
+    spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
+    _, payload = run_ceph_json_command(f"rbd config image list {spec}")
+    return _normalize_rbd_qos(payload)
+
+
+def query_rbd_qos_with(
+    pool: str, image: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> dict[str, int]:
+    spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
+    _, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd config image list {spec}",
+    )
+    return _normalize_rbd_qos(payload)
+
+
 _GLOBAL_CAPACITY_HEALTH_CHECKS = {
     "OSD_NEARFULL", "OSD_BACKFILLFULL", "OSD_FULL", "POOL_NEAR_FULL", "POOL_FULL",
 }
@@ -515,6 +903,40 @@ def query_rbd_pool_overview_with(
     usage = run_ceph_json_command_with(*connection, "ceph df detail")[1]
     health = run_ceph_json_command_with(*connection, "ceph health detail")[1]
     return _normalize_rbd_pool_overview(pool, detail, usage, health)
+
+
+def query_rbd_mirror_pool_info(pool: str) -> dict:
+    """Read-only RBD mirroring capability/configuration for one pool."""
+    _host, payload = run_ceph_json_command(f"rbd mirror pool info {shlex.quote(pool)}")
+    return payload if isinstance(payload, dict) else {"raw": payload}
+
+
+def query_rbd_mirror_pool_info_with(
+    pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> dict:
+    _host, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd mirror pool info {shlex.quote(pool)}",
+    )
+    return payload if isinstance(payload, dict) else {"raw": payload}
+
+
+def query_rbd_mirror_pool_status(pool: str) -> dict:
+    """Read-only mirror status; disabled pools are handled by the route."""
+    _host, payload = run_ceph_json_command(f"rbd mirror pool status {shlex.quote(pool)}")
+    return payload if isinstance(payload, dict) else {"raw": payload}
+
+
+def query_rbd_mirror_pool_status_with(
+    pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> dict:
+    _host, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd mirror pool status {shlex.quote(pool)}",
+    )
+    return payload if isinstance(payload, dict) else {"raw": payload}
 
 
 def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:
@@ -620,11 +1042,11 @@ class TrashEntry(TypedDict):
     name: str
     deletion_time: str
     status: str
-    size_bytes: int
+    size_bytes: int | None
     used_size_bytes: int | None
 
 
-def query_rbd_trash(pool: str) -> list[TrashEntry]:
+def query_rbd_trash(pool: str, *, include_capacity: bool = True) -> list[TrashEntry]:
     """Runs `rbd trash ls <pool> --format json` — lists RBD images an
     operator already soft-deleted (`rbd trash mv`) in this pool, which Ceph
     keeps recoverable (`rbd trash restore`) until explicitly purged
@@ -640,12 +1062,18 @@ def query_rbd_trash(pool: str) -> list[TrashEntry]:
         pool,
         payload,
         lambda command: run_ceph_json_command(command)[1],
+        lambda command: run_ceph_text_command(command)[1],
+        lambda commands: run_ceph_json_batch_command_with(
+            get_mon_nodes(), settings.ceph_container_name, settings.ssh_user,
+            settings.ssh_key_path, settings.ceph_exec_mode, commands, parallel=True,
+        )[1],
+        include_capacity=include_capacity,
     )
 
 
 def query_rbd_trash_with(
     pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
-    ssh_key_path: str, exec_mode: str,
+    ssh_key_path: str, exec_mode: str, *, include_capacity: bool = True,
 ) -> list[TrashEntry]:
     """Cluster-scoped counterpart to :func:`query_rbd_trash`."""
     connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
@@ -657,13 +1085,84 @@ def query_rbd_trash_with(
         pool,
         payload,
         lambda command: run_ceph_json_command_with(*connection, command)[1],
+        lambda command: run_ceph_text_command_with(*connection, command)[1],
+        lambda commands: run_ceph_json_batch_command_with(
+            *connection, commands, parallel=True
+        )[1],
+        include_capacity=include_capacity,
     )
+
+
+# One `rados ls` can hold this many object names in memory before the scan is
+# not worth its cost; above it the UI keeps showing "—" rather than stalling a
+# page render on a multi-million-object pool.
+_TRASH_USAGE_MAX_POOL_OBJECTS = 500_000
+
+
+def _trash_used_sizes(
+    pool: str,
+    images: list[tuple[str, str, int]],
+    query_json: Callable[[str], dict | list],
+    query_text: Callable[[str], str],
+) -> dict[str, int]:
+    """Allocated bytes per Trash ID, measured from the pool's RADOS objects.
+
+    No ``rbd`` subcommand except ``info`` accepts ``--image-id``, and a trashed
+    image is gone from the pool directory, so neither ``rbd du <pool>/<name>``
+    nor a pool-wide ``rbd du`` can see it (verified against Ceph 20.2, which
+    answers ``rbd: unrecognised option '--image-id'`` for both ``du`` and
+    ``diff``). What does work is counting the image's own
+    ``<block_name_prefix>.*`` objects: ``rbd du`` without ``--exact`` also
+    reports object-granular usage, so ``object_count * object_size``
+    reproduces its figure exactly — measured at 0.0% deviation against
+    ``rbd du`` on live images of the same pool.
+
+    Costs one ``rados ls`` for the whole pool regardless of how many entries
+    are in Trash, never one per entry.
+    """
+    if not images:
+        return {}
+    try:
+        stats = query_json("rados df")
+    except CephQueryError as exc:
+        logger.warning("_trash_used_sizes: cannot size pool %r before scanning: %s", pool, exc)
+        return {}
+    pools = stats.get("pools") if isinstance(stats, dict) else None
+    entry = next(
+        (row for row in pools if isinstance(row, dict) and row.get("name") == pool),
+        None,
+    ) if isinstance(pools, list) else None
+    object_count = _as_int(entry.get("num_objects")) if isinstance(entry, dict) else None
+    if object_count is None or object_count > _TRASH_USAGE_MAX_POOL_OBJECTS:
+        logger.info(
+            "_trash_used_sizes: skipping pool %r (%s objects, cap %s)",
+            pool, object_count, _TRASH_USAGE_MAX_POOL_OBJECTS,
+        )
+        return {}
+    try:
+        listing = query_text(f"rados -p {shlex.quote(pool)} ls")
+    except CephQueryError as exc:
+        logger.warning("_trash_used_sizes: rados ls failed for pool %r: %s", pool, exc)
+        return {}
+    names = listing.split()
+    used: dict[str, int] = {}
+    for trash_id, block_name_prefix, object_size in images:
+        if not block_name_prefix or object_size <= 0:
+            continue
+        prefix = f"{block_name_prefix}."
+        allocated = sum(1 for name in names if name.startswith(prefix))
+        used[trash_id] = allocated * object_size
+    return used
 
 
 def _normalize_rbd_trash(
     pool: str,
     payload: dict | list,
     query_json: Callable[[str], dict | list],
+    query_text: Callable[[str], str] | None = None,
+    query_batch: Callable[[list[str]], list[dict | list | None]] | None = None,
+    *,
+    include_capacity: bool = True,
 ) -> list[TrashEntry]:
     if not isinstance(payload, list):
         logger.warning(
@@ -673,6 +1172,28 @@ def _normalize_rbd_trash(
         return []
 
     entries: list[TrashEntry] = []
+    measurable: list[tuple[str, str, int]] = []
+    # One `rbd info` per entry means one SSH round trip per entry, and under
+    # `cephadm shell` each costs ~10s — 78s measured for six entries. The same
+    # reads batched into a single remote shell cost one round trip total.
+    batched_infos: dict[str, dict] | None = None
+    if include_capacity and query_batch is not None:
+        listed_ids = [
+            str(entry["id"]) for entry in payload
+            if isinstance(entry, dict) and entry.get("id")
+        ]
+        if listed_ids:
+            frames = query_batch([
+                # The batch runner sends commands verbatim; unlike
+                # run_ceph_json_command it does not append the format flag.
+                f"rbd info --pool {shlex.quote(pool)} --image-id {shlex.quote(trash_id)} --format json"
+                for trash_id in listed_ids
+            ])
+            batched_infos = {
+                trash_id: frame
+                for trash_id, frame in zip(listed_ids, frames)
+                if isinstance(frame, dict)
+            }
     for entry in payload:
         if not isinstance(entry, dict):
             continue
@@ -685,8 +1206,34 @@ def _normalize_rbd_trash(
         # object count by object_size: RBD is thin-provisioned and the final
         # object can be partial, while `rados ls` does not support the object
         # prefix filter this code previously assumed.
+        if not include_capacity:
+            entries.append(
+                TrashEntry(
+                    id=str(trash_id),
+                    name=str(entry.get("name") or "?"),
+                    deletion_time=str(entry.get("deleted_at") or ""),
+                    status=str(entry.get("status") or ""),
+                    size_bytes=None,
+                    used_size_bytes=None,
+                )
+            )
+            continue
+        if batched_infos is not None:
+            info = batched_infos.get(str(trash_id))
+            if info is None:
+                # A frame with no JSON is the same restore/purge race the
+                # per-entry path tolerates below: the ID vanished between the
+                # listing and the metadata read.
+                logger.info(
+                    "query_rbd_trash: entry %s/%s unreadable during batch scan; skipping",
+                    pool, trash_id,
+                )
+                continue
+            entries_info = info
+        else:
+            entries_info = None
         try:
-            info = query_json(
+            info = entries_info if entries_info is not None else query_json(
                 f"rbd info --pool {shlex.quote(pool)} --image-id {shlex.quote(str(trash_id))}"
             )
         except CephQueryError as exc:
@@ -713,6 +1260,14 @@ def _normalize_rbd_trash(
             provisioned_size = max(0, int(_as_float(info["size"])))
         except (TypeError, ValueError) as exc:
             raise CephQueryError(f"invalid logical size for trash image {pool}/{trash_id}") from exc
+        # `rbd info --image-id` is the one command that reaches a trashed
+        # image, and it hands over exactly what the RADOS object scan below
+        # needs to turn allocated objects into bytes.
+        measurable.append((
+            str(trash_id),
+            str(info.get("block_name_prefix") or ""),
+            _as_int(info.get("object_size")) or 0,
+        ))
         entries.append(
             TrashEntry(
                 id=str(trash_id),
@@ -720,13 +1275,18 @@ def _normalize_rbd_trash(
                 deletion_time=str(entry.get("deleted_at") or ""),
                 status=str(entry.get("status") or ""),
                 size_bytes=provisioned_size,
-                # Ceph does not expose an exact per-image allocated byte
-                # count for an image that is already in Trash through the
-                # supported `rbd trash ls`/`rbd info` commands. `None` is
-                # intentional; the UI must show “—”, never a false number.
+                # Filled in below from the pool-wide object listing; stays
+                # None when that scan is unavailable or too expensive, and the
+                # UI must then show “—” rather than a false number.
                 used_size_bytes=None,
             )
         )
+    if query_text is not None:
+        used_by_id = _trash_used_sizes(pool, measurable, query_json, query_text)
+        for item in entries:
+            used = used_by_id.get(item["id"])
+            if used is not None:
+                item["used_size_bytes"] = used
     return entries
 
 
@@ -744,6 +1304,16 @@ class TrashPurgeResult(TypedDict):
 # here — a judgment call, not a measured value (no real large-image trash
 # purge was timed this session).
 RBD_TRASH_PURGE_TIMEOUT_SECONDS = 600
+
+
+def _query_rbd_trash_for_purge(pool: str) -> list[TrashEntry]:
+    """Validate purge targets without the per-entry capacity N+1 scan."""
+    try:
+        return query_rbd_trash(pool, include_capacity=False)
+    except TypeError as exc:
+        if "include_capacity" not in str(exc):
+            raise
+        return query_rbd_trash(pool)
 
 
 def force_purge_rbd_trash(pool: str) -> list[TrashPurgeResult]:
@@ -774,7 +1344,7 @@ def force_purge_rbd_trash(pool: str) -> list[TrashPurgeResult]:
     if the trash listing itself can't be fetched at all — nothing was
     attempted in that case, so there's nothing per-item to report.
     """
-    entries = query_rbd_trash(pool)
+    entries = _query_rbd_trash_for_purge(pool)
     mon_nodes = get_mon_nodes()
     if not mon_nodes:
         raise CephQueryError("no MON nodes configured (settings.ceph_mon_nodes is empty)")
@@ -799,7 +1369,7 @@ def force_purge_rbd_trash(pool: str) -> list[TrashPurgeResult]:
 
 def force_purge_rbd_trash_item(pool: str, trash_id: str) -> TrashPurgeResult:
     """Force-remove one named entry from RBD trash, ignoring retention rules."""
-    entries = query_rbd_trash(pool)
+    entries = _query_rbd_trash_for_purge(pool)
     entry = next((row for row in entries if str(row.get("id")) == str(trash_id)), None)
     if entry is None:
         raise CephQueryError(f"Trash ID không còn tồn tại trong pool: {pool}/{trash_id}")
@@ -1039,13 +1609,15 @@ def _run_remote_command_with(
         remote_timeout = command_timeout
         if command.lstrip().startswith("cephadm shell"):
             remote_command = (
+                "timeout --signal=TERM "
+                f"--kill-after={CEPHADM_REMOTE_TIMEOUT_GRACE_SECONDS}s "
+                f"{float(command_timeout):g}s "
                 f"flock -w {CEPHADM_LOCK_WAIT_SECONDS} "
                 f"{shlex.quote(CEPHADM_REMOTE_LOCK_PATH)} {command}"
             )
-            # Waiting for a host-local cephadm lock is part of the command
-            # budget: the runner's total deadline includes time waiting for
-            # the host-local cephadm lock, so a contended MON cannot extend a
-            # health poll beyond its configured deadline.
+            # The remote timeout owns the process group, so TERM/KILL reaches
+            # flock and its cephadm/Podman descendants. Closing a Paramiko
+            # channel alone does not reliably terminate those remote children.
         return CephCommandRunner(active_pool).run(host, remote_command, remote_timeout)
     except CephRunnerError as exc:
         raise CephQueryError(str(exc)) from exc
@@ -1221,6 +1793,62 @@ def run_ceph_json_command_with(
         return host, parsed
     raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
 
+JSON_BATCH_MAX_PARALLEL = 8
+
+
+def _build_json_batch_script(inner_commands: list[str], *, parallel: bool = False) -> str:
+    """Build the bounded remote script used by JSON batch queries.
+
+    Parallel mode is safe for independent read-only RBD commands: every
+    command writes its own framed output, then the parent shell waits and
+    concatenates frames in the original order. This preserves the parser
+    contract while avoiding serial Ceph client startup and request latency.
+    """
+    frames = []
+    active_indices = []
+    if parallel:
+        frames.extend((
+            "batch_dir=$(mktemp -d)",
+            "trap 'rm -rf \"$batch_dir\"' EXIT",
+        ))
+    for index, inner_command in enumerate(inner_commands):
+        begin = f"__CEPH_AI_BATCH_{index}_BEGIN__"
+        status = f"__CEPH_AI_BATCH_{index}_STATUS__"
+        end = f"__CEPH_AI_BATCH_{index}_END__"
+        if parallel:
+            output_path = f'"$batch_dir/{index}"'
+            frames.extend((
+                "(",
+                f"printf '%s\\n' {shlex.quote(begin)} > {output_path}",
+                f"{inner_command} 2>/dev/null >> {output_path}",
+                "command_status=$?",
+                f"printf '\\n' >> {output_path}",
+                f"printf '%s:%s\\n' {shlex.quote(status)} $command_status >> {output_path}",
+                f"printf '%s\\n' {shlex.quote(end)} >> {output_path}",
+                ") &",
+                f"batch_pid_{index}=$!",
+            ))
+            active_indices.append(index)
+            if len(active_indices) >= JSON_BATCH_MAX_PARALLEL:
+                for active_index in active_indices:
+                    frames.append(f"wait \"$batch_pid_{active_index}\"")
+                active_indices = []
+        else:
+            frames.extend((
+                f"printf '%s\\n' {shlex.quote(begin)}",
+                f"{inner_command} 2>/dev/null",
+                "command_status=$?",
+                "printf '\\n'",
+                f"printf '%s:%s\\n' {shlex.quote(status)} $command_status",
+                f"printf '%s\\n' {shlex.quote(end)}",
+            ))
+    if parallel:
+        for active_index in active_indices:
+            frames.append(f"wait \"$batch_pid_{active_index}\"")
+        for index in range(len(inner_commands)):
+            frames.append(f"cat \"$batch_dir/{index}\"")
+    return chr(10).join(frames)
+
 
 def run_ceph_json_batch_command_with(
     mon_nodes: list[str],
@@ -1229,27 +1857,21 @@ def run_ceph_json_batch_command_with(
     ssh_key_path: str,
     exec_mode: str,
     inner_commands: list[str],
+    *,
+    parallel: bool = False,
 ) -> tuple[str, list[dict | list | None]]:
-    """Run bounded JSON commands in one remote Ceph shell."""
+    """Run bounded JSON commands in one remote Ceph shell.
+
+    parallel should only be used for independent read-only commands.
+    Results are returned in the same order as inner_commands.
+    """
     if not mon_nodes:
         raise CephQueryError("no MON nodes configured for this cluster")
     query_nodes = _balanced_query_mon_nodes(mon_nodes, "\n".join(inner_commands), exec_mode)
     if not inner_commands:
         return query_nodes[0], []
-    frames = []
-    for index, inner_command in enumerate(inner_commands):
-        begin = f"__CEPH_AI_BATCH_{index}_BEGIN__"
-        status = f"__CEPH_AI_BATCH_{index}_STATUS__"
-        end = f"__CEPH_AI_BATCH_{index}_END__"
-        frames.extend((
-            f"printf '%s\\n' {shlex.quote(begin)}",
-            f"{inner_command} 2>/dev/null",
-            "command_status=$?",
-            "printf '\n'",
-            f"printf '%s:%s\\n' {shlex.quote(status)} $command_status",
-            f"printf '%s\\n' {shlex.quote(end)}",
-        ))
-    batch_inner_command = f"bash -lc {shlex.quote(chr(10).join(frames))}"
+    batch_script = _build_json_batch_script(inner_commands, parallel=parallel)
+    batch_inner_command = f"bash -lc {shlex.quote(batch_script)}"
     command = build_exec_command(exec_mode, container_name, batch_inner_command)
     command_timeout = CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else MCP_COMMAND_TIMEOUT_SECONDS
     errors = []
@@ -1279,6 +1901,8 @@ def run_ceph_json_batch_command_with(
                 logger.warning("run_ceph_json_batch_command_with: invalid response frame %s from %s", index, host)
         return host, parsed
     raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
+
+
 def _parse_health_payload(raw_output: str) -> dict:
     payload = json.loads(raw_output)
     if not isinstance(payload, dict) or payload.get("status") not in VALID_STATUSES:
@@ -1335,10 +1959,10 @@ def query_cluster_health_with(
     Dashboard's own "test connection before saving" forms for the default
     cluster) keeps its exact original behavior unchanged.
 
-    Query one MON at a time and use sequential fallback on failure. Fan-out
-    to every MON makes each health poll start several cephadm shells. That is
-    unnecessarily expensive on the small Ceph nodes and can amplify CPU
-    stalls. The total deadline still bounds a failed health query."""
+    Probe MONs sequentially with one global deadline. A failed MON falls back
+    to the next configured peer, while a normal poll starts only one cephadm
+    shell. This avoids background probes continuing after the first result and
+    keeps MON CPU bounded during an incident."""
     if not mon_nodes:
         raise CephQueryError("no MON nodes configured")
 
@@ -1346,8 +1970,6 @@ def query_cluster_health_with(
     command_timeout = HEALTH_COMMAND_TIMEOUT_SECONDS
     deadline = time.monotonic() + settings.ceph_health_timeout
     global last_successful_mon_node
-    errors: list[str] = []
-
     def retryable_health_error(exc: BaseException) -> bool:
         """Retry transport failures, but never auth or command/data errors."""
         cause = exc.__cause__
@@ -1357,38 +1979,33 @@ def query_cluster_health_with(
             "pool_wait_timeout",
         }
 
+    pool = _get_shared_health_pool(ssh_user, ssh_key_path)
+    errors: list[str] = []
     for host in ordered_mon_nodes(mon_nodes):
         try:
             def attempt() -> str:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise CephQueryError("health collection deadline exceeded")
-                pool = CephConnectionPool(
-                    CephSSHConfig(
-                        user=ssh_user,
-                        key_path=ssh_key_path,
-                        known_hosts_path=KNOWN_HOSTS_PATH,
-                        connect_timeout=min(settings.ceph_ssh_connect_timeout, remaining),
-                        banner_timeout=min(settings.ceph_ssh_banner_timeout, remaining),
-                        auth_timeout=min(settings.ceph_ssh_auth_timeout, remaining),
-                        max_connections=1,
-                    )
+                return _run_remote_command_with(
+                    host,
+                    command,
+                    ssh_user,
+                    ssh_key_path,
+                    min(command_timeout, max(0.01, remaining)),
+                    pool=pool,
                 )
-                try:
-                    return _run_remote_command_with(
-                        host,
-                        command,
-                        ssh_user,
-                        ssh_key_path,
-                        min(command_timeout, max(0.01, remaining)),
-                        pool=pool,
-                    )
-                finally:
-                    pool.close()
 
             output = retry_sync(
                 attempt,
-                RetryPolicy(max_retries=settings.ceph_max_retries),
+                RetryPolicy(
+                    max_retries=min(
+                        settings.ceph_max_retries,
+                        CEPH_HEALTH_MAX_RETRIES_PER_MON,
+                    ),
+                    base_delay_seconds=settings.ceph_retry_base_delay_seconds,
+                    max_delay_seconds=settings.ceph_retry_max_delay_seconds,
+                ),
                 should_retry=retryable_health_error,
                 deadline=deadline,
             )
@@ -1397,7 +2014,6 @@ def query_cluster_health_with(
             logger.warning("query_cluster_health_with: %s failed: %s", host, exc)
             errors.append(f"{host}: {exc}")
             continue
-
         if update_sticky_fallback:
             last_successful_mon_node = host
         return payload

@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -10,7 +11,9 @@ from dashboard.templating import make_templates
 from shared.cluster_nodes import configured_nodes as _configured_nodes
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.cluster_snapshot import DEFAULT_MAX_STALE_SECONDS, read_section_snapshot
-from shared.object_storage_cache import get_or_load
+from shared import db
+from shared.models import HostMetricSample
+from shared.object_storage_cache import get_or_load, state as cache_state
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics, collect_node_metrics_with
 from watcher.ceph_log import CephLogError, fetch_ceph_log, fetch_ceph_log_with
 from watcher.rgw_log import RgwLogError, fetch_rgw_log, fetch_rgw_log_with
@@ -20,6 +23,73 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 templates = make_templates()
 INVENTORY_STALE_SECONDS = 90
+
+# The browser sends the short value because it is stable in URLs and easy to
+# read.  Keep the numeric aliases as well so old bookmarked/API URLs continue
+# to work while the selector is migrated.
+NODE_TIME_RANGES = {
+    "2m": 120,
+    "5m": 300,
+    "15m": 900,
+    "1h": 3600,
+    "24h": 86400,
+    "7d": 604800,
+    "14d": 1209600,
+}
+NODE_TIME_RANGE_ALIASES = {str(seconds): name for name, seconds in NODE_TIME_RANGES.items()}
+NODE_RANGE_MAX_POINTS = {"2m": 24, "5m": 30, "15m": 30, "1h": 40, "24h": 144, "7d": 168, "14d": 240}
+
+
+def _normalize_node_range(value: str | None) -> str:
+    value = (value or "5m").strip().lower()
+    return value if value in NODE_TIME_RANGES else NODE_TIME_RANGE_ALIASES.get(value, "5m")
+
+
+def _metric_dict(row: HostMetricSample, at: datetime | None = None) -> dict:
+    return {
+        "at": (at or row.collected_at).isoformat() + "Z",
+        "cpu_percent": row.cpu_percent,
+        "mem_percent": row.mem_percent,
+        "disk_read_iops": row.disk_read_iops,
+        "disk_write_iops": row.disk_write_iops,
+        "disk_latency_ms": row.disk_latency_ms,
+    }
+
+
+def _live_metric_dict(metrics: dict, at: datetime) -> dict:
+    return {
+        "at": at.isoformat() + "Z",
+        **{key: metrics.get(key) for key in (
+            "cpu_percent", "mem_percent", "disk_read_iops",
+            "disk_write_iops", "disk_latency_ms",
+        )},
+    }
+
+
+def _average_metrics(points: list[dict]) -> dict:
+    fields = ("cpu_percent", "mem_percent", "disk_read_iops", "disk_write_iops", "disk_latency_ms")
+    result = {}
+    for field in fields:
+        values = [point[field] for point in points if isinstance(point.get(field), (int, float))]
+        result[field] = round(sum(values) / len(values), 2) if values else None
+    return result
+
+
+def _downsample_metrics(points: list[dict], max_points: int) -> list[dict]:
+    """Reduce chart payload size while preserving the mean of each bucket."""
+    if len(points) <= max_points:
+        return points
+    bucket_size = (len(points) + max_points - 1) // max_points
+    fields = ("cpu_percent", "mem_percent", "disk_read_iops", "disk_write_iops", "disk_latency_ms")
+    sampled = []
+    for start in range(0, len(points), bucket_size):
+        bucket = points[start:start + bucket_size]
+        representative = {"at": bucket[len(bucket) // 2]["at"]}
+        for field in fields:
+            values = [point[field] for point in bucket if isinstance(point.get(field), (int, float))]
+            representative[field] = round(sum(values) / len(values), 2) if values else None
+        sampled.append(representative)
+    return sampled
 
 
 def _nodes_for_cluster(cluster):
@@ -31,6 +101,7 @@ def _nodes_for_cluster(cluster):
 @router.get("/nodes", response_class=HTMLResponse)
 async def nodes_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
+    selected_range = _normalize_node_range(request.query_params.get("range"))
     snapshot = read_section_snapshot(
         cluster.id,
         "nodes",
@@ -64,6 +135,7 @@ async def nodes_page(request: Request, user: str = Depends(require_login)):
             "selected_node": selected_node,
             "clusters": clusters,
             "selected_cluster": cluster,
+            "selected_range": selected_range,
             "snapshot_meta": {
                 "collected_at": snapshot.get("collected_at") if snapshot else None,
                 "age_seconds": snapshot.get("age_seconds") if snapshot else None,
@@ -113,6 +185,26 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
     allowed_hosts = {n["host"] for n in _nodes_for_cluster(cluster)}
     if host not in allowed_hosts:
         raise HTTPException(status_code=404, detail="Node không nằm trong danh sách đã cấu hình")
+    range_name = _normalize_node_range(
+        request.query_params.get("range")
+        or request.query_params.get("time_range")
+        or request.query_params.get("duration")
+    )
+    range_seconds = NODE_TIME_RANGES[range_name]
+    now = datetime.utcnow()
+
+    # Read the persisted window first. It is local database data and should
+    # be available immediately, even when a node's SSH endpoint is slow.
+    cutoff = now - timedelta(seconds=range_seconds)
+    with db.SessionLocal() as session:
+        history_rows = session.query(HostMetricSample).filter(
+            HostMetricSample.cluster_id == cluster.id,
+            HostMetricSample.host == host,
+            HostMetricSample.collected_at >= cutoff,
+            HostMetricSample.collected_at <= now,
+        ).order_by(HostMetricSample.collected_at.asc()).all()
+
+    metrics_error = None
     try:
         def load_metrics():
             if cluster.is_default:
@@ -129,11 +221,91 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
             # refresh stale data in the background when possible.
             ttl_seconds=2,
             stale_ttl_seconds=10,
+            # Never make the chart wait for a first SSH sample. The Watcher
+            # history above is enough to paint the chart immediately; this
+            # refresh fills the live cache for the next poll.
+            background_on_miss=True,
+            fallback=None,
         )
+        # ``background_on_miss`` deliberately hides loader exceptions from
+        # the request thread. Inspect the cache state so a completed failed
+        # refresh is reported as a stale/error state instead of remaining
+        # stuck at ``live_pending`` forever.
+        live_cache_state = cache_state("node-metrics", f"{cluster.id}:{host}")
+        if live_cache_state["error"] and not live_cache_state["refreshing"]:
+            metrics_error = "Không thể lấy telemetry realtime từ node"
     except NodeMetricsError as exc:
         logger.warning("node_metrics_api: %s", exc)
-        raise HTTPException(status_code=502, detail=f"Không lấy được metrics từ node: {exc}")
-    return {"host": host, **metrics}
+        metrics = None
+        metrics_error = str(exc)
+
+    # HostMetricSample is already collected by Watcher for RCA, so use it as
+    # the historical source and add a live point only when the cache already
+    # has one. This keeps first paint fast and preserves realtime updates on
+    # the following poll.
+    history_points = [_metric_dict(row) for row in history_rows]
+    live_pending = metrics is None and metrics_error is None
+    if metrics is None:
+        # A first request schedules live collection in the background. Keep
+        # the chart available immediately from history; if history is empty,
+        # return an explicit no-data state and let the next poll pick up the
+        # freshly cached live sample.
+        if history_rows:
+            latest_row = history_rows[-1]
+            metrics = {
+                field: getattr(latest_row, field)
+                for field in (
+                    "cpu_percent", "mem_percent", "disk_read_iops",
+                    "disk_write_iops", "disk_latency_ms",
+                )
+            }
+            current_point = history_points[-1]
+            all_points = history_points
+            chart_points = _downsample_metrics(history_points, NODE_RANGE_MAX_POINTS[range_name])
+        else:
+            metrics = {
+                field: None
+                for field in (
+                    "cpu_percent", "mem_percent", "disk_read_iops",
+                    "disk_write_iops", "disk_latency_ms",
+                )
+            }
+            current_point = {"at": now.isoformat() + "Z", **metrics}
+            all_points = []
+            chart_points = []
+    else:
+        current_point = _live_metric_dict(metrics, now)
+        all_points = history_points + [current_point]
+        # A live sample can have the same second as a persisted sample. Keep
+        # the live value as the newest point, but avoid duplicate timestamps.
+        if len(all_points) > 1 and all_points[-2]["at"] == all_points[-1]["at"]:
+            all_points[-2] = all_points[-1]
+            all_points.pop()
+        # Keep the fresh point at the right edge; if it were included in the
+        # last averaging bucket, the chart would lose the actual current value.
+        chart_points = _downsample_metrics(
+            history_points, max(NODE_RANGE_MAX_POINTS[range_name] - 1, 1)
+        ) + [current_point]
+
+    return {
+        "host": host,
+        # Keep the legacy top-level fields for API consumers outside the
+        # Nodes page; the chart-aware fields below are additive.
+        **metrics,
+        "range": range_name,
+        "range_seconds": range_seconds,
+        "range_start": cutoff.isoformat() + "Z",
+        "range_end": now.isoformat() + "Z",
+        "sample_count": len(all_points),
+        "source_sample_count": len(history_points),
+        "live_available": metrics_error is None and not live_pending,
+        "live_pending": live_pending,
+        "live_error": metrics_error,
+        "points": chart_points,
+        "current": current_point,
+        "summary": _average_metrics(all_points),
+        "summary_mode": "average",
+    }
 
 
 @router.get("/api/nodes/{host}/rgw-log")

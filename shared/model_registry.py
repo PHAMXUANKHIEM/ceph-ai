@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from config.settings import settings
-from sqlalchemy import or_
 from shared.models import (
     ForecastModelEvaluation,
     ForecastModelPromotionAudit,
@@ -214,35 +213,7 @@ def ensure_shadow_model_pair(session, comparison, *, now: datetime | None = None
         set_status(session, active, status="ACTIVE", reason="initial guarded-promotion baseline", now=when)
         current_active = active
     elif current_active.id != active.id:
-        # The node-resource selector may change its adaptive linear window
-        # without changing the forecasting algorithm.  That is a runtime
-        # baseline refresh, not a candidate promotion.  Before this branch,
-        # the registry treated every such refresh as corruption and the
-        # worker logged the same traceback on every poll.  Reconcile only
-        # when the old active row has never participated in an explicit
-        # promotion/rollback decision; after operator governance exists,
-        # fail closed so a real registry drift cannot be hidden.
-        governed = session.query(ForecastModelPromotionAudit.id).filter(
-            or_(
-                ForecastModelPromotionAudit.candidate_model_id == current_active.id,
-                ForecastModelPromotionAudit.previous_active_model_id == current_active.id,
-            )
-        ).first()
-        if governed is not None:
-            raise ValueError("runtime active model differs from registry ACTIVE model")
-        if active.status == "BLOCKED":
-            raise ValueError("runtime active model points to a blocked registry candidate")
-        set_status(
-            session, current_active, status="RETIRED",
-            reason="adaptive runtime baseline changed; no operator promotion",
-            now=when,
-        )
-        set_status(
-            session, active, status="ACTIVE",
-            reason="synchronized adaptive runtime baseline; no operator promotion",
-            now=when,
-        )
-        current_active = active
+        raise ValueError("runtime active model differs from registry ACTIVE model")
 
     candidate = register_candidate(
         session, scope_type=scope_type, scope_key=scope_key, name=name,
@@ -391,9 +362,7 @@ def block_candidate(session, *, candidate_id: str, actor: str, reason: str,
     if not (reason or "").strip():
         raise ValueError("blocking reason is required")
     active = session.query(ForecastModelRegistry).filter_by(
-        scope_type=candidate.scope_type,
-        scope_key=candidate.scope_key,
-        status="ACTIVE",
+        scope_type=candidate.scope_type, scope_key=candidate.scope_key, status="ACTIVE",
     ).one_or_none()
     set_status(session, candidate, status="BLOCKED", reason=reason, now=now)
     _audit(

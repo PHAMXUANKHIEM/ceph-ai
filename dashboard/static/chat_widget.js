@@ -2,10 +2,13 @@
   var panelEl = document.getElementById("chat-panel");
   var bodyEl = document.getElementById("chat-panel-body");
   var historyBtn = document.getElementById("chat-panel-history");
+  var historyBackBtn = document.getElementById("chat-history-back");
   var settingsBtn = document.getElementById("chat-panel-settings");
   var newSessionBtn = document.getElementById("chat-panel-new-session");
   var minimizeBtn = document.getElementById("chat-panel-minimize");
+  var restoreBtn = document.getElementById("chat-panel-restore");
   var closeBtn = document.getElementById("chat-panel-close");
+  var chatFab = document.getElementById("chat-fab");
   var messagesEl = document.getElementById("chat-messages");
   var formEl = document.getElementById("chat-form");
   var historyListViewEl = document.getElementById("chat-history-list-view");
@@ -19,6 +22,10 @@
   var femaleAddressInputEl = document.getElementById("chat-female-address");
   var settingsSuccessEl = document.getElementById("chat-settings-success");
   var panelAiNameEl = document.getElementById("chat-panel-ai-name");
+  var contextBadgeEl = document.getElementById("chat-context-badge");
+  var panelUnreadBadgeEl = document.getElementById("chat-unread-badge");
+  var resizeHandleEl = document.getElementById("chat-resize-handle");
+  var recentQuestionsEl = document.getElementById("chat-recent-questions");
   var modeSelectEl = document.getElementById("chat-mode-select");
   if (!panelEl || !bodyEl || !messagesEl || !formEl) {
     return; // not on a page with the chat panel
@@ -42,8 +49,8 @@
   var errorEl = document.getElementById("chat-error");
 
   var MINIMIZED_STORAGE_KEY = "chatPanelMinimized";
-  var MINIMIZE_ICON = "−"; // −
-  var RESTORE_ICON = "□"; // □
+  var MINIMIZE_ICON = "⌄";
+  var RESTORE_ICON = "⌃";
   var TYPING_ID = "chat-typing-indicator";
   // Must match dashboard/chat_client.py's MISSING_AI_CONFIG_MESSAGE exactly
   // — the backend sends this as plain text (chat bubbles never carry HTML),
@@ -54,11 +61,37 @@
   var DELEGATED_POLL_BASE_MS = 2500;
   var DELEGATED_POLL_MAX_MS = 30000;
   var DELEGATED_TASK_MAX_MS = 30 * 60 * 1000;
+  var CHAT_HEIGHT_STORAGE_KEY = "chatPanelHeightV2";
+  var CHAT_MIN_HEIGHT = 60;
+  var CHAT_MAX_HEIGHT = 500;
+  var isDashboardInline = panelEl.dataset.dashboardInline === "true";
+  var dashboardContext = null;
   var LIMIT_WARNING_THRESHOLDS = [5, 10, 15];
   var dualProcessing = false;
   var activeDualSessionId = null;
   var dualStopRequestedSessionId = null;
   var activeDelegatedTasks = {};
+  var unreadCount = 0;
+
+  function updateChatFabBadge() {
+    var badge = chatFab ? chatFab.querySelector(".chat-fab-badge") : null;
+    if (!unreadCount) {
+      if (badge) badge.remove();
+      if (panelUnreadBadgeEl) panelUnreadBadgeEl.hidden = true;
+      return;
+    }
+    if (chatFab && !badge) {
+      badge = document.createElement("span");
+      badge.className = "chat-fab-badge";
+      badge.setAttribute("aria-label", "Tin nhắn mới chưa đọc");
+      chatFab.appendChild(badge);
+    }
+    if (badge) badge.textContent = unreadCount > 9 ? "9+" : String(unreadCount);
+    if (panelUnreadBadgeEl) {
+      panelUnreadBadgeEl.hidden = false;
+      panelUnreadBadgeEl.textContent = unreadCount > 9 ? "9+" : String(unreadCount);
+    }
+  }
 
   // Always renders in Asia/Ho_Chi_Minh regardless of the viewing browser's
   // own OS timezone — deliberately NOT getHours()/getMinutes() etc. (those
@@ -83,7 +116,7 @@
     var d = new Date(iso);
     if (isNaN(d.getTime())) return iso;
     var p = _vnParts(d);
-    return p.hour + ":" + p.minute + ":" + p.second;
+    return p.hour + ":" + p.minute;
   }
   function formatDateTime(iso) {
     var d = new Date(iso);
@@ -99,6 +132,20 @@
     }
     return response;
   }
+
+  function loadDashboardContext() {
+    if (!isDashboardInline) return;
+    var clusterName = panelEl.getAttribute("data-context-cluster") || "Dashboard";
+    if (contextBadgeEl) {
+      contextBadgeEl.textContent = "Đang xem: " + clusterName;
+      contextBadgeEl.hidden = false;
+    }
+    // Keep only the selected cluster identity for the existing chat request
+    // contract; do not fetch or render a duplicate health snapshot here.
+    dashboardContext = { cluster: clusterName };
+  }
+
+  loadDashboardContext();
 
   function clearEmptyState() {
     var empty = document.getElementById("chat-empty-state");
@@ -396,6 +443,32 @@
     return bubble;
   }
 
+  // Long operational answers are useful, but they must not push the composer
+  // below the viewport. Measure the rendered bubble after it is attached so
+  // short answers stay compact while log-heavy answers get a controlled
+  // preview with an explicit expand action.
+  function enhanceLongMessages(root) {
+    root.querySelectorAll(".chat-msg-assistant").forEach(function (container) {
+      if (container.classList.contains("chat-msg-collapsible")) return;
+      var bubble = container.querySelector(":scope > .chat-msg-bubble");
+      if (!bubble || bubble.scrollHeight <= 200) return;
+      container.classList.add("chat-msg-collapsible", "is-collapsed");
+      bubble.classList.add("chat-msg-bubble--collapsible");
+      var toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "chat-msg-expand";
+      toggle.textContent = "Xem thêm";
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.addEventListener("click", function () {
+        var expanded = !container.classList.contains("is-collapsed");
+        container.classList.toggle("is-collapsed", expanded);
+        toggle.textContent = expanded ? "Xem thêm" : "Thu gọn";
+        toggle.setAttribute("aria-expanded", expanded ? "false" : "true");
+      });
+      container.appendChild(toggle);
+    });
+  }
+
   // Click toggles a small tooltip listing the same tools again, in the
   // exact order they were called (tools_used is append-only, in call
   // order — see dashboard/chat_client.py::run_chat_turn) — the badge text
@@ -444,6 +517,12 @@
       displayContent = displayContent.slice(dualMatch[0].length);
       messagesEl.classList.add("has-dual-messages");
     }
+    if (!isUser) {
+      // A personalised greeting can be prepended more than once by the
+      // provider. Remove only consecutive duplicates; the actual answer and
+      // all technical identifiers remain untouched.
+      displayContent = displayContent.replace(/(Mình yêu ơi, em là AI\.\s*){2,}/g, "$1");
+    }
     var container = document.createElement("div");
     container.className = "chat-msg " + (isUser ? "chat-msg-user" : "chat-msg-assistant");
     if (dualSpeaker) {
@@ -456,9 +535,11 @@
     var meta = document.createElement("div");
     meta.className = "chat-msg-meta";
     var dualRole = dualSpeaker === "Implementer" ? "Trả lời" : "Hỏi";
-    meta.textContent = isUser
-      ? "Bạn · " + (message.actor || "?") + " · " + formatTimestamp(message.created_at)
-      : (dualSpeaker ? "🤖 " + dualRole + " · " + dualSpeaker + " · " + dualProvider : "🤖 " + aiName) + " · " + formatTimestamp(message.created_at);
+    var messageTime = formatTimestamp(message.created_at);
+    meta.textContent = messageTime;
+    meta.title = isUser
+      ? "Bạn · " + (message.actor || "?") + " · " + messageTime
+      : (dualSpeaker ? "🤖 " + dualRole + " · " + dualSpeaker + " · " + dualProvider : "🤖 " + aiName) + " · " + messageTime;
     container.appendChild(meta);
 
     var bubble;
@@ -486,6 +567,11 @@
   function appendMessage(message) {
     clearEmptyState();
     messagesEl.appendChild(buildMessage(message));
+    enhanceLongMessages(messagesEl);
+    if (message && message.role !== "user" && panelEl.classList.contains("is-minimized")) {
+      unreadCount += 1;
+      updateChatFabBadge();
+    }
     scrollToBottom();
   }
 
@@ -533,6 +619,7 @@
     } else {
       messagesEl.appendChild(rebuilt);
     }
+    enhanceLongMessages(messagesEl);
   }
 
   // --- typing indicator ------------------------------------------------------
@@ -848,6 +935,7 @@
         }
         clearEmptyState();
         messages.forEach(function (message) { messagesEl.appendChild(buildMessage(message)); });
+        enhanceLongMessages(messagesEl);
         scrollToBottom();
         setDualProcessing(false);
         resumeDelegatedTasks();
@@ -895,6 +983,7 @@
             addedAny = true;
           } else if (existing.dataset.content !== (message.content || "")) {
             existing.replaceWith(buildMessage(message));
+            enhanceLongMessages(messagesEl);
             addedAny = true;
           }
         });
@@ -1158,7 +1247,7 @@
     if (!skipConfirm && !window.confirm("Xoá vĩnh viễn đoạn chat này? Không thể hoàn tác.")) return Promise.resolve(false);
     var deleteBtn = rowEl && rowEl.querySelector(".chat-history-delete-btn");
     if (deleteBtn) deleteBtn.disabled = true;
-    fetch(apiPrefix + "/sessions/" + encodeURIComponent(sessionId), {
+    return fetch(apiPrefix + "/sessions/" + encodeURIComponent(sessionId), {
       method: "DELETE",
       credentials: "same-origin",
     })
@@ -1221,6 +1310,9 @@
         openHistoryList();
       }
     });
+  }
+  if (historyBackBtn) {
+    historyBackBtn.addEventListener("click", closeHistoryView);
   }
   if (settingsBtn) {
     settingsBtn.addEventListener("click", function () {
@@ -1309,13 +1401,32 @@
 
   // --- minimize / restore (thu nhỏ / phóng to) --------------------------------
 
+  function focusInlineChat() {
+    if (!isDashboardInline) return;
+    if (panelEl.classList.contains("is-minimized")) setMinimized(false);
+    panelEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.setTimeout(function () {
+      if (inputEl) inputEl.focus();
+    }, 180);
+  }
+
   function setMinimized(minimized) {
     panelEl.classList.toggle("is-minimized", minimized);
+    panelEl.setAttribute("aria-hidden", "false");
+    if (!minimized) {
+      unreadCount = 0;
+      updateChatFabBadge();
+    }
+    if (chatFab) {
+      chatFab.hidden = !minimized;
+      chatFab.setAttribute("aria-expanded", minimized ? "false" : "true");
+    }
     if (minimizeBtn) {
       minimizeBtn.textContent = minimized ? RESTORE_ICON : MINIMIZE_ICON;
       minimizeBtn.setAttribute("aria-label", minimized ? "Phóng to" : "Thu nhỏ");
       minimizeBtn.title = minimized ? "Phóng to" : "Thu nhỏ";
     }
+    if (restoreBtn) restoreBtn.hidden = !minimized;
     try {
       localStorage.setItem(MINIMIZED_STORAGE_KEY, minimized ? "1" : "0");
     } catch (e) {
@@ -1324,16 +1435,19 @@
     }
     if (!minimized) {
       scrollToBottom();
+      window.requestAnimationFrame(function () { enhanceLongMessages(messagesEl); });
       // Mở lại panel thì con trỏ phải ở ô nhập, nếu không người dùng bàn
       // phím phải Tab qua cả thanh nút mới gõ được.
       if (inputEl) inputEl.focus();
-    } else if (minimizeBtn) {
+    } else if (chatFab) {
       // Thu nhỏ làm thân panel biến mất; nếu focus đang nằm trong đó thì nó
       // rơi về <body> và mất dấu. Trả về nút vẫn còn nhìn thấy.
       var active = document.activeElement;
       if (!active || active === document.body || bodyEl.contains(active)) {
-        minimizeBtn.focus();
+        chatFab.focus();
       }
+    } else if (minimizeBtn) {
+      minimizeBtn.focus();
     }
   }
 
@@ -1342,22 +1456,66 @@
       setMinimized(!panelEl.classList.contains("is-minimized"));
     });
   }
+  if (restoreBtn) {
+    restoreBtn.addEventListener("click", function () { setMinimized(false); });
+  }
   if (closeBtn) {
-    // No separate "fully closed" state exists — this panel is part of the
-    // page layout, not a floating widget with its own reopen affordance
-    // elsewhere on the page, so × collapses it the same way − does. Two
-    // buttons are kept (matches the header mockup) since some operators
-    // reach for × out of habit.
     closeBtn.addEventListener("click", function () { setMinimized(true); });
+  }
+  if (chatFab) {
+    chatFab.addEventListener("click", function () {
+      if (isDashboardInline) {
+        focusInlineChat();
+      } else {
+        setMinimized(false);
+      }
+    });
   }
 
   var startMinimized = false;
   try {
-    startMinimized = localStorage.getItem(MINIMIZED_STORAGE_KEY) === "1";
+    var storedMinimized = localStorage.getItem(MINIMIZED_STORAGE_KEY);
+    // Dashboard keeps the inline section open on first visit. Other pages
+    // expose the bottom-sheet trigger and start collapsed until opened.
+    startMinimized = isDashboardInline ? false : (chatFab
+      ? (storedMinimized === null ? true : storedMinimized === "1")
+      : storedMinimized === "1");
   } catch (e) {
     startMinimized = false;
   }
   setMinimized(startMinimized);
+
+  function setPanelHeight(height) {
+    if (!panelEl) return;
+    var next = Math.max(CHAT_MIN_HEIGHT, Math.min(CHAT_MAX_HEIGHT, Math.round(height)));
+    panelEl.style.setProperty("--chat-panel-height", next + "px");
+    try { localStorage.setItem(CHAT_HEIGHT_STORAGE_KEY, String(next)); } catch (e) {}
+  }
+
+  try {
+    var storedHeight = parseInt(localStorage.getItem(CHAT_HEIGHT_STORAGE_KEY), 10);
+    if (Number.isFinite(storedHeight)) setPanelHeight(storedHeight);
+  } catch (e) {}
+
+  if (resizeHandleEl) {
+    resizeHandleEl.addEventListener("pointerdown", function (event) {
+      event.preventDefault();
+      var rect = panelEl.getBoundingClientRect();
+      var bottom = rect.bottom;
+      document.body.classList.add("is-chat-resizing");
+      resizeHandleEl.setPointerCapture(event.pointerId);
+      function move(moveEvent) { setPanelHeight(bottom - moveEvent.clientY); }
+      function stop() {
+        document.body.classList.remove("is-chat-resizing");
+        resizeHandleEl.removeEventListener("pointermove", move);
+        resizeHandleEl.removeEventListener("pointerup", stop);
+        resizeHandleEl.removeEventListener("pointercancel", stop);
+      }
+      resizeHandleEl.addEventListener("pointermove", move);
+      resizeHandleEl.addEventListener("pointerup", stop);
+      resizeHandleEl.addEventListener("pointercancel", stop);
+    });
+  }
 
   // --- textarea auto-resize + send-button enabled state -----------------------
 
@@ -1376,11 +1534,20 @@
   });
   refreshSendEnabled();
 
+  bodyEl.addEventListener("click", function (event) {
+    var quickAction = event.target.closest("[data-chat-prompt]");
+    if (!quickAction || !inputEl) return;
+    inputEl.value = quickAction.getAttribute("data-chat-prompt") || "";
+    autoResizeTextarea();
+    refreshSendEnabled();
+    inputEl.focus();
+  });
+
   function updateChatMode() {
     if (!modeSelectEl) return;
     var dual = modeSelectEl.value === "dual";
     var delegated = modeSelectEl.value === "delegate";
-    inputEl.placeholder = dual ? "Nhập yêu cầu để hai AI trao đổi..." : (delegated ? "Giao việc cho các agent độc lập..." : "Nhập câu hỏi về cụm Ceph...");
+    inputEl.placeholder = dual ? "Nhập yêu cầu để hai AI trao đổi..." : (delegated ? "Giao việc cho các agent độc lập..." : "Hỏi AI về trạng thái cụm Ceph…");
   }
   if (modeSelectEl) {
     modeSelectEl.addEventListener("change", updateChatMode);
@@ -1429,11 +1596,14 @@
     // wait, not a fixed-duration decoration.
     showTypingIndicator();
 
+    var requestBody = { content: text, session_id: currentSessionId, mode: modeSelectEl ? modeSelectEl.value : "single" };
+    if (isDashboardInline && dashboardContext) requestBody.dashboard_context = dashboardContext;
+
     fetch(apiPrefix + "/messages", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: text, session_id: currentSessionId, mode: modeSelectEl ? modeSelectEl.value : "single" }),
+      body: JSON.stringify(requestBody),
     })
       .then(handleAuthRedirect)
       .then(function (response) {

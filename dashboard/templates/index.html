@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ceph AIOps Dashboard</title>
-  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
-  <link rel="stylesheet" href="/static/ceph-health/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&chat_layout=7">
+  <link rel="stylesheet" href="/static/ceph-health/style.css?v={{ static_version }}&dashboard_layout=6">
 </head>
-<body>
+<body class="dashboard-page-shell">
   <div class="mon-strip">
     <div class="mon-strip-inner">
       <span class="mon-strip-label">MON</span>
@@ -30,7 +30,7 @@
 
   <div class="app-body">
   <main class="page">
-    <div id="ceph-dashboard-root"></div>
+    <div id="ceph-dashboard-root" data-cluster-name="{{ selected_cluster.name if selected_cluster else '' }}"></div>
     <div hidden>
     <section class="connection-status {% if heartbeat_stale %}connection-lost{% else %}connection-ok{% endif %}">
       {% if heartbeat_stale %}
@@ -79,9 +79,9 @@
     <div class="tabbed-page">
     <nav class="tabbed-sidebar">
       {% if not telegram_approval_configured %}
-      <label class="pending-tab-autoswitch" title="Khi tắt, trang sẽ nhớ tab bạn đang xem thay vì tự nhảy về Chờ duyệt mỗi lần có Incident/Action mới">
+      <label class="pending-tab-autoswitch" title="Khi tắt, trang sẽ nhớ tab bạn đang xem thay vì tự nhảy về Chờ duyệt khi có yêu cầu mới">
         <input type="checkbox" id="pending-tab-autoswitch" checked>
-        Tự động mở tab này khi có Risky Action mới
+        Tự động mở khi có yêu cầu duyệt mới
       </label>
       <button type="button" class="tabbed-nav-item {% if active_tab == 'pending' %}active{% endif %}" data-section="pending">Chờ duyệt{% if pending_actions %} ({{ pending_actions|length }}){% endif %}</button>
       {% endif %}
@@ -92,7 +92,7 @@
     {% if not telegram_approval_configured %}
     <section class="card tabbed-panel" data-panel="pending" {% if active_tab != 'pending' %}hidden{% endif %}>
       <div class="card-header">
-        <h2>Chờ duyệt — Risky Action</h2>
+        <h2>Chờ duyệt</h2>
         <button type="button" class="card-toggle-btn" id="pending-actions-toggle" aria-label="Ẩn danh sách" title="Ẩn danh sách">&#8722;</button>
       </div>
       <div class="card-body pending-actions" id="pending-actions-body">
@@ -148,7 +148,7 @@
     <section class="card tabbed-panel" data-panel="incidents" {% if active_tab != 'incidents' %}hidden{% endif %}>
       <div class="card-header"><h2>Incident Feed</h2></div>
       {% if telegram_approval_configured %}
-      <p class="hint" style="padding: 0 1rem;">Duyệt/Từ chối Risky Action đã chuyển hẳn sang Telegram (xem {% if is_admin %}<a href="/telegram-alerts">Alert Telegram</a>{% else %}Telegram{% endif %}) — không còn danh sách chờ duyệt riêng trên trang này.</p>
+      <p class="hint" style="padding: 0 1rem;">Duyệt/Từ chối đã chuyển sang {% if is_admin %}<a href="/telegram-alerts">Telegram</a>{% else %}Telegram{% endif %} — trang này chỉ hiển thị sự cố.</p>
       {% endif %}
       <div class="card-body table-wrap">
         <table id="incident-feed">
@@ -216,18 +216,18 @@
     </div>
   </main>
 
-  <aside class="chat-panel" id="chat-panel">
+  <aside class="chat-panel chat-panel-inline" id="chat-panel" data-dashboard-inline="true" data-context-cluster="{{ selected_cluster.name if selected_cluster else '' }}">
+    <div class="chat-resize-handle" id="chat-resize-handle" role="separator" aria-label="Thay đổi chiều cao khung chat" title="Kéo để thay đổi chiều cao"></div>
     <header class="chat-panel-header">
       <div class="chat-panel-title">
         <span class="chat-panel-icon" aria-hidden="true">&#129302;</span>
-        <span>Chat với <span id="chat-panel-ai-name">AI</span></span>
+        <span class="chat-panel-title-copy">Chat với <span id="chat-panel-ai-name">AI</span><span class="chat-context-badge" id="chat-context-badge" hidden></span></span>
+        <span class="chat-unread-badge" id="chat-unread-badge" hidden aria-label="Tin nhắn mới chưa đọc"></span>
       </div>
       <div class="chat-panel-controls">
-        <button type="button" class="chat-panel-btn" id="chat-panel-history" aria-label="Lịch sử đoạn chat" title="Lịch sử đoạn chat">&#128337;</button>
         <button type="button" class="chat-panel-btn" id="chat-panel-settings" aria-label="Cấu hình AI" title="Cấu hình AI">&#9881;</button>
-        <button type="button" class="chat-panel-btn" id="chat-panel-new-session" aria-label="Đoạn chat mới" title="Đoạn chat mới">&#43;</button>
-        <button type="button" class="chat-panel-btn" id="chat-panel-minimize" aria-label="Thu nhỏ" title="Thu nhỏ">&#8722;</button>
-        <button type="button" class="chat-panel-btn" id="chat-panel-close" aria-label="Đóng" title="Đóng">&#215;</button>
+        <button type="button" class="chat-panel-btn" id="chat-panel-minimize" aria-label="Thu nhỏ" title="Thu nhỏ">⌄</button>
+        <button type="button" class="chat-panel-btn" id="chat-panel-close" aria-label="Đóng chat" title="Đóng chat">×</button>
       </div>
     </header>
 
@@ -239,11 +239,13 @@
       </select>
     </div>
     <div class="chat-panel-body" id="chat-panel-body">
+      <div class="chat-main-column">
       <div class="chat-history-toast" id="chat-history-toast" role="status" aria-live="polite" hidden></div>
       <div class="chat-history-list-view" id="chat-history-list-view" hidden>
         <div class="chat-view-header">
           <span class="chat-view-icon" aria-hidden="true">↶</span>
           <div><span class="chat-view-eyebrow">Chat / Lịch sử</span><h3>Lịch sử đoạn chat</h3></div>
+          <button type="button" class="btn btn-ghost btn-sm chat-history-back" id="chat-history-back">Quay lại</button>
         </div>
         <div class="chat-history-toolbar">
           <label class="chat-history-select-all"><input type="checkbox" id="chat-history-select-all"> Chọn tất cả</label>
@@ -266,6 +268,10 @@
             <div class="chat-persona-note"><span aria-hidden="true">♡</span><p class="chat-settings-hint">AI sẽ dùng cách xưng hô này trước tên hiển thị trong mọi câu trả lời.</p></div>
           </div>
           <div class="chat-settings-actions"><button type="submit" class="btn btn-sm">Lưu thay đổi</button></div>
+          <div class="chat-settings-quick-actions" aria-label="Thao tác chat">
+            <button type="button" class="btn btn-ghost btn-sm" id="chat-panel-history">Lịch sử chat</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="chat-panel-new-session">Đoạn chat mới</button>
+          </div>
           <p class="chat-settings-success" id="chat-settings-success" hidden></p>
         </form>
       </div>
@@ -274,18 +280,19 @@
         <div class="chat-empty-state" id="chat-empty-state">
           <span class="chat-empty-icon" aria-hidden="true">&#129302;</span>
           <p class="chat-empty-text">Hỏi tôi về trạng thái cụm Ceph</p>
-          <p class="chat-empty-subtext">VD: cụm có bao nhiêu pool? OSD nào đang down?</p>
+          <p class="chat-empty-subtext">Trợ lý có thể giải thích cấu hình, vận hành và sự cố.</p>
         </div>
       </div>
 
       <p class="chat-error" id="chat-error" hidden></p>
 
       <form class="chat-input-bar" id="chat-form">
+        <button type="button" class="chat-inline-restore" id="chat-panel-restore" aria-label="Mở rộng chat" title="Mở rộng chat">⌃</button>
         <textarea
           id="chat-input"
           class="chat-textarea"
           rows="1"
-          placeholder="Nhập câu hỏi về cụm Ceph..."
+          placeholder="Hỏi AI về trạng thái cụm Ceph…"
           required
         ></textarea>
         <button type="button" class="chat-stop-btn" id="chat-stop-btn" hidden aria-label="Dừng Hai AI">Dừng</button>
@@ -296,8 +303,14 @@
           </svg>
         </button>
       </form>
+      </div>
+
     </div>
   </aside>
+  <button type="button" class="chat-fab" id="chat-fab" aria-controls="chat-panel" aria-expanded="false">
+    <span class="chat-fab-icon" aria-hidden="true">&#128172;</span>
+    <span>Chat với AI</span>
+  </button>
   </div>
 
   <script src="/static/app.js?v={{ static_version }}"></script>

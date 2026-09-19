@@ -34,6 +34,7 @@ from watcher import (
     verify,
     volume_monitor,
     host_metrics,
+    learning_retention,
     performance_rca_monitor,
     volume_topology,
     vitastor_monitor,
@@ -916,6 +917,10 @@ def run(
     last_bluestore_omap_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_osd_latency_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_crush_scan_at: Optional[datetime] = initial_auxiliary_scan_at
+    # Host telemetry feeds the Node Monitoring time-series and needs a much
+    # shorter cadence than the CRUSH/RCA scans. Keep it independent so a
+    # five-minute CRUSH interval cannot leave the chart with only one point.
+    last_host_metrics_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_volume_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_volume_topology_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_capacity_forecast_scan_at: Optional[datetime] = None
@@ -1323,15 +1328,24 @@ def run(
                 )
                 last_volume_topology_scan_at = now
                 _run_auxiliary_scan(
-                    f"host-metrics-{cluster_id or 'default'}",
-                    lambda: host_metrics.collect_and_store(cluster_id, None),
-                    background=True,
-                )
-                _run_auxiliary_scan(
                     f"performance-rca-{cluster_id or 'default'}",
                     lambda: performance_rca_monitor.check_and_alert(cluster_id, None),
                     background=True,
                 )
+
+        # Node Monitoring chart data is intentionally collected independently
+        # from the slower CRUSH scan. Thirty seconds gives the browser a
+        # continuous series while keeping the SSH work off the health poll.
+        if (
+            last_host_metrics_scan_at is None
+            or (now - last_host_metrics_scan_at).total_seconds() >= 30
+        ):
+            _run_auxiliary_scan(
+                f"host-metrics-{cluster_id or 'default'}",
+                lambda: host_metrics.collect_and_store(cluster_id, None),
+                background=True,
+            )
+            last_host_metrics_scan_at = now
 
         if settings.capacity_forecast_enabled and cluster_id and (
             last_capacity_forecast_scan_at is None
@@ -1414,6 +1428,11 @@ def run(
                 background=max_iterations is None,
             )
             last_log_intel_scan_at = now
+
+        # Learning retention is independent from Log Intelligence and must
+        # continue even when log collection is disabled. The helper has its
+        # own process-wide cadence guard, so this remains cheap on each poll.
+        learning_retention.prune_old_rows()
 
         iterations += 1
         time.sleep(max(0, settings.watcher_poll_interval_seconds))
@@ -1674,6 +1693,7 @@ def run_observed_cluster_loop(
     last_status: Optional[str] = None
     last_checks: frozenset = frozenset()
     last_crush_scan_at: Optional[datetime] = None
+    last_host_metrics_scan_at: Optional[datetime] = None
     last_volume_scan_at: Optional[datetime] = None
     last_volume_topology_scan_at: Optional[datetime] = None
     last_trash_capacity_scan_at: Optional[datetime] = None
@@ -1834,11 +1854,6 @@ def run_observed_cluster_loop(
                         )
                         last_volume_topology_scan_at = now
                     _run_auxiliary_scan(
-                        f"host-metrics-{cluster.id}",
-                        lambda: host_metrics.collect_and_store(cluster.id, cluster),
-                        background=True,
-                    )
-                    _run_auxiliary_scan(
                         f"performance-rca-{cluster.id}",
                         lambda: performance_rca_monitor.check_and_alert(cluster.id, cluster),
                         background=True,
@@ -1848,6 +1863,19 @@ def run_observed_cluster_loop(
                         "run_observed_cluster_loop(%r): CRUSH scan failed", cluster.name
                     )
                 last_crush_scan_at = now
+
+            # Keep observed-cluster Node Monitoring history independent from
+            # the slower five-minute CRUSH scan.
+            if (
+                last_host_metrics_scan_at is None
+                or (now - last_host_metrics_scan_at).total_seconds() >= 30
+            ):
+                _run_auxiliary_scan(
+                    f"host-metrics-{cluster.id}",
+                    lambda: host_metrics.collect_and_store(cluster.id, cluster),
+                    background=True,
+                )
+                last_host_metrics_scan_at = now
 
             if settings.capacity_forecast_enabled and (
                 stop_event is None or not stop_event.is_set()
@@ -1899,6 +1927,7 @@ def run_observed_cluster_loop(
                         "run_observed_cluster_loop(%r): log intelligence scan failed", cluster.name
                     )
                 last_log_intel_scan_at = now
+            learning_retention.prune_old_rows()
         except CephQueryError as exc:
             _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster.id)
             logger.warning("run_observed_cluster_loop(%r): %s", cluster.name, exc)

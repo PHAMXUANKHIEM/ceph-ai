@@ -1,30 +1,253 @@
-(function () {
-  var tabs = Array.prototype.slice.call(document.querySelectorAll("[data-bucket-tab]"));
-  if (!tabs.length) return;
-  var panels = Array.prototype.slice.call(document.querySelectorAll(".bucket-feature-panel"));
+function bucketHighlightJSON(value) {
+  var raw = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  var escaped = raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return escaped.replace(/("(?:\\.|[^"\\])*"\s*:)|("(?:\\.|[^"\\])*")|\b(true|false|null)\b|\b(-?\d+(?:\.\d+)?)\b/g, function (match, key, string, literal, number) {
+    if (key) return '<span class="json-key">' + key.slice(0, -1) + '</span>:';
+    if (string) return '<span class="json-string">' + match + '</span>';
+    if (literal) return '<span class="json-literal">' + match + '</span>';
+    if (number) return '<span class="json-number">' + match + '</span>';
+    return match;
+  });
+}
 
-  function activate(tab) {
-    tabs.forEach(function (item) {
-      var active = item === tab;
-      item.classList.toggle("is-active", active);
-      item.setAttribute("aria-selected", String(active));
-      item.tabIndex = active ? 0 : -1;
+(function () {
+  document.querySelectorAll(".bucket-created-time").forEach(function (element) {
+    var date = new Date(element.getAttribute("datetime") || "");
+    if (Number.isNaN(date.getTime())) return;
+    element.textContent = new Intl.DateTimeFormat("vi-VN", {
+      day: "2-digit", month: "2-digit", year: "numeric",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(date);
+    element.title = element.getAttribute("datetime") || "";
+  });
+})();
+
+(function () {
+  var page = document.querySelector(".bucket-page");
+  if (!page) return;
+  var rows = Array.prototype.slice.call(document.querySelectorAll("tr.bucket-row-pending[data-bucket-name]"));
+  if (!rows.length) return;
+  var activeLoads = 0;
+  var nextRow = 0;
+  var MAX_ACTIVE_LOADS = 3;
+  var MAX_PENDING_ATTEMPTS = 18;
+  var RETRY_DELAY_MS = 1000;
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>\"']/g, function (character) {
+      return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[character];
     });
-    panels.forEach(function (panel) { panel.hidden = panel.id !== tab.dataset.bucketTab; });
   }
 
-  tabs.forEach(function (tab, index) {
-    tab.addEventListener("click", function () { activate(tab); });
-    tab.addEventListener("keydown", function (event) {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      event.preventDefault();
-      var offset = event.key === "ArrowRight" ? 1 : -1;
-      var next = tabs[(index + offset + tabs.length) % tabs.length];
-      activate(next);
-      next.focus();
+  function formatCreatedTimes(root) {
+    root.querySelectorAll(".bucket-created-time").forEach(function (element) {
+      var date = new Date(element.getAttribute("datetime") || "");
+      if (Number.isNaN(date.getTime())) return;
+      element.textContent = new Intl.DateTimeFormat("vi-VN", {
+        day: "2-digit", month: "2-digit", year: "numeric",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+      }).format(date);
+      element.title = element.getAttribute("datetime") || "";
+    });
+  }
+
+  function formatBytes(value) {
+    var size = Number(value);
+    if (!Number.isFinite(size) || size < 0) return "—";
+    var units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    var index = 0;
+    while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
+    return (index === 0 ? Math.round(size) : size.toFixed(1)) + " " + units[index];
+  }
+  function setField(row, field, html) {
+    var target = row.querySelector('[data-bucket-field="' + field + '"]');
+    if (target) target.innerHTML = html;
+  }
+  function setError(row, message) {
+    setField(row, "owner", '<span class="muted-value">Không lấy được</span>');
+    setField(row, "objects", '<span class="muted-value">—</span>');
+    setField(row, "size", '<span class="muted-value" title="' + escapeHtml(message || "") + '">Không khả dụng</span>');
+    setField(row, "quota", '<span class="muted-value">—</span>');
+    setField(row, "created", '<span class="muted-value">—</span>');
+    setField(row, "status", '<span class="status-badge warning">Chưa đầy đủ</span>');
+    row.classList.remove("bucket-row-pending");
+  }
+  function apply(row, data) {
+    if (!data || !data.ready) return false;
+    if (data.error) { setError(row, data.error); return true; }
+    var quota = data.quota_enabled
+      ? escapeHtml(data.quota_size || "—") + " / " + escapeHtml(data.quota_max_objects == null ? "—" : data.quota_max_objects) + " objects"
+      : '<span class="muted-value">Không giới hạn</span>';
+    setField(row, "owner", escapeHtml(data.owner || "—"));
+    setField(row, "objects", escapeHtml(data.num_objects == null ? "—" : data.num_objects));
+    setField(row, "size", formatBytes(data.size_bytes) + (Number(data.num_objects || 0) === 0 && Number(data.size_bytes || 0) === 0 ? ' <span class="bucket-empty-badge">Trống</span>' : ""));
+    setField(row, "quota", quota);
+    setField(row, "created", data.creation_time ? '<time class="bucket-created-time" datetime="' + escapeHtml(data.creation_time) + '" title="' + escapeHtml(data.creation_time) + '">' + escapeHtml(data.creation_time) + '</time>' : "—");
+    setField(row, "status", '<span class="status-badge healthy">Sẵn sàng</span>');
+    formatCreatedTimes(row);
+    row.classList.remove("bucket-row-pending");
+    var manage = row.querySelector("[data-bucket-action=menu]");
+    if (manage) {
+      manage.dataset.bucketOwner = data.owner || "";
+      manage.dataset.bucketSize = data.size || formatBytes(data.size_bytes);
+      manage.dataset.bucketObjects = String(data.num_objects || 0);
+    }
+    return true;
+  }
+  function load(row, attempt, done) {
+    var bucket = row.dataset.bucketName || "";
+    var url = "/api/object-storage/buckets/" + encodeURIComponent(bucket) + "?cluster=" + encodeURIComponent(page.dataset.cluster || "");
+    fetch(url, {cache: "no-store"}).then(function (response) {
+      return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Không đọc được metadata"); });
+    }).then(function (data) {
+      var ready = apply(row, data);
+      if (!ready && attempt < MAX_PENDING_ATTEMPTS) {
+        window.setTimeout(function () { load(row, attempt + 1, done); }, RETRY_DELAY_MS);
+      } else {
+        if (!ready) setError(row, "RGW phản hồi chậm");
+        done();
+      }
+    }).catch(function (error) {
+      if (attempt < 2) window.setTimeout(function () { load(row, attempt + 1, done); }, RETRY_DELAY_MS);
+      else { setError(row, error.message); done(); }
+    });
+  }
+  function pump() {
+    while (activeLoads < MAX_ACTIVE_LOADS && nextRow < rows.length) {
+      var row = rows[nextRow++];
+      activeLoads += 1;
+      load(row, 0, function () { activeLoads -= 1; pump(); });
+    }
+  }
+  pump();
+})();
+
+(function () {
+  var banner = document.getElementById("bucket-capability-banner");
+  var dismiss = banner && banner.querySelector(".bucket-capability-dismiss");
+  if (!banner || !dismiss) return;
+  var storageKey = "ceph-ai.bucket-capability-banner.dismissed";
+  try { if (window.localStorage.getItem(storageKey) === "1") banner.hidden = true; } catch (_) {}
+  dismiss.addEventListener("click", function () {
+    banner.hidden = true;
+    try { window.localStorage.setItem(storageKey, "1"); } catch (_) {}
+  });
+})();
+
+(function () {
+  document.querySelectorAll("[data-bucket-filter-select]").forEach(function (select) {
+    var field = select.parentElement;
+    var input = field.querySelector("input[type=hidden]");
+    var label = select.querySelector("[data-filter-label]");
+    if (!input || !label) return;
+    select.querySelectorAll("[data-filter-value]").forEach(function (option) {
+      option.addEventListener("click", function () {
+        input.value = option.dataset.filterValue;
+        label.textContent = option.textContent.trim();
+        select.querySelectorAll("[data-filter-value]").forEach(function (item) {
+          item.setAttribute("aria-selected", item === option ? "true" : "false");
+        });
+        select.removeAttribute("open");
+      });
     });
   });
-  activate(tabs[0]);
+})();
+
+(function () {
+  var drawer = document.getElementById("bucket-action-drawer");
+  var backdrop = document.getElementById("bucket-action-backdrop");
+  if (!drawer || !backdrop) return;
+  var title = document.getElementById("bucket-drawer-title");
+  var context = document.getElementById("bucket-drawer-context");
+  var nav = document.getElementById("bucket-action-nav");
+  var previousFocus = null;
+  var labels = {governance: "Quota & Retention", "user-settings": "User Quota & Capability", lifecycle: "Lifecycle Policy", policy: "Bucket Policy & ACL", delete: "Xóa bucket"};
+  var page = document.querySelector(".bucket-page");
+  function configuredEndpoint() { return page.dataset.rgwEndpoint || (page.dataset.rgwHost ? "http://" + page.dataset.rgwHost + ":7480" : ""); }
+
+  function configuredEndpoints() {
+    var values = (page.dataset.rgwEndpoints || "").split(",").map(function (value) { return value.trim(); }).filter(Boolean);
+    var current = configuredEndpoint();
+    if (current && values.indexOf(current) < 0) values.unshift(current);
+    return values.filter(function (value, index) { return values.indexOf(value) === index; });
+  }
+  function enableEndpointInputs() {
+    var endpoints = configuredEndpoints();
+    var apiName = document.getElementById("bucket-create-api-name");
+    if (apiName) apiName.readOnly = false;
+    ["bucket-create-endpoint", "bucket-governance-endpoint", "bucket-lifecycle-endpoint", "bucket-policy-endpoint", "bucket-delete-endpoint"].forEach(function (id) {
+      var input = document.getElementById(id);
+      if (!input) return;
+      input.readOnly = false;
+      if (!endpoints.length) return;
+      input.setAttribute("list", id + "-options");
+      var list = document.createElement("datalist");
+      list.id = id + "-options";
+      endpoints.forEach(function (endpoint) {
+        var option = document.createElement("option");
+        option.value = endpoint;
+        list.appendChild(option);
+      });
+      input.parentNode.appendChild(list);
+    });
+  }
+
+  function value(id, next) {
+    var control = document.getElementById(id);
+    if (control) control.value = next || "";
+  }
+  function fillBucket(data) {
+    ["governance", "lifecycle", "policy", "delete"].forEach(function (kind) {
+      value("bucket-" + kind + "-name", data.name);
+      value("bucket-" + kind + "-owner", data.owner);
+      value("bucket-" + kind + "-endpoint", configuredEndpoint());
+    });
+    value("s3-setting-uid", data.owner);
+    value("s3-setting-quota-scope", "bucket");
+    var deleteAction = document.getElementById("bucket-delete-action");
+    if (deleteAction) deleteAction.value = Number(data.objects || 0) > 0 ? "purge_delete" : "delete_empty";
+  }
+  function showPanel(kind) {
+    document.querySelectorAll("[data-action-panel]").forEach(function (panel) { panel.hidden = panel.dataset.actionPanel !== kind; });
+    document.querySelectorAll("[data-drawer-action]").forEach(function (button) { button.classList.toggle("is-active", button.dataset.drawerAction === kind); });
+    title.textContent = labels[kind] || "Bucket action";
+    nav.hidden = kind === "create";
+    if (kind === "governance") document.getElementById("bucket-governance-action").dispatchEvent(new Event("change"));
+    if (kind === "lifecycle") document.getElementById("bucket-lifecycle-action").dispatchEvent(new Event("change"));
+    if (kind === "policy") document.getElementById("bucket-policy-action").dispatchEvent(new Event("change"));
+  }
+  function open(kind, data) {
+    previousFocus = document.activeElement;
+    if (data) {
+      fillBucket(data);
+      context.textContent = data.name + " · owner " + (data.owner || "chưa có metadata");
+    } else {
+      context.textContent = "Cấu hình được áp dụng cho cụm đang chọn.";
+    }
+    value("bucket-create-endpoint", configuredEndpoint());
+    backdrop.hidden = false; drawer.hidden = false; drawer.setAttribute("aria-hidden", "false");
+    document.body.classList.add("bucket-drawer-open");
+    window.dispatchEvent(new Event("bucket-drawer-context"));
+    showPanel(kind);
+    var focusTarget = kind === "create" ? document.getElementById("bucket-create-name") : drawer.querySelector("[data-action-panel='" + kind + "'] input");
+    if (focusTarget) window.setTimeout(function () { focusTarget.focus(); }, 0);
+  }
+  function close() {
+    backdrop.hidden = true; drawer.hidden = true; drawer.setAttribute("aria-hidden", "true"); document.body.classList.remove("bucket-drawer-open");
+    if (previousFocus && previousFocus.focus) previousFocus.focus();
+  }
+  enableEndpointInputs();
+  document.querySelectorAll("[data-bucket-action]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      if (button.dataset.bucketAction === "create") return open("create");
+      if (button.dataset.bucketAction === "menu") return open("governance", {name: button.dataset.bucketName, owner: button.dataset.bucketOwner, objects: button.dataset.bucketObjects});
+    });
+  });
+  nav.querySelectorAll("[data-drawer-action]").forEach(function (button) { button.addEventListener("click", function () { showPanel(button.dataset.drawerAction); }); });
+  document.querySelectorAll("[data-preview-form]").forEach(function (button) { button.addEventListener("click", function () { var form = document.getElementById(button.dataset.previewForm); if (form.requestSubmit) form.requestSubmit(); else form.dispatchEvent(new Event("submit", {cancelable: true})); }); });
+  document.querySelectorAll("[data-close-bucket-drawer]").forEach(function (button) { button.addEventListener("click", close); });
+  backdrop.addEventListener("click", close);
+  document.addEventListener("keydown", function (event) { if (event.key === "Escape" && !drawer.hidden) close(); });
 })();
 
 (function () {
@@ -44,51 +267,31 @@
 (function () {
   var capabilityStatus = document.getElementById("object-storage-capability-status");
   if (!capabilityStatus) return;
-  var capabilityPanel = document.getElementById("object-storage-capability-panel");
-  var unavailableList = document.getElementById("object-storage-unavailable-features");
   var source = document.getElementById("bucket-create-form");
-  function showUnavailable(items) {
-    if (!capabilityPanel || !unavailableList) return;
-    while (unavailableList.firstChild) unavailableList.removeChild(unavailableList.firstChild);
-    items.forEach(function (item) {
-      var row = document.createElement("li");
-      row.textContent = item;
-      unavailableList.appendChild(row);
-    });
-    capabilityPanel.hidden = items.length === 0;
-  }
-  function addUnavailable(items, label, reason) {
-    if (reason) items.push(label + ": " + reason);
-  }
   function disableForm(id, reason) {
     var form = document.getElementById(id);
     if (!form) return;
     form.querySelectorAll("button, input, select, textarea").forEach(function (control) { control.disabled = true; control.title = reason; });
   }
+  function setTitle(id, title) {
+    var element = document.getElementById(id);
+    if (element) element.title = title || "";
+  }
   fetch("/api/object-storage/capabilities?cluster=" + encodeURIComponent(source.dataset.cluster))
     .then(function (response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Không đọc được capability"); }); })
     .then(function (data) {
+      capabilityStatus.textContent = "Ceph " + data.ceph_version + " (" + data.ceph_release + ") · Chỉ các tính năng tương thích bên dưới được phép thao tác.";
       var create = data.bucket_create;
       var governance = data.bucket_governance;
       var lifecycle = data.lifecycle;
-      var unavailable = [];
-      addUnavailable(unavailable, "Placement target", create.placement_unavailable_reason);
-      if (!governance.object_lock_at_create || !governance.default_retention) {
-        addUnavailable(unavailable, "Object Lock và retention", governance.object_lock_unavailable_reason);
-      }
-      addUnavailable(unavailable, "Bucket versioning", governance.versioning_unavailable_reason);
-      addUnavailable(unavailable, "Lifecycle Policy", lifecycle.supported ? null : lifecycle.unavailable_reason);
-      if (lifecycle.supported) addUnavailable(unavailable, "Lifecycle Transition", lifecycle.transition_unavailable_reason);
-      addUnavailable(unavailable, "Bucket Policy & ACL", data.bucket_policy_acl.unavailable_reason);
-      showUnavailable(unavailable);
       if (!create.placement_supported) {
         ["bucket-create-api-name", "bucket-create-placement"].forEach(function (id) { document.getElementById(id).disabled = true; });
-        document.getElementById("bucket-create-placement-label").title = create.placement_unavailable_reason;
-        document.getElementById("bucket-create-api-name-label").title = create.placement_unavailable_reason;
+        setTitle("bucket-create-placement-label", create.placement_unavailable_reason);
+        setTitle("bucket-create-api-name-label", create.placement_unavailable_reason);
       }
       if (!governance.object_lock_at_create) {
         document.getElementById("bucket-create-object-lock").disabled = true;
-        document.getElementById("bucket-create-object-lock-label").title = governance.object_lock_unavailable_reason;
+        setTitle("bucket-create-object-lock-label", governance.object_lock_unavailable_reason);
       }
       document.querySelectorAll("#bucket-governance-action option[data-capability='versioning']").forEach(function (option) { option.disabled = !governance.versioning; option.title = governance.versioning_unavailable_reason || ""; });
       document.querySelectorAll("#bucket-governance-action option[data-capability='object-lock']").forEach(function (option) { option.disabled = !governance.default_retention; option.title = governance.object_lock_unavailable_reason || ""; });
@@ -105,10 +308,43 @@
       }
     })
     .catch(function (error) {
-      if (capabilityPanel) capabilityPanel.hidden = false;
       capabilityStatus.textContent = "Không xác định được phiên bản/capability Ceph: " + error.message + ". Các thao tác ghi đã bị khóa.";
       ["bucket-create-form", "bucket-governance-form", "bucket-lifecycle-form", "bucket-policy-form", "bucket-delete-form"].forEach(function (id) { disableForm(id, error.message); });
     });
+})();
+
+(function () {
+  var page = document.querySelector(".bucket-page");
+  var loading = document.querySelector(".bucket-load-state");
+  if (!page || !loading || loading.textContent.indexOf("Đang tải") === -1) return;
+
+  var attempts = 0;
+  var maxAttempts = 8;
+  function retryDelay() { return Math.min(10000, 1500 * attempts); }
+  function checkInventory() {
+    attempts += 1;
+    var params = new URLSearchParams(window.location.search);
+    params.set("cluster", page.dataset.cluster || "");
+    fetch("/api/object-storage/buckets?" + params.toString(), {cache: "no-store"})
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (data && !data.refreshing) {
+          if (data.refresh_error) {
+            loading.textContent = "Không thể đồng bộ inventory bucket từ RGW. Bấm tải lại để thử lại.";
+            return;
+          }
+          window.location.reload();
+          return;
+        }
+        if (attempts < maxAttempts) window.setTimeout(checkInventory, retryDelay());
+        else loading.textContent = "RGW đang phản hồi chậm. Bấm tải lại để kiểm tra lại danh sách bucket.";
+      })
+      .catch(function () {
+        if (attempts < maxAttempts) window.setTimeout(checkInventory, retryDelay());
+        else loading.textContent = "Không kiểm tra được trạng thái RGW. Bấm tải lại để thử lại.";
+      });
+  }
+  window.setTimeout(checkInventory, 1500);
 })();
 
 (function () {
@@ -121,6 +357,7 @@
   var execute = document.getElementById("bucket-delete-execute");
   var status = document.getElementById("bucket-delete-status");
   var approved = null;
+  window.addEventListener("bucket-drawer-context", function () { approved = null; preview.hidden = true; confirmation.value = ""; status.textContent = ""; });
   function payload() { return {action: document.getElementById("bucket-delete-action").value, bucket: document.getElementById("bucket-delete-name").value.trim(), owner: document.getElementById("bucket-delete-owner").value.trim(), endpoint: document.getElementById("bucket-delete-endpoint").value.trim()}; }
   function endpoint(kind) { return "/api/object-storage/buckets/delete/" + kind + "?cluster=" + encodeURIComponent(form.dataset.cluster); }
   function parse(response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); }
@@ -159,6 +396,7 @@
   var execute = document.getElementById("bucket-policy-execute");
   var status = document.getElementById("bucket-policy-status");
   var approved = null;
+  window.addEventListener("bucket-drawer-context", function () { approved = null; preview.hidden = true; confirmation.value = ""; status.textContent = ""; });
   function ready() { return Boolean(action.value && bucket.value.trim() && owner.value.trim() && gateway.value.trim() && gateway.checkValidity()); }
   function buildPolicy() {
     var bucketArn = "arn:aws:s3:::" + bucket.value.trim();
@@ -172,7 +410,7 @@
     policyLabel.hidden = !baseReady || action.value !== "policy_put";
     aclLabel.hidden = !baseReady || action.value !== "acl_set";
     submit.hidden = !baseReady;
-    if (baseReady && action.value === "policy_put") generated.textContent = JSON.stringify(buildPolicy(), null, 2);
+    if (baseReady && action.value === "policy_put") generated.innerHTML = bucketHighlightJSON(JSON.stringify(buildPolicy(), null, 2));
     preview.hidden = true; approved = null;
   }
   function payload() {
@@ -208,16 +446,15 @@
   var confirmation = document.getElementById("bucket-create-confirmation");
   var execute = document.getElementById("bucket-create-execute");
   var status = document.getElementById("bucket-create-status");
-  var objectLockInput = document.getElementById("bucket-create-object-lock");
   var approved = null;
-  function objectLockEnabled() { return objectLockInput.value.trim() === "OK"; }
+  window.addEventListener("bucket-drawer-context", function () { approved = null; preview.hidden = true; confirmation.value = ""; status.textContent = ""; });
   function payload() { return {
     name: document.getElementById("bucket-create-name").value.trim(),
     owner: document.getElementById("bucket-create-owner").value.trim(),
     endpoint: document.getElementById("bucket-create-endpoint").value.trim(),
-    api_name: document.getElementById("bucket-create-api-name").value.trim(),
+    api_name: document.getElementById("bucket-create-placement").value.trim() ? document.getElementById("bucket-create-api-name").value.trim() : "",
     placement: document.getElementById("bucket-create-placement").value.trim(),
-    object_lock: objectLockEnabled()
+    object_lock: document.getElementById("bucket-create-object-lock").checked
   }; }
   function endpoint(kind) { return "/api/object-storage/buckets/actions/" + kind + "?cluster=" + encodeURIComponent(form.dataset.cluster); }
   function parse(response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); }
@@ -255,6 +492,7 @@
   var execute = document.getElementById("bucket-lifecycle-execute");
   var status = document.getElementById("bucket-lifecycle-status");
   var approved = null;
+  window.addEventListener("bucket-drawer-context", function () { approved = null; preview.hidden = true; confirmation.value = ""; status.textContent = ""; });
   function baseReady() { return Boolean(action.value && bucket.value.trim() && owner.value.trim() && gateway.value.trim() && gateway.checkValidity()); }
   function buildRules() {
     return Array.prototype.slice.call(ruleList.querySelectorAll(".bucket-lifecycle-rule")).map(function (row) {
@@ -270,7 +508,7 @@
     rulesLabel.hidden = !ready || action.value !== "lifecycle_put";
     rulesLabel.querySelectorAll("input, select, button").forEach(function (control) { control.disabled = rulesLabel.hidden; });
     submit.hidden = !ready;
-    if (!rulesLabel.hidden) generated.textContent = JSON.stringify(buildRules(), null, 2);
+    if (!rulesLabel.hidden) generated.innerHTML = bucketHighlightJSON(JSON.stringify(buildRules(), null, 2));
     preview.hidden = true; approved = null;
   }
   function addRule() {
@@ -317,26 +555,43 @@
   var confirmation = document.getElementById("bucket-governance-confirmation");
   var execute = document.getElementById("bucket-governance-execute");
   var status = document.getElementById("bucket-governance-status");
+  var unlimitedSize = document.getElementById("bucket-governance-unlimited-size");
+  var unlimitedObjects = document.getElementById("bucket-governance-unlimited-objects");
+  var sizeInput = document.getElementById("bucket-governance-size");
+  var objectsInput = document.getElementById("bucket-governance-objects");
   var approved = null;
+  window.addEventListener("bucket-drawer-context", function () { approved = null; preview.hidden = true; confirmation.value = ""; status.textContent = ""; });
   function isS3() { return action.value.indexOf("versioning_") === 0 || action.value === "retention_set"; }
   function refreshFields() {
     document.querySelectorAll("[data-governance-s3]").forEach(function (item) { item.hidden = !isS3(); });
     document.querySelectorAll("[data-governance-quota]").forEach(function (item) { item.hidden = action.value !== "quota_set"; });
     document.querySelectorAll("[data-governance-retention]").forEach(function (item) { item.hidden = action.value !== "retention_set"; });
+    sizeInput.disabled = unlimitedSize.checked || action.value !== "quota_set";
+    objectsInput.disabled = unlimitedObjects.checked || action.value !== "quota_set";
+    sizeInput.required = !unlimitedSize.checked && action.value === "quota_set";
+    objectsInput.required = !unlimitedObjects.checked && action.value === "quota_set";
+    document.getElementById("governance-action-help").textContent = {
+      quota_set: "Nhập một hoặc cả hai giới hạn; bật “Không giới hạn” cho phần không cần giới hạn.",
+      quota_enable: "Bật quota hiện tại của bucket.", quota_disable: "Tắt quota; dữ liệu hiện tại không bị xóa.",
+      versioning_enable: "Bật lưu version cho object mới.", versioning_suspend: "Tạm dừng tạo version mới; version cũ vẫn giữ nguyên.",
+      retention_set: "Đặt thời hạn mặc định cho object mới trong bucket có Object Lock."
+    }[action.value] || "Chọn thao tác cần áp dụng cho bucket này.";
   }
   function payload() { return {
     action: action.value,
     bucket: document.getElementById("bucket-governance-name").value.trim(),
     owner: document.getElementById("bucket-governance-owner").value.trim(),
     endpoint: document.getElementById("bucket-governance-endpoint").value.trim(),
-    max_size_bytes: document.getElementById("bucket-governance-size").value,
-    max_objects: document.getElementById("bucket-governance-objects").value,
+    max_size_bytes: unlimitedSize.checked ? "-1" : sizeInput.value,
+    max_objects: unlimitedObjects.checked ? "-1" : objectsInput.value,
     mode: document.getElementById("bucket-governance-mode").value,
     days: document.getElementById("bucket-governance-days").value
   }; }
   function endpoint(kind) { return "/api/object-storage/buckets/governance/" + kind + "?cluster=" + encodeURIComponent(form.dataset.cluster); }
   function parse(response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); }
   action.addEventListener("change", function () { approved = null; preview.hidden = true; refreshFields(); });
+  unlimitedSize.addEventListener("change", refreshFields);
+  unlimitedObjects.addEventListener("change", refreshFields);
   form.addEventListener("submit", function (event) {
     event.preventDefault(); approved = null; preview.hidden = true; execute.disabled = true; status.textContent = "Đang kiểm tra capability và bucket...";
     var body = payload();

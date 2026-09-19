@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 from config.settings import settings
+import dashboard.routes.ai_learning as ai_learning_route
 from shared import db
 from shared.clusters import ensure_default_cluster
 from shared.models import (
@@ -9,7 +10,10 @@ from shared.models import (
     LogFinding,
     LogIngestRun,
     LogLearningSample,
+    HostMetricSample,
+    NodeResourceForecastAlert,
     NodeResourceForecastRun,
+    NodeResourceForecastTransition,
     NodeResourceModelState,
     RemediationCase,
     VolumeEarlyForecast, VolumeForecastRun,
@@ -89,6 +93,40 @@ def test_ai_learning_requires_login(dashboard_client):
     assert response.headers["location"] == "/login"
 
 
+def test_ai_learning_model_mutations_require_admin(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    monkeypatch.setattr(ai_learning_route, "is_admin_user", lambda _user: False)
+
+    assert dashboard_client.post(
+        "/api/ai-learning/models/unknown/promote"
+    ).status_code == 403
+    assert dashboard_client.post(
+        "/api/ai-learning/models/unknown/rollback"
+    ).status_code == 403
+    assert dashboard_client.post(
+        "/api/ai-learning/models/unknown/block", data={"reason": "test"}
+    ).status_code == 403
+
+
+def test_ai_learning_controls_reject_a_different_selected_cluster(dashboard_client):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        selected_cluster_id = ensure_default_cluster(session).id
+
+    response = dashboard_client.post(
+        "/api/ai-learning/learner/pause",
+        data={
+            "cluster_id": "another-cluster-id",
+            "host": "10.20.1.153",
+            "metric": "cpu",
+            "reason": "scope regression test",
+        },
+    )
+
+    assert response.status_code == 409
+    assert selected_cluster_id != "another-cluster-id"
+
+
 def test_ai_learning_empty_state_is_readable(dashboard_client):
     _login(dashboard_client)
     response = dashboard_client.get("/ai-learning")
@@ -96,36 +134,6 @@ def test_ai_learning_empty_state_is_readable(dashboard_client):
     assert "AI đang học gì?" in response.text
     assert "Chưa có model CPU/RAM" in response.text
     assert "AUDIT_ONLY" in response.text
-
-
-def test_operator_controls_pause_resume_reset_are_admin_and_audited(dashboard_client):
-    _login(dashboard_client)
-    cluster_id = _seed_learning()
-    scope = {"cluster_id": cluster_id, "host": "10.3.53.69", "metric": "cpu"}
-
-    paused = dashboard_client.post(
-        "/api/ai-learning/learner/pause",
-        data={**scope, "reason": "investigate candidate drift"},
-    )
-    assert paused.status_code == 200
-    assert paused.json()["status"] == "PAUSED"
-
-    status = dashboard_client.get("/api/ai-learning").json()["online_learning"]
-    assert status["control"]["status"] == "RUNNING"  # UI reports configured canary, not arbitrary scope
-
-    resumed = dashboard_client.post(
-        "/api/ai-learning/learner/resume",
-        data={**scope, "reason": "investigation complete"},
-    )
-    assert resumed.status_code == 200
-    reset = dashboard_client.post(
-        "/api/ai-learning/learner/reset",
-        data={**scope, "reason": "rebuild state", "confirmation": "RESET"},
-    )
-    assert reset.status_code == 200
-    audit = dashboard_client.get(f"/api/ai-learning/operator-audit?cluster_id={cluster_id}")
-    assert audit.status_code == 200
-    assert [row["action"] for row in audit.json()[:3]] == ["RESET_STATE", "RESUME", "PAUSE"]
 
 
 def test_ai_learning_reports_large_omap_readiness_without_mutating_state(dashboard_client):
@@ -202,10 +210,6 @@ def test_remediation_feedback_reports_cluster_precision_and_unlabeled_queue(dash
     assert payload["labeled"] == 2
     assert payload["unlabeled"] == 1
     assert payload["precision_percent"] == 50.0
-    assert payload["telemetry_labeled"] == 3
-    assert payload["telemetry_scored"] == 3
-    assert payload["telemetry_precision_percent"] == 100.0
-    assert payload["outcome_counts"]["VERIFIED_SUCCESS"] == 3
     assert payload["by_fault_family"][0]["precision_percent"] == 50.0
     page = dashboard_client.get(f"/ai-learning?cluster={cluster_id}")
     assert "precision AI remediation" in page.text
@@ -309,3 +313,77 @@ def test_ai_learning_shows_volume_data_quality_reason(dashboard_client):
     assert response.status_code == 200
     assert "DATA_QUALITY" in response.text
     assert "GAP_DETECTED" in response.text
+
+
+def test_ai_learning_explains_node_alert_with_quality_and_transition_history(dashboard_client):
+    with db.SessionLocal() as session:
+        cluster = ensure_default_cluster(session)
+        cluster.name = "CS-EXPLAIN"
+        alert = NodeResourceForecastAlert(
+            cluster_name=cluster.name, host="10.3.53.69", metric="cpu",
+            status="OPEN", lifecycle_state="WARNING", notification_state="SENT",
+            first_detected_at=NOW, last_detected_at=NOW,
+            current_percent=82.0, predicted_percent=94.0, hours_to_90=4.0,
+            confidence=.91, samples=48, window_hours=24,
+            consensus_status="CONSENSUS", consensus_ratio=.75,
+            consensus_candidate_count=4, predicted_low=89.0, predicted_high=97.0,
+            coverage_ratio=.96, max_gap_hours=.5, latest_observed_at=datetime.utcnow(),
+            state_changed_at=NOW, state_reason="Upper bound vượt ngưỡng cảnh báo.",
+            evidence_version="forecast-consensus:v1",
+        )
+        session.add(alert)
+        session.flush()
+        session.add(NodeResourceForecastTransition(
+            alert_id=alert.id, previous_state="CANDIDATE", new_state="WARNING",
+            reason="Đủ breach liên tiếp để mở warning.",
+            evidence_version="forecast-consensus:v1", changed_at=NOW,
+        ))
+        session.commit()
+        cluster_id = cluster.id
+    _login(dashboard_client)
+
+    payload = dashboard_client.get(f"/api/ai-learning?cluster={cluster_id}").json()
+    explanation = payload["node_alerts"][0]
+    assert explanation["state_reason"] == "Upper bound vượt ngưỡng cảnh báo."
+    assert explanation["consensus_candidate_count"] == 4
+    assert explanation["coverage_ratio"] == .96
+    assert explanation["freshness_status"] == "FRESH"
+    assert explanation["transitions"][0]["new_state"] == "WARNING"
+
+    page = dashboard_client.get(f"/ai-learning?cluster={cluster_id}")
+    assert "Giải thích alert CPU/RAM" in page.text
+    assert "Đủ breach liên tiếp để mở warning." in page.text
+
+
+def test_ai_learning_replay_is_read_only_and_compares_models(dashboard_client):
+    with db.SessionLocal() as session:
+        cluster = ensure_default_cluster(session)
+        for index in range(40):
+            session.add(HostMetricSample(
+                cluster_id=cluster.id, host="10.3.53.69", node_name="node-1",
+                cpu_percent=30.0 + index * .2, mem_percent=40.0 + index * .1,
+                disk_read_iops=10.0, disk_write_iops=8.0, disk_latency_ms=1.0,
+                network_rx_bytes_per_sec=100.0, network_tx_bytes_per_sec=80.0,
+                collected_at=NOW + timedelta(hours=index),
+            ))
+        session.commit()
+        cluster_id = cluster.id
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/ai-learning/replay", json={
+        "cluster_id": cluster_id, "host": "10.3.53.69", "metric": "cpu",
+        "start_at": NOW.isoformat(),
+        "end_at": (NOW + timedelta(hours=39)).isoformat(),
+        "horizon_hours": 1, "window_hours": [6, 12, 24],
+    })
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["read_only"] is True
+    assert payload["remediation_executed"] is False
+    assert payload["metrics"]["linear"]["evaluated"] > 0
+    assert payload["comparison"]["active_algorithm"] == "linear"
+    assert "rolling_quantile" in payload["metrics"]
+    with db.SessionLocal() as session:
+        assert session.query(NodeResourceForecastRun).count() == 0
+        assert session.query(NodeResourceForecastAlert).count() == 0

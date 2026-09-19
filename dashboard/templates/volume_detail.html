@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ image }} — Volume detail</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/volume_inventory_redesign.css?v={{ static_version }}">
+</head>
+<body>
+  {% include "_nav.html" %}
+  <main class="page volume-detail-page" id="volume-detail-page" data-pool="{{ selected_pool }}" data-image="{{ image }}" data-is-admin="{{ 'true' if is_admin else 'false' }}">
+    <header class="volume-detail-header">
+      <div>
+        <a class="volume-back-link" href="/volumes?pool={{ selected_pool }}{% if selected_cluster %}&cluster={{ selected_cluster.id }}{% endif %}">← Volumes</a>
+        <div class="volumes-breadcrumb">Block Storage <span>›</span> Volumes <span>›</span> Detail</div>
+        <h1 class="volume-detail-title" id="volume-detail-title">{{ image }}</h1>
+        <p class="volume-detail-subtitle" id="volume-detail-id">Đang tải metadata…</p>
+      </div>
+      <span id="volume-detail-status" class="volume-detail-status"><i class="volume-status-dot"></i>Đang tải</span>
+    </header>
+
+    <section id="volume-detail-loading" class="volume-detail-card volume-detail-skeleton" aria-label="Đang tải chi tiết">
+      <span class="skeleton skeleton-wide"></span><span class="skeleton skeleton-medium"></span>
+      <span class="skeleton skeleton-wide"></span><span class="skeleton skeleton-wide"></span>
+    </section>
+    <div id="volume-detail-content" class="volume-detail-grid" hidden>
+      <div>
+        <section class="volume-detail-card">
+          <h2>Thông tin volume</h2>
+          <div class="volume-info-grid">
+            <div class="volume-info-item"><span>ID</span><strong id="detail-image-id">—</strong></div>
+            <div class="volume-info-item"><span>Size</span><strong id="detail-size">—</strong></div>
+            <div class="volume-info-item"><span>Objects</span><strong id="detail-objects">—</strong></div>
+            <div class="volume-info-item"><span>Format</span><strong id="detail-format">—</strong></div>
+          </div>
+        </section>
+        <section class="volume-detail-card">
+          <h2>Features</h2><div id="detail-features" class="volume-feature-list"></div>
+        </section>
+        <section class="volume-detail-card volume-attachment-card">
+          <h2>Attachment status</h2><div id="detail-attachment" class="volume-attachment-grid"></div>
+        </section>
+        <section class="volume-detail-card volume-detail-summary-card">
+          <div class="volume-detail-card-heading"><h2>Backup</h2><span id="detail-backup-status" class="volume-badge-muted">—</span></div>
+          <div id="detail-backup-summary" class="volume-info-grid"></div>
+        </section>
+        <section class="volume-detail-card volume-detail-summary-card">
+          <div class="volume-detail-card-heading"><h2>Replication / DR</h2><span id="detail-replication-status" class="volume-badge-muted">Đang tải…</span></div>
+          <div id="detail-replication-summary" class="volume-info-grid"></div>
+          <p class="hint">Chỉ hiển thị read-only. Promote, failover và fencing chưa được phép từ Volume Detail.</p>
+        </section>
+        <section class="volume-detail-card volume-detail-summary-card">
+          <div class="volume-detail-card-heading"><h2>Cinder snapshots</h2><span id="detail-cinder-snapshot-status" class="volume-badge-muted">—</span></div>
+          <div id="detail-cinder-snapshots"></div>
+        </section>
+        <section class="volume-detail-card volume-detail-summary-card" id="volume-snapshot-policy-card" {% if not is_admin %}hidden{% endif %}>
+          <div class="volume-detail-card-heading"><h2>Snapshot policy</h2><span id="detail-snapshot-policy-status" class="volume-badge-muted">Chưa cấu hình</span></div>
+          <form id="volume-snapshot-policy-form" class="volume-snapshot-policy-form">
+            <label><span>Chu kỳ cron</span><input id="snapshot-policy-cron" value="0 2 * * *" maxlength="128" required></label>
+            <label><span>Timezone</span><input id="snapshot-policy-timezone" value="UTC" maxlength="64" required></label>
+            <label><span>Prefix snapshot</span><input id="snapshot-policy-prefix" value="scheduled" maxlength="48" required></label>
+            <label><span>Giữ lại</span><input id="snapshot-policy-retention" type="number" min="1" max="365" value="7" required></label>
+            <label><span>Capacity guard (%)</span><input id="snapshot-policy-guard" type="number" min="1" max="99" step="0.1" value="85" required></label>
+            <label class="volume-policy-toggle"><input id="snapshot-policy-enabled" type="checkbox"><span>Bật policy</span></label>
+            <div class="volume-snapshot-policy-actions"><button class="btn btn-primary btn-sm" type="submit">Lưu policy</button><button class="btn btn-sm" type="button" id="snapshot-policy-disable">Tắt policy</button></div>
+            <p id="snapshot-policy-result" class="hint" hidden></p>
+          </form>
+        </section>
+        <section class="volume-detail-card volume-detail-summary-card">
+          <div class="volume-detail-card-heading"><h2>Telemetry gần nhất</h2><span id="detail-metric-status" class="volume-badge-muted">—</span></div>
+          <div id="detail-metric-summary" class="volume-info-grid"></div>
+        </section>
+        <section class="volume-detail-card volume-detail-summary-card">
+          <div class="volume-detail-card-heading"><h2>Audit gần đây</h2><span id="detail-audit-count" class="volume-badge-muted">0 sự kiện</span></div>
+          <div id="detail-audit-summary"></div>
+        </section>
+        <section class="volume-detail-card">
+          <div class="volume-tabs" role="tablist">
+            <button class="volume-tab active" type="button" data-tab="snapshots">Snapshots</button>
+            <button class="volume-tab" type="button" data-tab="watchers">Watchers</button>
+            <button class="volume-tab" type="button" data-tab="locks">Locks</button>
+            <button class="volume-tab" type="button" data-tab="children">Children / Clone</button>
+          </div>
+          <div id="detail-tab-snapshots" class="volume-tab-panel"></div>
+          <div id="detail-tab-watchers" class="volume-tab-panel" hidden></div>
+          <div id="detail-tab-locks" class="volume-tab-panel" hidden></div>
+          <div id="detail-tab-children" class="volume-tab-panel" hidden>
+            <div id="detail-tab-children-list"></div>
+            <div id="detail-dependency-graph" class="volume-dependency-graph"></div>
+          </div>
+        </section>
+      </div>
+      <aside class="volume-detail-card volume-actions-card" id="volume-detail-actions" {% if not is_admin %}hidden{% endif %}>
+        <h2>Actions</h2>
+        <form class="volume-action" id="volume-resize-form"><label for="volume-resize-size">Mở rộng volume (GiB)</label><div class="volume-action-row"><input id="volume-resize-size" type="number" min="1" max="65536" required placeholder="Dung lượng mới"><button class="btn btn-primary btn-sm" type="submit">Đề xuất</button></div></form>
+        <form class="volume-action" id="volume-rename-form"><label for="volume-rename-name">Tên volume mới</label><div class="volume-action-row"><input id="volume-rename-name" maxlength="128" required placeholder="Tên mới"><button class="btn btn-primary btn-sm" type="submit">Đổi tên</button></div></form>
+        <form class="volume-action" id="volume-clone-form">
+          <label for="volume-clone-snapshot">Clone từ snapshot</label>
+          <input id="volume-clone-snapshot" maxlength="128" required placeholder="Tên snapshot">
+          <div class="volume-action-row"><input id="volume-clone-dest-pool" maxlength="128" required placeholder="Pool đích"><input id="volume-clone-dest-image" maxlength="128" required placeholder="Volume mới"><button class="btn btn-primary btn-sm" type="submit">Clone</button></div>
+          <small class="hint">Clone giữ parent dependency; snapshot sẽ được bảo vệ tự động trước khi clone.</small>
+        </form>
+        <form class="volume-action" id="volume-template-form">
+          <label for="volume-template-snapshot">Đánh dấu snapshot thành template read-only</label>
+          <div class="volume-action-row"><input id="volume-template-snapshot" maxlength="128" required placeholder="Tên snapshot"><input id="volume-template-name" maxlength="64" required placeholder="Tên template"><button class="btn btn-primary btn-sm" type="submit">Tạo template</button></div>
+          <textarea id="volume-template-description" maxlength="500" rows="2" placeholder="Mô tả template (tuỳ chọn)"></textarea>
+          <small class="hint">Template là snapshot được bảo vệ khỏi xóa. Dùng nút Clone để tạo volume mới từ template.</small>
+        </form>
+        <form class="volume-action" id="volume-qos-form">
+          <label>QoS per-image <small class="hint">0 = không giới hạn</small></label>
+          <div class="volume-qos-grid">
+            <input id="qos-iops-limit" type="number" min="0" placeholder="IOPS tổng">
+            <input id="qos-bps-limit" type="number" min="0" placeholder="bytes/s tổng">
+            <input id="qos-iops-burst" type="number" min="0" placeholder="IOPS burst">
+            <input id="qos-bps-burst" type="number" min="0" placeholder="bytes/s burst">
+          </div>
+          <button class="btn btn-warning-outline btn-sm" type="submit">Đề xuất QoS</button>
+          <small class="hint">Thay đổi cần approval và chạy qua Worker; không giới hạn mặc định là 0.</small>
+          <p id="volume-qos-result" class="hint" hidden></p>
+        </form>
+        <div class="volume-action"><button class="btn btn-warning-outline" type="button" id="volume-flatten-button" disabled>Flatten clone</button><small class="hint" id="volume-flatten-hint">Chỉ khả dụng khi volume có parent và đã detached.</small></div>
+        <div class="volume-action"><button class="btn volume-action-danger" type="button" id="volume-trash-button">Chuyển vào Trash</button></div>
+        <p id="volume-action-result" class="hint" hidden></p>
+      </aside>
+    </div>
+    <p id="volume-detail-error" class="error" hidden></p>
+  </main>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/volume_detail.js?v={{ static_version }}"></script>
+</body>
+</html>

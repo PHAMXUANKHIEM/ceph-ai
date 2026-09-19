@@ -109,12 +109,17 @@ def test_management_action_ids_loaded_from_policy_yaml():
         "rbd_create_volume",
         "rbd_resize_volume",
         "rbd_rename_volume",
+        "rbd_clone_volume",
+        "rbd_flatten_volume",
+        "rbd_template_mark",
+        "rbd_qos_set",
         "rbd_trash_move_volume",
         "rbd_trash_restore_volume",
             "rbd_trash_purge_all",
             "cinder_attach_volume",
             "cinder_detach_volume",
             "cinder_create_snapshot",
+            "cinder_delete_snapshot",
             "finalize_pacific_osd_release",
     }
 
@@ -178,6 +183,9 @@ def test_rbd_volume_mutations_are_classified_risky():
     assert classify_action("rbd_create_volume") == ActionClassification.RISKY
     assert classify_action("rbd_resize_volume") == ActionClassification.RISKY
     assert classify_action("rbd_rename_volume") == ActionClassification.RISKY
+    assert classify_action("rbd_clone_volume") == ActionClassification.RISKY
+    assert classify_action("rbd_template_mark") == ActionClassification.RISKY
+    assert classify_action("rbd_qos_set") == ActionClassification.RISKY
     assert classify_action("rbd_trash_move_volume") == ActionClassification.RISKY
     assert classify_action("rbd_trash_restore_volume") == ActionClassification.RISKY
     assert classify_action("cinder_attach_volume") == ActionClassification.RISKY
@@ -190,6 +198,14 @@ def test_rbd_trash_purge_all_is_classified_destructive():
     # moved risky: -> destructive:, same "stricter label, not a behavior
     # change" reasoning as rbd_trash_remove above.
     assert classify_action("rbd_trash_purge_all") == ActionClassification.DESTRUCTIVE
+
+
+def test_rbd_flatten_is_classified_destructive():
+    assert classify_action("rbd_flatten_volume") == ActionClassification.DESTRUCTIVE
+
+
+def test_cinder_snapshot_delete_is_classified_destructive():
+    assert classify_action("cinder_delete_snapshot") == ActionClassification.DESTRUCTIVE
 
 
 def test_finalize_pacific_osd_release_is_classified_risky():

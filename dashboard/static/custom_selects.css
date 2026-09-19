@@ -1,0 +1,25 @@
+/* Native fallback: Chromium/Firefox may still own the open popup. Keep its
+   text readable in dark themes even when the enhancement is unavailable. */
+select option, select optgroup { color: #111827; background: #ffffff; }
+
+.custom-select { position: relative; display: block; width: 100%; min-width: 0; }
+.custom-select-native { position: absolute !important; width: 1px !important; height: 1px !important; overflow: hidden !important; clip: rect(0 0 0 0) !important; clip-path: inset(50%) !important; white-space: nowrap !important; opacity: 0 !important; pointer-events: none !important; }
+.custom-select-trigger { display: flex; width: 100%; min-height: 38px; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 11px; border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: 8px; background: var(--bg-surface-2, #1e293b); color: var(--text, rgba(255,255,255,.85)); font: inherit; text-align: left; cursor: pointer; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+.custom-select-trigger:hover, .custom-select.is-open .custom-select-trigger, .custom-select-trigger:focus-visible { border-color: var(--accent-hover, #818cf8); background: rgba(30,41,59,.95); box-shadow: 0 0 0 3px rgba(99,102,241,.12); outline: none; }
+.custom-select-trigger:disabled { cursor: not-allowed; opacity: .5; }
+.custom-select-chevron { flex: 0 0 auto; color: var(--text-muted, rgba(255,255,255,.55)); font-size: .95rem; line-height: 1; }
+.custom-select-menu { position: fixed; z-index: 1100; max-height: min(360px, calc(100vh - 16px)); min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 5px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: rgba(15,23,42,.98); box-shadow: 0 12px 28px rgba(0,0,0,.48); scrollbar-color: #475569 transparent; scrollbar-width: thin; backdrop-filter: blur(10px); }
+.custom-select-menu::-webkit-scrollbar { width: 6px; height: 6px; }
+.custom-select-menu::-webkit-scrollbar-track { background: transparent; }
+.custom-select-menu::-webkit-scrollbar-thumb { border-radius: 999px; background: #475569; }
+.custom-select-menu[hidden] { display: none; }
+.custom-select-search { width: 100%; min-height: 34px; margin-bottom: 5px; padding: 7px 9px; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; background: rgba(255,255,255,.06); color: rgba(255,255,255,.9); font: inherit; }
+.custom-select-search::placeholder { color: rgba(255,255,255,.45); }
+.custom-select-search:focus { border-color: #818cf8; outline: none; box-shadow: 0 0 0 2px rgba(99,102,241,.15); }
+.custom-select-option { display: flex; min-height: 40px; align-items: center; padding: 10px 14px; border-left: 2px solid transparent; border-radius: 5px; color: rgba(255,255,255,.85); font-size: .82rem; cursor: pointer; }
+.custom-select-option:hover, .custom-select-option:focus-visible { background: #1e293b; outline: none; }
+.custom-select-option[aria-selected="true"] { border-left-color: #22d3ee; background: rgba(30,41,59,.92); color: #fff; }
+.custom-select-option[aria-selected="true"]::after { margin-left: auto; padding-left: 12px; color: #22d3ee; content: "✓"; font-weight: 700; }
+.custom-select-option[aria-disabled="true"] { color: rgba(255,255,255,.3); cursor: not-allowed; }
+.custom-select-options:empty::after { display: block; padding: 10px 9px; color: rgba(255,255,255,.5); content: "Không có lựa chọn phù hợp"; font-size: .76rem; }
+@media (max-width: 560px) { .custom-select-menu { max-height: min(360px, calc(100vh - 16px)); } }

@@ -5,6 +5,39 @@
   var nodeSnapshotMeta = document.getElementById("node-snapshot-meta");
   var clusterId = nodeSelector ? nodeSelector.dataset.clusterId : "";
   var inventoryRequestInFlight = false;
+  var rangeSelect = document.getElementById("node-time-range");
+  var RANGE_CONFIG = {
+    "2m": { seconds: 120, pollMs: 10000, label: "2 phút" },
+    "5m": { seconds: 300, pollMs: 15000, label: "5 phút" },
+    "15m": { seconds: 900, pollMs: 30000, label: "15 phút" },
+    "1h": { seconds: 3600, pollMs: 30000, label: "1 giờ" },
+    "24h": { seconds: 86400, pollMs: 30000, label: "24 giờ" },
+    "7d": { seconds: 604800, pollMs: 30000, label: "7 ngày" },
+    "14d": { seconds: 1209600, pollMs: 30000, label: "14 ngày" }
+  };
+  var RANGE_STORAGE_KEY = "ceph-ai.node-monitor.range";
+
+  function normalizeRange(value) {
+    value = String(value || "5m").toLowerCase();
+    if (RANGE_CONFIG[value]) return value;
+    var aliases = { "120": "2m", "300": "5m", "900": "15m", "3600": "1h", "86400": "24h", "604800": "7d", "1209600": "14d" };
+    return aliases[value] || "5m";
+  }
+
+  function readStoredRange() {
+    try { return localStorage.getItem(RANGE_STORAGE_KEY); } catch (_) { return null; }
+  }
+
+  function persistRange(value) {
+    try { localStorage.setItem(RANGE_STORAGE_KEY, value); } catch (_) { /* storage may be disabled */ }
+    var url = new URL(window.location.href);
+    url.searchParams.set("range", value);
+    window.history.replaceState({}, "", url.toString());
+  }
+
+  var queryRange = new URLSearchParams(window.location.search).get("range");
+  var currentRange = normalizeRange(queryRange || readStoredRange() || (rangeSelect && rangeSelect.value));
+  if (rangeSelect) rangeSelect.value = currentRange;
 
   function refreshNodeInventory() {
     if (!nodeSelector || !clusterId || document.hidden || inventoryRequestInFlight) return;
@@ -22,21 +55,34 @@
           var selectedHost = stack ? stack.dataset.host : "";
           data.nodes.forEach(function (node) {
             if (!node || !node.host) return;
+            var card = document.createElement("div");
+            card.className = "node-selector-card" + (node.host === selectedHost ? " is-selected" : "");
+            card.dataset.host = node.host;
             var link = document.createElement("a");
-            link.className = "tabbed-nav-item node-sidebar-item" + (node.host === selectedHost ? " active" : "");
-            link.dataset.host = node.host;
+            link.className = "node-selector-link" + (node.host === selectedHost ? " active" : "");
             link.href = "/nodes?cluster=" + encodeURIComponent(clusterId) + "&host=" + encodeURIComponent(node.host);
+            var indicator = document.createElement("span");
+            indicator.className = "node-health-indicator";
+            indicator.setAttribute("aria-hidden", "true");
             var ip = document.createElement("span");
-            ip.className = "node-chip-ip";
-            ip.textContent = node.host;
-            link.appendChild(ip);
+            ip.className = "node-selector-copy";
+            var ipText = document.createElement("strong");
+            ipText.className = "node-chip-ip";
+            ipText.textContent = node.host;
+            var roles = document.createElement("small");
+            roles.className = "node-role-badges";
             (Array.isArray(node.roles) ? node.roles : []).forEach(function (role) {
               var badge = document.createElement("span");
               badge.className = "role-badge role-badge-" + String(role).toLowerCase();
               badge.textContent = role;
-              link.appendChild(badge);
+              roles.appendChild(badge);
             });
-            nodeList.appendChild(link);
+            ip.appendChild(ipText);
+            ip.appendChild(roles);
+            link.appendChild(indicator);
+            link.appendChild(ip);
+            card.appendChild(link);
+            nodeList.appendChild(card);
           });
         }
         if (nodeSnapshotMeta) {
@@ -53,7 +99,7 @@
 
   if (nodeSelector && clusterId) {
     refreshNodeInventory();
-    window.setInterval(refreshNodeInventory, 10_000);
+    window.setInterval(refreshNodeInventory, 10000);
     document.addEventListener("visibilitychange", refreshNodeInventory);
   }
   if (!stack) {
@@ -61,11 +107,10 @@
   }
 
   var host = stack.dataset.host;
-  var POLL_INTERVAL_MS = 3000;
-  // Real cadence is one SSH round trip per poll (~3s), not the 1s a mock
-  // dashboard could fake — "last 2 minutes" at that cadence is 40 points.
-  var WINDOW_SECONDS = 120;
-  var MAX_POINTS = Math.round((WINDOW_SECONDS * 1000) / POLL_INTERVAL_MS);
+  var POLL_INTERVAL_MS = RANGE_CONFIG[currentRange].pollMs;
+  var WINDOW_SECONDS = RANGE_CONFIG[currentRange].seconds;
+  var pollTimer = null;
+  var requestSerial = 0;
 
   var TOOLTIP_BG = "#0f172a";
   var GRID_COLOR = "#1e293b";
@@ -74,22 +119,22 @@
   var METRICS = [
     {
       key: "cpu_percent", name: "CPU", unit: "%", fixedMax: 100,
-      series: [{ field: "cpu_percent", color: "#4ade80" }]
+      series: [{ field: "cpu_percent", color: "#22c55e" }]
     },
     {
       key: "mem_percent", name: "RAM", unit: "%", fixedMax: 100,
-      series: [{ field: "mem_percent", color: "#38bdf8" }]
+      series: [{ field: "mem_percent", color: "#3b82f6" }]
     },
     {
       key: "disk_iops", name: "Disk IOPS", unit: "ops/s",
       series: [
-        { field: "disk_read_iops", label: "read", color: "#4ade80" },
-        { field: "disk_write_iops", label: "write", color: "#fb923c" }
+        { field: "disk_read_iops", label: "read", color: "#22d3ee" },
+        { field: "disk_write_iops", label: "write", color: "#f97316" }
       ]
     },
     {
       key: "disk_latency_ms", name: "Disk Latency", unit: "ms",
-      series: [{ field: "disk_latency_ms", color: "#fbbf24" }]
+      series: [{ field: "disk_latency_ms", color: "#eab308" }]
     }
   ];
 
@@ -98,6 +143,19 @@
   function pad2(n) { return String(n).padStart(2, "0"); }
   function formatClock(date) {
     return pad2(date.getHours()) + ":" + pad2(date.getMinutes()) + ":" + pad2(date.getSeconds());
+  }
+
+  function formatAxisTime(date) {
+    if (WINDOW_SECONDS < 3600) return formatClock(date);
+    var clock = pad2(date.getHours()) + ":" + pad2(date.getMinutes());
+    if (WINDOW_SECONDS >= 86400) {
+      var start = App.rangeStart;
+      var end = App.rangeEnd;
+      if (start && end && start.toDateString() !== end.toDateString()) {
+        return pad2(date.getDate()) + "/" + pad2(date.getMonth() + 1) + " " + clock;
+      }
+    }
+    return clock;
   }
 
   function niceMax(value) {
@@ -109,11 +167,65 @@
     return niceFrac * base;
   }
 
+  function chartMaxPoints() {
+    return { "2m": 24, "5m": 30, "15m": 30, "1h": 40, "24h": 144, "7d": 168, "14d": 240 }[currentRange];
+  }
+
+  function downsampleChartPoints(points, maxPoints) {
+    if (points.length <= maxPoints) return points;
+    var latest = points[points.length - 1];
+    var history = points.slice(0, -1);
+    maxPoints = Math.max(maxPoints - 1, 1);
+    var bucketSize = Math.ceil(history.length / maxPoints);
+    var fields = ["cpu_percent", "mem_percent", "disk_read_iops", "disk_write_iops", "disk_latency_ms"];
+    var result = [];
+    for (var start = 0; start < history.length; start += bucketSize) {
+      var bucket = history.slice(start, start + bucketSize);
+      var item = { at: bucket[Math.floor(bucket.length / 2)].at };
+      fields.forEach(function (field) {
+        var values = bucket.map(function (point) { return point[field]; }).filter(function (value) { return typeof value === "number"; });
+        item[field] = values.length ? values.reduce(function (sum, value) { return sum + value; }, 0) / values.length : null;
+      });
+      result.push(item);
+    }
+    result.push(latest);
+    return result;
+  }
+
   function formatValue(cfg, v) {
     if (v == null) return "—";
     if (cfg.unit === "%") return v.toFixed(1);
     if (cfg.unit === "ms") return v.toFixed(2);
     return v.toFixed(2);
+  }
+
+  function metricNumber(value) {
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value === "string" && value.trim() !== "") {
+      var parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  function metricDate(value) {
+    if (value instanceof Date) return value;
+    if (typeof value === "number") return new Date(value < 100000000000 ? value * 1000 : value);
+    var text = String(value || "").trim();
+    // Accept both the API's UTC `...Z` value and older `...+00:00Z` values.
+    text = text.replace(/\+00:00Z$/, "Z");
+    return new Date(text);
+  }
+
+  function normalizeMetricPoint(point) {
+    if (!point || !point.at) return null;
+    var date = metricDate(point.at);
+    if (Number.isNaN(date.getTime())) return null;
+    var normalized = { at: date.toISOString() };
+    ["cpu_percent", "mem_percent", "disk_read_iops", "disk_write_iops", "disk_latency_ms"].forEach(function (field) {
+      normalized[field] = metricNumber(point[field]);
+    });
+    return normalized;
   }
 
   /* ---------- build DOM for the 4 stacked metric sections ---------- */
@@ -133,7 +245,8 @@
         '<span class="metric-name" style="color:' + cfg.series[0].color + '">' + cfg.name + "</span>" +
         '<span class="metric-value">' + valueSpansHtml + '<span class="unit">' + cfg.unit + "</span></span>" +
       "</div>" +
-      '<div class="metric-chart-wrap">' +
+        (cfg.series.length > 1 ? '<div class="metric-legend" aria-label="Chú giải biểu đồ">' + cfg.series.map(function (s) { return '<span><i style="background:' + s.color + '"></i>' + s.label + '</span>'; }).join("") + '</div>' : "") +
+        '<div class="metric-chart-wrap">' +
         "<canvas></canvas>" +
         '<div class="chart-skeleton">' +
           '<div class="shimmer-bar" style="--i:0"></div><div class="shimmer-bar" style="--i:1"></div>' +
@@ -141,8 +254,9 @@
           '<div class="shimmer-bar" style="--i:4"></div><div class="shimmer-bar" style="--i:5"></div>' +
           '<div class="shimmer-bar" style="--i:6"></div><div class="shimmer-bar" style="--i:7"></div>' +
         "</div>" +
+        '<div class="chart-loading-overlay" hidden><span class="header-spinner" aria-hidden="true"></span><span>Đang tải dữ liệu ' + RANGE_CONFIG[currentRange].label + '...</span></div>' +
         '<div class="chart-error-overlay" hidden><span class="icon" aria-hidden="true">&#9888;</span><span class="msg"></span></div>' +
-        '<div class="chart-empty-overlay" hidden>Chưa có dữ liệu</div>' +
+        '<div class="chart-empty-overlay" hidden>Chưa có dữ liệu telemetry. Dữ liệu sẽ hiển thị sau vài phút khi hệ thống bắt đầu thu thập.</div>' +
         '<div class="tt" hidden><div class="tt-time"></div><div class="tt-rows"></div></div>' +
       "</div>";
     stack.appendChild(section);
@@ -158,6 +272,7 @@
       ctx: canvas.getContext("2d"),
       wrap: section.querySelector(".metric-chart-wrap"),
       skeleton: section.querySelector(".chart-skeleton"),
+      loadingOverlay: section.querySelector(".chart-loading-overlay"),
       errorOverlay: section.querySelector(".chart-error-overlay"),
       emptyOverlay: section.querySelector(".chart-empty-overlay"),
       tooltip: section.querySelector(".tt"),
@@ -175,7 +290,13 @@
       var rect = section.canvas.getBoundingClientRect();
       var px = e.clientX - rect.left;
       var rel = (px - g.padLeft) / g.plotW;
-      var idx = clamp(Math.round(rel * (g.n - 1)), 0, g.n - 1);
+      var targetTime = g.domainStart + clamp(rel, 0, 1) * (g.domainEnd - g.domainStart);
+      var idx = 0;
+      var closestDistance = Infinity;
+      for (var i = 0; i < g.timestamps.length; i++) {
+        var distance = Math.abs(g.timestamps[i].getTime() - targetTime);
+        if (distance < closestDistance) { closestDistance = distance; idx = i; }
+      }
       App.hoverIndex = idx;
       App.hoverSection = section.cfg.key;
       drawAllCharts();
@@ -196,6 +317,12 @@
     lastErrorMessage: "",
     hoverIndex: null,
     hoverSection: null,
+    rangeStart: null,
+    rangeEnd: null,
+    activeRequest: 0,
+    livePoints: [],
+    rangeKey: currentRange,
+    livePending: false,
 
     init: function () {
       var self = this;
@@ -204,13 +331,22 @@
       });
       this.setLoadingUI(true);
       this.poll();
-      setInterval(function () { self.poll(); }, POLL_INTERVAL_MS);
 
       var retryBtn = document.getElementById("retry-btn");
       if (retryBtn) retryBtn.addEventListener("click", function () { self.poll(); });
     },
 
-    setLoadingUI: function (loading) {
+    schedulePoll: function () {
+      var self = this;
+      if (pollTimer) window.clearTimeout(pollTimer);
+      // The first request paints persisted history immediately and starts
+      // live SSH collection in the background. Poll again quickly so the
+      // fresh live sample appears without making the user wait 30 seconds.
+      var delay = this.livePending ? Math.min(POLL_INTERVAL_MS, 2000) : POLL_INTERVAL_MS;
+      pollTimer = window.setTimeout(function () { self.poll(); }, delay);
+    },
+
+    setLoadingUI: function (loading, rangeRefresh) {
       var pill = document.querySelector('.node-sidebar-item[data-host="' + cssEscape(host) + '"]');
       if (pill) pill.classList.toggle("is-loading", loading);
       var spinner = document.getElementById("header-spinner");
@@ -228,11 +364,15 @@
 
       METRICS.forEach(function (cfg) {
         var section = sections[cfg.key];
-        section.skeleton.hidden = !loading;
+        if (section.loadingOverlay) {
+          section.loadingOverlay.querySelector("span:last-child").textContent = "Đang tải dữ liệu " + RANGE_CONFIG[currentRange].label + "...";
+          section.loadingOverlay.hidden = !loading;
+        }
+        section.skeleton.hidden = !loading || !!rangeRefresh;
         if (loading) {
           section.errorOverlay.hidden = true;
           section.emptyOverlay.hidden = true;
-          section.canvas.style.visibility = "hidden";
+          if (!rangeRefresh) section.canvas.style.visibility = "hidden";
         }
       });
     },
@@ -241,8 +381,10 @@
       var self = this;
       var firstLoad = this.timestamps.length === 0 && this.status !== "error";
       if (firstLoad) this.setLoadingUI(true);
+      var requestId = ++requestSerial;
+      this.activeRequest = requestId;
 
-      fetch("/api/nodes/" + encodeURIComponent(host) + "/metrics?cluster_id=" + encodeURIComponent(clusterId), { credentials: "same-origin" })
+      fetch("/api/nodes/" + encodeURIComponent(host) + "/metrics?cluster_id=" + encodeURIComponent(clusterId) + "&range=" + encodeURIComponent(currentRange), { credentials: "same-origin" })
         .then(function (response) {
           // require_login raises a 303 to /login on an expired session; fetch's
           // default redirect mode resolves that transparently, landing here as
@@ -258,32 +400,86 @@
           }
           return response.json();
         })
-        .then(function (data) { self.onSuccess(data); })
+        .then(function (data) { if (requestId === self.activeRequest) self.onSuccess(data); })
         .catch(function (err) {
           if (err.message === "unauthenticated") return;
-          self.onError(err.message);
+          if (requestId === self.activeRequest) self.onError(err.message);
+        })
+        .finally(function () {
+          if (requestId === self.activeRequest) self.schedulePoll();
         });
     },
 
     onSuccess: function (data) {
       this.status = "success";
+      this.livePending = data.live_pending === true;
       this.lastErrorMessage = "";
-      this.timestamps.push(new Date());
-      if (this.timestamps.length > MAX_POINTS) this.timestamps.shift();
-
       var self = this;
+      if (this.rangeKey !== currentRange) {
+        this.livePoints = [];
+        this.rangeKey = currentRange;
+      }
+      var rawPoints = Array.isArray(data.points) ? data.points : (Array.isArray(data.data) ? data.data : []);
+      var responsePoints = rawPoints.map(normalizeMetricPoint).filter(Boolean);
+      var currentPoint = normalizeMetricPoint(data.current && data.current.at ? data.current : data);
+      console.debug("[Node Monitoring] metrics response", {
+        host: host,
+        range: currentRange,
+        apiRange: data.range,
+        sampleCount: data.sample_count,
+        sourceSampleCount: data.source_sample_count,
+        receivedPoints: rawPoints.length,
+        validPoints: responsePoints.length,
+        firstPoint: responsePoints[0] || null,
+        lastPoint: responsePoints[responsePoints.length - 1] || null
+      });
+      if (currentPoint) this.livePoints.push(currentPoint);
+      var cutoffMs = Date.now() - WINDOW_SECONDS * 1000;
+      this.livePoints = this.livePoints.filter(function (point) {
+        return point && metricDate(point.at).getTime() >= cutoffMs;
+      });
+      // Merge the server history with live samples collected between polls.
+      // The timestamp map also removes the current point duplicated by the
+      // response and makes a range change deterministic.
+      var pointByTimestamp = {};
+      responsePoints.concat(this.livePoints).forEach(function (point) {
+        if (point && point.at && !Number.isNaN(metricDate(point.at).getTime())) pointByTimestamp[point.at] = point;
+      });
+      var points = Object.keys(pointByTimestamp).map(function (key) { return pointByTimestamp[key]; }).sort(function (a, b) {
+        return metricDate(a.at).getTime() - metricDate(b.at).getTime();
+      });
+      points = downsampleChartPoints(points, chartMaxPoints());
+      this.timestamps = [];
       METRICS.forEach(function (cfg) {
         cfg.series.forEach(function (s) {
-          var v = data[s.field];
-          var buf = self.buffers[s.field];
-          buf.push(typeof v === "number" ? v : null);
-          if (buf.length > MAX_POINTS) buf.shift();
+          self.buffers[s.field] = [];
         });
       });
+      points.forEach(function (point) {
+        var timestamp = metricDate(point.at);
+        if (Number.isNaN(timestamp.getTime())) return;
+        self.timestamps.push(timestamp);
+        METRICS.forEach(function (cfg) {
+          cfg.series.forEach(function (s) {
+            self.buffers[s.field].push(metricNumber(point[s.field]));
+          });
+        });
+      });
+      this.rangeStart = data.range_start ? metricDate(data.range_start) : new Date(Date.now() - WINDOW_SECONDS * 1000);
+      this.rangeEnd = data.range_end ? metricDate(data.range_end) : new Date();
 
       this.setLoadingUI(false);
       this.setErrorUI(false);
-      this.updateValueBadges(data);
+      this.updateValueBadges(currentPoint || data);
+      this.updateSummary(data.summary || data.current || data, data);
+      if (data.live_pending || data.live_available === false) {
+        var staleStatus = document.getElementById("metrics-status");
+        var staleText = document.getElementById("metrics-status-text");
+        if (staleStatus) staleStatus.classList.add("is-stale");
+        if (staleText) staleText.textContent = data.live_pending
+          ? "Đang lấy telemetry realtime..."
+          : "Đang hiển thị dữ liệu cuối cùng — node tạm mất kết nối";
+      }
       drawAllCharts(true);
     },
 
@@ -335,12 +531,73 @@
           if (el) el.textContent = formatValue(cfg, data[s.field]);
         });
       });
+    },
+
+    updateSummary: function (data) {
+      function setText(id, value, digits) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = value == null ? "—" : Number(value).toFixed(digits);
+      }
+      function setMeter(id, value, max) {
+        var el = document.getElementById(id);
+        if (el) el.style.width = value == null ? "0%" : clamp(Number(value) / max * 100, 0, 100) + "%";
+      }
+      setText("summary-cpu", data.cpu_percent, 1);
+      setMeter("summary-cpu-meter", data.cpu_percent, 100);
+      setText("summary-ram", data.mem_percent, 1);
+      setMeter("summary-ram-meter", data.mem_percent, 100);
+      var read = data.disk_read_iops;
+      var write = data.disk_write_iops;
+      setText("summary-read-iops", read, 0);
+      setText("summary-write-iops", write, 0);
+      setText("summary-iops", read == null || write == null ? null : Number(read) + Number(write), 0);
+      setText("summary-latency", data.disk_latency_ms, 2);
+      setMeter("summary-latency-meter", data.disk_latency_ms, 20);
+      var context = "(avg " + RANGE_CONFIG[currentRange].label + ")";
+      ["cpu", "ram", "iops", "latency"].forEach(function (metric) {
+        var contextEl = document.getElementById("summary-" + metric + "-context");
+        if (contextEl) contextEl.textContent = context;
+      });
+      var selectedCard = document.querySelector('.node-selector-card[data-host="' + cssEscape(host) + '"]');
+      if (selectedCard) selectedCard.classList.add("is-healthy");
     }
   };
+
+  if (rangeSelect) {
+    rangeSelect.addEventListener("change", function () {
+      currentRange = normalizeRange(rangeSelect.value);
+      WINDOW_SECONDS = RANGE_CONFIG[currentRange].seconds;
+      POLL_INTERVAL_MS = RANGE_CONFIG[currentRange].pollMs;
+      persistRange(currentRange);
+      App.status = "loading";
+      App.rangeStart = new Date(Date.now() - WINDOW_SECONDS * 1000);
+      App.rangeEnd = new Date();
+      App.setLoadingUI(true, true);
+      App.poll();
+    });
+  }
 
   /* ---------- drawing ---------- */
   function drawAllCharts(firstPaint) {
     METRICS.forEach(function (cfg) { drawSection(sections[cfg.key], firstPaint); });
+  }
+
+  // The Nodes page can change width when the main sidebar collapses or when
+  // the responsive grid changes without a window resize event. Redraw after
+  // the browser has committed the new layout so a canvas never keeps a
+  // zero/old backing size and appears empty.
+  var redrawFrame = 0;
+  function requestChartRedraw() {
+    if (redrawFrame) return;
+    redrawFrame = window.requestAnimationFrame(function () {
+      redrawFrame = 0;
+      if (App.status === "success") drawAllCharts();
+    });
+  }
+
+  if (typeof ResizeObserver === "function") {
+    var chartResizeObserver = new ResizeObserver(requestChartRedraw);
+    METRICS.forEach(function (cfg) { chartResizeObserver.observe(sections[cfg.key].wrap); });
   }
 
   function drawSection(section, firstPaint) {
@@ -349,11 +606,11 @@
     var timestamps = App.timestamps;
     var n = timestamps.length;
 
-    var allFieldsMissing = cfg.series.every(function (s) {
+    var hasData = cfg.series.some(function (s) {
       var buf = App.buffers[s.field];
-      return buf.length === 0 || buf[buf.length - 1] == null;
+      return buf.some(function (value) { return value != null; });
     });
-    section.emptyOverlay.hidden = !allFieldsMissing;
+    section.emptyOverlay.hidden = hasData;
     section.canvas.style.visibility = "visible";
 
     if (firstPaint && !section.hasDrawnOnce) {
@@ -385,9 +642,21 @@
       yMax = niceMax((dataMax * 1.2) || 1);
     }
 
-    function xAt(i) { return padLeft + (n <= 1 ? 0 : (i / (n - 1)) * plotW); }
+    var domainStart = App.rangeStart && !Number.isNaN(App.rangeStart.getTime())
+      ? App.rangeStart.getTime() : (timestamps[0] ? timestamps[0].getTime() : Date.now() - WINDOW_SECONDS * 1000);
+    var domainEnd = App.rangeEnd && !Number.isNaN(App.rangeEnd.getTime())
+      ? App.rangeEnd.getTime() : domainStart + WINDOW_SECONDS * 1000;
+    if (domainEnd <= domainStart) domainEnd = domainStart + WINDOW_SECONDS * 1000;
+    function xAt(i) {
+      if (!timestamps[i]) return padLeft;
+      return padLeft + clamp((timestamps[i].getTime() - domainStart) / (domainEnd - domainStart), 0, 1) * plotW;
+    }
     function yAt(v) { return padTop + plotH - (clamp(v, 0, yMax) / (yMax || 1)) * plotH; }
-    section.geom = { padLeft: padLeft, plotW: plotW, plotH: plotH, padTop: padTop, n: n, xAt: xAt, yAt: yAt };
+    section.geom = {
+      padLeft: padLeft, plotW: plotW, plotH: plotH, padTop: padTop, n: n,
+      xAt: xAt, yAt: yAt, domainStart: domainStart, domainEnd: domainEnd,
+      timestamps: timestamps
+    };
 
     // gridlines — 25/50/75/100 for fixed-percent charts, 0/max for auto-scale ones
     ctx.strokeStyle = GRID_COLOR;
@@ -406,43 +675,23 @@
       ctx.fillText(cfg.unit === "%" ? v + "" : (v >= 10 ? v.toFixed(0) : v.toFixed(1)), padLeft - 5, y);
     });
 
-    // x-axis: HH:MM:SS at start / middle / end — deduped, since early in the
-    // rolling window (n=1 or 2) "start"/"middle"/"end" can be the same index,
-    // which would otherwise draw two differently-aligned labels on top of
-    // each other at that one position.
+    // x-axis uses the selected time window, rather than the first/last sample.
+    // This keeps a sparse 24h history visibly distinct from a 2m history.
     ctx.textBaseline = "top";
-    var tickIdxs = [];
-    [0, Math.floor((n - 1) / 2), n - 1].forEach(function (idx) {
-      if (idx >= 0 && tickIdxs.indexOf(idx) === -1) tickIdxs.push(idx);
-    });
-    tickIdxs.forEach(function (idx, i) {
-      if (!timestamps[idx]) return;
-      ctx.textAlign = i === 0 ? "left" : i === tickIdxs.length - 1 ? "right" : "center";
-      ctx.fillText(formatClock(timestamps[idx]), xAt(idx), padTop + plotH + 4);
+    var tickTimes = [domainStart, domainStart + (domainEnd - domainStart) / 2, domainEnd];
+    tickTimes.forEach(function (time, i) {
+      var tickX = padLeft + (time - domainStart) / (domainEnd - domainStart) * plotW;
+      ctx.textAlign = i === 0 ? "left" : i === tickTimes.length - 1 ? "right" : "center";
+      ctx.fillText(formatAxisTime(new Date(time)), tickX, padTop + plotH + 4);
     });
 
-    if (allFieldsMissing) return; // flat baseline only, no lines to draw
+    if (!hasData) return;
 
     cfg.series.forEach(function (s) {
       var values = App.buffers[s.field];
       var offset = n - values.length; // buffers can be shorter than timestamps right after a resize
-      drawLine(ctx, values, function (i) { return xAt(i + offset); }, yAt, s.color);
+      drawLine(ctx, values, function (i) { return xAt(i + offset); }, yAt, s.color, timestamps, yAt(0), offset);
     });
-
-    // direct end-labels instead of a legend, only needed when >1 series
-    if (cfg.series.length > 1) {
-      ctx.textBaseline = "middle";
-      cfg.series.forEach(function (s, si) {
-        var values = App.buffers[s.field];
-        if (!values.length) return;
-        var lastV = values[values.length - 1];
-        if (lastV == null) return;
-        var x = xAt(n - 1);
-        ctx.fillStyle = s.color;
-        ctx.textAlign = "right";
-        ctx.fillText(s.label, x - 4, yAt(lastV) + (si === 0 ? -8 : 8));
-      });
-    }
 
     // crosshair + tooltip
     if (App.hoverIndex != null && App.hoverIndex < n) {
@@ -473,20 +722,73 @@
     }
   }
 
-  function drawLine(ctx, values, xAt, yAt, color) {
-    var started = false;
-    ctx.beginPath();
-    for (var i = 0; i < values.length; i++) {
-      if (values[i] == null) { started = false; continue; }
-      var x = xAt(i), y = yAt(values[i]);
-      if (!started) { ctx.moveTo(x, y); started = true; }
-      else ctx.lineTo(x, y);
+  function hexRgba(color, alpha) {
+    var match = String(color).match(/^#([0-9a-f]{6})$/i);
+    if (!match) return color;
+    var hex = match[1];
+    return "rgba(" + parseInt(hex.slice(0, 2), 16) + "," + parseInt(hex.slice(2, 4), 16) + "," + parseInt(hex.slice(4, 6), 16) + "," + alpha + ")";
+  }
+
+  function gapThreshold(timestamps) {
+    var gaps = [];
+    for (var i = 1; i < timestamps.length; i++) {
+      var gap = timestamps[i].getTime() - timestamps[i - 1].getTime();
+      if (gap > 0) gaps.push(gap);
     }
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.lineJoin = "round";
-    ctx.lineCap = "round";
-    ctx.stroke();
+    if (!gaps.length) return Infinity;
+    gaps.sort(function (a, b) { return a - b; });
+    var median = gaps[Math.floor(gaps.length / 2)];
+    return Math.max(median * 2.5, 2 * 60 * 1000);
+  }
+
+  function drawLine(ctx, values, xAt, yAt, color, timestamps, baseline, offset) {
+    var maxGap = gapThreshold(timestamps);
+    var segments = [], segment = [];
+    var lastTime = null;
+    for (var i = 0; i < values.length; i++) {
+      var value = values[i];
+      var timestamp = timestamps[i + offset];
+      var time = timestamp && timestamp.getTime();
+      if (value == null || !timestamp || (lastTime != null && time - lastTime > maxGap)) {
+        if (segment.length) segments.push(segment);
+        segment = [];
+        lastTime = null;
+        if (value == null) continue;
+      }
+      segment.push({ x: xAt(i), y: yAt(value) });
+      lastTime = time;
+    }
+    if (segment.length) segments.push(segment);
+
+    var gradient = ctx.createLinearGradient(0, 0, 0, baseline);
+    gradient.addColorStop(0, hexRgba(color, 0.28));
+    gradient.addColorStop(1, hexRgba(color, 0));
+    segments.forEach(function (points) {
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, baseline);
+      points.forEach(function (point) { ctx.lineTo(point.x, point.y); });
+      ctx.lineTo(points[points.length - 1].x, baseline);
+      ctx.closePath();
+      ctx.fillStyle = gradient;
+      ctx.fill();
+
+      ctx.beginPath();
+      points.forEach(function (point, index) {
+        if (index === 0) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+      });
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.stroke();
+      if (points.length === 1) {
+        ctx.beginPath();
+        ctx.arc(points[0].x, points[0].y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+      }
+    });
   }
 
   function showTooltip(section, idx) {
@@ -524,5 +826,5 @@
   }
 
   App.init();
-  window.addEventListener("resize", function () { drawAllCharts(); });
+  window.addEventListener("resize", requestChartRedraw);
 })();

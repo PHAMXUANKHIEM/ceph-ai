@@ -1,0 +1,11 @@
+[Unit]
+Description=Send the Ceph AI nightly improvement report at 08:30 Vietnam time
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 Asia/Ho_Chi_Minh
+Persistent=true
+AccuracySec=1min
+Unit=ceph-ai-nightly-ai-improvement-report.service
+
+[Install]
+WantedBy=timers.target

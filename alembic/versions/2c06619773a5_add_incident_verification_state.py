@@ -68,5 +68,7 @@ def downgrade() -> None:
     # cấp là nói dối về trạng thái cụm.
     op.execute("UPDATE incidents SET status = 'FAILED' WHERE status = 'VERIFYING'")
     _replace_status_constraint(_STATUS_VALUES_BEFORE)
-    op.drop_column("incidents", "verify_attempts")
-    op.drop_column("incidents", "verify_after")
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_column("verify_attempts")
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_column("verify_after")

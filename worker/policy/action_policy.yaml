@@ -66,12 +66,17 @@ management_action_ids:
   - rbd_create_volume
   - rbd_resize_volume
   - rbd_rename_volume
+  - rbd_clone_volume
+  - rbd_flatten_volume
+  - rbd_template_mark
+  - rbd_qos_set
   - rbd_trash_move_volume
   - rbd_trash_restore_volume
   - rbd_trash_purge_all
   - cinder_attach_volume
   - cinder_detach_volume
   - cinder_create_snapshot
+  - cinder_delete_snapshot
 
 # v1 (Story 3.1): Safe/Risky classification (AD-5). Anything NOT in `safe`
 # defaults to RISKY — including action_ids present in `action_ids` above but
@@ -344,6 +349,9 @@ risky:
   - rbd_create_volume
   - rbd_resize_volume
   - rbd_rename_volume
+  - rbd_clone_volume
+  - rbd_template_mark
+  - rbd_qos_set
   - rbd_trash_move_volume
   - rbd_trash_restore_volume
   - cinder_attach_volume
@@ -457,11 +465,17 @@ destructive:
   # delete_pool.
   - rbd_trash_remove
   - rbd_trash_purge_all
+  # A Cinder snapshot is an independent recovery point; deletion is
+  # irreversible and must never enter the auto-run path.
+  - cinder_delete_snapshot
   # Restores a backup OVER a live production image — the exact "ghi đè
   # production" case roadmap section 3.3 names explicitly. Distinct from
   # restore_rbd_image_as_new (risky: above), which never overwrites
   # anything existing.
   - restore_rbd_image_to_production
+  # Flatten detaches a clone from its parent and may allocate the full
+  # logical image; it is irreversible and therefore always destructive.
+  - rbd_flatten_volume
   # Deletes a backup outside the automatic retention schedule — the
   # operator's own last-resort recovery copy, permanently gone once this
   # runs.

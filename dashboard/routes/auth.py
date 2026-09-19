@@ -1,19 +1,24 @@
-import time
+import logging
 from collections import defaultdict
+from datetime import datetime, timedelta
 
 import bcrypt
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import delete, insert, select
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
 from dashboard.templating import make_templates
 from shared import db
-from shared.models import ChatPreference, User, VitastorUser
+from shared.models import AuthLoginRateLimit, ChatPreference, User, VitastorUser
 
 router = APIRouter()
 templates = make_templates()
 VALID_PRODUCTS = {"ceph", "vitastor"}
+logger = logging.getLogger(__name__)
 
 
 def _product_home(product: str | None) -> str:
@@ -29,8 +34,8 @@ def _login_context(product: str, error: str | None = None) -> dict:
 # whether an account exists.
 _DUMMY_HASH = bcrypt.hashpw(b"not-a-real-password", bcrypt.gensalt()).decode()
 
-# Simple in-memory rate limit: single-process, resets on restart — adequate
-# for a single static account, not meant to survive multi-worker deployment.
+# Shared PostgreSQL rate limit.  The legacy dictionary remains only as a
+# compatibility hook for old test fixtures; it is not consulted by login.
 MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_WINDOW_SECONDS = 300
 _failed_attempts: dict[str, list[float]] = defaultdict(list)
@@ -41,17 +46,88 @@ def _client_key(request: Request) -> str:
 
 
 def _is_locked_out(key: str) -> bool:
-    now = time.monotonic()
-    _failed_attempts[key] = [t for t in _failed_attempts[key] if now - t < LOCKOUT_WINDOW_SECONDS]
-    return len(_failed_attempts[key]) >= MAX_LOGIN_ATTEMPTS
+    now = datetime.utcnow()
+    try:
+        with db.SessionLocal() as session:
+            row = session.get(AuthLoginRateLimit, key, with_for_update=True)
+            if row is None:
+                return False
+            if now - row.window_started_at >= timedelta(seconds=LOCKOUT_WINDOW_SECONDS):
+                session.delete(row)
+                session.commit()
+                return False
+            return bool(row.locked_until and row.locked_until > now)
+    except SQLAlchemyError:
+        # A missing/unavailable shared store must never silently disable
+        # brute-force protection on one replica.
+        logger.exception("login rate-limit store is unavailable while checking %s", key)
+        return True
+
+
+def _insert_rate_limit_row(session, key: str, now: datetime) -> None:
+    """Create the row once, tolerating simultaneous first attempts."""
+    values = {
+        "client_key": key,
+        "failed_attempts": 0,
+        "window_started_at": now,
+        "updated_at": now,
+    }
+    dialect = session.bind.dialect.name
+    if dialect == "postgresql":
+        session.execute(
+            postgres_insert(AuthLoginRateLimit)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["client_key"])
+        )
+    elif dialect == "sqlite":
+        session.execute(
+            sqlite_insert(AuthLoginRateLimit)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["client_key"])
+        )
+    else:
+        session.execute(insert(AuthLoginRateLimit).values(**values))
+
+
+def _get_locked_rate_limit_row(session, key: str, now: datetime):
+    _insert_rate_limit_row(session, key, now)
+    return session.execute(
+        select(AuthLoginRateLimit)
+        .where(AuthLoginRateLimit.client_key == key)
+        .with_for_update()
+    ).scalar_one()
 
 
 def _record_failure(key: str) -> None:
-    _failed_attempts[key].append(time.monotonic())
+    now = datetime.utcnow()
+    try:
+        with db.SessionLocal() as session:
+            row = _get_locked_rate_limit_row(session, key, now)
+            if now - row.window_started_at >= timedelta(seconds=LOCKOUT_WINDOW_SECONDS):
+                row.failed_attempts = 1
+                row.window_started_at = now
+                row.locked_until = None
+            else:
+                row.failed_attempts += 1
+                if row.failed_attempts >= MAX_LOGIN_ATTEMPTS:
+                    row.locked_until = now + timedelta(seconds=LOCKOUT_WINDOW_SECONDS)
+            row.updated_at = now
+            session.commit()
+    except SQLAlchemyError:
+        logger.exception("login rate-limit store is unavailable while recording %s", key)
+        raise
 
 
 def _clear_failures(key: str) -> None:
-    _failed_attempts.pop(key, None)
+    try:
+        with db.SessionLocal() as session:
+            session.execute(
+                delete(AuthLoginRateLimit).where(AuthLoginRateLimit.client_key == key)
+            )
+            session.commit()
+    except SQLAlchemyError:
+        logger.exception("login rate-limit store is unavailable while clearing %s", key)
+        raise
 
 
 def _find_active_user(username: str) -> User | None:

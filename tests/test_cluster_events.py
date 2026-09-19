@@ -1,7 +1,11 @@
 import pytest
 
 from shared import ceph_query_cache
-from shared.cluster_events import publish_event, read_latest_event
+from shared.cluster_events import (
+    publish_action_state_event,
+    publish_event,
+    read_latest_event,
+)
 
 
 def _isolate_cache(monkeypatch, tmp_path):
@@ -30,3 +34,15 @@ def test_event_rejects_unknown_event_and_filters_unknown_sections(monkeypatch, t
 
     event = publish_event("cluster-a", "snapshot_changed", sections=["health", "secret"])
     assert event["sections"] == ["health"]
+
+
+def test_action_state_event_keeps_cluster_and_status_metadata(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+
+    event = publish_action_state_event("cluster-a", "action-1", "EXECUTING")
+
+    assert event["event"] == "action_state_changed"
+    assert event["cluster_id"] == "cluster-a"
+    assert event["action_id"] == "action-1"
+    assert event["action_status"] == "EXECUTING"
+    assert read_latest_event("cluster-a")["action_status"] == "EXECUTING"

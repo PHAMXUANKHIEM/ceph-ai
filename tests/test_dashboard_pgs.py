@@ -26,9 +26,11 @@ def test_pool_name_mapping_supports_ceph_json_key_variants():
 
 def test_pg_filter_script_builds_pool_options_from_rendered_rows():
     script = (Path(pgs_route.__file__).resolve().parents[1] / "static" / "pgs.js").read_text()
-    assert "row.dataset.pool" in script
-    assert 'poolSelect.replaceChildren(new Option("Tất cả pool", ""))' in script
-    assert "poolSelect.add(new Option(poolName, poolName))" in script
+    assert "pgData" in script
+    assert "pageSize" in script
+    assert "formatShortTimestamp" in script
+    assert "stateMatches" in script
+    assert "pg-osd-pill" in script
 
 
 def test_pgs_page_returns_all_pgs_with_pool_and_scrub_details(dashboard_client, monkeypatch):
@@ -80,17 +82,19 @@ def test_pgs_page_returns_all_pgs_with_pool_and_scrub_details(dashboard_client, 
     assert "2026-08-11T01:02:03Z" in response.text
     assert "2026-08-10T01:02:03Z" in response.text
     assert 'id="pg-search"' in response.text
-    assert 'id="pg-id-filter"' in response.text
     assert 'id="pg-pool-filter"' in response.text
     assert 'aria-label="Lọc theo Pool name"' in response.text
     assert '<option value="vms">vms</option>' in response.text
     assert '<option value="backups">backups</option>' in response.text
-    assert 'data-pgid="1.a" data-pool="vms"' in response.text
     assert 'src="/static/pgs.js' in response.text
     assert 'id="pg-pagination"' in response.text
     assert 'id="pg-page-prev"' in response.text
     assert 'id="pg-page-next"' in response.text
-    assert "10 PGs mỗi trang" in response.text
+    assert 'id="pg-filter-result-pagination"' in response.text
+    assert "Phân bố state" in response.text
+    assert "Theo pool" in response.text
+    assert 'data-pg-state="active+clean"' in response.text
+    assert "pg-osd-pill" in response.text or "pg-osd-pill" in Path(pgs_route.__file__).resolve().parents[1].joinpath("static", "pgs.js").read_text()
     assert "Chọn một pool" not in response.text
     assert "Tạo pool" not in response.text
 

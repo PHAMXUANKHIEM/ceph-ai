@@ -1,8 +1,10 @@
 import bcrypt
+import asyncio
+from starlette.requests import Request
 
-from dashboard.routes.auth import is_admin_user
+from dashboard.routes.auth import is_admin_user, login_submit
 from shared import db as db_module
-from shared.models import User
+from shared.models import AuthLoginRateLimit, User
 
 
 def _add_user(username, password, *, is_admin=False, is_active=True, created_by="admin"):
@@ -118,6 +120,24 @@ def test_logout_invalidates_session(dashboard_client):
     assert response.headers["location"] == "/login"
 
 
+def test_successful_login_replaces_preexisting_session_state(dashboard_client):
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/login",
+            "headers": [],
+            "client": ("testclient", 12345),
+            "session": {"user": "attacker", "product": "vitastor", "stale": "value"},
+        }
+    )
+
+    response = asyncio.run(login_submit(request, "admin", "admin", "ceph"))
+
+    assert response.status_code == 303
+    assert request.session == {"user": "admin", "product": "ceph"}
+
+
 def test_already_logged_in_get_login_redirects_to_index(dashboard_client):
     dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
 
@@ -153,6 +173,20 @@ def test_login_locks_out_after_repeated_failures(dashboard_client):
         follow_redirects=False,
     )
     assert response.status_code == 429
+
+
+def test_login_rate_limit_state_is_persisted_in_shared_database(dashboard_client):
+    response = dashboard_client.post(
+        "/login",
+        data={"username": "admin", "password": "wrong-password"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 401
+
+    with db_module.SessionLocal() as session:
+        row = session.get(AuthLoginRateLimit, "testclient")
+        assert row is not None
+        assert row.failed_attempts == 1
 
 
 def test_db_backed_user_can_log_in(dashboard_client):

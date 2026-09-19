@@ -21,5 +21,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_log_findings_fault_family", table_name="log_findings")
-    op.drop_column("log_findings", "semantic_entities_json")
-    op.drop_column("log_findings", "fault_family")
+    with op.batch_alter_table("log_findings") as batch_op:
+        batch_op.drop_column("semantic_entities_json")
+    with op.batch_alter_table("log_findings") as batch_op:
+        batch_op.drop_column("fault_family")

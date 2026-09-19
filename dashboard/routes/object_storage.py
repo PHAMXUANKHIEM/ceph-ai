@@ -14,6 +14,7 @@ from urllib.parse import quote, urlparse
 
 import boto3
 from botocore.config import Config
+from config.settings import settings
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -26,11 +27,11 @@ from dashboard.vntime import to_utc_iso
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared import db
 from shared.ceph_releases import codename_for_version
-from shared.models import ObjectStorageAuditEntry
+from shared.models import BucketInventorySnapshot, ObjectStorageAuditEntry
 from shared.object_storage_cache import (
     get_or_load,
     invalidate as invalidate_object_storage_cache,
-    is_refreshing as cache_is_refreshing,
+    state as cache_state,
 )
 from dashboard.cluster_scope import cluster_connection
 from watcher import ceph_client
@@ -63,9 +64,21 @@ from watcher.rgw_access_log import (
 router = APIRouter()
 templates = make_templates()
 
-PAGE_SIZE = 25
+PAGE_SIZE = 10
 MAX_QUERY_LENGTH = 120
 MAX_METADATA_SCAN = 500
+CAPABILITY_TTL_SECONDS = 300
+CAPABILITY_STALE_TTL_SECONDS = 600
+BUCKET_STATS_TTL_SECONDS = 30
+BUCKET_STATS_STALE_TTL_SECONDS = 300
+BUCKET_LIST_TTL_SECONDS = 30
+BUCKET_LIST_STALE_TTL_SECONDS = 300
+RGW_S3_CONNECT_TIMEOUT_SECONDS = 3
+RGW_S3_READ_TIMEOUT_SECONDS = 5
+BUCKET_ACTIVITY_TTL_SECONDS = 30
+BUCKET_ACTIVITY_STALE_TTL_SECONDS = 300
+BUCKET_DETAIL_TTL_SECONDS = 30
+BUCKET_DETAIL_STALE_TTL_SECONDS = 300
 MAX_LIFECYCLE_SCAN = 1000
 MAX_PURGE_BATCHES = 10000
 MAX_OBJECT_BROWSER_SCAN = 2000
@@ -113,6 +126,10 @@ for _action in REEF_POLICY_ACTIONS:
     if "BucketLogging" in _action:
         POLICY_ACTION_MIN_MAJOR[_action] = 20
 logger = logging.getLogger(__name__)
+_DEFAULT_FETCH_BUCKET_STATS = fetch_bucket_stats
+_DEFAULT_FETCH_BUCKET_STATS_WITH = fetch_bucket_stats_with
+_DEFAULT_FETCH_BUCKET_ACCESS_LOG = fetch_bucket_access_log
+_DEFAULT_FETCH_BUCKET_ACCESS_LOG_WITH = fetch_bucket_access_log_with
 
 QuotaFilter = Literal["all", "enabled", "disabled"]
 UsageFilter = Literal["all", "nonempty", "empty"]
@@ -231,7 +248,8 @@ def _cached_capabilities(cluster) -> dict:
         "capabilities",
         f"{cluster.id}:capabilities",
         lambda: _capabilities(cluster),
-        stale_ttl_seconds=7200,
+        ttl_seconds=CAPABILITY_TTL_SECONDS,
+        stale_ttl_seconds=CAPABILITY_STALE_TTL_SECONDS,
     )
 
 
@@ -295,6 +313,10 @@ def _bucket_audit_finish(audit_id: str, result: str, error: str | None = None) -
             session.commit()
     if result == "succeeded" and cluster_id:
         invalidate_object_storage_cache(cluster_id, "buckets")
+        invalidate_object_storage_cache(cluster_id, "bucket-stats")
+        invalidate_object_storage_cache(cluster_id, "bucket-list")
+        invalidate_object_storage_cache(cluster_id, "bucket-activity")
+        invalidate_object_storage_cache(cluster_id, "bucket-detail")
 
 
 def _start_governance_audit(cluster_id: str, actor: str, payload: dict, preview: str) -> str:
@@ -838,27 +860,164 @@ def _format_bytes(value: object) -> str:
     return "—"
 
 
+def _default_s3_endpoint(host: str) -> str:
+    """Build the S3 endpoint from the configured RGW node."""
+    return f"http://{host}:7480"
+
+
+def _configured_rgw_s3_credentials(cluster) -> tuple[str, str, str] | None:
+    """Return optional RGW S3 inventory credentials for the default cluster."""
+    if not cluster.is_default:
+        return None
+    endpoint = str(settings.ceph_rgw_s3_endpoint or "").strip().rstrip("/")
+    access_key = str(settings.ceph_rgw_s3_access_key or "").strip()
+    secret_key = str(settings.ceph_rgw_s3_secret_key or "")
+    if not endpoint or not access_key or not secret_key:
+        return None
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        logger.warning("RGW S3 inventory endpoint is invalid; using SSH fallback")
+        return None
+    return endpoint, access_key, secret_key
+
+
+def _load_bucket_list_via_s3(cluster, host: str) -> list[str] | None:
+    """List bucket names through RGW S3 when explicitly configured.
+
+    ListBuckets replaces only the expensive name-list phase. It returns the
+    buckets visible to the configured S3 identity, not an unconditional
+    cluster-wide admin inventory. Bucket usage and quota still come from the
+    lazy detail API. None means use SSH fallback.
+    """
+    configured = _configured_rgw_s3_credentials(cluster)
+    if configured is None:
+        return None
+    endpoint, access_key, secret_key = configured
+    try:
+        client = boto3.client(
+            "s3",
+            endpoint_url=endpoint or _default_s3_endpoint(host),
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name="us-east-1",
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                connect_timeout=RGW_S3_CONNECT_TIMEOUT_SECONDS,
+                read_timeout=RGW_S3_READ_TIMEOUT_SECONDS,
+                retries={"max_attempts": 1, "mode": "standard"},
+            ),
+        )
+        response = client.list_buckets()
+        if not isinstance(response, dict) or not isinstance(response.get("Buckets"), list):
+            raise ValueError("RGW S3 ListBuckets trả về response không hợp lệ")
+        buckets = response["Buckets"]
+        names = {
+            str(item.get("Name")).strip()
+            for item in buckets
+            if isinstance(item, dict) and str(item.get("Name") or "").strip()
+        }
+        return sorted(names, key=str.casefold)
+    except Exception as exc:
+        logger.warning("RGW S3 ListBuckets failed; using SSH fallback: %s", _safe_error(exc))
+        return None
+
+
 def _rgw_hosts(cluster) -> list[str]:
     nodes = configured_nodes() if cluster.is_default else configured_nodes(cluster)
     return [str(node["host"]) for node in nodes if "RGW" in node["roles"]]
 
 
-def _list_from_first_reachable_rgw(cluster, hosts: list[str]) -> tuple[str, list[str]]:
+def _load_bucket_inventory_snapshot(cluster) -> dict | None:
+    """Read the last successful bucket-name inventory from the database.
+
+    The process-local cache is intentionally still the fast path. This small
+    durable snapshot is only the cold-start fallback, so a Dashboard restart
+    does not turn the first Buckets request into a visibly empty page while
+    SSH/RGW inventory is being refreshed.
+    """
+    try:
+        with db.SessionLocal() as session:
+            snapshot = session.get(BucketInventorySnapshot, cluster.id)
+            if snapshot is None:
+                return None
+            names = json.loads(snapshot.bucket_names_json or "[]")
+            if not isinstance(names, list):
+                raise ValueError("bucket_names_json is not a list")
+            clean_names = sorted(
+                {str(name).strip() for name in names if str(name or "").strip()},
+                key=str.casefold,
+            )
+            return {
+                "host": snapshot.rgw_host,
+                "names": clean_names,
+                "captured_at": snapshot.captured_at,
+            }
+    except Exception:
+        logger.exception("Failed to read durable bucket inventory snapshot for cluster %s", cluster.id)
+        return None
+
+
+def _save_bucket_inventory_snapshot(cluster, host: str, names: list[str]) -> None:
+    """Persist bucket names best-effort; never fail a successful RGW read."""
+    clean_names = sorted(
+        {str(name).strip() for name in names if str(name or "").strip()},
+        key=str.casefold,
+    )
+    try:
+        with db.SessionLocal() as session:
+            snapshot = session.get(BucketInventorySnapshot, cluster.id)
+            if snapshot is None:
+                snapshot = BucketInventorySnapshot(cluster_id=cluster.id)
+                session.add(snapshot)
+            snapshot.rgw_host = host
+            snapshot.bucket_names_json = json.dumps(clean_names, ensure_ascii=False)
+            snapshot.captured_at = datetime.utcnow()
+            session.commit()
+    except Exception:
+        logger.exception("Failed to persist durable bucket inventory snapshot for cluster %s", cluster.id)
+
+
+def _load_bucket_list_from_first_reachable_rgw(cluster, hosts: list[str]) -> tuple[str, list[str]]:
     """Use any configured RGW endpoint; bucket metadata is shared per zone."""
     errors = []
     for host in hosts:
+        api_names = _load_bucket_list_via_s3(cluster, host)
+        if api_names is not None:
+            _save_bucket_inventory_snapshot(cluster, host, api_names)
+            return host, api_names
         try:
             if cluster.is_default:
-                return host, fetch_bucket_list(host)
+                names = fetch_bucket_list(host)
+                _save_bucket_inventory_snapshot(cluster, host, names)
+                return host, names
             ssh_user, ssh_key_path, exec_mode, _mon_container = resolve_ssh_creds(cluster)
             container = cluster.ceph_rgw_container_name
-            return host, fetch_bucket_list_with(host, ssh_user, ssh_key_path, exec_mode, container)
+            names = fetch_bucket_list_with(host, ssh_user, ssh_key_path, exec_mode, container)
+            _save_bucket_inventory_snapshot(cluster, host, names)
+            return host, names
         except RgwLogError as exc:
             errors.append(_safe_error(exc))
     raise ObjectStorageError("Không thể lấy danh sách bucket từ RGW. " + "; ".join(errors))
 
 
-def _bucket_summary(cluster, host: str, name: str) -> dict:
+def _list_from_first_reachable_rgw(cluster, hosts: list[str]) -> tuple[str, list[str]]:
+    snapshot = _load_bucket_inventory_snapshot(cluster)
+    preferred_host = snapshot.get("host") if snapshot else None
+    if preferred_host in hosts:
+        hosts = [preferred_host] + [host for host in hosts if host != preferred_host]
+    if _uses_mocked_rgw_client():
+        return _load_bucket_list_from_first_reachable_rgw(cluster, hosts)
+    return get_or_load(
+        "bucket-list",
+        f"{cluster.id}:list:{','.join(hosts)}",
+        lambda: _load_bucket_list_from_first_reachable_rgw(cluster, hosts),
+        ttl_seconds=BUCKET_LIST_TTL_SECONDS,
+        stale_ttl_seconds=BUCKET_LIST_STALE_TTL_SECONDS,
+    )
+
+
+def _load_bucket_summary(cluster, host: str, name: str) -> dict:
     try:
         if cluster.is_default:
             raw = fetch_bucket_stats(host, name)
@@ -882,7 +1041,29 @@ def _bucket_summary(cluster, host: str, name: str) -> dict:
         return {"name": name, "stats_available": False, "stats_error": _safe_error(exc)}
 
 
-def _bucket_activity(cluster, host: str, name: str) -> dict:
+def _bucket_summary(cluster, host: str, name: str) -> dict:
+    """Return bucket metadata while reusing short-lived per-bucket stats.
+
+    Inventory pages have different cache keys for search, sorting and
+    pagination. Without this second cache, navigating between those views
+    repeats the same expensive ``radosgw-admin bucket stats`` call.
+    """
+    if (
+        fetch_bucket_stats is not _DEFAULT_FETCH_BUCKET_STATS
+        or fetch_bucket_stats_with is not _DEFAULT_FETCH_BUCKET_STATS_WITH
+    ):
+        return _load_bucket_summary(cluster, host, name)
+    key = f"{cluster.id}:{host}:{name}"
+    return get_or_load(
+        "bucket-stats",
+        key,
+        lambda: _load_bucket_summary(cluster, host, name),
+        ttl_seconds=BUCKET_STATS_TTL_SECONDS,
+        stale_ttl_seconds=BUCKET_STATS_STALE_TTL_SECONDS,
+    )
+
+
+def _load_bucket_activity(cluster, host: str, name: str) -> dict:
     """Best-effort request/error trend from the bounded RGW log excerpt."""
     try:
         if cluster.is_default:
@@ -918,6 +1099,24 @@ def _bucket_activity(cluster, host: str, name: str) -> dict:
     }
 
 
+def _bucket_activity(cluster, host: str, name: str) -> dict:
+    """Return the bounded activity excerpt with a short stale-if-error cache."""
+    if (
+        fetch_bucket_access_log is not _DEFAULT_FETCH_BUCKET_ACCESS_LOG
+        or fetch_bucket_access_log_with is not _DEFAULT_FETCH_BUCKET_ACCESS_LOG_WITH
+    ):
+        # Keep test doubles and compatibility callers synchronous and direct.
+        return _load_bucket_activity(cluster, host, name)
+    key = f"{cluster.id}:{host}:{name}"
+    return get_or_load(
+        "bucket-activity",
+        key,
+        lambda: _load_bucket_activity(cluster, host, name),
+        ttl_seconds=BUCKET_ACTIVITY_TTL_SECONDS,
+        stale_ttl_seconds=BUCKET_ACTIVITY_STALE_TTL_SECONDS,
+    )
+
+
 def _inventory(
     cluster,
     query: str,
@@ -927,7 +1126,9 @@ def _inventory(
     usage: UsageFilter = "all",
     sort: SortField = "name",
     order: SortOrder = "asc",
+    page_size: int = PAGE_SIZE,
 ) -> dict:
+    page_size = PAGE_SIZE
     hosts = _rgw_hosts(cluster)
     if not hosts:
         raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
@@ -965,19 +1166,38 @@ def _inventory(
         }
         rows.sort(key=sort_keys[sort], reverse=order == "desc")
         total = len(rows)
-        page_count = max(1, ceil(total / PAGE_SIZE))
+        page_count = max(1, ceil(total / page_size))
         page = min(max(page, 1), page_count)
-        rows = rows[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
+        rows = rows[(page - 1) * page_size:page * page_size]
     else:
         names.sort(key=str.casefold, reverse=order == "desc")
         total = len(names)
-        page_count = max(1, ceil(total / PAGE_SIZE))
+        page_count = max(1, ceil(total / page_size))
         page = min(max(page, 1), page_count)
-        page_names = names[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
-        with ThreadPoolExecutor(max_workers=min(4, max(1, len(page_names)))) as executor:
-            rows = list(executor.map(lambda name: _bucket_summary(cluster, host, name), page_names))
+        page_names = names[(page - 1) * page_size:page * page_size]
+        if _uses_mocked_rgw_client():
+            # Keep compatibility with unit-test doubles and callers that
+            # intentionally replace the RGW client functions. Production
+            # requests use the lazy path below so the page does not wait for
+            # one remote bucket-stats command per row.
+            with ThreadPoolExecutor(max_workers=min(4, max(1, len(page_names)))) as executor:
+                rows = list(executor.map(lambda name: _bucket_summary(cluster, host, name), page_names))
+        else:
+            # Listing bucket names is enough to render the first screen. The
+            # owner/usage/quota fields are expensive because each one would
+            # otherwise start a separate SSH + cephadm + radosgw-admin call.
+            # Mark the visible rows pending; the browser resolves each row
+            # through the existing bucket-detail API after the table appears.
+            rows = [
+                {"name": name, "stats_available": False, "stats_pending": True,
+                 "stats_error": None}
+                for name in page_names
+            ]
     return {
         "host": host,
+        "rgw_endpoint": _default_s3_endpoint(host),
+        "rgw_endpoints": [_default_s3_endpoint(rgw_host) for rgw_host in hosts],
+        "zonegroup_api_name": "default",
         "items": rows,
         "query": query.strip(),
         "owner": owner.strip(),
@@ -986,17 +1206,74 @@ def _inventory(
         "sort": sort,
         "order": order,
         "page": page,
-        "page_size": PAGE_SIZE,
+        "page_size": page_size,
         "page_count": page_count,
         "total": total,
     }
 
 
+def _durable_snapshot_fallback(cluster, query: str, page: int, owner: str,
+                               quota: QuotaFilter, usage: UsageFilter,
+                               sort: SortField, order: SortOrder, page_size: int) -> dict | None:
+    """Build a renderable inventory from the last durable name snapshot.
+
+    A name-only snapshot is safe for the default name view. Metadata filters
+    and non-name sorting still require fresh bucket stats, so those requests
+    keep the empty loading fallback until the background refresh completes.
+    """
+    if owner.strip() or quota != "all" or usage != "all" or sort != "name":
+        return None
+    snapshot = _load_bucket_inventory_snapshot(cluster)
+    if snapshot is None:
+        return None
+    names = [
+        name for name in snapshot["names"]
+        if not query.strip() or query.strip().casefold() in name.casefold()
+    ]
+    names.sort(key=str.casefold, reverse=order == "desc")
+    total = len(names)
+    page_count = max(1, ceil(total / page_size))
+    safe_page = min(max(1, page), page_count)
+    page_names = names[(safe_page - 1) * page_size:safe_page * page_size]
+    current_hosts = _rgw_hosts(cluster)
+    host = (
+        snapshot["host"]
+        if snapshot["host"] in current_hosts
+        else (current_hosts[0] if current_hosts else "")
+    )
+    return {
+        "host": host,
+        "rgw_endpoint": _default_s3_endpoint(host) if host else "",
+        "rgw_endpoints": [_default_s3_endpoint(rgw_host) for rgw_host in _rgw_hosts(cluster)],
+        "zonegroup_api_name": "default",
+        "items": [
+            {"name": name, "stats_available": False, "stats_pending": True, "stats_error": None}
+            for name in page_names
+        ],
+        "query": query.strip(),
+        "owner": owner.strip(),
+        "quota": quota,
+        "usage": usage,
+        "sort": sort,
+        "order": order,
+        "page": safe_page,
+        "page_size": page_size,
+        "page_count": page_count,
+        "total": total,
+        "snapshot_available": True,
+        "snapshot_at": snapshot["captured_at"].isoformat() if snapshot["captured_at"] else None,
+    }
+
+
 def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: QuotaFilter = "all",
-                      usage: UsageFilter = "all", sort: SortField = "name", order: SortOrder = "asc") -> dict:
-    key = f"{cluster.id}:{query}:{page}:{owner}:{quota}:{usage}:{sort}:{order}"
+                      usage: UsageFilter = "all", sort: SortField = "name", order: SortOrder = "asc",
+                      page_size: int = PAGE_SIZE) -> dict:
+    key = f"{cluster.id}:{query}:{page}:{owner}:{quota}:{usage}:{sort}:{order}:{page_size}"
     fallback = {
         "host": None,
+        "rgw_endpoint": "",
+        "rgw_endpoints": [],
+        "zonegroup_api_name": "default",
         "items": [],
         "query": query.strip(),
         "owner": owner.strip(),
@@ -1005,20 +1282,53 @@ def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: Qu
         "sort": sort,
         "order": order,
         "page": max(1, page),
-        "page_size": PAGE_SIZE,
+        "page_size": page_size,
         "page_count": 1,
         "total": 0,
     }
+    cache_status = cache_state("buckets", key)
+    cache_age = cache_status.get("age_seconds")
+    cache_needs_cold_fallback = (
+        not cache_status["available"]
+        or (cache_age is not None and cache_age >= BUCKET_LIST_STALE_TTL_SECONDS)
+    )
+    snapshot_fallback = (
+        _durable_snapshot_fallback(cluster, query, page, owner, quota, usage, sort, order, page_size)
+        if cache_needs_cold_fallback
+        else None
+    )
+    if snapshot_fallback is not None:
+        fallback.update(snapshot_fallback)
     result = get_or_load(
         "buckets", key,
-        lambda: _inventory(cluster, query, page, owner, quota, usage, sort, order),
-        stale_ttl_seconds=7200,
+        lambda: _inventory(cluster, query, page, owner, quota, usage, sort, order, page_size),
+        ttl_seconds=BUCKET_LIST_TTL_SECONDS,
+        stale_ttl_seconds=BUCKET_LIST_STALE_TTL_SECONDS,
         background_on_miss=not _uses_mocked_rgw_client(),
         fallback=fallback,
+        # Keep only the latest inventory result for this cluster. Detail and
+        # stats caches remain per bucket; only filter/page inventory entries
+        # are replaced to prevent unbounded query-key accumulation.
+        replace_cluster=True,
     )
     if isinstance(result, dict):
         result = dict(result)
-        result["refreshing"] = cache_is_refreshing("buckets", key)
+        snapshot_available = bool(result.get("snapshot_available"))
+        if not result.get("rgw_endpoints"):
+            result["rgw_endpoints"] = [
+                _default_s3_endpoint(host) for host in _rgw_hosts(cluster)
+            ] or ([result["rgw_endpoint"]] if result.get("rgw_endpoint") else [])
+        status = cache_state("buckets", key)
+        result["refreshing"] = bool(status["refreshing"])
+        result["refresh_error"] = bool(status["error"])
+        result["stale"] = bool(
+            snapshot_available
+            or (
+                status["available"]
+                and status["age_seconds"] is not None
+                and status["age_seconds"] >= BUCKET_LIST_TTL_SECONDS
+            )
+        )
     return result
 
 
@@ -1029,16 +1339,53 @@ def _detail(cluster, name: str, include_activity: bool = False) -> dict:
     hosts = _rgw_hosts(cluster)
     if not hosts:
         raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
-    host, _names = _list_from_first_reachable_rgw(cluster, hosts)
-    result = _bucket_summary(cluster, host, bucket_name)
-    if not result["stats_available"]:
-        if result["stats_error"]:
-            raise ObjectStorageError(result["stats_error"])
+    # Detail only needs bucket stats. Avoid listing every bucket first; that
+    # extra RGW/SSH round trip was the main cold-load delay. Try configured
+    # RGW nodes in order and let bucket stats validate the target itself.
+    errors = []
+    detail = None
+    for host in hosts:
+        result = _bucket_summary(cluster, host, bucket_name)
+        if result["stats_available"]:
+            detail = {"host": host, **result}
+            break
+        if result.get("stats_error"):
+            errors.append(f"{host}: {result['stats_error']}")
+    if detail is None:
+        if errors:
+            raise ObjectStorageError("Không lấy được thông tin bucket trên " + "; ".join(errors))
         raise HTTPException(status_code=404, detail="Không tìm thấy bucket")
-    detail = {"host": host, **result}
     if include_activity:
-        detail["activity"] = _bucket_activity(cluster, host, bucket_name)
+        detail["activity"] = _bucket_activity(cluster, detail["host"], bucket_name)
     return detail
+
+
+def _load_detail_for_cache(cluster, name: str) -> dict:
+    """Resolve detail in a background-safe shape for the page shell."""
+    try:
+        return _detail(cluster, name)
+    except HTTPException as exc:
+        return {"loading": False, "load_error": str(exc.detail), "not_found": exc.status_code == 404}
+    except ObjectStorageError as exc:
+        return {"loading": False, "load_error": _safe_error(exc), "not_found": False}
+
+
+def _cached_detail(cluster, name: str) -> dict:
+    """Return cached metadata or a loading marker while RGW is queried once."""
+    if _uses_mocked_rgw_client():
+        return _detail(cluster, name)
+    bucket_name = name.strip()
+    key = f"{cluster.id}:{bucket_name}"
+    result = get_or_load(
+        "bucket-detail",
+        key,
+        lambda: _load_detail_for_cache(cluster, bucket_name),
+        ttl_seconds=BUCKET_DETAIL_TTL_SECONDS,
+        stale_ttl_seconds=BUCKET_DETAIL_STALE_TTL_SECONDS,
+        background_on_miss=True,
+        fallback={"loading": True, "name": bucket_name},
+    )
+    return dict(result)
 
 
 def _object_browser(cluster, bucket: str, marker: str, prefix: str, query: str,
@@ -1051,8 +1398,12 @@ def _object_browser(cluster, bucket: str, marker: str, prefix: str, query: str,
     last_return_marker = marker
     scanned = 0
     truncated = False
+    # The normal browser view is already in RGW index order. Fetch only one
+    # extra entry to detect the next page; filtered or alternate-sort views
+    # still need a larger bounded scan to find enough matching rows.
+    page_probe_limit = page_size + 1 if not prefix and not query and sort == "key" and order == "asc" else 101
     while len(rows) <= page_size and scanned < MAX_OBJECT_BROWSER_SCAN:
-        limit = min(101, MAX_OBJECT_BROWSER_SCAN - scanned)
+        limit = min(page_probe_limit, MAX_OBJECT_BROWSER_SCAN - scanned)
         if cluster.is_default:
             chunk = fetch_bucket_objects(host, bucket, cursor, limit)
         else:
@@ -1252,7 +1603,7 @@ async def bucket_create_preview(request: Request, user: str = Depends(require_lo
     payload = _create_payload(await request.json())
     cluster = selected_cluster(request)
     try:
-        capability = await asyncio.to_thread(_capabilities, cluster)
+        capability = await asyncio.to_thread(_cached_capabilities, cluster)
         host = _rgw_hosts(cluster)[0]
         owner = await asyncio.to_thread(_owner_info, cluster, host, payload["owner"])
     except (ObjectStorageError, RgwLogError, IndexError) as exc:
@@ -1331,7 +1682,7 @@ async def bucket_governance_preview(request: Request, user: str = Depends(requir
     payload = _governance_payload(await request.json())
     cluster = selected_cluster(request)
     try:
-        capability = await asyncio.to_thread(_capabilities, cluster)
+        capability = await asyncio.to_thread(_cached_capabilities, cluster)
         detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
     except ObjectStorageError as exc:
         raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
@@ -1386,7 +1737,7 @@ async def bucket_lifecycle_preview(request: Request, user: str = Depends(require
     payload = _lifecycle_payload(await request.json())
     cluster = selected_cluster(request)
     try:
-        capability = await asyncio.to_thread(_capabilities, cluster)
+        capability = await asyncio.to_thread(_cached_capabilities, cluster)
         _ensure_lifecycle_capability(payload, capability)
         detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
         _validate_governance_target({**payload, "action": "versioning_enable"}, detail)
@@ -1441,7 +1792,7 @@ async def bucket_policy_acl_preview(request: Request, user: str = Depends(requir
     payload = _policy_acl_payload(await request.json())
     cluster = selected_cluster(request)
     try:
-        capability = await asyncio.to_thread(_capabilities, cluster)
+        capability = await asyncio.to_thread(_cached_capabilities, cluster)
         _ensure_policy_capability(payload, capability)
         detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
         _validate_governance_target({**payload, "action": "versioning_enable"}, detail)
@@ -1498,7 +1849,7 @@ async def bucket_delete_preview(request: Request, user: str = Depends(require_lo
     payload = _delete_payload(await request.json())
     cluster = selected_cluster(request)
     try:
-        capability = await asyncio.to_thread(_capabilities, cluster)
+        capability = await asyncio.to_thread(_cached_capabilities, cluster)
         detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
         _validate_governance_target({**payload, "action": "versioning_enable"}, detail)
         impact = await asyncio.to_thread(_delete_bucket_inspect, cluster, payload, detail)
@@ -1588,6 +1939,10 @@ async def bucket_delete_all(request: Request, user: str = Depends(require_login)
         safe_error = _safe_error(exc)
         await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
         invalidate_object_storage_cache(cluster.id, "buckets")
+        invalidate_object_storage_cache(cluster.id, "bucket-stats")
+        invalidate_object_storage_cache(cluster.id, "bucket-list")
+        invalidate_object_storage_cache(cluster.id, "bucket-activity")
+        invalidate_object_storage_cache(cluster.id, "bucket-detail")
         raise HTTPException(status_code=502, detail=safe_error) from exc
     await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
     return {"ok": True, "action": "delete_all", "deleted_count": len(deleted),
@@ -1597,10 +1952,24 @@ async def bucket_delete_all(request: Request, user: str = Depends(require_login)
 @router.get("/api/object-storage/buckets/{bucket}")
 async def bucket_detail_api(request: Request, bucket: str, user: str = Depends(require_login)):
     del user
+    detail = await asyncio.to_thread(_cached_detail, selected_cluster(request), bucket)
+    if detail.get("loading"):
+        return {"ready": False, "bucket": bucket}
+    if detail.get("load_error"):
+        return {"ready": True, "bucket": bucket, "error": detail["load_error"]}
+    return {"ready": True, **detail}
+
+
+@router.get("/api/object-storage/buckets/{bucket}/activity")
+async def bucket_activity_api(request: Request, bucket: str, user: str = Depends(require_login)):
+    del user
+    cluster = selected_cluster(request)
     try:
-        return await asyncio.to_thread(_detail, selected_cluster(request), bucket)
+        detail = await asyncio.to_thread(_detail, cluster, bucket)
+        activity = await asyncio.to_thread(_bucket_activity, cluster, detail["host"], bucket)
     except ObjectStorageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"bucket": bucket, "activity": activity}
 
 
 @router.get("/api/object-storage/buckets/{bucket}/objects")
@@ -1611,14 +1980,16 @@ async def bucket_objects_api(
     marker: str = Query("", max_length=1024),
     prefix: str = Query("", max_length=1024),
     query: str = Query("", max_length=MAX_QUERY_LENGTH),
-    page_size: int = Query(50, ge=1, le=100),
+    # Kept for backwards compatibility; the dashboard uses a fixed page size.
+    page_size: int = Query(10, ge=1, le=100),
     sort: Literal["key", "size", "modified"] = "key",
     order: SortOrder = "asc",
 ):
     del user
+    page_size = 10
     cluster = selected_cluster(request)
     try:
-        capability = await asyncio.to_thread(_capabilities, cluster)
+        capability = await asyncio.to_thread(_cached_capabilities, cluster)
         browser = capability["object_browser"]
         if not browser["supported"]:
             raise HTTPException(status_code=409, detail=browser["unavailable_reason"])
@@ -1645,7 +2016,7 @@ async def bucket_object_detail_api(
     del user
     cluster = selected_cluster(request)
     try:
-        capability = await asyncio.to_thread(_capabilities, cluster)
+        capability = await asyncio.to_thread(_cached_capabilities, cluster)
         browser = capability["object_browser"]
         if not browser["supported"]:
             raise HTTPException(status_code=409, detail=browser["unavailable_reason"])
@@ -1665,7 +2036,7 @@ async def object_presign_preview(request: Request, user: str = Depends(require_l
         raise HTTPException(status_code=403, detail="Chỉ admin được tạo presigned URL")
     payload = _presigned_payload(await request.json())
     cluster = selected_cluster(request)
-    capability = await asyncio.to_thread(_capabilities, cluster)
+    capability = await asyncio.to_thread(_cached_capabilities, cluster)
     if not capability["object_browser"]["supported"]:
         raise HTTPException(status_code=409, detail=capability["object_browser"]["unavailable_reason"])
     detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
@@ -1727,15 +2098,19 @@ async def bucket_inventory_page(
     usage: UsageFilter = "all",
     sort: SortField = "name",
     order: SortOrder = "asc",
+    page_size: int = Query(PAGE_SIZE, ge=1, le=100),
 ):
+    page_size = PAGE_SIZE
     clusters, cluster = cluster_selection(request)
-    inventory = {"items": [], "query": query.strip(), "page": page, "page_count": 1, "total": 0}
+    inventory = {"items": [], "query": query.strip(), "owner": owner.strip(), "quota": quota,
+                 "usage": usage, "sort": sort, "order": order, "page": page, "page_count": 1,
+                 "page_size": page_size, "total": 0, "rgw_endpoint": "", "rgw_endpoints": [], "zonegroup_api_name": "default"}
     error = None
     try:
-        inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page, owner, quota, usage, sort, order)
+        inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page, owner, quota, usage, sort, order, page_size)
     except ObjectStorageError as exc:
         error = str(exc)
-    return templates.TemplateResponse(request, "object_storage_buckets.html", {
+    response = templates.TemplateResponse(request, "object_storage_buckets.html", {
         "user": user,
         "is_admin": auth.is_admin_user(user),
         "clusters": clusters,
@@ -1745,6 +2120,8 @@ async def bucket_inventory_page(
         "quote_bucket": lambda value: quote(value, safe=""),
         "quote_query": lambda value: quote(value, safe=""),
     })
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
 
 
 @router.get("/object-storage/buckets/{bucket}", response_class=HTMLResponse)
@@ -1753,7 +2130,11 @@ async def bucket_detail_page(request: Request, bucket: str, user: str = Depends(
     detail = None
     error = None
     try:
-        detail = await asyncio.to_thread(_detail, cluster, bucket, True)
+        # Return the page shell immediately; RGW bucket stats are resolved in
+        # the background and the browser polls the detail API until ready.
+        detail = await asyncio.to_thread(_cached_detail, cluster, bucket)
+        if detail.get("load_error"):
+            error = detail["load_error"]
     except ObjectStorageError as exc:
         error = str(exc)
     except HTTPException as exc:

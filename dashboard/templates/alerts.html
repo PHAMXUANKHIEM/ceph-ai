@@ -89,14 +89,20 @@
             </tbody>
           </table>
         </div>
-        {% if total_pages > 1 %}<nav class="pagination" aria-label="Phân trang cảnh báo">
-          {% if page > 1 %}<a class="btn btn-ghost btn-sm" href="/alerts?page={{ page - 1 }}&{{ filter_query }}">← Trước</a>{% endif %}
-          <span class="hint">Trang {{ page }} / {{ total_pages }}</span>
-          {% if page < total_pages %}<a class="btn btn-ghost btn-sm" href="/alerts?page={{ page + 1 }}&{{ filter_query }}">Sau →</a>{% endif %}
-        </nav>{% endif %}
+        <nav class="dashboard-pagination pagination" aria-label="Phân trang cảnh báo">
+          <span class="pagination-summary" data-mobile-summary="{{ ((page - 1) * page_size + 1) if total_groups else 0 }}–{{ [page * page_size, total_groups]|min }} / {{ total_groups }}">Hiển thị {{ ((page - 1) * page_size + 1) if total_groups else 0 }}–{{ [page * page_size, total_groups]|min }} / {{ total_groups }} mục</span>
+          <div class="pagination-controls">
+            {% if page > 1 %}<a class="pagination-prev" aria-label="Trang trước" href="/alerts?page={{ page - 1 }}&amp;page_size={{ page_size }}&amp;{{ filter_query }}">‹</a>{% else %}<button class="pagination-prev" disabled aria-label="Trang trước">‹</button>{% endif %}
+            <div class="pagination-pages">{% for number in range(1, total_pages + 1) %}<a class="pagination-page-number{% if number == page %} is-active{% endif %}"{% if number == page %} aria-current="page"{% endif %} href="/alerts?page={{ number }}&amp;page_size={{ page_size }}&amp;{{ filter_query }}">{{ number }}</a>{% endfor %}</div>
+            <span class="pagination-mobile-status pagination-status">Trang {{ page }}/{{ total_pages }}</span>
+            {% if page < total_pages %}<a class="pagination-next" aria-label="Trang sau" href="/alerts?page={{ page + 1 }}&amp;page_size={{ page_size }}&amp;{{ filter_query }}">›</a>{% else %}<button class="pagination-next" disabled aria-label="Trang sau">›</button>{% endif %}
+          </div>
+        </nav>
         <p class="hint alert-center-note">Gom nhóm chỉ thay đổi cách hiển thị. Incident gốc và toàn bộ bằng chứng vẫn được giữ trong timeline; hệ thống không tự xoá hay bỏ qua cảnh báo.</p>
       </div>
     </section>
   </main>
+<script src="/static/app.js?v={{ static_version }}"></script>
+<script src="/static/pagination.js?v={{ static_version }}"></script>
 </body>
 </html>

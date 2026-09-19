@@ -1,0 +1,154 @@
+release_id: ceph-ai-phase0-2026-09-14
+target:
+  host: 10.3.55.213
+  repository: /root/ceph-ai
+  branch: main
+  deployed: false
+status: pending_review
+
+application:
+  commit_sha: 6207eaf8
+  rollback_candidate_sha: 9573816c4b106fe55434d2118bd9ab45f2127928
+  worktree: untracked_codex_stage_snapshots_only
+  release_commit: 6207eaf8
+  pushed_to_origin: true
+
+migrations:
+  alembic_head: c2d3e4f5a6b7
+  upgrade_downgrade_tests: passed
+  sqlite_version: 3.26.0
+  full_round_trip: upgrade_head_downgrade_base_upgrade_head_passed_current_wave
+
+artifacts:
+  application_image: localhost/ceph-ai:local
+  rabbitmq_image: docker.io/library/rabbitmq:3.13-management
+  frontend_build: passed_with_node_20_at_/opt/ceph-ai-node20/bin/node
+
+runtime:
+  systemd_units:
+    dashboard: disabled_inactive
+    worker: disabled_inactive
+    watcher: disabled_inactive
+  podman_compose_runtime: running_independently
+  watcher_container: healthy_but_not_owned_by_systemd
+  operator_approval_for_restart: required
+  secrets_permissions: root_only_verified
+  backup_directory: /var/lib/ceph-ai/backups_missing
+  cluster_roles:
+    - name: CS-LAB
+      environment: production
+      active: true
+      per_cluster_autopilot_enabled: true
+      rollout_review: required
+
+feature_flags:
+  global_autopilot_enabled: true
+  configured_cluster_autopilot_enabled: true_for_CS-LAB
+  code_repair_auto_enabled: true
+  log_intelligence_enabled: true
+  log_intelligence_ai_enabled: true
+  note: Global autonomous flags require review before any release rollout.
+
+message_broker:
+  user: ceph_ai
+  vhost: /
+  credential_values_recorded: false
+  production_permission_update:
+    write_includes: amq.default
+    secret_values_exposed: false
+  integration_gate:
+    isolated_vhost: 3_passed
+    production_vhost: not_run_to_completion_shared_queue_has_live_consumers
+
+verification:
+  focused_feature_gate: 176_passed_12_warnings_current_wave_modules
+  object_storage_current_wave_gate: 168_passed_1_warning
+  s3_users_persistent_cache_gate: 28_passed_1_warning
+  migration_cache_alert_gate: 66_passed_12_warnings
+  rgw_audit_evidence_gate: 61_passed_1_warning
+  telegram_enrichment_gate: 70_passed_1_warning
+  settings_wave_gate: 236_passed_3_deselected_2_warnings_1_pagination_contract_fixed
+  settings_pagination_contract_after_fix: 1_passed_1_warning
+  settings_javascript_syntax: passed
+  settings_ai_provider_and_log_intel_gate: 14_passed_1_warning
+  watcher_host_telemetry_cadence_gate: 38_passed_1_warning
+  action_state_event_gate: 11_passed_1_warning
+  broad_deterministic_gate: 3390_passed_13_deselected_12_warnings
+  broad_gate_note: full_canonical_suite_passed_with_isolated_temporary_rabbitmq_vhost; temporary_broker_user_and_vhost_removed_after_gate
+  broad_gate_environment: production_code_repair_lock_isolated_to_temporary_gate_lock
+  final_openstack_module_after_template_fix: 20_passed
+  python_compile: passed
+  diff_check: passed
+  frontend_build: passed_with_node_20
+  alembic_heads: one_head
+  realtime_foundation:
+    rt01_refresh_lifecycle: 17_snapshot_health_tests_passed
+    rt02_collector_metrics: 13_collector_health_tests_passed
+    rt03_process_restart_persistence: passed
+    rt06_snapshot_websocket_notification: 4_dashboard_ws_tests_passed
+    rt07_frontend_visibility_and_refresh_guard: node20_build_passed
+    combined_current_snapshot_gate: 24_passed
+  vitastor_snapshot_alert_gate: 175_passed_1_warning
+  rbd_inventory_gate: 115_passed_1_warning
+  python_compile_current_sha: passed
+  javascript_syntax_current_sha: passed
+  frontend_build_current_sha: passed_with_node_20_at_/opt/ceph-ai-node20/bin/node
+  current_runtime_health_observed: watcher_healthy_after_external_container_restart
+  retry_correlation_gate_current_sha: 342_passed_1_deselected_1_warning_prior_candidate_plus_targeted_current_wave_modules
+  backup_restore_gate_current_wave: 21_engine_3_integrity_11_restore_6_restore_drill_3_ssh_executor_11_s3_13_ssh_storage_passed
+  dashboard_wave_gate_current_wave: 6_block_storage_28_navigation_150_settings_8_alerts_8_pgs_24_crush_passed
+  restore_telegram_regression_gate_current_wave: 177_passed_1_warning
+  telegram_volume_ui_gate_current_wave: 180_passed_1_warning
+  cache_volume_block_storage_gate_current_wave: 123_passed_1_warning
+  telegram_block_volume_followup_gate_current_wave: 152_passed_1_warning
+  nightly_report_gate: 4_passed
+  migration_unit_gate: 10_passed_11_warnings
+  migration_round_trip_gate: passed_on_disposable_sqlite_database
+  dashboard_inventory_interaction_gate: 260_passed_1_warning
+  trash_lifecycle_gate: 113_passed_1_warning
+  block_storage_usage_and_chat_gate: 7_passed_1_warning
+  trash_restore_preflight_gate: 31_passed_82_deselected_1_warning
+  cache_metadata_chat_layout_gate: 8_passed_1_warning
+  trash_usage_telemetry_gate: 4_passed_224_deselected_1_warning
+  trash_usage_and_monitoring_wave_gate: 474_passed_11_warnings
+  migration_round_trip_current_wave: passed_upgrade_head_downgrade_base_upgrade_head
+  frontend_build_current_wave: passed_with_node_20_at_/opt/ceph-ai-node20/bin/node
+  crush_map_workspace_gate: 44_passed_1_warning
+  crush_map_javascript_syntax: passed
+  crush_map_frontend_build: passed_with_node_20
+  dashboard_resource_workspace_gate: 235_passed_1_warning
+  backup_cinder_workspace_gate: 96_passed_1_warning
+  dashboard_resource_static_gates: python_compile_diff_check_javascript_syntax_passed
+  dashboard_resource_frontend_build: passed_with_node_20
+  cluster_user_restore_settings_gate: 322_passed_2_warnings
+  settings_navigation_javascript_syntax: passed
+  phase10_failure_concurrency_cancellation_gate: 258_passed_1_warning
+  object_storage_audit_workspace_gate: 152_passed_1_warning
+  object_storage_render_guard_gate: 106_passed_1_warning
+  convert_cephadm_redesign_gate: 44_passed_1_warning
+  broad_current_candidate_gate: not_recorded_full_run_output_lost
+  broad_segmented_current_candidate_gate:
+    non_migration_suite: 3344_passed_3_broker_environment_failures_reproduced_then_isolated
+    migration_suite: 10_passed_11_warnings
+    rabbitmq_isolated_vhost_suite: 3_passed_1_warning
+    result: all_code_tests_passed_when_rabbitmq_gate_used_isolated_runtime_vhost
+    deselected: 13
+    non_migration_elapsed: 1306.45_seconds
+  current_wave_expanded_gate: 474_passed_11_warnings
+
+deployment_gate:
+  deterministic_tests: passed
+  broker: passed_in_isolated_release_gate_vhost
+  worktree_review: blocked_untracked_codex_stage_snapshots
+  runtime_ownership: blocked_pending_operator_decision
+  global_autonomy_flags: review_required
+  per_cluster_autopilot: blocked_pending_operator_decision
+  backup_location: blocked_missing_configured_directory
+  budget_observation: watcher_log_reports_monthly_ai_budget_at_159_5_percent
+  release_manifest: this_file
+  deploy: blocked
+
+rollback:
+  approved_sha: null
+  procedure: Plan/end-to-end-feature-completion-and-deployment-plan.md
+  automatic_rollback_enabled: false

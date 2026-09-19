@@ -15,6 +15,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.drop_index("uq_backup_jobs_active_rbd_run", table_name="backup_jobs")
     with op.batch_alter_table("backup_jobs") as batch_op:
         batch_op.alter_column(
             "size_bytes",
@@ -22,9 +23,17 @@ def upgrade() -> None:
             type_=sa.BigInteger(),
             existing_nullable=True,
         )
+    op.execute(
+        """
+        CREATE UNIQUE INDEX uq_backup_jobs_active_rbd_run
+        ON backup_jobs (COALESCE(cluster_id, ''), pool, image)
+        WHERE status = 'RUNNING'
+        """
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_backup_jobs_active_rbd_run", table_name="backup_jobs")
     with op.batch_alter_table("backup_jobs") as batch_op:
         batch_op.alter_column(
             "size_bytes",
@@ -32,3 +41,10 @@ def downgrade() -> None:
             type_=sa.Integer(),
             existing_nullable=True,
         )
+    op.execute(
+        """
+        CREATE UNIQUE INDEX uq_backup_jobs_active_rbd_run
+        ON backup_jobs (COALESCE(cluster_id, ''), pool, image)
+        WHERE status = 'RUNNING'
+        """
+    )

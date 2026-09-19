@@ -22,7 +22,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("incidents", "muted_by")
-    op.drop_column("incidents", "muted_until")
-    op.drop_column("incidents", "acknowledged_by")
-    op.drop_column("incidents", "acknowledged_at")
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_column("muted_by")
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_column("muted_until")
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_column("acknowledged_by")
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_column("acknowledged_at")

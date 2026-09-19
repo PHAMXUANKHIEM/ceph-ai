@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 from watcher import remediation_main
 from config.settings import settings
 
@@ -14,6 +16,21 @@ def test_fast_watcher_polls_and_publishes_every_tick(monkeypatch, tmp_path):
     monkeypatch.setattr(remediation_main.db, "SessionLocal", lambda: FakeSession())
     monkeypatch.setattr(remediation_main, "get_default_cluster_id", lambda _session: "cluster-1")
     monkeypatch.setattr(remediation_main, "resolve_ssh_creds", lambda cluster: ("root", "/key", "none", ""))
+    lock_events = []
+
+    @contextmanager
+    def fake_health_lock(cluster_id):
+        lock_events.append(("enter", cluster_id))
+        try:
+            yield
+        finally:
+            lock_events.append(("exit", cluster_id))
+
+    monkeypatch.setattr(
+        remediation_main.cluster_snapshot_collector,
+        "health_collection_lock",
+        fake_health_lock,
+    )
     health_calls = []
     monkeypatch.setattr(
         remediation_main.ceph_client, "query_cluster_health_with",
@@ -30,6 +47,10 @@ def test_fast_watcher_polls_and_publishes_every_tick(monkeypatch, tmp_path):
     assert [row[0] for row in calls] == ["resolve", "reconcile", "verify", "publish"] * 2
     assert calls[3][3]["cluster_id"] == "cluster-1"
     assert health_calls[0][0][0] == ["10.0.0.1", "10.0.0.2"]
+    assert lock_events == [
+        ("enter", "cluster-1"), ("exit", "cluster-1"),
+        ("enter", "cluster-1"), ("exit", "cluster-1"),
+    ]
 
 
 def test_second_watcher_instance_refuses_to_run(monkeypatch, tmp_path):

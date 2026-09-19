@@ -191,6 +191,7 @@ def create_or_resolve_device_health_incidents(current: dict[str, dict]) -> None:
     osd_latency_monitor.py) for each NEWLY created Incident only — this
     module previously created the Incident/Action silently with no
     notification at all, unlike its two sibling hardware monitors."""
+    pending_alerts = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -251,5 +252,7 @@ def create_or_resolve_device_health_incidents(current: dict[str, dict]) -> None:
             )
 
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                send_node_alert(detail["host"] or detail["mon_host"], rationale)
+                pending_alerts.append((detail["host"] or detail["mon_host"], rationale))
         session.commit()
+    for host, rationale in pending_alerts:
+        send_node_alert(host, rationale)

@@ -39,6 +39,12 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("uq_incidents_inflight_cluster_code", table_name="incidents")
+    # SQLite cannot drop a column with plain ALTER TABLE when the table has
+    # expression/partial indexes; Alembic's batch implementation rebuilds the
+    # table.  Expression indexes are not reflected by SQLite's inspector, so
+    # recreate the legacy index after the rebuild.
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_column("dedupe_key")
     op.create_index(
         "uq_incidents_inflight_cluster_code",
         "incidents",
@@ -47,4 +53,3 @@ def downgrade() -> None:
         postgresql_where=sa.text(_IN_FLIGHT),
         sqlite_where=sa.text(_IN_FLIGHT),
     )
-    op.drop_column("incidents", "dedupe_key")

@@ -19,4 +19,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("backup_jobs", "sha256")
+    op.drop_index("uq_backup_jobs_active_rbd_run", table_name="backup_jobs")
+    with op.batch_alter_table("backup_jobs") as batch_op:
+        batch_op.drop_column("sha256")
+    op.execute(
+        """
+        CREATE UNIQUE INDEX uq_backup_jobs_active_rbd_run
+        ON backup_jobs (COALESCE(cluster_id, ''), pool, image)
+        WHERE status = 'RUNNING'
+        """
+    )

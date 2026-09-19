@@ -606,6 +606,7 @@ def test_restore_propose_rejects_image_not_in_tracked_images(dashboard_client, m
 
 def test_restore_propose_creates_pending_risky_action(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    _stub_restore_in_place_preflight(monkeypatch)
     monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
     _seed_successful_full()
     _login(dashboard_client)
@@ -629,11 +630,13 @@ def test_restore_propose_creates_pending_risky_action(dashboard_client, monkeypa
         assert params["pool"] == "vms"
         assert params["image"] == "disk1"
         assert params["recovery_point_job_id"]
+        assert params["preflight"]["passed"] is True
         assert json.loads(action.target_nodes) == ["10.20.1.112"]
 
 
 def test_restore_propose_rejects_second_proposal_while_one_pending(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}, {"pool": "vms", "image": "disk2"}])
+    _stub_restore_in_place_preflight(monkeypatch)
     monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
     _seed_successful_full(image="disk1")
     _seed_successful_full(image="disk2")
@@ -646,8 +649,21 @@ def test_restore_propose_rejects_second_proposal_while_one_pending(dashboard_cli
     assert second.status_code == 409
 
 
+def test_restore_propose_rejects_attached_source_before_destructive_action(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    _stub_restore_in_place_preflight(monkeypatch, watchers=[{"address": "10.0.0.5"}])
+    _seed_successful_full()
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/backups/restore/propose", json={"pool": "vms", "image": "disk1"})
+
+    assert response.status_code == 409
+    assert "source_attached" in response.json()["detail"]["blockers"]
+
+
 def test_restore_propose_requires_ceph_mon_nodes_configured(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    _stub_restore_in_place_preflight(monkeypatch)
     monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "", raising=False)
     _seed_successful_full()
     _login(dashboard_client)
@@ -659,6 +675,7 @@ def test_restore_propose_requires_ceph_mon_nodes_configured(dashboard_client, mo
 
 def test_backups_page_shows_pending_restore_action_with_approve_reject(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    _stub_restore_in_place_preflight(monkeypatch)
     monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
     _seed_successful_full()
     _login(dashboard_client)
@@ -696,6 +713,14 @@ def _stub_restore_as_new_preflight(monkeypatch, inventory=None, max_available=10
     monkeypatch.setattr(
         backups_route.ceph_client, "query_rbd_image_detail",
         lambda pool, image: {"watchers": [], "snapshots": [], "children": [], "partial_errors": {}},
+    )
+
+
+def _stub_restore_in_place_preflight(monkeypatch, **source):
+    monkeypatch.setattr(
+        backups_route.ceph_client,
+        "query_rbd_image_detail",
+        lambda pool, image: {"watchers": [], "snapshots": [], "children": [], "partial_errors": {}, **source},
     )
 
 
@@ -777,6 +802,9 @@ def test_backups_page_uses_restore_as_new_as_safe_default(dashboard_client, monk
 
     assert "Khôi phục thành volume mới" in response.text
     assert "không thay đổi volume nguồn" in response.text
+    assert 'id="backup-restore-dialog"' in response.text
+    assert "Kiểm tra &amp; tạo đề xuất" in response.text
+    assert "window.prompt" not in response.text
 
 
 def test_recovery_points_api_returns_exact_full_and_incremental_chains(dashboard_client, monkeypatch):
@@ -871,10 +899,30 @@ def test_admin_can_queue_manual_metadata_backup(dashboard_client, monkeypatch):
         assert action.status == ActionStatus.APPROVED.value
 
 
+def test_admin_can_queue_configured_restore_drill(dashboard_client, monkeypatch):
+    monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
+    monkeypatch.setattr(
+        backups_route,
+        "load_backup_policy",
+        lambda: {"restore_drill": {"pool": "vms", "image": "disk1", "scratch_pool": "scratch", "scratch_image": "drill01"}},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/backups/restore-drill/run-now", json={})
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "restore_drill_execute"
+        assert action.status == ActionStatus.APPROVED.value
+        assert "scratch" in action.rationale
+
+
 def test_backup_operations_reject_non_admin(dashboard_client, monkeypatch):
     _login(dashboard_client)
     monkeypatch.setattr(backups_route.auth, "is_admin_user", lambda _user: False)
 
     assert dashboard_client.post("/backups/run-now", json={}).status_code == 403
     assert dashboard_client.post("/backups/metadata/run-now", json={}).status_code == 403
+    assert dashboard_client.post("/backups/restore-drill/run-now", json={}).status_code == 403
     assert dashboard_client.post("/backups/restore/propose", json={}).status_code == 403

@@ -40,6 +40,10 @@ def _users_context(
     user_chat_scope_success: str | None = None,
     user_delete_error: str | None = None,
     user_delete_success: str | None = None,
+    user_edit_error: str | None = None,
+    user_edit_success: str | None = None,
+    user_password_error: str | None = None,
+    user_password_success: str | None = None,
 ) -> dict:
     return {
         "user": user,
@@ -51,6 +55,10 @@ def _users_context(
         "user_chat_scope_success": user_chat_scope_success,
         "user_delete_error": user_delete_error,
         "user_delete_success": user_delete_success,
+        "user_edit_error": user_edit_error,
+        "user_edit_success": user_edit_success,
+        "user_password_error": user_password_error,
+        "user_password_success": user_password_success,
     }
 
 
@@ -171,6 +179,84 @@ async def toggle_ceph_chat_scope(
     return templates.TemplateResponse(
         request, "users.html",
         _users_context(user, user_chat_scope_success=f"User {username!r} hiện {state}."),
+    )
+
+
+@router.post("/users/{user_id}/edit", response_class=HTMLResponse)
+async def edit_user(
+    request: Request,
+    user_id: str,
+    user: str = Depends(require_login),
+    edit_username: str = Form(""),
+    edit_is_admin: str = Form(""),
+    edit_chat_ai: str = Form(""),
+):
+    """Update the editable account profile without touching login sessions."""
+    _require_admin_privilege(user)
+    username = edit_username.strip()
+    is_admin_flag = edit_is_admin.lower() in ("on", "true", "1")
+    ai_enabled = edit_chat_ai.lower() in ("on", "true", "1")
+
+    error: str | None = None
+    with db.SessionLocal() as session:
+        target = session.get(User, user_id)
+        if target is None:
+            error = "Không tìm thấy user."
+        elif not username:
+            error = "Username không được để trống."
+        elif username == settings.dashboard_username and username != target.username:
+            error = f"Username {username!r} đã được dùng cho tài khoản admin gốc (.env)."
+        elif target.username == user and username != target.username:
+            error = "Không thể đổi username của tài khoản đang đăng nhập trong phiên hiện tại."
+        elif target.username != username and session.query(User).filter(User.username == username).first() is not None:
+            error = f"Username {username!r} đã tồn tại."
+        elif target.username == user and not is_admin_flag:
+            error = "Không thể tự hạ quyền admin của tài khoản đang đăng nhập."
+        else:
+            target.username = username
+            target.is_admin = is_admin_flag
+            target.ceph_chat_restricted = False if is_admin_flag else not ai_enabled
+            session.commit()
+
+    if error:
+        return templates.TemplateResponse(request, "users.html", _users_context(user, user_edit_error=error))
+    return templates.TemplateResponse(
+        request,
+        "users.html",
+        _users_context(user, user_edit_success=f"Đã cập nhật user {username!r}."),
+    )
+
+
+@router.post("/users/{user_id}/change-password", response_class=HTMLResponse)
+async def change_user_password(
+    request: Request,
+    user_id: str,
+    user: str = Depends(require_login),
+    new_password: str = Form(""),
+    new_password_confirm: str = Form(""),
+):
+    _require_admin_privilege(user)
+    error: str | None = None
+    username = "user"
+    with db.SessionLocal() as session:
+        target = session.get(User, user_id)
+        if target is None:
+            error = "Không tìm thấy user."
+        elif len(new_password) < MIN_USER_PASSWORD_LENGTH:
+            error = f"Mật khẩu phải có ít nhất {MIN_USER_PASSWORD_LENGTH} ký tự."
+        elif new_password != new_password_confirm:
+            error = "Mật khẩu nhập lại không khớp."
+        else:
+            username = target.username
+            target.password_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+            session.commit()
+
+    if error:
+        return templates.TemplateResponse(request, "users.html", _users_context(user, user_password_error=error))
+    return templates.TemplateResponse(
+        request,
+        "users.html",
+        _users_context(user, user_password_success=f"Đã đổi mật khẩu cho user {username!r}."),
     )
 
 

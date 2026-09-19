@@ -15,6 +15,7 @@ SHARED_NAV_PATHS = {
     "/upgrade",
     "/patch",
     "/convert-cluster",
+    "/ai-learning",
     "/backups",
     "/restore-cluster",
     "/settings",
@@ -245,13 +246,11 @@ def test_tablet_rail_is_static_and_mobile_restores_full_labels():
     assert ".app-shell .nav-link-label { display: inline; }" in css
 
 
-def test_collapsed_desktop_rail_keeps_a_real_icon_width_and_no_pseudo_fragments():
+def test_sidebar_collapse_feature_is_removed_without_pseudo_fragments():
     css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
 
-    assert "body.app-shell.sidebar-collapsed .main-nav" in css
-    assert "align-self: stretch !important" in css
-    assert "width: 100% !important" in css
-    assert "body.app-shell.sidebar-collapsed .nav-link::before { content: none; }" in css
+    assert "sidebar-collapsed" not in css
+    assert "body.app-shell.sidebar-collapsed .main-nav" not in css
     assert ".app-shell .nav-link::before { content: none; }" in css
 
 
@@ -272,3 +271,78 @@ def test_block_storage_create_panel_does_not_repeat_action_policy_copy():
     assert "Action RISKY" not in markup
     assert "cần phê duyệt trước khi thực thi" not in markup
     assert "Đề xuất tạo Volume" in markup
+
+
+def test_dashboard_approval_copy_uses_the_short_vietnamese_label():
+    markup = (TEMPLATE_DIR / "index.html").read_text(encoding="utf-8")
+
+    assert "Chờ duyệt</h2>" in markup
+    assert "Risky Action" not in markup
+    assert "Tự động mở khi có yêu cầu duyệt mới" in markup
+
+
+def test_block_storage_does_not_repeat_count_and_page_capacity_copy():
+    markup = (TEMPLATE_DIR / "block_storage.html").read_text(encoding="utf-8")
+    script = Path("dashboard/static/block_storage.js").read_text(encoding="utf-8")
+
+    assert "tối đa" not in markup
+    assert "block-storage-filter-result" not in markup
+    assert "kết quả" not in script
+    assert "if (input && reset && empty)" in script
+
+
+PAGINATION_PAGES = {
+    "alerts.html": "pagination",
+    "pgs.html": "pg-pagination",
+    "settings.html": "action-policy-pagination",
+    "crush_map.html": "crush-history-pagination",
+    "volumes.html": "trash-pagination",
+}
+
+
+def test_every_pagination_bar_marks_its_status_element():
+    """Số trang được căn giữa bằng `grid-column: 2`, không dựa vào thứ tự —
+    nút Trước/Sau là có điều kiện, nên khi một nút vắng mặt thì
+    :first-child/:last-child trỏ sang nhầm phần tử và số trang lệch khỏi tâm."""
+    for name in PAGINATION_PAGES:
+        markup = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
+        assert "pagination-status" in markup, f"{name} thiếu .pagination-status"
+
+
+def test_pagination_status_rule_wins_the_first_last_child_tie():
+    """`.pagination > .pagination-status` và `.pagination > :first-child` có
+    cùng độ đặc hiệu (0,2,0), nên rule đứng sau mới thắng. Đảo thứ tự là số
+    trang lại rơi về cột 1 ở trang cuối."""
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+    first = css.index(".pagination > :first-child")
+    last = css.index(".pagination > :last-child")
+    status = css.index(".pagination > .pagination-status")
+    assert status > first and status > last
+
+
+def test_pagination_uses_three_column_grid():
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+    assert "grid-template-columns: 1fr auto 1fr;" in css
+    assert ".pagination-end { display: flex;" in css
+
+
+def test_hidden_nav_links_really_disappear():
+    """`.nav-link` đặt `display:flex` nên nó thắng `[hidden]{display:none}` của
+    trình duyệt (cùng độ ưu tiên, author > UA). Trang Buckets có một `<a hidden
+    class="nav-link">` nằm thẳng trong `<body>`; `body{display:flex}` biến nó
+    thành flex item với flex-basis 100%, bóp `.app-body` (flex-basis 0) xuống
+    0px và cả trang biến mất."""
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+
+    assert ".nav-link[hidden] { display: none; }" in css or ".nav-link[hidden]{display:none}" in css
+
+
+def test_body_level_nav_link_cannot_starve_the_page_column():
+    """Chặn tái phát ở tầng markup: nếu một `.nav-link` lại xuất hiện làm con
+    trực tiếp của `<body>` mà không có `hidden`, nó sẽ ăn hết chiều ngang."""
+    import re
+
+    markup = Path("dashboard/templates/object_storage_buckets.html").read_text(encoding="utf-8")
+    body = markup[markup.index("<body>"):]
+    strays = re.findall(r'<a\b(?![^>]*\bhidden\b)[^>]*class="nav-link[^"]*"[^>]*>', body[:body.index("<div class=\"app-body\">")])
+    assert not strays, f"nav-link không có hidden nằm ở cấp body: {strays}"

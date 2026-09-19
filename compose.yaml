@@ -19,15 +19,28 @@ x-app: &app
     - /run/ceph-ai:/run/ceph-ai:rw
     - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
 
+# Resource policy for the 8-vCPU host.  The hard CPU caps below total 6.0
+# CPUs, leaving at least 2 CPUs for the host OS, Ceph, SSH and short-lived
+# maintenance commands.  memswap_limit == mem_limit keeps normal application
+# work out of swap even when an optional host swapfile is enabled.
+
 services:
   dashboard-web:
     <<: *app
+    cpus: "0.50"
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 256
     command: ["python", "-m", "uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000"]
     ports: ["8000:8000"]
     volumes:
       - ./:/app:ro
-      - /run/ceph-ai:/run/ceph-ai:rw
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      # Dashboard only needs read access to service heartbeats plus the
+      # dedicated restart socket. Do not expose the whole runtime directory.
+      - /run/ceph-ai/worker.json:/run/ceph-ai/worker.json:ro
+      - /run/ceph-ai/watcher.json:/run/ceph-ai/watcher.json:ro
+      - /run/ceph-ai/container-restart.sock:/run/ceph-ai/container-restart.sock
       - /root/.local:/opt/ai-tools:ro
       - /root/.codex/packages:/opt/codex-packages:ro
       # codex_home/claude_config_dir (config/settings.py) resolve under the
@@ -57,6 +70,10 @@ services:
 
   telegram-ai:
     <<: *app
+    cpus: "0.50"
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
     command: ["python", "-m", "worker.telegram_gateway"]
     volumes:
       - ./:/app:ro
@@ -95,23 +112,43 @@ services:
 
   full-executor:
     <<: *app
+    # AI chat executor budget. Benchmark actions run in a separate child
+    # process inside the Worker cgroup and have their own one-CPU limit.
+    cpus: "1.00"
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 256
+    user: "10001:10001"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
     command: ["python", "-m", "uvicorn", "worker.full_executor:app", "--host", "0.0.0.0", "--port", "8787"]
-    privileged: true
     volumes:
-      - ./:/app:rw
-      - /run/ceph-ai:/run/ceph-ai:rw
-      - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
-      - /root/.local:/root/.local:ro
-      - /root/.codex/packages:/root/.codex/packages:ro
-      - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
-      - ${SSH_KEY_PATH}.pub:${SSH_KEY_PATH}.pub:ro
-      - /etc/ceph-ai-secrets/single-full-executor.token:/run/secrets/single-full-executor.token:ro
+      # The application source is baked into the image. Ceph mutations use
+      # the selected cluster's SSH boundary; no live checkout is mounted.
+      - /var/lib/ceph-ai:/var/lib/ceph-ai:ro
+      - /root/.local:/opt/ai-tools:ro
+      - /root/.codex/packages:/opt/codex-packages:ro
+      - /var/lib/ceph-ai/full-executor-accounts:/opt/full-executor-accounts:ro
+      - /var/lib/ceph-ai/full-executor-ssh/id_ed25519:/tmp/full-executor-id_ed25519:ro
+      - /var/lib/ceph-ai/full-executor-ssh/id_ed25519.pub:/tmp/full-executor-id_ed25519.pub:ro
+      - /var/lib/ceph-ai/full-executor-secrets/token:/tmp/single-full-executor.token:ro
     environment:
-      CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
-      CEPH_AI_RUNTIME_DIR: /run/ceph-ai
+      CEPH_AI_ENV_FILE: /dev/null
+      CEPH_AI_RUNTIME_DIR: /tmp/ceph-ai
+      CEPH_AI_DUAL_EXECUTION_LOCK_PATH: /tmp/ceph-ai/dual-ai-execution.lock
       CEPH_AI_CONTAINERIZED: "true"
-      SINGLE_FULL_EXECUTOR_TOKEN_FILE: /run/secrets/single-full-executor.token
+      HOME: /home/aiagent
+      PATH: /opt/ai-tools/bin:/opt/codex-packages/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      CODEX_HOME: /opt/full-executor-accounts/codex
+      CLAUDE_CONFIG_DIR: /opt/full-executor-accounts/claude
+      SSH_KEY_PATH: /tmp/full-executor-id_ed25519
+      CEPH_AI_EXECUTOR_SSH_KEY_PATH: /tmp/full-executor-id_ed25519
+      SINGLE_FULL_EXECUTOR_TOKEN_FILE: /tmp/single-full-executor.token
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('full-executor', stale_after_seconds=30)['healthy'])\" && curl -fsS http://127.0.0.1:8787/healthz"]
       interval: 15s
@@ -120,6 +157,10 @@ services:
 
   watcher:
     <<: *app
+    cpus: "1.50"
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
     command: ["python", "-m", "watcher.main"]
     volumes:
       - ./:/app:ro
@@ -147,6 +188,10 @@ services:
 
   vault-monitor:
     <<: *app
+    cpus: "0.25"
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
     command: ["python", "-m", "watcher.vault_monitor"]
     volumes:
       - ./:/app:ro
@@ -159,6 +204,10 @@ services:
 
   worker:
     <<: *app
+    cpus: "2.00"
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
     command: ["python", "-m", "worker.main"]
     volumes:
       - ./:/app:ro
@@ -185,6 +234,10 @@ services:
 
   code-repair:
     <<: *app
+    cpus: "0.25"
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
     command: ["python", "-m", "worker.code_repair_supervisor"]
     volumes:
       - ./:/app:rw

@@ -732,3 +732,10 @@ def test_recent_resolved_finding_is_kept(isolated_db, monkeypatch):
     _obs, _runs, findings_deleted = log_intel.prune_old_rows(now=now)
 
     assert findings_deleted == 0
+
+
+def test_rgw_errno_107_focus_matches_transport_endpoint_pattern():
+    assert log_intel._matches_focus(
+        "rgw watcher librados: RGWWatcher::handle_error err (<N>) Transport endpoint is not connected",
+        "-107",
+    )

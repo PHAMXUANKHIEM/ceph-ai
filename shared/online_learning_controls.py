@@ -4,11 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from shared.models import (
-    OnlineLearnerControl,
-    OnlineLearnerOperatorAudit,
-    OnlineLearnerState,
-)
+from shared.models import OnlineLearnerControl, OnlineLearnerOperatorAudit, OnlineLearnerState
 
 RUNNING = "RUNNING"
 PAUSED = "PAUSED"
@@ -35,42 +31,22 @@ def get_control(session, *, cluster_id: str | None, host: str, metric: str):
     ).one_or_none()
 
 
-def is_paused(session, *, cluster_id: str | None, host: str, metric: str) -> bool:
-    """Return True only for an explicitly persisted PAUSED control.
-
-    A missing control is RUNNING.  Database read failures are intentionally
-    not swallowed by this helper; the caller's transaction must fail closed.
-    """
-
-    control = get_control(session, cluster_id=cluster_id, host=host, metric=metric)
-    return bool(control and control.status == PAUSED)
-
-
-def _audit(
-    session, *, cluster_key: str, host: str, metric: str, action: str,
-    actor: str, reason: str, target_id: str | None = None,
-    now: datetime | None = None,
-) -> OnlineLearnerOperatorAudit:
+def _audit(session, *, cluster_key: str, host: str, metric: str, action: str,
+           actor: str, reason: str, target_id: str | None = None,
+           now: datetime | None = None):
     row = OnlineLearnerOperatorAudit(
-        cluster_key=cluster_key,
-        host=host,
-        metric=metric,
-        action=action,
-        actor=(actor or "unknown")[:64],
-        reason=(reason or "operator control")[:4000],
-        target_id=target_id,
-        created_at=now or datetime.utcnow(),
+        cluster_key=cluster_key, host=host, metric=metric, action=action,
+        actor=(actor or "unknown")[:64], reason=(reason or "operator control")[:4000],
+        target_id=target_id, created_at=now or datetime.utcnow(),
     )
     session.add(row)
     session.flush()
     return row
 
 
-def set_status(
-    session, *, cluster_id: str | None, host: str, metric: str,
-    status: str, actor: str, reason: str,
-    now: datetime | None = None,
-) -> OnlineLearnerControl:
+def set_status(session, *, cluster_id: str | None, host: str, metric: str,
+               status: str, actor: str, reason: str,
+               now: datetime | None = None) -> OnlineLearnerControl:
     cluster_key, normalized_host, normalized_metric = normalize_scope(
         cluster_id=cluster_id, host=host, metric=metric,
     )
@@ -85,14 +61,9 @@ def set_status(
     ).one_or_none()
     if row is None:
         row = OnlineLearnerControl(
-            cluster_key=cluster_key,
-            host=normalized_host,
-            metric=normalized_metric,
-            status=normalized_status,
-            reason=reason.strip(),
-            updated_by=(actor or "unknown")[:64],
-            created_at=when,
-            updated_at=when,
+            cluster_key=cluster_key, host=normalized_host, metric=normalized_metric,
+            status=normalized_status, reason=reason.strip(),
+            updated_by=(actor or "unknown")[:64], created_at=when, updated_at=when,
         )
         session.add(row)
     else:
@@ -101,25 +72,16 @@ def set_status(
         row.updated_by = (actor or "unknown")[:64]
         row.updated_at = when
     _audit(
-        session,
-        cluster_key=cluster_key,
-        host=normalized_host,
-        metric=normalized_metric,
+        session, cluster_key=cluster_key, host=normalized_host, metric=normalized_metric,
         action="PAUSE" if normalized_status == PAUSED else "RESUME",
-        actor=actor,
-        reason=reason,
-        now=when,
+        actor=actor, reason=reason, now=when,
     )
     session.flush()
     return row
 
 
-def reset_state(
-    session, *, cluster_id: str | None, host: str, metric: str,
-    actor: str, reason: str, now: datetime | None = None,
-) -> int:
-    """Delete only the selected durable learner state and audit the reset."""
-
+def reset_state(session, *, cluster_id: str | None, host: str, metric: str,
+                actor: str, reason: str, now: datetime | None = None) -> int:
     cluster_key, normalized_host, normalized_metric = normalize_scope(
         cluster_id=cluster_id, host=host, metric=metric,
     )
@@ -131,14 +93,8 @@ def reset_state(
     for row in rows:
         session.delete(row)
     _audit(
-        session,
-        cluster_key=cluster_key,
-        host=normalized_host,
-        metric=normalized_metric,
-        action="RESET_STATE",
-        actor=actor,
-        reason=reason,
-        now=now,
+        session, cluster_key=cluster_key, host=normalized_host, metric=normalized_metric,
+        action="RESET_STATE", actor=actor, reason=reason, now=now,
     )
     session.flush()
     return len(rows)

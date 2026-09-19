@@ -24,6 +24,35 @@ def test_reconcile_rename_and_restore_require_destination_name():
         reconcile("rbd_rename_volume", {"new_image": "other"}, '{"name":"vm-new"}')
 
 
+def test_reconcile_clone_and_flatten_require_expected_destination():
+    reconcile("rbd_clone_volume", {"dest_image": "vm-copy", "size_bytes": 1024},
+              '{"name":"vm-copy", "size":1024}')
+    reconcile("rbd_flatten_volume", {"image": "vm-copy"}, '{"name":"vm-copy"}')
+    with pytest.raises(ExecutorError, match="destination"):
+        reconcile("rbd_clone_volume", {"dest_image": "other"}, '{"name":"vm-copy"}')
+
+
+def test_reconcile_template_requires_protected_snapshot():
+    reconcile("rbd_template_mark", {"snapshot": "gold"},
+              '[{"name":"gold","protected":true}]')
+    with pytest.raises(ExecutorError, match="protected snapshot"):
+        reconcile("rbd_template_mark", {"snapshot": "gold"},
+                  '[{"name":"gold","protected":false}]')
+
+
+def test_reconcile_qos_requires_all_approved_values_and_read_only_recovery_command():
+    params = {
+        "pool_name": "vms", "image": "vm-01", "rbd_qos_iops_limit": 500,
+        "rbd_qos_bps_limit": 0, "rbd_qos_iops_burst": 600, "rbd_qos_bps_burst": 0,
+    }
+    reconcile("rbd_qos_set", params, json.dumps({"options": {
+        "rbd_qos_iops_limit": "500", "rbd_qos_iops_burst": "600",
+    }}))
+    with pytest.raises(ExecutorError, match="QoS post-check mismatch"):
+        reconcile("rbd_qos_set", params, '{"options":{"rbd_qos_iops_limit":"400"}}')
+    assert reconciliation_command("rbd_qos_set", params) == "rbd config image list vms/vm-01 --format json"
+
+
 def test_reconcile_trash_move_and_purge_verify_membership():
     trash = json.dumps([{"id": "id-1", "name": "vm-old"}, {"id": "keep", "name": "other"}])
 
@@ -47,8 +76,18 @@ def test_reconciliation_command_is_read_only_and_validated():
     trash_command = reconciliation_command(
         "rbd_trash_purge_all", {"pool_name": "vms", "trash_ids": ["id-1"]}
     )
+    clone_command = reconciliation_command(
+        "rbd_clone_volume", {"pool_name": "vms", "dest_pool": "images", "dest_image": "vm-copy",
+                              "image": "vm", "snapshot": "gold"}
+    )
+    template_command = reconciliation_command(
+        "rbd_template_mark", {"pool_name": "vms", "image": "vm", "snapshot": "gold",
+                               "template_name": "gold", "description": ""}
+    )
 
     assert command == "rbd info vms/vm-01 --format json"
     assert trash_command == "rbd trash ls vms --format json"
+    assert clone_command == "rbd info images/vm-copy --format json"
+    assert template_command == "rbd snap ls vms/vm --format json"
     assert "resize" not in command
     assert " rm " not in trash_command

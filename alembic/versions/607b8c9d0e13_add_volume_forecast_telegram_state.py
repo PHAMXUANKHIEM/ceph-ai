@@ -20,4 +20,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_volume_early_forecasts_telegram_sent_at", table_name="volume_early_forecasts")
-    op.drop_column("volume_early_forecasts", "telegram_sent_at")
+    with op.batch_alter_table("volume_early_forecasts") as batch_op:
+        batch_op.drop_column("telegram_sent_at")

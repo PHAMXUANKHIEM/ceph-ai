@@ -9,6 +9,10 @@ def _login(client):
     client.post("/login", data={"username": "admin", "password": "admin"})
 
 
+def _confirmation():
+    return settings.cluster_name.strip() or "Cụm mặc định"
+
+
 def test_unauthenticated_get_redirects_to_login(dashboard_client):
     response = dashboard_client.get("/delete-cluster", follow_redirects=False)
     assert response.status_code == 303
@@ -39,7 +43,9 @@ def test_propose_creates_pending_action_for_manual_exec_mode(dashboard_client, m
     monkeypatch.setattr(settings, "ceph_exec_mode", "none")
     _login(dashboard_client)
 
-    response = dashboard_client.post("/delete-cluster/propose", json={"wipe_osd_disks": False})
+    response = dashboard_client.post(
+        "/delete-cluster/propose", json={"wipe_osd_disks": False, "confirmation": _confirmation()}
+    )
 
     assert response.status_code == 201
     action_pk = response.json()["action_id"]
@@ -69,7 +75,9 @@ def test_propose_creates_pending_action_for_cephadm_exec_mode(dashboard_client, 
     monkeypatch.setattr(settings, "ceph_exec_mode", "cephadm")
     _login(dashboard_client)
 
-    response = dashboard_client.post("/delete-cluster/propose", json={"wipe_osd_disks": False})
+    response = dashboard_client.post(
+        "/delete-cluster/propose", json={"wipe_osd_disks": False, "confirmation": _confirmation()}
+    )
 
     assert response.status_code == 201
     action_pk = response.json()["action_id"]
@@ -86,7 +94,7 @@ def test_propose_with_wipe_requires_osd_disk_per_node(dashboard_client, monkeypa
     _login(dashboard_client)
 
     response = dashboard_client.post(
-        "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": {}}
+        "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": {}, "confirmation": _confirmation()}
     )
     assert response.status_code == 400
     assert "đĩa OSD" in response.json()["detail"]
@@ -98,7 +106,7 @@ def test_propose_with_wipe_and_valid_disks_succeeds(dashboard_client, monkeypatc
 
     osd_disks = {ip: ["/dev/vdc"] for ip in settings.ceph_osd_nodes.split(",")}
     response = dashboard_client.post(
-        "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": osd_disks}
+        "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": osd_disks, "confirmation": _confirmation()}
     )
     assert response.status_code == 201
     action_pk = response.json()["action_id"]
@@ -119,7 +127,7 @@ def test_propose_with_wipe_allows_multiple_disks_on_same_node(dashboard_client, 
     osd_nodes = settings.ceph_osd_nodes.split(",")
     osd_disks = {ip: ["/dev/vdc", "/dev/vdd"] for ip in osd_nodes}
     response = dashboard_client.post(
-        "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": osd_disks}
+        "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": osd_disks, "confirmation": _confirmation()}
     )
     assert response.status_code == 201
     action_pk = response.json()["action_id"]
@@ -137,7 +145,7 @@ def test_propose_with_wipe_rejects_duplicate_disk_on_same_node(dashboard_client,
     osd_nodes = settings.ceph_osd_nodes.split(",")
     osd_disks = {ip: ["/dev/vdc", "/dev/vdc"] for ip in osd_nodes}
     response = dashboard_client.post(
-        "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": osd_disks}
+        "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": osd_disks, "confirmation": _confirmation()}
     )
     assert response.status_code == 400
     assert "trùng lặp" in response.json()["detail"]
@@ -154,14 +162,29 @@ def test_propose_rejects_when_no_cluster_configured(dashboard_client, monkeypatc
     assert response.status_code == 400
 
 
+def test_propose_requires_exact_cluster_name(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/delete-cluster/propose", json={"wipe_osd_disks": False, "confirmation": "wrong-name"}
+    )
+    assert response.status_code == 400
+    assert "tên cụm" in response.json()["detail"]
+
+
 def test_propose_rejects_second_proposal_while_one_pending(dashboard_client, monkeypatch):
     monkeypatch.setattr(settings, "ceph_exec_mode", "none")
     _login(dashboard_client)
 
-    first = dashboard_client.post("/delete-cluster/propose", json={"wipe_osd_disks": False})
+    first = dashboard_client.post(
+        "/delete-cluster/propose", json={"wipe_osd_disks": False, "confirmation": _confirmation()}
+    )
     assert first.status_code == 201
 
-    second = dashboard_client.post("/delete-cluster/propose", json={"wipe_osd_disks": False})
+    second = dashboard_client.post(
+        "/delete-cluster/propose", json={"wipe_osd_disks": False, "confirmation": _confirmation()}
+    )
     assert second.status_code == 409
 
 
@@ -180,7 +203,9 @@ def test_progress_endpoint_formats_real_timestamps_as_vietnam_local_clock(dashbo
     # frozen finished_at must come back as a fixed HH:MM:SS on every poll.
     monkeypatch.setattr(settings, "ceph_exec_mode", "none")
     _login(dashboard_client)
-    propose = dashboard_client.post("/delete-cluster/propose", json={"wipe_osd_disks": False})
+    propose = dashboard_client.post(
+        "/delete-cluster/propose", json={"wipe_osd_disks": False, "confirmation": _confirmation()}
+    )
     action_pk = propose.json()["action_id"]
     with db_module.SessionLocal() as session:
         action = session.get(Action, action_pk)

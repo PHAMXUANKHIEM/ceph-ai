@@ -1,17 +1,23 @@
 import asyncio
+import html
+import ipaddress
+import json
 import logging
 import re
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.responses import Response
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import (
@@ -71,11 +77,16 @@ from shared.codex_app_server import codex_app_server
 from shared.clusters import sync_default_cluster_from_settings
 from shared.logging_redaction import install_logging_redaction
 from shared.api_observability import record_request
+from shared.api_rate_limit import RateLimitStoreUnavailable, allow_api_request
+from shared.security_audit import record_mutation
 from shared.request_context import reset_request_id, set_request_id
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 logger = logging.getLogger(__name__)
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_CSRF_SESSION_KEY = "_ceph_ai_csrf_token"
+_CSRF_COOKIE_NAME = "ceph_ai_csrf"
+_UNSAFE_METHODS = frozenset(("POST", "PUT", "PATCH", "DELETE"))
 install_logging_redaction()
 
 
@@ -96,6 +107,25 @@ class _CachedStaticFiles(StaticFiles):
 
 
 def _warn_if_using_dev_defaults() -> None:
+    if settings.ceph_ai_environment == "production":
+        errors = []
+        if settings.dashboard_password_hash == DEFAULT_DASHBOARD_PASSWORD_HASH:
+            errors.append("DASHBOARD_PASSWORD_HASH is still the dev default")
+        if settings.session_secret_key == DEFAULT_SESSION_SECRET_KEY:
+            errors.append("SESSION_SECRET_KEY is still the dev default")
+        if not _configured_values(settings.dashboard_trusted_hosts):
+            errors.append("DASHBOARD_TRUSTED_HOSTS is not configured")
+        if not _configured_values(settings.dashboard_allowed_origins):
+            errors.append("DASHBOARD_ALLOWED_ORIGINS is not configured")
+        try:
+            _trusted_proxy_networks()
+        except RuntimeError as exc:
+            errors.append(str(exc))
+        if errors:
+            raise RuntimeError(
+                "Production security configuration rejected: " + "; ".join(errors)
+            )
+        return
     if settings.dashboard_password_hash == DEFAULT_DASHBOARD_PASSWORD_HASH:
         logger.warning(
             "Dashboard is using the DEFAULT dev-only password (admin/admin). "
@@ -106,6 +136,223 @@ def _warn_if_using_dev_defaults() -> None:
             "Dashboard is using the DEFAULT dev-only SESSION_SECRET_KEY. "
             "Set a real random value before exposing this beyond localhost."
         )
+
+
+def _configured_values(raw: str) -> tuple[str, ...]:
+    """Parse a comma-separated security setting without accepting blanks."""
+    return tuple(dict.fromkeys(value.strip() for value in str(raw or "").split(",") if value.strip()))
+
+
+def _trusted_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    networks = []
+    for value in _configured_values(settings.dashboard_trusted_proxy_ips):
+        try:
+            networks.append(ipaddress.ip_network(value, strict=False))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Invalid DASHBOARD_TRUSTED_PROXY_IPS entry: {value}"
+            ) from exc
+    return tuple(networks)
+
+
+def _request_from_trusted_proxy(request) -> bool:
+    client_host = request.client.host if request.client else ""
+    try:
+        client_ip = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    return any(client_ip in network for network in _trusted_proxy_networks())
+
+
+def _forwarded_headers_allowed(request) -> bool:
+    forwarded_names = (
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+    )
+    if not any(request.headers.get(name) for name in forwarded_names):
+        return True
+    if not _request_from_trusted_proxy(request):
+        return False
+    proto = request.headers.get("x-forwarded-proto", "").split(",")[-1].strip().lower()
+    if proto and proto not in {"http", "https"}:
+        return False
+    forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[-1].strip()
+    return not forwarded_host or bool(re.fullmatch(r"[^\s/:]+(?::\d{1,5})?", forwarded_host))
+
+
+def _source_origin(request) -> str | None:
+    """Return the Origin/Referer origin supplied by a browser request."""
+    source = request.headers.get("origin") or request.headers.get("referer")
+    if not source:
+        return None
+    parsed = urlsplit(source)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+def _request_origin(request) -> str | None:
+    """Return the origin represented by the request Host header.
+
+    Forwarded headers are intentionally ignored: accepting them without a
+    configured, trusted proxy boundary would let a client forge the origin.
+    Deployments behind a reverse proxy must list their public origin in
+    DASHBOARD_ALLOWED_ORIGINS.
+    """
+    host = request.headers.get("host", "").strip().lower()
+    scheme = request.url.scheme.lower()
+    if _request_from_trusted_proxy(request):
+        forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[-1].strip()
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[-1].strip().lower()
+        if forwarded_host:
+            host = forwarded_host.lower()
+        if forwarded_proto:
+            scheme = forwarded_proto
+    if not host:
+        return None
+    if scheme not in {"http", "https"}:
+        return None
+    return f"{scheme}://{host}"
+
+
+def _mutation_origin_allowed(request) -> bool:
+    """Enforce same-origin or explicitly configured-origin mutations."""
+    source_origin = _source_origin(request)
+    if source_origin is None:
+        return False
+    allowed_origins = {value.lower().rstrip("/") for value in _configured_values(settings.dashboard_allowed_origins)}
+    return source_origin in allowed_origins or source_origin == _request_origin(request)
+
+
+def _ensure_csrf_token(request) -> str:
+    token = request.session.get(_CSRF_SESSION_KEY)
+    if not isinstance(token, str) or len(token) < 32:
+        token = secrets.token_urlsafe(32)
+        request.session[_CSRF_SESSION_KEY] = token
+    return token
+
+
+async def _submitted_form_csrf_token(request) -> str | None:
+    """Read a form token and replay the body for FastAPI's route parser."""
+    content_type = request.headers.get("content-type", "").lower()
+    if not (content_type.startswith("application/x-www-form-urlencoded") or content_type.startswith("multipart/form-data")):
+        return None
+    body = await request.body()
+
+    async def replay_body():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    # BaseHTTPMiddleware may hand the downstream route a separate receive
+    # callable; replay the buffered body so Form/File parameters still work.
+    request._receive = replay_body
+    if content_type.startswith("application/x-www-form-urlencoded"):
+        try:
+            values = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+        except UnicodeDecodeError:
+            return None
+        return values.get("_csrf_token", [None])[0]
+    try:
+        form = await request.form()
+    except Exception:
+        return None
+    value = form.get("_csrf_token")
+    return str(value) if value is not None else None
+
+
+async def _csrf_token_allowed(request) -> bool:
+    expected = request.session.get(_CSRF_SESSION_KEY)
+    cookie_token = request.cookies.get(_CSRF_COOKIE_NAME)
+    submitted = request.headers.get("x-csrf-token") or await _submitted_form_csrf_token(request)
+    if not all(isinstance(value, str) for value in (expected, cookie_token, submitted)):
+        return False
+    return (
+        secrets.compare_digest(expected, cookie_token)
+        and secrets.compare_digest(expected, submitted)
+    )
+
+
+async def _protect_html_response(response, token: str, *, secure_cookie: bool):
+    """Add CSRF affordances to HTML and expose the token to same-origin JS."""
+    content_type = response.headers.get("content-type", "").lower()
+    if "text/html" not in content_type:
+        response.set_cookie(
+            _CSRF_COOKIE_NAME,
+            token,
+            max_age=86400,
+            httponly=False,
+            secure=secure_cookie,
+            samesite="lax",
+            path="/",
+        )
+        return response
+
+    if hasattr(response, "body_iterator"):
+        raw_body = b"".join([chunk async for chunk in response.body_iterator])
+    else:
+        raw_body = response.body or b""
+    body = raw_body.decode("utf-8", errors="replace")
+    escaped_token = html.escape(token, quote=True)
+    hidden_input = f'<input type="hidden" name="_csrf_token" value="{escaped_token}">'
+    body = re.sub(
+        r'(<form\b(?=[^>]*\bmethod\s*=\s*["\']?post["\']?)[^>]*>)',
+        lambda match: match.group(1) + hidden_input,
+        body,
+        flags=re.IGNORECASE,
+    )
+    token_json = json.dumps(token)
+    csrf_script = f"""<script>
+(function () {{
+  const token = {token_json};
+  const unsafe = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {{
+    const options = init ? Object.assign({{}}, init) : {{}};
+    const method = String(options.method || (input && input.method) || "GET").toUpperCase();
+    let url;
+    try {{ url = new URL(typeof input === "string" ? input : input.url, window.location.href); }}
+    catch (_) {{ return nativeFetch(input, options); }}
+    if (unsafe.has(method) && url.origin === window.location.origin) {{
+      const headers = new Headers(options.headers || (input instanceof Request ? input.headers : undefined));
+      headers.set("X-CSRF-Token", token);
+      options.headers = headers;
+    }}
+    return nativeFetch(input, options);
+  }};
+  document.addEventListener("submit", function (event) {{
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || !unsafe.has((form.method || "get").toUpperCase())) return;
+    if (!form.querySelector('input[name="_csrf_token"]')) {{
+      const input = document.createElement("input");
+      input.type = "hidden"; input.name = "_csrf_token"; input.value = token;
+      form.appendChild(input);
+    }}
+  }});
+}})();
+</script>"""
+    if re.search(r"</head>", body, flags=re.IGNORECASE):
+        body = re.sub(r"</head>", csrf_script + "</head>", body, count=1, flags=re.IGNORECASE)
+    else:
+        body = csrf_script + body
+    headers = dict(response.headers)
+    headers.pop("content-length", None)
+    protected = Response(
+        content=body.encode("utf-8"),
+        status_code=response.status_code,
+        headers=headers,
+        background=response.background,
+    )
+    protected.set_cookie(
+        _CSRF_COOKIE_NAME,
+        token,
+        max_age=86400,
+        httponly=False,
+        secure=secure_cookie,
+        samesite="lax",
+        path="/",
+    )
+    return protected
 
 
 @asynccontextmanager
@@ -166,6 +413,8 @@ def create_app() -> FastAPI:
             raise
         finally:
             reset_request_id(request_context_token)
+        if request.method in _UNSAFE_METHODS:
+            record_mutation(request, response)
         response.headers["X-Request-ID"] = request_id
         if not request.url.path.startswith("/static/"):
             record_request(
@@ -180,14 +429,59 @@ def create_app() -> FastAPI:
     @application.middleware("http")
     async def isolate_product_namespaces(request, call_next):
         """Keep authenticated Ceph and Vitastor sessions in separate UIs."""
+        # A stale client-side navigation state once generated protocol-relative
+        # paths such as ``//object-storage/buckets``. Starlette treats that as
+        # a different route and returns 404, which made the Buckets screen look
+        # like it had disappeared. Normalize only this application namespace;
+        # do not rewrite arbitrary paths or external-style URLs.
+        raw_path = request.scope.get("path", "")
+        if raw_path.startswith("//object-storage/"):
+            request.scope["path"] = raw_path[1:]
         user = request.session.get("user")
         product = request.session.get("product")
         path = request.url.path
+        if settings.ceph_ai_environment == "production" and not _forwarded_headers_allowed(request):
+            return JSONResponse(
+                {"detail": "Forwarded headers chỉ được phép từ trusted proxy"},
+                status_code=400,
+            )
         shared_path = path.startswith("/static/") or path in {"/logout", "/login"}
-        if user and request.method in {"POST", "PUT", "PATCH", "DELETE"} and path.startswith("/vitastor"):
-            # SameSite=Lax blocks normal cross-site POST cookies in modern
-            # browsers; validate Origin/Referer as an additional server-side
-            # guard for every authenticated Vitastor mutation.
+        is_api_request = path == "/api" or path.startswith("/api/")
+        if settings.ceph_ai_environment == "production" and is_api_request:
+            client_key = request.client.host if request.client else "unknown"
+            try:
+                allowed = allow_api_request(
+                    client_key,
+                    limit=settings.dashboard_api_rate_limit,
+                    window_seconds=settings.dashboard_api_rate_limit_window_seconds,
+                )
+            except RateLimitStoreUnavailable:
+                return JSONResponse(
+                    {"detail": "API rate-limit store không khả dụng"},
+                    status_code=503,
+                )
+            if not allowed:
+                return JSONResponse(
+                    {"detail": "Quá nhiều yêu cầu API — thử lại sau ít phút"},
+                    status_code=429,
+                    headers={"Retry-After": str(settings.dashboard_api_rate_limit_window_seconds)},
+                )
+        csrf_token = _ensure_csrf_token(request) if settings.ceph_ai_environment == "production" else None
+        if (
+            settings.ceph_ai_environment == "production"
+            and request.method in _UNSAFE_METHODS
+            and not _mutation_origin_allowed(request)
+        ):
+            return JSONResponse({"detail": "Cross-site mutation bị từ chối"}, status_code=403)
+        if (
+            settings.ceph_ai_environment == "production"
+            and request.method in _UNSAFE_METHODS
+            and not await _csrf_token_allowed(request)
+        ):
+            return JSONResponse({"detail": "CSRF token không hợp lệ hoặc đã thiếu"}, status_code=403)
+        if user and request.method in _UNSAFE_METHODS and path.startswith("/vitastor"):
+            # Keep the product-specific guard for non-production environments,
+            # where the global production policy above is intentionally off.
             expected_host = request.headers.get("host", "").lower()
             source = request.headers.get("origin") or request.headers.get("referer")
             if source and urlsplit(source).netloc.lower() != expected_host:
@@ -199,11 +493,28 @@ def create_app() -> FastAPI:
             if product != "vitastor" and path.startswith("/vitastor"):
                 from fastapi.responses import RedirectResponse
                 return RedirectResponse("/", status_code=303)
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        if request.url.scheme == "https":
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+        if csrf_token is not None:
+            return await _protect_html_response(
+                response,
+                csrf_token,
+                secure_cookie=request.url.scheme == "https",
+            )
+        return response
 
     # Added after the product middleware so SessionMiddleware wraps it and
     # `request.session` is available inside the namespace guard.
     application.add_middleware(SessionMiddleware, secret_key=settings.session_secret_key, same_site="lax")
+    if settings.ceph_ai_environment == "production":
+        application.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=list(_configured_values(settings.dashboard_trusted_hosts)),
+        )
     # Outermost middleware (added last): compress every response over ~500B —
     # the 129KB stylesheet, large Jinja pages (settings.html ~52KB) and the
     # telemetry JSON APIs all shrink ~70-80% over the wire, the single biggest

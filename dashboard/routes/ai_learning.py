@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -14,8 +15,8 @@ from dashboard.cluster_scope import cluster_selection
 from dashboard.routes.auth import is_admin_user, require_login
 from dashboard.templating import make_templates
 from shared import (
+    canary,
     db,
-    forecast_canary,
     forecast_feedback,
     learning_runtime,
     model_registry,
@@ -24,6 +25,7 @@ from shared import (
 )
 from shared.models import (
     Action,
+    Cluster,
     ChangeRiskAssessment,
     ForecastModelEvaluation,
     Incident,
@@ -33,22 +35,53 @@ from shared.models import (
     NodeResourceForecastRun,
     NodeResourceForecastAlert,
     NodeResourceForecastFeedback,
+    NodeResourceForecastTransition,
     NodeResourceModelState,
-    OnlineLearnerCycleAudit,
     ForecastModelPromotionAudit,
     ForecastModelRegistry,
+    OnlineLearnerAudit,
+    OnlineLearnerCycleAudit,
     PlaybookStat,
     RemediationCase,
     VolumeEarlyForecast,
     VolumeForecastRun,
     VolumeModelState,
+    HostMetricSample,
 )
+from watcher.forecast_replay import evaluate_shadow
 
 router = APIRouter()
 templates = make_templates()
 
 _LARGE_OMAP_ACTION = "reshard_rgw_bucket"
 _LARGE_OMAP_EVIDENCE_RE = re.compile(r"observed_at=([^\s]+)")
+_REPLAY_COLUMNS = {
+    "cpu": HostMetricSample.cpu_percent,
+    "ram": HostMetricSample.mem_percent,
+}
+
+
+def _parse_replay_datetime(value: object, field_name: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise HTTPException(status_code=422, detail=f"{field_name} là bắt buộc.")
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"{field_name} không đúng ISO datetime.") from exc
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _replay_options(cluster_id: str) -> dict:
+    with db.SessionLocal() as session:
+        hosts = [row[0] for row in session.query(HostMetricSample.host).filter(
+            HostMetricSample.cluster_id == cluster_id,
+        ).distinct().order_by(HostMetricSample.host).all()]
+        minimum, maximum = session.query(
+            func.min(HostMetricSample.collected_at), func.max(HostMetricSample.collected_at),
+        ).filter(HostMetricSample.cluster_id == cluster_id).one()
+    return {"hosts": hosts, "minimum_at": minimum, "maximum_at": maximum}
 
 
 def _parse_observed_at(value: str | None) -> datetime | None:
@@ -285,55 +318,15 @@ def model_promotion_status(cluster_id: str, cluster_name: str) -> dict:
 def learning_status(cluster_id: str, cluster_name: str) -> dict:
     """Build a JSON-safe snapshot. No learning state is changed here."""
     with db.SessionLocal() as session:
-        canary_metric = next(
-            (item.strip().lower() for item in str(settings.online_learning_canary_metrics or "").split(",")
-             if item.strip()),
-            "cpu",
-        )
-        canary_host = str(settings.online_learning_canary_host or "").strip()
-        online_learning_runtime = learning_runtime.evaluate(
-            session, cluster_id, host=canary_host or None, metric=canary_metric,
-        )
-        canary_control = (
-            online_learning_controls.get_control(
-                session,
-                cluster_id=cluster_id,
-                host=canary_host,
-                metric=canary_metric,
-            ) if canary_host else None
-        )
-        operator_audits = online_learning_controls.list_audit(
-            session, cluster_id=cluster_id, limit=50,
-        )
-        learner_cycles_query = session.query(OnlineLearnerCycleAudit).filter_by(
-            cluster_key=str(cluster_id),
-            host=canary_host,
-            metric=canary_metric,
-        ) if canary_host else session.query(OnlineLearnerCycleAudit).filter_by(
-            cluster_key=str(cluster_id),
-            host="",
-            metric=canary_metric,
-        )
-        learner_cycle_count = learner_cycles_query.count()
-        learner_cycle_totals = learner_cycles_query.with_entities(
-            func.coalesce(func.sum(OnlineLearnerCycleAudit.processed), 0),
-            func.coalesce(func.sum(OnlineLearnerCycleAudit.applied), 0),
-            func.coalesce(func.sum(OnlineLearnerCycleAudit.failed), 0),
-            func.avg(OnlineLearnerCycleAudit.elapsed_ms),
-            func.avg(OnlineLearnerCycleAudit.cpu_time_ms),
-        ).one()
-        recent_learner_cycles = learner_cycles_query.order_by(
-            OnlineLearnerCycleAudit.created_at.desc()
-        ).limit(12).all()
-        canary_report = forecast_canary.build_canary_report(
-            session,
-            cluster_id=cluster_id,
-            cluster_name=cluster_name,
-            host=canary_host or None,
-            metric=canary_metric,
-            lookback_hours=72,
-        )
         states = session.query(NodeResourceModelState).filter_by(cluster_name=cluster_name).all()
+        active_registry_rows = session.query(ForecastModelRegistry).filter(
+            ForecastModelRegistry.status == "ACTIVE",
+            ForecastModelRegistry.scope_type.in_(("NODE_RESOURCE", "VOLUME")),
+        ).all()
+        active_model_versions = {
+            (row.scope_type, row.scope_key): row.version
+            for row in active_registry_rows
+        }
         run_counts = dict(
             session.query(NodeResourceForecastRun.status, func.count(NodeResourceForecastRun.id))
             .filter(NodeResourceForecastRun.cluster_name == cluster_name)
@@ -348,6 +341,82 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
             cluster_name=cluster_name,
             trigger_threshold=settings.node_resource_forecast_trigger_threshold_percent,
         )
+        now = datetime.utcnow()
+        alert_rows = session.query(NodeResourceForecastAlert).filter_by(
+            cluster_name=cluster_name,
+        ).order_by(NodeResourceForecastAlert.last_detected_at.desc()).limit(100).all()
+        alert_ids = [row.id for row in alert_rows]
+        transition_rows = (
+            session.query(NodeResourceForecastTransition)
+            .filter(NodeResourceForecastTransition.alert_id.in_(alert_ids))
+            .order_by(NodeResourceForecastTransition.changed_at.desc())
+            .all()
+            if alert_ids else []
+        )
+        transitions_by_alert: dict[str, list[NodeResourceForecastTransition]] = {}
+        for transition in transition_rows:
+            history = transitions_by_alert.setdefault(transition.alert_id, [])
+            if len(history) < 10:
+                history.append(transition)
+
+        freshness_limit = max(120, settings.node_health_scan_interval_seconds * 2)
+
+        def _freshness(observed_at: datetime | None) -> tuple[float | None, str]:
+            if observed_at is None:
+                return None, "UNKNOWN"
+            age = max(0.0, (now - observed_at).total_seconds())
+            return round(age, 1), "FRESH" if age <= freshness_limit else "STALE"
+
+        node_alerts = []
+        for alert in alert_rows:
+            freshness_seconds, freshness_status = _freshness(alert.latest_observed_at)
+            if alert.coverage_ratio is None and alert.max_gap_hours is None:
+                quality_status = "LEGACY_NO_EVIDENCE"
+                quality_reason = "Alert cũ chưa có quality evidence được lưu persistent."
+            elif alert.coverage_ratio is not None and alert.coverage_ratio < settings.node_resource_forecast_min_coverage:
+                quality_status = "LOW_COVERAGE"
+                quality_reason = f"Coverage {alert.coverage_ratio:.3f} thấp hơn ngưỡng {settings.node_resource_forecast_min_coverage:.3f}."
+            elif alert.max_gap_hours is not None and alert.max_gap_hours > settings.node_resource_forecast_max_gap_hours:
+                quality_status = "GAP_DETECTED"
+                quality_reason = f"Gap dài nhất {alert.max_gap_hours:.2f}h vượt ngưỡng {settings.node_resource_forecast_max_gap_hours:.2f}h."
+            else:
+                quality_status = "OK"
+                quality_reason = "Window dữ liệu đạt quality gate."
+            node_alerts.append({
+                "id": alert.id,
+                "host": alert.host,
+                "metric": alert.metric.upper(),
+                "status": alert.status,
+                "lifecycle_state": alert.lifecycle_state or alert.status,
+                "notification_state": alert.notification_state,
+                "state_reason": alert.state_reason or "Chưa có lý do transition được lưu.",
+                "evidence_version": alert.evidence_version,
+                "state_changed_at": alert.state_changed_at,
+                "first_detected_at": alert.first_detected_at,
+                "last_detected_at": alert.last_detected_at,
+                "current_percent": round(alert.current_percent, 2),
+                "predicted_percent": round(alert.predicted_percent, 2),
+                "predicted_low": round(alert.predicted_low, 2) if alert.predicted_low is not None else None,
+                "predicted_high": round(alert.predicted_high, 2) if alert.predicted_high is not None else None,
+                "confidence": round(alert.confidence, 3),
+                "consensus_status": alert.consensus_status,
+                "consensus_ratio": round(alert.consensus_ratio, 3) if alert.consensus_ratio is not None else None,
+                "consensus_candidate_count": alert.consensus_candidate_count,
+                "coverage_ratio": round(alert.coverage_ratio, 3) if alert.coverage_ratio is not None else None,
+                "max_gap_hours": round(alert.max_gap_hours, 3) if alert.max_gap_hours is not None else None,
+                "latest_observed_at": alert.latest_observed_at,
+                "freshness_seconds": freshness_seconds,
+                "freshness_status": freshness_status,
+                "quality_status": quality_status,
+                "quality_reason": quality_reason,
+                "transitions": [{
+                    "previous_state": transition.previous_state,
+                    "new_state": transition.new_state,
+                    "reason": transition.reason,
+                    "evidence_version": transition.evidence_version,
+                    "changed_at": transition.changed_at,
+                } for transition in transitions_by_alert.get(alert.id, [])],
+            })
 
         resource_models = []
         for state in sorted(states, key=lambda row: (row.host, row.metric, row.window_hours)):
@@ -356,24 +425,49 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 session.query(NodeResourceForecastRun)
                 .filter_by(
                     cluster_name=cluster_name, host=state.host,
-                    metric=state.metric, window_hours=state.window_hours,
+                    metric=state.metric, algorithm=state.algorithm,
+                    window_hours=state.window_hours,
                 )
                 .order_by(NodeResourceForecastRun.predicted_at.desc())
                 .first()
             )
+            latest_quality = (
+                latest.status
+                if latest and latest.status in {"DATA_QUALITY", "LOW_CONFIDENCE"}
+                else latest.consensus_status
+                if latest and latest.consensus_status in {"DATA_QUALITY", "LOW_CONFIDENCE"}
+                else ("OK" if latest else "NO_FORECAST")
+            )
+            node_scope = f"{cluster_name}|{state.host}|{state.metric.lower()}"
             resource_models.append({
                 "host": state.host,
                 "metric": state.metric.upper(),
                 "window_hours": state.window_hours,
+                "algorithm": latest.algorithm if latest else state.algorithm,
+                "model_version": active_model_versions.get(("NODE_RESOURCE", node_scope)),
                 "selected": state.selected,
                 "evaluated_count": state.evaluated_count,
                 "mae": round(state.mean_absolute_error, 3) if state.mean_absolute_error is not None else None,
+                "rolling_mae": round(
+                    state.rolling_mae if state.rolling_mae is not None else state.mean_absolute_error, 3
+                ) if (state.rolling_mae is not None or state.mean_absolute_error is not None) else None,
+                "rolling_smape": round(state.rolling_smape, 3) if state.rolling_smape is not None else None,
                 "last_error": round(state.last_absolute_error, 3) if state.last_absolute_error is not None else None,
                 "accuracy_estimate": accuracy,
                 "quality_status": status,
                 "quality_reason": reason,
+                "data_quality": latest_quality,
+                "latest_status": latest.status if latest else None,
+                "latest_current": round(latest.current_percent, 2) if latest else None,
                 "latest_confidence": round(latest.confidence, 3) if latest else None,
                 "latest_prediction": round(latest.predicted_percent, 2) if latest else None,
+                "latest_actual": round(latest.actual_percent, 2) if latest and latest.actual_percent is not None else None,
+                "predicted_low": round(latest.predicted_low, 2) if latest and latest.predicted_low is not None else None,
+                "predicted_high": round(latest.predicted_high, 2) if latest and latest.predicted_high is not None else None,
+                "consensus_status": latest.consensus_status if latest else None,
+                "consensus_ratio": round(latest.consensus_ratio, 3) if latest and latest.consensus_ratio is not None else None,
+                "consensus_candidate_count": latest.consensus_candidate_count if latest else None,
+                "latest_predicted_at": latest.predicted_at if latest else None,
                 "latest_target_at": latest.target_at if latest else None,
                 "updated_at": state.updated_at,
             })
@@ -409,7 +503,6 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 & (VolumeForecastRun.predicted_at == latest_volume_times.c.latest_at),
             ).filter(VolumeForecastRun.cluster_id == cluster_id).all()
         }
-
         volume_models = []
         for state in sorted(
             volume_states,
@@ -426,6 +519,10 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "image": state.image,
                 "metric": state.metric,
                 "window_hours": state.window_hours,
+                "algorithm": latest.algorithm if latest else state.algorithm,
+                "model_version": active_model_versions.get((
+                    "VOLUME", f"{cluster_id}|{state.pool}|{state.image}|{state.metric}"
+                )),
                 "selected": state.selected,
                 "evaluated_count": state.evaluated_count,
                 "mae": round(state.mean_absolute_error, 3) if state.mean_absolute_error is not None else None,
@@ -434,12 +531,22 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "accuracy_estimate": accuracy,
                 "quality_status": status,
                 "quality_reason": reason,
+                "rolling_mae": round(
+                    state.rolling_mae if state.rolling_mae is not None else state.mean_absolute_error, 3
+                ) if (state.rolling_mae is not None or state.mean_absolute_error is not None) else None,
+                "rolling_smape": round(state.rolling_smape, 3) if state.rolling_smape is not None else None,
                 "latest_prediction": round(latest.predicted_value, 3) if latest else None,
                 "latest_confidence": round(latest.confidence, 3) if latest else None,
+                "latest_actual": round(latest.actual_value, 3) if latest and latest.actual_value is not None else None,
                 "seasonal_scope": latest.seasonal_scope if latest else None,
                 "training_samples": latest.training_samples if latest else None,
+                "latest_status": latest.status if latest else None,
                 "updated_at": state.updated_at,
             })
+        volume_model_metrics = {
+            (model["pool"], model["image"], model["metric"]): model
+            for model in volume_models
+        }
 
         latest_forecast_times = (
             session.query(
@@ -468,13 +575,23 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
             "horizon_hours": row.horizon_hours,
             "current_value": round(row.current_value, 3),
             "predicted_value": round(row.predicted_value, 3),
+            "actual_value": None,
+            "predicted_low": round(row.predicted_low, 3) if row.predicted_low is not None else None,
+            "predicted_high": round(row.predicted_high, 3) if row.predicted_high is not None else None,
             "threshold_type": row.threshold_type,
             "threshold_value": round(row.threshold_value, 3) if row.threshold_value is not None else None,
             "confidence": round(row.confidence, 3),
+            "consensus_status": row.consensus_status,
+            "consensus_ratio": round(row.consensus_ratio, 3) if row.consensus_ratio is not None else None,
+            "consensus_candidate_count": row.consensus_candidate_count,
             "training_samples": row.training_samples,
             "training_window_hours": row.training_window_hours,
             "seasonal_scope": row.seasonal_scope,
             "model_version": row.model_version,
+            "algorithm": "seasonal_baseline",
+            "data_quality": row.status if row.status == "DATA_QUALITY" else "OK",
+            "rolling_mae": volume_model_metrics.get((row.pool, row.image, row.metric), {}).get("rolling_mae"),
+            "rolling_smape": volume_model_metrics.get((row.pool, row.image, row.metric), {}).get("rolling_smape"),
             "status": row.status, "reason": row.reason,
             "generated_at": row.generated_at, "target_at": row.target_at,
             "source_latest_at": row.source_latest_at,
@@ -532,56 +649,108 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
             "updated_at": sample.updated_at,
         } for sample, title in recent_rows]
 
-        return {
-            "online_learning": {
-                **online_learning_runtime.as_dict(),
-                "canary_scope": {
-                    "host": canary_host or None,
-                    "metric": canary_metric,
-                },
-                "control": {
-                    "status": canary_control.status,
-                    "reason": canary_control.reason,
-                    "updated_by": canary_control.updated_by,
-                    "updated_at": canary_control.updated_at,
-                } if canary_control else {
-                    "status": online_learning_controls.RUNNING,
-                    "reason": "no explicit operator pause",
-                    "updated_by": None,
-                    "updated_at": None,
-                },
-                "operator_audits": [{
-                    "action": row.action,
-                    "actor": row.actor,
-                    "host": row.host,
-                    "metric": row.metric,
-                    "reason": row.reason,
-                    "target_id": row.target_id,
-                    "created_at": row.created_at,
-                } for row in operator_audits],
-                "telemetry": {
-                    "has_data": learner_cycle_count > 0,
-                    "cycle_count": learner_cycle_count,
-                    "processed": int(learner_cycle_totals[0] or 0),
-                    "applied": int(learner_cycle_totals[1] or 0),
-                    "failed": int(learner_cycle_totals[2] or 0),
-                    "average_elapsed_ms": round(float(learner_cycle_totals[3]), 2)
-                    if learner_cycle_totals[3] is not None else None,
-                    "average_cpu_time_ms": round(float(learner_cycle_totals[4]), 2)
-                    if learner_cycle_totals[4] is not None else None,
-                    "recent_cycles": [{
-                        "created_at": row.created_at,
-                        "reason": row.reason,
-                        "runtime_mode": row.runtime_mode,
-                        "processed": row.processed,
-                        "applied": row.applied,
-                        "failed": row.failed,
-                        "elapsed_ms": row.elapsed_ms,
-                        "cpu_time_ms": row.cpu_time_ms,
-                    } for row in recent_learner_cycles],
-                },
-                "evidence_report": canary_report,
+        canary_metric = next(
+            (item.strip().lower() for item in str(settings.online_learning_canary_metrics or "").split(",")
+             if item.strip()),
+            "cpu",
+        )
+        runtime = learning_runtime.evaluate(
+            session,
+            cluster_id,
+            host=settings.online_learning_canary_host or None,
+            metric=canary_metric,
+        ).as_dict()
+        learner_cluster_key = str(cluster_id)
+        learner_sample_count = session.query(OnlineLearnerAudit).filter(
+            OnlineLearnerAudit.cluster_key == learner_cluster_key,
+        ).count()
+        learner_quality_rows = session.query(
+            OnlineLearnerAudit.quality_status, func.count(OnlineLearnerAudit.id),
+        ).filter(
+            OnlineLearnerAudit.cluster_key == learner_cluster_key,
+        ).group_by(OnlineLearnerAudit.quality_status).all()
+        learner_quality_counts = {status: count for status, count in learner_quality_rows}
+        latest_learner = session.query(OnlineLearnerAudit).filter(
+            OnlineLearnerAudit.cluster_key == learner_cluster_key,
+        ).order_by(OnlineLearnerAudit.created_at.desc()).first()
+        latest_applied = session.query(OnlineLearnerAudit).filter(
+            OnlineLearnerAudit.cluster_key == learner_cluster_key,
+            OnlineLearnerAudit.update_applied.is_(True),
+        ).order_by(OnlineLearnerAudit.created_at.desc()).first()
+        latest_cycle = session.query(OnlineLearnerCycleAudit).filter(
+            OnlineLearnerCycleAudit.cluster_key == learner_cluster_key,
+        ).order_by(OnlineLearnerCycleAudit.created_at.desc()).first()
+        canary_host = str(settings.online_learning_canary_host or "").strip()
+        canary_control = (
+            online_learning_controls.get_control(
+                session,
+                cluster_id=cluster_id,
+                host=canary_host,
+                metric=canary_metric,
+            ) if canary_host else None
+        )
+        operator_audits = online_learning_controls.list_audit(
+            session, cluster_id=cluster_id, limit=50,
+        )
+        drift_rows = session.query(
+            NodeResourceForecastRun.drift_status, func.count(NodeResourceForecastRun.id),
+        ).filter(
+            NodeResourceForecastRun.cluster_name == cluster_name,
+        ).group_by(NodeResourceForecastRun.drift_status).all()
+        online_learning = {
+            "feature_enabled": bool(settings.online_learning_enabled),
+            "configured_mode": str(settings.online_learning_mode or ""),
+            "effective_mode": runtime["mode"],
+            "runtime_reason": runtime["reason"],
+            "canary_enabled": bool(settings.online_learning_canary_enabled),
+            "canary_scope": {
+                "cluster_id": settings.online_learning_canary_cluster_id or None,
+                "host": canary_host or None,
+                "metrics": canary_metric,
             },
+            "control": {
+                "status": canary_control.status,
+                "reason": canary_control.reason,
+                "updated_by": canary_control.updated_by,
+                "updated_at": canary_control.updated_at,
+            } if canary_control else {
+                "status": online_learning_controls.RUNNING,
+                "reason": "no explicit operator pause",
+                "updated_by": None,
+                "updated_at": None,
+            },
+            "operator_audits": [{
+                "action": row.action,
+                "actor": row.actor,
+                "host": row.host,
+                "metric": row.metric,
+                "reason": row.reason,
+                "target_id": row.target_id,
+                "created_at": row.created_at,
+            } for row in operator_audits],
+            "runtime": runtime,
+            "model_version": latest_learner.model_version if latest_learner else None,
+            "sample_count": learner_sample_count,
+            "quality_gate_counts": learner_quality_counts,
+            "drift_state_counts": {status: count for status, count in drift_rows},
+            "verified_feedback_count": feedback_summary.get("labeled_count", 0),
+            "last_sample_at": latest_learner.created_at if latest_learner else None,
+            "last_learned_at": latest_applied.created_at if latest_applied else None,
+            "latest_cycle": {
+                "processed": latest_cycle.processed,
+                "applied": latest_cycle.applied,
+                "failed": latest_cycle.failed,
+                "skipped": latest_cycle.skipped,
+                "elapsed_ms": round(latest_cycle.elapsed_ms, 2),
+                "cpu_time_ms": round(latest_cycle.cpu_time_ms, 2),
+                "reason": latest_cycle.reason,
+                "runtime_mode": latest_cycle.runtime_mode,
+                "created_at": latest_cycle.created_at,
+            } if latest_cycle else None,
+        }
+
+        return {
+            "online_learning": online_learning,
             "forecast_feedback": {
                 **feedback_summary,
                 "coverage": (
@@ -601,6 +770,7 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "selected_models": [row for row in resource_models if row["selected"]],
                 "candidate_models": resource_models,
             },
+            "node_alerts": node_alerts,
             "volume_learning": {
                 "enabled": settings.volume_learning_enabled,
                 "evaluation_hours": settings.volume_learning_evaluation_hours,
@@ -659,18 +829,171 @@ def _control_scope(cluster_id: str, host: str, metric: str) -> tuple[str, str, s
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _require_selected_cluster(request: Request, cluster_id: str):
+    """Reject cross-cluster mutations instead of trusting a posted id."""
+    requested = str(cluster_id or "").strip()
+    if not requested:
+        raise HTTPException(status_code=422, detail="cluster_id là bắt buộc.")
+    _clusters, selected = cluster_selection(request)
+    if requested != selected.id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Thao tác chỉ được phép trên cụm đang được chọn; "
+                "hãy tải lại trang sau khi chuyển cụm."
+            ),
+        )
+    return selected
+
+
+def _model_belongs_to_cluster(row: ForecastModelRegistry, cluster) -> bool:
+    """Match the registry's historical scope key to the selected cluster."""
+    scope_key = str(row.scope_key or "")
+    if row.scope_type == "VOLUME":
+        return scope_key.split("|", 1)[0] == cluster.id
+    if row.scope_type == "NODE_RESOURCE":
+        return scope_key.split("|", 1)[0] == cluster.name
+    return False
+
+
+def _require_model_scope(session, model_id: str, cluster) -> ForecastModelRegistry:
+    row = session.get(ForecastModelRegistry, model_id)
+    if row is None or not _model_belongs_to_cluster(row, cluster):
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy model trong cụm đang được chọn.",
+        )
+    return row
+
+
 @router.get("/api/ai-learning")
 async def ai_learning_api(request: Request, _user: str = Depends(require_login)):
     _clusters, cluster = cluster_selection(request)
     return {"cluster_id": cluster.id, "cluster_name": cluster.name, **learning_status(cluster.id, cluster.name), "large_omap_readiness": large_omap_readiness(cluster.id)}
 
 
+@router.get("/api/ai-learning/canary")
+async def ai_learning_canary_api(request: Request, _user: str = Depends(require_login)):
+    """Return read-only canary acceptance evidence for the selected cluster."""
+    _clusters, cluster = cluster_selection(request)
+    with db.SessionLocal() as session:
+        return canary.build_canary_report(
+            session, cluster_id=cluster.id, cluster_name=cluster.name,
+        )
+
+
+@router.post("/api/ai-learning/replay")
+async def ai_learning_replay(request: Request, _user: str = Depends(require_login)):
+    """Run a bounded, read-only historical replay; never persists or remediates."""
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Replay payload không hợp lệ.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Replay payload phải là object JSON.")
+
+    _clusters, selected_cluster = cluster_selection(request)
+    cluster_id = str(payload.get("cluster_id") or selected_cluster.id).strip()
+    if cluster_id != selected_cluster.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Replay chỉ được phép trên cụm đang được chọn.",
+        )
+    host = str(payload.get("host") or "").strip()
+    metric = str(payload.get("metric") or "").strip().lower()
+    if metric not in _REPLAY_COLUMNS:
+        raise HTTPException(status_code=422, detail="Metric replay chỉ hỗ trợ cpu hoặc ram.")
+    if not host or len(host) > 255:
+        raise HTTPException(status_code=422, detail="Host replay không hợp lệ.")
+    start_at = _parse_replay_datetime(payload.get("start_at"), "start_at")
+    end_at = _parse_replay_datetime(payload.get("end_at"), "end_at")
+    if end_at <= start_at:
+        raise HTTPException(status_code=422, detail="end_at phải sau start_at.")
+    if end_at - start_at > timedelta(days=31):
+        raise HTTPException(status_code=422, detail="Replay tối đa 31 ngày mỗi lần chạy.")
+
+    try:
+        horizon_hours = int(payload.get("horizon_hours", 1))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="horizon_hours phải là số nguyên.") from exc
+    if not 1 <= horizon_hours <= 168:
+        raise HTTPException(status_code=422, detail="horizon_hours phải nằm trong khoảng 1–168.")
+
+    raw_windows = payload.get("window_hours", [6, 24, 72])
+    if isinstance(raw_windows, str):
+        raw_windows = raw_windows.split(",")
+    if not isinstance(raw_windows, list):
+        raise HTTPException(status_code=422, detail="window_hours phải là danh sách.")
+    try:
+        windows = sorted({int(value) for value in raw_windows})
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="window_hours chứa giá trị không hợp lệ.") from exc
+    if not windows or len(windows) > 8 or any(window < 1 or window > 720 for window in windows):
+        raise HTTPException(status_code=422, detail="window_hours phải có 1–8 giá trị trong khoảng 1–720.")
+
+    with db.SessionLocal() as session:
+        if session.get(Cluster, cluster_id) is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy cluster.")
+        rows = session.query(HostMetricSample).filter(
+            HostMetricSample.cluster_id == cluster_id,
+            HostMetricSample.host == host,
+            HostMetricSample.collected_at >= start_at,
+            HostMetricSample.collected_at <= end_at,
+        ).order_by(HostMetricSample.collected_at.desc()).limit(
+            settings.learning_job_max_batch_size
+        ).all()
+
+    if not rows:
+        raise HTTPException(status_code=422, detail="Không có host metric trong khoảng thời gian đã chọn.")
+
+    # The pure replay helper works on hourly points. Aggregate raw host scans
+    # into hourly means so horizon_hours remains a time horizon, not a row
+    # count, while keeping the operation read-only and bounded.
+    buckets: dict[datetime, list[float]] = {}
+    value_column = _REPLAY_COLUMNS[metric]
+    for row in rows:
+        bucket = row.collected_at.replace(minute=0, second=0, microsecond=0)
+        buckets.setdefault(bucket, []).append(float(getattr(row, value_column.key)))
+    points = [
+        (bucket, round(sum(values) / len(values), 4))
+        for bucket, values in sorted(buckets.items())
+    ]
+    minimum_points = max(6, settings.node_resource_forecast_min_samples + horizon_hours)
+    if len(points) < minimum_points:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Cần ít nhất {minimum_points} điểm theo giờ; hiện có {len(points)}.",
+        )
+
+    replay = evaluate_shadow(
+        points, metric, horizon_hours=horizon_hours,
+        window_hours=windows, minimum_evaluated=1,
+    )
+    return {
+        "read_only": True,
+        "remediation_executed": False,
+        "cluster_id": cluster_id,
+        "host": host,
+        "metric": metric,
+        "start_at": start_at,
+        "end_at": end_at,
+        "source_rows": len(rows),
+        "hourly_points": len(points),
+        "horizon_hours": horizon_hours,
+        "window_hours": windows,
+        "metrics": {name: asdict(metrics) for name, metrics in replay["metrics"].items()},
+        "comparison": asdict(replay["comparison"]),
+    }
+
+
 @router.post("/api/ai-learning/models/{model_id}/promotion-request")
 async def request_model_promotion(
-    model_id: str, user: str = Depends(require_login),
+    model_id: str, request: Request, user: str = Depends(require_login),
 ):
     """Ask for promotion; this never changes the active model."""
+    _clusters, cluster = cluster_selection(request)
     with db.SessionLocal() as session:
+        _require_model_scope(session, model_id, cluster)
         try:
             decision = model_registry.request_promotion(
                 session, candidate_id=model_id, actor=user,
@@ -689,10 +1012,13 @@ async def request_model_promotion(
 
 @router.post("/api/ai-learning/models/{model_id}/promote")
 async def approve_model_promotion(
-    model_id: str, user: str = Depends(require_login),
+    model_id: str, request: Request, user: str = Depends(require_login),
 ):
     """Explicit operator approval required before a model becomes active."""
+    _require_admin(user)
+    _clusters, cluster = cluster_selection(request)
     with db.SessionLocal() as session:
+        _require_model_scope(session, model_id, cluster)
         try:
             row = model_registry.approve_promotion(
                 session, candidate_id=model_id, actor=user,
@@ -706,10 +1032,13 @@ async def approve_model_promotion(
 
 @router.post("/api/ai-learning/models/{model_id}/rollback")
 async def rollback_model_promotion(
-    model_id: str, user: str = Depends(require_login),
+    model_id: str, request: Request, user: str = Depends(require_login),
 ):
     """Restore the exact previous active model recorded in promotion audit."""
+    _require_admin(user)
+    _clusters, cluster = cluster_selection(request)
     with db.SessionLocal() as session:
+        _require_model_scope(session, model_id, cluster)
         try:
             row = model_registry.rollback_promotion(
                 session, candidate_id=model_id, actor=user,
@@ -723,26 +1052,19 @@ async def rollback_model_promotion(
 
 @router.post("/api/ai-learning/learner/pause")
 async def pause_online_learner(
-    cluster_id: str = Form(...),
-    host: str = Form(...),
-    metric: str = Form(...),
-    reason: str = Form(...),
-    user: str = Depends(require_login),
+    request: Request,
+    cluster_id: str = Form(...), host: str = Form(...), metric: str = Form(...),
+    reason: str = Form(...), user: str = Depends(require_login),
 ):
     """Pause exactly one learner stream; no global flag or model is changed."""
-
     _require_admin(user)
+    _require_selected_cluster(request, cluster_id)
     _control_scope(cluster_id, host, metric)
     with db.SessionLocal() as session:
         try:
             row = online_learning_controls.set_status(
-                session,
-                cluster_id=cluster_id,
-                host=host,
-                metric=metric,
-                status=online_learning_controls.PAUSED,
-                actor=user,
-                reason=reason,
+                session, cluster_id=cluster_id, host=host, metric=metric,
+                status=online_learning_controls.PAUSED, actor=user, reason=reason,
             )
             session.commit()
         except ValueError as exc:
@@ -753,26 +1075,19 @@ async def pause_online_learner(
 
 @router.post("/api/ai-learning/learner/resume")
 async def resume_online_learner(
-    cluster_id: str = Form(...),
-    host: str = Form(...),
-    metric: str = Form(...),
-    reason: str = Form(...),
-    user: str = Depends(require_login),
+    request: Request,
+    cluster_id: str = Form(...), host: str = Form(...), metric: str = Form(...),
+    reason: str = Form(...), user: str = Depends(require_login),
 ):
-    """Resume exactly one previously paused stream after explicit approval."""
-
+    """Resume exactly one paused stream after explicit operator approval."""
     _require_admin(user)
+    _require_selected_cluster(request, cluster_id)
     _control_scope(cluster_id, host, metric)
     with db.SessionLocal() as session:
         try:
             row = online_learning_controls.set_status(
-                session,
-                cluster_id=cluster_id,
-                host=host,
-                metric=metric,
-                status=online_learning_controls.RUNNING,
-                actor=user,
-                reason=reason,
+                session, cluster_id=cluster_id, host=host, metric=metric,
+                status=online_learning_controls.RUNNING, actor=user, reason=reason,
             )
             session.commit()
         except ValueError as exc:
@@ -783,28 +1098,22 @@ async def resume_online_learner(
 
 @router.post("/api/ai-learning/learner/reset")
 async def reset_online_learner(
-    cluster_id: str = Form(...),
-    host: str = Form(...),
-    metric: str = Form(...),
-    reason: str = Form(...),
-    confirmation: str = Form(...),
+    request: Request,
+    cluster_id: str = Form(...), host: str = Form(...), metric: str = Form(...),
+    reason: str = Form(...), confirmation: str = Form(...),
     user: str = Depends(require_login),
 ):
-    """Reset one durable state only after an explicit RESET confirmation."""
-
+    """Reset one durable state only after explicit RESET confirmation."""
     _require_admin(user)
     if confirmation.strip().upper() != "RESET":
         raise HTTPException(status_code=422, detail="Nhập chính xác RESET để xác nhận.")
+    _require_selected_cluster(request, cluster_id)
     _control_scope(cluster_id, host, metric)
     with db.SessionLocal() as session:
         try:
             removed = online_learning_controls.reset_state(
-                session,
-                cluster_id=cluster_id,
-                host=host,
-                metric=metric,
-                actor=user,
-                reason=reason,
+                session, cluster_id=cluster_id, host=host, metric=metric,
+                actor=user, reason=reason,
             )
             session.commit()
         except ValueError as exc:
@@ -815,39 +1124,33 @@ async def reset_online_learner(
 
 @router.get("/api/ai-learning/operator-audit")
 async def online_learner_operator_audit(
-    request: Request,
-    _user: str = Depends(require_login),
+    request: Request, _user: str = Depends(require_login),
 ):
     cluster_id = str(request.query_params.get("cluster_id") or "").strip()
-    if not cluster_id:
-        raise HTTPException(status_code=422, detail="cluster_id là bắt buộc.")
+    _require_selected_cluster(request, cluster_id)
+    try:
+        limit = int(request.query_params.get("limit") or 100)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="limit không hợp lệ.") from exc
     with db.SessionLocal() as session:
-        rows = online_learning_controls.list_audit(
-            session,
-            cluster_id=cluster_id,
-            limit=int(request.query_params.get("limit") or 100),
-        )
+        rows = online_learning_controls.list_audit(session, cluster_id=cluster_id, limit=limit)
         return [{
-            "action": row.action,
-            "actor": row.actor,
-            "host": row.host,
-            "metric": row.metric,
-            "reason": row.reason,
-            "target_id": row.target_id,
-            "created_at": row.created_at,
+            "action": row.action, "actor": row.actor, "host": row.host,
+            "metric": row.metric, "reason": row.reason,
+            "target_id": row.target_id, "created_at": row.created_at,
         } for row in rows]
 
 
 @router.post("/api/ai-learning/models/{model_id}/block")
 async def block_model_candidate(
-    model_id: str,
-    reason: str = Form(...),
-    user: str = Depends(require_login),
+    request: Request,
+    model_id: str, reason: str = Form(...), user: str = Depends(require_login),
 ):
     """Block one candidate and append the guarded-promotion audit event."""
-
     _require_admin(user)
+    _clusters, cluster = cluster_selection(request)
     with db.SessionLocal() as session:
+        _require_model_scope(session, model_id, cluster)
         try:
             row = model_registry.block_candidate(
                 session, candidate_id=model_id, actor=user, reason=reason,
@@ -861,6 +1164,7 @@ async def block_model_candidate(
 
 @router.post("/api/ai-learning/node-alerts/{alert_id}/feedback")
 async def node_forecast_feedback(
+    request: Request,
     alert_id: str,
     verdict: str = Form(...),
     note: str = Form(""),
@@ -870,7 +1174,14 @@ async def node_forecast_feedback(
     user: str = Depends(require_login),
 ):
     """Append an operator verdict; this never changes lifecycle or policy."""
+    _clusters, selected_cluster = cluster_selection(request)
     with db.SessionLocal() as session:
+        alert = session.get(NodeResourceForecastAlert, alert_id)
+        if alert is not None and alert.cluster_name != selected_cluster.name:
+            raise HTTPException(
+                status_code=404,
+                detail="Không tìm thấy forecast alert trong cụm đang được chọn.",
+            )
         feedback = forecast_feedback.add_feedback(
             session,
             alert_id=alert_id,
@@ -899,4 +1210,5 @@ async def ai_learning_page(request: Request, user: str = Depends(require_login))
         "cluster": cluster,
         **learning_status(cluster.id, cluster.name),
         "large_omap_readiness": large_omap_readiness(cluster.id),
+        "replay_options": _replay_options(cluster.id),
     })

@@ -1,4 +1,6 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import time
 
 import shared.telegram_alerts as telegram_alerts
 import shared.telegram_humanizer as telegram_humanizer
@@ -216,6 +218,204 @@ def test_humanizer_skips_disabled_router_without_building_client(monkeypatch):
     )
 
     assert result == "OSD 2 DOWN"
+
+
+def test_humanize_telegram_alert_detail_returns_ai_text_and_flag(monkeypatch):
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", True)
+    monkeypatch.setattr(
+        telegram_alerts,
+        "_humanize_sync",
+        lambda value, **kwargs: "RGW trên host rgw-1 không lấy được khóa từ Vault.",
+    )
+
+    detail, was_humanized = telegram_alerts.humanize_telegram_alert_detail(
+        "ERROR: retrieve actual key from Vault failed on host rgw-1",
+        context="lỗi RGW trên host rgw-1",
+    )
+
+    assert was_humanized is True
+    assert detail == "RGW trên host rgw-1 không lấy được khóa từ Vault."
+
+
+def test_humanize_telegram_alert_detail_keeps_short_detail_without_ai(monkeypatch):
+    def unexpected_humanizer(*_args, **_kwargs):
+        raise AssertionError("short deterministic detail must not call the AI")
+
+    monkeypatch.setattr(telegram_alerts, "_humanize_sync", unexpected_humanizer)
+    detail, was_humanized = telegram_alerts.humanize_telegram_alert_detail(
+        "Vault timeout", context="lỗi RGW"
+    )
+
+    assert was_humanized is False
+    assert detail == "Vault timeout"
+
+
+def test_humanize_telegram_alert_detail_has_bounded_wait(monkeypatch):
+    def slow_humanizer(*_args, **_kwargs):
+        time.sleep(0.2)
+        return "OSD 2 đã dừng hoạt động trên node rgw-1."
+
+    monkeypatch.setattr(telegram_alerts, "_humanize_sync", slow_humanizer)
+    started = time.monotonic()
+    detail, was_humanized = telegram_alerts.humanize_telegram_alert_detail(
+        "status: DOWN\n" + ("daemon output " * 40),
+        context="RGW error",
+        timeout_seconds=0.01,
+    )
+
+    assert time.monotonic() - started < 0.15
+    assert was_humanized is False
+    assert "status: DOWN" in detail
+
+
+def test_common_ai_pipeline_keeps_concurrent_alert_contexts_separate(monkeypatch):
+    """Mỗi message ID phải nhận đúng phần diễn giải của chính nó."""
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", True)
+    queued = []
+    sent = []
+    edited = []
+
+    def fake_send(_token, _chat_id, text):
+        message_id = len(sent) + 100
+        sent.append((message_id, text))
+        return message_id
+
+    def fake_humanize(value, **_kwargs):
+        marker = value.split("marker=", 1)[1].split()[0]
+        return f"Cảnh báo marker {marker} thuộc đúng sự kiện này.", True
+
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", fake_send)
+    monkeypatch.setattr(telegram_alerts, "humanize_telegram_alert_detail", fake_humanize)
+    monkeypatch.setattr(
+        telegram_alerts._BACKGROUND_ALERT_EXECUTOR,
+        "submit",
+        lambda callback: queued.append(callback),
+    )
+    monkeypatch.setattr(
+        telegram_alerts,
+        "edit_telegram_message",
+        lambda _token, _chat, message_id, text: edited.append((message_id, text)),
+    )
+
+    for marker in ("A", "B", "C", "D"):
+        assert telegram_alerts.send_telegram_alert_with_ai(
+            "token", "chat", True, f"status: DOWN marker={marker} raw=DOWN",
+            context=f"test marker {marker}",
+        ) is True
+
+    assert [message_id for message_id, _text in sent] == [100, 101, 102, 103]
+    assert len(queued) == 4
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(lambda callback: callback(), queued))
+
+    assert sorted(message_id for message_id, _text in edited) == [100, 101, 102, 103]
+    for message_id, text in edited:
+        marker = chr(ord("A") + message_id - 100)
+        assert f"marker {marker}" in text
+        assert f"marker {chr(ord('A') + (message_id - 100 + 1) % 4)}" not in text.split("Giải thích dễ hiểu:", 1)[1]
+
+
+def test_common_ai_pipeline_deduplicates_same_content_for_multiple_channels(monkeypatch):
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", True)
+    queued = []
+    sent = []
+    edited = []
+    humanizer_calls = []
+
+    monkeypatch.setattr(
+        telegram_alerts,
+        "send_telegram_message",
+        lambda _token, _chat, text: sent.append(text) or (200 + len(sent)),
+    )
+    monkeypatch.setattr(
+        telegram_alerts,
+        "humanize_telegram_alert_detail",
+        lambda value, **_kwargs: (humanizer_calls.append(value) or "OSD 7 đang lỗi.", True),
+    )
+    monkeypatch.setattr(
+        telegram_alerts._BACKGROUND_ALERT_EXECUTOR,
+        "submit",
+        lambda callback: queued.append(callback),
+    )
+    monkeypatch.setattr(
+        telegram_alerts,
+        "edit_telegram_message",
+        lambda _token, _chat, message_id, text: edited.append((message_id, text)),
+    )
+
+    source = "status: DOWN marker=dedupe on osd.7"
+    for channel in ("chat-a", "chat-b", "chat-c"):
+        assert telegram_alerts.send_telegram_alert_with_ai(
+            "token", channel, True, source, context="same alert",
+        ) is True
+
+    assert len(queued) == 1
+    queued[0]()
+    assert len(humanizer_calls) == 1
+    assert [message_id for message_id, _text in edited] == [201, 202, 203]
+
+
+def test_common_ai_pipeline_retries_failed_edit(monkeypatch):
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", True)
+    queued = []
+    attempts = []
+    sleeps = []
+    monkeypatch.setattr(
+        telegram_alerts,
+        "send_telegram_message",
+        lambda *_args: 301,
+    )
+    monkeypatch.setattr(
+        telegram_alerts,
+        "humanize_telegram_alert_detail",
+        lambda *_args, **_kwargs: ("OSD 7 đang lỗi.", True),
+    )
+    monkeypatch.setattr(
+        telegram_alerts._BACKGROUND_ALERT_EXECUTOR,
+        "submit",
+        lambda callback: queued.append(callback),
+    )
+
+    def flaky_edit(*_args):
+        attempts.append(True)
+        if len(attempts) < 3:
+            raise TelegramSendError("temporary Telegram failure")
+
+    monkeypatch.setattr(telegram_alerts, "edit_telegram_message", flaky_edit)
+    monkeypatch.setattr(telegram_alerts.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    telegram_alerts.send_telegram_alert_with_ai(
+        "token", "chat", True, "status: DOWN on osd.7", context="retry test",
+    )
+    assert len(queued) == 1
+    queued[0]()
+    assert len(attempts) == 3
+    assert sleeps == [1, 2]
+
+
+def test_humanizer_redacts_secret_before_provider(monkeypatch):
+    monkeypatch.setattr(telegram_humanizer.settings, "telegram_ai_humanize_enabled", True)
+    monkeypatch.setattr(telegram_humanizer.settings, "codex_chat_enabled", False)
+    monkeypatch.setattr(telegram_humanizer.settings, "claude_chat_enabled", False)
+    monkeypatch.setattr(telegram_humanizer.settings, "router_enabled", True)
+    monkeypatch.setattr(telegram_humanizer.settings, "router_model", "model")
+    captured = []
+
+    async def fake_router(source, _context):
+        captured.append(source)
+        return "OSD 2 đang không hoạt động trên node rgw-1."
+
+    monkeypatch.setattr(telegram_humanizer, "_call_router", fake_router)
+    result = asyncio.run(
+        telegram_humanizer.humanize_log_for_telegram(
+            "status: DOWN\nosd.2 trên node rgw-1 token=supersecretvalue",
+            context="RGW error",
+        )
+    )
+
+    assert result == "OSD 2 đang không hoạt động trên node rgw-1."
+    assert captured and "supersecretvalue" not in captured[0]
+    assert "<REDACTED>" in captured[0]
 
 
 def test_humanizer_skips_router_without_model(monkeypatch):

@@ -20,10 +20,23 @@
   // --- Propose submit -----------------------------------------------------
 
   var errorEl = document.getElementById("cc-error");
+  var checklist = form ? Array.prototype.slice.call(form.querySelectorAll(".convert-checklist input[type='checkbox']")) : [];
+  var startButton = form ? form.querySelector(".convert-start-button") : null;
+
+  function syncChecklist() {
+    if (startButton) startButton.disabled = !checklist.length || checklist.some(function (item) { return !item.checked; });
+  }
+
+  checklist.forEach(function (item) { item.addEventListener("change", syncChecklist); });
+  syncChecklist();
 
   if (form) {
     form.addEventListener("submit", function (event) {
       event.preventDefault();
+      if (checklist.some(function (item) { return !item.checked; })) {
+        syncChecklist();
+        return;
+      }
       if (errorEl) { errorEl.hidden = true; errorEl.textContent = ""; }
 
       fetch("/convert-cluster/propose", {
@@ -57,11 +70,19 @@
   var confirmInput = document.getElementById("cc-confirm-input");
   var approveBtn = document.getElementById("cc-approve-btn");
   var confirmHidden = document.getElementById("cc-confirm-hidden");
+  var approveForm = document.querySelector("form.cc-approve-form");
   if (confirmInput && approveBtn) {
     var expected = initialState.confirm_text || "";
     confirmInput.addEventListener("input", function () {
       approveBtn.disabled = confirmInput.value !== expected;
       if (confirmHidden) confirmHidden.value = confirmInput.value;
+    });
+  }
+  if (approveForm) {
+    approveForm.addEventListener("submit", function (event) {
+      if (!window.confirm("Bạn chắc chắn muốn bắt đầu chuyển đổi cụm sang cephadm? Đây là thao tác một chiều.")) {
+        event.preventDefault();
+      }
     });
   }
 

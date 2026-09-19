@@ -15,7 +15,7 @@ from shared.telegram_client import (
 class FakeResponse:
     def __init__(self, status_code=200, body=None, text=""):
         self.status_code = status_code
-        self._body = body if body is not None else {"ok": True}
+        self._body = body if body is not None else {"ok": True, "result": {"message_id": 1}}
         self.text = text
 
     def json(self):
@@ -31,9 +31,10 @@ def test_send_telegram_message_posts_to_correct_url_and_payload(monkeypatch):
 
     monkeypatch.setattr(telegram_client.httpx, "post", fake_post)
 
-    send_telegram_message("123:ABC", "-100999", "hello")
+    message_id = send_telegram_message("123:ABC", "-100999", "hello")
 
     assert len(calls) == 1
+    assert message_id == 1
     url, payload, timeout = calls[0]
     assert url == "https://api.telegram.org/bot123:ABC/sendMessage"
     assert payload == {"chat_id": "-100999", "text": "hello"}

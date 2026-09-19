@@ -1,0 +1,99 @@
+/* Volume Performance combobox: keep the menu anchored to the field instead
+   of relying on the browser's native datalist popup. */
+.volume-combobox { position: relative; width: 100%; min-width: 0; }
+.volume-combobox-control { position: relative; display: flex; align-items: stretch; }
+.volume-combobox-control input { padding-right: 40px !important; }
+.volume-combobox-toggle {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  bottom: 1px;
+  width: 36px;
+  border: 0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: .68rem;
+  cursor: pointer;
+}
+.volume-combobox-toggle:hover,
+.volume-combobox.is-open .volume-combobox-toggle { color: var(--accent); background: rgba(255,255,255,.05); }
+.volume-dropdown {
+  position: absolute;
+  z-index: 100;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid #334155;
+  border-radius: 9px;
+  background: rgba(15,23,42,.98);
+  box-shadow: 0 16px 38px rgba(0,0,0,.45);
+}
+.volume-combobox.is-flipped .volume-dropdown { top: auto; bottom: calc(100% + 6px); }
+.volume-dropdown[hidden] { display: none; }
+.volume-dropdown-options {
+  max-height: 320px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 5px;
+  scrollbar-color: #475569 transparent;
+  scrollbar-width: thin;
+}
+.volume-dropdown-options::-webkit-scrollbar { width: 6px; }
+.volume-dropdown-options::-webkit-scrollbar-track { background: transparent; }
+.volume-dropdown-options::-webkit-scrollbar-thumb { border-radius: 999px; background: #475569; }
+.volume-dropdown-options.is-virtual { position: relative; }
+.volume-dropdown-option {
+  display: flex;
+  min-height: 62px;
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 34px 8px 11px;
+  position: relative;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.volume-dropdown-option:hover,
+.volume-dropdown-option.is-highlighted { background: #1e293b; }
+.volume-dropdown-option[aria-selected="true"] { background: rgba(30,41,59,.5); }
+.volume-dropdown-option[aria-selected="true"]::after {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  color: #22d3ee;
+  content: "✓";
+  font-size: 1rem;
+  font-weight: 800;
+  transform: translateY(-50%);
+}
+.volume-dropdown-name {
+  max-width: 100%;
+  overflow: hidden;
+  color: #f8fafc;
+  font-size: .82rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.volume-dropdown-meta {
+  max-width: 100%;
+  overflow: hidden;
+  color: #94a3b8;
+  font: .68rem/1.25 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.volume-dropdown-empty { padding: 16px 11px; color: #94a3b8; font-size: .78rem; text-align: center; }
+@media (max-width: 640px) {
+  .volume-dropdown { position: fixed; left: auto; right: 12px; width: calc(100vw - 24px); }
+  .volume-combobox.is-flipped .volume-dropdown { right: 12px; }
+}

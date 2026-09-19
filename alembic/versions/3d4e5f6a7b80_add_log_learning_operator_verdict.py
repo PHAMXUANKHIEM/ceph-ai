@@ -33,7 +33,11 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_log_learning_audit_sample_id", table_name="log_learning_audit")
     op.drop_table("log_learning_audit")
-    op.drop_column("log_learning_samples", "operator_verdict_at")
-    op.drop_column("log_learning_samples", "operator_verdict_by")
-    op.drop_column("log_learning_samples", "operator_note")
-    op.drop_column("log_learning_samples", "operator_verdict")
+    with op.batch_alter_table("log_learning_samples") as batch_op:
+        batch_op.drop_column("operator_verdict_at")
+    with op.batch_alter_table("log_learning_samples") as batch_op:
+        batch_op.drop_column("operator_verdict_by")
+    with op.batch_alter_table("log_learning_samples") as batch_op:
+        batch_op.drop_column("operator_note")
+    with op.batch_alter_table("log_learning_samples") as batch_op:
+        batch_op.drop_column("operator_verdict")

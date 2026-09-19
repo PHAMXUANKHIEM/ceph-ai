@@ -37,6 +37,9 @@ CLUSTER_ENV_NAMES: dict[str, str] = {
     "ceph_mgr_nodes": "CEPH_MGR_NODES",
     "ceph_rgw_nodes": "CEPH_RGW_NODES",
     "ceph_rgw_container_name": "CEPH_RGW_CONTAINER_NAME",
+    "ceph_rgw_s3_endpoint": "CEPH_RGW_S3_ENDPOINT",
+    "ceph_rgw_s3_access_key": "CEPH_RGW_S3_ACCESS_KEY",
+    "ceph_rgw_s3_secret_key": "CEPH_RGW_S3_SECRET_KEY",
     "ceph_exec_mode": "CEPH_EXEC_MODE",
     "ssh_user": "SSH_USER",
 }

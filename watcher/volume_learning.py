@@ -13,6 +13,7 @@ from config.settings import settings
 from shared import db, telegram_alerts
 from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
 from shared.forecast_metrics import update_rolling_metrics
+from shared.learning_safety import RateLimiter
 from shared.metric_quality import MetricQuality, assess_metric_quality
 from shared.models import (
     Cluster,
@@ -24,6 +25,7 @@ ALGORITHM = "seasonal_median"
 FORECAST_MODEL_VERSION = "seasonal-trend-v1"
 METRICS = ("iops", "read_latency_ms", "write_latency_ms")
 _last_attempt_bucket: dict[tuple[str, str, str], datetime] = {}
+_learning_rate_limiter = RateLimiter()
 
 
 def _quality_for_points(
@@ -413,6 +415,16 @@ def observe_sample(
     if not settings.volume_learning_enabled or not cluster_id:
         return 0
     pool, image = str(sample["pool"]), str(sample["image"])
+    # Raw VolumeMetric persistence remains owned by volume_monitor. This gate
+    # only bounds the more expensive learning/evaluation work for direct
+    # callers and duplicate Watcher ticks; the normal 5-minute cadence passes
+    # unchanged with the default interval.
+    if not _learning_rate_limiter.allow(
+        f"volume:{cluster_id}:{pool}:{image}",
+        interval_seconds=settings.learning_job_min_interval_seconds,
+        now=observed_at.timestamp(),
+    ):
+        return 0
     actual = {metric: float(sample[metric]) for metric in METRICS}
     evaluated = _evaluate_due(session, cluster_id, pool, image, actual, observed_at)
     bucket = observed_at.replace(minute=0, second=0, microsecond=0)

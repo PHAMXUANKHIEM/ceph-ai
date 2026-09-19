@@ -229,6 +229,7 @@ def create_or_resolve_osd_latency_incidents(
     watcher/crush_skew_monitor.py (xem docstring hàm tương ứng ở đó); cùng
     một khuôn streak-trong-RAM nên cùng một cách vá. Mặc định None giữ
     nguyên hành vi cũ."""
+    pending_alerts = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -285,5 +286,7 @@ def create_or_resolve_osd_latency_incidents(
             )
 
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                send_osd_latency_alert(detail["osd_id"], detail["host"], rationale)
+                pending_alerts.append((detail["osd_id"], detail["host"], rationale))
         session.commit()
+    for osd_id, host, rationale in pending_alerts:
+        send_osd_latency_alert(osd_id, host, rationale)

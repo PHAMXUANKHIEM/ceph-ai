@@ -89,10 +89,10 @@ class FakeSSHClient:
     def save_host_keys(self, path):
         pass
 
-    def connect(self, hostname, username, key_filename, timeout):
+    def connect(self, hostname, username, key_filename, timeout, **_timeouts):
         pass
 
-    def exec_command(self, cmd):
+    def exec_command(self, cmd, timeout=None):
         if cmd.startswith("rbd import"):
             FakeSSHClient.imported_bytes = bytearray()
             stdin = _FakeStdinCapture(FakeSSHClient.imported_bytes)
@@ -136,7 +136,12 @@ def fakes(monkeypatch):
     monkeypatch.setattr(restore_drill, "get_backend", lambda slot, settings: FakeBackend())
 
     cleanup_calls = []
-    monkeypatch.setattr(restore_drill, "execute_command", lambda host, cmd: cleanup_calls.append(cmd) or "")
+    def fake_execute_command(host, cmd):
+        cleanup_calls.append(cmd)
+        if cmd.startswith("rbd info"):
+            raise restore_drill.ExecutorError(f"{host}: command exited 2: image not found")
+        return ""
+    monkeypatch.setattr(restore_drill, "execute_command", fake_execute_command)
 
     alerts = []
     monkeypatch.setattr(
@@ -193,6 +198,60 @@ def test_restore_drill_succeeds_when_checksum_matches(isolated_db, fakes):
     # scratch image always cleaned up, success or failure
     assert any("rbd rm scratch/drill01" == c for c in fakes.cleanup_calls)
     assert fakes.alerts == []
+
+
+def test_restore_drill_uses_shared_engine_for_incremental_chain(isolated_db, fakes, monkeypatch):
+    full_id = _make_success_full_backup_job()
+    with db_module.SessionLocal() as session:
+        diff = BackupJob(
+            run_id="run-2",
+            pool="vms",
+            image="web01",
+            job_type="incremental",
+            status="SUCCESS",
+            backup_target_slot="a",
+            base_job_id=full_id,
+            remote_key="incremental/vms/web01/diff-20260101T010000Z.bin",
+            size_bytes=128,
+            sha256="diff-sha256",
+            created_at=datetime.utcnow(),
+            finished_at=datetime.utcnow(),
+        )
+        session.add(diff)
+        session.commit()
+        diff_id = diff.id
+
+    calls = []
+
+    def fake_restore_image(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(
+            success=True,
+            full_job_id=full_id,
+            applied_diff_job_ids=[diff_id],
+            size_bytes=len(BACKUP_CONTENT) + 128,
+            error_message=None,
+        )
+
+    monkeypatch.setattr(restore_drill.restore_chain, "restore_image", fake_restore_image)
+
+    progress_updates = []
+    succeeded = restore_drill.run(
+        "action-chain", {}, "incident-chain", lambda _action, progress: progress_updates.append(progress), _allow_execution
+    )
+
+    assert succeeded is True
+    assert len(calls) == 1
+    assert calls[0][0][0:2] == ("vms", "web01")
+    assert calls[0][0][3:5] == ("scratch", "drill01")
+    assert calls[0][1]["cleanup_new_destination_on_failure"] is True
+    with db_module.SessionLocal() as session:
+        drill = session.query(BackupJob).filter(BackupJob.job_type == "restore_drill").one()
+        assert drill.status == "SUCCESS"
+        assert drill.size_bytes == len(BACKUP_CONTENT) + 128
+    assert any("rbd rm scratch/drill01" == c for c in fakes.cleanup_calls)
+    assert progress_updates[0][0]["mode"] == "full+incremental"
+    assert progress_updates[-1][0]["applied_diff_job_ids"] == [diff_id]
 
 
 def test_restore_drill_fails_on_checksum_mismatch_and_alerts_critical(isolated_db, fakes):
@@ -271,3 +330,16 @@ def test_restore_drill_not_configured_returns_false(isolated_db, fakes, monkeypa
     succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _allow_execution)
 
     assert succeeded is False
+
+
+def test_restore_drill_refuses_to_overwrite_existing_scratch_image(isolated_db, fakes, monkeypatch):
+    _make_success_full_backup_job()
+    monkeypatch.setattr(
+        restore_drill, "execute_command", lambda host, cmd: "{\"name\":\"drill01\"}" if cmd.startswith("rbd info") else "",
+    )
+
+    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _allow_execution)
+
+    assert succeeded is False
+    assert FakeSSHClient.imported_bytes == bytearray()
+    assert not any(command == "rbd rm scratch/drill01" for command in fakes.cleanup_calls)

@@ -81,16 +81,27 @@ class FakeSSHClient:
     def save_host_keys(self, path):
         pass
 
-    def connect(self, hostname, username, key_filename, timeout):
+    def connect(self, hostname, username, key_filename, timeout, **_timeouts):
         pass
 
-    def exec_command(self, cmd):
+    def exec_command(self, cmd, timeout=None):
         sink = bytearray()
         FakeSSHClient.imported_calls.append([cmd, sink])
         stdin = _FakeStdinCapture(sink)
         exit_status = FakeSSHClient.exit_status_by_cmd.get(cmd, 0)
+        if cmd not in FakeSSHClient.exit_status_by_cmd:
+            exit_status = next(
+                (status for expected, status in FakeSSHClient.exit_status_by_cmd.items() if cmd.endswith(expected)),
+                0,
+            )
         stdout = _FakeStdoutExit(exit_status)
-        stderr = _FakeStderr(FakeSSHClient.stderr_by_cmd.get(cmd, ""))
+        stderr_text = FakeSSHClient.stderr_by_cmd.get(cmd, "")
+        if cmd not in FakeSSHClient.stderr_by_cmd:
+            stderr_text = next(
+                (message for expected, message in FakeSSHClient.stderr_by_cmd.items() if cmd.endswith(expected)),
+                "",
+            )
+        stderr = _FakeStderr(stderr_text)
         return stdin, stdout, stderr
 
     def close(self):
@@ -130,6 +141,14 @@ class FakeStorageBackend:
         if content is None:
             return False
         return len(content) == expected_size and hashlib.sha256(content).hexdigest() == expected_sha256
+
+
+def _assert_bounded_restore_commands(commands, expected):
+    assert len(commands) == len(expected)
+    for actual, expected_command in zip(commands, expected):
+        assert "timeout --signal=TERM --kill-after=2s" in actual
+        assert "flock -w 30 /run/ceph-ai-cephadm.lock" in actual
+        assert actual.endswith(expected_command)
 
 
 @pytest.fixture(autouse=True)
@@ -239,14 +258,15 @@ def test_restore_image_applies_full_then_diffs_in_order(isolated_db):
     assert result.size_bytes == len(FULL_CONTENT) + len(DIFF1_CONTENT) + len(DIFF2_CONTENT)
 
     commands = [cmd for cmd, _sink in FakeSSHClient.imported_calls]
-    assert commands == [
+    _assert_bounded_restore_commands(commands, [
         "rbd import - vms/web01",
         "rbd import-diff - vms/web01",
         "rbd import-diff - vms/web01",
         "rbd info vms/web01 --format json",
-    ]
+        "rbd export vms/web01 /dev/null",
+    ])
     payloads = [bytes(sink) for _cmd, sink in FakeSSHClient.imported_calls]
-    assert payloads == [FULL_CONTENT, DIFF1_CONTENT, DIFF2_CONTENT, b""]
+    assert payloads == [FULL_CONTENT, DIFF1_CONTENT, DIFF2_CONTENT, b"", b""]
 
 
 def test_restore_image_stops_at_selected_incremental_recovery_point(isolated_db):
@@ -267,7 +287,7 @@ def test_restore_image_stops_at_selected_incremental_recovery_point(isolated_db)
     assert result.success is True
     assert result.applied_diff_job_ids == [selected_id]
     payloads = [bytes(sink) for _cmd, sink in FakeSSHClient.imported_calls]
-    assert payloads == [FULL_CONTENT, DIFF1_CONTENT, b""]
+    assert payloads == [FULL_CONTENT, DIFF1_CONTENT, b"", b""]
 
 
 def test_restore_image_restores_into_a_different_dest(isolated_db):
@@ -278,8 +298,11 @@ def test_restore_image_restores_into_a_different_dest(isolated_db):
     result = restore.restore_image("vms", "web01", storage, "restored", "web01-copy")
 
     assert result.success is True
-    assert FakeSSHClient.imported_calls[0][0] == "rbd import - restored/web01-copy"
-    assert FakeSSHClient.imported_calls[-1][0] == "rbd info restored/web01-copy --format json"
+    _assert_bounded_restore_commands(
+        [cmd for cmd, _sink in FakeSSHClient.imported_calls],
+        ["rbd import - restored/web01-copy", "rbd info restored/web01-copy --format json",
+         "rbd export restored/web01-copy /dev/null"],
+    )
 
 
 def test_restore_as_new_cleans_partial_destination_when_verify_fails(isolated_db):
@@ -294,7 +317,11 @@ def test_restore_as_new_cleans_partial_destination_when_verify_fails(isolated_db
     )
 
     assert result.success is False
-    assert FakeSSHClient.imported_calls[-1][0] == "rbd rm restored/web01-copy"
+    _assert_bounded_restore_commands(
+        [cmd for cmd, _sink in FakeSSHClient.imported_calls],
+        ["rbd import - restored/web01-copy", "rbd info restored/web01-copy --format json",
+         "rbd rm restored/web01-copy"],
+    )
 
 
 def test_restore_as_new_cleans_destination_when_import_fails_after_creation(isolated_db):
@@ -310,10 +337,13 @@ def test_restore_as_new_cleans_destination_when_import_fails_after_creation(isol
     )
 
     assert result.success is False
-    assert [cmd for cmd, _sink in FakeSSHClient.imported_calls] == [
+    _assert_bounded_restore_commands(
+        [cmd for cmd, _sink in FakeSSHClient.imported_calls],
+        [
         "rbd import - restored/web01-copy",
         "rbd rm restored/web01-copy",
-    ]
+        ],
+    )
 
 
 def test_restore_image_fails_when_no_successful_full_backup_exists(isolated_db):
@@ -385,4 +415,8 @@ def test_restore_image_ignores_failed_incremental_jobs(isolated_db):
     assert result.success is True
     assert result.applied_diff_job_ids == []
     commands = [cmd for cmd, _sink in FakeSSHClient.imported_calls]
-    assert commands == ["rbd import - vms/web01", "rbd info vms/web01 --format json"]
+    _assert_bounded_restore_commands(
+        commands,
+        ["rbd import - vms/web01", "rbd info vms/web01 --format json",
+         "rbd export vms/web01 /dev/null"],
+    )

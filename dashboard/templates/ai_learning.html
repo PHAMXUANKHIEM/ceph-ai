@@ -16,6 +16,14 @@
       <form method="get" action="/ai-learning" class="audit-filters">
         <label>Cụm<select name="cluster" onchange="this.form.submit()">{% for item in clusters %}<option value="{{ item.id }}" {% if item.id == cluster.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></label>
       </form>
+      <div class="learning-status-grid" aria-label="Trạng thái online learning">
+        <div><span class="hint">Runtime</span><strong>{{ online_learning.effective_mode }}</strong><small>{{ online_learning.runtime_reason }}</small></div>
+        <div><span class="hint">Model version</span><strong>{{ online_learning.model_version or 'Chưa có' }}</strong><small>{{ online_learning.sample_count }} sample audit</small></div>
+        <div><span class="hint">Lần học gần nhất</span><strong>{{ online_learning.last_learned_at|vntime if online_learning.last_learned_at else 'Chưa có' }}</strong><small>Verified feedback: {{ online_learning.verified_feedback_count }}</small></div>
+        <div><span class="hint">Drift</span><strong>{{ online_learning.drift_state_counts.get('DRIFT', 0) }} DRIFT</strong><small>OK: {{ online_learning.drift_state_counts.get('OK', 0) }} · thiếu dữ liệu: {{ online_learning.drift_state_counts.get('INSUFFICIENT_DATA', 0) }}</small></div>
+        <div><span class="hint">Quality gate</span><strong>{{ online_learning.quality_gate_counts.get('READY_TO_LEARN', 0) }} đủ điều kiện</strong><small>DATA_QUALITY: {{ online_learning.quality_gate_counts.get('DATA_QUALITY', 0) }} · NO_LABEL: {{ online_learning.quality_gate_counts.get('NO_LABEL', 0) }}</small></div>
+        <div><span class="hint">Learner cycle</span><strong>{% if online_learning.latest_cycle %}{{ online_learning.latest_cycle.cpu_time_ms }} ms CPU{% else %}Chưa có telemetry{% endif %}</strong><small>{% if online_learning.latest_cycle %}{{ online_learning.latest_cycle.applied }} applied · {{ online_learning.latest_cycle.elapsed_ms }} ms elapsed{% else %}Learner chưa chạy{% endif %}</small></div>
+      </div>
       <p><strong>CPU/RAM:</strong> {{ resource_learning.run_counts.get('EVALUATED', 0) }} dự báo đã đối chiếu · {{ resource_learning.run_counts.get('PENDING', 0) }} đang chờ outcome.</p>
       <p><strong>RBD volume:</strong> {{ volume_learning.run_counts.get('EVALUATED', 0) }} baseline đã đối chiếu · {{ volume_learning.run_counts.get('PENDING', 0) }} đang chờ outcome · {{ volume_learning.selected_models|length }} model được chọn.</p>
       <p><strong>Dự báo sớm RBD:</strong> {{ volume_learning.early_forecasts|length }} forecast mới nhất · {{ volume_learning.forecast_warning_count }} cảnh báo.</p>
@@ -29,7 +37,7 @@
   <section class="card">
     <div class="card-header"><div><h2>Operator controls</h2><p class="hint">Chỉ admin mới dùng được. Các thao tác này không promote model và không chạy remediation.</p></div></div>
     <div class="card-body learner-controls">
-      <p><strong>Canary stream:</strong> <code>{{ online_learning.canary_scope.host or 'chưa cấu hình host' }}</code> / <code>{{ online_learning.canary_scope.metric }}</code>
+      <p><strong>Canary stream:</strong> <code>{{ online_learning.canary_scope.host or 'chưa cấu hình host' }}</code> / <code>{{ online_learning.canary_scope.metrics }}</code>
         {% if online_learning.control.status == 'PAUSED' %}<span class="badge badge-warn">PAUSED</span>{% else %}<span class="badge badge-ok">RUNNING</span>{% endif %}
         <span class="hint">{{ online_learning.control.reason }}</span></p>
       <div class="actions">
@@ -37,7 +45,7 @@
         <button type="button" class="btn btn-secondary" onclick="setLearnerControl('resume')" {% if not online_learning.canary_scope.host %}disabled{% endif %}>Resume stream</button>
         <button type="button" class="btn btn-danger-outline" onclick="resetLearner()" {% if not online_learning.canary_scope.host %}disabled{% endif %}>Reset state</button>
       </div>
-      <details class="operator-audit-details"><summary>Operator audit trail ({{ online_learning.operator_audits|length }})</summary>
+      <details><summary>Operator audit trail ({{ online_learning.operator_audits|length }})</summary>
         <div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Action</th><th>Scope</th><th>Actor</th><th>Lý do</th></tr></thead><tbody>
         {% for audit in online_learning.operator_audits %}<tr><td>{{ audit.created_at|vntime }}</td><td><code>{{ audit.action }}</code></td><td><code>{{ audit.host }}/{{ audit.metric }}</code></td><td>{{ audit.actor }}</td><td>{{ audit.reason }}</td></tr>
         {% else %}<tr class="empty-row"><td colspan="5">Chưa có operator control audit.</td></tr>{% endfor %}
@@ -47,31 +55,39 @@
   </section>
 
   <section class="card">
-    <div class="card-header"><div><h2>Telemetry job tự học</h2><p class="hint">Chỉ scope canary hiện tại · đo số cycle, thời gian xử lý và CPU time; không có dữ liệu thì hiển thị rõ thay vì suy diễn thành 0.</p></div></div>
+    <div class="card-header"><div><h2>Replay / Backtest forecast</h2><p class="hint">Chạy lại read-only trên lịch sử CPU/RAM để so sánh active linear với candidate rolling-quantile. Không ghi model state, không mở alert và không chạy remediation.</p></div></div>
     <div class="card-body">
-      {% if online_learning.telemetry.has_data %}
-      <p><span class="badge">{{ online_learning.telemetry.cycle_count }} cycles</span>
-        <span class="badge">{{ online_learning.telemetry.processed }} samples</span>
-        <span class="badge badge-ok">{{ online_learning.telemetry.applied }} updates</span>
-        {% if online_learning.telemetry.failed %}<span class="badge badge-err">{{ online_learning.telemetry.failed }} failures</span>{% else %}<span class="badge badge-ok">0 failures</span>{% endif %}
-        <span class="hint">avg elapsed {{ online_learning.telemetry.average_elapsed_ms }} ms · avg CPU {{ online_learning.telemetry.average_cpu_time_ms }} ms</span></p>
-      {% else %}<p class="hint">Chưa có telemetry learner cycle cho canary scope.</p>{% endif %}
+      <form id="forecast-replay-form" class="audit-filters">
+        <input type="hidden" name="cluster_id" value="{{ cluster.id }}">
+        <label>Host<select name="host" required {% if not replay_options.hosts %}disabled{% endif %}>{% for host in replay_options.hosts %}<option value="{{ host }}">{{ host }}</option>{% else %}<option value="">Không có host metric</option>{% endfor %}</select></label>
+        <label>Metric<select name="metric"><option value="cpu">CPU</option><option value="ram">RAM</option></select></label>
+        <label>Từ<input type="datetime-local" name="start_at" required></label>
+        <label>Đến<input type="datetime-local" name="end_at" required></label>
+        <label>Horizon (giờ)<input type="number" name="horizon_hours" min="1" max="168" value="1" required></label>
+        <label>Windows (giờ)<input type="text" name="window_hours" value="6,24,72" pattern="[0-9, ]+" required></label>
+        <button class="btn btn-primary" type="submit" {% if not replay_options.hosts %}disabled{% endif %}>▶ Chạy replay</button>
+      </form>
+      <p class="hint">Giới hạn: tối đa 31 ngày/replay · dữ liệu khả dụng {{ replay_options.minimum_at|vntime }} → {{ replay_options.maximum_at|vntime }} · chỉ gom mẫu theo giờ để giữ đúng horizon.</p>
+      <p id="forecast-replay-status" class="hint" role="status" aria-live="polite"></p>
     </div>
-    <div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Runtime</th><th>Kết quả</th><th>Elapsed</th><th>CPU time</th></tr></thead><tbody>
-      {% for cycle in online_learning.telemetry.recent_cycles %}<tr><td>{{ cycle.created_at|vntime }}</td><td><code>{{ cycle.runtime_mode }}</code></td><td>{{ cycle.reason }} · {{ cycle.processed }} processed · {{ cycle.applied }} applied · {{ cycle.failed }} failed</td><td>{{ cycle.elapsed_ms }} ms</td><td>{{ cycle.cpu_time_ms }} ms</td></tr>
-      {% else %}<tr class="empty-row"><td colspan="5">Chưa có learner cycle nào.</td></tr>{% endfor %}
-    </tbody></table></div>
+    <div id="forecast-replay-result" class="card-body" hidden></div>
   </section>
 
   <section class="card">
-    <div class="card-header"><div><h2>Evidence canary 72 giờ</h2><p class="hint">Báo cáo chỉ đọc cho đúng cluster/host/metric; outcome còn trong horizon được giữ là pending, không bị tính nhầm thành false positive.</p></div></div>
-    <div class="card-body">
-      <p><strong>Forecast:</strong> {{ online_learning.evidence_report.forecast_quality.run_count }} runs · {{ online_learning.evidence_report.forecast_quality.evaluated_count }} evaluated · MAE {{ online_learning.evidence_report.forecast_quality.mae if online_learning.evidence_report.forecast_quality.mae is not none else '—' }} · data-quality {{ online_learning.evidence_report.forecast_quality.data_quality_count }}</p>
-      <p><strong>Alert lifecycle:</strong> {{ online_learning.evidence_report.alert_lifecycle.event_count }} events · warning {{ online_learning.evidence_report.alert_lifecycle.warning_events }} · recovery {{ online_learning.evidence_report.alert_lifecycle.recovery_events }}</p>
-      <p><strong>Early detection:</strong> {{ online_learning.evidence_report.early_detection.detected_breaches }} detections · false positive {{ online_learning.evidence_report.early_detection.false_positive_events }} · pending {{ online_learning.evidence_report.early_detection.pending_outcome_events }} · lead time {{ online_learning.evidence_report.early_detection.average_lead_time_hours if online_learning.evidence_report.early_detection.average_lead_time_hours is not none else '—' }} giờ</p>
-      <p><strong>Resource cost:</strong> {% if online_learning.evidence_report.resource_cost.available %}{{ online_learning.evidence_report.resource_cost.cpu_time_ms }} ms CPU · {{ online_learning.evidence_report.resource_cost.elapsed_ms }} ms elapsed · {{ online_learning.evidence_report.resource_cost.cycle_count }} cycles{% else %}<span class="hint">Chưa có learner cycle telemetry</span>{% endif %}</p>
-      <p class="hint">Bước tiếp theo: {{ online_learning.evidence_report.next_step }}</p>
-    </div>
+    <div class="card-header"><div><h2>Giải thích alert CPU/RAM</h2><p class="hint">Read-only evidence: vì sao alert mở, model đồng thuận ra sao, dữ liệu có fresh/đủ coverage không và lifecycle đã chuyển trạng thái như thế nào.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Host / metric</th><th>Lifecycle / lý do mở</th><th>Forecast</th><th>Consensus</th><th>Freshness</th><th>Coverage / gap</th><th>Quality</th><th>Evidence</th><th>Lịch sử state</th></tr></thead><tbody>
+    {% for alert in node_alerts %}<tr>
+      <td><code>{{ alert.host }}</code><div class="hint">{{ alert.metric }}</div></td>
+      <td>{% if alert.lifecycle_state in ['CRITICAL', 'WARNING'] %}<span class="badge badge-err">{{ alert.lifecycle_state }}</span>{% elif alert.lifecycle_state in ['DATA_QUALITY', 'CANDIDATE'] %}<span class="badge badge-warn">{{ alert.lifecycle_state }}</span>{% elif alert.lifecycle_state in ['RECOVERING'] %}<span class="badge badge-warn">{{ alert.lifecycle_state }}</span>{% else %}<span class="badge badge-ok">{{ alert.lifecycle_state }}</span>{% endif %}<div class="hint">{{ alert.state_reason }}</div></td>
+      <td>{{ alert.current_percent }} → {{ alert.predicted_percent }}<div class="hint">{% if alert.predicted_low is not none and alert.predicted_high is not none %}interval {{ alert.predicted_low }} — {{ alert.predicted_high }}{% else %}interval —{% endif %}<br>confidence {{ (alert.confidence * 100)|round(1) }}%</div></td>
+      <td>{{ ((alert.consensus_ratio * 100)|round(1)) if alert.consensus_ratio is not none else '—' }}%<div class="hint">{{ alert.consensus_candidate_count or 0 }} model · {{ alert.consensus_status or '—' }}</div></td>
+      <td>{% if alert.freshness_status == 'FRESH' %}<span class="badge badge-ok">FRESH</span>{% elif alert.freshness_status == 'STALE' %}<span class="badge badge-err">STALE</span>{% else %}<span class="badge">UNKNOWN</span>{% endif %}<div class="hint">{% if alert.freshness_seconds is not none %}{{ alert.freshness_seconds }}s{% else %}chưa có timestamp{% endif %}</div></td>
+      <td>{{ (alert.coverage_ratio * 100)|round(1) if alert.coverage_ratio is not none else '—' }}%<div class="hint">gap {{ alert.max_gap_hours if alert.max_gap_hours is not none else '—' }}h</div></td>
+      <td>{% if alert.quality_status == 'OK' %}<span class="badge badge-ok">OK</span>{% elif alert.quality_status in ['LOW_COVERAGE', 'GAP_DETECTED'] %}<span class="badge badge-err">{{ alert.quality_status }}</span>{% else %}<span class="badge badge-warn">{{ alert.quality_status }}</span>{% endif %}<div class="hint">{{ alert.quality_reason }}</div></td>
+      <td><code>{{ alert.evidence_version or '—' }}</code><div class="hint">last observed {{ alert.latest_observed_at|vntime }}</div></td>
+      <td><details><summary>{{ alert.transitions|length }} lần chuyển</summary><div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>State</th><th>Lý do</th></tr></thead><tbody>{% for transition in alert.transitions %}<tr><td>{{ transition.changed_at|vntime }}</td><td>{{ transition.previous_state or '—' }} → {{ transition.new_state }}</td><td>{{ transition.reason }}<div class="hint">{{ transition.evidence_version or '—' }}</div></td></tr>{% else %}<tr><td colspan="3" class="hint">Chưa có lịch sử transition.</td></tr>{% endfor %}</tbody></table></div></details></td>
+    </tr>{% else %}<tr class="empty-row"><td colspan="9"><div class="empty-state">Chưa có node forecast alert để giải thích.</div></td></tr>{% endfor %}
+    </tbody></table></div>
   </section>
 
   <section class="card">
@@ -93,6 +109,20 @@
       </tr>
     {% else %}<tr class="empty-row"><td colspan="6"><div class="empty-state">Worker chưa ghi nhận model vào registry.</div></td></tr>{% endfor %}
     </tbody></table></div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <h2>Canary acceptance</h2>
+        <p class="hint">Báo cáo read-only từ dữ liệu live: xem candidate, chất lượng dự báo và các guard trước khi operator nghiệm thu. Không tự promote, không đổi policy và không chạy remediation.</p>
+      </div>
+      <button type="button" class="btn btn-secondary" id="load-canary-report">↻ Tải báo cáo</button>
+    </div>
+    <div class="card-body">
+      <p id="canary-report-status" class="hint" role="status" aria-live="polite">Đang tải báo cáo canary…</p>
+      <div id="canary-report-result" hidden></div>
+    </div>
   </section>
 
   <section class="card">
@@ -137,12 +167,16 @@
   </section>
 
   <section class="card">
-    <div class="card-header"><div><h2>Dự báo sớm RBD volume</h2><p class="hint">Mốc {{ volume_learning.forecast_horizons }} giờ · latency SLO {{ volume_learning.forecast_latency_slo_ms }}ms · dữ liệu thiếu/stale hoặc confidence thấp sẽ không cảnh báo.</p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Volume</th><th>Metric</th><th>Mốc</th><th>Hiện tại → dự báo</th><th>Ngưỡng</th><th>Confidence</th><th>Evidence</th><th>Trạng thái</th></tr></thead><tbody>
+    <div class="card-header"><div><h2>Forecast detail — RBD volume</h2><p class="hint">Mốc {{ volume_learning.forecast_horizons }} giờ · latency SLO {{ volume_learning.forecast_latency_slo_ms }}ms. Dữ liệu thiếu/stale hoặc confidence thấp sẽ không cảnh báo.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Volume / metric</th><th>Mốc</th><th>Actual / hiện tại → predicted</th><th>Prediction interval</th><th>Model / version</th><th>Confidence / consensus</th><th>Quality / MAE-SMAPE</th><th>Trạng thái</th></tr></thead><tbody>
     {% for forecast in volume_learning.early_forecasts %}<tr>
-      <td><code>{{ forecast.pool }}/{{ forecast.image }}</code></td><td>{{ forecast.metric }}</td><td>{{ forecast.horizon_hours }} giờ<br><span class="hint">{{ forecast.target_at|vntime }}</span></td>
-      <td>{{ forecast.current_value }} → {{ forecast.predicted_value }}</td><td>{{ forecast.threshold_value if forecast.threshold_value is not none else '—' }}<div class="hint">{{ forecast.threshold_type or 'chưa đo knee' }}</div></td>
-      <td>{{ (forecast.confidence * 100)|round(1) }}%</td><td>{{ forecast.training_samples }} mẫu / {{ forecast.training_window_hours }}h<div class="hint">{{ forecast.seasonal_scope }} · {{ forecast.model_version }} · nguồn {{ forecast.source_latest_at|vntime }}</div></td>
+      <td><code>{{ forecast.pool }}/{{ forecast.image }}</code><div class="hint">{{ forecast.metric }}</div></td>
+      <td>{{ forecast.horizon_hours }} giờ<br><span class="hint">{{ forecast.target_at|vntime }}</span></td>
+      <td>{{ forecast.actual_value if forecast.actual_value is not none else '— (chờ outcome)' }}<br><span class="hint">{{ forecast.current_value }} → {{ forecast.predicted_value }}</span></td>
+      <td>{% if forecast.predicted_low is not none and forecast.predicted_high is not none %}{{ forecast.predicted_low }} — {{ forecast.predicted_high }}{% else %}—{% endif %}<div class="hint">ngưỡng {{ forecast.threshold_value if forecast.threshold_value is not none else '—' }}</div></td>
+      <td><code>{{ forecast.algorithm }}</code><div class="hint">{{ forecast.model_version }}</div></td>
+      <td>{{ (forecast.confidence * 100)|round(1) }}%<div class="hint">{{ ((forecast.consensus_ratio * 100)|round(1)) if forecast.consensus_ratio is not none else '—' }}% · {{ forecast.consensus_candidate_count or 0 }} model</div></td>
+      <td>{% if forecast.data_quality == 'OK' %}<span class="badge badge-ok">OK</span>{% else %}<span class="badge badge-err">{{ forecast.data_quality }}</span>{% endif %}<div class="hint">MAE {{ forecast.rolling_mae if forecast.rolling_mae is not none else '—' }} · SMAPE {{ forecast.rolling_smape if forecast.rolling_smape is not none else '—' }}%</div></td>
       <td>{% if forecast.status == 'WARNING' %}<span class="badge badge-err">Cảnh báo sớm</span>{% elif forecast.status == 'SAFE' %}<span class="badge badge-ok">Bình thường</span>{% else %}<span class="badge badge-warn">{{ forecast.status }}</span>{% endif %}<div class="hint">{{ forecast.reason }}</div></td>
     </tr>{% else %}<tr class="empty-row"><td colspan="8"><div class="empty-state">Chưa đủ dữ liệu mới để tạo forecast 1h/6h/24h.</div></td></tr>{% endfor %}
     </tbody></table></div>
@@ -159,15 +193,18 @@
   </section>
 
   <section class="card">
-    <div class="card-header"><div><h2>Model CPU/RAM đang được chọn</h2><p class="hint">Đánh giá sau mỗi {{ resource_learning.evaluation_hours }} giờ · tối thiểu {{ resource_learning.minimum_outcomes }} outcome · candidate {{ resource_learning.candidate_windows }} giờ.</p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Host</th><th>Metric</th><th>Cửa sổ</th><th>Outcome</th><th>MAE</th><th>Chính xác ước tính</th><th>Confidence mới nhất</th><th>Đánh giá</th></tr></thead><tbody>
+    <div class="card-header"><div><h2>Forecast detail — CPU/RAM đang được chọn</h2><p class="hint">Đánh giá sau mỗi {{ resource_learning.evaluation_hours }} giờ · tối thiểu {{ resource_learning.minimum_outcomes }} outcome · candidate {{ resource_learning.candidate_windows }} giờ.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Host / metric</th><th>Model / window / version</th><th>Actual / current → predicted</th><th>Prediction interval</th><th>Confidence / consensus</th><th>Data quality</th><th>MAE / SMAPE</th><th>Target / đánh giá</th></tr></thead><tbody>
     {% for model in resource_learning.selected_models %}
       <tr>
-        <td><code>{{ model.host }}</code></td><td>{{ model.metric }}</td><td>{{ model.window_hours }} giờ</td><td>{{ model.evaluated_count }}</td>
-        <td>{{ model.mae if model.mae is not none else '—' }} điểm %</td>
-        <td>{{ (model.accuracy_estimate|string + '%') if model.accuracy_estimate is not none else '—' }}</td>
-        <td>{{ ((model.latest_confidence * 100)|round(1)|string + '%') if model.latest_confidence is not none else '—' }}</td>
-        <td>{% if model.quality_status == 'RELIABLE' %}<span class="badge badge-ok">Đáng tin</span>{% elif model.quality_status == 'PROMISING' %}<span class="badge badge-warn">Tín hiệu tốt, còn ít mẫu</span>{% elif model.quality_status == 'NEEDS_IMPROVEMENT' %}<span class="badge badge-err">Cần cải thiện</span>{% else %}<span class="badge">Đang thu thập</span>{% endif %}<div class="hint">{{ model.quality_reason }}</div></td>
+        <td><code>{{ model.host }}</code><div class="hint">{{ model.metric }}</div></td>
+        <td><code>{{ model.algorithm }}</code><div class="hint">{{ model.window_hours }}h · {{ model.model_version or 'chưa có registry version' }}</div></td>
+        <td>{{ model.latest_actual if model.latest_actual is not none else '— (chờ outcome)' }}<br><span class="hint">{{ model.latest_current if model.latest_current is not none else '—' }} → {{ model.latest_prediction if model.latest_prediction is not none else '—' }}</span></td>
+        <td>{% if model.predicted_low is not none and model.predicted_high is not none %}{{ model.predicted_low }} — {{ model.predicted_high }}{% else %}—{% endif %}</td>
+        <td>{{ ((model.latest_confidence * 100)|round(1)|string + '%') if model.latest_confidence is not none else '—' }}<div class="hint">{{ ((model.consensus_ratio * 100)|round(1)) if model.consensus_ratio is not none else '—' }}% · {{ model.consensus_candidate_count or 0 }} model</div></td>
+        <td>{% if model.data_quality == 'OK' %}<span class="badge badge-ok">OK</span>{% elif model.data_quality == 'NO_FORECAST' %}<span class="badge">Chưa có forecast</span>{% else %}<span class="badge badge-err">{{ model.data_quality }}</span>{% endif %}<div class="hint">{{ model.latest_status or '—' }}</div></td>
+        <td>MAE {{ model.rolling_mae if model.rolling_mae is not none else '—' }}<br><span class="hint">SMAPE {{ model.rolling_smape if model.rolling_smape is not none else '—' }}%</span></td>
+        <td>{{ model.latest_target_at|vntime }}<div class="hint">{{ model.evaluated_count }} outcome · accuracy {{ (model.accuracy_estimate|string + '%') if model.accuracy_estimate is not none else '—' }}</div><div>{% if model.quality_status == 'RELIABLE' %}<span class="badge badge-ok">Đáng tin</span>{% elif model.quality_status == 'PROMISING' %}<span class="badge badge-warn">Tín hiệu tốt, còn ít mẫu</span>{% elif model.quality_status == 'NEEDS_IMPROVEMENT' %}<span class="badge badge-err">Cần cải thiện</span>{% else %}<span class="badge">Đang thu thập</span>{% endif %}</div><div class="hint">{{ model.quality_reason }}</div></td>
       </tr>
     {% else %}<tr class="empty-row"><td colspan="8"><div class="empty-state">Chưa có model CPU/RAM được chọn cho cụm này.</div></td></tr>{% endfor %}
     </tbody></table></div>
@@ -214,8 +251,14 @@ async function guardedPromotion(modelId, action) {
   window.alert(payload.reason || "Đã ghi nhận thao tác");
   window.location.reload();
 }
+
 async function postLearnerControl(path, values) {
-  const response = await fetch(path, {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: new URLSearchParams(values)});
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {"Content-Type": "application/x-www-form-urlencoded"},
+    body: new URLSearchParams(values),
+  });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.detail || "Thao tác bị chặn");
   return payload;
@@ -224,24 +267,109 @@ async function setLearnerControl(action) {
   const reason = window.prompt("Nhập lý do operator:");
   if (!reason || !reason.trim()) return;
   const host = {{ (online_learning.canary_scope.host or '')|tojson }};
-  const metric = {{ online_learning.canary_scope.metric|tojson }};
-  try { await postLearnerControl("/api/ai-learning/learner/" + action, {cluster_id: {{ cluster.id|tojson }}, host, metric, reason}); window.location.reload(); }
-  catch (error) { window.alert(error.message); }
+  const metric = {{ online_learning.canary_scope.metrics|tojson }};
+  try {
+    await postLearnerControl("/api/ai-learning/learner/" + action, {
+      cluster_id: {{ cluster.id|tojson }}, host, metric, reason,
+    });
+    window.location.reload();
+  } catch (error) { window.alert(error.message); }
 }
 async function resetLearner() {
   if (window.prompt("Nhập RESET để xác nhận xóa durable learner state:") !== "RESET") return;
   const reason = window.prompt("Nhập lý do operator:");
   if (!reason || !reason.trim()) return;
   const host = {{ (online_learning.canary_scope.host or '')|tojson }};
-  const metric = {{ online_learning.canary_scope.metric|tojson }};
-  try { await postLearnerControl("/api/ai-learning/learner/reset", {cluster_id: {{ cluster.id|tojson }}, host, metric, reason, confirmation: "RESET"}); window.location.reload(); }
-  catch (error) { window.alert(error.message); }
+  const metric = {{ online_learning.canary_scope.metrics|tojson }};
+  try {
+    await postLearnerControl("/api/ai-learning/learner/reset", {
+      cluster_id: {{ cluster.id|tojson }}, host, metric, reason, confirmation: "RESET",
+    });
+    window.location.reload();
+  } catch (error) { window.alert(error.message); }
 }
 async function blockCandidate(modelId) {
   const reason = window.prompt("Nhập lý do block candidate:");
   if (!reason || !reason.trim()) return;
-  try { await postLearnerControl("/api/ai-learning/models/" + encodeURIComponent(modelId) + "/block", {reason}); window.location.reload(); }
-  catch (error) { window.alert(error.message); }
+  try {
+    await postLearnerControl("/api/ai-learning/models/" + encodeURIComponent(modelId) + "/block", {reason});
+    window.location.reload();
+  } catch (error) { window.alert(error.message); }
+}
+
+const replayForm = document.getElementById("forecast-replay-form");
+if (replayForm) {
+  const startInput = replayForm.elements.start_at;
+  const endInput = replayForm.elements.end_at;
+  const pad = value => String(value).padStart(2, "0");
+  const localDateTime = date => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const now = new Date();
+  startInput.value = localDateTime(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
+  endInput.value = localDateTime(now);
+  const status = document.getElementById("forecast-replay-status");
+  const result = document.getElementById("forecast-replay-result");
+  const escapeHtml = value => String(value ?? "—").replace(/[&<>'"]/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"}[character]));
+  const valueOrDash = value => value === null || value === undefined ? "—" : Number.isFinite(Number(value)) ? Number(value).toFixed(3) : escapeHtml(value);
+  replayForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    status.textContent = "Đang chạy replay read-only…";
+    result.hidden = true;
+    const formData = new FormData(replayForm);
+    const payload = {
+      cluster_id: formData.get("cluster_id"), host: formData.get("host"), metric: formData.get("metric"),
+      start_at: formData.get("start_at"), end_at: formData.get("end_at"),
+      horizon_hours: Number(formData.get("horizon_hours")),
+      window_hours: String(formData.get("window_hours") || "").split(",").map(item => Number(item.trim())).filter(Number.isFinite),
+    };
+    try {
+      const response = await fetch("/api/ai-learning/replay", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "Replay thất bại");
+      const rows = Object.values(body.metrics || {}).map(metric => `<tr><td><code>${escapeHtml(metric.algorithm)}</code></td><td>${metric.evaluated}</td><td>${metric.skipped}</td><td>${valueOrDash(metric.mae)}</td><td>${valueOrDash(metric.rmse)}</td><td>${valueOrDash(metric.smape)}%</td><td>${valueOrDash(metric.bias)}</td><td>${valueOrDash(metric.false_positive_rate === null ? null : metric.false_positive_rate * 100)}%</td></tr>`).join("");
+      const comparison = body.comparison || {};
+      result.innerHTML = `<p><span class="badge badge-ok">READ-ONLY</span> ${escapeHtml(body.host)} / ${escapeHtml(body.metric.toUpperCase())} · ${body.hourly_points} điểm theo giờ · horizon ${body.horizon_hours}h · remediation: không chạy.</p><p><strong>So sánh:</strong> <code>${escapeHtml(comparison.active_algorithm)}</code> vs <code>${escapeHtml(comparison.candidate_algorithm)}</code> · <span class="badge ${comparison.status === "PROMISING" ? "badge-ok" : "badge-warn"}">${escapeHtml(comparison.status)}</span> · ${escapeHtml(comparison.reason)}</p><div class="table-wrap"><table><thead><tr><th>Algorithm</th><th>Evaluated</th><th>Skipped</th><th>MAE</th><th>RMSE</th><th>SMAPE</th><th>Bias</th><th>False-positive</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      result.hidden = false;
+      status.textContent = "Replay hoàn tất; không có state/policy/alert nào bị thay đổi.";
+    } catch (error) {
+      status.textContent = error.message || "Replay thất bại";
+    }
+  });
+}
+
+const canaryButton = document.getElementById("load-canary-report");
+if (canaryButton) {
+  const status = document.getElementById("canary-report-status");
+  const result = document.getElementById("canary-report-result");
+  const escapeCanaryHtml = value => String(value ?? "—").replace(/[&<>'"]/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"}[character]));
+  const canaryNumber = value => value === null || value === undefined ? "—" : Number.isFinite(Number(value)) ? Number(value).toFixed(3) : escapeCanaryHtml(value);
+  const loadCanaryReport = async () => {
+    canaryButton.disabled = true;
+    status.textContent = "Đang tải báo cáo canary read-only…";
+    result.hidden = true;
+    try {
+      const response = await fetch("/api/ai-learning/canary");
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "Không tải được báo cáo canary");
+      const scopes = (body.scopes || []).map(scope => {
+        const comparison = scope.comparison || {};
+        const guard = comparison.promotion_guard || {};
+        const operational = scope.operational_metrics || {};
+        const quality = operational.data_quality_rate === null || operational.data_quality_rate === undefined ? null : Number(operational.data_quality_rate) * 100;
+        const cost = operational.resource_cost || {};
+        const costText = cost.available ? `${canaryNumber(cost.cpu_time_ms)} ms CPU` : "—";
+        return `<tr><td><code>${escapeCanaryHtml(scope.candidate_model && scope.candidate_model.version)}</code><div class="hint">${escapeCanaryHtml(scope.candidate_model && scope.candidate_model.algorithm)} · ${escapeCanaryHtml(scope.candidate_model && scope.candidate_model.status)}</div></td><td>${comparison.evaluation_count || 0}</td><td>${canaryNumber(comparison.active_mae)} / ${canaryNumber(comparison.candidate_mae)}</td><td>${canaryNumber(comparison.active_smape)} / ${canaryNumber(comparison.candidate_smape)}</td><td>${canaryNumber(quality)}%</td><td>${operational.alert_volume || 0}</td><td>${canaryNumber(operational.precision)} / ${canaryNumber(operational.early_detection_hours)}h</td><td>${costText}</td><td><span class="badge ${guard.allowed ? "badge-ok" : "badge-warn"}">${guard.allowed ? "Đủ điều kiện" : "Đang bị chặn"}</span><div class="hint">${escapeCanaryHtml(guard.reason)}</div></td></tr>`;
+      }).join("");
+      result.innerHTML = `<p><span class="badge badge-ok">READ-ONLY</span> ${body.candidate_count || 0} candidate · operator approval required · auto-promotion: false · remediation: false.</p><div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Evaluations</th><th>MAE active/candidate</th><th>SMAPE active/candidate</th><th>Data quality</th><th>Alert volume</th><th>Precision / lead time</th><th>CPU cost</th><th>Promotion gate</th></tr></thead><tbody>${scopes || '<tr class="empty-row"><td colspan="9">Chưa có shadow candidate.</td></tr>'}</tbody></table></div>`;
+      result.hidden = false;
+      status.textContent = "Đã tải báo cáo canary; không thay đổi model, policy hoặc remediation.";
+    } catch (error) {
+      status.textContent = error.message || "Không tải được báo cáo canary";
+    } finally {
+      canaryButton.disabled = false;
+    }
+  };
+  canaryButton.addEventListener("click", loadCanaryReport);
+  loadCanaryReport();
 }
 </script>
 </body></html>

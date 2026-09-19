@@ -21,4 +21,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_delegated_ai_tasks_dispatch_claimed_at", table_name="delegated_ai_tasks")
-    op.drop_column("delegated_ai_tasks", "dispatch_claimed_at")
+    with op.batch_alter_table("delegated_ai_tasks") as batch_op:
+        batch_op.drop_column("dispatch_claimed_at")

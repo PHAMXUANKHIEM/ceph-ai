@@ -27,6 +27,7 @@ from shared.models import (
     IncidentStatus,
     IncidentTimelineEvent,
     RemediationCase,
+    RbdTrashUsage,
 )
 
 ENVELOPE = {
@@ -1368,6 +1369,37 @@ def test_execute_approved_action_success_marks_executed_and_resolved(isolated_db
         assert incident.status == IncidentStatus.VERIFYING.value
         entries = session.query(AuditEntry).filter_by(incident_id="incident-7a").all()
         assert entries[-1].event_type == audit.EVENT_RISKY_ACTION_EXECUTED
+
+
+def test_persist_rbd_trash_usage_uses_ceph_trash_id(isolated_db):
+    _create_incident("incident-trash-usage")
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-trash-usage")
+        action = _approved_action(session, incident.id, action_id="rbd_trash_move_volume")
+        action.action_params = json.dumps({
+            "pool_name": "vms", "image": "vm-01",
+            "trash_usage": {
+                "provisioned_size_bytes": 10 * 1024 ** 3,
+                "used_size_bytes": 3 * 1024 ** 3,
+                "observed_at": "2026-09-16T10:00:00Z",
+            },
+        })
+        incident.cluster_id = session.query(Cluster.id).filter(Cluster.is_default.is_(True)).scalar()
+        session.commit()
+        router_client._persist_rbd_trash_usage(
+            session, action, incident,
+            json.dumps([{"id": "trash-abc", "name": "vm-01"}]),
+        )
+        session.commit()
+
+        row = session.query(RbdTrashUsage).one()
+        assert row.cluster_id == incident.cluster_id
+        assert row.pool == "vms"
+        assert row.trash_id == "trash-abc"
+        assert row.image == "vm-01"
+        assert row.provisioned_size_bytes == 10 * 1024 ** 3
+        assert row.used_size_bytes == 3 * 1024 ** 3
+        assert row.used_percent == 30.0
 
 
 def test_execute_approved_action_requires_reapproval_after_policy_change(isolated_db, monkeypatch):

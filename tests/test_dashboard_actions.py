@@ -101,7 +101,7 @@ def test_index_directs_pending_actions_to_telegram(dashboard_client):
     response = dashboard_client.get("/")
 
     assert response.status_code == 200
-    assert "Risky Action" in response.text
+    assert "Duyệt/Từ chối đã chuyển sang" in response.text
     assert "Telegram" in response.text
     assert "restart_osd_daemon" not in response.text
     assert "docker restart ceph-osd-B" not in response.text
@@ -249,7 +249,7 @@ def test_index_warns_about_uncovered_pending_action_on_other_cluster_without_mix
     response = dashboard_client.get("/")
 
     assert response.status_code == 200
-    assert "Risky Action" in response.text
+    assert "Duyệt/Từ chối đã chuyển sang" in response.text
     assert "Telegram" in response.text
     assert "stuck OSD on cluster-b" not in response.text
 
@@ -688,7 +688,7 @@ def test_index_keeps_approval_controls_out_of_dashboard_while_upgrade_pending(da
 
     assert response.status_code == 200
     assert 'class="btn btn-approve" disabled' not in response.text
-    assert "Risky Action" in response.text
+    assert "Duyệt/Từ chối đã chuyển sang" in response.text
     assert "Telegram" in response.text
 
 

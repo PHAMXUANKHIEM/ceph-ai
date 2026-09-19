@@ -5,14 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ 'Trash' if selected_view == 'trash' else ('Performance' if selected_view == 'performance' else 'Volumes') }} — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  {% if selected_view == 'performance' %}<link rel="stylesheet" href="/static/volume_performance_picker.css?v={{ static_version }}">{% endif %}
+  {% if selected_view == 'volumes' %}<link rel="stylesheet" href="/static/volume_inventory_redesign.css?v={{ static_version }}">{% endif %}
 </head>
 <body>
   {% include "_nav.html" %}
 
-  <main class="page">
-    <div class="tabbed-page">
+  <main class="page{% if selected_view == 'volumes' %} volumes-redesign-page{% endif %}">
+    <div class="tabbed-page{% if selected_view == 'performance' %} performance-tabbed-page{% endif %}">
     {% if selected_view in ["volumes", "performance"] %}
-    <nav class="tabbed-sidebar" id="pool-selector">
+    <nav class="tabbed-sidebar{% if selected_view == 'performance' %} performance-pool-selector{% endif %}{% if selected_view == 'volumes' %} volumes-legacy-pool-selector{% endif %}" id="pool-selector">
       <div class="node-sidebar-header">
         <span class="hint">Pool</span>
       </div>
@@ -43,17 +45,27 @@
     {% if selected_view in ["volumes", "performance"] and selected_pool %}
     {% if selected_view == "volumes" %}
     <section class="card volume-inventory-card" id="volume-inventory-panel" data-pool="{{ selected_pool }}" data-image="{{ request.query_params.get('image', '') }}" data-is-admin="{{ 'true' if is_admin else 'false' }}">
-      <div class="card-header volume-inventory-header">
-        <div class="metrics-panel-title volume-inventory-heading">
-          <span class="volume-inventory-eyebrow">RBD INVENTORY</span>
-          <h2>Inventory Volume <span>— {{ selected_pool }}</span></h2>
-          <span class="hint" id="volume-inventory-freshness">Đang tải dữ liệu live…</span>
+      <header class="volumes-page-header">
+        <div>
+          <div class="volumes-breadcrumb">Block Storage <span>›</span> Volumes</div>
+          <h1>Volumes</h1>
+          <p>RBD inventory và trạng thái sử dụng của pool đang chọn.</p>
         </div>
-        <p class="hint metrics-panel-desc">
-          Danh sách RBD image thật lấy từ <code>rbd du</code>, bao gồm cả volume đang idle và chưa có
-          mẫu I/O. Bấm một volume để xem feature, snapshot, parent/child và watcher đang attach.
-        </p>
-      </div>
+        <div class="volumes-header-meta">
+          <span class="volume-total-badge"><strong id="volume-page-total">—</strong> volumes</span>
+          <span id="volume-page-updated" class="volume-updated">Cập nhật: —</span>
+          <span id="volume-inventory-freshness" class="volume-updated" role="status" aria-live="polite">Đang tải snapshot…</span>
+        </div>
+      </header>
+
+      <nav class="volumes-pool-tabs" aria-label="RBD pools">
+        {% for pool in pools %}
+        <a href="/volumes?pool={{ pool }}{% if selected_cluster %}&cluster={{ selected_cluster.id }}{% endif %}" class="volumes-pool-tab{% if pool == selected_pool %} active{% endif %}" data-pool="{{ pool }}">
+          <span>{{ pool }}</span> <small data-pool-count>—</small>
+        </a>
+        {% endfor %}
+      </nav>
+
       <div class="card-body volume-inventory-body">
         <div class="node-summary-grid volume-inventory-summary" id="volume-pool-overview" aria-live="polite">
           <div class="summary-item"><span>Kiểu Pool</span><strong data-field="type">—</strong></div>
@@ -66,72 +78,98 @@
         <div id="volume-pool-health-checks" class="hint"></div>
         <p class="error" id="volume-pool-overview-error" hidden></p>
         {% if is_admin %}<p id="volume-mutation-result" class="hint" hidden></p>{% endif %}
-        <div class="volume-inventory-toolbar volume-inventory-filters"><div><strong>Danh sách volume</strong><span>Tìm kiếm và sắp xếp trong pool hiện tại.</span></div><form class="audit-filters" id="volume-inventory-filter">
-          <label>Tìm Volume
-            <input type="search" id="volume-inventory-search" maxlength="128" placeholder="Tên hoặc ID Volume" autocomplete="off">
-          </label>
-          <label>Sắp xếp
-            <select id="volume-inventory-sort">
-              <option value="name">Tên</option>
-              <option value="provisioned_size">Dung lượng logic</option>
-              <option value="used_size">Đã dùng</option>
-              <option value="snapshot_count">Snapshot</option>
-            </select>
-          </label>
-          <button type="submit" class="btn btn-primary btn-sm">Áp dụng</button>
+        <div class="volume-inventory-toolbar volume-inventory-filters"><div><strong>Danh sách volume</strong><span>Tìm kiếm và sắp xếp trong pool hiện tại.</span></div><form class="volume-filter-form" id="volume-inventory-filter">
+          <label class="volume-search-field"><span class="sr-only">Tìm Volume</span><input type="search" id="volume-inventory-search" maxlength="128" placeholder="Tìm theo tên hoặc ID…" autocomplete="off"></label>
+          <details class="volume-sort-dropdown" id="volume-inventory-sort-menu">
+            <summary><span>Sắp xếp: <strong id="volume-inventory-sort-label">Tên A→Z</strong></span><span aria-hidden="true">↕</span></summary>
+            <div class="volume-sort-options" role="menu">
+              <button type="button" data-sort="name" data-order="asc">Tên A→Z</button>
+              <button type="button" data-sort="name" data-order="desc">Tên Z→A</button>
+              <button type="button" data-sort="provisioned_size" data-order="asc">Dung lượng logic tăng</button>
+              <button type="button" data-sort="provisioned_size" data-order="desc">Dung lượng logic giảm</button>
+              <button type="button" data-sort="used_size" data-order="asc">Đã dùng tăng</button>
+              <button type="button" data-sort="used_size" data-order="desc">Đã dùng giảm</button>
+              <button type="button" data-sort="snapshot_count" data-order="desc">Snapshot nhiều nhất</button>
+            </div>
+          </details>
         </form></div>
         <p class="error" id="volume-inventory-error" hidden></p>
         <div class="table-wrap volume-inventory-table-wrap">
           <table id="volume-inventory-table">
-            <thead><tr><th>Volume</th><th>Image ID</th><th class="num">Đã dùng</th><th class="num">Logic</th><th class="num">Snapshot</th><th></th></tr></thead>
-            <tbody><tr><td colspan="6" class="hint">Đang tải inventory…</td></tr></tbody>
+            <thead><tr><th>Volume</th><th class="volume-image-id-column">Image ID</th><th class="num">Đã dùng</th><th class="volume-logic-column num">Logic</th><th class="num">Tỷ lệ dùng</th><th class="num">Snapshot</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              {% for _ in range(5) %}<tr class="volume-skeleton-row" aria-hidden="true"><td><span class="skeleton skeleton-wide"></span><span class="skeleton skeleton-short"></span></td><td class="volume-image-id-column"><span class="skeleton skeleton-medium"></span></td><td><span class="skeleton skeleton-short"></span></td><td class="volume-logic-column"><span class="skeleton skeleton-short"></span></td><td><span class="skeleton skeleton-medium"></span></td><td><span class="skeleton skeleton-short"></span></td><td><span class="skeleton skeleton-dot"></span></td><td></td></tr>{% endfor %}
+            </tbody>
           </table>
         </div>
-        <div class="trash-pagination volume-inventory-pagination" id="volume-inventory-pagination" hidden>
-          <button type="button" class="btn btn-ghost btn-sm" id="volume-inventory-prev">← Trang trước</button>
-          <span id="volume-inventory-page-status"></span>
-          <button type="button" class="btn btn-ghost btn-sm" id="volume-inventory-next">Trang sau →</button>
+        <div class="dashboard-pagination trash-pagination volume-inventory-pagination" id="volume-inventory-pagination" hidden>
+          <span id="volume-inventory-summary" class="pagination-summary" data-mobile-summary="0 / 0">Hiển thị 0–0 / 0 mục</span>
+          <div class="pagination-controls">
+            <button type="button" class="pagination-prev" id="volume-inventory-prev" aria-label="Trang trước">‹</button>
+            <div id="volume-inventory-page-buttons" class="pagination-pages"></div>
+            <span id="volume-inventory-page-status" class="pagination-mobile-status pagination-status" aria-live="polite"></span>
+            <button type="button" class="pagination-next" id="volume-inventory-next" aria-label="Trang sau">›</button>
+          </div>
         </div>
-        <div id="volume-inventory-detail" class="empty-node-state" hidden></div>
+        <section class="volume-dependency-insights" id="volume-dependency-insights" aria-live="polite">
+          <div class="volume-dependency-header">
+            <div><h2>Snapshot &amp; clone dependencies</h2><p class="hint">Kiểm tra read-only trước khi flatten, xoá hoặc thay đổi retention.</p></div>
+            <button type="button" class="btn btn-ghost btn-sm" id="volume-dependency-refresh">Quét lại</button>
+          </div>
+          <p class="hint" id="volume-dependency-status">Đang kiểm tra dependency…</p>
+          <div class="volume-dependency-list" id="volume-dependency-list"></div>
+        </section>
       </div>
     </section>
 
     {% else %}
-    <section class="card" id="volumes-panel" data-pool="{{ selected_pool }}">
-      <div class="card-header">
-        <div class="metrics-panel-title">
-          <span class="node-ip">{{ selected_pool }}</span>
-          <span class="header-spinner" id="header-spinner" hidden aria-hidden="true"></span>
+    <section class="card performance-monitor-card" id="volumes-panel" data-pool="{{ selected_pool }}">
+      <div class="card-header performance-card-header">
+        <div>
+          <span class="performance-eyebrow">PERFORMANCE MONITORING</span>
+          <h1>Volume Performance</h1>
+          <p>Theo dõi IOPS và độ trễ từ lịch sử Watcher của cluster.</p>
         </div>
-        <p class="hint metrics-panel-desc">
-          Tìm một Volume (RBD image) trong pool này theo ID/tên để xem biểu đồ IOPS / độ trễ theo
-          thời gian, kèm hiệu năng tối đa từng đạt được — dữ liệu lấy từ lịch sử Watcher đã ghi lại
-          (<code>rbd perf image iostat</code> mỗi vài giây). Nhãn "⚠ Bão hoà" khớp với Incident hệ
-          thống đã tự phát hiện (xem <a href="/">Dashboard</a>/Audit Trail để duyệt xử lý).
-        </p>
+        <div class="performance-pool-badge"><span>POOL</span><strong>{{ selected_pool }}</strong></div>
+        <span class="header-spinner" id="header-spinner" hidden aria-hidden="true"></span>
       </div>
-      <div class="card-body">
-        <form class="audit-filters" id="volume-search-form">
-          <label>ID / tên Volume
-            <input
-              type="text"
-              id="volume-search-input"
-              list="volume-datalist"
-              placeholder="vd: vm-disk-01"
-              autocomplete="off"
-            >
+      <div class="card-body performance-monitor-body">
+        <form class="performance-selector" id="volume-search-form">
+          <div class="performance-step performance-pool-step">
+            <span class="performance-step-label">POOL</span>
+            <strong>{{ selected_pool }}</strong>
+          </div>
+          <label class="performance-step performance-volume-step">
+            <span class="performance-step-label">VOLUME</span>
+            <div class="volume-combobox" id="volume-combobox">
+              <div class="volume-combobox-control">
+                <input
+                  type="text"
+                  id="volume-search-input"
+                  placeholder="Tìm theo tên hoặc ID"
+                  autocomplete="off"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-expanded="false"
+                  aria-controls="volume-dropdown-options"
+                >
+                <button type="button" class="volume-combobox-toggle" id="volume-combobox-toggle" aria-label="Mở danh sách volume" aria-expanded="false">▼</button>
+              </div>
+              <div class="volume-dropdown" id="volume-dropdown" hidden>
+                <div class="volume-dropdown-options" id="volume-dropdown-options" role="listbox" aria-label="Danh sách volume"></div>
+              </div>
+            </div>
           </label>
-          <datalist id="volume-datalist"></datalist>
           <button type="submit" class="btn btn-primary btn-sm">Xem hiệu năng</button>
+          <button type="button" class="btn btn-ghost btn-sm performance-clear-btn" id="volume-clear-btn" hidden>Xoá</button>
         </form>
 
-        <div class="cli-buttons" id="volume-suggestions"></div>
-
-        <div class="empty-node-state" id="volume-chart-empty">
-          <span class="empty-node-icon" aria-hidden="true">&#128200;</span>
-          <p class="empty-node-text">Nhập ID Volume rồi bấm "Xem hiệu năng" để xem biểu đồ.</p>
+        <div class="performance-selected-volume" id="volume-selected-volume" hidden>
+          <span>Đang hiển thị</span>
+          <code id="volume-selected-name"></code>
         </div>
 
+        <div class="empty-node-state" id="volume-chart-empty" hidden></div>
         <div class="metrics-stack" id="volume-chart-stack" hidden></div>
 
         <div class="metrics-error-footer" id="volumes-error-footer" hidden>
@@ -141,23 +179,19 @@
       </div>
     </section>
 
-    <section class="card" id="vm-perf-panel" data-status="{{ vm_perf_action.status if vm_perf_action else '' }}">
-      <div class="card-header">
-        <h2>Hiệu năng tối đa của Volume — đo từ trong VM</h2>
-      </div>
-      <div class="card-body">
-        <p class="hint metrics-panel-desc">
-          Worker SSH vào OpenStack Controller đã cấu hình, từ Controller SSH tiếp vào VM và chạy
-          <code>fio</code> READ-ONLY trên ổ đã chọn. Mỗi mức tải được đo đúng 3 lần và lấy median
-          để loại nhiễu. Kết quả
-          bao gồm toàn bộ đường đi guest → virtio/QEMU → network → Ceph. Private key phải tồn tại
-          trên OpenStack Controller; hệ thống chỉ lưu đường dẫn, không nhận nội dung key qua trình duyệt.
-        </p>
-        <div class="vitastor-live-notice">
-          <strong>Cảnh báo:</strong> phép đo không ghi dữ liệu nhưng tạo tải đọc thật và có thể làm
-          chậm VM/cluster. Không chọn <code>/dev/vda</code> theo thói quen; hãy kiểm tra bằng
-          <code>lsblk</code>. Các data disk thường là <code>/dev/vdb</code>, <code>/dev/vdc</code>…
+    <section class="card performance-benchmark-card" id="vm-perf-panel" data-status="{{ vm_perf_action.status if vm_perf_action else '' }}">
+      <div class="card-header performance-card-header performance-benchmark-header">
+        <div>
+          <span class="performance-eyebrow">ACTIVE BENCHMARK</span>
+          <h2>Đo hiệu năng tối đa (fio)</h2>
+          <p>Benchmark READ-ONLY trong VM, tách biệt khỏi monitoring.</p>
         </div>
+      </div>
+      <div class="card-body performance-benchmark-body">
+        <details class="benchmark-warning">
+          <summary>Cảnh báo trước khi đo</summary>
+          <p>Worker SSH vào OpenStack Controller rồi vào VM để chạy <code>fio</code> READ-ONLY. Mỗi mức tải được đo đúng 3 lần và lấy median. Phép đo tạo tải đọc thật; không chọn <code>/dev/vda</code> theo thói quen, hãy kiểm tra bằng <code>lsblk</code>.</p>
+        </details>
 
         {% if vm_perf_action and vm_perf_action.status == "PENDING_APPROVAL" %}
         <pre class="upgrade-plan-text">{{ vm_perf_action.proposed_command }}</pre>
@@ -173,7 +207,7 @@
         {% elif vm_perf_action and vm_perf_action.status == "APPROVED" %}
         <p class="hint">● Đang SSH vào VM và đo hiệu năng...</p>
         {% elif is_admin and selected_cluster.is_default %}
-        <form id="vm-perf-form" class="login-box">
+        <form id="vm-perf-form" class="login-box benchmark-form">
           <label>IP của VM
             <input name="vm_ip" required inputmode="decimal" placeholder="vd: 10.20.1.50">
           </label>
@@ -203,124 +237,6 @@
     </section>
 
     {% endif %}
-    {% elif selected_view == "trash" %}
-    <section class="card">
-      <div class="card-header"><h2>Trash theo Pool</h2></div>
-      <div class="card-body">
-        <p class="hint metrics-panel-desc">Dung lượng logic là capacity đã provision. Ceph không cung cấp chính xác allocated bytes theo từng image đã nằm trong Trash, nên cột “Đã dùng” hiển thị “—” thay vì một con số ước lượng sai.</p>
-        {% if trash_pool_summaries %}
-        <div class="table-wrap"><table id="trash-pool-list">
-          <thead><tr><th>Pool</th><th class="num">Số Volume trong Trash</th><th class="num">Đã dùng</th><th class="num">Logic</th><th>Thao tác</th></tr></thead>
-          <tbody>{% for summary in trash_pool_summaries %}
-            <tr class="{% if summary.pool == selected_pool %}progress-item-failed{% endif %}">
-              <td><code>{{ summary.pool }}</code></td>
-              {% if summary.error %}
-              <td colspan="3"><span class="error">Không đọc được: {{ summary.error }}</span></td>
-              {% elif summary.entry_count is none %}
-              <td colspan="3"><span class="hint">Chọn “Xem Trash” để tải dữ liệu của pool này</span></td>
-              {% else %}
-              <td class="num">{{ summary.entry_count }}</td><td class="num">{{ summary.total_used_size_human }}</td><td class="num">{{ summary.total_provisioned_size_human }}</td>
-              {% endif %}
-              <td>
-                <a class="btn btn-ghost btn-sm" href="/trash?pool={{ summary.pool }}">{{ "Đang xem" if summary.pool == selected_pool else "Xem Trash" }}</a>
-                {% if is_admin and selected_cluster.is_default and summary.entry_count %}
-                <form method="post" action="/volumes/{{ summary.pool }}/trash/purge-all" class="inline-form trash-force-purge-form" data-confirm-target="pool {{ summary.pool }}">
-                  <input type="hidden" name="confirmation" value="">
-                  <button type="submit" class="btn btn-reject btn-sm trash-purge-all-btn">Xoá vĩnh viễn tất cả ({{ summary.entry_count }})</button>
-                </form>
-                {% elif is_admin and summary.entry_count %}
-                <button type="button" class="btn btn-reject btn-sm trash-purge-all-btn" disabled
-                  title="Chỉ hỗ trợ xoá trên cluster mặc định">
-                  Xoá vĩnh viễn tất cả
-                </button>
-                {% endif %}
-              </td>
-            </tr>
-          {% endfor %}</tbody>
-        </table></div>
-        {% else %}
-        <p class="hint">Không tìm thấy RBD pool nào.</p>
-        {% endif %}
-      </div>
-    </section>
-
-    {% if selected_pool %}
-    <section class="card">
-      <div class="card-header">
-        <div class="metrics-panel-title">
-          <h2>Trash — {{ selected_pool }}</h2>
-          <div>
-            <a href="/trash" class="btn btn-ghost btn-sm">Chọn pool khác</a>
-            {% if is_admin and selected_cluster.is_default and trash_entries %}
-            <form method="post" action="/volumes/{{ selected_pool }}/trash/purge-all" class="inline-form trash-force-purge-form" data-confirm-target="pool {{ selected_pool }}">
-              <input type="hidden" name="confirmation" value="">
-              <button type="submit" class="btn btn-reject btn-sm" id="trash-purge-all-btn">Xoá vĩnh viễn tất cả ({{ trash_entries|length }})</button>
-            </form>
-            {% elif is_admin and trash_entries %}
-            <button type="button" class="btn btn-reject btn-sm" id="trash-purge-all-btn" disabled
-              title="Chỉ hỗ trợ xoá trên cluster mặc định">
-              Xoá vĩnh viễn tất cả
-            </button>
-            {% endif %}
-          </div>
-        </div>
-      </div>
-      <div class="card-body">
-        <p class="hint metrics-panel-desc">Volume được giữ tối thiểu <strong>{{ trash_retention_days }} ngày</strong> để khôi phục. Nút xoá cưỡng bức bỏ qua TTL và watcher protection, xoá vĩnh viễn không thể hoàn tác; hệ thống yêu cầu nhập chính xác <strong>OK</strong>.</p>
-        {% if purge_error %}<p class="error">{{ purge_error }}</p>{% endif %}
-        {% if purge_success %}<p class="success">{{ purge_success }}</p>{% endif %}
-        {% if trash_error %}<p class="error">Một số pool không đọc được Trash: {{ trash_error }}</p>{% endif %}
-        {% if trash_entries %}
-        <div class="trash-filter-panel" aria-label="Lọc Trash theo Volume ID">
-          <label class="trash-filter-field">
-            <span>Volume ID</span>
-            <input id="trash-id-filter" type="search" placeholder="Nhập ID volume trong trash" autocomplete="off">
-          </label>
-          <button id="trash-filter-reset" type="button" class="btn btn-ghost btn-sm">Xóa bộ lọc</button>
-          <span id="trash-filter-result" role="status" aria-live="polite">Hiển thị 1-{{ [trash_entries|length, 10]|min }} / {{ trash_entries|length }} Trash</span>
-        </div>
-        <div class="table-wrap"><table id="trash-entry-list">
-          <thead><tr><th>Volume</th><th>ID</th><th>Đã dùng</th><th>Logic</th><th>Thời điểm xoá</th><th>TTL</th><th>Trạng thái</th><th></th></tr></thead>
-          <tbody>{% for entry in trash_entries %}
-          <tr id="trash-{{ entry.id }}" data-trash-id="{{ entry.id }}"{% if loop.index > 10 %} hidden{% endif %}>
-            <td><details><summary><code>{{ entry.name }}</code></summary><p class="hint">Pool: {{ entry.pool }}<br>ID: {{ entry.id }}<br>Đã dùng: {{ entry.used_size_human }}<br>Dung lượng logic: {{ entry.size_human }}<br>Xoá mềm: {{ entry.deletion_time or "—" }}</p></details></td>
-            <td><code>{{ entry.id }}</code></td><td>{{ entry.used_size_human }}</td><td>{{ entry.size_human }}</td>
-            <td>{{ entry.deletion_time or "—" }}</td><td>{{ entry.retention_label }}</td><td>{{ entry.status or "—" }}</td>
-            <td>
-              {% set pending_action = trash_pending.get(entry.pool ~ '/' ~ entry.id) %}
-              {% if pending_action and pending_action.status == "PENDING_APPROVAL" and is_admin %}
-              <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form"><button class="btn btn-approve btn-sm">Duyệt xoá</button></form>
-              <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form"><button class="btn btn-reject btn-sm">Từ chối</button></form>
-              {% elif pending_action and pending_action.status == "PENDING_APPROVAL" %}<span class="hint">Chờ admin duyệt</span>
-              {% elif pending_action %}<span class="hint">Đang chờ Worker</span>
-              {% elif entry.purge_eligible and is_admin %}<form method="post" action="/volumes/{{ entry.pool }}/trash/{{ entry.id }}/propose" class="inline-form"><button class="btn btn-reject btn-sm">Đề xuất xoá</button></form>
-              {% elif entry.purge_eligible %}<span class="hint">Chỉ admin được xoá</span>
-              {% else %}<span class="hint">Chưa hết TTL</span>{% endif %}
-              {% if is_admin %}
-              <form method="post" action="/volumes/{{ entry.pool }}/trash/{{ entry.id }}/force-remove" class="inline-form trash-force-remove-form" data-confirm-target="Trash {{ entry.pool }}/{{ entry.id }}">
-                <input type="hidden" name="confirmation" value="">
-                <button type="submit" class="btn btn-reject btn-sm">Xoá cưỡng bức</button>
-              </form>
-
-              <form class="inline-form trash-restore-form" data-pool="{{ entry.pool }}" data-trash-id="{{ entry.id }}">
-                <input name="image" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" value="{{ entry.name }}" aria-label="Tên Volume khôi phục">
-                <button type="submit" class="btn btn-approve btn-sm">Đề xuất khôi phục</button>
-              </form>
-              {% endif %}
-            </td>
-          </tr>{% endfor %}</tbody>
-        </table></div>
-        <div id="trash-filter-empty" class="empty-state trash-filter-empty" hidden>Không tìm thấy Trash có Volume ID phù hợp.</div>
-        <div id="trash-pagination" class="trash-pagination" aria-label="Phân trang Trash">
-          <button id="trash-page-prev" type="button" class="btn btn-ghost btn-sm" aria-label="Trang trước">← Trang trước</button>
-          <span id="trash-page-status" role="status" aria-live="polite">Trang 1 / {{ ((trash_entries|length + 9) // 10) }}</span>
-          <button id="trash-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Trang sau →</button>
-          <span class="trash-page-size">10 Trash mỗi trang</span>
-        </div>
-        {% else %}<p class="hint">Trash của pool <code>{{ selected_pool }}</code> đang trống.</p>{% endif %}
-      </div>
-    </section>
-    {% endif %}
     {% else %}
     <section class="empty-node-state">
       <span class="empty-node-icon" aria-hidden="true">&#128421;</span>
@@ -330,11 +246,10 @@
     </div>
     </div>
   </main>
-  {% if selected_view == "trash" %}<script src="/static/trash.js?v={{ static_version }}"></script>{% endif %}
 
   <script src="/static/app.js?v={{ static_version }}"></script>
   {% if selected_view == 'performance' %}<script src="/static/volumes.js?v={{ static_version }}"></script>{% endif %}
-  {% if selected_view == 'volumes' %}<script src="/static/volume_inventory.js?v={{ static_version }}"></script>{% endif %}
+  {% if selected_view == 'volumes' %}<script src="/static/pagination.js?v={{ static_version }}"></script><script src="/static/volume_inventory.js?v={{ static_version }}"></script>{% endif %}
   {% if selected_view == 'performance' %}<script src="/static/vm_perf.js?v={{ static_version }}"></script>{% endif %}
 </body>
 </html>

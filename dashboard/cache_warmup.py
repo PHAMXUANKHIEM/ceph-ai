@@ -1,11 +1,10 @@
-"""Warm Dashboard cluster snapshots after startup.
+"""Warm Dashboard read caches after startup.
 
 The shared cluster snapshot is the source of truth for the realtime path. This
-worker hydrates it from disk without issuing a Ceph command, so a Dashboard
-restart does not turn into another collector or SSH round trip. Page routes
-remain responsible for their own compatibility fallback until RT-05 moves
-them to snapshot read models. The worker is deliberately best-effort and
-daemonized: the web process becomes ready immediately.
+worker hydrates snapshots from disk and schedules a best-effort Block Storage
+inventory refresh. Both operations run outside the web request path; the web
+process becomes ready immediately while page routes retain their compatibility
+fallbacks.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from threading import Lock, Thread
 from shared import db
 from shared.clusters import list_active_clusters
 from shared.cluster_snapshot import read_snapshot
+from shared.object_storage_cache import get_or_load
 
 logger = logging.getLogger(__name__)
 _started = False
@@ -72,6 +72,45 @@ def _warm_cluster_snapshots(clusters) -> int:
     return warmed
 
 
+def _warm_block_storage(clusters) -> int:
+    """Start inventory refreshes before an operator opens Block Storage.
+
+    The inventory is intentionally loaded in the cache's background executor;
+    Dashboard startup and the first browser request stay non-blocking. The
+    existing route uses the same cache key and loader, so it immediately sees
+    the warmed result when the Ceph query finishes.
+    """
+    from dashboard.routes.block_storage import (
+        BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
+        BLOCK_STORAGE_CACHE_TTL_SECONDS,
+        _load_block_storage,
+    )
+
+    scheduled = 0
+    for cluster in clusters:
+        cache_key = f"{cluster.id}:inventory"
+        try:
+            get_or_load(
+                "block-storage",
+                cache_key,
+                lambda cluster=cluster: _load_block_storage(cluster),
+                ttl_seconds=BLOCK_STORAGE_CACHE_TTL_SECONDS,
+                stale_ttl_seconds=BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
+                background_on_miss=True,
+                fallback=[],
+            )
+        except Exception:
+            # One cache/executor failure must not prevent other clusters from
+            # receiving their warmup request.
+            logger.exception(
+                "Dashboard Block Storage warmup failed to schedule cluster %s",
+                cluster.id,
+            )
+            continue
+        scheduled += 1
+    return scheduled
+
+
 def _warm() -> None:
     try:
         with db.SessionLocal() as session:
@@ -79,5 +118,6 @@ def _warm() -> None:
             session.expunge_all()
 
         _warm_cluster_snapshots(clusters)
+        _warm_block_storage(clusters)
     except Exception:
         logger.exception("Dashboard cache warmup could not start")

@@ -1,5 +1,8 @@
+import time
+
 import dashboard.routes.nodes as nodes_route
 from config.settings import settings
+from shared import object_storage_cache
 from watcher.node_metrics import NodeMetricsError
 from shared import db
 from shared.models import Cluster
@@ -83,6 +86,7 @@ def test_nodes_page_rejects_host_not_in_configured_list(dashboard_client, monkey
 def test_metrics_api_returns_collected_metrics_for_configured_host(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     _login(dashboard_client)
+    object_storage_cache.clear()
 
     fake_metrics = {
         "cpu_percent": 42.0,
@@ -96,9 +100,15 @@ def test_metrics_api_returns_collected_metrics_for_configured_host(dashboard_cli
     monkeypatch.setattr(nodes_route, "collect_node_metrics", lambda host: fake_metrics)
 
     response = dashboard_client.get("/api/nodes/10.20.1.150/metrics")
+    body = response.json()
+    for _ in range(50):
+        if body.get("live_available"):
+            break
+        time.sleep(0.01)
+        response = dashboard_client.get("/api/nodes/10.20.1.150/metrics")
+        body = response.json()
 
     assert response.status_code == 200
-    body = response.json()
     assert body["host"] == "10.20.1.150"
     assert body["cpu_percent"] == 42.0
 
@@ -131,9 +141,10 @@ def test_metrics_api_rejects_host_not_in_configured_list_without_calling_collect
     assert calls == []  # whitelist check happens before any SSH attempt
 
 
-def test_metrics_api_returns_502_when_collector_fails(dashboard_client, monkeypatch):
+def test_metrics_api_reports_pending_when_background_collector_fails(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     _login(dashboard_client)
+    object_storage_cache.clear()
 
     def fake_collect(host):
         raise NodeMetricsError(f"{host}: unreachable")
@@ -141,8 +152,24 @@ def test_metrics_api_returns_502_when_collector_fails(dashboard_client, monkeypa
     monkeypatch.setattr(nodes_route, "collect_node_metrics", fake_collect)
 
     response = dashboard_client.get("/api/nodes/10.20.1.150/metrics")
+    assert response.status_code == 200
 
-    assert response.status_code == 502
+    body = response.json()
+    for _ in range(50):
+        if body.get("live_error"):
+            break
+        time.sleep(0.01)
+        body = dashboard_client.get("/api/nodes/10.20.1.150/metrics").json()
+
+    assert body["live_pending"] is False
+    assert body["live_available"] is False
+    assert body["live_error"]
+    assert body["cpu_percent"] is None
+
+
+def test_metrics_api_normalizes_extended_numeric_ranges(dashboard_client):
+    assert nodes_route._normalize_node_range("604800") == "7d"
+    assert nodes_route._normalize_node_range("1209600") == "14d"
 
 
 def test_nodes_page_and_metrics_use_selected_additional_cluster(dashboard_client, monkeypatch):

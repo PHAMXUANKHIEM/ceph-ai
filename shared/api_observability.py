@@ -14,12 +14,16 @@ _by_route: dict[str, dict[str, float | int]] = defaultdict(
     lambda: {"requests_total": 0, "errors_total": 0, "last_duration_ms": 0.0}
 )
 _recent: deque[dict[str, object]] = deque(maxlen=200)
+_MAX_ROUTE_METRICS = 500
+_ROUTE_OVERFLOW = "__other__"
 
 
 def record_request(method: str, path: str, status_code: int, duration_ms: float, request_id: str) -> None:
     """Record only route, status, duration and correlation ID—never query data."""
     route = path[:200] or "/"
     with _lock:
+        if route not in _by_route and len(_by_route) >= _MAX_ROUTE_METRICS:
+            route = _ROUTE_OVERFLOW
         _totals["requests_total"] += 1
         if status_code >= 500:
             _totals["errors_total"] += 1

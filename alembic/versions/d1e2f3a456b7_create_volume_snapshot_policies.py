@@ -54,6 +54,9 @@ def upgrade() -> None:
         "ix_volume_snapshot_policies_next_run",
         "volume_snapshot_policies", ["next_run_at"],
     )
+    # Nullable cluster_id means the legacy/default cluster. A normal UNIQUE
+    # constraint treats NULLs as distinct, so use the same COALESCE scope as
+    # the application's other default-cluster guards.
     op.execute(
         "CREATE UNIQUE INDEX uq_volume_snapshot_policy_target "
         "ON volume_snapshot_policies (COALESCE(cluster_id, ''), pool, image)"

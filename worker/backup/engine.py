@@ -47,6 +47,7 @@ from worker.backup.cluster_scope import first_mon_node, get_cluster, is_valid_rb
 from worker.backup.policy_config import load_backup_policy
 from worker.backup.storage.base import RetentionPolicyLike
 from worker.backup.storage.factory import get_backend, get_backend_for_cluster
+from worker.backup.ssh_io import read_all, read_chunk, wait_exit_status
 from worker.executor.ssh_executor import KNOWN_HOSTS_PATH, execute_command
 from worker.policy.gate import VALID_BACKUP_ACTION_IDS
 from watcher import ceph_client
@@ -65,7 +66,7 @@ BACKUP_ACTION_IDS = VALID_BACKUP_ACTION_IDS
 
 CHUNK_SIZE = 4 * 1024 * 1024  # 4 MiB — matches Story 9.2's storage backends
 PROGRESS_WRITE_INTERVAL_SECONDS = 3
-CONNECT_TIMEOUT_SECONDS = 10
+CONNECT_TIMEOUT_SECONDS = settings.ceph_ssh_connect_timeout
 # A BackupJob stuck RUNNING longer than this is presumed crashed (Worker
 # died mid-export) rather than genuinely still in progress — the next
 # scheduled trigger for the same (pool, image) supersedes it instead of
@@ -104,19 +105,20 @@ class _ProgressTrackingReader:
     here so Story 9.2's already-tested storage backends need no progress-
     callback parameter of their own (AD-12)."""
 
-    def __init__(self, source, total_bytes: int, action_pk: str, write_progress, progress: list[dict]):
+    def __init__(self, source, total_bytes: int, action_pk: str, write_progress, progress: list[dict], deadline: float):
         self._source = source
         self._total_bytes = total_bytes
         self._action_pk = action_pk
         self._write_progress = write_progress
         self._progress = progress
+        self._deadline = deadline
         self._bytes_read = 0
         self._started_at = time.monotonic()
         self._last_write_at = 0.0
         self.sha256 = hashlib.sha256()
 
     def read(self, size: int = -1) -> bytes:
-        chunk = self._source.read(size if size and size > 0 else CHUNK_SIZE)
+        chunk = read_chunk(self._source, size if size and size > 0 else CHUNK_SIZE, self._deadline)
         if chunk:
             self._bytes_read += len(chunk)
             self.sha256.update(chunk)
@@ -455,6 +457,7 @@ def _run_rbd_backup(
     uploaded_targets: list[tuple[str, str, object]] = []
     backup_succeeded = False
     try:
+        deadline = time.monotonic() + float(settings.ceph_backup_operation_timeout)
         client = paramiko.SSHClient()
         if os.path.exists(KNOWN_HOSTS_PATH):
             client.load_host_keys(KNOWN_HOSTS_PATH)
@@ -463,15 +466,21 @@ def _run_rbd_backup(
             hostname=mon_ip,
             username=ssh_user,
             key_filename=ssh_key_path,
-            timeout=CONNECT_TIMEOUT_SECONDS,
+            timeout=min(CONNECT_TIMEOUT_SECONDS, max(0.1, deadline - time.monotonic())),
+            banner_timeout=min(settings.ceph_ssh_banner_timeout, max(0.1, deadline - time.monotonic())),
+            auth_timeout=min(settings.ceph_ssh_auth_timeout, max(0.1, deadline - time.monotonic())),
         )
         try:
-            _stdin, stdout, stderr = client.exec_command(export_cmd)
+            _stdin, stdout, stderr = client.exec_command(
+                export_cmd, timeout=max(0.1, deadline - time.monotonic())
+            )
             progress[0]["status"] = "running"
             progress[0]["started_at"] = datetime.utcnow().isoformat()
             write_progress(action_pk, progress)
 
-            tracked_stream = _ProgressTrackingReader(stdout, total_bytes, action_pk, write_progress, progress)
+            tracked_stream = _ProgressTrackingReader(
+                stdout, total_bytes, action_pk, write_progress, progress, deadline
+            )
             with tempfile.NamedTemporaryFile(delete=False) as tmp:
                 tmp_path = tmp.name
                 while True:
@@ -480,9 +489,9 @@ def _run_rbd_backup(
                         break
                     tmp.write(chunk)
 
-            exit_status = stdout.channel.recv_exit_status()
+            exit_status = wait_exit_status(stdout.channel, deadline)
             if exit_status != 0:
-                error_output = stderr.read().decode(errors="replace")
+                error_output = read_all(stderr, deadline).decode(errors="replace")
                 raise BackupEngineError(f"{export_cmd} exited {exit_status}: {error_output}")
         finally:
             client.close()
@@ -734,29 +743,44 @@ def _run_restore_to_production(
     write_progress(action_pk, progress)
 
     cluster = get_cluster(cluster_id)
+    restore_as_new = dest_pool != pool or dest_image != image
     approved_preflight = action_params.get("preflight")
     if isinstance(approved_preflight, dict):
         try:
             if cluster is None:
                 inventory = ceph_client.query_rbd_inventory(dest_pool)
                 overview = ceph_client.query_rbd_pool_overview(dest_pool)
+                source_detail = ceph_client.query_rbd_image_detail(pool, image) if not restore_as_new else None
             else:
                 nodes = [row["host"] for row in configured_nodes(cluster) if "MON" in row["roles"]]
                 ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(cluster)
                 connection = (nodes, container_name, ssh_user, ssh_key_path, exec_mode)
                 inventory = ceph_client.query_rbd_inventory_with(dest_pool, *connection)
                 overview = ceph_client.query_rbd_pool_overview_with(dest_pool, *connection)
+                source_detail = (
+                    ceph_client.query_rbd_image_detail_with(pool, image, *connection)
+                    if not restore_as_new else None
+                )
             required_bytes = int(approved_preflight.get("required_bytes") or 0)
             blockers = []
-            if any(row.get("name") == dest_image for row in inventory):
+            if not restore_as_new and not any(row.get("name") == dest_image for row in inventory):
+                blockers.append("source_missing")
+            if restore_as_new and any(row.get("name") == dest_image for row in inventory):
                 blockers.append("destination_exists")
             if overview.get("near_full"):
                 blockers.append("destination_pool_near_full")
             if overview.get("rbd_enabled") is False:
                 blockers.append("destination_pool_rbd_disabled")
             max_available = int(overview.get("max_available") or 0)
-            if max_available and required_bytes > max_available:
+            if restore_as_new and max_available and required_bytes > max_available:
                 blockers.append("insufficient_capacity")
+            if not restore_as_new and source_detail is not None:
+                if source_detail.get("watchers"):
+                    blockers.append("source_attached")
+                if source_detail.get("children"):
+                    blockers.append("source_has_children")
+                if source_detail.get("available") is False:
+                    blockers.append("source_unavailable")
             if blockers:
                 raise BackupEngineError("Restore preflight re-check failed: " + ", ".join(blockers))
         except (CephQueryError, ValueError, BackupEngineError) as exc:
@@ -782,7 +806,6 @@ def _run_restore_to_production(
         return False
 
     backend = get_backend_for_cluster(cluster) if cluster is not None else get_backend(slot, settings)
-    restore_as_new = dest_pool != pool or dest_image != image
     result = restore.restore_image(
         pool,
         image,

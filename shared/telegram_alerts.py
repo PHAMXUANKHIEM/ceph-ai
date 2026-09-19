@@ -35,13 +35,21 @@ import json
 import logging
 import re
 import threading
+import time
 from queue import Queue
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from config.settings import settings
+from shared import db
 from shared.notification_channels import enqueue_external_alert
-from shared.telegram_client import TelegramSendError, send_telegram_message
+from shared.models import TelegramManagedChannel
+from shared.telegram_client import (
+    TelegramSendError,
+    edit_telegram_message,
+    sanitize_telegram_text,
+    send_telegram_message,
+)
 from shared.telegram_humanizer import (
     HUMANIZER_CLI_TIMEOUT_SECONDS,
     humanize_log_for_telegram,
@@ -69,6 +77,16 @@ _EXTERNAL_SEVERITY_BY_HEALTH = {
 _BACKGROUND_ALERT_EXECUTOR = ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="telegram-alert"
 )
+_AI_ENRICHMENT_QUEUE_CAPACITY = 20
+_AI_ENRICHMENT_CACHE_TTL_SECONDS = 60.0
+_AI_ENRICHMENT_CACHE_MAX_ENTRIES = 256
+_AI_ENRICHMENT_EDIT_ATTEMPTS = 3
+_AI_ENRICHMENT_CAPACITY = threading.BoundedSemaphore(_AI_ENRICHMENT_QUEUE_CAPACITY)
+_AI_ENRICHMENT_LOCK = threading.RLock()
+_AI_ENRICHMENT_IN_FLIGHT: dict[tuple[str, str], list[tuple[int, str, str, str]]] = {}
+_AI_ENRICHMENT_CACHE: dict[tuple[str, str], tuple[float, str, bool]] = {}
+HUMANIZER_ALERT_MAX_WAIT_SECONDS = 8.0
+_HUMANIZER_IN_FLIGHT = threading.BoundedSemaphore(2)
 
 _INCIDENT_SEVERITY_PREFIX = {
     "HEALTH_ERR": "\U0001f534 HEALTH_ERR",  # red circle
@@ -215,7 +233,8 @@ def _humanize_sync(raw_text: str | None, *, context: str) -> str:
     retain the synchronous API and still receive the deterministic fallback
     when the router is unavailable.
     """
-    fallback = _compact_incident_excerpt(raw_text, _MAX_EXCERPT_CHARS)
+    safe_text = sanitize_telegram_text(raw_text, limit=3_500)
+    fallback = _compact_incident_excerpt(safe_text, _MAX_EXCERPT_CHARS)
     if not fallback or not getattr(settings, "telegram_ai_humanize_enabled", False):
         return fallback
 
@@ -259,6 +278,51 @@ def _humanize_sync(raw_text: str | None, *, context: str) -> str:
     return value
 
 
+def _humanize_sync_bounded(
+    raw_text: str | None,
+    *,
+    context: str,
+    timeout_seconds: float,
+) -> str:
+    """Run the synchronous bridge with a caller-specific upper bound.
+
+    RGW delivery is a durable polling loop, not a background alert executor.
+    A daemon thread lets it fall back quickly while the provider call is still
+    allowed to finish and clean itself up under its own provider timeout.
+    """
+    fallback = _compact_incident_excerpt(
+        sanitize_telegram_text(raw_text, limit=3_500), _MAX_EXCERPT_CHARS
+    )
+    if not _HUMANIZER_IN_FLIGHT.acquire(blocking=False):
+        logger.warning("telegram humanizer busy; using deterministic alert fallback")
+        return fallback
+    result_queue: Queue[tuple[str | None, BaseException | None]] = Queue(maxsize=1)
+
+    def run() -> None:
+        try:
+            result_queue.put((_humanize_sync(raw_text, context=context), None))
+        except BaseException as exc:
+            result_queue.put((None, exc))
+        finally:
+            _HUMANIZER_IN_FLIGHT.release()
+
+    thread = threading.Thread(target=run, name="telegram-humanizer-bounded", daemon=True)
+    thread.start()
+    thread.join(max(0.1, float(timeout_seconds)))
+    if thread.is_alive():
+        logger.warning("telegram humanizer bounded call timed out after %.1fs", timeout_seconds)
+        return fallback
+    try:
+        value, error = result_queue.get_nowait()
+    except Exception:
+        return fallback
+    if error is not None or not value:
+        if error is not None:
+            logger.warning("telegram bounded humanizer failed: %s", error)
+        return fallback
+    return value
+
+
 def _needs_humanization(value: str | None) -> bool:
     text = str(value or "").strip()
     return bool(text) and (len(text) > 240 or bool(_MACHINE_LOG_RE.search(text)))
@@ -274,8 +338,144 @@ def _run_alert_in_background(name: str, callback) -> None:
 
     try:
         _BACKGROUND_ALERT_EXECUTOR.submit(run)
+        return True
     except Exception:
         logger.exception("could not queue background Telegram alert: %s", name)
+        return False
+
+
+def _edit_telegram_message_with_retry(
+    message_id: int, bot_token: str, chat_id: str, text: str, detail: str
+) -> None:
+    """Edit a delivered alert with bounded retries in the background."""
+    enriched = f"{text}\n🧠 Giải thích dễ hiểu: {detail}"
+    for attempt in range(1, _AI_ENRICHMENT_EDIT_ATTEMPTS + 1):
+        try:
+            edit_telegram_message(bot_token, chat_id, message_id, enriched)
+            return
+        except TelegramSendError:
+            if attempt == _AI_ENRICHMENT_EDIT_ATTEMPTS:
+                logger.warning("Telegram AI enrichment edit failed after %s attempts", attempt, exc_info=True)
+                return
+            time.sleep(attempt)
+
+
+def _schedule_cached_ai_edit(destination: tuple[int, str, str, str], detail: str) -> None:
+    """Schedule an edit using an already computed explanation."""
+    if not _AI_ENRICHMENT_CAPACITY.acquire(blocking=False):
+        logger.warning("Telegram AI enrichment queue is full; skipping cached edit")
+        return
+    message_id, bot_token, chat_id, text = destination
+
+    def run() -> None:
+        try:
+            _edit_telegram_message_with_retry(message_id, bot_token, chat_id, text, detail)
+        finally:
+            _AI_ENRICHMENT_CAPACITY.release()
+
+    if not _run_alert_in_background("telegram-ai-enrichment-edit", run):
+        _AI_ENRICHMENT_CAPACITY.release()
+
+
+def _process_ai_enrichment_group(
+    key: tuple[str, str], source_text: str, context: str
+) -> None:
+    """Humanize one source once, then update every matching destination."""
+    detail = ""
+    was_humanized = False
+    try:
+        detail, was_humanized = humanize_telegram_alert_detail(
+            source_text,
+            context=context,
+            limit=_MAX_EXCERPT_CHARS,
+            timeout_seconds=HUMANIZER_ALERT_MAX_WAIT_SECONDS,
+        )
+    except Exception:
+        logger.exception("Telegram AI humanization failed")
+    finally:
+        with _AI_ENRICHMENT_LOCK:
+            destinations = _AI_ENRICHMENT_IN_FLIGHT.pop(key, [])
+            _AI_ENRICHMENT_CACHE[key] = (
+                time.monotonic() + _AI_ENRICHMENT_CACHE_TTL_SECONDS,
+                detail,
+                was_humanized,
+            )
+            while len(_AI_ENRICHMENT_CACHE) > _AI_ENRICHMENT_CACHE_MAX_ENTRIES:
+                _AI_ENRICHMENT_CACHE.pop(next(iter(_AI_ENRICHMENT_CACHE)))
+        try:
+            if was_humanized and detail:
+                for message_id, bot_token, chat_id, text in destinations:
+                    _edit_telegram_message_with_retry(
+                        message_id, bot_token, chat_id, text, detail
+                    )
+        finally:
+            _AI_ENRICHMENT_CAPACITY.release()
+
+
+def _queue_ai_enrichment(
+    message_id: int, bot_token: str, chat_id: str, text: str, context: str
+) -> None:
+    """Bound and coalesce background AI work for the same alert content."""
+    if not _needs_humanization(text):
+        return
+    source_text = sanitize_telegram_text(text, limit=3_500)
+    key = (source_text, str(context or "")[:160])
+    destination = (message_id, bot_token, chat_id, text)
+    with _AI_ENRICHMENT_LOCK:
+        cached = _AI_ENRICHMENT_CACHE.get(key)
+        if cached is not None:
+            expires_at, detail, was_humanized = cached
+            if expires_at > time.monotonic():
+                if was_humanized and detail:
+                    _schedule_cached_ai_edit(destination, detail)
+                return
+            _AI_ENRICHMENT_CACHE.pop(key, None)
+        destinations = _AI_ENRICHMENT_IN_FLIGHT.get(key)
+        if destinations is not None:
+            destinations.append(destination)
+            return
+        if not _AI_ENRICHMENT_CAPACITY.acquire(blocking=False):
+            logger.warning("Telegram AI enrichment queue is full; skipping AI update")
+            return
+        _AI_ENRICHMENT_IN_FLIGHT[key] = [destination]
+
+    if not _run_alert_in_background(
+        "telegram-ai-enrichment",
+        lambda: _process_ai_enrichment_group(key, source_text, context),
+    ):
+        with _AI_ENRICHMENT_LOCK:
+            _AI_ENRICHMENT_IN_FLIGHT.pop(key, None)
+        _AI_ENRICHMENT_CAPACITY.release()
+
+
+def send_telegram_alert_with_ai(
+    bot_token: str,
+    chat_id: str,
+    enabled: bool,
+    text: str,
+    *,
+    context: str = "cảnh báo vận hành Ceph",
+    send_func=None,
+) -> bool:
+    """Send an alert immediately, then enrich it asynchronously with AI.
+
+    This is the common Telegram delivery path for alert notifications. It
+    deliberately does not apply to interactive chat replies or approval
+    keyboards: those are conversations/actions, not alerts. If Telegram
+    returns a message id, the background job edits that exact message, so
+    concurrent alerts cannot exchange their explanations.
+    """
+    if not enabled or not bot_token or not chat_id:
+        return False
+    sender = send_func or send_telegram_message
+    try:
+        message_id = sender(bot_token, chat_id, text)
+    except TelegramSendError:
+        logger.exception("Telegram alert delivery failed")
+        return False
+    if message_id is not None and getattr(settings, "telegram_ai_humanize_enabled", False):
+        _queue_ai_enrichment(int(message_id), bot_token, chat_id, text, context)
+    return True
 
 
 def _large_omap_evidence_is_empty(value: str | None) -> bool:
@@ -516,6 +716,43 @@ def _compact_multiline(value: str | None, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def humanize_telegram_alert_detail(
+    value: str | None,
+    *,
+    context: str,
+    limit: int = _MAX_EXCERPT_CHARS,
+    timeout_seconds: float | None = None,
+) -> tuple[str, bool]:
+    """Convert one raw alert detail into operator-readable Vietnamese.
+
+    The structured alert envelope is intentionally left to the caller. Only
+    the diagnostic/log detail goes through the optional AI humanizer, so IDs,
+    severity, timestamps and action labels cannot be rewritten by the model.
+    The second return value tells the caller whether an AI-generated result
+    was accepted; a deterministic compact fallback is always returned.
+    """
+    safe_value = sanitize_telegram_text(value, limit=3_500)
+    source = _compact_incident_excerpt(safe_value, min(limit, _MAX_EXCERPT_CHARS))
+    if not source:
+        return "", False
+    if not _needs_humanization(value):
+        return _compact_multiline(source, limit), False
+
+    result = (
+        _humanize_sync_bounded(
+            safe_value,
+            context=context,
+            timeout_seconds=timeout_seconds,
+        )
+        if timeout_seconds is not None
+        else _humanize_sync(safe_value, context=context)
+    )
+    normalized = _join_lines(result)
+    if not normalized or normalized == source:
+        return _compact_multiline(source, limit), False
+    return _compact_sentence(normalized, limit), True
+
+
 def _strip_container_label_noise(value: str) -> str:
     """Bỏ nhãn image của container khỏi khối bằng chứng.
 
@@ -594,14 +831,57 @@ def _send(
     enqueue_external_alert(
         category=category, severity=severity, message=text, cluster_name=resolved_cluster,
     )
-    if not enabled or not bot_token or not chat_id:
-        return False
+    managed_sent = send_managed_channel_alert(text, cluster_name=cluster_name, category=category)
+    return send_telegram_alert_with_ai(
+        bot_token,
+        chat_id,
+        enabled,
+        _with_cluster_prefix(text, cluster_name),
+        context=f"cảnh báo {category} Ceph",
+    ) or managed_sent
+
+
+def send_managed_channel_alert(
+    text: str,
+    *,
+    cluster_name: str | None = None,
+    category: str = "incident",
+) -> bool:
+    """Deliver notification-only copies to admin-managed channels.
+
+    A duplicated built-in channel keeps the built-in channel key as its
+    template and therefore receives the same category. A newly created
+    custom channel receives shared alert categories until the operator
+    chooses a more specific source by duplicating an existing channel.
+    Approval keyboards intentionally remain on the built-in channels only.
+    """
     try:
-        send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text, cluster_name))
-        return True
-    except TelegramSendError:
-        logger.exception("shared.telegram_alerts: Telegram delivery failed")
+        with db.SessionLocal() as session:
+            rows = (
+                session.query(TelegramManagedChannel)
+                .filter(TelegramManagedChannel.enabled.is_(True))
+                .all()
+            )
+            destinations = [
+                (row.bot_token, row.chat_id, row.template)
+                for row in rows
+                if row.bot_token and row.chat_id
+                and (row.template == "custom" or row.template == category)
+            ]
+    except Exception:
+        logger.exception("shared.telegram_alerts: failed to load managed Telegram channels")
         return False
+
+    sent = False
+    for bot_token, chat_id, _template in destinations:
+        sent = send_telegram_alert_with_ai(
+            bot_token,
+            chat_id,
+            True,
+            _with_cluster_prefix(text, cluster_name),
+            context=f"cảnh báo {category} Ceph",
+        ) or sent
+    return sent
 
 
 def send_volume_forecast_alert(
@@ -649,13 +929,13 @@ def send_volume_forecast_alert(
         chat_id if chat_id is not None else settings.telegram_rbd_forecast_chat_id,
         enabled if enabled is not None else settings.telegram_rbd_forecast_enabled,
         text, cluster_name,
-        category="incident", severity="warning",
+        category="rbd-forecast", severity="warning",
     )
 
 
-def send_code_repair_alert(text: str) -> None:
+def send_code_repair_alert(text: str) -> bool:
     """Send a status update for the application code-repair supervisor."""
-    _send(
+    return _send(
         settings.telegram_code_repair_bot_token,
         settings.telegram_code_repair_chat_id,
         settings.telegram_code_repair_enabled,

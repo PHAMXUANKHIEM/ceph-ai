@@ -16,5 +16,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("ai_invocations", "output_tokens")
-    op.drop_column("ai_invocations", "input_tokens")
+    with op.batch_alter_table("ai_invocations") as batch_op:
+        batch_op.drop_column("output_tokens")
+    with op.batch_alter_table("ai_invocations") as batch_op:
+        batch_op.drop_column("input_tokens")

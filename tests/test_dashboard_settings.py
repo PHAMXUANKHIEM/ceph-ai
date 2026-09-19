@@ -2135,11 +2135,89 @@ def test_patch_pipeline_settings_submit_shows_error_on_write_failure(dashboard_c
 
     response = dashboard_client.post(
         "/settings/patch-pipeline",
-        data={"ceph_patch_build_node": "10.0.0.20"},
+        data={
+            "ceph_patch_build_node": "10.0.0.20",
+            "ceph_patch_source_dir": "/root/ceph",
+            "ceph_patch_build_command": "./make-srpm.sh",
+            "ceph_patch_output_dir": "/root/rpmbuild/RPMS/x86_64",
+            "ceph_patch_node_staging_dir": "/opt/ceph-aiops-patch-staging",
+        },
     )
 
     assert response.status_code == 200
     assert "Không ghi được file cấu hình" in response.text
+
+
+def test_patch_pipeline_validation_rejects_invalid_host_before_writing(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/patch-pipeline",
+        data={
+            "ceph_patch_build_node": "999.3.55.213",
+            "ceph_patch_source_dir": "/root/ceph",
+            "ceph_patch_build_command": "./make-srpm.sh",
+            "ceph_patch_output_dir": "/root/rpmbuild/RPMS/x86_64",
+            "ceph_patch_node_staging_dir": "/opt/ceph-aiops-patch-staging",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "IP/hostname build server không hợp lệ" in response.text
+    assert not tmp_env.exists()
+
+
+def test_patch_pipeline_save_only_does_not_restart_worker(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    restart_calls = []
+    monkeypatch.setattr(settings_route, "restart_worker", lambda: restart_calls.append(1))
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/patch-pipeline",
+        data={
+            "ceph_patch_build_node": "build.ceph.local",
+            "ceph_patch_source_dir": "/root/ceph",
+            "ceph_patch_build_command": "./make-srpm.sh",
+            "ceph_patch_output_dir": "/root/rpmbuild/RPMS/x86_64",
+            "ceph_patch_node_staging_dir": "/opt/ceph-aiops-patch-staging",
+            "save_action": "save",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Worker chưa được restart" in response.text
+    assert restart_calls == []
+
+
+def test_patch_pipeline_status_is_admin_only_and_reports_configuration(dashboard_client, monkeypatch):
+    for name, value in {
+        "ceph_patch_build_node": "10.0.0.20",
+        "ceph_patch_source_dir": "/root/ceph",
+        "ceph_patch_build_command": "./make-srpm.sh",
+        "ceph_patch_output_dir": "/root/rpmbuild/RPMS/x86_64",
+        "ceph_patch_node_staging_dir": "/opt/ceph-aiops-patch-staging",
+    }.items():
+        monkeypatch.setattr(settings, name, value)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/settings/patch-pipeline/status")
+
+    assert response.status_code == 200
+    assert response.json()["configured"] is True
+    assert response.json()["state"] == "ready"
+
+
+def test_patch_pipeline_status_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.get("/api/settings/patch-pipeline/status")
+
+    assert response.status_code == 403
 
 
 def test_patch_pipeline_settings_submit_rejects_non_admin(dashboard_client):

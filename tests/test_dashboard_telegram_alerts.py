@@ -54,7 +54,7 @@ def test_unauthenticated_get_telegram_alerts_redirects_to_login(dashboard_client
     assert response.headers["location"] == "/login"
 
 
-def test_get_telegram_alerts_shows_5_channel_cards_for_admin(dashboard_client):
+def test_get_telegram_alerts_shows_compact_overview_for_admin(dashboard_client):
     _login(dashboard_client)
 
     response = dashboard_client.get("/telegram-alerts")
@@ -65,15 +65,57 @@ def test_get_telegram_alerts_shows_5_channel_cards_for_admin(dashboard_client):
     assert "Cảnh báo phần cứng" in response.text
     assert "AI Code Repair — sửa hệ thống" in response.text
     assert "Cảnh báo RGW — AI phân tích" in response.text
+    assert 'href="/telegram-alerts/backup"' in response.text
+    assert 'href="/telegram-alerts/incident"' in response.text
+    assert 'href="/telegram-alerts/node"' in response.text
+    assert 'href="/telegram-alerts/code-repair"' in response.text
+    for channel in ("backup", "incident", "rbd-forecast", "node", "code-repair", "rgw", "vault", "chatbox-ai"):
+        assert f'href="/telegram-alerts/{channel}"' in response.text
+    assert response.text.count('class="telegram-overview-item') == 9
+    assert "Cảnh báo Performance RCA" in response.text
+    assert 'href="/telegram-alerts/performance-rca"' in response.text
+    assert 'action="/telegram-alerts/performance-rca/toggle"' in response.text
+    assert '<details class="telegram-channel"' not in response.text
+    assert 'class="telegram-history-details"' not in response.text
+    assert 'id="telegram-common-title"' in response.text
+    assert 'name="bot_token"' not in response.text
+    assert 'name="chat_id"' not in response.text
+
+
+def test_get_telegram_channel_detail_shows_configuration_and_history(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/telegram-alerts/backup")
+
+    assert response.status_code == 200
+    assert "Cảnh báo Backup" in response.text
+    assert 'href="/telegram-alerts">← Tổng quan</a>' in response.text
     assert 'action="/telegram-alerts/backup"' in response.text
-    assert 'action="/telegram-alerts/incident"' in response.text
-    assert 'action="/telegram-alerts/node"' in response.text
-    assert 'action="/telegram-alerts/code-repair"' in response.text
-    assert 'action="/telegram-alerts/rgw"' in response.text
-    assert "NOTIFICATION-ONLY" in response.text
-    assert "Muốn tách khỏi chat Hardware?" in response.text
-    assert 'href="/telegram-alerts/help#code-repair-private-chat"' in response.text
-    assert "Gửi thử — AI Code Repair — sửa hệ thống" in response.text
+    assert 'action="/telegram-alerts/backup/test"' in response.text
+    assert 'name="bot_token"' in response.text
+    assert 'name="chat_id"' in response.text
+    assert "telegram-history-details" in response.text
+    assert "TRUST MODEL" in response.text
+
+
+def test_get_telegram_channel_detail_rejects_unknown_channel(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/telegram-alerts/not-a-real-channel")
+
+    assert response.status_code == 404
+
+
+def test_get_performance_rca_detail_shows_shared_incident_configuration(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/telegram-alerts/performance-rca")
+
+    assert response.status_code == 200
+    assert "Cảnh báo Performance RCA" in response.text
+    assert 'action="/telegram-alerts/performance-rca/toggle"' in response.text
+    assert 'href="/telegram-alerts/incident"' in response.text
+    assert "Cấu hình kênh lỗi cụm" in response.text
 
 
 def test_get_telegram_alerts_rejects_non_admin(dashboard_client):

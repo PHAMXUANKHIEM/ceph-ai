@@ -66,6 +66,13 @@ _CREATION_TIME_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 # longer than the 5-second default used by read-only SSH commands, but scoped
 # only to the admin delete-all path.
 BUCKET_PURGE_TIMEOUT_SECONDS = 600
+# A batched inventory query must tolerate a busy cephadm host, but should not
+# wait indefinitely when RGW is unavailable.
+S3_USER_BATCH_TIMEOUT_SECONDS = settings.ceph_inventory_timeout
+# One cephadm shell can serve several independent, read-only user-info
+# commands in parallel. Keep this below the global Ceph concurrency limit so
+# an inventory refresh cannot stampede an RGW host.
+S3_USER_BATCH_CONCURRENCY = max(1, min(4, settings.ceph_max_concurrency))
 
 _ACTION_VI = {
     ("GET", True): "Tải xuống",
@@ -399,7 +406,9 @@ def fetch_bucket_list(host: str) -> list[str]:
         exec_mode, settings.ceph_rgw_container_name, "radosgw-admin bucket list --format json"
     )
     try:
-        output = run_command_on_node(host, command)
+        output = run_command_on_node(
+            host, command, timeout=settings.ceph_inventory_timeout
+        )
     except Exception as exc:
         raise RgwLogError(f"Không lấy được danh sách bucket trên {host}: {exc}") from exc
     try:
@@ -417,13 +426,58 @@ def fetch_bucket_list_with(host: str, ssh_user: str, ssh_key_path: str,
         exec_mode, rgw_container_name, "radosgw-admin bucket list --format json"
     )
     try:
-        output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        output = run_command_on_node_with(
+            host, command, ssh_user, ssh_key_path,
+            timeout=settings.ceph_inventory_timeout,
+        )
     except Exception as exc:
         raise RgwLogError(f"Không lấy được danh sách bucket trên {host}: {exc}") from exc
     try:
         return _bucket_names(json.loads(output))
     except (TypeError, ValueError) as exc:
         raise RgwLogError(f"RGW {host} trả về danh sách bucket không hợp lệ") from exc
+
+
+def fetch_s3_user_bucket_list(host: str, uid: str) -> list[str]:
+    """List buckets owned by one S3 user without returning object metadata."""
+    if settings.ceph_exec_mode not in ("cephadm", "none") and not settings.ceph_rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW.")
+    command = ceph_client.build_exec_command(
+        settings.ceph_exec_mode,
+        settings.ceph_rgw_container_name,
+        f"radosgw-admin bucket list --uid={shlex.quote(uid)} --format json",
+    )
+    try:
+        output = run_command_on_node(
+            host, command, timeout=settings.ceph_inventory_timeout
+        )
+        return _bucket_names(json.loads(output))
+    except (TypeError, ValueError) as exc:
+        raise RgwLogError(f"RGW {host} trả về danh sách bucket của user không hợp lệ") from exc
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được bucket của S3 user trên {host}: {exc}") from exc
+
+
+def fetch_s3_user_bucket_list_with(host: str, uid: str, ssh_user: str, ssh_key_path: str,
+                                   exec_mode: str, rgw_container_name: str) -> list[str]:
+    """Cluster-scoped variant of fetch_s3_user_bucket_list."""
+    if exec_mode not in ("cephadm", "none") and not rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW cho cụm đang chọn.")
+    command = ceph_client.build_exec_command(
+        exec_mode,
+        rgw_container_name,
+        f"radosgw-admin bucket list --uid={shlex.quote(uid)} --format json",
+    )
+    try:
+        output = run_command_on_node_with(
+            host, command, ssh_user, ssh_key_path,
+            timeout=settings.ceph_inventory_timeout,
+        )
+        return _bucket_names(json.loads(output))
+    except (TypeError, ValueError) as exc:
+        raise RgwLogError(f"RGW {host} trả về danh sách bucket của user không hợp lệ") from exc
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được bucket của S3 user trên {host}: {exc}") from exc
 
 
 def build_purge_bucket_command(bucket: str) -> str:
@@ -535,7 +589,9 @@ def fetch_s3_user_list(host: str) -> list[str]:
         exec_mode, settings.ceph_rgw_container_name, "radosgw-admin user list --format json"
     )
     try:
-        output = run_command_on_node(host, command)
+        output = run_command_on_node(
+            host, command, timeout=settings.ceph_inventory_timeout
+        )
         return _user_ids(json.loads(output))
     except (TypeError, ValueError) as exc:
         raise RgwLogError(f"RGW {host} trả về danh sách S3 user không hợp lệ") from exc
@@ -551,7 +607,10 @@ def fetch_s3_user_list_with(host: str, ssh_user: str, ssh_key_path: str,
         exec_mode, rgw_container_name, "radosgw-admin user list --format json"
     )
     try:
-        output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        output = run_command_on_node_with(
+            host, command, ssh_user, ssh_key_path,
+            timeout=settings.ceph_inventory_timeout,
+        )
         return _user_ids(json.loads(output))
     except (TypeError, ValueError) as exc:
         raise RgwLogError(f"RGW {host} trả về danh sách S3 user không hợp lệ") from exc
@@ -568,7 +627,9 @@ def fetch_s3_user_info(host: str, uid: str) -> dict | None:
         f"radosgw-admin user info --uid={shlex.quote(uid)} --format json",
     )
     try:
-        return _parse_json_object(run_command_on_node(host, command))
+        return _parse_json_object(
+            run_command_on_node(host, command, timeout=settings.ceph_inventory_timeout)
+        )
     except Exception as exc:
         raise RgwLogError(f"Không lấy được thông tin S3 user trên {host}: {exc}") from exc
 
@@ -582,13 +643,123 @@ def fetch_s3_user_info_with(host: str, uid: str, ssh_user: str, ssh_key_path: st
         f"radosgw-admin user info --uid={shlex.quote(uid)} --format json",
     )
     try:
-        return _parse_json_object(run_command_on_node_with(host, command, ssh_user, ssh_key_path))
+        return _parse_json_object(run_command_on_node_with(
+            host, command, ssh_user, ssh_key_path,
+            timeout=settings.ceph_inventory_timeout,
+        ))
     except Exception as exc:
         raise RgwLogError(f"Không lấy được thông tin S3 user trên {host}: {exc}") from exc
 
 
+def _fetch_s3_user_info_batch(host: str, uids: list[str], exec_mode: str,
+                              rgw_container_name: str, runner) -> dict[str, dict | None]:
+    """Fetch one page of user metadata through one remote RGW command.
+
+    A separate ``cephadm shell`` for every user is very expensive: cephadm
+    starts a transient container and serializes those starts per host.  The
+    inventory page only needs a small, bounded set of users, so execute the
+    same read-only command in one shell and delimit each JSON response with a
+    UID marker.  Missing/invalid responses remain ``None`` just like the
+    single-user helpers.
+    """
+    if not uids:
+        return {}
+    if exec_mode not in ("cephadm", "none") and not rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW.")
+    # Running all ten commands serially inside one cephadm shell still makes
+    # a cold page wait for every user. Start a bounded number of commands in
+    # parallel, write each response to a private temporary file, then merge
+    # the files. The UID and file index are shell-quoted, and failed user
+    # lookups intentionally produce an empty response so one bad user does
+    # not discard the rest of the page.
+    parts = [
+        "tmpdir=$(mktemp -d)",
+        "trap 'rm -rf \"$tmpdir\"' EXIT",
+    ]
+    for offset in range(0, len(uids), S3_USER_BATCH_CONCURRENCY):
+        for index, uid in enumerate(uids[offset:offset + S3_USER_BATCH_CONCURRENCY], start=offset):
+            marker = f"__CEPH_AIOPS_S3_USER__{uid}__"
+            parts.append(
+                f"(printf '%s\\n' {shlex.quote(marker)}; "
+                f"radosgw-admin user info --uid={shlex.quote(uid)} --format json) "
+                f">\"$tmpdir/{index}\" 2>/dev/null &"
+            )
+        parts.append("wait")
+    parts.append("cat \"$tmpdir\"/* 2>/dev/null || true")
+    # Use newlines between background jobs. A semicolon after ``&`` is a
+    # syntax error in POSIX shells (``&;``), while a newline cleanly starts
+    # the next command inside the quoted ``sh -c`` payload.
+    inner = "\n".join(parts)
+    command = ceph_client.build_exec_command(
+        exec_mode, rgw_container_name, f"sh -c {shlex.quote(inner)}"
+    )
+    try:
+        output = runner(command)
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được thông tin S3 user trên {host}: {exc}") from exc
+
+    result: dict[str, dict | None] = {uid: None for uid in uids}
+    current_uid = None
+    buffered: list[str] = []
+    for line in output.splitlines():
+        if line.startswith("__CEPH_AIOPS_S3_USER__") and line.endswith("__"):
+            if current_uid is not None:
+                result[current_uid] = _parse_json_object("\n".join(buffered).strip())
+            current_uid = line[len("__CEPH_AIOPS_S3_USER__"):-2]
+            buffered = []
+        elif current_uid is not None:
+            buffered.append(line)
+    if current_uid is not None:
+        result[current_uid] = _parse_json_object("\n".join(buffered).strip())
+    return result
+
+
+def fetch_s3_user_info_batch(host: str, uids: list[str]) -> dict[str, dict | None]:
+    return _fetch_s3_user_info_batch(
+        host, uids, settings.ceph_exec_mode, settings.ceph_rgw_container_name,
+        lambda command: run_command_on_node(host, command, timeout=S3_USER_BATCH_TIMEOUT_SECONDS),
+    )
+
+
+def fetch_s3_user_info_batch_with(host: str, uids: list[str], ssh_user: str,
+                                  ssh_key_path: str, exec_mode: str,
+                                  rgw_container_name: str) -> dict[str, dict | None]:
+    return _fetch_s3_user_info_batch(
+        host, uids, exec_mode, rgw_container_name,
+        lambda command: run_command_on_node_with(
+            host, command, ssh_user, ssh_key_path, timeout=S3_USER_BATCH_TIMEOUT_SECONDS
+        ),
+    )
+
+def _mask_s3_access_key(value: object) -> str:
+    access_key = str(value or "").strip()
+    if len(access_key) <= 4:
+        return "••••"
+    return "••••••••" + access_key[-4:]
+
+
+def _summarize_s3_access_keys(raw_keys: object) -> list[dict]:
+    if not isinstance(raw_keys, list):
+        return []
+    result = []
+    for key in raw_keys:
+        if not isinstance(key, dict) or not key.get("access_key"):
+            continue
+        access_key = str(key["access_key"])
+        status = str(key.get("status") or "").strip().lower()
+        if key.get("revoked") or key.get("disabled"):
+            status = "revoked"
+        result.append({
+            "access_key_masked": _mask_s3_access_key(access_key),
+            "access_key_last4": access_key[-4:] if len(access_key) > 4 else "",
+            "created_at": key.get("created_at") or key.get("created") or key.get("create_date"),
+            "status": status or "active",
+        })
+    return result
+
+
 def summarize_s3_user(raw: dict) -> dict:
-    """Allowlist non-secret fields; key objects are deliberately discarded."""
+    """Allowlist metadata and masked key identifiers; never return key material."""
     user_quota = raw.get("user_quota") or {}
     bucket_quota = raw.get("bucket_quota") or {}
     return {
@@ -598,6 +769,7 @@ def summarize_s3_user(raw: dict) -> dict:
         "suspended": bool(raw.get("suspended", False)),
         "max_buckets": raw.get("max_buckets"),
         "key_count": len(raw.get("keys") or []),
+        "access_keys": _summarize_s3_access_keys(raw.get("keys")),
         "subuser_count": len(raw.get("subusers") or []),
         "caps": [str(cap.get("type")) for cap in (raw.get("caps") or []) if isinstance(cap, dict) and cap.get("type")],
         "user_quota_enabled": bool(user_quota.get("enabled", False)),
@@ -622,6 +794,8 @@ def build_s3_user_action_command(action: str, uid: str, params: dict) -> str:
         if params.get("email"):
             command += f" --email={shlex.quote(str(params['email']))}"
         return command + " --format json"
+    if action == "delete":
+        return f"radosgw-admin user rm --uid={quoted_uid}"
     if action in {"suspend", "enable"}:
         return f"radosgw-admin user {action} --uid={quoted_uid}"
     raise ValueError("Unsupported S3 user action")

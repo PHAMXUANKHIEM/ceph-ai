@@ -236,6 +236,115 @@ def test_error_telegram_exposes_real_job_state(db_session, monkeypatch):
     assert "Đã chuyển vào Log Intelligence" not in sent[0]
 
 
+def test_errno_107_explains_rg_w_backend_disconnect():
+    problem, impact, action = audit._operator_error_context("-107")
+
+    assert "ENOTCONN" in problem
+    assert "RADOS/Ceph" in problem
+    assert "ceph -s" in action
+    assert "object bị mất" in impact
+
+
+def test_inconclusive_result_reports_collected_evidence_not_only_flags():
+    run = LogIngestRun(
+        status="OK", lines_scanned=217, patterns_seen=22,
+        patterns_flagged=0, hosts_scanned=1, hosts_failed=0,
+    )
+
+    text = audit._inconclusive_analysis_text("-107", 0, run)
+
+    assert "đã thu 22 mẫu từ 217 dòng" in text
+    assert "0 mẫu bị gắn cờ không có nghĩa RGW bình thường" in text
+    assert "Transport" not in text  # operator-facing text uses ENOTCONN context
+    assert "ENOTCONN" in text
+
+
+def test_error_telegram_humanizes_but_external_keeps_redacted_evidence(db_session, monkeypatch):
+    cluster = Cluster(name="rgw-message", ceph_mon_nodes="", ceph_rgw_nodes="10.3.53.1",
+                      is_default=False, is_active=True, ssh_user="root",
+                      ssh_key_path="/key", ceph_exec_mode="none")
+    db_session.add(cluster)
+    db_session.flush()
+    event = _error_event(
+        db_session, cluster,
+        "Request to Vault failed with token=supersecretvalue",
+        fingerprint="7" * 64,
+    )
+    db_session.commit()
+    sent = []
+    edited = []
+    external = []
+    monkeypatch.setattr(settings, "telegram_rgw_enabled", True)
+    monkeypatch.setattr(settings, "telegram_rgw_bot_token", "token")
+    monkeypatch.setattr(settings, "telegram_rgw_chat_id", "chat")
+    monkeypatch.setattr(settings, "alert_webhook_url", "https://alerts.invalid")
+    monkeypatch.setattr(audit, "send_telegram_message", lambda _token, _chat, text: sent.append(text) or 1001)
+    monkeypatch.setattr(audit, "edit_telegram_message", lambda _token, _chat, _id, text: edited.append(text))
+    monkeypatch.setattr(
+        audit,
+        "humanize_telegram_alert_detail",
+        lambda *_args, **_kwargs: ("RGW không lấy được khóa từ Vault.", True),
+    )
+    monkeypatch.setattr(
+        audit,
+        "enqueue_external_alert",
+        lambda **kwargs: external.append(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        audit._RGW_HUMANIZER_EXECUTOR,
+        "submit",
+        lambda callback, *args: callback(*args),
+    )
+
+    audit._deliver_pending(db_session)
+
+    assert "🧠 Đang phân tích log bằng AI…" in sent[0]
+    assert "🧠 Diễn giải AI: RGW không lấy được khóa từ Vault." in edited[0]
+    assert "token=supersecretvalue" not in external[0]["message"]
+    assert "Chi tiết kỹ thuật" in external[0]["message"]
+    assert "<REDACTED>" in external[0]["message"]
+
+
+def test_failed_ai_edit_is_retried_without_sending_placeholder_again(db_session, monkeypatch):
+    cluster = Cluster(name="rgw-retry", ceph_mon_nodes="", ceph_rgw_nodes="10.3.53.1",
+                      is_default=False, is_active=True, ssh_user="root",
+                      ssh_key_path="/key", ceph_exec_mode="none")
+    db_session.add(cluster)
+    db_session.flush()
+    event = _error_event(db_session, cluster, "Request to Vault failed with error -13",
+                         fingerprint="8" * 64)
+    event.telegram_sent = True
+    event.telegram_message_id = 2222
+    event.telegram_humanization_status = "failed"
+    event.external_alert_queued = True
+    db_session.commit()
+    edited = []
+    sent = []
+    monkeypatch.setattr(settings, "telegram_rgw_enabled", True)
+    monkeypatch.setattr(settings, "telegram_rgw_bot_token", "token")
+    monkeypatch.setattr(settings, "telegram_rgw_chat_id", "chat")
+    monkeypatch.setattr(audit.db, "SessionLocal", sessionmaker(bind=db_session.get_bind()))
+    monkeypatch.setattr(audit, "send_telegram_message", lambda *_args: sent.append(True))
+    monkeypatch.setattr(audit, "edit_telegram_message", lambda _token, _chat, _id, text: edited.append(text))
+    monkeypatch.setattr(
+        audit,
+        "humanize_telegram_alert_detail",
+        lambda *_args, **_kwargs: ("RGW vẫn không lấy được khóa từ Vault.", True),
+    )
+    monkeypatch.setattr(
+        audit._RGW_HUMANIZER_EXECUTOR,
+        "submit",
+        lambda callback, *args: callback(*args),
+    )
+
+    audit._deliver_pending(db_session)
+    db_session.refresh(event)
+
+    assert sent == []
+    assert edited and "RGW vẫn không lấy được khóa từ Vault." in edited[0]
+    assert event.telegram_humanization_status == "completed"
+
+
 def test_duplicate_vault_error_explains_that_analysis_is_deduplicated(db_session, monkeypatch):
     cluster = Cluster(name="rgw-message", ceph_mon_nodes="", ceph_rgw_nodes="10.3.53.1",
                       is_default=False, is_active=True, ssh_user="root",
@@ -315,7 +424,7 @@ def test_immediate_job_runs_log_intelligence_and_reports_completion(db_session, 
     result = next(message for message in sent if "PHÂN TÍCH RGW HOÀN TẤT" in message)
     assert "📍 Host: 10.3.53.1" in result
     assert "Chưa đủ bằng chứng để xác định nguyên nhân gốc" in result
-    assert "Đã đối chiếu: 1 nhóm log liên quan" in result
+    assert "Triage: 1 mẫu bất thường được gắn cờ; đã thu 1 mẫu từ 2 dòng" in result
     assert "CẦN KIỂM TRA — chưa được coi là đã khắc phục" in result
 
 

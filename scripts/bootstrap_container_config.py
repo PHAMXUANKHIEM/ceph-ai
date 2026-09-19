@@ -2,6 +2,7 @@
 
 import os
 import secrets
+import shutil
 import subprocess
 import re
 from urllib.parse import quote
@@ -17,6 +18,10 @@ EXECUTOR_TOKEN_FILE = SECRETS_DIR / "single-full-executor.token"
 RABBITMQ_PASSWORD_FILE = SECRETS_DIR / "rabbitmq-ceph-ai.password"
 DUAL_AGENT_UID = "10001"
 DUAL_WORKSPACE = Path("/var/lib/ceph-ai/dual-workspace")
+FULL_EXECUTOR_UID = "10001"
+FULL_EXECUTOR_ACCOUNT_ROOT = Path("/var/lib/ceph-ai/full-executor-accounts")
+FULL_EXECUTOR_SSH_ROOT = Path("/var/lib/ceph-ai/full-executor-ssh")
+FULL_EXECUTOR_SECRET_ROOT = Path("/var/lib/ceph-ai/full-executor-secrets")
 DUAL_AGENT_ACCOUNT_PATHS = (".codex-account", ".claude-account", ".ai-accounts")
 LEGACY_DUAL_AGENT_WRITE_PATHS = (
     "config", "dashboard", "shared", "watcher", "worker", "tests", "vitastor",
@@ -142,6 +147,61 @@ def _ensure_dual_workspace() -> None:
     subprocess.run(["chown", "-R", f"{DUAL_AGENT_UID}:{DUAL_AGENT_UID}", str(DUAL_WORKSPACE)], check=True)
 
 
+def _chown_tree(path: Path, *, uid: str) -> None:
+    """Give one service account ownership of its dedicated secret tree."""
+    for item in (path, *path.rglob("*")):
+        os.chown(item, int(uid), int(uid))
+
+
+def _copy_account_tree(source: Path, target: Path) -> None:
+    """Copy provider auth once into a uid-isolated, read-only container mount."""
+    if not source.is_dir():
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    elif not target.exists():
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        shutil.copytree(
+            source,
+            target,
+            ignore=shutil.ignore_patterns("tmp", "shell_snapshots"),
+        )
+    if target.exists():
+        _chown_tree(target, uid=FULL_EXECUTOR_UID)
+        target.chmod(0o700)
+
+
+def _copy_secret_file(source: Path, target: Path) -> None:
+    """Install a private SSH key without exposing the host's root path."""
+    if not source.is_file():
+        return
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = target.with_suffix(f".{os.getpid()}.tmp")
+    shutil.copyfile(source, temporary)
+    os.chown(temporary, int(FULL_EXECUTOR_UID), int(FULL_EXECUTOR_UID))
+    os.chmod(temporary, 0o600 if not source.name.endswith(".pub") else 0o644)
+    os.replace(temporary, target)
+
+
+def _ensure_full_executor_credentials(values: dict) -> None:
+    """Provision only the credentials needed by the non-root executor."""
+    FULL_EXECUTOR_ACCOUNT_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chown(FULL_EXECUTOR_ACCOUNT_ROOT, int(FULL_EXECUTOR_UID), int(FULL_EXECUTOR_UID))
+    FULL_EXECUTOR_ACCOUNT_ROOT.chmod(0o700)
+    FULL_EXECUTOR_SSH_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chown(FULL_EXECUTOR_SSH_ROOT, int(FULL_EXECUTOR_UID), int(FULL_EXECUTOR_UID))
+    FULL_EXECUTOR_SSH_ROOT.chmod(0o700)
+    FULL_EXECUTOR_SECRET_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chown(FULL_EXECUTOR_SECRET_ROOT, int(FULL_EXECUTOR_UID), int(FULL_EXECUTOR_UID))
+    FULL_EXECUTOR_SECRET_ROOT.chmod(0o700)
+    _copy_secret_file(EXECUTOR_TOKEN_FILE, FULL_EXECUTOR_SECRET_ROOT / "token")
+    _copy_account_tree(ROOT / ".codex-account", FULL_EXECUTOR_ACCOUNT_ROOT / "codex")
+    _copy_account_tree(ROOT / ".claude-account", FULL_EXECUTOR_ACCOUNT_ROOT / "claude")
+    ssh_key = str(values.get("SSH_KEY_PATH") or "").strip()
+    if ssh_key:
+        source = Path(ssh_key).expanduser()
+        _copy_secret_file(source, FULL_EXECUTOR_SSH_ROOT / "id_ed25519")
+        _copy_secret_file(Path(f"{source}.pub"), FULL_EXECUTOR_SSH_ROOT / "id_ed25519.pub")
+
+
 def main() -> None:
     TARGET.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not TARGET.exists():
@@ -153,6 +213,7 @@ def main() -> None:
     _remove_legacy_executor_token(TARGET)
     _write_executor_token()
     _ensure_dual_workspace()
+    _ensure_full_executor_credentials(dotenv_values(TARGET))
     _revoke_legacy_dual_source_access()
     _grant_dual_agent_workspace_access()
     values = dotenv_values(TARGET)

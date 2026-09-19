@@ -379,11 +379,9 @@ def test_s3_user_action_builder_is_closed_quotes_input_and_never_generates_key()
     assert command.startswith("radosgw-admin user create --uid='alice tenant'")
     assert "--display-name='Alice'\"'\"'s Team'" in command
 
-    try:
-        ral.build_s3_user_action_command("delete", "alice", {})
-        assert False, "unsupported actions must fail closed"
-    except ValueError:
-        pass
+    delete_command = ral.build_s3_user_action_command("delete", "alice", {})
+    assert delete_command == "radosgw-admin user rm --uid=alice"
+    assert "--purge-data" not in delete_command
 
 
 def test_create_user_action_returns_only_generated_credential(monkeypatch):

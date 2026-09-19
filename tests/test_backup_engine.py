@@ -120,7 +120,8 @@ class FakeSSHClient:
     last_cmd = None
     # Story 9.7: per-command exit status/stderr overrides for `rbd
     # import`/`import-diff`-style commands (restore.py's _stream_file_to_rbd
-    # writes to stdin instead of reading stdout) — keyed by exact command.
+    # writes to stdin instead of reading stdout) — keyed by the command
+    # suffix so restore.py can add its remote timeout/lock wrapper.
     exit_status_by_cmd: dict = {}
     stderr_by_cmd: dict = {}
     imported_calls: list = []  # [(cmd, bytes_written), ...] in call order
@@ -138,18 +139,29 @@ class FakeSSHClient:
     def save_host_keys(self, path):
         pass
 
-    def connect(self, hostname, username, key_filename, timeout):
+    def connect(self, hostname, username, key_filename, timeout, **_timeouts):
         if FakeSSHClient.connect_error is not None:
             raise FakeSSHClient.connect_error
 
-    def exec_command(self, cmd):
+    def exec_command(self, cmd, timeout=None):
         FakeSSHClient.last_cmd = cmd
         sink = bytearray()
         FakeSSHClient.imported_calls.append([cmd, sink])
         stdin = _FakeStdin(sink)
         exit_status = FakeSSHClient.exit_status_by_cmd.get(cmd, FakeSSHClient.exit_status)
+        if cmd not in FakeSSHClient.exit_status_by_cmd:
+            exit_status = next(
+                (status for expected, status in FakeSSHClient.exit_status_by_cmd.items() if cmd.endswith(expected)),
+                FakeSSHClient.exit_status,
+            )
         stdout = _FakeStdout(FakeSSHClient.export_payload, exit_status)
-        stderr = _FakeStderr(FakeSSHClient.stderr_by_cmd.get(cmd, b""))
+        stderr_text = FakeSSHClient.stderr_by_cmd.get(cmd, b"")
+        if cmd not in FakeSSHClient.stderr_by_cmd:
+            stderr_text = next(
+                (message for expected, message in FakeSSHClient.stderr_by_cmd.items() if cmd.endswith(expected)),
+                b"",
+            )
+        stderr = _FakeStderr(stderr_text)
         return stdin, stdout, stderr
 
     def close(self):
@@ -200,6 +212,12 @@ class FakeBackend:
         for obj in to_delete:
             self.delete(obj.key)
         return [o.key for o in to_delete]
+
+
+def _assert_bounded_restore_command(actual, expected):
+    assert "timeout --signal=TERM --kill-after=2s" in actual
+    assert "flock -w 30 /run/ceph-ai-cephadm.lock" in actual
+    assert actual.endswith(expected)
 
 
 DEFAULT_POLICY = {
@@ -645,7 +663,7 @@ def test_restore_to_production_succeeds_when_full_backup_exists(isolated_db, fak
     )
 
     assert succeeded is True
-    assert FakeSSHClient.imported_calls[0][0] == "rbd import - vms/web01"
+    _assert_bounded_restore_command(FakeSSHClient.imported_calls[0][0], "rbd import - vms/web01")
     assert bytes(FakeSSHClient.imported_calls[0][1]) == b"full backup content"
 
 
@@ -666,8 +684,10 @@ def test_restore_as_new_uses_distinct_destination_and_verifies_it(isolated_db, f
 
     assert succeeded is True
     commands = [row[0] for row in FakeSSHClient.imported_calls]
-    assert "rbd import - recovery/web01-restored" in commands
-    assert "rbd info recovery/web01-restored --format json" in commands
+    assert any(command.endswith("rbd import - recovery/web01-restored") for command in commands)
+    assert any(command.endswith("rbd info recovery/web01-restored --format json") for command in commands)
+    for command in commands:
+        _assert_bounded_restore_command(command, command.split(" flock -w 30 /run/ceph-ai-cephadm.lock ", 1)[-1])
 
 
 def test_restore_as_new_rechecks_destination_and_fails_if_it_appeared(

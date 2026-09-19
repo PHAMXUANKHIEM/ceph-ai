@@ -199,6 +199,24 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "cluster_name", "", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def isolated_ceph_query_cache(tmp_path_factory, monkeypatch):
+    """Give every test its own Ceph query cache.
+
+    shared/ceph_query_cache.py is process-global and persists to
+    CEPH_AI_CACHE_DIR (/var/lib/ceph-ai/cache in production), so without this
+    the suite reads and writes the operator's real cache. It also leaks
+    between tests: one test's cached `rbd trash ls` answer silently satisfies
+    the next test's request, the monkeypatched loader never runs, and any
+    assertion on that double fails depending on test order.
+    """
+    from shared import ceph_query_cache
+
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path_factory.mktemp("ceph-query-cache"))
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    monkeypatch.setattr(ceph_query_cache, "_refreshing", set())
+
+
 @pytest.fixture()
 def db_session():
     engine = make_engine("sqlite:///:memory:")
@@ -248,10 +266,8 @@ def dashboard_client(monkeypatch):
     from dashboard.app import app
     from dashboard.routes import auth as auth_module
 
-    # The login rate limiter is process-global state keyed by client host,
-    # and TestClient always reports the same synthetic host — without
-    # clearing it here, failed-login attempts in one test would count
-    # towards another test's lockout threshold.
+    # Keep legacy test state clean while the real limiter is database-backed.
+    # The table itself is recreated for each isolated TestClient database.
     auth_module._failed_attempts.clear()
 
     with TestClient(app) as client:

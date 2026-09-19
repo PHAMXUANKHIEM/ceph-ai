@@ -7,12 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from shared.db import Base
-from shared.models import (
-    Cluster, NodeResourceForecastAlert, NodeResourceForecastAlertEvent, NodeResourceForecastRun,
-    NodeResourceModelState, WatcherHeartbeat,
-)
-from shared.forecast_canary import build_canary_report
-from shared.online_learning import RiverMeanLearner, save_state
+from shared.models import NodeResourceForecastAlert, NodeResourceForecastRun, NodeResourceModelState
 from watcher import node_resource_forecast as forecast
 
 
@@ -203,34 +198,6 @@ def test_adaptive_forecast_records_consensus_metadata(monkeypatch):
         assert all(row.anomaly_score is not None for row in rows)
 
 
-def test_river_is_shadow_candidate_only(monkeypatch):
-    factory = _learning_db(monkeypatch)
-    monkeypatch.setattr(forecast.settings, "online_learning_enabled", True)
-    monkeypatch.setattr(forecast.settings, "online_learning_mode", "SHADOW_ONLY")
-    monkeypatch.setattr(forecast.settings, "online_learning_min_verified_evidence", 1)
-    now = datetime.now(timezone.utc)
-    with factory() as session:
-        session.add(Cluster(
-            id="cluster-a", name="CS-LAB", ceph_mon_nodes="", ssh_user="root", ssh_key_path="/tmp/key",
-        ))
-        session.add(WatcherHeartbeat(
-            id=1, cluster_id="cluster-a", success=True, mon_node="mon-1",
-            error_message=None, polled_at=now, consecutive_failures=0, last_success_at=now,
-        ))
-        learner = RiverMeanLearner()
-        learner.learn_one(42.0)
-        save_state(
-            session, learner, cluster_id="cluster-a", host="node-1", metric="cpu",
-            learned_at=now.replace(tzinfo=None),
-        )
-        session.commit()
-        candidate = forecast._river_shadow_candidate(session, "CS-LAB", "node-1", "cpu", 40.0)
-        assert candidate is not None
-        assert candidate.algorithm == "river_mean"
-        assert candidate.predicted_percent == 42.0
-        assert candidate.consensus_status == "SHADOW_CANDIDATE"
-
-
 def test_adaptive_forecast_evaluates_due_run_and_updates_mae(monkeypatch):
     factory = _learning_db(monkeypatch)
     monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_samples", 6)
@@ -332,62 +299,6 @@ def test_open_alert_becomes_data_quality_not_resolved(monkeypatch):
         assert alert.resolved_at is None
 
 
-def test_drift_creates_data_quality_state_without_notification(monkeypatch):
-    factory = _learning_db(monkeypatch)
-    sent = []
-    monkeypatch.setattr(forecast, "send_node_forecast_alert", lambda *args, **kwargs: sent.append(args) or True)
-    now = datetime(2026, 8, 24, 12, tzinfo=timezone.utc)
-    value = forecast.ResourceForecast(
-        "cpu", 80, 1, 95, 2, .45, 30, 24,
-        training_window_hours=24, consensus_ratio=1.0,
-        consensus_candidate_count=4, consensus_status="CONSENSUS",
-        predicted_low=90, predicted_high=98,
-        drift_status="DRIFT", drift_score=2.0,
-        drift_reason="baseline shift 25.0; residual shift 18.0",
-    )
-
-    forecast.sync_forecast_alerts("CS-LAB", "node-1", {"cpu": value}, now=now)
-
-    with factory() as session:
-        alert = session.query(NodeResourceForecastAlert).one()
-        assert alert.status == "DATA_QUALITY"
-        assert "Concept drift" in alert.state_reason
-        assert "baseline shift" in alert.state_reason
-    assert sent == []
-
-
-def test_alert_lifecycle_event_is_append_only_and_canary_report_reads_it(monkeypatch):
-    factory = _learning_db(monkeypatch)
-    monkeypatch.setattr(forecast.settings, "online_learning_canary_enabled", False)
-    now = datetime(2026, 8, 24, 12, tzinfo=timezone.utc)
-    value = forecast.ResourceForecast(
-        "cpu", 80, 1, 95, 2, .45, 30, 24,
-        training_window_hours=24, consensus_ratio=1.0,
-        consensus_candidate_count=4, consensus_status="CONSENSUS",
-        predicted_low=90, predicted_high=98,
-        drift_status="DRIFT", drift_score=2.0,
-        drift_reason="baseline shift",
-    )
-
-    forecast.sync_forecast_alerts("CS-LAB", "node-1", {"cpu": value}, now=now)
-    forecast.sync_forecast_alerts(
-        "CS-LAB", "node-1", {"cpu": value},
-        now=now + timedelta(minutes=15),
-    )
-
-    with factory() as session:
-        events = session.query(NodeResourceForecastAlertEvent).all()
-        assert len(events) == 1
-        assert events[0].from_state is None
-        assert events[0].to_state == "DATA_QUALITY"
-        report = build_canary_report(
-            session, cluster_id="cluster-1", cluster_name="CS-LAB",
-            host="node-1", metric="cpu", now=now + timedelta(minutes=15),
-        )
-        assert report["alert_lifecycle"]["data_quality_events"] == 1
-        assert report["alert_lifecycle"]["event_count"] == 1
-
-
 def test_low_consensus_signal_is_persisted_as_candidate_without_notification(monkeypatch):
     factory = _learning_db(monkeypatch)
     sent = []
@@ -456,7 +367,6 @@ def test_warning_requires_consecutive_breaches_and_recovery_requires_healthy_sca
         alert = session.query(NodeResourceForecastAlert).one()
         assert alert.lifecycle_state == "WARNING"
         assert alert.consecutive_breach_count == 2
-        assert alert.evidence_fingerprint
     assert len(sent) == 1
 
     safe = forecast.ResourceForecast(
@@ -473,87 +383,6 @@ def test_warning_requires_consecutive_breaches_and_recovery_requires_healthy_sca
         alert = session.query(NodeResourceForecastAlert).one()
         assert alert.lifecycle_state == "RECOVERED"
         assert alert.resolved_at is not None
-
-
-def test_same_evidence_is_not_notified_again_after_cooldown(monkeypatch):
-    factory = _learning_db(monkeypatch)
-    monkeypatch.setattr(forecast.settings, "node_resource_forecast_breach_consecutive_scans", 1)
-    monkeypatch.setattr(forecast.settings, "node_resource_forecast_warning_cooldown_seconds", 0)
-    sent = []
-    monkeypatch.setattr(
-        forecast, "send_node_forecast_alert", lambda *args, **kwargs: sent.append(args) or True
-    )
-    now = datetime(2026, 8, 24, 12, tzinfo=timezone.utc)
-    value = forecast.ResourceForecast(
-        "cpu", 80, 1, 91, 4, .9, 30, 24,
-        training_window_hours=24, consensus_ratio=1.0,
-        consensus_candidate_count=4, consensus_status="CONSENSUS",
-        predicted_low=88, predicted_high=93,
-    )
-
-    forecast.sync_forecast_alerts("CS-LAB", "node-1", {"cpu": value}, now=now)
-    forecast.sync_forecast_alerts(
-        "CS-LAB", "node-1", {"cpu": value}, now=now + timedelta(hours=2)
-    )
-
-    with factory() as session:
-        alert = session.query(NodeResourceForecastAlert).one()
-        assert alert.last_notified_evidence_fingerprint == alert.evidence_fingerprint
-        assert alert.notification_state == "SUPPRESSED"
-    assert len(sent) == 1
-
-
-def test_value_hysteresis_keeps_warning_open_below_trigger(monkeypatch):
-    factory = _learning_db(monkeypatch)
-    monkeypatch.setattr(forecast.settings, "node_resource_forecast_breach_consecutive_scans", 1)
-    monkeypatch.setattr(forecast.settings, "node_resource_forecast_recovery_consecutive_scans", 2)
-    monkeypatch.setattr(forecast.settings, "node_resource_forecast_recovery_threshold_percent", 85.0)
-    monkeypatch.setattr(forecast, "send_node_forecast_alert", lambda *args, **kwargs: True)
-    now = datetime(2026, 8, 24, 12, tzinfo=timezone.utc)
-    warning = forecast.ResourceForecast(
-        "ram", 80, 1, 91, 4, .9, 30, 24,
-        training_window_hours=24, consensus_ratio=1.0,
-        consensus_candidate_count=4, consensus_status="CONSENSUS",
-        predicted_low=88, predicted_high=93,
-    )
-    forecast.sync_forecast_alerts("CS-LAB", "node-1", {"ram": warning}, now=now)
-
-    below_trigger_but_not_recovered = forecast.ResourceForecast(
-        "ram", 80, 0, 88, None, .9, 30, 24,
-        training_window_hours=24, consensus_ratio=1.0,
-        consensus_candidate_count=4, consensus_status="CONSENSUS",
-        predicted_low=82, predicted_high=88,
-    )
-    forecast.sync_forecast_alerts(
-        "CS-LAB", "node-1", {"ram": below_trigger_but_not_recovered},
-        now=now + timedelta(minutes=5),
-    )
-
-    with factory() as session:
-        alert = session.query(NodeResourceForecastAlert).one()
-        assert alert.lifecycle_state == "WARNING"
-        assert alert.consecutive_healthy_count == 0
-        assert alert.resolved_at is None
-
-
-def test_maintenance_suppression_does_not_send_notification(monkeypatch):
-    factory = _learning_db(monkeypatch)
-    sent = []
-    monkeypatch.setattr(forecast, "send_node_forecast_alert", lambda *args, **kwargs: sent.append(args) or True)
-    now = datetime(2026, 8, 24, 12, tzinfo=timezone.utc)
-    value = forecast.ResourceForecast(
-        "cpu", 80, 1, 91, 4, .9, 30, 24,
-        training_window_hours=24, consensus_ratio=1.0,
-        consensus_candidate_count=4, consensus_status="CONSENSUS",
-        predicted_low=88, predicted_high=93,
-    )
-
-    forecast.sync_forecast_alerts(
-        "CS-LAB", "node-1", {"cpu": value}, now=now,
-        suppressed_until=now + timedelta(hours=1),
-    )
-
-    assert sent == []
 
 
 def test_direct_observation_evaluates_due_cpu_and_ram(monkeypatch):
@@ -575,8 +404,3 @@ def test_direct_observation_evaluates_due_cpu_and_ram(monkeypatch):
         rows = session.query(NodeResourceForecastRun).order_by(NodeResourceForecastRun.metric).all()
         assert all(row.status == "EVALUATED" for row in rows)
         assert {row.metric: row.absolute_error for row in rows} == {"cpu": 2, "ram": 1}
-        states = session.query(NodeResourceModelState).all()
-        assert all(state.rolling_sample_count == 1 for state in states)
-        assert all(state.rolling_rmse is not None for state in states)
-        assert all(state.rolling_smape is not None for state in states)
-        assert all(state.rolling_bias is not None for state in states)

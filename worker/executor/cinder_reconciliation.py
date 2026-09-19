@@ -9,7 +9,9 @@ CINDER_ATTACHMENT_ACTION_IDS = frozenset({"cinder_attach_volume", "cinder_detach
 
 
 def reconcile(action_id: str, params: dict, command_output: str) -> None:
-    if action_id not in CINDER_ATTACHMENT_ACTION_IDS and action_id != "cinder_create_snapshot":
+    if action_id not in CINDER_ATTACHMENT_ACTION_IDS and action_id not in {
+        "cinder_create_snapshot", "cinder_delete_snapshot",
+    }:
         return
     try:
         payload = json.loads(command_output)
@@ -29,6 +31,16 @@ def reconcile(action_id: str, params: dict, command_output: str) -> None:
         status = str(match.get("status") or match.get("Status") or "").lower()
         if status in {"error", "error_deleting"}:
             raise ExecutorError(f"Cinder snapshot post-check có trạng thái lỗi: {status}")
+        return
+    if action_id == "cinder_delete_snapshot":
+        if not isinstance(payload, dict):
+            raise ExecutorError("Cinder snapshot delete post-check không trả về object")
+        snapshot_id = str(payload.get("snapshot_id") or payload.get("id") or "").lower()
+        expected_id = str(params.get("snapshot_id") or "").lower()
+        if snapshot_id != expected_id:
+            raise ExecutorError("Cinder snapshot delete post-check trả về snapshot ID không khớp")
+        if payload.get("deleted") is not True:
+            raise ExecutorError("Cinder snapshot vẫn còn tồn tại sau khi xóa")
         return
     if not isinstance(payload, dict):
         raise ExecutorError("Cinder post-check không trả về volume object")

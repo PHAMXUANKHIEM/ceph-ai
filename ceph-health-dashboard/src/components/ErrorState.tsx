@@ -9,10 +9,11 @@ type ErrorStateProps = {
   onRetry?: () => void;
   retryLabel?: string;
   retryDisabled?: boolean;
+  onDismiss?: () => void;
 };
 
 export function ErrorState({
-  message, tone = "error", onRetry, retryLabel = "Thử lại", retryDisabled = false,
+  message, tone = "error", onRetry, retryLabel = "Thử lại", retryDisabled = false, onDismiss,
 }: ErrorStateProps) {
   return (
     <div
@@ -24,6 +25,11 @@ export function ErrorState({
       {onRetry && (
         <button type="button" onClick={onRetry} disabled={retryDisabled}>
           {retryLabel}
+        </button>
+      )}
+      {onDismiss && (
+        <button type="button" className="state-banner__dismiss" onClick={onDismiss} aria-label="Ẩn cảnh báo">
+          ×
         </button>
       )}
     </div>

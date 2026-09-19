@@ -9,307 +9,227 @@
 <body>
   {% include "_nav.html" %}
 
-  <main class="page">
-    <section class="card">
-      <div class="card-header"><h2>Clusters (quan sát nhiều cụm)</h2></div>
-      <div class="card-body">
-        {% if cluster_create_error %}
-          <p class="error">{{ cluster_create_error }}</p>
-        {% endif %}
-        {% if cluster_create_success %}
-          <p class="success">{{ cluster_create_success }}</p>
-        {% endif %}
-        {% if cluster_toggle_error %}
-          <p class="error">{{ cluster_toggle_error }}</p>
-        {% endif %}
-        {% if cluster_toggle_success %}
-          <p class="success">{{ cluster_toggle_success }}</p>
-        {% endif %}
-        {% if cluster_delete_error %}
-          <p class="error">{{ cluster_delete_error }}</p>
-        {% endif %}
-        {% if cluster_delete_success %}
-          <p class="success">{{ cluster_delete_success }}</p>
-        {% endif %}
-        {% if backup_config_error %}
-          <p class="error">{{ backup_config_error }}</p>
-        {% endif %}
-        {% if backup_config_success %}
-          <p class="success">{{ backup_config_success }}</p>
-        {% endif %}
-        <p class="hint">
-          Watcher chạy một vòng lặp giám sát sức khoẻ riêng cho mỗi cụm "Đang hoạt động" bên dưới —
-          Incident/heartbeat của mỗi cụm hiện riêng trên Dashboard qua bộ chọn cụm. Chẩn đoán AI/tự
-          động xử lý (remediation) và cảnh báo/phê duyệt Telegram riêng đã áp dụng cho mọi cụm; backup
-          RBD/metadata cũng áp dụng cho cụm bổ sung nếu bật "Cấu hình backup" ở mỗi dòng bên dưới
-          (nơi lưu/thông tin đăng nhập backup của cụm đó là riêng, không dùng chung với cụm mặc định).
-          <strong>Vẫn chỉ áp dụng cho cụm mặc định</strong>: patch, upgrade, và RestoreDrill/digest backup
-          định kỳ. Cụm mặc định (đánh dấu bên dưới) được cấu hình qua mục "Kết nối cụm Ceph" ở trang
-          <a href="/settings">Cài đặt</a>, không sửa được ở đây.
-        </p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Tên cụm</th><th>MON nodes</th><th>Exec mode</th><th>Ceph version</th><th>Trạng thái</th><th>Backup</th><th>Ngày thêm</th><th></th></tr>
-            </thead>
-            <tbody>
-              {% for c in clusters %}
-              {% set cap = capability_by_cluster.get(c.id) %}
-              <tr>
-                <td>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</td>
-                <td>{{ c.ceph_mon_nodes }}</td>
-                <td>{{ c.ceph_exec_mode }}</td>
-                <td>
-                  {% if not cap %}
-                  <span class="hint" title="Chưa quét được version">Chưa xác định</span>
-                  {% elif cap.status == "UNAVAILABLE" %}
-                  <span class="hint" title="{{ cap.error_message }}">Không truy cập được ({{ cap.collected_at|vntime }})</span>
-                  {% elif cap.is_mixed_version %}
-                  <span title="Đang có nhiều phiên bản khác nhau — có thể đang giữa quá trình nâng cấp">
-                    ⚠ Mixed: {{ cap.distinct_versions|join(", ") }}
-                  </span>
-                  {% elif cap.status == "UNSUPPORTED_VERSION" %}
-                  <span title="Phiên bản chưa được hệ thống nhận diện">{{ cap.current_version }} (chưa xác nhận hỗ trợ)</span>
-                  {% else %}
-                  {{ cap.current_version }}
-                  {% endif %}
-                </td>
-                <td>{{ "Đang hoạt động" if c.is_active else "Đã vô hiệu hoá" }}</td>
-                <td>
-                  {% if c.is_default %}
-                  <span class="hint">(YAML/backup_policy.yaml)</span>
-                  {% else %}
-                  {{ "Bật" if c.backup_enabled else "Tắt" }}
-                  {% endif %}
-                </td>
-                <td>{{ c.created_at|vntime }}</td>
-                <td>
-                  {% if c.is_default %}
-                  <button type="button" class="btn btn-sm" disabled title="Sửa qua trang Cài đặt">Cài đặt</button>
-                  {% else %}
-                  <form method="post" action="/clusters/{{ c.id }}/toggle-active" class="inline-form">
-                    <button type="submit" class="btn btn-sm {{ 'btn-danger' if c.is_active else '' }}">
-                      {{ "Vô hiệu hoá" if c.is_active else "Kích hoạt lại" }}
-                    </button>
-                  </form>
-                  <form
-                    method="post"
-                    action="/clusters/{{ c.id }}/delete"
-                    class="inline-form"
-                    onsubmit="return confirm('Xoá vĩnh viễn cụm {{ c.name }}? Toàn bộ Incident/Action/Audit Trail/backup job/heartbeat RIÊNG của cụm này sẽ bị xoá khỏi database, không thể hoàn tác. Các cụm khác không bị ảnh hưởng.');"
-                  >
-                    <button type="submit" class="btn btn-sm btn-danger">Xoá</button>
-                  </form>
-                  {% endif %}
-                </td>
-              </tr>
-              {% if not c.is_default %}
-              <tr class="backup-config-row">
-                <td colspan="8">
-                  <details>
-                    <summary>Sửa &amp; test lại kết nối — {{ c.name }}</summary>
-                    <form method="post" action="/clusters/{{ c.id }}/connection" class="login-box">
-                      <label>Tên cụm<input name="name" value="{{ c.name }}" required></label>
-                      <label>MON nodes<input name="ceph_mon_nodes" value="{{ c.ceph_mon_nodes }}" required></label>
-                      <label>MON hostnames<input name="ceph_mon_hostnames" value="{{ c.ceph_mon_hostnames or '' }}"></label>
-                      <label>MGR nodes<input name="ceph_mgr_nodes" value="{{ c.ceph_mgr_nodes or '' }}"></label>
-                      <label>OSD nodes<input name="ceph_osd_nodes" value="{{ c.ceph_osd_nodes or '' }}"></label>
-                      <label>RGW nodes<input name="ceph_rgw_nodes" value="{{ c.ceph_rgw_nodes or '' }}"></label>
-                      <label>Exec mode<select name="ceph_exec_mode">{% for mode in ("cephadm", "docker", "podman", "none") %}<option value="{{ mode }}" {{ "selected" if c.ceph_exec_mode == mode else "" }}>{{ mode }}</option>{% endfor %}</select></label>
-                      <label>MON container<input name="ceph_container_name" value="{{ c.ceph_container_name or '' }}"></label>
-                      <label>OSD container<input name="ceph_osd_container_name" value="{{ c.ceph_osd_container_name or '' }}"></label>
-                      <label>RGW container<input name="ceph_rgw_container_name" value="{{ c.ceph_rgw_container_name or '' }}"></label>
-                      <label>SSH user<input name="ssh_user" value="{{ c.ssh_user }}" required></label>
-                      <label>SSH key path<input name="ssh_key_path" value="{{ c.ssh_key_path }}" required></label>
-                      <label>Ceph keyring path<input name="ceph_keyring_path" value="{{ c.ceph_keyring_path }}" required></label>
-                      <button type="submit" class="btn btn-primary btn-sm">Test kết nối &amp; lưu</button>
-                    </form>
-                  </details>
-                </td>
-              </tr>
-              {% set bv = backup_config_form_values if backup_config_cluster_id == c.id else c %}
-              <tr class="backup-config-row">
-                <td colspan="8">
-                  <details{% if backup_config_cluster_id == c.id %} open{% endif %}>
-                    <summary>Cấu hình backup — {{ c.name }} ({{ "Bật" if c.backup_enabled else "Tắt" }})</summary>
-                    <form method="post" action="/clusters/{{ c.id }}/backup-config" class="login-box">
-                      <label class="checkbox-label">
-                        <input type="checkbox" name="backup_enabled" value="true" {{ "checked" if bv.backup_enabled else "" }}>
-                        Bật backup cho cụm này
-                      </label>
-                      <label>RBD pools/images cần backup (dạng pool/image, cách nhau bởi dấu phẩy)
-                        <input type="text" name="backup_tracked_images" placeholder="rbd/vm1,rbd/vm2" value="{{ bv.backup_tracked_images or '' }}">
-                      </label>
-                      <label>Full refresh mỗi N ngày (tuỳ chọn — để trống nếu không giới hạn)
-                        <input type="text" inputmode="numeric" name="backup_full_refresh_days" value="{{ bv.backup_full_refresh_days if bv.backup_full_refresh_days is not none else '' }}">
-                      </label>
-                      <label>RPO tối đa (giờ)
-                        <input type="number" min="1" max="8760" name="backup_rpo_hours" value="{{ bv.backup_rpo_hours or 24 }}">
-                      </label>
-                      <label>Nơi lưu backup
-                        <select name="backup_transport">
-                          <option value="" {{ "selected" if not bv.backup_transport else "" }}>-- chưa chọn --</option>
-                          <option value="ssh" {{ "selected" if bv.backup_transport == "ssh" else "" }}>SSH</option>
-                          <option value="s3" {{ "selected" if bv.backup_transport == "s3" else "" }}>S3</option>
-                        </select>
-                      </label>
-                      <label>SSH host (backup đích, tuỳ chọn nếu dùng S3)
-                        <input type="text" name="backup_ssh_host" value="{{ bv.backup_ssh_host or '' }}">
-                      </label>
-                      <label>SSH user (backup đích)
-                        <input type="text" name="backup_ssh_user" value="{{ bv.backup_ssh_user or '' }}">
-                      </label>
-                      <label>SSH key path (backup đích — để trống nếu không đổi)
-                        <input type="password" name="backup_ssh_key_path" autocomplete="off">
-                      </label>
-                      <label>SSH landing dir (backup đích)
-                        <input type="text" name="backup_ssh_landing_dir" value="{{ bv.backup_ssh_landing_dir or '' }}">
-                      </label>
-                      <label>S3 endpoint (tuỳ chọn nếu dùng SSH)
-                        <input type="text" name="backup_s3_endpoint" value="{{ bv.backup_s3_endpoint or '' }}">
-                      </label>
-                      <label>S3 access key (để trống nếu không đổi)
-                        <input type="password" name="backup_s3_access_key" autocomplete="off">
-                      </label>
-                      <label>S3 secret key (để trống nếu không đổi)
-                        <input type="password" name="backup_s3_secret_key" autocomplete="off">
-                      </label>
-                      <label>S3 bucket
-                        <input type="text" name="backup_s3_bucket" value="{{ bv.backup_s3_bucket or '' }}">
-                      </label>
-                      <label class="checkbox-label">
-                        <input type="checkbox" name="backup_immutable_enabled" value="true" {{ "checked" if bv.backup_immutable_enabled else "" }}>
-                        Immutable (WORM lock)
-                      </label>
-                      <label>Immutable lock days
-                        <input type="text" inputmode="numeric" name="backup_immutable_lock_days" value="{{ bv.backup_immutable_lock_days if bv.backup_immutable_lock_days is not none else 7 }}">
-                      </label>
-                      <button type="submit" class="btn btn-primary btn-sm">Lưu cấu hình backup</button>
-                    </form>
-                  </details>
-                </td>
-              </tr>
-              {% endif %}
-              {% else %}
-              <tr class="empty-row"><td colspan="8" class="empty-state">Chưa có cụm nào.</td></tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        <form class="login-box" id="cluster-create-form" method="post" action="/clusters/create">
-          <label>Tên cụm
-            <input type="text" name="name" placeholder="vd: cluster-hcm-02" value="{{ cluster_form_values.name or '' }}">
-          </label>
-          <label>MON nodes (cách nhau bởi dấu phẩy)
-            <input type="text" name="ceph_mon_nodes" placeholder="10.20.1.10,10.20.1.11" value="{{ cluster_form_values.ceph_mon_nodes or '' }}">
-          </label>
-          <label>MON hostnames (tuỳ chọn — cùng thứ tự với MON nodes ở trên, giúp AI đọc đúng tên mon trong log)
-            <input type="text" name="ceph_mon_hostnames" placeholder="mon1,mon2" value="{{ cluster_form_values.ceph_mon_hostnames or '' }}">
-          </label>
-          <label>MGR nodes (tuỳ chọn, cách nhau bởi dấu phẩy)
-            <input type="text" name="ceph_mgr_nodes" placeholder="10.20.1.10" value="{{ cluster_form_values.ceph_mgr_nodes or '' }}">
-          </label>
-          <label>OSD nodes (tuỳ chọn — cần điền nếu muốn AI chẩn đoán/tự xử lý sự cố OSD cho cụm này)
-            <input type="text" name="ceph_osd_nodes" placeholder="10.20.1.10,10.20.1.11,10.20.1.12" value="{{ cluster_form_values.ceph_osd_nodes or '' }}">
-          </label>
-          <label>RGW nodes (tuỳ chọn)
-            <input type="text" name="ceph_rgw_nodes" placeholder="" value="{{ cluster_form_values.ceph_rgw_nodes or '' }}">
-          </label>
-          <label>Kiểu deploy
-            <select name="ceph_exec_mode">
-              {% for mode in ("cephadm", "docker", "podman", "none") %}
-              <option value="{{ mode }}" {{ "selected" if cluster_form_values.ceph_exec_mode == mode else "" }}>{{ mode }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>MON container (bỏ trống nếu cephadm/none)
-            <input type="text" name="ceph_container_name" value="{{ cluster_form_values.ceph_container_name or '' }}">
-          </label>
-          <label>OSD container (tuỳ chọn, bỏ trống nếu cephadm/none)
-            <input type="text" name="ceph_osd_container_name" value="{{ cluster_form_values.ceph_osd_container_name or '' }}">
-          </label>
-          <label>RGW container (tuỳ chọn, bỏ trống nếu cephadm/none hoặc không có RGW)
-            <input type="text" name="ceph_rgw_container_name" value="{{ cluster_form_values.ceph_rgw_container_name or '' }}">
-          </label>
-          <label>SSH user
-            <input type="text" name="ssh_user" placeholder="root" value="{{ cluster_form_values.ssh_user or '' }}">
-          </label>
-          <label>SSH key path (trên server chạy Watcher)
-            <input type="text" name="ssh_key_path" placeholder="/root/.ssh/ceph_aiops_watcher" value="{{ cluster_form_values.ssh_key_path or '' }}">
-          </label>
-          <label>Ceph keyring path (bắt buộc, trên node/container Ceph)
-            <input type="text" name="ceph_keyring_path" placeholder="/etc/ceph/ceph.client.admin.keyring" value="{{ cluster_form_values.ceph_keyring_path or '' }}" required>
-          </label>
-          <label>Telegram Bot Token (tuỳ chọn — bỏ trống thì cảnh báo/phê duyệt của cụm này dùng chung 3 kênh mặc định)
-            <input type="password" name="telegram_bot_token" autocomplete="off" value="{{ cluster_form_values.telegram_bot_token or '' }}">
-          </label>
-          <label>Telegram Chat ID (tuỳ chọn — bắt buộc nếu đã điền Bot Token ở trên)
-            <input type="text" name="telegram_chat_id" placeholder="vd: -1001234567890" value="{{ cluster_form_values.telegram_chat_id or '' }}">
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" name="telegram_enabled" value="true" {{ "" if cluster_form_values and cluster_form_values.telegram_enabled is defined and not cluster_form_values.telegram_enabled else "checked" }}>
-            Bật kênh Telegram riêng cho cụm này
-          </label>
-          <details>
-            <summary>Cấu hình backup (tuỳ chọn — có thể để trống rồi cấu hình sau ở bảng phía trên)</summary>
-            <label class="checkbox-label">
-              <input type="checkbox" name="backup_enabled" value="true" {{ "checked" if cluster_form_values.backup_enabled else "" }}>
-              Bật backup cho cụm này
-            </label>
-            <label>RBD pools/images cần backup (dạng pool/image, cách nhau bởi dấu phẩy)
-              <input type="text" name="backup_tracked_images" placeholder="rbd/vm1,rbd/vm2" value="{{ cluster_form_values.backup_tracked_images or '' }}">
-            </label>
-            <label>Full refresh mỗi N ngày (tuỳ chọn)
-              <input type="text" inputmode="numeric" name="backup_full_refresh_days" value="{{ cluster_form_values.backup_full_refresh_days or '' }}">
-            </label>
-            <label>RPO tối đa (giờ)
-              <input type="number" min="1" max="8760" name="backup_rpo_hours" value="{{ cluster_form_values.backup_rpo_hours or 24 }}">
-            </label>
-            <label>Nơi lưu backup
-              <select name="backup_transport">
-                <option value="" {{ "selected" if not cluster_form_values.backup_transport else "" }}>-- chưa chọn --</option>
-                <option value="ssh" {{ "selected" if cluster_form_values.backup_transport == "ssh" else "" }}>SSH</option>
-                <option value="s3" {{ "selected" if cluster_form_values.backup_transport == "s3" else "" }}>S3</option>
-              </select>
-            </label>
-            <label>SSH host (backup đích)
-              <input type="text" name="backup_ssh_host" value="{{ cluster_form_values.backup_ssh_host or '' }}">
-            </label>
-            <label>SSH user (backup đích)
-              <input type="text" name="backup_ssh_user" value="{{ cluster_form_values.backup_ssh_user or '' }}">
-            </label>
-            <label>SSH key path (backup đích)
-              <input type="password" name="backup_ssh_key_path" autocomplete="off" value="{{ cluster_form_values.backup_ssh_key_path or '' }}">
-            </label>
-            <label>SSH landing dir (backup đích)
-              <input type="text" name="backup_ssh_landing_dir" value="{{ cluster_form_values.backup_ssh_landing_dir or '' }}">
-            </label>
-            <label>S3 endpoint
-              <input type="text" name="backup_s3_endpoint" value="{{ cluster_form_values.backup_s3_endpoint or '' }}">
-            </label>
-            <label>S3 access key
-              <input type="password" name="backup_s3_access_key" autocomplete="off" value="{{ cluster_form_values.backup_s3_access_key or '' }}">
-            </label>
-            <label>S3 secret key
-              <input type="password" name="backup_s3_secret_key" autocomplete="off" value="{{ cluster_form_values.backup_s3_secret_key or '' }}">
-            </label>
-            <label>S3 bucket
-              <input type="text" name="backup_s3_bucket" value="{{ cluster_form_values.backup_s3_bucket or '' }}">
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" name="backup_immutable_enabled" value="true" {{ "checked" if cluster_form_values.backup_immutable_enabled else "" }}>
-              Immutable (WORM lock)
-            </label>
-            <label>Immutable lock days
-              <input type="text" inputmode="numeric" name="backup_immutable_lock_days" value="{{ cluster_form_values.backup_immutable_lock_days or 7 }}">
-            </label>
-          </details>
-          <button type="submit" class="btn btn-primary btn-sm">Kiểm tra kết nối &amp; Thêm cụm</button>
-        </form>
+  {% macro node_tag_field(label, name, value, placeholder, help_text, required=false) %}
+  <div class="cluster-field cluster-node-field" data-tag-field>
+    <label>{{ label }}{% if required %} <span aria-hidden="true">*</span>{% endif %}
+      <div class="cluster-tag-editor" data-tag-name="{{ name }}" data-tag-value="{{ value or '' }}">
+        <div class="cluster-tag-list" aria-live="polite"></div>
+        <input class="cluster-tag-entry" type="text" placeholder="{{ placeholder }}" autocomplete="off">
       </div>
+      <small class="cluster-field-help">{{ help_text }}</small>
+    </label>
+    <input type="hidden" name="{{ name }}" value="{{ value or '' }}"{% if required %} required{% endif %}>
+  </div>
+  {% endmacro %}
+
+  <main class="page clusters-page">
+    <header class="clusters-page-header">
+      <div>
+        <div class="clusters-eyebrow">Fleet management / Ceph</div>
+        <h1>Clusters</h1>
+        <p>Quản lý kết nối và trạng thái giám sát của các cụm Ceph trong cùng một workspace.</p>
+      </div>
+      <span class="clusters-count">{{ clusters|length }} cụm</span>
+    </header>
+
+    {% if cluster_create_error %}<p class="error clusters-feedback" role="alert">{{ cluster_create_error }}</p>{% endif %}
+    {% if cluster_create_success %}<p class="success clusters-feedback" role="status">{{ cluster_create_success }}</p>{% endif %}
+    {% if cluster_toggle_error %}<p class="error clusters-feedback" role="alert">{{ cluster_toggle_error }}</p>{% endif %}
+    {% if cluster_toggle_success %}<p class="success clusters-feedback" role="status">{{ cluster_toggle_success }}</p>{% endif %}
+    {% if cluster_delete_error %}<p class="error clusters-feedback" role="alert">{{ cluster_delete_error }}</p>{% endif %}
+    {% if cluster_delete_success %}<p class="success clusters-feedback" role="status">{{ cluster_delete_success }}</p>{% endif %}
+    {% if backup_config_error %}<p class="error clusters-feedback" role="alert">{{ backup_config_error }}</p>{% endif %}
+    {% if backup_config_success %}<p class="success clusters-feedback" role="status">{{ backup_config_success }}</p>{% endif %}
+
+    <details class="clusters-info-card">
+      <summary><span class="clusters-info-icon" aria-hidden="true">i</span><strong>Watcher giám sát mỗi cụm riêng biệt.</strong><span class="clusters-info-short">Cụm mặc định dùng cho patch/upgrade/backup.</span><span class="clusters-info-link">Xem chi tiết ↗</span></summary>
+      <div class="clusters-info-details">
+        Watcher chạy một vòng lặp sức khoẻ riêng cho mỗi cụm đang hoạt động. Incident, heartbeat,
+        chẩn đoán AI, remediation và Telegram được tách theo cluster scope. Backup RBD/metadata
+        chỉ áp dụng cho cụm bổ sung khi bật cấu hình backup riêng; patch, upgrade, RestoreDrill và
+        digest định kỳ hiện vẫn chỉ áp dụng cho cụm mặc định. Cấu hình kết nối cụm mặc định được
+        quản lý tại <a href="/settings">Cài đặt</a>.
+      </div>
+    </details>
+
+    <section class="clusters-section" aria-labelledby="clusters-list-title">
+      <div class="clusters-section-header">
+        <div><div class="clusters-eyebrow">Observed environments</div><h2 id="clusters-list-title">Cụm đang quản lý</h2></div>
+        <span class="clusters-section-meta">{{ clusters|length }} cụm trong hệ thống</span>
+      </div>
+      <div class="cluster-card-list">
+        {% for c in clusters %}
+        {% set cap = capability_by_cluster.get(c.id) %}
+        <article class="cluster-card{% if not c.is_active %} is-inactive{% endif %}">
+          <header class="cluster-card-header">
+            <div class="cluster-card-title">
+              <div class="cluster-title-line">
+                <h3>{{ c.name }}</h3>
+                {% if c.is_default %}<span class="cluster-badge is-default">Mặc định</span>{% endif %}
+                {% if not c.is_active %}<span class="cluster-badge is-inactive">Inactive</span>{% endif %}
+              </div>
+              <p>Cluster ID <code>{{ c.id }}</code></p>
+            </div>
+            <div class="cluster-card-status-row">
+              <span class="cluster-status-badge{% if c.is_active %} is-active{% else %} is-disabled{% endif %}"><span aria-hidden="true">●</span>{{ "Đang hoạt động" if c.is_active else "Đã vô hiệu hoá" }}</span>
+              <details class="cluster-action-menu">
+                <summary aria-label="Thao tác với cụm {{ c.name }}">⋮</summary>
+                <div class="cluster-action-menu-list">
+                  {% if c.is_default %}
+                  <a href="/settings">Cài đặt kết nối</a>
+                  {% else %}
+                  <button type="button" data-cluster-detail-target="connection-{{ c.id }}">Sửa kết nối</button>
+                  <button type="button" data-cluster-detail-target="backup-{{ c.id }}">Cấu hình backup</button>
+                  <form method="post" action="/clusters/{{ c.id }}/toggle-active">
+                    <button type="submit">{{ "Vô hiệu hoá" if c.is_active else "Kích hoạt lại" }}</button>
+                  </form>
+                  <form method="post" action="/clusters/{{ c.id }}/delete" onsubmit="return confirm('Xoá vĩnh viễn cụm {{ c.name }}? Toàn bộ Incident/Action/Audit Trail/backup job/heartbeat RIÊNG của cụm này sẽ bị xoá khỏi database, không thể hoàn tác. Các cụm khác không bị ảnh hưởng.');">
+                    <button type="submit" class="is-danger">Xóa cụm</button>
+                  </form>
+                  {% endif %}
+                </div>
+              </details>
+            </div>
+          </header>
+
+          <div class="cluster-card-grid">
+            <div class="cluster-fact cluster-fact-wide"><span>MON Nodes</span><div class="cluster-node-chips">
+              {% for node in (c.ceph_mon_nodes or '').split(',') if node.strip() %}<code>{{ node.strip() }}</code>{% else %}<span class="cluster-muted">Chưa cấu hình</span>{% endfor %}
+            </div></div>
+            <div class="cluster-fact"><span>Exec Mode</span><strong class="cluster-mode-badge">{{ c.ceph_exec_mode }}</strong></div>
+            <div class="cluster-fact"><span>Ceph Version</span>
+              {% if not cap %}<strong class="cluster-muted">Chưa quét</strong>
+              {% elif cap.status == "UNAVAILABLE" %}<strong class="cluster-version-status is-unavailable" title="{{ cap.error_message or 'Không truy cập được' }}">Không truy cập được</strong>
+              {% elif cap.is_mixed_version %}<strong class="cluster-version-status is-mixed" title="Cluster đang chạy nhiều phiên bản Ceph: {{ cap.distinct_versions|join(', ') }}. Nên upgrade đồng bộ.">⚠ Mixed <small>{{ cap.distinct_versions|join(', ') }}</small></strong>
+              {% elif cap.status == "UNSUPPORTED_VERSION" %}<strong class="cluster-version-status is-unsupported" title="Phiên bản chưa được hệ thống nhận diện">{{ cap.current_version }} · chưa xác nhận</strong>
+              {% else %}<strong>{{ cap.current_version }}</strong>{% endif %}
+            </div>
+            <div class="cluster-fact"><span>Backup</span>
+              {% if c.is_default %}<strong class="cluster-backup-badge is-managed">Quản lý tại Settings</strong>
+              {% elif c.backup_enabled %}<strong class="cluster-backup-badge is-on">Bật</strong>
+              {% else %}<strong class="cluster-backup-badge is-off">Tắt</strong>{% endif %}
+            </div>
+            <div class="cluster-fact"><span>Ngày thêm</span><strong title="{{ c.created_at|vntime }}">{{ c.created_at|vntime }}</strong></div>
+          </div>
+
+          {% if not c.is_default %}
+          <div class="cluster-card-details">
+            <details id="connection-{{ c.id }}">
+              <summary>Sửa &amp; test lại kết nối</summary>
+              <form method="post" action="/clusters/{{ c.id }}/connection" class="cluster-form-grid cluster-inline-edit-form">
+                <label>Tên cụm<input name="name" value="{{ c.name }}" required></label>
+                {{ node_tag_field("MON Nodes", "ceph_mon_nodes", c.ceph_mon_nodes, "Thêm IP rồi Enter", "MON bắt buộc; mỗi địa chỉ sẽ hiển thị thành một chip.", true) }}
+                {{ node_tag_field("MON Hostnames", "ceph_mon_hostnames", c.ceph_mon_hostnames, "mon-a rồi Enter", "Tuỳ chọn; cùng thứ tự với MON Nodes để đọc log chính xác.") }}
+                {{ node_tag_field("MGR Nodes", "ceph_mgr_nodes", c.ceph_mgr_nodes, "Thêm IP rồi Enter", "Tuỳ chọn; dùng khi cụm có MGR riêng.") }}
+                {{ node_tag_field("OSD Nodes", "ceph_osd_nodes", c.ceph_osd_nodes, "Thêm IP rồi Enter", "Tuỳ chọn; hỗ trợ chẩn đoán OSD.") }}
+                {{ node_tag_field("RGW Nodes", "ceph_rgw_nodes", c.ceph_rgw_nodes, "Thêm IP rồi Enter", "Tuỳ chọn; dùng cho RGW/object storage.") }}
+                <label>Kiểu deploy<select name="ceph_exec_mode" data-deploy-mode>{% for mode in ("cephadm", "docker", "podman", "none") %}<option value="{{ mode }}" {{ "selected" if c.ceph_exec_mode == mode else "" }}>{{ mode }}</option>{% endfor %}</select></label>
+                <label class="cluster-container-field">MON container<input name="ceph_container_name" value="{{ c.ceph_container_name or '' }}"></label>
+                <label class="cluster-container-field">OSD container<input name="ceph_osd_container_name" value="{{ c.ceph_osd_container_name or '' }}"></label>
+                <label class="cluster-container-field">RGW container<input name="ceph_rgw_container_name" value="{{ c.ceph_rgw_container_name or '' }}"></label>
+                <label>SSH user<input name="ssh_user" value="{{ c.ssh_user }}" required></label>
+                <label>SSH key path<input name="ssh_key_path" value="{{ c.ssh_key_path }}" required></label>
+                <label>Ceph keyring path<input name="ceph_keyring_path" value="{{ c.ceph_keyring_path }}" required></label>
+                <div class="cluster-form-actions"><span class="cluster-form-note">Kiểm tra kết nối trước khi lưu.</span><button type="submit" class="btn btn-primary btn-sm">Lưu kết nối</button></div>
+              </form>
+            </details>
+
+            {% set bv = backup_config_form_values if backup_config_cluster_id == c.id else c %}
+            <details id="backup-{{ c.id }}"{% if backup_config_cluster_id == c.id %} open{% endif %}>
+              <summary>Cấu hình backup <span class="cluster-detail-state">{{ "Bật" if c.backup_enabled else "Tắt" }}</span></summary>
+              <form method="post" action="/clusters/{{ c.id }}/backup-config" class="cluster-form-grid cluster-inline-edit-form">
+                <label class="checkbox-label cluster-form-full"><input type="checkbox" name="backup_enabled" value="true" {{ "checked" if bv.backup_enabled else "" }}> Bật backup cho cụm này</label>
+                <label>Images cần backup<input type="text" name="backup_tracked_images" placeholder="rbd/vm1,rbd/vm2" value="{{ bv.backup_tracked_images or '' }}"><small class="cluster-field-help">Định dạng pool/image, phân tách bằng dấu phẩy.</small></label>
+                <label>Full refresh (ngày)<input type="text" inputmode="numeric" name="backup_full_refresh_days" value="{{ bv.backup_full_refresh_days if bv.backup_full_refresh_days is not none else '' }}"></label>
+                <label>RPO tối đa (giờ)<input type="number" min="1" max="8760" name="backup_rpo_hours" value="{{ bv.backup_rpo_hours or 24 }}"></label>
+                <label>Nơi lưu backup<select name="backup_transport"><option value="" {{ "selected" if not bv.backup_transport else "" }}>-- chưa chọn --</option><option value="ssh" {{ "selected" if bv.backup_transport == "ssh" else "" }}>SSH</option><option value="s3" {{ "selected" if bv.backup_transport == "s3" else "" }}>S3</option></select></label>
+                <label>SSH host backup<input type="text" name="backup_ssh_host" value="{{ bv.backup_ssh_host or '' }}"></label>
+                <label>SSH user backup<input type="text" name="backup_ssh_user" value="{{ bv.backup_ssh_user or '' }}"></label>
+                <label>SSH key backup<input type="password" name="backup_ssh_key_path" autocomplete="off"></label>
+                <label>SSH landing dir<input type="text" name="backup_ssh_landing_dir" value="{{ bv.backup_ssh_landing_dir or '' }}"></label>
+                <label>S3 endpoint<input type="text" name="backup_s3_endpoint" value="{{ bv.backup_s3_endpoint or '' }}"></label>
+                <label>S3 access key<input type="password" name="backup_s3_access_key" autocomplete="off"></label>
+                <label>S3 secret key<input type="password" name="backup_s3_secret_key" autocomplete="off"></label>
+                <label>S3 bucket<input type="text" name="backup_s3_bucket" value="{{ bv.backup_s3_bucket or '' }}"></label>
+                <label class="checkbox-label"><input type="checkbox" name="backup_immutable_enabled" value="true" {{ "checked" if bv.backup_immutable_enabled else "" }}> Immutable (WORM lock)</label>
+                <label>Immutable lock days<input type="text" inputmode="numeric" name="backup_immutable_lock_days" value="{{ bv.backup_immutable_lock_days if bv.backup_immutable_lock_days is not none else 7 }}"></label>
+                <div class="cluster-form-actions"><span class="cluster-form-note">Backup được lưu riêng theo cluster.</span><button type="submit" class="btn btn-primary btn-sm">Lưu cấu hình backup</button></div>
+              </form>
+            </details>
+          </div>
+          {% endif %}
+        </article>
+        {% else %}
+        <div class="cluster-empty-state">Chưa có cluster nào được cấu hình.</div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="cluster-create-section" aria-labelledby="cluster-create-title">
+      <div class="clusters-section-header"><div><div class="clusters-eyebrow">Provision a new environment</div><h2 id="cluster-create-title">Thêm cụm mới</h2></div><span class="clusters-section-meta">Kiểm tra kết nối trước khi lưu</span></div>
+      <form class="cluster-create-form" id="cluster-create-form" method="post" action="/clusters/create">
+        <details class="cluster-form-card" open>
+          <summary><span class="cluster-form-step">01</span><span><strong>Thông tin cơ bản</strong><small>Tên hiển thị và kiểu triển khai của cụm.</small></span></summary>
+          <div class="cluster-form-grid">
+            <label>Tên cụm<input type="text" name="name" placeholder="vd: cluster-hcm-02" value="{{ cluster_form_values.name or '' }}" required><small class="cluster-field-help">Tên dùng trong breadcrumb, cảnh báo và audit.</small></label>
+            <label>Kiểu deploy<select name="ceph_exec_mode" data-deploy-mode>{% for mode in ("cephadm", "docker", "podman", "none") %}<option value="{{ mode }}" {{ "selected" if cluster_form_values.ceph_exec_mode == mode else "" }}>{{ mode }}</option>{% endfor %}</select><small class="cluster-field-help">Chọn cách Ceph đang chạy trên node.</small></label>
+          </div>
+        </details>
+
+        <details class="cluster-form-card" open>
+          <summary><span class="cluster-form-step">02</span><span><strong>Nodes</strong><small>Địa chỉ được nhập thành chip, nhấn Enter để thêm.</small></span></summary>
+          <div class="cluster-form-grid">
+            {{ node_tag_field("MON Nodes", "ceph_mon_nodes", cluster_form_values.ceph_mon_nodes, "10.20.1.10 rồi Enter", "Bắt buộc; danh sách IP của MON.", true) }}
+            {{ node_tag_field("MON Hostnames", "ceph_mon_hostnames", cluster_form_values.ceph_mon_hostnames, "mon-a rồi Enter", "Tuỳ chọn; cùng thứ tự với MON Nodes để AI đọc log đúng node.") }}
+            {{ node_tag_field("MGR Nodes", "ceph_mgr_nodes", cluster_form_values.ceph_mgr_nodes, "10.20.1.10 rồi Enter", "Tuỳ chọn; dùng khi MGR không nằm cùng MON.") }}
+            {{ node_tag_field("OSD Nodes", "ceph_osd_nodes", cluster_form_values.ceph_osd_nodes, "10.20.1.10 rồi Enter", "Tuỳ chọn; cần cho chẩn đoán và remediation OSD.") }}
+            {{ node_tag_field("RGW Nodes", "ceph_rgw_nodes", cluster_form_values.ceph_rgw_nodes, "10.20.1.10 rồi Enter", "Tuỳ chọn; dùng cho RGW/object storage.") }}
+          </div>
+        </details>
+
+        <details class="cluster-form-card" open>
+          <summary><span class="cluster-form-step">03</span><span><strong>Container &amp; SSH</strong><small>Thông tin truy cập để kiểm tra Ceph.</small></span></summary>
+          <div class="cluster-form-grid">
+            <label class="cluster-container-field">MON container<input type="text" name="ceph_container_name" value="{{ cluster_form_values.ceph_container_name or '' }}"><small class="cluster-field-help">Không cần khi dùng cephadm hoặc none.</small></label>
+            <label class="cluster-container-field">OSD container<input type="text" name="ceph_osd_container_name" value="{{ cluster_form_values.ceph_osd_container_name or '' }}"><small class="cluster-field-help">Tuỳ chọn; không cần khi dùng cephadm.</small></label>
+            <label class="cluster-container-field">RGW container<input type="text" name="ceph_rgw_container_name" value="{{ cluster_form_values.ceph_rgw_container_name or '' }}"><small class="cluster-field-help">Tuỳ chọn; để trống nếu không có RGW.</small></label>
+            <label>SSH user<input type="text" name="ssh_user" placeholder="root" value="{{ cluster_form_values.ssh_user or '' }}" required></label>
+            <label>SSH key path<input type="text" name="ssh_key_path" placeholder="/root/.ssh/ceph_aiops_watcher" value="{{ cluster_form_values.ssh_key_path or '' }}" required><small class="cluster-field-help">Đường dẫn trên server chạy Watcher.</small></label>
+            <label>Ceph keyring path<input type="text" name="ceph_keyring_path" placeholder="/etc/ceph/ceph.client.admin.keyring" value="{{ cluster_form_values.ceph_keyring_path or '' }}" required><small class="cluster-field-help">Đường dẫn trên node/container Ceph.</small></label>
+          </div>
+        </details>
+
+        <details class="cluster-form-card">
+          <summary><span class="cluster-form-step">04</span><span><strong>Thông báo &amp; Backup</strong><small>Thiết lập kênh riêng và chính sách bảo vệ dữ liệu.</small></span></summary>
+          <div class="cluster-form-grid">
+            <label>Telegram Bot Token<input type="password" name="telegram_bot_token" autocomplete="off" value="{{ cluster_form_values.telegram_bot_token or '' }}"><small class="cluster-field-help">Tuỳ chọn; bỏ trống để dùng kênh Telegram mặc định.</small></label>
+            <label>Telegram Chat ID<input type="text" name="telegram_chat_id" placeholder="vd: -1001234567890" value="{{ cluster_form_values.telegram_chat_id or '' }}"><small class="cluster-field-help">Bắt buộc nếu đã nhập Bot Token.</small></label>
+            <label class="checkbox-label cluster-form-full"><input type="checkbox" name="telegram_enabled" value="true" {{ "" if cluster_form_values and cluster_form_values.telegram_enabled is defined and not cluster_form_values.telegram_enabled else "checked" }}> Bật kênh Telegram riêng cho cụm này</label>
+          </div>
+          <div class="cluster-backup-form-grid">
+            <label class="checkbox-label cluster-form-full"><input type="checkbox" name="backup_enabled" value="true" {{ "checked" if cluster_form_values.backup_enabled else "" }}> Bật backup cho cụm này</label>
+            <label>Images cần backup<input type="text" name="backup_tracked_images" placeholder="rbd/vm1,rbd/vm2" value="{{ cluster_form_values.backup_tracked_images or '' }}"></label>
+            <label>Full refresh (ngày)<input type="text" inputmode="numeric" name="backup_full_refresh_days" value="{{ cluster_form_values.backup_full_refresh_days or '' }}"></label>
+            <label>RPO tối đa (giờ)<input type="number" min="1" max="8760" name="backup_rpo_hours" value="{{ cluster_form_values.backup_rpo_hours or 24 }}"></label>
+            <label>Nơi lưu backup<select name="backup_transport"><option value="" {{ "selected" if not cluster_form_values.backup_transport else "" }}>-- chưa chọn --</option><option value="ssh" {{ "selected" if cluster_form_values.backup_transport == "ssh" else "" }}>SSH</option><option value="s3" {{ "selected" if cluster_form_values.backup_transport == "s3" else "" }}>S3</option></select></label>
+            <label>SSH host backup<input type="text" name="backup_ssh_host" value="{{ cluster_form_values.backup_ssh_host or '' }}"></label>
+            <label>SSH user backup<input type="text" name="backup_ssh_user" value="{{ cluster_form_values.backup_ssh_user or '' }}"></label>
+            <label>SSH key backup<input type="password" name="backup_ssh_key_path" autocomplete="off" value="{{ cluster_form_values.backup_ssh_key_path or '' }}"></label>
+            <label>SSH landing dir<input type="text" name="backup_ssh_landing_dir" value="{{ cluster_form_values.backup_ssh_landing_dir or '' }}"></label>
+            <label>S3 endpoint<input type="text" name="backup_s3_endpoint" value="{{ cluster_form_values.backup_s3_endpoint or '' }}"></label>
+            <label>S3 access key<input type="password" name="backup_s3_access_key" autocomplete="off" value="{{ cluster_form_values.backup_s3_access_key or '' }}"></label>
+            <label>S3 secret key<input type="password" name="backup_s3_secret_key" autocomplete="off" value="{{ cluster_form_values.backup_s3_secret_key or '' }}"></label>
+            <label>S3 bucket<input type="text" name="backup_s3_bucket" value="{{ cluster_form_values.backup_s3_bucket or '' }}"></label>
+            <label class="checkbox-label"><input type="checkbox" name="backup_immutable_enabled" value="true" {{ "checked" if cluster_form_values.backup_immutable_enabled else "" }}> Immutable (WORM lock)</label>
+            <label>Immutable lock days<input type="text" inputmode="numeric" name="backup_immutable_lock_days" value="{{ cluster_form_values.backup_immutable_lock_days or 7 }}"></label>
+          </div>
+        </details>
+        <footer class="cluster-create-actions"><span><strong>Thêm cụm</strong><small>Hệ thống sẽ kiểm tra kết nối trước khi lưu cấu hình.</small></span><button type="submit" class="btn btn-primary cluster-submit-button"><span aria-hidden="true">＋</span> Thêm cụm</button></footer>
+      </form>
     </section>
   </main>
 
+  <script src="/static/clusters.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>
 </body>
 </html>

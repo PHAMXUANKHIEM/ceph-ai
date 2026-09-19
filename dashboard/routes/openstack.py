@@ -117,6 +117,13 @@ def _create_auth_command(entity: str, pool: str, access: str) -> str:
     return " ".join(shlex.quote(piece) for piece in pieces)
 
 
+def _delete_auth_command(entity: str) -> str:
+    """Build a narrowly-scoped command for removing a Ceph client identity."""
+    if not _ENTITY_RE.fullmatch(entity) or entity == "client.admin":
+        raise ValueError("Không thể xóa auth user này")
+    return "ceph auth rm " + shlex.quote(entity)
+
+
 def _openstack_nodes(cluster) -> list[str]:
     raw_nodes = f"{cluster.openstack_controller_nodes},{cluster.openstack_compute_nodes}"
     return list(dict.fromkeys(node.strip() for node in raw_nodes.split(",") if node.strip()))
@@ -193,6 +200,7 @@ async def _auth_page_context(request: Request, user: str, active_view: str) -> d
         "error": error,
         "success": request.query_params.get("saved") == "1",
         "created": request.query_params.get("created") == "1",
+        "deleted": request.query_params.get("deleted") == "1",
         "active_view": active_view,
     }
 
@@ -209,6 +217,7 @@ def _config_dump_page_context(request: Request, user: str) -> dict:
         "error": None,
         "success": request.query_params.get("updated") == "1",
         "created": False,
+        "deleted": False,
         "active_view": "config-dump",
     }
 
@@ -469,4 +478,40 @@ async def create_auth_user(
         ) from exc
     return RedirectResponse(
         f"/openstack/auth-user/create?cluster={cluster.id}&created=1", status_code=303
+    )
+
+
+@router.post("/openstack/auth-user/delete")
+async def delete_auth_user(
+    request: Request,
+    user: str = Depends(require_login),
+    entity: str = Form(""),
+):
+    """Remove one non-admin Ceph client identity after an explicit UI action."""
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xóa Ceph auth user")
+    _clusters, cluster = cluster_selection(request)
+    connection = cluster_connection(cluster)
+    entity = entity.strip()
+    try:
+        command = _delete_auth_command(entity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        _host, auth_payload = await asyncio.to_thread(
+            run_ceph_json_command_with, *connection, "ceph auth ls"
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không đọc được cấu hình Ceph: {exc}") from exc
+    if entity not in {str(row.get("entity")) for row in _auth_rows(auth_payload)}:
+        raise HTTPException(status_code=404, detail="Ceph auth user không tồn tại")
+    try:
+        command = build_exec_command(connection[4], connection[1], command)
+        await asyncio.to_thread(
+            execute_command, connection[0][0], command, user=connection[2], key_path=connection[3]
+        )
+    except (ValueError, ExecutorError, IndexError) as exc:
+        raise HTTPException(status_code=502, detail=f"Không thể xóa auth user: {exc}") from exc
+    return RedirectResponse(
+        f"/openstack/auth-user/create?cluster={cluster.id}&deleted=1", status_code=303
     )

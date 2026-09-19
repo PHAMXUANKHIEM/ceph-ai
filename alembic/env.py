@@ -1,6 +1,6 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
+from sqlalchemy import engine_from_config, text
 from sqlalchemy import pool
 
 from alembic import context
@@ -39,6 +39,7 @@ if config.config_file_name is not None:
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
+_MIGRATION_LOCK_NAME = "ceph-ai:alembic:migration"
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -84,12 +85,44 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        lock_acquired = False
+        if connection.dialect.name == "postgresql":
+            lock_acquired = bool(
+                connection.execute(
+                    text(
+                        "SELECT pg_try_advisory_lock(" \
+                        "hashtextextended(:lock_name, 0))"
+                    ),
+                    {"lock_name": _MIGRATION_LOCK_NAME},
+                ).scalar()
+            )
+            if not lock_acquired:
+                raise RuntimeError(
+                    "Another Alembic migration is already running; "
+                    " refusing concurrent migration."
+                )
+        try:
+            context.configure(
+                connection=connection, target_metadata=target_metadata
+            )
 
-        with context.begin_transaction():
-            context.run_migrations()
+            with context.begin_transaction():
+                context.run_migrations()
+            # ``connectable.connect()`` does not commit an implicit
+            # transaction when its context exits.  Commit explicitly before
+            # releasing the session-level advisory lock; otherwise a
+            # successful-looking upgrade is rolled back and the metadata
+            # artifact falsely reports the requested head.
+            connection.commit()
+        finally:
+            if lock_acquired:
+                connection.execute(
+                    text(
+                        "SELECT pg_advisory_unlock(" \
+                        "hashtextextended(:lock_name, 0))"
+                    ),
+                    {"lock_name": _MIGRATION_LOCK_NAME},
+                )
 
 
 if context.is_offline_mode():
