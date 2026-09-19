@@ -5,7 +5,8 @@ from shared import db
 from shared.models import Cluster, CrushOsdDistribution, HostMetricSample, VolumeMetric, VolumeOsdMapping
 from watcher import volume_topology
 from watcher.volume_topology import normalize_osd_map_payload
-from watcher.performance_rca import _collect_recovery_evidence, build_report
+from watcher.ceph_client import CephQueryError
+from watcher.performance_rca import _collect_recovery_evidence, build_report, collect_live_osd_signals
 
 
 def _volume(cluster_id, pool, image, values, start):
@@ -149,6 +150,89 @@ def test_recovery_collector_parses_active_pgmap(monkeypatch):
     assert result["status"] == "active"
     assert result["state_counts"] == {"active+undersized+degraded": 2}
     assert result["recovering_bytes_per_sec"] == 2048.0
+
+
+def test_public_live_collector_combines_osd_tree_perf_and_recovery(monkeypatch):
+    monkeypatch.setattr(
+        "watcher.performance_rca.resolve_ssh_creds",
+        lambda _cluster: ("ceph", "/tmp/key", "docker", "ceph-mon"),
+    )
+    commands = []
+
+    def fake_run(*_args, **kwargs):
+        command = kwargs.get("inner_command") or _args[-1]
+        commands.append(command)
+        if command == "ceph osd perf":
+            return "mon", {
+                "osdstats": {"osd_perf_infos": [
+                    {"id": 1, "perf_stats": {"commit_latency_ms": 1}},
+                    {"id": 2, "perf_stats": {"commit_latency_ms": 1}},
+                    {"id": 3, "perf_stats": {"commit_latency_ms": 1}},
+                    {"id": 4, "perf_stats": {"commit_latency_ms": 10}},
+                ]},
+            }
+        if command == "ceph osd tree":
+            return "mon", {"nodes": [
+                {"id": -1, "type": "host", "name": "osd-a", "children": [1, 2]},
+                {"id": -2, "type": "host", "name": "osd-b", "children": [3, 4]},
+                {"id": 1, "type": "osd", "status": "up"},
+                {"id": 2, "type": "osd", "status": "up"},
+                {"id": 3, "type": "osd", "status": "up"},
+                {"id": 4, "type": "osd", "status": "up"},
+            ]}
+        return "mon", {"health": {"status": "HEALTH_WARN"}, "pgmap": {
+            "recovering_bytes_per_sec": 2048,
+            "pgs_by_state": [{"state_name": "active+undersized+degraded", "count": 2}],
+        }}
+
+    monkeypatch.setattr(
+        "watcher.performance_rca.ceph_client.run_ceph_json_command_with",
+        fake_run,
+    )
+    cluster = SimpleNamespace(
+        ceph_mon_nodes="mon-1", ceph_container_name="ceph-mon",
+        ssh_user="ceph", ssh_key_path="/tmp/key", ceph_exec_mode="docker",
+    )
+
+    result = collect_live_osd_signals(cluster)
+
+    assert result["status"] == "ready"
+    assert result["outliers"][0]["osd_id"] == 4
+    assert result["recovery"]["status"] == "active"
+    assert commands == ["ceph osd perf", "ceph osd tree", "ceph -s"]
+
+
+def test_public_live_collector_keeps_osd_evidence_when_status_query_fails(monkeypatch):
+    monkeypatch.setattr(
+        "watcher.performance_rca.resolve_ssh_creds",
+        lambda _cluster: ("ceph", "/tmp/key", "docker", "ceph-mon"),
+    )
+
+    def fake_run(*_args, **kwargs):
+        command = kwargs.get("inner_command") or _args[-1]
+        if command == "ceph -s":
+            raise CephQueryError("status unavailable")
+        if command == "ceph osd perf":
+            return "mon", {"osdstats": {"osd_perf_infos": [
+                {"id": index, "perf_stats": {"commit_latency_ms": 1}}
+                for index in range(1, 5)
+            ]}}
+        return "mon", {"nodes": []}
+
+    monkeypatch.setattr(
+        "watcher.performance_rca.ceph_client.run_ceph_json_command_with",
+        fake_run,
+    )
+    cluster = SimpleNamespace(
+        ceph_mon_nodes="mon-1", ceph_container_name="ceph-mon",
+        ssh_user="ceph", ssh_key_path="/tmp/key", ceph_exec_mode="docker",
+    )
+
+    result = collect_live_osd_signals(cluster)
+
+    assert result["status"] == "ready"
+    assert result["recovery"]["status"] == "not_available"
+    assert "ceph -s" in result["recovery"]["reason"]
 
 
 def test_report_does_not_join_missing_node_or_network_evidence(db_session):
