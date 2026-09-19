@@ -109,8 +109,11 @@ and pushed before deployment is considered.
   deployment. `/var/backups/ceph-ai` is `0700 root:root`, while the documented
   `/var/lib/ceph-ai/backups` path is absent; runtime ownership also remains
   split between systemd and Podman.
-- [ ] Define staging/canary/production cluster IDs and ensure test data cannot
-  reach production.
+- [x] Record the canary scope and keep test activity bounded to it. Evidence:
+  `CS-LAB` is `ac23b8ff-e235-414c-bed8-06894f3dedd3` in the release manifests;
+  no production mutation or autopilot promotion was performed.
+- [ ] Assign and document staging/production cluster IDs and enforce the final
+  test-data isolation and operator scope before deployment.
 - [x] Add a release manifest containing commit SHA, migration revision, image
   versions, feature flags, and rollback SHA. Evidence:
   `docs/ai/end-to-end-release-manifest.md`.
