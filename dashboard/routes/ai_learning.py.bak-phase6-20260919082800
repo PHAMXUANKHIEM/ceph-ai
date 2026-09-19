@@ -12,17 +12,9 @@ from sqlalchemy import func
 
 from config.settings import settings
 from dashboard.cluster_scope import cluster_selection
-from dashboard.routes.auth import is_admin_user, require_login
+from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from shared import (
-    canary,
-    db,
-    forecast_feedback,
-    learning_runtime,
-    model_registry,
-    online_learning_controls,
-    remediation_feedback,
-)
+from shared import canary, db, forecast_feedback, learning_runtime, model_registry, remediation_feedback
 from shared.models import (
     Action,
     Cluster,
@@ -680,18 +672,6 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
         latest_cycle = session.query(OnlineLearnerCycleAudit).filter(
             OnlineLearnerCycleAudit.cluster_key == learner_cluster_key,
         ).order_by(OnlineLearnerCycleAudit.created_at.desc()).first()
-        canary_host = str(settings.online_learning_canary_host or "").strip()
-        canary_control = (
-            online_learning_controls.get_control(
-                session,
-                cluster_id=cluster_id,
-                host=canary_host,
-                metric=canary_metric,
-            ) if canary_host else None
-        )
-        operator_audits = online_learning_controls.list_audit(
-            session, cluster_id=cluster_id, limit=50,
-        )
         drift_rows = session.query(
             NodeResourceForecastRun.drift_status, func.count(NodeResourceForecastRun.id),
         ).filter(
@@ -705,29 +685,9 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
             "canary_enabled": bool(settings.online_learning_canary_enabled),
             "canary_scope": {
                 "cluster_id": settings.online_learning_canary_cluster_id or None,
-                "host": canary_host or None,
+                "host": settings.online_learning_canary_host or None,
                 "metrics": canary_metric,
             },
-            "control": {
-                "status": canary_control.status,
-                "reason": canary_control.reason,
-                "updated_by": canary_control.updated_by,
-                "updated_at": canary_control.updated_at,
-            } if canary_control else {
-                "status": online_learning_controls.RUNNING,
-                "reason": "no explicit operator pause",
-                "updated_by": None,
-                "updated_at": None,
-            },
-            "operator_audits": [{
-                "action": row.action,
-                "actor": row.actor,
-                "host": row.host,
-                "metric": row.metric,
-                "reason": row.reason,
-                "target_id": row.target_id,
-                "created_at": row.created_at,
-            } for row in operator_audits],
             "runtime": runtime,
             "model_version": latest_learner.model_version if latest_learner else None,
             "sample_count": learner_sample_count,
@@ -813,20 +773,6 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
             },
             "model_promotion": model_promotion_status(cluster_id, cluster_name),
         }
-
-
-def _require_admin(user: str) -> None:
-    if not is_admin_user(user):
-        raise HTTPException(status_code=403, detail="Chỉ admin mới được điều khiển online learner.")
-
-
-def _control_scope(cluster_id: str, host: str, metric: str) -> tuple[str, str, str]:
-    try:
-        return online_learning_controls.normalize_scope(
-            cluster_id=cluster_id, host=host, metric=metric,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/api/ai-learning")
@@ -992,110 +938,6 @@ async def rollback_model_promotion(
         try:
             row = model_registry.rollback_promotion(
                 session, candidate_id=model_id, actor=user,
-            )
-            session.commit()
-        except ValueError as exc:
-            session.rollback()
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"id": row.id, "status": row.status, "version": row.version}
-
-
-@router.post("/api/ai-learning/learner/pause")
-async def pause_online_learner(
-    cluster_id: str = Form(...), host: str = Form(...), metric: str = Form(...),
-    reason: str = Form(...), user: str = Depends(require_login),
-):
-    """Pause exactly one learner stream; no global flag or model is changed."""
-    _require_admin(user)
-    _control_scope(cluster_id, host, metric)
-    with db.SessionLocal() as session:
-        try:
-            row = online_learning_controls.set_status(
-                session, cluster_id=cluster_id, host=host, metric=metric,
-                status=online_learning_controls.PAUSED, actor=user, reason=reason,
-            )
-            session.commit()
-        except ValueError as exc:
-            session.rollback()
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"status": row.status, "host": row.host, "metric": row.metric, "reason": row.reason}
-
-
-@router.post("/api/ai-learning/learner/resume")
-async def resume_online_learner(
-    cluster_id: str = Form(...), host: str = Form(...), metric: str = Form(...),
-    reason: str = Form(...), user: str = Depends(require_login),
-):
-    """Resume exactly one paused stream after explicit operator approval."""
-    _require_admin(user)
-    _control_scope(cluster_id, host, metric)
-    with db.SessionLocal() as session:
-        try:
-            row = online_learning_controls.set_status(
-                session, cluster_id=cluster_id, host=host, metric=metric,
-                status=online_learning_controls.RUNNING, actor=user, reason=reason,
-            )
-            session.commit()
-        except ValueError as exc:
-            session.rollback()
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"status": row.status, "host": row.host, "metric": row.metric, "reason": row.reason}
-
-
-@router.post("/api/ai-learning/learner/reset")
-async def reset_online_learner(
-    cluster_id: str = Form(...), host: str = Form(...), metric: str = Form(...),
-    reason: str = Form(...), confirmation: str = Form(...),
-    user: str = Depends(require_login),
-):
-    """Reset one durable state only after explicit RESET confirmation."""
-    _require_admin(user)
-    if confirmation.strip().upper() != "RESET":
-        raise HTTPException(status_code=422, detail="Nhập chính xác RESET để xác nhận.")
-    _control_scope(cluster_id, host, metric)
-    with db.SessionLocal() as session:
-        try:
-            removed = online_learning_controls.reset_state(
-                session, cluster_id=cluster_id, host=host, metric=metric,
-                actor=user, reason=reason,
-            )
-            session.commit()
-        except ValueError as exc:
-            session.rollback()
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"status": "RESET", "removed_states": removed, "host": host, "metric": metric}
-
-
-@router.get("/api/ai-learning/operator-audit")
-async def online_learner_operator_audit(
-    request: Request, _user: str = Depends(require_login),
-):
-    cluster_id = str(request.query_params.get("cluster_id") or "").strip()
-    if not cluster_id:
-        raise HTTPException(status_code=422, detail="cluster_id là bắt buộc.")
-    try:
-        limit = int(request.query_params.get("limit") or 100)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="limit không hợp lệ.") from exc
-    with db.SessionLocal() as session:
-        rows = online_learning_controls.list_audit(session, cluster_id=cluster_id, limit=limit)
-        return [{
-            "action": row.action, "actor": row.actor, "host": row.host,
-            "metric": row.metric, "reason": row.reason,
-            "target_id": row.target_id, "created_at": row.created_at,
-        } for row in rows]
-
-
-@router.post("/api/ai-learning/models/{model_id}/block")
-async def block_model_candidate(
-    model_id: str, reason: str = Form(...), user: str = Depends(require_login),
-):
-    """Block one candidate and append the guarded-promotion audit event."""
-    _require_admin(user)
-    with db.SessionLocal() as session:
-        try:
-            row = model_registry.block_candidate(
-                session, candidate_id=model_id, actor=user, reason=reason,
             )
             session.commit()
         except ValueError as exc:

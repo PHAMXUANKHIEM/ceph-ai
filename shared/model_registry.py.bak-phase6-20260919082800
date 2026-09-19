@@ -350,34 +350,6 @@ def request_promotion(session, *, candidate_id: str, actor: str,
     return decision
 
 
-def block_candidate(session, *, candidate_id: str, actor: str, reason: str,
-                    now: datetime | None = None) -> ForecastModelRegistry:
-    """Block a shadow candidate explicitly without touching the active model."""
-
-    candidate = session.get(ForecastModelRegistry, candidate_id)
-    if candidate is None:
-        raise ValueError("candidate model does not exist")
-    if candidate.status not in {"CANDIDATE", "SHADOW"}:
-        raise ValueError("only a CANDIDATE or SHADOW model can be blocked")
-    if not (reason or "").strip():
-        raise ValueError("blocking reason is required")
-    active = session.query(ForecastModelRegistry).filter_by(
-        scope_type=candidate.scope_type, scope_key=candidate.scope_key, status="ACTIVE",
-    ).one_or_none()
-    set_status(session, candidate, status="BLOCKED", reason=reason, now=now)
-    _audit(
-        session,
-        candidate_model_id=candidate.id,
-        previous_active_model_id=active.id if active else None,
-        event_type=PROMOTION_BLOCKED,
-        actor=actor,
-        reason=reason.strip(),
-        evidence={"operator_block": True},
-        now=now,
-    )
-    return candidate
-
-
 def approve_promotion(session, *, candidate_id: str, actor: str,
                       policy: PromotionPolicy | None = None,
                       now: datetime | None = None) -> ForecastModelRegistry:

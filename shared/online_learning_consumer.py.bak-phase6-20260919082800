@@ -14,7 +14,6 @@ from config.settings import settings
 from shared import db
 from shared.clusters import get_default_cluster_id
 from shared.learning_runtime import evaluate
-from shared.online_learning_controls import get_control
 from shared.models import OnlineLearnerAudit, OnlineLearnerCycleAudit
 from shared.online_learning import (
     MODEL_VERSION,
@@ -92,27 +91,6 @@ def _consume_one(
     with db.SessionLocal() as session:
         effective_cluster_id = cluster_id or get_default_cluster_id(session)
         cluster_key = _cluster_key(effective_cluster_id)
-        control = get_control(
-            session,
-            cluster_id=effective_cluster_id,
-            host=host,
-            metric=metric,
-        )
-        if control is not None and control.status == "PAUSED":
-            session.commit()
-            return ConsumedSample(
-                sample_id=sample_id,
-                metric=metric,
-                quality=OnlineLearningGateDecision(
-                    "PAUSED",
-                    False,
-                    f"learner stream is paused by {control.updated_by}: {control.reason}",
-                    sample_id,
-                    None,
-                ),
-                runtime_mode="PAUSED",
-                update_applied=False,
-            )
         # Forecast outcomes are evaluated asynchronously. Reconcile them
         # before reading this sample so a previously audited NO_LABEL row can
         # become learnable on a later Watcher cycle.

@@ -275,10 +275,23 @@ Tiếp theo: operator phê duyệt bật `SHADOW_ONLY` cho một metric stream, 
 
 #### Bước 6.3 — Operator controls
 
-- [ ] Pause/resume learner.
-- [ ] Reset state theo host/metric.
-- [ ] Promote, rollback và block candidate.
-- [ ] Xem audit trail.
+- [x] Pause/resume learner theo đúng `cluster + host + metric`, fail-closed khi control không đọc được.
+- [x] Reset state theo host/metric, không xóa stream khác và yêu cầu xác nhận `RESET`.
+- [x] Promote/rollback giữ nguyên guarded approval; bổ sung block candidate có lý do bắt buộc.
+- [x] Xem append-only audit trail cho pause/resume/reset/block.
+- [x] Migrate/deploy/verify production source sau khi SSH tới `10.3.55.213` hoạt động lại.
+- [ ] Verify hành vi pause trên một live `SHADOW_ONLY` stream; hiện production vẫn `DISABLED`.
+
+Code và test local đã hoàn tất: control `3 passed`, dashboard/migration/operator-route tổng hợp đã kiểm tra. Chưa đánh dấu Phase 6.3 hoàn tất vì production migration/deploy chưa được xác minh.
+
+Production rollout checklist:
+
+- [x] Khôi phục SSH tới `10.3.55.213` và xác nhận watcher/worker/dashboard đang healthy.
+- [x] Đối chiếu migration head production (`e3f4a5b6c7d8`) với local chain (`e2f3a4b5c6d7`); tạo production migration variant `f0a1b2c3d4f7` đúng parent.
+- [x] Backup schema trước migration; tạo `online_learner_controls` và `online_learner_operator_audits` trong explicit transaction, sau đó xác nhận version `f0a1b2c3d4f7`.
+- [x] Deploy route/template/model/consumer; kiểm tra unauthenticated 303, non-admin không được phép và operator route/import.
+- [x] Restart dashboard/worker/watcher và xác nhận cả ba healthy.
+- [ ] Khi canary được operator bật, xác nhận stream bị pause không tạo update trong production.
 
 ### Phase 7 — Benchmark và nghiệm thu
 
@@ -327,5 +340,9 @@ Tiếp theo: operator phê duyệt bật `SHADOW_ONLY` cho một metric stream, 
 - [x] Bước 5.1 — shadow metrics, paired target evidence và drift-aware comparison.
 - [x] Bước 5.2 — guarded promotion, resource/latency/drift gates, operator approval, rollback và append-only audit.
 - [x] Bước 5.3 — canary guard, lifecycle evidence, acceptance API/UI và resource-cost telemetry read-only.
+- [x] Bước 6.1 — dashboard online-learning status, quality gate, drift, latency và verified feedback read-only.
+- [x] Bước 6.2 — forecast detail gồm actual/predicted, interval, model/version, confidence/consensus và MAE/SMAPE.
+- [ ] Bước 6.3 — operator controls đã viết/test và deploy production; còn verify hành vi trên live canary.
+- [x] Preflight canary — scope `CS-LAB / 10.20.1.153 / cpu` và heartbeat đã pass dry-run `SHADOW_ONLY`; chưa thay đổi production flags.
 
-Bước tiếp theo sẽ làm: **Bước 5.3 — operator-approved canary rollout 24–72 giờ trên `CS-LAB / 10.20.1.153 / cpu`, giữ `SHADOW_ONLY`, không tự promote**.
+Bước tiếp theo sẽ làm: **operator phê duyệt bật `SHADOW_ONLY` cho `CS-LAB / 10.20.1.153 / cpu`, xác nhận pause gate trên live stream, rồi theo dõi canary 24–72 giờ**.
