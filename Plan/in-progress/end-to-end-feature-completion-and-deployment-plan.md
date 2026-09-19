@@ -137,6 +137,10 @@ Scope: RT-00 through RT-04 in
   slice. The current realtime hardening is in pushed commit `f40d084c` and
   post-check invalidation is in `0be87d8a`.
 - [ ] Record test evidence and query-rate comparison against the baseline.
+  Server-side snapshot-read evidence is recorded in
+  `docs/ai/realtime-snapshot-load-evidence-2026-09-19.md` (1/5/10 simulated
+  tabs, p95 under 2 ms, zero Ceph/SSH queries); the real browser-tab run is
+  still required for closure.
 
 **Exit gate:** health reads do not perform live Ceph queries, refresh is
 single-flight per cluster, old data remains visible with a stale label, and
