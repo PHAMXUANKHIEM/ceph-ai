@@ -37,6 +37,12 @@ def test_stale_unattached_requires_recent_zero_io_evidence():
     assert result[0]["kind"] == "STALE_UNATTACHED"
     assert result[0]["estimated_reclaimable_bytes"] == 1000
     assert result[0]["confidence"] == 0.9
+    assert result[0]["recommendation_mode"] == "ADVISORY"
+    assert result[0]["read_only"] is True
+    assert result[0]["action_id"] is None
+    assert result[0]["expected_saving_bytes"] == 1000
+    assert result[0]["ttl_seconds"] == 900
+    assert result[0]["evidence_expires_at"].endswith("Z")
 
 
 def test_missing_history_is_not_called_stale():
@@ -125,6 +131,8 @@ def test_snapshot_and_clone_insights_report_protection_and_dependency():
         "SNAPSHOT_RETENTION_GAP", "CLONE_PARENT", "CLONE_CHILD",
     }
     assert any(item["recommendation"].startswith("Resolve child") for item in result)
+    assert all(item["recommendation_mode"] == "ADVISORY" and item["read_only"] for item in result)
+    assert all(item["action_id"] is None and item["ttl_seconds"] == 900 for item in result)
 
 
 def test_snapshot_clone_insights_fail_closed_on_partial_evidence():
@@ -146,6 +154,11 @@ def test_protection_gap_reports_missing_backup_and_restore_drill():
     assert {item["kind"] for item in result} == {"NO_SUCCESSFUL_BACKUP", "RESTORE_DRILL_GAP"}
     assert result[0]["recommendation"]
     assert result[0]["evidence_gaps"]
+    assert result[0]["recommendation_mode"] == "ADVISORY"
+    assert result[0]["read_only"] is True
+    assert result[0]["action_id"] is None
+    assert result[0]["expected_saving_bytes"] is None
+    assert result[0]["ttl_seconds"] == 900
 
 
 def test_protection_gap_reports_stale_and_newer_failed_backup():

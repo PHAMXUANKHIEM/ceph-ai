@@ -19,6 +19,8 @@ from sqlalchemy import delete
 from shared import db
 from shared.models import VolumeDependencySnapshot
 
+_ADVISORY_TTL_SECONDS = 15 * 60
+
 
 @dataclass(frozen=True)
 class InventoryInsight:
@@ -55,6 +57,37 @@ def _as_datetime(value: object) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
     except ValueError:
         return None
+
+
+def _with_advisory(
+    payload: dict,
+    *,
+    evidence_at: object,
+    expected_saving_bytes: int | None = None,
+    impact: str = "Không thay đổi Ceph; cần operator review trước mọi mutation.",
+) -> dict:
+    """Attach a stable, non-executable recommendation contract.
+
+    These fields make it explicit that an insight is not an Action.  The
+    evidence TTL prevents a UI consumer from treating a stale read-only scan
+    as a current approval to mutate the cluster.
+    """
+    captured = _as_datetime(evidence_at) or datetime.utcnow()
+    payload.update({
+        "recommendation_mode": "ADVISORY",
+        "read_only": True,
+        "action_id": None,
+        "expected_saving_bytes": (
+            max(0, int(expected_saving_bytes))
+            if expected_saving_bytes is not None else None
+        ),
+        "impact": impact,
+        "ttl_seconds": _ADVISORY_TTL_SECONDS,
+        "evidence_expires_at": (
+            captured + timedelta(seconds=_ADVISORY_TTL_SECONDS)
+        ).isoformat() + "Z",
+    })
+    return payload
 
 
 def _metric_summary(rows: Iterable[Mapping[str, object]], since: datetime) -> tuple[datetime | None, bool]:
@@ -121,7 +154,7 @@ def build_inventory_insights(
             )
             if snapshots:
                 reason += f"; {snapshots} snapshot(s) still protect the image"
-            result.append(asdict(InventoryInsight(
+            result.append(_with_advisory(asdict(InventoryInsight(
                 pool=pool, image=image, kind="STALE_UNATTACHED", confidence=0.9,
                 reason=reason,
                 recommendation="Review owner and backup status before any retain/trash decision",
@@ -130,9 +163,10 @@ def build_inventory_insights(
                 attachment_state=attachment, watcher_count=watcher_count,
                 last_io_at=None, evidence_at=now.isoformat() + "Z",
                 evidence_gaps=tuple(gaps),
-            )))
+            )), evidence_at=now, expected_saving_bytes=reclaimable,
+                impact="Không tự detach/trash; reclaim chỉ là ước tính cần owner và backup review."))
         elif snapshots and not policy:
-            result.append(asdict(InventoryInsight(
+            result.append(_with_advisory(asdict(InventoryInsight(
                 pool=pool, image=image, kind="SNAPSHOT_REVIEW", confidence=0.85,
                 reason=f"{snapshots} snapshot(s) detected without a configured snapshot policy",
                 recommendation="Review snapshot retention and clone dependencies; do not delete automatically",
@@ -141,9 +175,10 @@ def build_inventory_insights(
                 attachment_state=attachment, watcher_count=watcher_count,
                 last_io_at=last_io.isoformat() + "Z" if last_io else None,
                 evidence_at=now.isoformat() + "Z", evidence_gaps=tuple(gaps),
-            )))
+            )), evidence_at=now,
+                impact="Không tự xóa snapshot; cần kiểm tra retention và clone dependency."))
         elif not has_metrics or attachment == "unknown":
-            result.append(asdict(InventoryInsight(
+            result.append(_with_advisory(asdict(InventoryInsight(
                 pool=pool, image=image, kind="INSUFFICIENT_EVIDENCE", confidence=None,
                 reason="Không đủ bằng chứng để kết luận volume stale hoặc có thể thu hồi",
                 recommendation="Collect attachment and I/O evidence before making an inventory recommendation",
@@ -152,7 +187,8 @@ def build_inventory_insights(
                 attachment_state=attachment, watcher_count=watcher_count,
                 last_io_at=last_io.isoformat() + "Z" if last_io else None,
                 evidence_at=now.isoformat() + "Z", evidence_gaps=tuple(gaps),
-            )))
+            )), evidence_at=now,
+                impact="Không có mutation; chỉ yêu cầu thu thập thêm evidence."))
 
     order = {"STALE_UNATTACHED": 0, "SNAPSHOT_REVIEW": 1, "INSUFFICIENT_EVIDENCE": 2}
     return sorted(result, key=lambda row: (order.get(row["kind"], 9), row["pool"], row["image"]))
@@ -192,7 +228,7 @@ def build_snapshot_clone_insights(
         dependency = bool(parent or children)
         snapshot_count = len(snapshots)
         if errors.get("snapshots") or errors.get("children"):
-            result.append({
+            result.append(_with_advisory({
                 "pool": pool, "image": image, "kind": "INSUFFICIENT_EVIDENCE",
                 "confidence": None,
                 "reason": "Không đọc đủ snapshot/clone dependency từ RBD",
@@ -200,10 +236,11 @@ def build_snapshot_clone_insights(
                 "snapshot_count": snapshot_count, "parent": parent,
                 "children": children, "evidence_at": captured,
                 "evidence_gaps": sorted(str(name) for name in errors if name in {"snapshots", "children"}),
-            })
+            }, evidence_at=captured,
+                impact="Không tự flatten/xóa; partial evidence phải được đọc lại trước khi review."))
             continue
         if snapshot_count and key not in policy_keys:
-            result.append({
+            result.append(_with_advisory({
                 "pool": pool, "image": image, "kind": "SNAPSHOT_RETENTION_GAP",
                 "confidence": 0.95,
                 "reason": f"Có {snapshot_count} snapshot nhưng chưa có snapshot policy trong ceph-ai",
@@ -211,9 +248,10 @@ def build_snapshot_clone_insights(
                 "snapshot_count": snapshot_count, "parent": parent,
                 "children": children, "evidence_at": captured,
                 "evidence_gaps": ["Cinder/tenant ownership is not part of this RBD response"],
-            })
+            }, evidence_at=captured,
+                impact="Không tự xóa snapshot; cần owner, retention và clone review."))
         if parent:
-            result.append({
+            result.append(_with_advisory({
                 "pool": pool, "image": image, "kind": "CLONE_CHILD",
                 "confidence": 0.95,
                 "reason": f"Volume phụ thuộc parent clone {parent}",
@@ -221,9 +259,10 @@ def build_snapshot_clone_insights(
                 "snapshot_count": snapshot_count, "parent": parent,
                 "children": children, "evidence_at": captured,
                 "evidence_gaps": [],
-            })
+            }, evidence_at=captured,
+                impact="Không tự flatten/xóa parent; child dependency có thể làm gián đoạn clone."))
         if children:
-            result.append({
+            result.append(_with_advisory({
                 "pool": pool, "image": image, "kind": "CLONE_PARENT",
                 "confidence": 0.95,
                 "reason": f"Có {len(children)} clone child đang phụ thuộc volume này",
@@ -231,7 +270,8 @@ def build_snapshot_clone_insights(
                 "snapshot_count": snapshot_count, "parent": parent,
                 "children": children, "evidence_at": captured,
                 "evidence_gaps": [],
-            })
+            }, evidence_at=captured,
+                impact="Không tự flatten/xóa volume; cần xử lý child dependency có kiểm soát."))
         if not snapshot_count and not dependency and not errors:
             continue
     order = {"INSUFFICIENT_EVIDENCE": 0, "CLONE_PARENT": 1, "CLONE_CHILD": 2, "SNAPSHOT_RETENTION_GAP": 3}
@@ -276,7 +316,7 @@ def build_protection_gap_insights(
         last_failure_at: datetime | None, evidence_gaps: list[str],
         scope: str = "volume",
     ) -> dict:
-        return {
+        return _with_advisory({
             "pool": pool,
             "image": image,
             "scope": scope,
@@ -290,7 +330,8 @@ def build_protection_gap_insights(
             "last_failure_at": last_failure_at.isoformat() + "Z" if last_failure_at else None,
             "evidence_at": now.isoformat() + "Z",
             "evidence_gaps": evidence_gaps,
-        }
+        }, evidence_at=now,
+            impact="Không tự chạy backup/restore và không thay đổi volume; operator cần review evidence.")
 
     for raw in inventory:
         pool = str(raw.get("pool") or "")

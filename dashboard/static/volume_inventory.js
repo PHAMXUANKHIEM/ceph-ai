@@ -92,6 +92,7 @@
       var kind = document.createElement("span"); kind.className = "volume-protection-kind " + (item.kind === "INSUFFICIENT_EVIDENCE" ? "warning" : "danger"); kind.textContent = item.kind; title.appendChild(kind); card.appendChild(title);
       var reason = document.createElement("p"); reason.textContent = item.reason || "—"; card.appendChild(reason);
       var recommendation = document.createElement("small"); recommendation.textContent = item.recommendation || "Không có recommendation."; card.appendChild(recommendation);
+      var advisory = document.createElement("small"); advisory.className = "hint"; advisory.textContent = "Advisory read-only · evidence hết hạn " + (item.evidence_expires_at ? new Date(item.evidence_expires_at).toLocaleTimeString("vi-VN") : "—"); card.appendChild(advisory);
       var evidence = document.createElement("small"); evidence.className = "hint"; evidence.textContent = item.last_success_at ? "Backup thành công: " + new Date(item.last_success_at).toLocaleString("vi-VN") : "Chưa có backup thành công được ghi nhận"; card.appendChild(evidence);
       if (item.snapshot_policy_enabled) { var policy = document.createElement("small"); policy.className = "hint"; policy.textContent = "Có snapshot policy; policy không thay thế backup độc lập."; card.appendChild(policy); }
       if ((item.evidence_gaps || []).length) { var gaps = document.createElement("small"); gaps.className = "hint"; gaps.textContent = "Giới hạn bằng chứng: " + item.evidence_gaps.join(" · "); card.appendChild(gaps); }
