@@ -324,8 +324,10 @@ Scope: `Plan/ai-missing-features-roadmap.md` and
 - [ ] Add failure injection, stale-evidence, timeout, duplicate, and rollback
   tests.
 - [ ] Add shadow mode, approval mode, and guarded auto mode.
-- [ ] Keep auto mode disabled by default and require explicit per-cluster
-  promotion.
+- [x] Keep auto mode disabled by default and require explicit per-cluster
+  promotion. Evidence: autonomy/settings/router guard tests in the full
+  deterministic suite and AI gate (`248 passed`); no autopilot promotion was
+  performed.
 
 #### Cost and provider controls
 
@@ -333,8 +335,9 @@ Scope: `Plan/ai-missing-features-roadmap.md` and
   stopping, and per-feature output limits.
 - [ ] Add controlled model routing with canary quality comparison, rollback, and
   budget protection.
-- [ ] Verify telemetry is content-free and never stores prompts, responses, or
-  credentials.
+- [x] Verify telemetry is content-free and never stores prompts, responses, or
+  credentials. Evidence: AI observability, cost, routing, security, and
+  Natural Language redaction tests in the AI gate (`248 passed`).
 
 **Exit gate:** every AI conclusion links to current evidence, insufficient
 evidence produces `INSUFFICIENT_EVIDENCE`, and no AI path can bypass RBAC or
