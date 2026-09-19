@@ -45,6 +45,88 @@
 })();
 
 (function () {
+  // One cluster-state socket is shared by legacy snapshot pages.  Pages still
+  // keep their bounded HTTP fallback, but a healthy socket stops those timers
+  // and turns committed snapshot invalidations into targeted reads.
+  if (window.CephClusterState) return;
+  var sessions = Object.create(null);
+
+  function announce(clusterId, connected) {
+    window.dispatchEvent(new CustomEvent("ceph-cluster-state-connection", {
+      detail: { clusterId: clusterId, connected: connected }
+    }));
+  }
+
+  function getSession(clusterId) {
+    var session = sessions[clusterId];
+    if (session) return session;
+    session = sessions[clusterId] = {
+      callbacks: [], socket: null, reconnectTimer: null, attempt: 0,
+      connected: false, stopped: false
+    };
+    session.connect = function () {
+      if (session.stopped || session.socket || document.hidden) return;
+      var protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      session.socket = new WebSocket(protocol + "//" + window.location.host + "/ws/cluster-state?cluster_id=" + encodeURIComponent(clusterId));
+      session.socket.onopen = function () {
+        session.attempt = 0;
+        session.connected = true;
+        announce(clusterId, true);
+      };
+      session.socket.onmessage = function (message) {
+        try {
+          var payload = JSON.parse(message.data);
+          if (!payload.event || (payload.cluster_id && payload.cluster_id !== clusterId)) return;
+          session.callbacks.slice().forEach(function (callback) { callback(payload); });
+        } catch (_) {
+          // HTTP fallback remains authoritative when an event is malformed.
+        }
+      };
+      session.socket.onclose = function () {
+        session.socket = null;
+        if (session.connected) announce(clusterId, false);
+        session.connected = false;
+        if (!session.stopped && !document.hidden) {
+          var delay = Math.min(30000, 1000 * Math.pow(2, Math.min(session.attempt++, 5)));
+          session.reconnectTimer = window.setTimeout(session.connect, delay);
+        }
+      };
+      session.socket.onerror = function () { if (session.socket) session.socket.close(); };
+    };
+    return session;
+  }
+
+  window.CephClusterState = {
+    subscribe: function (clusterId, callback) {
+      if (!clusterId || typeof callback !== "function") return function () {};
+      var session = getSession(clusterId);
+      session.callbacks.push(callback);
+      session.stopped = false;
+      session.connect();
+      return function () {
+        session.callbacks = session.callbacks.filter(function (item) { return item !== callback; });
+        if (session.callbacks.length) return;
+        session.stopped = true;
+        if (session.reconnectTimer) window.clearTimeout(session.reconnectTimer);
+        if (session.socket) session.socket.close();
+        delete sessions[clusterId];
+      };
+    }
+  };
+
+  document.addEventListener("visibilitychange", function () {
+    Object.keys(sessions).forEach(function (clusterId) {
+      var session = sessions[clusterId];
+      if (document.hidden) {
+        if (session.socket) session.socket.close();
+      } else if (!session.socket) {
+        session.connect();
+      }
+    });
+  });
+})();
+
+(function () {
   // Shared application shell.  The server-rendered navigation remains the
   // source of truth; this layer only enriches it with a responsive menu,
   // compact product identity and page context so every route gets the same

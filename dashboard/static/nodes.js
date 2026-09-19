@@ -99,8 +99,21 @@
 
   if (nodeSelector && clusterId) {
     refreshNodeInventory();
-    window.setInterval(refreshNodeInventory, 10000);
-    document.addEventListener("visibilitychange", refreshNodeInventory);
+    var inventoryTimer = window.setInterval(refreshNodeInventory, 10000);
+    var realtimeConnected = false;
+    var stopInventoryFallback = function () { if (inventoryTimer !== null) { window.clearInterval(inventoryTimer); inventoryTimer = null; } };
+    var startInventoryFallback = function () { if (inventoryTimer === null) inventoryTimer = window.setInterval(refreshNodeInventory, 10000); };
+    var onConnection = function (event) {
+      if (!event.detail || event.detail.clusterId !== clusterId) return;
+      realtimeConnected = event.detail.connected === true;
+      if (realtimeConnected) stopInventoryFallback(); else startInventoryFallback();
+    };
+    var unsubscribe = window.CephClusterState && window.CephClusterState.subscribe(clusterId, function (event) {
+      if (!event.sections || event.sections.indexOf("nodes") !== -1) refreshNodeInventory();
+    });
+    window.addEventListener("ceph-cluster-state-connection", onConnection);
+    document.addEventListener("visibilitychange", function () { if (!document.hidden) refreshNodeInventory(); if (!realtimeConnected) startInventoryFallback(); });
+    window.addEventListener("pagehide", function () { if (unsubscribe) unsubscribe(); window.removeEventListener("ceph-cluster-state-connection", onConnection); stopInventoryFallback(); });
   }
   if (!stack) {
     return; // /nodes with no host selected, or not on this page at all
