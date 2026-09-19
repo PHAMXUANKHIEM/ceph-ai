@@ -150,13 +150,21 @@ restart does not create duplicate collectors.
 
 Scope: RT-05 through RT-09.
 
-- [ ] Implement snapshot read APIs for Pools, PGs, CRUSH, and Nodes.
-- [ ] Preserve existing response fields and add freshness metadata.
-- [ ] Move filtering, sorting, and pagination onto snapshot data.
-- [ ] Add a shared frontend snapshot/freshness hook and status component.
+- [x] Implement snapshot read APIs for Pools, PGs, CRUSH, and Nodes. Evidence:
+  `tests/test_dashboard_pgs.py`, `tests/test_dashboard_crush_map.py`, and
+  `tests/test_dashboard_nodes.py`.
+- [x] Preserve existing response fields and add freshness metadata. The
+  focused API gate passed `47 passed, 1 warning`.
+- [x] Move filtering, sorting, and pagination onto snapshot data for the
+  migrated dashboard sections; the focused API/UI gate passed `47 passed`.
+- [x] Add a shared frontend snapshot/freshness hook and status component. The
+  Node 20 build includes `useClusterSnapshotEvents`, shared snapshot state,
+  and status labels for the migrated React pages.
 - [ ] Remove page reload and independent polling loops.
-- [ ] Add WebSocket or SSE invalidation events with HTTP polling fallback.
-- [ ] Enforce HTTP-equivalent authentication and cluster isolation for events.
+- [x] Add WebSocket or SSE invalidation events with HTTP polling fallback.
+  Evidence: `tests/test_dashboard_ws.py` and Node 20 build.
+- [x] Enforce HTTP-equivalent authentication and cluster isolation for events.
+  Evidence: scoped WebSocket tests in `tests/test_dashboard_ws.py`.
 - [x] Publish events only after snapshot commit or mutation post-check. Snapshot
   events are published after versioned cache commit; resolved-incident
   invalidations are published after the database commit that records the
