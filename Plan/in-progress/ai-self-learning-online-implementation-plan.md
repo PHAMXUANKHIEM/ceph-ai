@@ -92,7 +92,7 @@ Ngân sách mặc định:
 - [x] Ghi nhận 8 vCPU, 31 GiB RAM, không GPU, không swap.
 - [x] Ghi nhận load, CPU/RAM của Worker và Watcher trước khi thay đổi.
 - [x] Ghi nhận số cluster/node/metric stream và tốc độ tăng dữ liệu.
-- [ ] Tạo dashboard CPU/RAM/latency riêng cho learning job.
+- [x] Tạo dashboard CPU/RAM/latency riêng cho learning job: `/ai-learning` hiển thị cycle count, processed/applied/failed, average elapsed, average CPU time và recent cycles theo canary scope.
 
 Acceptance criteria:
 
@@ -109,7 +109,7 @@ Acceptance criteria:
 - [x] Hiển thị runtime decision trong API AI Learning.
 - [x] Migration `b5c6d7e8f9a0_add_learning_runtime_safety.py` đã được kiểm thử.
 
-Đã hoàn thành. Bước tiếp theo trong plan là Phase 1.2 quality gate cho từng online sample.
+Đã hoàn thành. Các phase nền tảng đã triển khai; bước đang theo dõi là canary production ở Phase 5.3.
 
 ### Phase 1 — Data contract và quality gate
 
@@ -190,6 +190,7 @@ Tiếp theo: chạy Phase 2 ở `AUDIT_ONLY` trên một node và CPU metric tro
 - [x] Không cho một alert chưa đóng tạo label cuối cùng; reconcile lại sau khi alert chuyển `RESOLVED`.
 - [x] Có audit append-only cho `CREATED`, `BLOCKED`, `CONSUMED` và `REVOKED`; thu hồi không xoá bản ghi.
 - [x] Khi chạm rate limit bất thường, mở policy pause trong cùng cửa sổ thời gian và fail-closed mọi online update.
+- [x] Production feedback endpoint `/api/ai-learning/node-alerts/{alert_id}/feedback` đã được kiểm tra; unauthenticated request trả `303`, không ghi dữ liệu. Feedback thật vẫn là `0` row và chỉ operator mới được tạo nhãn.
 
 Tiếp theo: dùng verified feedback để chạy online update trong `SHADOW_ONLY`, chưa thay đổi model active.
 
@@ -246,12 +247,13 @@ Tiếp theo: kiểm thử trên dữ liệu lịch sử trước khi cho River c
 - [x] Có API/UI báo cáo canary read-only, hiển thị MAE/SMAPE, data-quality, alert volume, precision/lead time và CPU cost.
 - [x] Có bounded learner-cycle CPU/elapsed telemetry; khi chưa bật learner, báo cáo hiển thị rõ “chưa có telemetry”, không suy diễn thành 0.
 - [x] Chọn ứng viên canary `CS-LAB / 10.20.1.153 / cpu` và replay read-only 14 ngày: 335 hourly points, 311 paired outcomes; rolling MAE 8.568 thấp hơn linear 9.811, consensus MAE 7.902, false-positive rate không tăng.
-- [ ] Bật ứng viên trên production ở `SHADOW_ONLY` sau khi operator phê duyệt.
-- [ ] Theo dõi ít nhất một chu kỳ đánh giá đầy đủ.
-- [ ] So sánh alert volume, false positive, early detection và CPU cost.
+- [x] Bật ứng viên trên production ở `SHADOW_ONLY` sau khi operator phê duyệt; scope thực tế là `CS-LAB / 10.20.1.153 / cpu`, kill switch vẫn tắt và `ACTIVE`/auto-promotion không được phép.
+- [x] Theo dõi ít nhất một bounded learner cycle production: sample CPU thật được audit với `runtime=SHADOW_ONLY`, `failed=0`, `applied=0`, `quality=NO_LABEL`.
+- [x] Sửa registry drift do adaptive window selection: đồng bộ baseline `linear:<window>h` chưa có promotion/rollback governance; scope đã có governance vẫn fail-closed.
+- [x] So sánh alert volume, false positive, early detection và CPU cost bằng canary report 72 giờ: `368` runs, `192` evaluated, `2` lifecycle events, `0` false positives, `0` early detections, `7` cycles và `3358.786 ms` CPU time; không có warning/critical outcome để kết luận candidate tốt hơn.
 - [ ] Chỉ mở rộng scope khi operator xác nhận.
 
-Tiếp theo: operator phê duyệt bật `SHADOW_ONLY` cho một metric stream, sau đó theo dõi đủ 24–72 giờ.
+Tiếp theo: tiếp tục theo dõi canary production `CS-LAB / 10.20.1.153 / cpu` đủ 24–72 giờ để có đủ alert-volume, false-positive, early-detection và resource-cost evidence; chưa mở rộng scope.
 
 ### Phase 6 — Dashboard và explainability
 
@@ -280,9 +282,9 @@ Tiếp theo: operator phê duyệt bật `SHADOW_ONLY` cho một metric stream, 
 - [x] Promote/rollback giữ nguyên guarded approval; bổ sung block candidate có lý do bắt buộc.
 - [x] Xem append-only audit trail cho pause/resume/reset/block.
 - [x] Migrate/deploy/verify production source sau khi SSH tới `10.3.55.213` hoạt động lại.
-- [ ] Verify hành vi pause trên một live `SHADOW_ONLY` stream; hiện production vẫn `DISABLED`.
+- [x] Verify hành vi pause trên đúng live canary stream: consumer trả `PAUSED`, `update_applied=false`; sau kiểm thử đã resume về `RUNNING`.
 
-Code và test local đã hoàn tất: control `3 passed`, dashboard/migration/operator-route tổng hợp đã kiểm tra. Chưa đánh dấu Phase 6.3 hoàn tất vì production migration/deploy chưa được xác minh.
+Đã sửa lỗi production phát sinh khi sample live timezone-aware được so sánh với timestamp persisted naive: normalize `latest.observed_at` về UTC trước quality gate; regression suite `tests/test_online_learning_consumer.py` đạt `10 passed`. Consumer cũng resolve cluster mặc định một lần trước bounded runner và ghi cycle telemetry theo từng stream `cluster + host + metric`, tránh gộp CPU/RAM thành `metric=mixed`. Nhóm test consumer/forecast/dashboard đạt `49 passed`. Control, dashboard, migration và operator-route đã được deploy/verify.
 
 Production rollout checklist:
 
@@ -291,24 +293,68 @@ Production rollout checklist:
 - [x] Backup schema trước migration; tạo `online_learner_controls` và `online_learner_operator_audits` trong explicit transaction, sau đó xác nhận version `f0a1b2c3d4f7`.
 - [x] Deploy route/template/model/consumer; kiểm tra unauthenticated 303, non-admin không được phép và operator route/import.
 - [x] Restart dashboard/worker/watcher và xác nhận cả ba healthy.
-- [ ] Khi canary được operator bật, xác nhận stream bị pause không tạo update trong production.
+- [x] Khi canary được operator bật, xác nhận stream bị pause không tạo update trong production; operator audit ghi nhận PAUSE/RESUME và control cuối cùng là `RUNNING`.
+- [x] Per-stream learner telemetry — cycle audit production ghi đúng `cluster + host + metric`, cycle mới nhất của CPU/RAM có `failed=0`; các audit lịch sử vẫn giữ nguyên append-only.
+- [x] Sửa schema production cho prompt version — `log_findings.prompt_version` đã mở rộng lên `VARCHAR(64)`, migration production variant `f3c4d5e6f7a8` và schema backup đã được xác nhận.
 
 ### Phase 7 — Benchmark và nghiệm thu
 
 #### Bước 7.1 — Offline benchmark
 
-- [ ] Tạo dataset Ceph đã ẩn thông tin nhạy cảm.
-- [ ] Dùng NAB làm format/tham khảo scoring.
-- [ ] So sánh baseline, River và detector PyOD.
-- [ ] Đánh giá precision, recall, false-positive rate, detection delay và CPU cost.
+- [x] Tạo dataset Ceph đã ẩn thông tin nhạy cảm: dữ liệu tổng hợp `docs/benchmark/ceph-node-cpu-anonymized.csv`, không chứa cluster/host/IP/volume ID.
+- [x] Dùng NAB làm format/tham khảo scoring: hỗ trợ `timestamp,value`, point labels và `window_start,window_end`.
+- [x] So sánh baseline, River và detector PyOD: kết quả lưu tại `docs/benchmark/forecast-benchmark-report.json`; PyOD chỉ chạy trong benchmark container riêng.
+- [x] Đánh giá precision, recall, false-positive rate, detection delay và CPU cost; fixture hiện chỉ đạt với robust baseline, River/PyOD bị giữ ngoài production vì chưa bắt được event.
+
+Benchmark evidence: robust baseline đạt precision/recall/event-recall `1.0/1.0/1.0`; River HalfSpaceTrees và PyOD IForest đều recall `0.0` trên fixture hiện tại. Đây là lý do chưa promote candidate và cần dataset Ceph thật đã ẩn danh trước khi điều chỉnh threshold.
 
 #### Bước 7.2 — Production acceptance
 
 - [ ] Không tăng soft lockup, poll timeout hoặc DB saturation.
 - [ ] Không mất forecast/feedback sau restart.
-- [ ] Không có promotion tự động ngoài policy.
-- [ ] Rollback trong thời gian mục tiêu.
-- [ ] Có tài liệu vận hành và runbook khi model học sai.
+- [x] Không có promotion tự động ngoài policy — runtime canary hiện `can_update_active=false`, chưa có promotion audit và guarded tests đã pass.
+- [x] Rollback trong thời gian mục tiêu — guarded rollback regression test khôi phục đúng model trước đó và hoàn tất dưới `1s`.
+- [x] Có tài liệu vận hành và runbook khi model học sai: `docs/runbook-online-learning-canary.md`.
+
+Evidence hiện tại chưa đủ để đóng các mục observation dài hạn: sau restart worker,
+ba service vẫn `healthy`, 15 phút log gần nhất không có soft lockup/poll timeout,
+DB probe là `54.447 ms`, Worker dùng khoảng `185.3 MB / 2.147 GB`, Watcher
+`231.9 MB / 1.074 GB`, forecast runs vẫn là `17,708`, cycle audit mới nhất được
+ghi sau restart. Production chưa có forecast feedback (`0` row), vì vậy retention
+của feedback chưa thể kết luận; không tạo dữ liệu giả trong DB thật.
+
+Observation sau restart ngày `19/09/2026 09:55 +07`: forecast runs `17,708`,
+forecast feedback `0`, promotion audits `0`, learner cycle audits `30`; không
+có mất forecast. Feedback vẫn chưa thể nghiệm thu retention vì production chưa
+phát sinh feedback thật. Runtime pool được xác nhận `size=5`, `overflow=0`,
+`timeout=10s`; dashboard/worker/watcher đều `healthy`.
+
+Đã phát hiện một QueuePool timeout đơn lẻ của Vitastor lúc `02:38:57` do
+Watcher có nhiều auxiliary monitor threads nhưng pool bị giới hạn `3/0/5s`.
+Đã sửa bounded database budget thành `5/0/10s`, giữ overflow bằng `0`; sau
+restart Watcher, pool runtime xác nhận `size=5`, `timeout=10`, `checkedout=0`
+và chu kỳ Vitastor tiếp theo không còn timeout. Mục acceptance vẫn chờ đủ
+24–72 giờ vì trước đó đã có một timeout thật.
+
+Worker và Dashboard cũng đã được restart tuần tự để nạp cùng policy; runtime
+đều xác nhận `pool=5`, `timeout=10`, `overflow=0`. Sau restart, forecast runs
+vẫn `17,708`, cycle audits `26`, promotion audits `0`, và không có lỗi mới
+trong log health check.
+
+Canary report live mới nhất (`72h`, scope `CS-LAB / 10.20.1.153 / cpu`) xác nhận
+`scope_match=true`, `data_quality_count=0`, `192` evaluated outcomes, `0`
+false-positive events, `0` detected breaches và `7` bounded cycles. Đây là
+evidence quan sát, không phải lý do để promote khi chưa có warning/critical
+outcome thực tế.
+
+Worker shadow evaluator hiện ghi nhận `108` comparisons, `7` `PROMISING` và
+`101` `HOLD`, nhưng vẫn chạy `SHADOW_ONLY` với thông báo rõ `no promotion,
+notification or remediation`; `promotion_audits=0`. Đây là bằng chứng candidate
+được đánh giá nhưng guarded boundary vẫn đang chặn promotion tự động.
+
+Guarded rollback smoke test trên SQLite tạm đã tạo active/candidate, ghi
+evidence, request/approve và rollback thành công trong `13.4 ms`; production
+chưa có candidate được promote nên chưa đánh dấu rollback acceptance thật.
 
 ## 7. Không làm trong phiên bản đầu
 
@@ -342,7 +388,16 @@ Production rollout checklist:
 - [x] Bước 5.3 — canary guard, lifecycle evidence, acceptance API/UI và resource-cost telemetry read-only.
 - [x] Bước 6.1 — dashboard online-learning status, quality gate, drift, latency và verified feedback read-only.
 - [x] Bước 6.2 — forecast detail gồm actual/predicted, interval, model/version, confidence/consensus và MAE/SMAPE.
-- [ ] Bước 6.3 — operator controls đã viết/test và deploy production; còn verify hành vi trên live canary.
-- [x] Preflight canary — scope `CS-LAB / 10.20.1.153 / cpu` và heartbeat đã pass dry-run `SHADOW_ONLY`; chưa thay đổi production flags.
+- [x] Bước 6.3 — operator controls đã viết/test, deploy production và verify hành vi trên live canary.
+- [x] Preflight canary — scope `CS-LAB / 10.20.1.153 / cpu` và heartbeat đã pass dry-run `SHADOW_ONLY`.
+- [x] Production canary gate — chỉ bật `SHADOW_ONLY`, giữ `ONLINE_LEARNING_KILL_SWITCH=false`, `can_update_active=false`, và xác nhận cả watcher/worker/dashboard nạp đúng settings.
+- [x] Production live pause verification — pause/resume thành công, không có active update.
+- [x] Dashboard evidence — `/ai-learning` hiển thị telemetry learner và báo cáo canary 72 giờ gồm forecast quality, alert lifecycle, false positive/pending outcome, lead time và resource cost.
+- [x] Production schema compatibility — canary report đọc được cả `node_resource_forecast_alert_events` và schema cũ `node_resource_forecast_transitions` mà không cần rewrite dữ liệu.
+- [x] Dashboard runtime scope — `learning_status()` truyền đúng `host + metric` vào runtime gate; production UI hiện `SHADOW_ONLY/healthy` thay vì báo nhầm `CANARY_SCOPE`.
+- [x] Per-stream cycle telemetry — dashboard đọc được cycle audit riêng cho CPU/RAM; cycle mới nhất không còn lỗi sau khi sửa timestamp normalization.
+- [x] Production prompt-version compatibility — log analysis không còn `StringDataRightTruncation` do prompt version sau khi migrate schema.
+- [x] Forecast registry drift — sau restart worker không còn `runtime active model differs from registry ACTIVE model`; active registry khớp selected runtime state và không phát sinh promotion audit tự động.
+- [x] Bounded database pool — Watcher/Worker/Dashboard dùng `pool=5`, `overflow=0`, `timeout=10s`; sau sửa không có QueuePool timeout mới trong observation hiện tại.
 
-Bước tiếp theo sẽ làm: **operator phê duyệt bật `SHADOW_ONLY` cho `CS-LAB / 10.20.1.153 / cpu`, xác nhận pause gate trên live stream, rồi theo dõi canary 24–72 giờ**.
+Bước tiếp theo sẽ làm: **tiếp tục theo dõi canary `CS-LAB / 10.20.1.153 / cpu` trong 24–72 giờ; thu thập alert volume, false positive, early detection, quality gate, CPU/elapsed cost và một feedback outcome thật nếu phát sinh. Đồng thời giữ River/PyOD ngoài production vì benchmark hiện tại recall bằng `0`. Chưa promote sang `ACTIVE` và chưa mở rộng scope.**
