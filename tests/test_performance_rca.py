@@ -5,7 +5,7 @@ from shared import db
 from shared.models import Cluster, CrushOsdDistribution, HostMetricSample, VolumeMetric, VolumeOsdMapping
 from watcher import volume_topology
 from watcher.volume_topology import normalize_osd_map_payload
-from watcher.performance_rca import build_report
+from watcher.performance_rca import _collect_recovery_evidence, build_report
 
 
 def _volume(cluster_id, pool, image, values, start):
@@ -98,7 +98,57 @@ def test_report_exposes_recovery_and_network_evidence_gaps(db_session):
 
     assert "recovery/backfill/slow-ops" in gaps
     assert "network contention" in gaps
-    assert all(item["layer"] not in {"recovery", "network"} for item in result["chain"])
+    assert result["chain"][-1]["layer"] == "recovery"
+    assert result["chain"][-1]["status"] == "not_available"
+
+
+def test_report_uses_live_recovery_state_when_available(db_session):
+    now = datetime(2026, 8, 28, 12, 0)
+    db_session.add(Cluster(id="c1", name="cluster-1", ceph_mon_nodes="", ssh_user="test", ssh_key_path="test"))
+    db_session.add_all(_volume("c1", "rbd", "vm-a", [10, 10, 10, 30], now - timedelta(minutes=3)))
+    db_session.commit()
+
+    result = build_report(
+        db_session,
+        "c1",
+        now=now,
+        live_signals={
+            "status": "ready",
+            "outliers": [],
+            "recovery": {
+                "status": "active",
+                "detail": "Recovery/backfill state đang active: active+undersized=2.",
+                "source": "ceph_status_pgmap",
+                "freshness": {"observed_at": "2026-08-28T12:00:00Z", "status": "fresh"},
+            },
+        },
+    )
+
+    assert result["recovery"]["status"] == "active"
+    assert result["chain"][-1]["layer"] == "recovery"
+    assert result["chain"][-1]["status"] == "active"
+    assert not any("recovery/backfill/slow-ops evidence" in gap for gap in result["evidence_gaps"])
+
+
+def test_recovery_collector_parses_active_pgmap(monkeypatch):
+    monkeypatch.setattr(
+        "watcher.performance_rca.ceph_client.run_ceph_json_command_with",
+        lambda *_args, **_kwargs: ("mon", {
+            "pgmap": {
+                "recovering_bytes_per_sec": 2048,
+                "recovering_objects_per_sec": 3,
+                "num_objects_degraded": 4,
+                "num_objects_misplaced": 0,
+                "pgs_by_state": [{"state_name": "active+undersized+degraded", "count": 2}],
+            },
+        }),
+    )
+
+    result = _collect_recovery_evidence(([], "", "", "", ""), datetime(2026, 8, 28, 12, 0))
+
+    assert result["status"] == "active"
+    assert result["state_counts"] == {"active+undersized+degraded": 2}
+    assert result["recovering_bytes_per_sec"] == 2048.0
 
 
 def test_report_does_not_join_missing_node_or_network_evidence(db_session):
@@ -118,6 +168,46 @@ def test_report_does_not_join_missing_node_or_network_evidence(db_session):
     assert result["analyses"][0]["host_evidence"] == []
     assert result["chain"][5]["status"] == "not_available"
     assert "host disk/SMART/network" in " ".join(result["evidence_gaps"])
+
+
+def test_host_network_peer_outlier_is_evidence_not_absolute_congestion(db_session):
+    now = datetime(2026, 8, 28, 12, 0)
+    db_session.add(Cluster(id="c1", name="cluster-1", ceph_mon_nodes="", ssh_user="test", ssh_key_path="test"))
+    db_session.add_all(_volume("c1", "rbd", "vm-a", [10, 10, 10, 30], now - timedelta(minutes=3)))
+    db_session.add(VolumeOsdMapping(
+        cluster_id="c1", pool="rbd", image="vm-a", image_id="abc",
+        object_name="rbd_data.abc.0000000000000000", pgid="1.2a", acting_osds_json="[3]",
+        primary_osd=3, pgids_json='["1.2a"]', sampled_objects_json='["rbd_data.abc.0000000000000000"]',
+        data_object_count=1, mapping_scope="data_sample", captured_at=now,
+    ))
+    db_session.add_all([
+        CrushOsdDistribution(cluster_id="c1", osd_id=3, host="ceph-hot", pgs=20, updated_at=now),
+        CrushOsdDistribution(cluster_id="c1", osd_id=4, host="ceph-cold-1", pgs=20, updated_at=now),
+        CrushOsdDistribution(cluster_id="c1", osd_id=5, host="ceph-cold-2", pgs=20, updated_at=now),
+        HostMetricSample(
+            cluster_id="c1", host="10.0.0.3", node_name="ceph-hot", cpu_percent=40,
+            mem_percent=40, disk_read_iops=100, disk_write_iops=100, disk_latency_ms=2,
+            network_rx_bytes_per_sec=10 * 1024 * 1024, network_tx_bytes_per_sec=0, collected_at=now,
+        ),
+        HostMetricSample(
+            cluster_id="c1", host="10.0.0.4", node_name="ceph-cold-1", cpu_percent=40,
+            mem_percent=40, disk_read_iops=100, disk_write_iops=100, disk_latency_ms=2,
+            network_rx_bytes_per_sec=1 * 1024 * 1024, network_tx_bytes_per_sec=0, collected_at=now,
+        ),
+        HostMetricSample(
+            cluster_id="c1", host="10.0.0.5", node_name="ceph-cold-2", cpu_percent=40,
+            mem_percent=40, disk_read_iops=100, disk_write_iops=100, disk_latency_ms=2,
+            network_rx_bytes_per_sec=1 * 1024 * 1024, network_tx_bytes_per_sec=0, collected_at=now,
+        ),
+    ])
+    db_session.commit()
+
+    result = build_report(db_session, "c1", now=now, live_signals={"status": "unavailable"})
+    host = result["analyses"][0]["host_evidence"][0]
+
+    assert "network_peer_high" in host["flags"]
+    assert host["network_contention_candidate"] is True
+    assert "interface capacity" in " ".join(result["evidence_gaps"])
 
 
 def test_normal_latency_is_not_reported_as_hot_volume_false_positive(db_session):

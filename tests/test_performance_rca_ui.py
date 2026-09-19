@@ -13,3 +13,4 @@ def test_performance_rca_template_exposes_read_only_guidance():
     assert "a.investigation_steps" in template
     assert "option.next_checks" in template
     assert "không tạo Action" in template
+    assert "network peer" in template
