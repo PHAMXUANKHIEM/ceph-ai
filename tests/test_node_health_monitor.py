@@ -267,6 +267,23 @@ def test_create_or_resolve_sends_telegram_alert_only_for_a_newly_created_inciden
     assert calls[0][0] == "10.0.0.5"
 
 
+def test_telegram_failure_does_not_rollback_committed_incident(isolated_db, monkeypatch):
+    def fail_delivery(_host, _message):
+        raise RuntimeError("telegram unavailable")
+
+    monkeypatch.setattr(nhm, "send_node_alert", fail_delivery)
+
+    nhm.create_or_resolve_node_health_incidents(
+        {"NODE_RESOURCE_HIGH:10.0.0.5": _detail()}
+    )
+
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(
+            ceph_code="NODE_RESOURCE_HIGH:10.0.0.5"
+        ).one()
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+
+
 def test_create_or_resolve_does_not_alert_on_resolve(isolated_db, monkeypatch):
     calls = []
     monkeypatch.setattr(nhm, "send_node_alert", lambda host, message: calls.append((host, message)))

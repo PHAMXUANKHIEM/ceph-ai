@@ -61,6 +61,8 @@ def build_bucket_access_diagnosis(
     bucket_stats: dict | None = None,
     rgw_evidence: dict | None = None,
     admin_query_status: str = "not_attempted",
+    endpoint_probes: list[dict] | None = None,
+    daemon_errors: list[dict] | None = None,
 ) -> dict:
     """Classify observed RGW access outcomes without claiming an unobserved cause.
 
@@ -76,6 +78,8 @@ def build_bucket_access_diagnosis(
     gaps: list[str] = []
     evidence = ["rgw_access_log"] if records else []
     endpoint_status = ((rgw_evidence or {}).get("endpoints") or {}).get("status")
+    endpoint_probes = [probe for probe in (endpoint_probes or []) if isinstance(probe, dict)]
+    daemon_errors = [error for error in (daemon_errors or []) if isinstance(error, dict)]
 
     if admin_query_status == "error":
         findings.append(_finding(
@@ -129,6 +133,41 @@ def build_bucket_access_diagnosis(
             [f"HTTP {status} x{counts[status]}" for status in backend_statuses],
             "Đối chiếu RGW daemon health, log lỗi, placement pool và Ceph health detail.",
         ))
+    if any(probe.get("dns") == "failed" for probe in endpoint_probes):
+        findings.append(_finding(
+            "RGW_DNS_FAILURE",
+            "warning",
+            "Endpoint RGW không phân giải được DNS từ probe read-only.",
+            [str(probe.get("endpoint")) for probe in endpoint_probes if probe.get("dns") == "failed"],
+            "Kiểm tra DNS record và hostname trong cấu hình endpoint RGW.",
+        ))
+    if any(probe.get("tcp") == "failed" for probe in endpoint_probes):
+        findings.append(_finding(
+            "RGW_ENDPOINT_UNREACHABLE",
+            "warning",
+            "Endpoint RGW không mở được kết nối TCP trong thời gian giới hạn.",
+            [str(probe.get("endpoint")) for probe in endpoint_probes if probe.get("tcp") == "failed"],
+            "Kiểm tra listener/frontend, firewall và route tới RGW node.",
+        ))
+    if any(probe.get("tls") == "failed" for probe in endpoint_probes):
+        findings.append(_finding(
+            "RGW_TLS_FAILURE",
+            "warning",
+            "TCP tới RGW thành công nhưng TLS handshake thất bại.",
+            [str(probe.get("endpoint")) for probe in endpoint_probes if probe.get("tls") == "failed"],
+            "Kiểm tra certificate chain, hostname/SAN và thời gian hệ thống; không tắt TLS verification.",
+        ))
+    error_messages = [str(error.get("message") or "") for error in daemon_errors if error.get("message")]
+    error_text = " ".join(error_messages).casefold()
+    for marker, code, summary, check in (
+        ("permission denied", "RGW_PERMISSION_ERROR", "RGW log ghi nhận lỗi permission denied.", "Kiểm tra quyền daemon/keyring và CephX caps."),
+        ("no such file", "RGW_CONFIG_ERROR", "RGW log ghi nhận lỗi thiếu file/cấu hình.", "Kiểm tra cấu hình daemon và mount/keyring."),
+        ("connection refused", "RGW_BACKEND_CONNECTION_ERROR", "RGW log ghi nhận backend connection refused.", "Kiểm tra backend pool/OSD và endpoint nội bộ."),
+        ("timeout", "RGW_BACKEND_TIMEOUT", "RGW log ghi nhận backend timeout.", "Đối chiếu Ceph health, latency OSD và recovery state."),
+    ):
+        if marker in error_text:
+            findings.append(_finding(code, "warning", summary, error_messages[:3], check))
+            break
     if counts[404]:
         findings.append(_finding(
             "BUCKET_OR_OBJECT_NOT_FOUND",
@@ -144,6 +183,10 @@ def build_bucket_access_diagnosis(
         gaps.append("Chưa có endpoint RGW đã xác nhận; DNS/TLS/connectivity không được suy luận từ access log rỗng.")
     if endpoint_status == "inferred":
         gaps.append("Endpoint chỉ được suy ra từ node/port mặc định, chưa xác nhận DNS/TLS bằng probe read-only.")
+    if not endpoint_probes:
+        gaps.append("Chưa chạy DNS/TCP/TLS probe cho endpoint RGW.")
+    if not daemon_errors:
+        gaps.append("Chưa có RGW daemon error log trong evidence; không suy luận backend failure từ log thiếu.")
     if not bucket_stats and bucket:
         gaps.append("Chưa có bucket stats; chưa đủ evidence để phân biệt quota với policy trong các ca 403.")
     if not rgw_evidence:
@@ -171,6 +214,8 @@ def build_bucket_access_diagnosis(
             "error_statuses": errors,
         },
         "evidence": evidence,
+        "endpoint_probes": endpoint_probes,
+        "daemon_errors": daemon_errors[:10],
         "evidence_gaps": gaps,
         "recommendation_mode": "ADVISORY",
         "read_only": True,

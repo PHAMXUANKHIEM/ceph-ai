@@ -3066,6 +3066,35 @@ class NodeResourceForecastAlert(Base):
     consecutive_healthy_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
+class NodeResourceForecastAlertEvent(Base):
+    """Append-only lifecycle event compatible with the forecast event migration."""
+
+    __tablename__ = "node_resource_forecast_alert_events"
+    __table_args__ = (
+        Index("ix_node_resource_forecast_alert_events_cluster_name", "cluster_name"),
+        Index("ix_node_resource_forecast_alert_events_host", "host"),
+        Index(
+            "ix_node_resource_forecast_alert_event_stream_time",
+            "cluster_name", "host", "metric", "occurred_at",
+        ),
+        Index("ix_node_resource_forecast_alert_event_state", "to_state", "occurred_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    alert_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("node_resource_forecast_alerts.id"), nullable=False,
+    )
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(8), nullable=False)
+    from_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    to_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    notification_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class NodeResourceForecastTransition(Base):
     """Append-only lifecycle history for one node-resource forecast alert."""
 

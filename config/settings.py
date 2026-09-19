@@ -306,6 +306,14 @@ class Settings(BaseSettings):
     ai_chat_max_context_tokens: int = Field(default=6000, ge=1000, le=20000)
     ai_chat_max_output_tokens: int = Field(default=1536, ge=256, le=8192)
     ai_chat_max_tool_iterations: int = Field(default=4, ge=1, le=6)
+    # Phase 2 natural-language planner. Disabled by default while the
+    # snapshot-backed runner is being validated; enabling it only creates a
+    # bounded read-only plan and emits telemetry, with the current provider
+    # tool loop remaining the fallback.
+    ai_natural_language_query_planner_enabled: bool = False
+    # Phase 2 snapshot evidence is opt-in until the collector coverage for all
+    # fixed tools has been verified in staging. It never opens SSH itself.
+    ai_natural_language_snapshot_runner_enabled: bool = False
 
     ai_cost_routing_mode: str = "advisory"
     ai_cost_routing_canary_percent: int = Field(default=0, ge=0, le=100)

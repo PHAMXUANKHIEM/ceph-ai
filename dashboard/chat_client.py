@@ -20,6 +20,12 @@ from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared.ai_routing import choose_model
 from shared.ai_output import output_budget_instruction, trim_text_to_token_budget
 from shared import db
+from shared.natural_language import (
+    SnapshotQueryRunner,
+    execute_query_plan,
+    plan_query,
+    route_natural_language,
+)
 from shared.incident_postmortem import build_timeline
 from shared.models import CephCapacitySample, Incident
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
@@ -1097,6 +1103,42 @@ async def run_chat_turn(
     frontend's "🔧 Đã dùng: ..." badge.
     """
     refresh_chat_provider_flags()
+    query_plan = None
+    snapshot_evidence_context = None
+    # Phase 1: classify for observability only.  The existing provider/tool
+    # loop remains authoritative until a later phase adds an explicit query
+    # planner.  In particular, this must not create a tool call or proposal.
+    try:
+        natural_language_intent = route_natural_language(
+            user_text,
+            cluster_id=(str(getattr(cluster, "id", "")) or None),
+        )
+    except Exception:  # pragma: no cover - defensive boundary for chat availability
+        # Language classification is an additive observability feature in this
+        # phase.  A parser regression must never make the existing chat path
+        # unavailable.
+        logger.exception("natural_language.classification_failed")
+    else:
+        logger.info(
+            "natural_language.intent intent=%s language=%s confidence=%.2f "
+            "clarification=%s resource_type=%s cluster_id=%s",
+            natural_language_intent.intent,
+            natural_language_intent.language,
+            natural_language_intent.confidence,
+            natural_language_intent.needs_clarification,
+            natural_language_intent.resource_type or "-",
+            getattr(cluster, "id", None),
+        )
+        if settings.ai_natural_language_query_planner_enabled:
+            query_plan = plan_query(natural_language_intent)
+            logger.info(
+                "natural_language.query_plan status=%s intent=%s tools=%s "
+                "cluster_id=%s",
+                query_plan.status,
+                query_plan.intent,
+                ",".join(call.tool_name for call in query_plan.calls) or "-",
+                query_plan.cluster_id or "-",
+            )
     ceph_restricted = auth.is_ceph_chat_restricted(actor)
     ai_name = auth.chat_ai_name(actor)
     female_address = auth.chat_female_address(actor)
@@ -1106,6 +1148,42 @@ async def run_chat_turn(
             "proposal": None,
             "tools_used": [],
         }
+
+    if (
+        query_plan is not None
+        and settings.ai_natural_language_snapshot_runner_enabled
+        and query_plan.executable
+    ):
+        allowed = set(allowed_tools) if allowed_tools is not None else None
+        if allowed is not None and not {call.tool_name for call in query_plan.calls} <= allowed:
+            logger.info(
+                "natural_language.snapshot_plan_skipped reason=tool_scope "
+                "cluster_id=%s",
+                query_plan.cluster_id,
+            )
+        else:
+            try:
+                snapshot_result = await execute_query_plan(
+                    query_plan,
+                    SnapshotQueryRunner(),
+                    max_concurrency=settings.ceph_max_concurrency,
+                )
+                snapshot_evidence_context = redact_text(
+                    json.dumps(snapshot_result.to_dict(), ensure_ascii=False, default=str)
+                )
+                logger.info(
+                    "natural_language.snapshot_plan status=%s stale=%s partial=%s "
+                    "refreshing=%s cluster_id=%s",
+                    snapshot_result.status,
+                    snapshot_result.stale,
+                    snapshot_result.partial,
+                    snapshot_result.refreshing,
+                    snapshot_result.cluster_id,
+                )
+            except Exception:
+                # Snapshot evidence is additive. Preserve the existing provider
+                # path if a cache record is malformed or unavailable.
+                logger.exception("natural_language.snapshot_plan_failed")
 
     actor_system_prompt = system_prompt(
         ceph_restricted=ceph_restricted and not allow_unrestricted,
@@ -1120,6 +1198,12 @@ async def run_chat_turn(
     bluestore_hint = _bluestore_history_hint(outbound_history, cluster)
     if bluestore_hint:
         actor_system_prompt += "\n\n" + bluestore_hint
+    if snapshot_evidence_context:
+        actor_system_prompt += (
+            "\n\nDỮ LIỆU SNAPSHOT READ-ONLY ĐÃ THU THẬP (có thể stale/partial):\n"
+            + snapshot_evidence_context
+            + "\nChỉ kết luận theo evidence này; nếu thiếu dữ liệu, nói rõ thiếu evidence."
+        )
     outbound_user_text = redact_text(user_text)
     tool_cache: dict = {}
     routing_request_id = uuid.uuid4().hex

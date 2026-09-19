@@ -39,5 +39,3 @@ def downgrade() -> None:
         batch_op.drop_column("drift_reason")
         batch_op.drop_column("drift_score")
         batch_op.drop_column("drift_status")
-        batch_op.drop_column("max_gap_hours")
-        batch_op.drop_column("coverage_ratio")

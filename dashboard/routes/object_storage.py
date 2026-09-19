@@ -38,6 +38,8 @@ from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 from watcher.rgw_evidence import get_rgw_evidence
 from watcher.rgw_bucket_diagnosis import build_bucket_access_diagnosis
+from watcher.rgw_access_log import fetch_rgw_error_log, fetch_rgw_error_log_with
+from watcher.rgw_connectivity import probe_endpoint
 from watcher.rgw_access_log import (
     RgwLogError,
     fetch_bucket_access_log,
@@ -1649,6 +1651,22 @@ async def bucket_access_diagnosis_api(
             admin_query_status = "error"
             collection_gaps.append("Không đọc được bucket stats bằng radosgw-admin.")
     rgw_evidence = await asyncio.to_thread(get_rgw_evidence, cluster)
+    endpoint_items = ((rgw_evidence.get("endpoints") or {}).get("items") or [])
+    allowed_hosts = {item["host"] for item in hosts}
+    endpoint_probes = await asyncio.to_thread(
+        lambda: [probe_endpoint(endpoint, allowed_hosts=allowed_hosts) for endpoint in endpoint_items[:8]]
+    )
+    daemon_errors = []
+    try:
+        if cluster.is_default:
+            daemon_errors = await asyncio.to_thread(fetch_rgw_error_log, hosts[0]["host"])
+        else:
+            ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+            daemon_errors = await asyncio.to_thread(
+                fetch_rgw_error_log_with, hosts[0]["host"], ssh_user, ssh_key_path,
+            )
+    except (RgwLogError, CephQueryError, IndexError):
+        daemon_errors = []
     diagnosis = build_bucket_access_diagnosis(
         records,
         bucket=bucket,
@@ -1656,6 +1674,8 @@ async def bucket_access_diagnosis_api(
         bucket_stats=bucket_stats,
         rgw_evidence=rgw_evidence,
         admin_query_status=admin_query_status,
+        endpoint_probes=endpoint_probes,
+        daemon_errors=daemon_errors,
     )
     diagnosis["evidence_gaps"] = collection_gaps + diagnosis["evidence_gaps"]
     diagnosis["cluster_id"] = cluster.id
