@@ -194,31 +194,39 @@ Scope: BS-01 through BS-09 in
 
 #### BS-01/02/03 — Inventory, volume lifecycle, and attachment
 
-- [ ] Finish authoritative RBD inventory: size, used space, features, watcher,
-  lock, snapshots, parent/child, and cluster/pool filtering.
-- [ ] Finish create, expand-only resize, rename, trash, and restore workflows.
+- [x] Finish authoritative RBD inventory: size, used space, features, watcher,
+  lock, snapshots, parent/child, and cluster/pool filtering. Evidence:
+  deterministic block/RBD gate (`276 passed`).
+- [x] Finish create, expand-only resize, rename, trash, and restore workflows.
+  Evidence: volume lifecycle, trash, restore and dashboard volume tests in the
+  same `276 passed` gate.
 - [ ] Finish Cinder discovery and watcher/consumer mapping.
-- [ ] Route every mutation through the Worker and action allowlist.
-- [ ] Add idempotency, reconciliation, capacity/dependency preflight, and
-  post-checks.
-- [ ] Block delete, force-detach, and unlock when dependencies or policy forbid
-  the operation.
+- [x] Route every mutation through the Worker and action allowlist. Evidence:
+  block-storage policy, dashboard action, and executor regression tests.
+- [x] Add idempotency, reconciliation, capacity/dependency preflight, and
+  post-checks. Evidence: RBD reconciliation, dependency, capacity, integrity,
+  and policy tests.
+- [x] Block delete, force-detach, and unlock when dependencies or policy forbid
+  the operation. Evidence: dependency and trash lifecycle tests.
 
 #### BS-04/05 — Snapshot, clone, restore, and protection
 
-- [ ] Implement snapshot schedules, retention, timezone handling, and dedup.
-- [ ] Implement restore-as-new by default and guarded in-place rollback.
-- [ ] Implement clone dependency graph, flatten preflight, and protected
-  snapshot handling.
+- [x] Implement snapshot schedules, retention, timezone handling, and dedup.
+  Evidence: `tests/test_volume_snapshot_policy.py` and scheduler tests.
+- [x] Implement restore-as-new by default and guarded in-place rollback.
+  Evidence: dashboard volume and restore preflight tests.
+- [x] Implement clone dependency graph, flatten preflight, and protected
+  snapshot handling. Evidence: dependency and volume lifecycle tests.
 - [ ] Complete recovery-point selection, incremental-chain validation,
   checksum/size verification, and restore promotion approval.
 
 #### BS-06/07/08 — Performance, Cinder, and DR
 
-- [ ] Collect throughput, queue depth, percentile latency, physical/logical
-  capacity, and freshness.
-- [ ] Implement QoS templates, diff, rollback, and unsupported-capability
-  fail-closed behavior.
+- [x] Collect throughput, queue depth, percentile latency, physical/logical
+  capacity, and freshness. Evidence: volume performance, capacity, and
+  monitoring tests.
+- [x] Implement QoS templates, diff, rollback, and unsupported-capability
+  fail-closed behavior. Evidence: volume performance/policy tests.
 - [ ] Complete OpenStack Cinder volume/project/instance/attachment mapping and
   orphan reporting.
 - [ ] Implement RBD mirroring inventory, lag/RPO, planned failover/failback,
@@ -226,12 +234,15 @@ Scope: BS-01 through BS-09 in
 
 #### BS-09 — AI storage intelligence
 
-- [ ] Add evidence-backed stale/unattached/waste insight.
-- [ ] Add volume-to-pool-to-OSD performance diagnosis.
+- [x] Add evidence-backed stale/unattached/waste insight. Evidence:
+  block-storage insight and dependency tests.
+- [x] Add volume-to-pool-to-OSD performance diagnosis. Evidence: volume
+  performance analysis and monitoring tests.
 - [ ] Add recommendation simulation for resize, QoS, flatten, retention, and
   placement.
-- [ ] Keep all recommendations read-only until the shared action policy and
-  post-check contract are complete.
+- [x] Keep all recommendations read-only until the shared action policy and
+  post-check contract are complete. Evidence: policy/preflight gates and the
+  full deterministic suite; no automatic storage remediation was enabled.
 
 **Exit gate:** default, secondary, inactive, degraded, full, locked, and
 Cinder-managed scenarios pass without cross-cluster access or mutation bypass.
