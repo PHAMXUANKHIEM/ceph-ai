@@ -524,9 +524,12 @@ thị ngay; snapshot mới tự thay đúng section.
   chặn và `cluster_id` trên query phải khớp cluster đã chọn.
 - [x] Collector/snapshot publisher phát `snapshot_changed` sau khi commit
   snapshot/section thành công.
-- [ ] Worker publish `action_state_changed` sau mỗi transition state bền vững.
-- [ ] CRUSH/Pool mutation publish sau post-check, không publish “success” ngay
-  khi mới enqueue.
+- [x] Worker/DB publish `action_state_changed` sau mỗi transition state bền
+  vững, sau commit và không sau rollback. Evidence: `shared/db.py` hooks and
+  `tests/test_dashboard_ws.py` action-state commit/rollback tests.
+- [x] CRUSH/Pool and related mutation scope publish sau post-check-confirmed
+  `Incident.RESOLVED`, không publish “success” ngay khi mới enqueue. Evidence:
+  resolved-incident mapping tests for Pool, CRUSH, RGW, and Deploy.
 - [x] Debounce event liên tiếp trong khoảng 100–300 ms để một batch query chỉ
   tạo một lần refresh UI; server giữ event mới nhất, React coalesces trong
   150 ms, và legacy snapshot pages share one socket. Evidence: commit
@@ -579,9 +582,8 @@ không làm UI đứng; event cluster B không xuất hiện ở tab cluster A.
   in the current dashboard navigation/WebSocket/health-debug gate; the broader
   deterministic release suite also passes.
 - Node 20 frontend type-check and production build: **passed**.
-- Remaining: action-state producers, mutation post-check invalidation,
-  universal freshness badge, browser multi-tab proof, and event/load
-  observability.
+- Remaining: universal freshness badge, browser multi-tab proof, and
+  event/load observability.
 
 ### RT-08 — Invalidation sau mutation và liên kết trạng thái
 
