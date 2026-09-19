@@ -53,6 +53,7 @@ from shared.volume_snapshot_policy import next_run_at, snapshot_name, validate_s
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher.volume_monitor import ceph_code_for
+from watcher.block_storage_insights import build_inventory_insights
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
@@ -1154,6 +1155,75 @@ async def volume_replication_api(
     return {"cluster_id": cluster.id, "pool": pool, "supported": True, "enabled": enabled,
             "mode": mode, "info": info, "status": status,
             "collected_at": datetime.utcnow().isoformat() + "Z"}
+
+
+@router.get("/api/volumes/{pool}/inventory-insights")
+async def volume_inventory_insights_api(
+    request: Request, pool: str, user: str = Depends(require_login)
+):
+    """Return conservative, read-only RBD inventory recommendations.
+
+    This endpoint combines the same cached RBD inventory used by the table
+    with persisted VolumeMetric history and snapshot-policy metadata. It
+    never creates an Action and explicitly reports missing owner/project and
+    backup evidence so a missing signal cannot become a false stale-volume
+    recommendation.
+    """
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        inventory, cache_state = _cached_rbd_inventory_with_state(cluster, pool)
+    except CephQueryError as exc:
+        logger.warning("volume_inventory_insights_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}") from exc
+
+    now = datetime.utcnow()
+    since = now - timedelta(days=7)
+    metric_rows: dict[tuple[str, str], list[dict]] = {}
+    with db.SessionLocal() as session:
+        history = session.query(VolumeMetric).filter(
+            VolumeMetric.pool == pool,
+            _cluster_row_filter(VolumeMetric.cluster_id, cluster),
+            VolumeMetric.polled_at >= since,
+        ).order_by(VolumeMetric.polled_at.asc()).all()
+        policies = session.query(VolumeSnapshotPolicy.pool, VolumeSnapshotPolicy.image).filter(
+            VolumeSnapshotPolicy.pool == pool,
+            _cluster_row_filter(VolumeSnapshotPolicy.cluster_id, cluster),
+            VolumeSnapshotPolicy.enabled.is_(True),
+        ).all()
+
+    for row in history:
+        metric_rows.setdefault((row.pool, row.image), []).append({
+            "iops": row.iops, "polled_at": row.polled_at,
+        })
+    policy_keys = {(row[0], row[1]) for row in policies}
+    scoped_inventory = [{**row, "pool": pool} for row in inventory if isinstance(row, dict)]
+    insights = build_inventory_insights(
+        scoped_inventory, metric_rows, now=now, history_days=7, policy_keys=policy_keys,
+    )
+    return {
+        "cluster_id": cluster.id,
+        "pool": pool,
+        "history_days": 7,
+        "insights": insights,
+        "summary": {
+            "total": len(insights),
+            "stale_unattached": sum(item["kind"] == "STALE_UNATTACHED" for item in insights),
+            "snapshot_review": sum(item["kind"] == "SNAPSHOT_REVIEW" for item in insights),
+            "insufficient_evidence": sum(item["kind"] == "INSUFFICIENT_EVIDENCE" for item in insights),
+        },
+        "coverage": {
+            "owner_project": False,
+            "backup_recency": False,
+            "note": "Owner/project và backup recency chưa có evidence collector trong slice này.",
+        },
+        "collected_at": _cache_collected_at(cache_state),
+        "stale": bool(cache_state["stale"]),
+        "refreshing": bool(cache_state["refreshing"]),
+        "cache_age_seconds": cache_state["age_seconds"],
+        "cache_source": cache_state["source"],
+    }
 
 
 @router.get("/api/volumes/{pool}/inventory/{image}/qos")

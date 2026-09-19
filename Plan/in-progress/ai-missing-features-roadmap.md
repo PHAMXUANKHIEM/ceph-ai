@@ -113,7 +113,7 @@ và nguyên nhân tăng trưởng; không biến cảnh báo ngưỡng hiện t�
 
 ### Pha 2 — AI Block Storage Inventory Insight — P1
 
-- [ ] **2.1 Stale và unattached volume**
+- [~] **2.1 Stale và unattached volume** — đã có read-only `/api/volumes/{pool}/inventory-insights`, kết hợp inventory RBD có cache, trạng thái watcher/attachment và `VolumeMetric` trong 7 ngày; chỉ đánh dấu `STALE_UNATTACHED` khi có evidence zero-I/O, còn thiếu owner/project, backup recency và age metadata.
   - Kết hợp metadata, attachment, I/O, tuổi volume, owner/project và backup gần nhất.
   - Đưa ra lý do, confidence và mức dung lượng có thể thu hồi.
 - [ ] **2.2 Snapshot/clone intelligence**
@@ -123,11 +123,11 @@ và nguyên nhân tăng trưởng; không biến cảnh báo ngưỡng hiện t�
 - [ ] **2.3 Backup và protection gap**
   - Phát hiện backup trễ, retention bất hợp lý, volume quan trọng chưa được bảo vệ
     và restore drill quá hạn.
-- [ ] **2.4 Recommendation only**
+- [~] **2.4 Recommendation only** — endpoint chỉ trả recommendation advisory, estimated reclaim và evidence gaps; không tạo Action, không thực thi retain/trash/resize.
   - Đề xuất retain, snapshot, backup, flatten, move-to-trash hoặc resize nhưng chưa
     thực thi trong pha này.
   - Mỗi đề xuất có evidence, expected saving, tác động và TTL.
-- [ ] **2.5 Kiểm thử**
+- [~] **2.5 Kiểm thử** — đã test attached volume, thiếu lịch sử, zero-I/O stale, snapshot protection và snapshot policy; còn thiếu integration test route/tenant isolation và clone dependency thực tế.
   - Volume đang attach, metadata giả mạo, clone dependency, snapshot được bảo vệ,
     stale cache và tenant isolation.
 
@@ -337,6 +337,7 @@ Một tính năng chỉ được coi là hoàn thành khi đáp ứng đủ:
 
 | Ngày | Hạng mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---|---|---|---|---|
+| 2026-09-19 | Pha 2 — block storage inventory insight slice | Một phần | Thêm `watcher/block_storage_insights.py` và API `/api/volumes/{pool}/inventory-insights`: kết hợp RBD inventory cache, watcher/attachment, I/O history 7 ngày và snapshot policy. Không suy đoán khi thiếu evidence; không tạo Action và không tự thu hồi volume. Owner/project, backup recency và clone dependency chưa có collector trong slice này. | `pytest tests/test_block_storage_insights.py tests/test_capacity_forecast.py tests/test_capacity_evidence.py tests/test_capacity_failure_simulation.py` (22/22 pass) + compileall | Chờ commit |
 | 2026-09-19 | Pha 1 — capacity forecast quality/safety slice | Một phần | Bổ sung forecast method (linear/seasonal/spike-guarded), confidence interval, dự báo cuối horizon, risk explanation và rolling backtest; cập nhật Dashboard để hiển thị các trường này. Chưa đánh dấu hoàn thành vì collector hiện chưa có volume/snapshot/thin provisioning, replica/EC attribution và alert lifecycle đầy đủ. | `pytest tests/test_capacity_forecast.py` (10/10 pass) + compileall + `git diff --check` | Chờ commit |
 | 2026-08-17 | Khởi tạo roadmap | Hoàn thành | Tổng hợp riêng các năng lực AI chưa triển khai và thứ tự phát hành | Review tài liệu | Chờ commit |
 | 2026-08-17 | 0.1 Cluster capability inventory | Hoàn thành | Thêm bảng `cluster_capability_inventory` (migration `6b5e22967d5f`) + enum `CapabilityStatus`; collector `watcher/capability_inventory.py::scan_and_store` chạy theo cadence riêng (`capability_inventory_scan_interval_seconds`, mặc định 300s) trong cả 2 vòng lặp Watcher (cụm mặc định + cụm quan sát thêm), tái dùng `ceph_client.summarize_cluster_versions`/`summarize_versions_payload` đã có sẵn cho phần mixed-version; deployment mode lấy từ `cluster.ceph_exec_mode` (chưa tự dò `ceph orch`, để dành Pha 0.2+ nếu cần). Dashboard `/clusters` hiển thị version/trạng thái mới nhất mỗi cụm. | `pytest tests/test_capability_inventory.py` (9/9 pass) + toàn bộ suite `pytest -q` (2170 passed, 3 fail KHÔNG liên quan — `test_mq.py`/`test_dashboard_pools.py`, tái hiện y hệt trên `main` chưa sửa, do thiếu RabbitMQ broker thật trong môi trường) + `alembic upgrade heads` áp thành công vào Postgres dev thật | Chờ commit |
