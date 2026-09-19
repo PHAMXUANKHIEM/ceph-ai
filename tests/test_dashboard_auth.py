@@ -2,7 +2,7 @@ import bcrypt
 
 from dashboard.routes.auth import is_admin_user
 from shared import db as db_module
-from shared.models import User
+from shared.models import AuthLoginRateLimit, User
 
 
 def _add_user(username, password, *, is_admin=False, is_active=True, created_by="admin"):
@@ -153,6 +153,20 @@ def test_login_locks_out_after_repeated_failures(dashboard_client):
         follow_redirects=False,
     )
     assert response.status_code == 429
+
+
+def test_login_rate_limit_state_is_persisted_in_shared_database(dashboard_client):
+    response = dashboard_client.post(
+        "/login",
+        data={"username": "admin", "password": "wrong-password"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 401
+
+    with db_module.SessionLocal() as session:
+        row = session.get(AuthLoginRateLimit, "testclient")
+        assert row is not None
+        assert row.failed_attempts == 1
 
 
 def test_db_backed_user_can_log_in(dashboard_client):

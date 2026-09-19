@@ -266,10 +266,8 @@ def dashboard_client(monkeypatch):
     from dashboard.app import app
     from dashboard.routes import auth as auth_module
 
-    # The login rate limiter is process-global state keyed by client host,
-    # and TestClient always reports the same synthetic host — without
-    # clearing it here, failed-login attempts in one test would count
-    # towards another test's lockout threshold.
+    # Keep legacy test state clean while the real limiter is database-backed.
+    # The table itself is recreated for each isolated TestClient database.
     auth_module._failed_attempts.clear()
 
     with TestClient(app) as client:

@@ -1077,6 +1077,25 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class AuthLoginRateLimit(Base):
+    """Shared failed-login state used by every Dashboard replica.
+
+    The client key is deliberately the only identity stored here.  Keeping
+    the limit keyed by source address preserves the existing brute-force
+    protection without storing usernames or passwords in the rate-limit
+    table.  PostgreSQL row locking in the login route makes increments
+    atomic across workers and processes.
+    """
+
+    __tablename__ = "auth_login_rate_limits"
+
+    client_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class VitastorUser(Base):
     """Login accounts owned exclusively by the Vitastor control plane.
 

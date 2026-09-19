@@ -108,6 +108,12 @@ def run_migrations_online() -> None:
 
             with context.begin_transaction():
                 context.run_migrations()
+            # ``connectable.connect()`` does not commit an implicit
+            # transaction when its context exits.  Commit explicitly before
+            # releasing the session-level advisory lock; otherwise a
+            # successful-looking upgrade is rolled back and the metadata
+            # artifact falsely reports the requested head.
+            connection.commit()
         finally:
             if lock_acquired:
                 connection.execute(
