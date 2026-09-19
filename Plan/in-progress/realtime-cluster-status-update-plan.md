@@ -527,9 +527,10 @@ thị ngay; snapshot mới tự thay đúng section.
 - [ ] Worker publish `action_state_changed` sau mỗi transition state bền vững.
 - [ ] CRUSH/Pool mutation publish sau post-check, không publish “success” ngay
   khi mới enqueue.
-- [ ] Debounce event liên tiếp trong khoảng 100–300 ms để một batch query chỉ
-  tạo một lần refresh UI; hiện server giữ event mới nhất và client coalesce
-  bằng generation.
+- [x] Debounce event liên tiếp trong khoảng 100–300 ms để một batch query chỉ
+  tạo một lần refresh UI; server giữ event mới nhất, React coalesces trong
+  150 ms, và legacy snapshot pages share one socket. Evidence: commit
+  `38ecab34` and `tests/test_dashboard_ws.py`.
 - [x] Client reconnect exponential backoff; HTTP polling vẫn là fallback khi
   WebSocket không được proxy hỗ trợ hoặc event bị mất.
 
@@ -538,39 +539,49 @@ không làm UI đứng; event cluster B không xuất hiện ở tab cluster A.
 
 ### RT-07 — Chuẩn hóa frontend status/freshness
 
-- [~] Health and Pools React pages now use abortable, sequence-safe reads,
-  shared cluster event invalidation, hidden-tab handling, and HTTP fallback.
-  Equivalent treatment for every remaining section is still open.
+- [~] Health and Pools React pages plus PG/CRUSH/Nodes snapshot pages now use
+  scoped event invalidation, hidden-tab handling, and HTTP fallback. Health/
+  Pools use abortable sequence-safe reads; equivalent treatment for every
+  remaining section is still open.
 - [x] Tạo shared hook `useClusterSnapshotEvents()` với reconnect backoff,
   cluster filtering và no-payload event handling.
-- [ ] Các trạng thái phải phân biệt:
+- [~] Các trạng thái phải phân biệt:
   - `loading`: chưa có snapshot;
   - `refreshing`: đang lấy snapshot mới nhưng vẫn có dữ liệu cũ;
   - `fresh`: trong freshness budget;
   - `stale`: quá budget nhưng còn snapshot dùng được;
   - `error`: refresh thất bại;
-  - `unknown`: chưa từng có dữ liệu.
-- [ ] Không dùng `window.location.reload()` để cập nhật read-only state.
-- [ ] Fetch có `AbortController`, tránh response cũ ghi đè response mới.
-- [ ] Không chạy polling khi tab hidden; khi tab visible lại fetch một lần.
-- [ ] Cập nhật timestamp bằng `collected_at` từ server, không bằng `updated_at`
-  lúc route render.
-- [ ] Nút `Refresh` chỉ trigger background refresh và disable chống double click;
-  không chờ SSH trong browser request.
-- [ ] Giữ giao diện cũ khi JS lỗi ở mức HTML snapshot tối thiểu hoặc báo lỗi rõ;
-  không để toàn trang trắng.
+  - `unknown`: chưa từng có dữ liệu. React health/Pools implement the shared
+    labels; remaining pages still need the same visual contract.
+- [~] Không dùng `window.location.reload()` để cập nhật read-only state trong
+  health, Pools, PGs, CRUSH và Nodes; mutation/progress pages still have
+  intentional reloads.
+- [~] Fetch có `AbortController`, tránh response cũ ghi đè response mới trong
+  React health/Pools and sequence guards in migrated legacy reads; the remaining
+  static pages still need abort wiring.
+- [x] Không chạy polling khi tab hidden; khi tab visible lại fetch một lần cho
+  các migrated snapshot pages.
+- [~] Cập nhật timestamp bằng `collected_at` từ server cho migrated snapshot
+  pages; remaining pages still need the shared freshness component.
+- [~] Nút `Refresh` chỉ trigger background refresh và disable chống double click;
+  health/Pools/CRUSH satisfy this, while remaining mutation pages are open.
+- [x] Giữ giao diện cũ khi JS lỗi ở mức HTML snapshot tối thiểu hoặc báo lỗi rõ;
+  server-rendered snapshot pages keep their initial table/status markup.
 
 **Exit gate:** mọi trang có cùng cách hiển thị freshness, không còn refresh loop
 3 giây và không nhấp nháy toàn trang.
 
-**RT-06/RT-07 evidence (2026-09-14):**
+**RT-06/RT-07 evidence (2026-09-19):**
 
 - `tests/test_cluster_events.py`, `tests/test_cluster_snapshot.py`,
   `tests/test_dashboard_ws.py`: **18 passed**.
-- Health/Pool/PG/CRUSH/Nodes/collector regression: **68 passed**.
+- Health/Pool/PG/CRUSH/Nodes/collector regression: **47 passed, 1 warning**
+  in the current dashboard navigation/WebSocket/health-debug gate; the broader
+  deterministic release suite also passes.
 - Node 20 frontend type-check and production build: **passed**.
 - Remaining: action-state producers, mutation post-check invalidation,
-  universal freshness badge, and event/load observability.
+  universal freshness badge, browser multi-tab proof, and event/load
+  observability.
 
 ### RT-08 — Invalidation sau mutation và liên kết trạng thái
 
