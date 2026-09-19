@@ -250,7 +250,7 @@ Tiếp theo: kiểm thử trên dữ liệu lịch sử trước khi cho River c
 - [x] Bật ứng viên trên production ở `SHADOW_ONLY` sau khi operator phê duyệt; scope thực tế là `CS-LAB / 10.20.1.153 / cpu`, kill switch vẫn tắt và `ACTIVE`/auto-promotion không được phép.
 - [x] Theo dõi ít nhất một bounded learner cycle production: sample CPU thật được audit với `runtime=SHADOW_ONLY`, `failed=0`, `applied=0`, `quality=NO_LABEL`.
 - [x] Sửa registry drift do adaptive window selection: đồng bộ baseline `linear:<window>h` chưa có promotion/rollback governance; scope đã có governance vẫn fail-closed.
-- [x] So sánh alert volume, false positive, early detection và CPU cost bằng canary report 72 giờ: `368` runs, `192` evaluated, `2` lifecycle events, `0` false positives, `0` early detections, `7` cycles và `3358.786 ms` CPU time; không có warning/critical outcome để kết luận candidate tốt hơn.
+- [x] So sánh alert volume, false positive, early detection và CPU cost bằng canary report 72 giờ: snapshot mới nhất có `364` runs, `188` evaluated, `2` lifecycle events, `0` false positives, `0` early detections, `7` cycles, MAE `5.5251` và `3358.786 ms` CPU time; không có warning/critical outcome để kết luận candidate tốt hơn.
 - [ ] Chỉ mở rộng scope khi operator xác nhận.
 
 Tiếp theo: tiếp tục theo dõi canary production `CS-LAB / 10.20.1.153 / cpu` đủ 24–72 giờ để có đủ alert-volume, false-positive, early-detection và resource-cost evidence; chưa mở rộng scope.
@@ -338,11 +338,12 @@ và chu kỳ Vitastor tiếp theo không còn timeout. Mục acceptance vẫn ch
 
 Worker và Dashboard cũng đã được restart tuần tự để nạp cùng policy; runtime
 đều xác nhận `pool=5`, `timeout=10`, `overflow=0`. Sau restart, forecast runs
-vẫn `17,708`, cycle audits `26`, promotion audits `0`, và không có lỗi mới
+vẫn `17,708`, cycle audits `30`, promotion audits `0`, và không có lỗi mới
 trong log health check.
 
-Canary report live mới nhất (`72h`, scope `CS-LAB / 10.20.1.153 / cpu`) xác nhận
-`scope_match=true`, `data_quality_count=0`, `192` evaluated outcomes, `0`
+Canary report live mới nhất lúc `19/09/2026 10:05 +07` (`72h`, scope
+`CS-LAB / 10.20.1.153 / cpu`) xác nhận `scope_match=true`,
+`ready_for_canary_review=true`, `data_quality_count=0`, `188` evaluated outcomes, `0`
 false-positive events, `0` detected breaches và `7` bounded cycles. Đây là
 evidence quan sát, không phải lý do để promote khi chưa có warning/critical
 outcome thực tế.
