@@ -257,6 +257,98 @@ def _volume_analysis(
     }
 
 
+def _hot_resource_summary(
+    latest_map: dict[tuple[str, str], VolumeMetric],
+    analyses: list[dict],
+    osd_summary: dict,
+) -> dict:
+    """Rank observed hot resources without inventing PG metrics.
+
+    Volume and pool rankings use the same latest ``VolumeMetric`` snapshot
+    already used by the RCA report.  OSDs come from live ``ceph osd perf``.
+    PG entries are explicitly candidates derived from a mapped hot volume;
+    this is not a direct PG latency measurement.
+    """
+    cluster_values = [_latency(row) for row in latest_map.values()]
+    cluster_median = _median(cluster_values)
+    by_pool: dict[str, list[float]] = defaultdict(list)
+    for row in latest_map.values():
+        by_pool[row.pool].append(_latency(row))
+
+    pools = []
+    if cluster_median and cluster_median > 0:
+        for pool, values in by_pool.items():
+            if len(values) < 2:
+                continue
+            median = _median(values)
+            ratio = round(median / cluster_median, 3) if median is not None else None
+            if ratio is not None and ratio >= POOL_ELEVATED_RATIO:
+                pools.append({
+                    "pool": pool,
+                    "median_latency_ms": median,
+                    "cluster_median_latency_ms": cluster_median,
+                    "ratio": ratio,
+                    "peer_volume_count": len(values),
+                    "source": "volume_metrics",
+                })
+    pools.sort(key=lambda item: item["ratio"], reverse=True)
+
+    volumes = []
+    pg_candidates: dict[str, dict] = {}
+    for item in analyses:
+        volume_signal = item.get("signals", {}).get("volume", {})
+        pool_signal = item.get("signals", {}).get("pool", {})
+        mapped_osds = item.get("signals", {}).get("mapped_outlier_osds", [])
+        if volume_signal.get("status") != "elevated" and not item.get("saturated"):
+            continue
+        volumes.append({
+            "pool": item["pool"],
+            "image": item["image"],
+            "current_latency_ms": item["current_latency_ms"],
+            "baseline_latency_ms": item["baseline_latency_ms"],
+            "delta_percent": item["delta_percent"],
+            "confidence": item["confidence"],
+            "signals": [
+                name for name, active in (
+                    ("volume_elevated", volume_signal.get("status") == "elevated"),
+                    ("pool_contention", pool_signal.get("status") == "elevated"),
+                    ("osd_outlier", bool(mapped_osds)),
+                    ("saturated", bool(item.get("saturated"))),
+                ) if active
+            ],
+            "source": "volume_metrics",
+        })
+        topology = item.get("topology") or {}
+        for pgid in topology.get("pgids") or ([topology["pgid"]] if topology.get("pgid") else []):
+            current = pg_candidates.setdefault(pgid, {
+                "pgid": pgid,
+                "volume_refs": [],
+                "confidence": 0.0,
+                "source": "volume_osd_mappings",
+                "status": "candidate_only",
+            })
+            current["volume_refs"].append(f"{item['pool']}/{item['image']}")
+            current["confidence"] = max(current["confidence"], item["confidence"])
+    volumes.sort(key=lambda item: (item["confidence"], item["delta_percent"] or 0), reverse=True)
+
+    return {
+        "status": "observed" if (volumes or pools or osd_summary.get("outliers")) else "not_available",
+        "volumes": volumes[:MAX_VOLUME_REPORTS],
+        "pools": pools[:MAX_VOLUME_REPORTS],
+        "osds": [
+            {**item, "source": "ceph_osd_perf_live", "status": "outlier"}
+            for item in (osd_summary.get("outliers") or [])[:MAX_VOLUME_REPORTS]
+        ],
+        "pg_candidates": sorted(
+            pg_candidates.values(), key=lambda item: item["confidence"], reverse=True
+        )[:MAX_VOLUME_REPORTS],
+        "evidence_gaps": [
+            "PG entries are mapped candidates, not direct PG latency or queue measurements.",
+            "OSD outliers require live ceph osd perf; absent/stale live data is not inferred.",
+        ],
+    }
+
+
 def _distribution_chain(session, cluster_id: str, now: datetime) -> tuple[dict, dict | None]:
     rows = session.query(CrushOsdDistribution).filter(
         CrushOsdDistribution.cluster_id == cluster_id,
@@ -419,6 +511,7 @@ def build_report(
             ))
     analyses.sort(key=lambda item: (item["confidence"], item["current_latency_ms"]), reverse=True)
     analyses = analyses[:MAX_VOLUME_REPORTS]
+    hot_resources = _hot_resource_summary(latest_map, analyses, osd_summary)
     host_join_count = sum(1 for item in analyses if item.get("host_evidence"))
 
     chain, distribution_citation = _distribution_chain(session, cluster_id, now)
@@ -541,6 +634,7 @@ def build_report(
         "window": {"hours": window_hours, "start": _iso(window_start), "end": _iso(now)},
         "scope": {"pool": pool, "image": image},
         "analyses": analyses,
+        "hot_resources": hot_resources,
         "chain": [chain[layer] for layer in ("volume", "pool", "pg", "osd", "disk", "host")],
         "evidence_gaps": gaps,
         "_citations": citations,
