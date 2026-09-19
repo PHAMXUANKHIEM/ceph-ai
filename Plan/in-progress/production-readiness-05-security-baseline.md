@@ -15,8 +15,9 @@ Biến các cảnh báo bảo mật thành startup gate và middleware policy b�
       `DASHBOARD_TRUSTED_HOSTS`/`DASHBOARD_ALLOWED_ORIGINS` và không tin
       `X-Forwarded-*` nếu chưa có proxy boundary được cấu hình. Trusted
       reverse-proxy boundary và header policy vẫn còn phải nghiệm thu.
-- [x] Chuyển login/API rate limit sang shared PostgreSQL store cho multi-replica;
+- [~] Login rate limit đã chuyển sang shared PostgreSQL store cho multi-replica;
       failed-login state được khóa theo row và không còn phụ thuộc process memory.
+      API rate limit dùng chung vẫn còn mở.
 - [ ] Hoàn tất security regression cho session fixation, CSRF, host header và brute force.
 
 Evidence hiện tại: `tests/test_production_readiness.py`. Gate chỉ được kích hoạt
