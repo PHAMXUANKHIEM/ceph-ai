@@ -153,6 +153,59 @@ def _host_evidence(
     return evidence
 
 
+def _investigation_steps(hypothesis: str) -> list[dict]:
+    """Return deterministic, read-only follow-up checks for a hypothesis.
+
+    These are investigation steps, not executable Ceph commands. Keeping them
+    as structured data lets the UI explain what evidence is still missing
+    without creating an action or implying that a root cause is proven.
+    """
+    steps_by_hypothesis = {
+        "host_resource_candidate": [
+            "Đối chiếu CPU/RAM/disk/network của host trong cùng timestamp với latency.",
+            "Kiểm tra lại acting OSD và CRUSH host mapping hiện tại.",
+            "Kiểm tra recovery/backfill và slow ops trước khi đề xuất thay đổi.",
+        ],
+        "sampled_data_osd_latency_candidate": [
+            "Xác nhận PG/acting set và primary OSD của các object mẫu còn fresh.",
+            "Đối chiếu latency của OSD outlier với host disk metrics trực tiếp.",
+            "Kiểm tra recovery/backfill và slow ops để loại trừ tải nền tạm thời.",
+        ],
+        "pool_contention_candidate": [
+            "So sánh latency của các volume peer cùng pool trong cùng cửa sổ thời gian.",
+            "Kiểm tra pool quota, QoS và phân bố PG/acting OSD hiện tại.",
+            "Kiểm tra recovery/backfill và network contention trước khi thay đổi cấu hình.",
+        ],
+        "volume_consumer_bottleneck_candidate": [
+            "Đối chiếu IOPS, latency và saturated flag của volume với workload consumer.",
+            "Kiểm tra snapshot, clone, watcher và attachment đang hoạt động.",
+            "Thu thập thêm lịch sử volume và host metrics trước khi kết luận.",
+        ],
+        "osd_disk_latency_candidate_unscoped": [
+            "Xác định volume/PG đang sử dụng OSD outlier trong cùng thời điểm.",
+            "Đối chiếu commit latency với host disk latency và network metrics.",
+            "Kiểm tra recovery/backfill và slow ops để xác định phạm vi ảnh hưởng.",
+        ],
+        "no_strong_candidate": [
+            "Thu thập thêm ít nhất 3 mẫu latency liên tiếp cho volume cần kiểm tra.",
+            "Bổ sung volume→PG→acting OSD mapping và host metrics cùng timestamp.",
+            "Chỉ xếp hạng nguyên nhân sau khi các tầng evidence đủ fresh.",
+        ],
+    }
+    return [
+        {
+            "order": index,
+            "step": step,
+            "read_only": True,
+            "action_id": None,
+        }
+        for index, step in enumerate(
+            steps_by_hypothesis.get(hypothesis, steps_by_hypothesis["no_strong_candidate"]),
+            start=1,
+        )
+    ]
+
+
 def _volume_analysis(
     rows: list[VolumeMetric],
     latest: VolumeMetric,
@@ -254,6 +307,7 @@ def _volume_analysis(
         "confidence": confidence,
         "topology": topology,
         "host_evidence": host_evidence,
+        "investigation_steps": _investigation_steps(hypothesis),
     }
 
 
@@ -347,6 +401,35 @@ def _hot_resource_summary(
             "OSD outliers require live ceph osd perf; absent/stale live data is not inferred.",
         ],
     }
+
+
+def _ranked_options(analyses: list[dict]) -> list[dict]:
+    """Expose ranked investigation options without turning them into actions."""
+    candidates = [
+        item for item in analyses
+        if item.get("hypothesis") != "no_strong_candidate"
+    ]
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("confidence") or 0),
+            float(item.get("current_latency_ms") or 0),
+        ),
+        reverse=True,
+    )
+    return [
+        {
+            "rank": index,
+            "target": f"{item['pool']}/{item['image']}",
+            "hypothesis": item["hypothesis"],
+            "confidence": item["confidence"],
+            "why": item["explanation"],
+            "next_checks": [step["step"] for step in item["investigation_steps"]],
+            "read_only": True,
+            "action_id": None,
+            "recommendation_mode": "READ_ONLY_REPORT",
+        }
+        for index, item in enumerate(candidates[:MAX_VOLUME_REPORTS], start=1)
+    ]
 
 
 def _distribution_chain(session, cluster_id: str, now: datetime) -> tuple[dict, dict | None]:
@@ -512,6 +595,7 @@ def build_report(
     analyses.sort(key=lambda item: (item["confidence"], item["current_latency_ms"]), reverse=True)
     analyses = analyses[:MAX_VOLUME_REPORTS]
     hot_resources = _hot_resource_summary(latest_map, analyses, osd_summary)
+    ranked_options = _ranked_options(analyses)
     host_join_count = sum(1 for item in analyses if item.get("host_evidence"))
 
     chain, distribution_citation = _distribution_chain(session, cluster_id, now)
@@ -622,6 +706,12 @@ def build_report(
         gaps.append("Có host metrics nhưng tất cả sample đã stale quá 5 phút; không dùng để suy luận.")
     elif not host_join_count:
         gaps.append("Có host metrics nhưng chưa join được với acting OSD của volume nào trong cửa sổ.")
+    gaps.append(
+        "Chưa có recovery/backfill/slow-ops evidence được thu thập cùng thời điểm; không dùng để kết luận tải nền."
+    )
+    gaps.append(
+        "Chưa có network contention evidence theo OSD/host; network counters hiện tại không đủ chứng minh nghẽn mạng."
+    )
     if stale_distribution_rows:
         gaps.append(
             f"Có {stale_distribution_rows} OSD→host mapping stale/thiếu host; không dùng cho host correlation."
@@ -635,6 +725,7 @@ def build_report(
         "scope": {"pool": pool, "image": image},
         "analyses": analyses,
         "hot_resources": hot_resources,
+        "ranked_options": ranked_options,
         "chain": [chain[layer] for layer in ("volume", "pool", "pg", "osd", "disk", "host")],
         "evidence_gaps": gaps,
         "_citations": citations,
