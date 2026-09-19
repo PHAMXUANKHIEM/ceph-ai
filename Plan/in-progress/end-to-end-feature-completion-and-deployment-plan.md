@@ -177,6 +177,10 @@ Scope: RT-05 through RT-09.
   `tests/test_dashboard_ws.py` (`12 passed`).
 - [ ] Add bounded retries, circuit breakers, concurrency limits, correlation
   IDs, stale alerts, cache-size monitoring, and event reconnect metrics.
+  Current admin debug evidence now includes collector/cache/API/retry and
+  WebSocket connection/message/disconnect/policy counters; the remaining
+  operator dashboards, stale/dead-collector alerts, and browser reconnect
+  telemetry are still open.
 - [ ] Execute the RT-05 through RT-09 exit-gate browser and load tests.
 
 **Exit gate:** changing dashboard sections does not open SSH connections,
