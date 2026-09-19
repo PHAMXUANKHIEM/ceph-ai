@@ -133,7 +133,9 @@ Scope: RT-00 through RT-04 in
 - [x] Keep the Watcher disabled during tests that could send real alerts. The
   release run excludes `live` and `integration` tests; no live alert-producing
   test is used in this gate.
-- [ ] Commit the current health snapshot, warmup, collector, and dashboard slice.
+- [x] Commit the current health snapshot, warmup, collector, and dashboard
+  slice. The current realtime hardening is in pushed commit `f40d084c` and
+  post-check invalidation is in `0be87d8a`.
 - [ ] Record test evidence and query-rate comparison against the baseline.
 
 **Exit gate:** health reads do not perform live Ceph queries, refresh is
@@ -151,7 +153,11 @@ Scope: RT-05 through RT-09.
 - [ ] Remove page reload and independent polling loops.
 - [ ] Add WebSocket or SSE invalidation events with HTTP polling fallback.
 - [ ] Enforce HTTP-equivalent authentication and cluster isolation for events.
-- [ ] Publish events only after snapshot commit or mutation post-check.
+- [x] Publish events only after snapshot commit or mutation post-check. Snapshot
+  events are published after versioned cache commit; resolved-incident
+  invalidations are published after the database commit that records the
+  post-check-confirmed `RESOLVED` state. Evidence: `tests/test_dashboard_ws.py`
+  (`9 passed`).
 - [ ] Add mutation-to-invalidation mapping for pool, CRUSH, OSD, RGW, node, and
   deployment changes.
 - [ ] Add bounded retries, circuit breakers, concurrency limits, correlation
