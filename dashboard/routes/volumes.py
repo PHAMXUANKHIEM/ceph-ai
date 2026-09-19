@@ -62,6 +62,7 @@ from watcher.block_storage_insights import (
 )
 from watcher.block_storage_capacity import build_capacity_risk
 from watcher.block_storage_dependencies import build_pool_dependency_health
+from watcher.block_storage_integrity import build_integrity_evidence
 from watcher.block_storage_policy import build_durability_policy
 from watcher.capacity_failure_simulation import simulate as simulate_capacity_failure
 from watcher.capacity_forecast import forecasts as capacity_forecasts
@@ -2514,6 +2515,36 @@ def _volume_audit_summary(cluster, pool: str, image: str) -> dict:
     return {"count": len(events), "events": events}
 
 
+def _volume_integrity_incidents(cluster, pool: str, image: str) -> list[dict]:
+    """Return open incidents whose stable code targets this exact volume.
+
+    The integrity card must not guess ownership from free-text messages.  The
+    volume monitor already persists a deterministic ``cluster/pool/image``
+    code, so use that key and the authoritative Incident table only.
+    """
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(Incident)
+            .filter(
+                _cluster_row_filter(Incident.cluster_id, cluster),
+                Incident.ceph_code == ceph_code_for(pool, image),
+                Incident.status.in_(OPEN_STATUSES),
+            )
+            .order_by(Incident.detected_at.desc())
+            .limit(20)
+            .all()
+        )
+    return [
+        {
+            "id": row.id,
+            "ceph_code": row.ceph_code,
+            "status": row.status,
+            "detected_at": _volume_timestamp(row.detected_at),
+        }
+        for row in rows
+    ]
+
+
 @router.get("/api/volumes/{pool}/inventory/{image}")
 async def volume_inventory_detail_api(
     request: Request, pool: str, image: str, user: str = Depends(require_login)
@@ -2566,6 +2597,59 @@ async def volume_inventory_detail_api(
     detail["metric_summary"] = metric_summary
     detail["audit_summary"] = audit_summary
     return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **detail}
+
+
+@router.get("/api/volumes/{pool}/inventory/{image}/integrity")
+async def volume_integrity_api(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Return bounded, read-only integrity evidence for one RBD volume.
+
+    This endpoint deliberately exposes evidence and gaps, not a repair button.
+    ``pg repair``, scrub repair and lock/attachment mutation remain outside the
+    route and require a separate reviewed/approved workflow.
+    """
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if not image or len(image) > 128 or "\x00" in image or "/" in image:
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+
+    try:
+        if cluster.is_default:
+            detail_future = asyncio.to_thread(ceph_client.query_rbd_image_detail, pool, image)
+            dependency_future = asyncio.to_thread(ceph_client.query_rbd_pool_dependency_health, pool)
+        else:
+            connection = cluster_connection(cluster)
+            detail_future = asyncio.to_thread(
+                ceph_client.query_rbd_image_detail_with, pool, image, *connection
+            )
+            dependency_future = asyncio.to_thread(
+                ceph_client.query_rbd_pool_dependency_health_with, pool, *connection
+            )
+        detail, dependency = await asyncio.gather(detail_future, dependency_future)
+    except CephQueryError as exc:
+        logger.warning("volume_integrity_api: cluster=%s volume=%s/%s: %s", cluster.id, pool, image, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được integrity evidence: {exc}")
+
+    backup_summary, incidents = await asyncio.gather(
+        asyncio.to_thread(_volume_backup_summary, cluster, pool, image),
+        asyncio.to_thread(_volume_integrity_incidents, cluster, pool, image),
+    )
+    evidence = build_integrity_evidence(
+        detail,
+        dependency.get("health") if isinstance(dependency, dict) else None,
+        dependency.get("pg") if isinstance(dependency, dict) else None,
+        backup_summary,
+        incidents=incidents,
+    )
+    return {
+        "cluster_id": cluster.id,
+        "pool": pool,
+        "image": image,
+        "collected_at": datetime.utcnow().isoformat() + "Z",
+        **evidence,
+    }
 
 
 @router.get("/api/volumes/{pool}/inventory/{image}/dependencies")

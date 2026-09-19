@@ -135,6 +135,14 @@
 .volume-attachment-remediation { margin: 14px 0 0; padding: 10px 12px; border-left: 3px solid #64748b; border-radius: 6px; color: #cbd5e1; background: rgba(100,116,139,.1); font-size: 12px; line-height: 1.45; }
 .volume-attachment-remediation.is-danger { border-left-color: #ef4444; color: #fecaca; background: rgba(239,68,68,.1); }
 .volume-attachment-remediation.is-warning { border-left-color: #f59e0b; color: #fde68a; background: rgba(245,158,11,.1); }
+.volume-integrity-status { display: inline-block; border-radius: 999px; padding: 3px 7px; font-size: 11px; }
+.volume-integrity-status.is-healthy { color: #bbf7d0; background: rgba(34,197,94,.14); }
+.volume-integrity-status.is-warning { color: #fde68a; background: rgba(245,158,11,.14); }
+.volume-integrity-status.is-critical { color: #fecaca; background: rgba(239,68,68,.14); }
+.volume-integrity-gaps { display: grid; gap: 6px; margin-top: 12px; }
+.volume-integrity-gap, .volume-integrity-ok { padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4; }
+.volume-integrity-gap { color: #fde68a; background: rgba(245,158,11,.08); border-left: 3px solid #f59e0b; }
+.volume-integrity-ok { color: #bbf7d0; background: rgba(34,197,94,.08); border-left: 3px solid #22c55e; }
 .volume-badge-danger, .volume-badge-success, .volume-badge-muted { display: inline-block; border-radius: 999px; padding: 3px 7px; font-size: 11px; }
 .volume-badge-danger { color: #fecaca; background: rgba(239,68,68,.14); }.volume-badge-success { color: #bbf7d0; background: rgba(34,197,94,.14); }.volume-badge-muted { color: #cbd5e1; background: #334155; }
 .volume-tabs { display: flex; gap: 5px; margin-bottom: 14px; border-bottom: 1px solid #334155; }

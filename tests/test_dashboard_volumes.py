@@ -2137,6 +2137,40 @@ def test_volume_dependency_health_api_is_pool_scoped_and_read_only(dashboard_cli
     assert payload["read_only"] is True
 
 
+def test_volume_integrity_api_returns_bounded_evidence_without_repair(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"pool": pool, "name": image, "watchers": [], "locks": []},
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_dependency_health",
+        lambda pool: {
+            "health": {"status": "HEALTH_OK", "checks": {}},
+            "pg": {"pg_stats": [{
+                "pgid": "3.a", "state": "active+clean",
+                "last_scrub_stamp": "2026-09-19T01:00:00+0000",
+                "last_deep_scrub_stamp": "2026-09-18T01:00:00+0000",
+            }]},
+            "osd_tree": {"nodes": []},
+        },
+    )
+    monkeypatch.setattr(volumes_route, "_volume_backup_summary", lambda cluster, pool, image: {
+        "latest_success": {"job_type": "full", "sha256_present": True},
+    })
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/inventory/vm-01/integrity")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "HEALTHY"
+    assert payload["checksum"]["status"] == "AVAILABLE"
+    assert payload["read_only"] is True
+    assert payload["repair"]["automatic_repair"] is False
+    assert payload["repair"]["repair_supported"] is False
+
+
 def test_volume_durability_policy_api_checks_replica_and_crush_domains(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(
