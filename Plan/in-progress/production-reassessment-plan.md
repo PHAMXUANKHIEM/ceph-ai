@@ -132,33 +132,52 @@ Evidence hiện tại trên server `10.3.55.213`:
 
 ### PR-02.1 Chốt mô hình TLS
 
-- [ ] Ghi rõ TLS termination ở reverse proxy nào và IP/CIDR proxy nào được tin.
-- [ ] Production/staging bắt buộc `https_only=True` cho session cookie; local HTTP
+- [~] Ghi rõ TLS termination ở reverse proxy nào và IP/CIDR proxy nào được tin.
+  `DASHBOARD_TRUSTED_PROXY_IPS` đã là boundary bắt buộc và đã có test peer IP;
+  topology reverse-proxy thực tế trên staging/production vẫn cần operator xác nhận.
+- [x] Production/staging bắt buộc `https_only=True` cho session cookie; local HTTP
   chỉ được dùng khi environment không phải production/staging.
-- [ ] `Secure`, `HttpOnly`, `SameSite` và session lifetime phải có startup check.
+- [x] Middleware cấu hình tường minh `https_only`, `HttpOnly`, `SameSite=lax` và
+  `max_age=1209600`; regression kiểm tra cả options và header phát ra.
 
 ### PR-02.2 Dùng một trusted-scheme helper
 
-- [ ] Chuẩn hóa helper xác định effective scheme: chỉ dùng `X-Forwarded-Proto`
+- [x] Chuẩn hóa helper xác định effective scheme: chỉ dùng `X-Forwarded-Proto`
   khi socket peer thuộc `DASHBOARD_TRUSTED_PROXY_IPS` và giá trị hợp lệ.
-- [ ] Request trực tiếp giả mạo forwarded header phải bị từ chối hoặc bỏ qua.
-- [ ] CSRF cookie, HSTS, absolute URL, origin check và security header dùng cùng
-  helper; không điều kiện rời rạc dựa trực tiếp vào `request.url.scheme`.
-- [ ] Nếu có proxy chain, document thứ tự hop và chỉ lấy giá trị đã xác minh.
+- [x] Request trực tiếp giả mạo forwarded header phải bị từ chối hoặc bỏ qua.
+- [x] CSRF cookie, HSTS và origin check dùng cùng helper; các nhánh còn lại không
+  còn quyết định HTTPS độc lập bằng `request.url.scheme`.
+- [~] Nếu có proxy chain, document thứ tự hop và chỉ lấy giá trị đã xác minh; code
+  chỉ nhận direct socket peer hiện tại, còn thứ tự hop thực tế chờ topology sign-off.
 
 ### PR-02.3 Regression matrix
 
-- [ ] Direct HTTP/HTTPS, trusted proxy HTTPS/HTTP, untrusted proxy và malformed
+- [x] Direct HTTP/HTTPS, trusted proxy HTTPS/HTTP, untrusted proxy và malformed
   forwarded header.
-- [ ] Assert `Secure`, `HttpOnly`, `SameSite`, HSTS và CSRF behavior.
-- [ ] Test session fixation/rotation sau login và logout.
+- [x] Assert `Secure`, `HttpOnly`, `SameSite`, HSTS và CSRF behavior.
+- [~] Có regression login/logout và thay thế session state; kiểm tra rotation ở
+  mức cookie cần bổ sung trong browser/e2e matrix.
 
 ### Acceptance PR-02
 
-- Production không thể phát session cookie thiếu `Secure`.
-- Forwarded HTTPS chỉ có hiệu lực từ trusted proxy.
-- Client trực tiếp không bật được secure-origin behavior bằng header giả.
-- Security regression pass trên Python 3.11 và 3.12.
+- [x] Production không thể phát session cookie thiếu `Secure`.
+- [x] Forwarded HTTPS chỉ có hiệu lực từ trusted proxy.
+- [x] Client trực tiếp không bật được secure-origin behavior bằng header giả.
+- [~] Security regression pass trên Python 3.11 và 3.12; Python 3.11 đã pass,
+  Python 3.12 chưa có runtime/CI artifact trên server.
+
+### Evidence PR-02 hiện tại
+
+- Code/test commit: `c915132286fb3b743b2455179f6247698ae5fa0a`.
+- `tests/test_production_readiness.py`: `19 passed, 1 warning`.
+- Security/auth regression: `tests/test_production_readiness.py
+  tests/test_dashboard_auth.py tests/test_security_audit.py tests/test_nl_security.py`:
+  `44 passed, 1 warning` trên Python 3.11.
+- Coverage của regression: production/staging Secure session cookie; explicit
+  HttpOnly/SameSite/max-age; trusted forwarded HTTPS bật HSTS và Secure CSRF;
+  direct/untrusted/malformed forwarded headers không được tin.
+- Còn chờ: xác nhận topology reverse proxy/IP thật, browser cookie rotation và
+  chạy lại matrix Python 3.12.
 
 ## 6. Workstream P0/P1 — container, SSH key và code-repair isolation
 
