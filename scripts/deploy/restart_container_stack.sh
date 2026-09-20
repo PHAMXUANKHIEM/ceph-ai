@@ -11,9 +11,54 @@ DEPLOY_REF="${DEPLOY_REF:-origin/main}"
 SERVICES=(dashboard-web full-executor watcher worker code-repair telegram-ai)
 
 cd "$REPO_DIR"
-if [ -n "$(git status --porcelain)" ]; then
-  echo "ERROR: refusing to replace a dirty checkout" >&2
-  exit 3
+# A self-hosted runner may share the canonical checkout with an operator who
+# is editing a bounded documentation file. Preserve only the explicitly
+# allowlisted paths across the checkout/reset; any dirty source/config file
+# still blocks deployment. The trap also restores the file when deployment
+# fails, so a failed release cannot discard the operator's work.
+ALLOWED_DIRTY_PATHS="${CEPH_AI_DEPLOY_ALLOWED_DIRTY_PATHS:-}"
+PRESERVED_DIRTY_ROOT=""
+restore_allowed_dirty_files() {
+  local exit_status=$?
+  if [ -n "$PRESERVED_DIRTY_ROOT" ]; then
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      if [ -f "$PRESERVED_DIRTY_ROOT/$path.present" ]; then
+        mkdir -p "$(dirname "$REPO_DIR/$path")"
+        cp -a "$PRESERVED_DIRTY_ROOT/$path" "$REPO_DIR/$path"
+      else
+        rm -f "$REPO_DIR/$path"
+      fi
+    done < "$PRESERVED_DIRTY_ROOT/paths"
+    rm -rf "$PRESERVED_DIRTY_ROOT"
+  fi
+  return "$exit_status"
+}
+trap restore_allowed_dirty_files EXIT
+
+dirty_status="$(git status --porcelain --untracked-files=all)"
+if [ -n "$dirty_status" ]; then
+  PRESERVED_DIRTY_ROOT="$(mktemp -d /tmp/ceph-ai-deploy-preserved.XXXXXX)"
+  : > "$PRESERVED_DIRTY_ROOT/paths"
+  while IFS= read -r dirty_line; do
+    [ -n "$dirty_line" ] || continue
+    dirty_path="${dirty_line:3}"
+    case ",$ALLOWED_DIRTY_PATHS," in
+      *,"$dirty_path",*)
+        printf '%s\n' "$dirty_path" >> "$PRESERVED_DIRTY_ROOT/paths"
+        if [ -e "$REPO_DIR/$dirty_path" ] || [ -L "$REPO_DIR/$dirty_path" ]; then
+          mkdir -p "$PRESERVED_DIRTY_ROOT/$(dirname "$dirty_path")"
+          cp -a "$REPO_DIR/$dirty_path" "$PRESERVED_DIRTY_ROOT/$dirty_path"
+          : > "$PRESERVED_DIRTY_ROOT/$dirty_path.present"
+          rm -f "$REPO_DIR/$dirty_path"
+        fi
+        ;;
+      *)
+        echo "ERROR: refusing to replace a dirty checkout: $dirty_path" >&2
+        exit 3
+        ;;
+    esac
+  done <<< "$dirty_status"
 fi
 
 if [[ "$DEPLOY_REF" == origin/* ]]; then

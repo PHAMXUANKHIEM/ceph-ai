@@ -190,6 +190,7 @@ jobs:
       - name: Deploy pushed commit to the container stack
         env:
           DEPLOY_SHA: ${{ github.sha }}
+          CEPH_AI_DEPLOY_ALLOWED_DIRTY_PATHS: Plan/in-progress/natural-language-ceph-ai-plan.md
           # The active compose deployment lives here. A self-hosted runner
           # may override this repository variable for another lab host.
           CEPH_AI_DEPLOY_DIR: ${{ vars.CEPH_AI_DEPLOY_DIR || '/root/ceph-ai' }}
