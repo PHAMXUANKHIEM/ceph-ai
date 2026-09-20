@@ -176,7 +176,9 @@ def fingerprint_of(template: str, daemon_type: str) -> str:
     Gộp cả `daemon_type` vào: cùng một câu chữ phát ra từ mon và từ osd là
     hai hiện tượng khác nhau với người điều tra, không nên gộp số đếm.
     """
-    return hashlib.sha1(f"{daemon_type}\x00{template}".encode()).hexdigest()
+    return hashlib.sha1(
+        f"{daemon_type}\x00{template}".encode(), usedforsecurity=False
+    ).hexdigest()
 
 
 def parse_log_line(line: str, host: str, daemon_type: str) -> LogRecord | None:

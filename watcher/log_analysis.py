@@ -664,7 +664,7 @@ def _dedupe_key(cluster_id: str, evidence_ids: list[str], verdict: str) -> str:
     """Cùng bộ mẫu evidence -> cùng khoá, để L3 không gửi lại cảnh báo cho
     cùng một hiện tượng ở mỗi lần quét."""
     material = f"{cluster_id}\x00{verdict}\x00{'|'.join(sorted(evidence_ids))}"
-    return hashlib.sha1(material.encode()).hexdigest()
+    return hashlib.sha1(material.encode(), usedforsecurity=False).hexdigest()
 
 
 def _evidence_ids(finding: LogFinding) -> set[str]:
