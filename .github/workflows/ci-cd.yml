@@ -150,6 +150,14 @@ jobs:
               echo "## Quality gate failure"
               cat "$summary"
             } >> "$GITHUB_STEP_SUMMARY"
+          elif [ -f artifacts/quality-gate.log ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error title=quality gate traceback::$line"
+            done < artifacts/quality-gate.log
+            {
+              echo "## Quality gate traceback"
+              cat artifacts/quality-gate.log
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::error title=quality gate::quality-summary.txt was not produced"
           fi
