@@ -167,6 +167,20 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "ai_nightly_improvement_state_file", str(test_repair_dir / "nightly.json"), raising=False)
     monkeypatch.setattr(settings, "ceph_capability_learning_state_file", str(test_repair_dir / "learning.json"), raising=False)
 
+    # Telegram Chat persists mode, cluster, confirmation, and interrupted
+    # Single Full markers under the same production state volume.  Redirect
+    # the module-level paths too; a non-root CI runner must not attempt to
+    # create /var/lib/ceph-ai merely because a mode-selection test clears an
+    # old confirmation.
+    from dashboard import telegram_chat
+
+    test_telegram_dir = tmp_path / "telegram-state"
+    test_telegram_dir.mkdir()
+    monkeypatch.setattr(telegram_chat, "_FULL_RUN_STATE_PATH", test_telegram_dir / "full-runs.json")
+    monkeypatch.setattr(telegram_chat, "_MODE_STATE_PATH", test_telegram_dir / "modes.json")
+    monkeypatch.setattr(telegram_chat, "_CLUSTER_STATE_PATH", test_telegram_dir / "clusters.json")
+    monkeypatch.setattr(telegram_chat, "_CONFIRM_STATE_PATH", test_telegram_dir / "confirmations.json")
+
     # 2026-08-05 fix (found live), updated 2026-08-06 for the 3-independent-
     # channel redesign: a real .env on THIS machine had genuine Telegram
     # credentials configured (an operator actually testing the feature) —
