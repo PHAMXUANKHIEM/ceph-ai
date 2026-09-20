@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -44,6 +44,7 @@ from shared.models import (
     BackupAnomaly,
     BackupDigestLog,
     BackupJob,
+    Cluster,
     Incident,
     IncidentStatus,
 )
@@ -968,6 +969,137 @@ async def run_restore_drill_now(request: Request, user: str = Depends(require_lo
         raise HTTPException(status_code=409, detail="RestoreDrill chưa được cấu hình đầy đủ trong backup policy.")
     action_pk = _create_manual_backup_action("restore_drill_execute", {}, user, cluster)
     return JSONResponse({"action_id": action_pk}, status_code=201)
+
+
+@router.get("/api/backups/multi-cluster-audit")
+async def multi_cluster_backup_audit(user: str = Depends(require_login)):
+    """Return a bounded, read-only backup posture report for every cluster.
+
+    The report deliberately exposes configuration shape and aggregate evidence
+    only: it never returns backup credentials, object-store endpoints, raw
+    error text, or triggers a backup/restore operation.  This closes the
+    multi-cluster audit visibility gap while the per-cluster RestoreDrill
+    configuration remains a separate rollout item.
+    """
+    _require_admin_privilege(user)
+    now = datetime.utcnow()
+    policy = load_backup_policy()
+    default_drill = policy.get("restore_drill") or {}
+    default_drill_configured = all(
+        default_drill.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image")
+    )
+    with db.SessionLocal() as session:
+        clusters = (
+            session.query(Cluster)
+            .filter(Cluster.is_active.is_(True))
+            .order_by(
+                Cluster.is_default.desc(),
+                Cluster.name,
+            )
+            .all()
+        )
+        report = []
+        for cluster in clusters:
+            tracked = _tracked_images(cluster)
+            scope = _job_scope(BackupJob.cluster_id, cluster)
+            latest = (
+                session.query(BackupJob)
+                .filter(BackupJob.job_type.in_(("full", "incremental")), scope)
+                .order_by(BackupJob.created_at.desc())
+                .first()
+            )
+            latest_success = (
+                session.query(BackupJob)
+                .filter(
+                    BackupJob.job_type.in_(("full", "incremental")),
+                    BackupJob.status == "SUCCESS",
+                    scope,
+                )
+                .order_by(BackupJob.created_at.desc())
+                .first()
+            )
+            latest_digest = (
+                session.query(BackupDigestLog)
+                .filter(_job_scope(BackupDigestLog.cluster_id, cluster))
+                .order_by(BackupDigestLog.created_at.desc())
+                .first()
+            )
+            latest_drill = (
+                session.query(BackupJob)
+                .filter(BackupJob.job_type == "restore_drill", scope)
+                .order_by(BackupJob.created_at.desc())
+                .first()
+            )
+            since = now - timedelta(hours=24)
+            recent_jobs = (
+                session.query(BackupJob)
+                .filter(scope, BackupJob.created_at >= since)
+                .all()
+            )
+            gaps = []
+            if not cluster.backup_enabled and not cluster.is_default:
+                gaps.append("BACKUP_DISABLED")
+            if not tracked:
+                gaps.append("NO_TRACKED_IMAGES")
+            if cluster.is_default:
+                target_ready = bool(policy.get("backup_targets"))
+                drill_configured = default_drill_configured
+            else:
+                if cluster.backup_transport == "ssh":
+                    target_ready = all(
+                        getattr(cluster, field, "")
+                        for field in (
+                            "backup_ssh_host", "backup_ssh_user",
+                            "backup_ssh_key_path", "backup_ssh_landing_dir",
+                        )
+                    )
+                elif cluster.backup_transport == "s3":
+                    target_ready = all(
+                        getattr(cluster, field, "")
+                        for field in ("backup_s3_access_key", "backup_s3_secret_key", "backup_s3_bucket")
+                    )
+                else:
+                    target_ready = False
+                target_ready = bool(cluster.backup_enabled and cluster.backup_tracked_images and target_ready)
+                drill_configured = False
+            if not target_ready:
+                gaps.append("BACKUP_TARGET_NOT_READY")
+            if not drill_configured:
+                gaps.append("RESTORE_DRILL_NOT_CONFIGURED")
+            if latest_success is None:
+                gaps.append("NO_SUCCESSFUL_BACKUP_EVIDENCE")
+            report.append({
+                "cluster_id": cluster.id,
+                "cluster_name": cluster.name,
+                "is_default": bool(cluster.is_default),
+                "backup_enabled": bool(cluster.backup_enabled or cluster.is_default),
+                "tracked_image_count": len(tracked),
+                "target_ready": target_ready,
+                "restore_drill_configured": drill_configured,
+                "latest_backup": None if latest is None else {
+                    "status": latest.status,
+                    "job_type": latest.job_type,
+                    "created_at": latest.created_at.isoformat(),
+                },
+                "latest_restore_drill": None if latest_drill is None else {
+                    "status": latest_drill.status,
+                    "created_at": latest_drill.created_at.isoformat(),
+                },
+                "latest_digest": None if latest_digest is None else {
+                    "created_at": latest_digest.created_at.isoformat(),
+                    "succeeded_count": latest_digest.succeeded_count,
+                    "failed_count": latest_digest.failed_count,
+                    "anomaly_count": latest_digest.anomaly_count,
+                },
+                "last_24h": {
+                    "jobs": len(recent_jobs),
+                    "succeeded": sum(job.status == "SUCCESS" for job in recent_jobs),
+                    "failed": sum(job.status == "FAILED" for job in recent_jobs),
+                },
+                "status": "attention" if gaps else "healthy",
+                "evidence_gaps": gaps,
+            })
+    return {"generated_at": now.isoformat(), "clusters": report}
 
 
 @router.post("/backups/digests/delete-all")

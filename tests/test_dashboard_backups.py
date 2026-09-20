@@ -103,6 +103,48 @@ def test_backups_page_renders_with_no_tracked_images(dashboard_client, monkeypat
     assert "Chưa cấu hình" in response.text
 
 
+def test_multi_cluster_backup_audit_is_bounded_and_reports_restore_gap(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        backups_route,
+        "load_backup_policy",
+        lambda: {
+            "tracked_images": [],
+            "backup_targets": [{"slot": "a"}],
+            "restore_drill": {},
+        },
+    )
+    with db_module.SessionLocal() as session:
+        cluster = _create_additional_cluster(session)
+        cluster.backup_transport = "s3"
+        cluster.backup_s3_access_key = "secret-access-key"
+        cluster.backup_s3_secret_key = "secret-key"
+        session.add(
+            BackupJob(
+                cluster_id=cluster.id,
+                run_id="audit-run-1",
+                pool="vms",
+                image="disk1",
+                job_type="full",
+                status="SUCCESS",
+                backup_target_slot="cluster",
+                created_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/api/backups/multi-cluster-audit")
+
+    assert response.status_code == 200
+    body = response.json()
+    secondary = next(item for item in body["clusters"] if item["cluster_name"] == "backup-secondary")
+    assert secondary["last_24h"] == {"jobs": 1, "succeeded": 1, "failed": 0}
+    assert secondary["latest_restore_drill"] is None
+    assert "RESTORE_DRILL_NOT_CONFIGURED" in secondary["evidence_gaps"]
+    assert "secret-key" not in response.text
+    assert "backup_s3_secret_key" not in response.text
+
+
 def test_backups_page_lists_queue_and_history(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
     _login(dashboard_client)
