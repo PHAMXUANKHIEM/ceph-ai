@@ -91,18 +91,14 @@ jobs:
           pip install ruff==0.12.10 mypy==1.17.1 bandit==1.8.6 pip-audit==2.9.0
           npm --prefix ceph-health-dashboard ci
 
-      - name: Collect static and dependency reports
-        continue-on-error: true
+      - name: Run blocking quality and security gate
+        env:
+          # Compare changed-file diagnostics with the commit's parent/base so
+          # the existing static-analysis backlog cannot hide new regressions.
+          QUALITY_BASE_SHA: ${{ github.event.before || github.event.pull_request.base.sha }}
         run: |
           mkdir -p artifacts
-          ruff check . --output-format sarif --output-file artifacts/ruff.sarif || true
-          mypy dashboard config shared watcher worker vitastor --ignore-missing-imports \
-            --junit-xml artifacts/mypy.xml || true
-          bandit -q -r dashboard config shared watcher worker vitastor \
-            -f sarif -o artifacts/bandit.sarif || true
-          pip-audit --format json --output artifacts/pip-audit.json || true
-          npm --prefix ceph-health-dashboard audit --omit=dev --json > artifacts/npm-audit.json || true
-          npm --prefix ceph-health-dashboard run build || true
+          python scripts/ci/quality_gate.py
 
       - name: Upload quality and security reports
         if: always()
@@ -113,7 +109,7 @@ jobs:
           if-no-files-found: warn
 
   deploy:
-    needs: test
+    needs: [test, quality]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: [self-hosted, linux, x64, ceph-ai-lab]
     timeout-minutes: 30

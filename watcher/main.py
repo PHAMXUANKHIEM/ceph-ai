@@ -776,15 +776,11 @@ def build_and_publish_incident(
             session.add(incident)
             try:
                 # Flush assigns the primary key while the ORM instance is
-                # still live.  Keep mute inheritance in this transaction so
-                # commit cannot expire/detach `incident` before its id is
-                # needed by the query and the outgoing envelope.
+                # still live. Inherit mute before the single commit so the
+                # incident row and its notification preference are atomic;
+                # never re-query a possibly expired/detached ORM instance.
                 session.flush()
                 incident_id = incident.id
-                session.commit()
-                incident = session.get(Incident, incident_id)
-                if incident is None:
-                    raise RuntimeError(f"incident {incident_id} disappeared after commit")
                 notification_muted = alert_lifecycle.inherit_active_mute(
                     session, incident, now=detected_at,
                 )
@@ -1518,10 +1514,6 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
             try:
                 session.flush()
                 incident_id = incident.id
-                session.commit()
-                incident = session.get(Incident, incident_id)
-                if incident is None:
-                    raise RuntimeError(f"incident {incident_id} disappeared after commit")
                 notification_muted = alert_lifecycle.inherit_active_mute(
                     session, incident, now=detected_at,
                 )
