@@ -192,6 +192,10 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     # ordinary unit tests open a real Telegram getUpdates connection.  Keep
     # the suite hermetic; tests for the listener must enable/mock it locally.
     monkeypatch.setattr(settings, "telegram_listener_enabled", False, raising=False)
+    # Unit tests must not leak daemon humanizer threads into another test's
+    # SQLite StaticPool transaction. Tests that verify background delivery
+    # explicitly opt in with their own monkeypatch.
+    monkeypatch.setattr(settings, "telegram_ai_humanize_enabled", False, raising=False)
     # 2026-08-07: cluster_name is written the same way (plain setattr in
     # dashboard/routes/telegram_alerts.py::telegram_cluster_name_submit,
     # not monkeypatch.setattr) — same leak-across-tests/inherits-real-.env
