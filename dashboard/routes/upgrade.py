@@ -4,6 +4,7 @@ import logging
 import re
 import uuid
 from datetime import datetime
+from shared.time import utc_now
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -418,7 +419,7 @@ async def _save_upgrade_procedure(filename: str, raw_text: str, user: str) -> No
         doc.summary_text = summary_text
         doc.summary_error = summary_error
         doc.uploaded_by = user
-        doc.uploaded_at = datetime.utcnow()
+        doc.uploaded_at = utc_now()
         session.commit()
 
 
@@ -1022,7 +1023,7 @@ async def propose_upgrade(request: Request, target_version: str = Form(...), use
             ceph_code=CLUSTER_UPGRADE_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Đề xuất nâng cấp cụm (cephadm) lên {target_version} bởi {user}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()  # assigns incident.id, needed by the Action FK below
@@ -1241,7 +1242,7 @@ async def prepare_node_os_gate(
             dedupe_key=f"node-os-gate:{gate_id}:{NODE_OS_GATE_PREPARE_ACTION_ID}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Chuẩn bị node {host} để cài lại OS (mục tiêu Ceph {target_version}) bởi {user}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()
@@ -1356,7 +1357,7 @@ async def abort_node_os_gate(
             dedupe_key=f"node-os-gate:{gate_row.id}:{NODE_OS_GATE_ABORT_ACTION_ID}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Huỷ Chuẩn bị cho node {host} bởi {user}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()
@@ -1544,7 +1545,7 @@ async def confirm_node_os_gate(
             dedupe_key=f"node-os-gate:{gate_row.id}:{NODE_OS_GATE_RECOVER_ACTION_ID}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Xác nhận & Phục hồi node {host} (mục tiêu Ceph {target_version}) bởi {user}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()
@@ -1680,7 +1681,7 @@ async def propose_package_download_upgrade(
                 f"Đề xuất nâng cấp cụm (ceph-deploy, tải từ download.ceph.com) lên "
                 f"{target_version} bởi {user}"
             ),
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()
@@ -1753,7 +1754,7 @@ async def propose_package_local_upgrade(
             log_excerpt=(
                 f"Đề xuất nâng cấp cụm (ceph-deploy, gói cục bộ tại {package_dir}) bởi {user}"
             ),
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()

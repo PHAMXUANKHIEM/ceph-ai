@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from shared.time import utc_now
 from hashlib import sha1
 
 from config.settings import settings
@@ -97,7 +98,7 @@ def check_and_alert(cluster_id: str, cluster=None) -> int:
     ]
     current = {_code_for(analysis): analysis for analysis in candidates}
     pending_delivery: list[tuple[str, dict]] = []
-    now = datetime.utcnow()
+    now = utc_now()
 
     with db.SessionLocal() as session:
         incidents = session.query(Incident).filter(
@@ -183,7 +184,7 @@ def check_and_alert(cluster_id: str, cluster=None) -> int:
         with db.SessionLocal() as session:
             incident = session.get(Incident, incident_id)
             if incident is not None:
-                incident.telegram_reminded_at = datetime.utcnow()
+                incident.telegram_reminded_at = utc_now()
                 session.commit()
         delivered += 1
     return delivered

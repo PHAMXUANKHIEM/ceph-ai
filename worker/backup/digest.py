@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from shared import db
 from shared.models import BackupAnomaly, BackupDigestLog, BackupJob
@@ -82,7 +83,7 @@ def run_digest(cluster_id: str | None = None) -> None:
     policy = load_backup_policy()
     digest_config = (policy.get("schedule") or {}).get("digest") or {}
     period_hours = digest_config.get("period_hours", DEFAULT_PERIOD_HOURS)
-    period_end = datetime.utcnow()
+    period_end = utc_now()
     period_start = period_end - timedelta(hours=period_hours)
 
     stats = _gather_stats(period_start, period_end, cluster_id=cluster_id)

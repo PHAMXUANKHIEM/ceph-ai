@@ -6,6 +6,7 @@ import threading
 from time import monotonic
 from urllib.parse import urlencode
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -219,7 +220,7 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
                 query = query.filter(Incident.ceph_code.ilike(f"%{code_filter}%"))
             if period_filter != "all":
                 hours = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30, "1y": 24 * 365}[period_filter]
-                query = query.filter(Incident.detected_at >= datetime.utcnow() - timedelta(hours=hours))
+                query = query.filter(Incident.detected_at >= utc_now() - timedelta(hours=hours))
             incidents = query.order_by(Incident.detected_at.desc(), Incident.id.desc()).all()
     except SQLAlchemyError:
         logger.exception("alert_center: failed to query incidents from DB")
@@ -278,7 +279,7 @@ async def _update_alert_lifecycle(
         if group is None:
             raise HTTPException(status_code=404, detail="Không tìm thấy nhóm cảnh báo trong cụm đang chọn")
         rows = group["incidents"]
-        now = datetime.utcnow()
+        now = utc_now()
         if operation == "acknowledge":
             for row in rows:
                 row.acknowledged_at, row.acknowledged_by = now, user
@@ -417,7 +418,7 @@ async def update_remediation_case_verdict(
         case.operator_verdict = verdict
         case.operator_note = note or None
         case.operator_verdict_by = user
-        case.operator_verdict_at = datetime.utcnow()
+        case.operator_verdict_at = utc_now()
         audit.record(
             session, incident_id=incident_id, action_id=case.action_id,
             event_type=audit.EVENT_REMEDIATION_CASE_VERDICT_UPDATED, actor=user,
@@ -578,7 +579,7 @@ def is_heartbeat_stale(latest_heartbeat: WatcherHeartbeat | None) -> bool:
         return True
     if not latest_heartbeat.success:
         return True
-    age = datetime.utcnow() - latest_heartbeat.polled_at
+    age = utc_now() - latest_heartbeat.polled_at
     return age > timedelta(seconds=HEARTBEAT_STALE_MULTIPLIER * settings.watcher_poll_interval_seconds)
 
 
@@ -598,7 +599,7 @@ def _recent_backup_failure(session) -> BackupJob | None:
     outbound webhook lives in worker/backup/alerting.py's periodic job —
     this is only the at-a-glance Dashboard banner, same scope as
     is_heartbeat_stale()'s single-condition check above."""
-    cutoff = datetime.utcnow() - timedelta(hours=BACKUP_ALERT_LOOKBACK_HOURS)
+    cutoff = utc_now() - timedelta(hours=BACKUP_ALERT_LOOKBACK_HOURS)
     return (
         session.query(BackupJob)
         .filter(BackupJob.status == "FAILED", BackupJob.created_at >= cutoff)
@@ -610,7 +611,7 @@ def _recent_backup_failure_for_cluster(
     session, cluster_id: str, is_default_cluster: bool
 ) -> BackupJob | None:
     """Latest failure for exactly the cluster currently being viewed."""
-    cutoff = datetime.utcnow() - timedelta(hours=BACKUP_ALERT_LOOKBACK_HOURS)
+    cutoff = utc_now() - timedelta(hours=BACKUP_ALERT_LOOKBACK_HOURS)
     cluster_filter = (
         or_(BackupJob.cluster_id == cluster_id, BackupJob.cluster_id.is_(None))
         if is_default_cluster

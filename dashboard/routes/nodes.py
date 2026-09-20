@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -191,7 +192,7 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
         or request.query_params.get("duration")
     )
     range_seconds = NODE_TIME_RANGES[range_name]
-    now = datetime.utcnow()
+    now = utc_now()
 
     # Read the persisted window first. It is local database data and should
     # be available immediately, even when a node's SSH endpoint is slow.

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from config.settings import settings
 from shared import db
@@ -118,7 +119,7 @@ def check_capability(command_id: str, ceph_major: int | None, session=None) -> C
         # deterministically rather than arbitrarily.
         entry = sorted(matching, key=lambda e: (e.max_major is None, -e.verified_at.timestamp()))[0]
         is_stale = (
-            datetime.utcnow() - entry.verified_at
+            utc_now() - entry.verified_at
         ).days > settings.capability_matrix_max_age_days
         return CapabilityCheckResult(CapabilityStatus.SUPPORTED, entry=entry, is_stale=is_stale)
 
@@ -157,7 +158,7 @@ def create_entry(
             inner_command=inner_command,
             doc_url=doc_url,
             verified_by=verified_by,
-            verified_at=verified_at or datetime.utcnow(),
+            verified_at=verified_at or utc_now(),
             min_major=min_major,
             max_major=max_major,
             flag=flag,

@@ -9,6 +9,7 @@ counts as "past its retention window".
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from shared.time import utc_now
 
 
 def trash_entry_ttl_status(entry: dict, *, ttl_days: int, now: datetime | None = None) -> dict:
@@ -45,7 +46,7 @@ def trash_entry_ttl_status(entry: dict, *, ttl_days: int, now: datetime | None =
     except (TypeError, ValueError):
         return {"kind": "unknown", "purge_eligible": False, "expires_at": None, "detail": None}
     expires_at = deleted_at + timedelta(days=ttl_days)
-    remaining_seconds = (expires_at - (now or datetime.utcnow())).total_seconds()
+    remaining_seconds = (expires_at - (now or utc_now())).total_seconds()
     return {
         "kind": "ttl_computed",
         "purge_eligible": remaining_seconds <= 0,

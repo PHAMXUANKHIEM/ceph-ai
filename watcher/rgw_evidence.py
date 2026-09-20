@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from shared.time import utc_now
 
 from config.settings import settings
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
@@ -26,7 +27,7 @@ RGW_COMMAND_TIMEOUT_SECONDS = 10
 
 
 def _iso_now() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return utc_now().isoformat(timespec="seconds") + "Z"
 
 
 def _rgw_hosts(cluster) -> list[str]:

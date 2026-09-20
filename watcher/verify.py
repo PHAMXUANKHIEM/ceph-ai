@@ -51,6 +51,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime
+from shared.time import utc_now
 
 from config.settings import settings
 from shared import audit, db, remediation_cases, telegram_alerts
@@ -182,7 +183,7 @@ def verify_pending_incidents(
     trông y hệt "cụm hoàn toàn khoẻ", và sẽ báo đã khắc phục cho mọi
     Incident đang chờ xác minh. Xem điều kiện gọi trong watcher/main.py.
     """
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     counts = {"verified": 0, "retried": 0, "exhausted": 0}
     max_attempts = max(1, settings.incident_verify_max_attempts)
     envelopes: list[dict] = []

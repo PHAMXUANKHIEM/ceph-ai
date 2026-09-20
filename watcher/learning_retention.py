@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from shared.time import utc_now
 from threading import Lock
 
 from sqlalchemy import select
@@ -58,7 +59,7 @@ def prune_old_rows(now: datetime | None = None) -> dict[str, int]:
     """
 
     global _last_prune_at
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     with _prune_lock:
         if (
             _last_prune_at is not None

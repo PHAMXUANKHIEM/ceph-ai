@@ -6,6 +6,7 @@ import statistics
 import json
 from collections import defaultdict
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from sqlalchemy import func
 
@@ -502,7 +503,7 @@ def deliver_pending_forecast_alerts(cluster_id: str | None) -> int:
                 cluster_name=cluster.name,
             )
             if sent:
-                row.telegram_sent_at = datetime.utcnow()
+                row.telegram_sent_at = utc_now()
                 delivered += 1
         session.commit()
     return delivered

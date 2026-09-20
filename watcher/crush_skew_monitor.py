@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from shared.time import utc_now
 
 from shared import alert_lifecycle, audit, db
 from shared.models import (
@@ -468,7 +469,7 @@ def create_or_resolve_crush_skew_incidents(
             incident = Incident(
                 ceph_code=ceph_code,
                 status=IncidentStatus.PENDING_APPROVAL.value,
-                detected_at=datetime.utcnow(),
+                detected_at=utc_now(),
                 log_excerpt=rationale,
             )
             session.add(incident)

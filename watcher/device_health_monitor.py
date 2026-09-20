@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from config.settings import settings
 from shared import alert_lifecycle, audit, db
@@ -132,7 +133,7 @@ def check_predicted_failing_osds() -> dict[str, dict]:
     host_by_osd_id = {o["osd_id"]: o.get("crush_host") for o in ceph_client.list_osds()}
 
     devices = device_payload if isinstance(device_payload, list) else []
-    horizon = datetime.utcnow() + timedelta(days=settings.device_health_evacuate_threshold_days)
+    horizon = utc_now() + timedelta(days=settings.device_health_evacuate_threshold_days)
 
     candidates: dict[str, dict] = {}
     for device in devices:
@@ -143,7 +144,7 @@ def check_predicted_failing_osds() -> dict[str, dict]:
             continue
         # Ceph's own timestamps here are always UTC (+00:00) in practice —
         # tzinfo is dropped after parsing so this compares naive-to-naive
-        # against `horizon` (datetime.utcnow(), also naive), rather than
+        # against `horizon` (utc_now(), also naive), rather than
         # risking a raised TypeError from comparing aware-to-naive.
         if life_min.replace(tzinfo=None) > horizon:
             continue
@@ -214,7 +215,7 @@ def create_or_resolve_device_health_incidents(current: dict[str, dict]) -> None:
             incident = Incident(
                 ceph_code=ceph_code,
                 status=IncidentStatus.PENDING_APPROVAL.value,
-                detected_at=datetime.utcnow(),
+                detected_at=utc_now(),
                 log_excerpt=rationale,
                 signal_evidence_json=json.dumps({
                     "source": "ceph_devicehealth",

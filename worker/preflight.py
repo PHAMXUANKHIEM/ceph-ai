@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from config.settings import settings
 from shared import capability_matrix
@@ -110,7 +111,7 @@ def run_preflight(session, *, cluster_id: str | None, action_id: str) -> Preflig
             ),
             capability_status=snapshot.status,
         )
-    snapshot_age = datetime.utcnow() - snapshot.collected_at
+    snapshot_age = utc_now() - snapshot.collected_at
     max_age = timedelta(seconds=settings.capability_inventory_max_age_seconds)
     if snapshot_age > max_age:
         return PreflightResult(

@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from shared.time import utc_now
 
 from config.settings import settings
 from shared import alert_lifecycle, audit, db
@@ -170,7 +171,7 @@ def create_or_resolve_node_unreachable_incidents(
             incident = Incident(
                 ceph_code=ceph_code,
                 status=IncidentStatus.PENDING_APPROVAL.value,
-                detected_at=datetime.utcnow(),
+                detected_at=utc_now(),
                 log_excerpt=rationale,
                 signal_evidence_json=json.dumps({"source": "ssh_reachability", **detail}),
             )
@@ -283,7 +284,7 @@ def check_node_resources(
             try:
                 observed_at = (
                     datetime.fromisoformat(str(observed_raw).replace("Z", "+00:00"))
-                    if observed_raw else datetime.utcnow()
+                    if observed_raw else utc_now()
                 )
                 consume_samples([
                     {
@@ -408,7 +409,7 @@ def create_or_resolve_node_health_incidents(
                 continue  # already has an open Incident — don't duplicate
 
             rationale = _rationale_for(detail)
-            detected_at = datetime.utcnow()
+            detected_at = utc_now()
             signal_evidence = {
                 "source": "loki_node_resource_metrics",
                 "captured_at": detected_at.isoformat(),

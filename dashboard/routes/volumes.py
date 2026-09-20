@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from shared.time import utc_now
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -402,7 +403,7 @@ def _finish_trash_force_audit(audit_id: str, result: str, error: str | None = No
         if row is not None:
             row.result = result
             row.error_message = error
-            row.completed_at = datetime.utcnow()
+            row.completed_at = utc_now()
             session.commit()
 
 
@@ -1135,7 +1136,7 @@ async def volume_inventory_overview_api(
     except CephQueryError as exc:
         logger.warning("volume_inventory_overview_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được tổng quan Pool: {exc}")
-    return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **overview}
+    return {"cluster_id": cluster.id, "collected_at": utc_now().isoformat() + "Z", **overview}
 
 
 @router.get("/api/volumes/{pool}/cinder-mapping")
@@ -1230,7 +1231,7 @@ async def volume_pool_lifecycle_api(
     )
     return {
         "cluster_id": cluster.id,
-        "collected_at": datetime.utcnow().isoformat() + "Z",
+        "collected_at": utc_now().isoformat() + "Z",
         "inventory_cache": {
             "source": inventory_state.get("source"),
             "stale": bool(inventory_state.get("stale")),
@@ -1300,7 +1301,7 @@ async def volume_capacity_risk_api(
     )
     return {
         "cluster_id": cluster.id,
-        "collected_at": datetime.utcnow().isoformat() + "Z",
+        "collected_at": utc_now().isoformat() + "Z",
         **build_capacity_risk(
             pool, inventory, overview,
             inventory_state=inventory_state,
@@ -1330,7 +1331,7 @@ async def volume_dependency_health_api(
         raise HTTPException(status_code=502, detail=f"Không đọc được dependency health của Pool: {exc}") from exc
     return {
         "cluster_id": cluster.id,
-        "collected_at": datetime.utcnow().isoformat() + "Z",
+        "collected_at": utc_now().isoformat() + "Z",
         **build_pool_dependency_health(
             pool, evidence.get("health"), evidence.get("pg"), evidence.get("osd_tree"),
             volume_count=len(inventory),
@@ -1381,7 +1382,7 @@ async def volume_durability_policy_api(
     return {
         "cluster_id": cluster.id,
         "pool": pool,
-        "collected_at": datetime.utcnow().isoformat() + "Z",
+        "collected_at": utc_now().isoformat() + "Z",
         **build_durability_policy(
             overview, crush_rules, dependency_evidence.get("osd_tree"), ec_profile=profile,
         ),
@@ -1405,7 +1406,7 @@ async def volume_replication_api(
         message = str(exc)
         if "mirroring not enabled" in message.lower():
             return {"cluster_id": cluster.id, "pool": pool, "supported": True, "enabled": False,
-                    "mode": "disabled", "status": None, "collected_at": datetime.utcnow().isoformat() + "Z"}
+                    "mode": "disabled", "status": None, "collected_at": utc_now().isoformat() + "Z"}
         raise HTTPException(status_code=502, detail=f"Không đọc được trạng thái mirroring: {exc}") from exc
     mode = str(info.get("mode") or "disabled").lower()
     enabled = mode not in {"disabled", "off", "none", ""}
@@ -1418,7 +1419,7 @@ async def volume_replication_api(
                 raise HTTPException(status_code=502, detail=f"Không đọc được mirror lag/status: {exc}") from exc
     return {"cluster_id": cluster.id, "pool": pool, "supported": True, "enabled": enabled,
             "mode": mode, "info": info, "status": status,
-            "collected_at": datetime.utcnow().isoformat() + "Z"}
+            "collected_at": utc_now().isoformat() + "Z"}
 
 
 @router.get("/api/volumes/{pool}/inventory-insights")
@@ -1442,7 +1443,7 @@ async def volume_inventory_insights_api(
         logger.warning("volume_inventory_insights_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}") from exc
 
-    now = datetime.utcnow()
+    now = utc_now()
     since = now - timedelta(days=7)
     metric_rows: dict[tuple[str, str], list[dict]] = {}
     with db.SessionLocal() as session:
@@ -1641,7 +1642,7 @@ async def volume_protection_insights_api(
             "finished_at": row.finished_at,
         })
 
-    now = datetime.utcnow()
+    now = utc_now()
     backup_rpo_hours = 24
     if not cluster.is_default:
         try:
@@ -1802,7 +1803,7 @@ def _propose_rbd_volume_mutation(
             dedupe_key=_rbd_mutation_dedupe_key(action_id, pool, image, extra_params),
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"{rationale} — yêu cầu bởi {user}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         try:
@@ -1867,7 +1868,7 @@ def _propose_cinder_attachment_mutation(
             cluster_id=cluster.id, ceph_code=ceph_code,
             dedupe_key=f"cinder-volume:{pool}/{image}",
             status=IncidentStatus.PENDING_APPROVAL.value,
-            log_excerpt=f"{rationale} — yêu cầu bởi {user}", detected_at=datetime.utcnow(),
+            log_excerpt=f"{rationale} — yêu cầu bởi {user}", detected_at=utc_now(),
         )
         session.add(incident)
         try:
@@ -1931,7 +1932,7 @@ def _propose_cinder_snapshot_create(
             cluster_id=cluster.id, ceph_code=CINDER_SNAPSHOT_CREATE_CEPH_CODE,
             dedupe_key=f"cinder-volume:{pool}/{image}",
             status=IncidentStatus.PENDING_APPROVAL.value,
-            log_excerpt=f"{rationale} — yêu cầu bởi {user}", detected_at=datetime.utcnow(),
+            log_excerpt=f"{rationale} — yêu cầu bởi {user}", detected_at=utc_now(),
         )
         session.add(incident)
         try:
@@ -1992,7 +1993,7 @@ def _propose_cinder_snapshot_delete(
             cluster_id=cluster.id, ceph_code=CINDER_SNAPSHOT_DELETE_CEPH_CODE,
             dedupe_key=f"cinder-snapshot:{pool}/{image}/{snapshot_id}",
             status=IncidentStatus.PENDING_APPROVAL.value,
-            log_excerpt=f"{rationale} — yêu cầu bởi {user}", detected_at=datetime.utcnow(),
+            log_excerpt=f"{rationale} — yêu cầu bởi {user}", detected_at=utc_now(),
         )
         session.add(incident)
         try:
@@ -2424,7 +2425,7 @@ async def propose_volume_trash_move(
         "provisioned_size_bytes": int(usage["provisioned_size"]),
         "used_size_bytes": int(usage["used_size"]),
         "used_percent": float(usage["used_percent"]),
-        "observed_at": datetime.utcnow().isoformat() + "Z",
+        "observed_at": utc_now().isoformat() + "Z",
     }
     action_pk = _propose_rbd_volume_mutation(
         cluster=cluster, pool=pool, image=image, action_id="rbd_trash_move_volume",
@@ -2545,7 +2546,7 @@ def _volume_backup_summary(cluster, pool: str, image: str) -> dict:
 
 def _volume_metric_summary(cluster, pool: str, image: str) -> dict:
     """Return the latest persisted telemetry sample, scoped to the cluster."""
-    cutoff = datetime.utcnow() - timedelta(hours=24)
+    cutoff = utc_now() - timedelta(hours=24)
     with db.SessionLocal() as session:
         latest = (
             session.query(VolumeMetric)
@@ -2706,7 +2707,7 @@ async def volume_inventory_detail_api(
     detail["backup_summary"] = backup_summary
     detail["metric_summary"] = metric_summary
     detail["audit_summary"] = audit_summary
-    return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **detail}
+    return {"cluster_id": cluster.id, "collected_at": utc_now().isoformat() + "Z", **detail}
 
 
 @router.get("/api/volumes/{pool}/inventory/{image}/integrity")
@@ -2757,7 +2758,7 @@ async def volume_integrity_api(
         "cluster_id": cluster.id,
         "pool": pool,
         "image": image,
-        "collected_at": datetime.utcnow().isoformat() + "Z",
+        "collected_at": utc_now().isoformat() + "Z",
         **evidence,
     }
 
@@ -2788,7 +2789,7 @@ async def volume_dependency_graph_api(
     except CephQueryError as exc:
         logger.warning("volume_dependency_graph_api: cluster=%s volume=%s/%s: %s", cluster.id, pool, image, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được dependency graph của Volume: {exc}") from exc
-    return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **graph}
+    return {"cluster_id": cluster.id, "collected_at": utc_now().isoformat() + "Z", **graph}
 
 
 async def _cinder_attachment_preflight(cluster, pool: str, image: str) -> tuple[dict, dict, dict]:
@@ -3109,7 +3110,7 @@ async def volume_history_api(
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     hours = max(1, min(hours, _MAX_HISTORY_HOURS))
-    since = datetime.utcnow() - timedelta(hours=hours)
+    since = utc_now() - timedelta(hours=hours)
 
     # Operators commonly copy either the RBD image name
     # (``volume-<uuid>``) or the short hexadecimal Image ID shown by
@@ -3160,7 +3161,7 @@ async def volume_history_api(
         samples = [
             {
                 # "Z" appended (2026-07-29): polled_at is stored naive-UTC
-                # (datetime.utcnow(), same convention as every other
+                # (utc_now(), same convention as every other
                 # timestamped table in this app) — without an explicit UTC
                 # marker, JS `new Date(isoString)` parses a bare
                 # "YYYY-MM-DDTHH:MM:SS" as LOCAL time instead, silently
@@ -3273,7 +3274,7 @@ async def propose_vm_perf_benchmark(request: Request, user: str = Depends(requir
                 f"Đề xuất đo read-only từ Controller {controller_ip} qua VM {vm_ip}, "
                 f"ổ {device}, bởi {user}."
             ),
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         try:
@@ -3425,7 +3426,7 @@ async def propose_volume_perf_sweep(request: Request, pool: str, user: str = Dep
                 f"Đề xuất đo hiệu năng tối đa (load sweep) cho pool {pool} bởi {user} — dùng "
                 f"scratch image riêng, không đụng volume thật."
             ),
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         try:
@@ -3579,7 +3580,7 @@ async def volume_perf_sweep_analyze_api(pool: str, user: str = Depends(require_l
         row = session.get(VolumePerfSweep, row_id)
         if row is not None:
             row.ai_conclusion = json.dumps(conclusion)
-            row.ai_analyzed_at = datetime.utcnow()
+            row.ai_analyzed_at = utc_now()
             session.commit()
 
     return {"pool": pool, "conclusion": conclusion}
@@ -3664,7 +3665,7 @@ async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, u
             dedupe_key=f"rbd-trash:{pool}/{trash_id}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Đề xuất xoá vĩnh viễn volume trong trash {pool}/{trash_id} bởi {user}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         try:

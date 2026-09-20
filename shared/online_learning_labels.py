@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta, timezone
+from shared.time import utc_now
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import object_session
@@ -119,7 +120,7 @@ def enqueue_verified_outcomes(
     tolerance_percent = max(0.0, float(settings.online_learning_label_tolerance_percent))
     rate_limit = max(1, int(settings.online_learning_label_rate_limit))
     rate_window = timedelta(seconds=max(60, int(settings.online_learning_label_rate_window_seconds)))
-    rate_window_start = datetime.utcnow() - rate_window
+    rate_window_start = utc_now() - rate_window
     source_actor = "forecast-evaluator"
     for run in session.scalars(query):
         if run.actual_percent is None or not math.isfinite(float(run.actual_percent)):
@@ -222,7 +223,7 @@ def enqueue_verified_outcomes(
             reason=ready_reason,
             evidence_count=int(evidence_count),
             source_actor="forecast-evaluator",
-            verified_at=run.evaluated_at or datetime.utcnow(),
+            verified_at=run.evaluated_at or utc_now(),
         )
         session.add(label_row)
         session.flush()
@@ -253,7 +254,7 @@ def ready_label_for_sample(
 def label_policy_paused(session, *, now: datetime | None = None) -> bool:
     """Fail closed for one rate-limit window after poisoning is detected."""
 
-    cutoff = (now or datetime.utcnow()) - timedelta(
+    cutoff = (now or utc_now()) - timedelta(
         seconds=max(60, int(settings.online_learning_label_rate_window_seconds)),
     )
     return session.scalar(select(OnlineLearnerLabelEvent.id).where(
@@ -265,7 +266,7 @@ def label_policy_paused(session, *, now: datetime | None = None) -> bool:
 
 def mark_consumed(label: OnlineLearnerLabel, *, now: datetime | None = None) -> None:
     label.status = CONSUMED
-    label.consumed_at = now or datetime.utcnow()
+    label.consumed_at = now or utc_now()
     session = object_session(label)
     if session is not None:
         _record_event_once(

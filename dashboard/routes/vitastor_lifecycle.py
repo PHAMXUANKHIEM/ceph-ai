@@ -5,6 +5,7 @@ import ipaddress
 import json
 import re
 from datetime import datetime
+from shared.time import utc_now
 from pathlib import Path
 
 from sqlalchemy import exists, or_
@@ -163,13 +164,13 @@ def _execute(operation_id: str) -> None:
         if row.cluster_id and not _active_cluster(session, row.cluster_id):
             row.status = "FAILED"
             row.error_message = "Cụm Vitastor đã bị vô hiệu hoá hoặc xoá trước khi chạy thao tác"
-            row.finished_at = datetime.utcnow()
+            row.finished_at = utc_now()
             session.commit()
             return
         operation, params = row.operation, json.loads(row.params_json)
     steps: dict[str, dict] = {}
     def progress(step: str, status: str, message: str):
-        now = datetime.utcnow().isoformat()
+        now = utc_now().isoformat()
         entry = steps.setdefault(step, {"id": step, "started_at": now})
         entry.update({"status": status, "message": message})
         if status in {"done", "failed"}: entry["finished_at"] = now
@@ -198,19 +199,19 @@ def _execute(operation_id: str) -> None:
                 if name_conflict is not None and (existing is None or name_conflict.id != existing.id):
                     raise RuntimeError(f"Tên cụm Vitastor {row.cluster_name!r} đã được dùng cho một cụm khác")
                 if existing is None:
-                    existing = VitastorCluster(**cluster_values, is_active=True, last_status_json=json.dumps({"deployment": deployment}), last_checked_at=datetime.utcnow(), created_by=row.requested_by)
+                    existing = VitastorCluster(**cluster_values, is_active=True, last_status_json=json.dumps({"deployment": deployment}), last_checked_at=utc_now(), created_by=row.requested_by)
                     session.add(existing); session.flush()
                 else:
                     for key, value in cluster_values.items():
                         setattr(existing, key, value)
                     existing.is_active = True
                     existing.last_status_json = json.dumps({"deployment": deployment})
-                    existing.last_checked_at = datetime.utcnow()
+                    existing.last_checked_at = utc_now()
                 row.cluster_id = existing.id
             elif operation == "delete":
                 cluster = session.get(VitastorCluster, row.cluster_id)
                 if cluster: session.delete(cluster)
-            row.status, row.finished_at = "SUCCESS", datetime.utcnow(); session.commit()
+            row.status, row.finished_at = "SUCCESS", utc_now(); session.commit()
     except Exception as exc:
         error_message = str(exc)
         if operation in {"deploy", "deploy_resume"}:
@@ -223,7 +224,7 @@ def _execute(operation_id: str) -> None:
         progress("error", "failed", error_message)
         with db.SessionLocal() as session:
             row = session.get(VitastorOperation, operation_id)
-            row.status, row.error_message, row.finished_at = "FAILED", error_message, datetime.utcnow(); session.commit()
+            row.status, row.error_message, row.finished_at = "FAILED", error_message, utc_now(); session.commit()
 
 
 @router.get("/deploy-cluster", response_class=HTMLResponse)
@@ -475,7 +476,7 @@ async def execute_operation(operation_id: str, background: BackgroundTasks, user
             VitastorOperation.status == "PENDING_APPROVAL",
             active_cluster,
         ).update(
-            {VitastorOperation.status: "RUNNING", VitastorOperation.started_at: datetime.utcnow()},
+            {VitastorOperation.status: "RUNNING", VitastorOperation.started_at: utc_now()},
             synchronize_session=False,
         )
         if claimed != 1:
@@ -495,7 +496,7 @@ async def reject_operation(operation_id: str, user: str = Depends(require_vitast
     with db.SessionLocal() as session:
         row = session.get(VitastorOperation, operation_id)
         if not row or row.status != "PENDING_APPROVAL": raise HTTPException(409, "Không thể từ chối thao tác")
-        row.status, row.finished_at = "REJECTED", datetime.utcnow(); session.commit()
+        row.status, row.finished_at = "REJECTED", utc_now(); session.commit()
     return {"status": "REJECTED"}
 
 

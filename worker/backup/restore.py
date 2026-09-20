@@ -29,6 +29,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from shared.time import utc_now
 from typing import TYPE_CHECKING
 
 import paramiko
@@ -322,7 +323,7 @@ def restore_image(
     as `RestoreResult(success=False, error_message=...)` so callers (a DR
     phase, or a single-image action) can record/report them their own
     way."""
-    started_at = datetime.utcnow()
+    started_at = utc_now()
     cluster = get_cluster(cluster_id)
     full_job, diff_jobs = _backup_chain(
         pool, image, cluster_id=cluster_id, recovery_point_job_id=recovery_point_job_id
@@ -369,7 +370,7 @@ def restore_image(
             full_job_id=full_job.id,
             applied_diff_job_ids=applied_diff_ids,
             size_bytes=total_size,
-            duration_seconds=(datetime.utcnow() - started_at).total_seconds(),
+            duration_seconds=(utc_now() - started_at).total_seconds(),
         )
     except Exception as exc:
         logger.exception(
@@ -385,7 +386,7 @@ def restore_image(
             full_job_id=full_job.id,
             applied_diff_job_ids=applied_diff_ids,
             size_bytes=total_size,
-            duration_seconds=(datetime.utcnow() - started_at).total_seconds(),
+            duration_seconds=(utc_now() - started_at).total_seconds(),
             error_message=str(exc),
         )
     finally:

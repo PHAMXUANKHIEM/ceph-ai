@@ -12,6 +12,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from shared.time import utc_now
 
 from shared.incident_actions import cancel_pending_actions
 from shared.models import Cluster, Incident, IncidentStatus
@@ -84,7 +85,7 @@ def create(session, *, cluster: Cluster, scenario_id: str, actor: str) -> tuple[
         raise SyntheticInjectionError("Cluster chưa có MON node để dựng evidence")
 
     run_id = str(uuid.uuid4())
-    detected_at = datetime.utcnow()
+    detected_at = utc_now()
     snapshot = {
         "status": "HEALTH_WARN",
         "checks": {

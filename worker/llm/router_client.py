@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from shared.time import utc_now
 from pathlib import Path
 
 import httpx
@@ -1103,7 +1104,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     # again. This is exactly the state discovered by the
                     # staging OSD fault-injection campaign on 2026-08-25.
                     incident.status = IncidentStatus.VERIFYING.value
-                    incident.verify_after = datetime.utcnow() + timedelta(
+                    incident.verify_after = utc_now() + timedelta(
                         seconds=max(0, settings.incident_verify_delay_seconds)
                     )
                     session.commit()
@@ -1353,7 +1354,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 # evidence check on approval, idempotency_key for the
                 # in-flight-duplicate DB guard — see Action's own column
                 # docstrings in shared/models.py for both.
-                expires_at=datetime.utcnow() + timedelta(hours=settings.action_approval_expiry_hours),
+                expires_at=utc_now() + timedelta(hours=settings.action_approval_expiry_hours),
                 idempotency_key=_compute_idempotency_key(action_id, nodes, action_params),
             )
             session.add(action)
@@ -1613,7 +1614,7 @@ def _maybe_execute_safe_action(
             grace_action = session.get(Action, action_pk)
             grace_incident = session.get(Incident, incident_id)
             if grace_action is not None and grace_action.grace_until is None:
-                grace_action.grace_until = datetime.utcnow() + timedelta(
+                grace_action.grace_until = utc_now() + timedelta(
                     seconds=settings.autopilot_grace_period_seconds,
                 )
                 grace_action.status = ActionStatus.GRACE_PENDING.value
@@ -1740,7 +1741,7 @@ def _maybe_execute_safe_action(
                 )
             session.commit()
         return
-    now = datetime.utcnow()
+    now = utc_now()
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)
         limits = check_limits(
@@ -1926,13 +1927,13 @@ def _record_execution_result(
                 ActionStatus.AUTO_EXECUTED.value if succeeded else ActionStatus.FAILED.value
             )
             if succeeded:
-                action.executed_at = datetime.utcnow()
+                action.executed_at = utc_now()
             notify_rationale = action.rationale
             notify_action_id = action.action_id
             notify_target_nodes = action.target_nodes
             remediation_cases.record_execution(
                 session, action_id=action.id, succeeded=succeeded,
-                executed_at=action.executed_at if succeeded else datetime.utcnow(),
+                executed_at=action.executed_at if succeeded else utc_now(),
             )
         if incident is None:
             # AuditEntry.incident_id is a required FK — there is nothing
@@ -1952,7 +1953,7 @@ def _record_execution_result(
                     30 if incident.ceph_code == "OSD_DOWN"
                     else settings.incident_verify_delay_seconds
                 )
-                incident.verify_after = datetime.utcnow() + timedelta(
+                incident.verify_after = utc_now() + timedelta(
                     seconds=verify_delay
                 )
             audit.record(
@@ -2057,7 +2058,7 @@ def _finalize_package_upgrade_osd_release(
         "host": mon_host,
         "status": "running",
         "command": command,
-        "started_at": datetime.utcnow().isoformat(),
+        "started_at": utc_now().isoformat(),
     }
     progress.append(step)
     _write_action_progress(action_pk, progress)
@@ -2077,7 +2078,7 @@ def _finalize_package_upgrade_osd_release(
         step["error"] = str(exc)
     else:
         step["status"] = "done"
-    step["finished_at"] = datetime.utcnow().isoformat()
+    step["finished_at"] = utc_now().isoformat()
     _write_action_progress(action_pk, progress)
 
 
@@ -2107,7 +2108,7 @@ def _set_upgrade_osd_flags(
         "host": mon_host,
         "status": "running",
         "command": command,
-        "started_at": datetime.utcnow().isoformat(),
+        "started_at": utc_now().isoformat(),
     }
     # Appended, NOT inserted at the front — `progress` already has one
     # "pending" placeholder PER HOST at fixed indices the per-host loop
@@ -2136,7 +2137,7 @@ def _set_upgrade_osd_flags(
         step["error"] = str(exc)
     else:
         step["status"] = "done"
-    step["finished_at"] = datetime.utcnow().isoformat()
+    step["finished_at"] = utc_now().isoformat()
     _write_action_progress(action_pk, progress)
 
 
@@ -2159,7 +2160,7 @@ def _unset_upgrade_osd_flags(
         "host": mon_host,
         "status": "running",
         "command": command,
-        "started_at": datetime.utcnow().isoformat(),
+        "started_at": utc_now().isoformat(),
     }
     progress.append(step)
     _write_action_progress(action_pk, progress)
@@ -2179,7 +2180,7 @@ def _unset_upgrade_osd_flags(
         step["error"] = str(exc)
     else:
         step["status"] = "done"
-    step["finished_at"] = datetime.utcnow().isoformat()
+    step["finished_at"] = utc_now().isoformat()
     _write_action_progress(action_pk, progress)
 
 
@@ -2355,7 +2356,7 @@ def _execute_package_upgrade_action(
     # also block this finalize step — without `not state["stopped_mid_
     # sequence"]`, `ceph osd require-osd-release <codename>` could still
     if state["aborted"]:
-        now = datetime.utcnow().isoformat()
+        now = utc_now().isoformat()
         for item in progress:
             if item.get("status") == "pending":
                 item.update(status="skipped", error=_UPGRADE_ABORTED_SKIP_MESSAGE,
@@ -2451,7 +2452,7 @@ def _run_install_phase(
         )
         entry["status"] = "running"
         entry["command"] = command
-        entry["started_at"] = datetime.utcnow().isoformat()
+        entry["started_at"] = utc_now().isoformat()
         _write_action_progress(action_pk, progress)
 
         try:
@@ -2470,12 +2471,12 @@ def _run_install_phase(
             state["failures"].append(f"Node {host}, bước install: {exc}")
             entry["status"] = "failed"
             entry["error"] = str(exc)
-            entry["finished_at"] = datetime.utcnow().isoformat()
+            entry["finished_at"] = utc_now().isoformat()
             _write_action_progress(action_pk, progress)
             break
 
         entry["status"] = "done"
-        entry["finished_at"] = datetime.utcnow().isoformat()
+        entry["finished_at"] = utc_now().isoformat()
         _write_action_progress(action_pk, progress)
         logger.info(
             "_execute_package_upgrade_action: hoàn tất cài đặt trên host %s (%d/%d) (action %s)",
@@ -2525,7 +2526,7 @@ def _run_restart_phase(
         # failed (Fix 1) must not have its unit(s) restarted here — that
         # would restart a daemon against a possibly broken/partial
         if host in state["failed_install_hosts"]:
-            now = datetime.utcnow().isoformat()
+            now = utc_now().isoformat()
             if phase_entries is not None:
                 entry = phase_entries[index]
                 entry["status"] = "skipped"
@@ -2550,7 +2551,7 @@ def _run_restart_phase(
             state["all_succeeded"] = False
             state["aborted"] = True
             state["failures"].append(f"Node {host}, bước {phase_name}/discover: {exc}")
-            now = datetime.utcnow().isoformat()
+            now = utc_now().isoformat()
             if phase_entries is not None:
                 entry = phase_entries[index]
                 entry["status"] = "failed"
@@ -2595,7 +2596,7 @@ def _run_restart_phase(
             state["all_succeeded"] = False
             state["aborted"] = True
             state["failures"].append(f"Node {host}, bước {phase_name}/prepare: {exc}")
-            now = datetime.utcnow().isoformat()
+            now = utc_now().isoformat()
             if phase_entries is not None:
                 entry = phase_entries[index]
                 entry["status"] = "failed"
@@ -2621,14 +2622,14 @@ def _run_restart_phase(
             entry = phase_entries[index]
             entry["status"] = "running"
             entry["command"] = command
-            entry["started_at"] = datetime.utcnow().isoformat()
+            entry["started_at"] = utc_now().isoformat()
         else:
             entry = {
                 "host": host,
                 "phase": phase_name,
                 "status": "running",
                 "command": command,
-                "started_at": datetime.utcnow().isoformat(),
+                "started_at": utc_now().isoformat(),
             }
             progress.append(entry)
         _write_action_progress(action_pk, progress)
@@ -2643,12 +2644,12 @@ def _run_restart_phase(
             state["failures"].append(f"Node {host}, bước {phase_name}/restart: {exc}")
             entry["status"] = "failed"
             entry["error"] = str(exc)
-            entry["finished_at"] = datetime.utcnow().isoformat()
+            entry["finished_at"] = utc_now().isoformat()
             _write_action_progress(action_pk, progress)
             break
 
         entry["status"] = "done"
-        entry["finished_at"] = datetime.utcnow().isoformat()
+        entry["finished_at"] = utc_now().isoformat()
         _write_action_progress(action_pk, progress)
 
 
@@ -2807,16 +2808,16 @@ def _route_risky_to_approval(incident_id: str, action_pk: str, action_id: str) -
 
 def _process_approved_actions_once() -> None:
     with db.SessionLocal() as session:
-        recovered = reconcile_expired_executions(session, now=datetime.utcnow())
+        recovered = reconcile_expired_executions(session, now=utc_now())
         backfilled = remediation_cases.backfill_missing_cases(session, limit=200)
         evaluated = remediation_cases.evaluate_regressions(
-            session, now=datetime.utcnow(), limit=200,
+            session, now=utc_now(), limit=200,
         )
         scrubbed = remediation_cases.scrub_existing_case_memory(session)
-        trust_updated = trust_engine.recompute_playbook_stats(session, now=datetime.utcnow())
-        promotion_updated = trust_engine.evaluate_promotion_candidates(session, now=datetime.utcnow())
-        log_learning_updated = log_learning.reconcile_samples(session, now=datetime.utcnow())
-        log_fault_stats_updated = log_learning.recompute_fault_stats(session, now=datetime.utcnow())
+        trust_updated = trust_engine.recompute_playbook_stats(session, now=utc_now())
+        promotion_updated = trust_engine.evaluate_promotion_candidates(session, now=utc_now())
+        log_learning_updated = log_learning.reconcile_samples(session, now=utc_now())
+        log_fault_stats_updated = log_learning.recompute_fault_stats(session, now=utc_now())
         from watcher.forecast_replay import compare_persisted_forecast_runs
         shadow_results = compare_persisted_forecast_runs(session)
     shadow_evaluations_persisted = 0
@@ -2828,14 +2829,14 @@ def _process_approved_actions_once() -> None:
                     continue
                 try:
                     active_model, candidate_model = model_registry.ensure_shadow_model_pair(
-                        session, shadow, now=datetime.utcnow(),
+                        session, shadow, now=utc_now(),
                     )
                     evaluation = model_registry.record_shadow_evaluation(
                         session,
                         active_model=active_model,
                         candidate_model=candidate_model,
                         comparison=shadow,
-                        now=datetime.utcnow(),
+                        now=utc_now(),
                     )
                     if evaluation is not None:
                         shadow_evaluations_persisted += 1
@@ -2910,7 +2911,7 @@ def _process_approved_actions_once() -> None:
 
 def _process_due_grace_actions_once(*, now: datetime | None = None) -> int:
     """Resume due lab actions from frozen Case evidence; all runtime gates rerun."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     with db.SessionLocal() as session:
         due_ids = [row.id for row in session.query(Action).filter(
             Action.status == ActionStatus.GRACE_PENDING.value,
@@ -2952,7 +2953,7 @@ def _reconcile_stuck_rbd_actions_once(
     *, stale_after_seconds: int = 600, now: datetime | None = None,
 ) -> list[str]:
     """Resolve stale RBD executions from live state without rerunning mutation."""
-    cutoff = (now or datetime.utcnow()) - timedelta(seconds=max(1, stale_after_seconds))
+    cutoff = (now or utc_now()) - timedelta(seconds=max(1, stale_after_seconds))
     candidates: list[dict] = []
     with db.SessionLocal() as session:
         rows = (
@@ -3010,7 +3011,7 @@ def _reconcile_stuck_rbd_actions_once(
         except ExecutorError as exc:
             _write_action_progress(item["action_pk"], [{
                 "host": item["host"], "status": "failed", "phase": "reconciliation",
-                "command": command, "error": str(exc), "finished_at": datetime.utcnow().isoformat(),
+                "command": command, "error": str(exc), "finished_at": utc_now().isoformat(),
             }])
             _record_approved_execution_result(
                 item["action_pk"], command=command, command_output=output, succeeded=False
@@ -3018,7 +3019,7 @@ def _reconcile_stuck_rbd_actions_once(
         else:
             _write_action_progress(item["action_pk"], [{
                 "host": item["host"], "status": "done", "phase": "reconciliation",
-                "command": command, "finished_at": datetime.utcnow().isoformat(),
+                "command": command, "finished_at": utc_now().isoformat(),
             }])
             _record_approved_execution_result(
                 item["action_pk"], command=command, command_output=output, succeeded=True
@@ -3035,7 +3036,7 @@ def _rbd_trash_purge_eligibility(pool: str, trash_ids: list[str]) -> dict[str, s
     """
     entries = query_rbd_trash(pool)
     by_id = {str(entry.get("id")): entry for entry in entries}
-    now = datetime.utcnow()
+    now = utc_now()
     ttl_days = max(1, min(int(settings.rbd_trash_retention_days), 3650))
     result: dict[str, str | None] = {}
     for trash_id in trash_ids:
@@ -3088,22 +3089,22 @@ def _execute_rbd_trash_purge_all_action(
     for index, trash_id in enumerate(ids):
         reason = eligibility[trash_id]
         if reason is not None:
-            progress[index].update(status="skipped", error=reason, finished_at=datetime.utcnow().isoformat())
+            progress[index].update(status="skipped", error=reason, finished_at=utc_now().isoformat())
             _write_action_progress(action_pk, progress)
             all_succeeded = False
             continue
         command = commands.get_command(
             "rbd_trash_remove", host, {"pool_name": pool, "trash_id": trash_id}
         )
-        progress[index].update(status="running", command=command, started_at=datetime.utcnow().isoformat())
+        progress[index].update(status="running", command=command, started_at=utc_now().isoformat())
         _write_action_progress(action_pk, progress)
         try:
             execute_command(host, command, user=ssh_user, key_path=ssh_key_path)
         except ExecutorError as exc:
-            progress[index].update(status="failed", error=str(exc), finished_at=datetime.utcnow().isoformat())
+            progress[index].update(status="failed", error=str(exc), finished_at=utc_now().isoformat())
             all_succeeded = False
         else:
-            progress[index].update(status="done", finished_at=datetime.utcnow().isoformat())
+            progress[index].update(status="done", finished_at=utc_now().isoformat())
         _write_action_progress(action_pk, progress)
     return all_succeeded
 
@@ -3465,7 +3466,7 @@ def _execute_approved_action(action_pk: str) -> None:
         # real error text only ever reached worker.log, never the Dashboard.
         progress[node_index - 1]["status"] = "running"
         progress[node_index - 1]["command"] = command
-        progress[node_index - 1]["started_at"] = datetime.utcnow().isoformat()
+        progress[node_index - 1]["started_at"] = utc_now().isoformat()
         _write_action_progress(action_pk, progress)
 
         try:
@@ -3486,7 +3487,7 @@ def _execute_approved_action(action_pk: str) -> None:
             executed_any = True
             progress[node_index - 1]["status"] = "failed"
             progress[node_index - 1]["error"] = str(exc)
-            progress[node_index - 1]["finished_at"] = datetime.utcnow().isoformat()
+            progress[node_index - 1]["finished_at"] = utc_now().isoformat()
             _write_action_progress(action_pk, progress)
             if action_id_str == "upgrade_ceph_cluster":
                 update_failures.append(f"Node {host}, bước cephadm upgrade: {exc}")
@@ -3500,7 +3501,7 @@ def _execute_approved_action(action_pk: str) -> None:
                     "phase": "rollback",
                     "status": "running",
                     "command": rollback_command,
-                    "started_at": datetime.utcnow().isoformat(),
+                    "started_at": utc_now().isoformat(),
                 }
                 progress.append(rollback_step)
                 _write_action_progress(action_pk, progress)
@@ -3513,8 +3514,8 @@ def _execute_approved_action(action_pk: str) -> None:
                 else:
                     rollback_step["status"] = "done"
                     update_rollback_summary = "Đã dừng cephadm upgrade và gỡ các cờ bảo trì Ceph."
-                rollback_step["finished_at"] = datetime.utcnow().isoformat()
-                now = datetime.utcnow().isoformat()
+                rollback_step["finished_at"] = utc_now().isoformat()
+                now = utc_now().isoformat()
                 for pending in progress:
                     if pending.get("status") == "pending":
                         pending.update(status="skipped", error=_UPGRADE_ABORTED_SKIP_MESSAGE,
@@ -3529,7 +3530,7 @@ def _execute_approved_action(action_pk: str) -> None:
         progress[node_index - 1]["status"] = "done"
         if action_id_str == "execute_node_command":
             progress[node_index - 1]["output"] = command_output[-50000:]
-        progress[node_index - 1]["finished_at"] = datetime.utcnow().isoformat()
+        progress[node_index - 1]["finished_at"] = utc_now().isoformat()
         _write_action_progress(action_pk, progress)
 
         logger.info(
@@ -3716,14 +3717,14 @@ def _record_approved_execution_result(
             action.proposed_command = command
         action.status = ActionStatus.EXECUTED.value if succeeded else ActionStatus.FAILED.value
         if succeeded:
-            action.executed_at = datetime.utcnow()
+            action.executed_at = utc_now()
             if action.action_id == "rbd_trash_move_volume":
                 _persist_rbd_trash_usage(session, action, incident, command_output)
             else:
                 _delete_rbd_trash_usage(session, action, incident)
         remediation_cases.record_execution(
             session, action_id=action.id, succeeded=succeeded,
-            executed_at=action.executed_at if succeeded else datetime.utcnow(),
+            executed_at=action.executed_at if succeeded else utc_now(),
         )
 
         if incident is None:
@@ -3743,7 +3744,7 @@ def _record_approved_execution_result(
                 incident.status = IncidentStatus.RESOLVED.value
                 remediation_cases.record_verified(
                     session, incident_id=incident.id, succeeded=True,
-                    verified_at=datetime.utcnow(), post_state={"verified_by": "owning_monitor"},
+                    verified_at=utc_now(), post_state={"verified_by": "owning_monitor"},
                 )
             else:
                 # 2026-08-20: lệnh chạy xong exit 0 KHÔNG phải bằng chứng
@@ -3751,7 +3752,7 @@ def _record_approved_execution_result(
                 # VERIFYING và để watcher/verify.py hỏi lại cụm sau
                 # `settings.incident_verify_delay_seconds` rồi mới kết luận.
                 incident.status = IncidentStatus.VERIFYING.value
-                incident.verify_after = datetime.utcnow() + timedelta(
+                incident.verify_after = utc_now() + timedelta(
                     seconds=max(0, settings.incident_verify_delay_seconds)
                 )
             audit.record(

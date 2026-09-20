@@ -4,6 +4,7 @@ import re
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from shared.time import utc_now
 from enum import Enum
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -178,7 +179,7 @@ def approve_action_core(action_id: str, actor: str) -> ApprovalResult:
         # AI roadmap Pha 0.4 (section 3.3): stale-evidence check. NULL
         # expires_at (every action family besides the Incident-diagnosis
         # pipeline — see Action.expires_at's own docstring) never expires.
-        if action.expires_at is not None and datetime.utcnow() > action.expires_at:
+        if action.expires_at is not None and utc_now() > action.expires_at:
             audit.record(
                 session,
                 incident_id=action.incident_id,
@@ -348,7 +349,7 @@ def cancel_grace_action_core(action_id: str, actor: str) -> ApprovalResult:
         if action.status != ActionStatus.GRACE_PENDING.value:
             return ApprovalResult(ApprovalOutcome.ALREADY_HANDLED, action.id, action.incident_id)
         action.status = ActionStatus.REJECTED.value
-        action.cancelled_at = datetime.utcnow()
+        action.cancelled_at = utc_now()
         action.cancelled_by = actor
         incident = session.get(Incident, action.incident_id)
         if incident is not None:

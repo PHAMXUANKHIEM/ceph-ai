@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from sqlalchemy import or_
 
@@ -139,7 +140,7 @@ def correlate_finding(session, finding: LogFinding, *, now: datetime | None = No
     """Attach the best active health incident, or leave the finding unlinked."""
     if not finding.fault_family:
         return None
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     cluster = session.get(Cluster, finding.cluster_id)
     is_default = bool(cluster and cluster.is_default)
     candidates = (

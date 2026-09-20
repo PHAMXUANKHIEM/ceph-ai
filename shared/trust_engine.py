@@ -6,6 +6,7 @@ import math
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from shared.models import Action, PlaybookStat, RemediationCase
 
@@ -56,7 +57,7 @@ def record_shadow_decision(
     session, *, case: RemediationCase, action: Action, now: datetime | None = None,
 ) -> str:
     """Freeze a hypothetical decision; this function cannot execute or promote."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     stat = session.query(PlaybookStat).filter_by(
         playbook_id=action.action_id,
         playbook_version=case.playbook_version,
@@ -100,7 +101,7 @@ def shadow_evaluation_report(
     session, *, now: datetime | None = None, window_days: int = 28,
 ) -> dict:
     """Deterministic read-only commissioning evidence for the Shadow window."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     since = now - timedelta(days=max(1, window_days))
     rows = (
         session.query(RemediationCase, Action)
@@ -189,7 +190,7 @@ def _verified_result(case: RemediationCase) -> str | None:
 
 def recompute_playbook_stats(session, *, now: datetime | None = None) -> int:
     """Idempotently replace aggregates; never promotes autonomy by itself."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     grouped: dict[tuple[str, str, str], list[RemediationCase]] = defaultdict(list)
     rows = (
         session.query(RemediationCase)
@@ -272,7 +273,7 @@ def recompute_playbook_stats(session, *, now: datetime | None = None) -> int:
 
 def evaluate_promotion_candidates(session, *, now: datetime | None = None) -> int:
     """Propose L2→L3 review only; never changes maturity or execution policy."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     since = now - timedelta(days=30)
     actions = {row.id: row for row in session.query(Action).all()}
     changed = 0

@@ -36,6 +36,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
+from shared.time import utc_now
 from pathlib import Path
 
 import httpx
@@ -1312,7 +1313,7 @@ def _maybe_propose_action(
                 cluster_id=cluster_id,
                 ceph_code=ceph_code,
                 status=IncidentStatus.PENDING_APPROVAL.value,
-                detected_at=datetime.utcnow(),
+                detected_at=utc_now(),
                 log_excerpt=rationale,
             )
             session.add(incident)

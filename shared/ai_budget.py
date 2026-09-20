@@ -6,6 +6,7 @@ import logging
 import math
 import uuid
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from config.settings import settings
 from shared import db
@@ -95,7 +96,7 @@ def _reservation_timeout_seconds() -> int:
 
 
 def _spent_since(session, start: datetime, *, now: datetime | None = None) -> tuple[float, int]:
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     reservation_cutoff = now - timedelta(seconds=_reservation_timeout_seconds())
     rows = session.query(AIInvocation).filter(AIInvocation.created_at >= start).all()
     spent = 0.0
@@ -130,7 +131,7 @@ def _expire_stale_reservations(session, now: datetime) -> None:
 
 def status(*, now: datetime | None = None) -> dict:
     """Return current daily/monthly budget status without reading content."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     daily_limit, monthly_limit = _budget_limits()
     with db.SessionLocal() as session:
         daily_spent, daily_unpriced = _spent_since(session, _period_start(now, "daily"), now=now)
@@ -226,7 +227,7 @@ def check(
     daily_limit, monthly_limit = _budget_limits()
     if not (daily_limit or monthly_limit):
         return None
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     reserve_output = max(0, int(getattr(settings, "ai_cost_budget_reserve_output_tokens", 2048)))
     estimated_call = _estimate_cost(provider, model_id, input_chars, reserve_output * 4)
     if estimated_call is None:

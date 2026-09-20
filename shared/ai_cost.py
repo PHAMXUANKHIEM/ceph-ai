@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from datetime import datetime, timedelta
+from shared.time import utc_now
 from dataclasses import asdict, dataclass
 
 from config.settings import settings
@@ -209,7 +210,7 @@ def _optimization_summary(groups: list[dict], total_cost: float, hours: int, usd
 def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
     """Aggregate content-free telemetry; never reads prompt/response content."""
     hours = max(1, min(int(hours), 8760))
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     cutoff = now - timedelta(hours=hours)
     with db.SessionLocal() as session:
         rows = session.query(AIInvocation).filter(AIInvocation.created_at >= cutoff).all()

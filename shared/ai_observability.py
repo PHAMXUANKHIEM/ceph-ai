@@ -8,6 +8,7 @@ import time
 import uuid
 from contextvars import ContextVar
 from datetime import datetime
+from shared.time import utc_now
 from typing import Any, Callable
 
 from config.settings import settings
@@ -119,7 +120,7 @@ def _record(*, reservation_id: str | None = None, **values: Any) -> None:
             else:
                 row = None
             if row is None:
-                session.add(AIInvocation(id=str(uuid.uuid4()), created_at=datetime.utcnow(), **values))
+                session.add(AIInvocation(id=str(uuid.uuid4()), created_at=utc_now(), **values))
             else:
                 for key, value in values.items():
                     setattr(row, key, value)

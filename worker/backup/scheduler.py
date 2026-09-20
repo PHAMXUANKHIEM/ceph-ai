@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime
+from shared.time import utc_now
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -135,7 +136,7 @@ def _create_scheduled_action(
             ceph_code=BACKUP_SCHEDULED_CEPH_CODE,
             status=IncidentStatus.EXECUTING.value,
             log_excerpt=log_excerpt,
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()  # assigns incident.id, needed by the Action FK below

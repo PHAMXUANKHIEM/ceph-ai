@@ -1,6 +1,7 @@
 import enum
 import uuid
 from datetime import datetime
+from shared.time import utc_now
 
 from sqlalchemy import (
     BigInteger,
@@ -151,7 +152,7 @@ class Cluster(Base):
     autopilot_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false"),
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class IncidentStatus(str, enum.Enum):
@@ -262,9 +263,9 @@ class Incident(Base):
     # tận gọi router tốn phí và spam Telegram.
     verify_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
     # ``updated_at`` also changes for acknowledgement/mute and other operator
     # activity. Retry policy needs the actual terminal-failure instant, not
@@ -278,7 +279,7 @@ def _stamp_incident_failure(
 ) -> None:
     """Persist the instant an Incident enters FAILED exactly once per attempt."""
     if value == IncidentStatus.FAILED.value and oldvalue != IncidentStatus.FAILED.value:
-        incident.failed_at = datetime.utcnow()
+        incident.failed_at = utc_now()
 
 
 class ActionClassification(str, enum.Enum):
@@ -449,9 +450,9 @@ class Action(Base):
     # the same command against the same target). NULL for every action
     # family that doesn't opt in, same posture as expires_at.
     idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -475,7 +476,7 @@ class RbdTrashUsage(Base):
     used_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     used_percent: Mapped[float] = mapped_column(Float, nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class AuditEntry(Base):
@@ -499,7 +500,7 @@ class AuditEntry(Base):
     action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     actor: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class RemediationCase(Base):
@@ -549,9 +550,9 @@ class RemediationCase(Base):
     shadow_trust_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     shadow_sample_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     shadow_recorded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -578,9 +579,9 @@ class PlaybookStat(Base):
     auto_disabled_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     promotion_candidate_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     promotion_blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -590,7 +591,7 @@ class AutopilotLease(Base):
 
     cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), primary_key=True)
     action_id: Mapped[str] = mapped_column(String(36), ForeignKey("actions.id"), nullable=False, unique=True)
-    acquired_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
@@ -603,7 +604,7 @@ class AutopilotConfigAudit(Base):
     previous_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
     new_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class AutopilotClusterConfigAudit(Base):
@@ -618,7 +619,7 @@ class AutopilotClusterConfigAudit(Base):
     previous_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
     new_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class ActionPolicyOverride(Base):
@@ -630,7 +631,7 @@ class ActionPolicyOverride(Base):
     updated_by: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -644,7 +645,7 @@ class ActionPolicyOverrideAudit(Base):
     previous_classification: Mapped[str] = mapped_column(String(16), nullable=False)
     new_classification: Mapped[str] = mapped_column(String(16), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class IncidentTimelineEvent(Base):
@@ -663,7 +664,7 @@ class IncidentTimelineEvent(Base):
     evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class ObjectStorageAuditEntry(Base):
@@ -680,7 +681,7 @@ class ObjectStorageAuditEntry(Base):
     preview: Mapped[str] = mapped_column(Text, nullable=False)
     result: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -694,7 +695,7 @@ class BucketInventorySnapshot(Base):
     )
     rgw_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     bucket_names_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class RgwAccessAuditEvent(Base):
@@ -728,7 +729,7 @@ class RgwAccessAuditEvent(Base):
     telegram_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_alert_queued: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     external_alert_queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -757,7 +758,7 @@ class RgwErrorNotification(Base):
     telegram_humanized_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     external_alert_queued: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     external_alert_queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -784,7 +785,7 @@ class RgwAnalysisJob(Base):
         String(36), ForeignKey("log_findings.id"), nullable=True
     )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -807,8 +808,8 @@ class BucketLoggingConfig(Base):
     checkpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_delivery_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class NodeDiagnosticRun(Base):
@@ -833,7 +834,7 @@ class NodeDiagnosticRun(Base):
     # Truncated (see watcher/ceph_client.py) — this is an audit record of
     # what an operator saw, not a full log store.
     output_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class ChatMessage(Base):
@@ -921,7 +922,7 @@ class ChatMessage(Base):
     # audit the cluster/resource/time scope used for this message.
     nl_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 class DelegatedAITask(Base):
     """A user request executed by a supervisor and isolated read-only agents.
@@ -957,11 +958,11 @@ class DelegatedAITask(Base):
     dispatch_claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     result_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -991,7 +992,7 @@ class DelegatedAISubtask(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -1019,7 +1020,7 @@ class UpgradeProcedureDocument(Base):
     summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     uploaded_by: Mapped[str] = mapped_column(String(32), nullable=False)
-    uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class WatcherHeartbeat(Base):
@@ -1078,7 +1079,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     ceph_chat_restricted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class AuthLoginRateLimit(Base):
@@ -1097,7 +1098,7 @@ class AuthLoginRateLimit(Base):
     failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     window_started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class ApiRateLimit(Base):
@@ -1108,7 +1109,7 @@ class ApiRateLimit(Base):
     client_key: Mapped[str] = mapped_column(String(255), primary_key=True)
     request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     window_started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class SecurityAuditEvent(Base):
@@ -1122,7 +1123,7 @@ class SecurityAuditEvent(Base):
     path: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     status_code: Mapped[int] = mapped_column(Integer, nullable=False)
     request_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now, index=True)
 
 
 class VitastorUser(Base):
@@ -1143,7 +1144,7 @@ class VitastorUser(Base):
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class VitastorCluster(Base):
@@ -1166,7 +1167,7 @@ class VitastorCluster(Base):
     last_status_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class VitastorOperation(Base):
@@ -1196,7 +1197,7 @@ class VitastorOperation(Base):
     progress_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     requested_by: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -1216,7 +1217,7 @@ class VitastorDiagnosticRun(Base):
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     requested_by: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -1248,7 +1249,7 @@ class VitastorMetricSample(Base):
     recovery_bps: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     degraded_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     raw_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class VitastorOsdMetricSample(Base):
@@ -1272,7 +1273,7 @@ class VitastorOsdMetricSample(Base):
     read_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     write_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     raw_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class VitastorNodeMetricSample(Base):
@@ -1289,7 +1290,7 @@ class VitastorNodeMetricSample(Base):
     media_errors: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     smart_failing: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     raw_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class VitastorNetworkMetricSample(Base):
@@ -1303,7 +1304,7 @@ class VitastorNetworkMetricSample(Base):
     rtt_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     jumbo_9000: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     interface_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class VitastorEntityMetricSample(Base):
@@ -1315,7 +1316,7 @@ class VitastorEntityMetricSample(Base):
     entity_type: Mapped[str] = mapped_column(String(16), nullable=False)
     entity_name: Mapped[str] = mapped_column(String(255), nullable=False)
     metrics_json: Mapped[str] = mapped_column(Text, nullable=False)
-    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class VitastorAnomalyEvent(Base):
@@ -1334,8 +1335,8 @@ class VitastorAnomalyEvent(Base):
     deviation_ratio: Mapped[float] = mapped_column(Float, nullable=False)
     sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
     explanation: Mapped[str] = mapped_column(Text, nullable=False)
-    detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -1437,9 +1438,9 @@ class VitastorRemediationAction(Base):
     telegram_message_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
     telegram_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -1462,7 +1463,7 @@ class VitastorAuditEntry(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     actor: Mapped[str] = mapped_column(String(64), nullable=False)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class ChatPreference(Base):
@@ -1478,7 +1479,7 @@ class ChatPreference(Base):
         String(128), nullable=False, default="Mình yêu ơi, em là"
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -1500,7 +1501,7 @@ class PatchDocument(Base):
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     uploaded_by: Mapped[str] = mapped_column(String(64), nullable=False)
-    uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class VolumeMetric(Base):
@@ -1579,8 +1580,8 @@ class VolumeSnapshotPolicy(Base):
     last_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now, onupdate=utc_now)
 
 
 class VolumeOsdMapping(Base):
@@ -1698,7 +1699,7 @@ class VolumeForecastRun(Base):
     percentage_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING", index=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -1733,7 +1734,7 @@ class VolumeModelState(Base):
     rolling_metrics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -1772,9 +1773,9 @@ class ForecastModelRegistry(Base):
     blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     active_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     retired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -1798,7 +1799,7 @@ class ForecastModelEvaluation(Base):
         String(36), ForeignKey("forecast_model_registry.id"), nullable=False
     )
     target_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    evaluated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     active_evaluated: Mapped[int] = mapped_column(Integer, nullable=False)
     candidate_evaluated: Mapped[int] = mapped_column(Integer, nullable=False)
     active_mae: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -1835,7 +1836,7 @@ class ForecastModelPromotionAudit(Base):
     actor: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class VolumeEarlyForecast(Base):
@@ -1876,7 +1877,7 @@ class VolumeEarlyForecast(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class VolumePerfSweep(Base):
@@ -1944,7 +1945,7 @@ class VolumePerfSweep(Base):
     # "conclusion_vi", "caveats_vi"} — see that module's _tool_schema.
     ai_conclusion: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -2053,7 +2054,7 @@ class BackupJob(Base):
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -2078,7 +2079,7 @@ class BackupAnomaly(Base):
     # left blank by design, unlike VolumePerfSweep.ai_conclusion above
     # which is NULL until an operator opts in; this fires automatically.
     ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class BackupDigestLog(Base):
@@ -2103,7 +2104,7 @@ class BackupDigestLog(Base):
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False)
     anomaly_count: Mapped[int] = mapped_column(Integer, nullable=False)
     summary_text: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class NodeUpgradeGateState(str, enum.Enum):
@@ -2173,9 +2174,9 @@ class NodeUpgradeGate(Base):
     prepare_action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
     confirm_action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
     abort_action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -2228,7 +2229,7 @@ class CrushStructureSnapshot(Base):
     )
     tree_json: Mapped[str] = mapped_column(Text, nullable=False)
     diff_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class CrushOsdDistribution(Base):
@@ -2264,7 +2265,7 @@ class CrushOsdDistribution(Base):
     bytes_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     pgs: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -2283,7 +2284,7 @@ class CephCapacitySample(Base):
     used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     used_percent: Mapped[float] = mapped_column(Float, nullable=False)
-    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class TelegramChannelConfigChange(Base):
@@ -2310,7 +2311,7 @@ class TelegramChannelConfigChange(Base):
     chat_id: Mapped[str] = mapped_column(String(64), nullable=False)
     bot_token_masked: Mapped[str] = mapped_column(String(32), nullable=False)
     actor: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class TelegramManagedChannel(Base):
@@ -2325,9 +2326,9 @@ class TelegramManagedChannel(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     template: Mapped[str] = mapped_column(String(64), nullable=False, default="custom")
     created_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -2342,7 +2343,7 @@ class TelegramChannelLayout(Base):
     display_names_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     updated_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -2425,7 +2426,7 @@ class ClusterCapabilityInventory(Base):
     # Populated only for UNAVAILABLE rows -- the CephQueryError text, so an
     # operator can see WHY without digging through watcher logs.
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now, index=True)
 
 
 class CapabilityMatrixEntryStatus(str, enum.Enum):
@@ -2500,9 +2501,9 @@ class CapabilityMatrixEntry(Base):
         String(16), nullable=False, default=CapabilityMatrixEntryStatus.ACTIVE.value
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -2524,7 +2525,7 @@ class CapabilityMatrixChange(Base):
     actor: Mapped[str] = mapped_column(String(64), nullable=False)
     change_type: Mapped[str] = mapped_column(String(16), nullable=False)  # CREATED / DEPRECATED
     entry_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class CapabilityMatrixProposal(Base):
@@ -2545,7 +2546,7 @@ class CapabilityMatrixProposal(Base):
     reviewed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_entry_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("capability_matrix_entries.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class LogIngestStatus(str, enum.Enum):
@@ -2611,7 +2612,7 @@ class LogIngestRun(Base):
     # (same role as ClusterCapabilityInventory.error_message above).
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, index=True
+        DateTime, nullable=False, default=utc_now, index=True
     )
 
 
@@ -2677,9 +2678,9 @@ class LogPattern(Base):
     triage_label: Mapped[str] = mapped_column(
         String(16), nullable=False, default=LogPatternTriageLabel.UNKNOWN.value
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -2712,7 +2713,7 @@ class LogPatternObservation(Base):
     host: Mapped[str] = mapped_column(String(64), nullable=False)
     count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -2832,7 +2833,7 @@ class LogFinding(Base):
     recovery_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     recovery_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, index=True
+        DateTime, nullable=False, default=utc_now, index=True
     )
 
 
@@ -2894,9 +2895,9 @@ class LogLearningSample(Base):
     operator_verdict_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     regressed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -2913,7 +2914,7 @@ class LogLearningAudit(Base):
     actor: Mapped[str] = mapped_column(String(64), nullable=False)
     previous_value_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     new_value_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class LogFaultStat(Base):
@@ -2942,7 +2943,7 @@ class LogFaultStat(Base):
     promotion_candidate_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     promotion_blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -2984,7 +2985,7 @@ class NodeResourceForecastRun(Base):
     absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING", index=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -3016,7 +3017,7 @@ class NodeResourceModelState(Base):
     rolling_metrics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -3115,7 +3116,7 @@ class NodeResourceForecastTransition(Base):
     new_state: Mapped[str] = mapped_column(String(16), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class NodeResourceForecastFeedback(Base):
@@ -3137,7 +3138,7 @@ class NodeResourceForecastFeedback(Base):
     incident_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     remediation_case_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     submitted_by: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class AIInvocation(Base):
@@ -3162,7 +3163,7 @@ class AIInvocation(Base):
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class AIBudgetLock(Base):
@@ -3172,7 +3173,7 @@ class AIBudgetLock(Base):
 
     period: Mapped[str] = mapped_column(String(16), primary_key=True)
     period_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class AIRunbook(Base):
@@ -3199,7 +3200,7 @@ class AIRunbook(Base):
     prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
     source_case_count: Mapped[int] = mapped_column(Integer, nullable=False)
     report_json: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     feedback_rating: Mapped[str | None] = mapped_column(String(16), nullable=True)
     feedback_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     feedback_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -3219,7 +3220,7 @@ class AIRunbookFeedback(Base):
     rating: Mapped[str] = mapped_column(String(16), nullable=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     submitted_by: Mapped[str] = mapped_column(String(128), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class CapacityAlertState(Base):
@@ -3240,7 +3241,7 @@ class CapacityAlertState(Base):
     notified_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow,
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now,
     )
 
 
@@ -3277,9 +3278,9 @@ class OnlineLearnerState(Base):
     state_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_learned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow,
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now,
     )
 
 
@@ -3312,7 +3313,7 @@ class OnlineLearnerAudit(Base):
     runtime_reason: Mapped[str] = mapped_column(Text, nullable=False)
     update_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     model_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class OnlineLearnerCycleAudit(Base):
@@ -3339,7 +3340,7 @@ class OnlineLearnerCycleAudit(Base):
     cpu_time_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     reason: Mapped[str] = mapped_column(String(64), nullable=False)
     runtime_mode: Mapped[str] = mapped_column(String(24), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class OnlineLearnerControl(Base):
@@ -3364,9 +3365,9 @@ class OnlineLearnerControl(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="RUNNING")
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     updated_by: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow,
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now,
     )
 
 
@@ -3390,7 +3391,7 @@ class OnlineLearnerOperatorAudit(Base):
     actor: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     target_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class OnlineLearnerLabel(Base):
@@ -3428,7 +3429,7 @@ class OnlineLearnerLabel(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     verified_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class OnlineLearnerLabelEvent(Base):
@@ -3450,7 +3451,7 @@ class OnlineLearnerLabelEvent(Base):
     action: Mapped[str] = mapped_column(String(24), nullable=False)
     actor: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class ChangeRiskAssessment(Base):
@@ -3470,4 +3471,4 @@ class ChangeRiskAssessment(Base):
     evidence_json: Mapped[str] = mapped_column(Text, nullable=False)
     assessment_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     acknowledged_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    analyzed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    analyzed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)

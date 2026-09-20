@@ -7,6 +7,7 @@ import hashlib
 import logging
 import time
 from datetime import datetime
+from shared.time import utc_now
 from math import ceil
 from urllib.parse import quote
 
@@ -198,7 +199,7 @@ def _finish_audit(audit_id: str, result: str, error: str | None = None) -> None:
         cluster_id = row.cluster_id
         row.result = result
         row.error_message = error
-        row.completed_at = datetime.utcnow()
+        row.completed_at = utc_now()
         session.commit()
     if result == "succeeded" and cluster_id:
         for namespace in ("s3-user-list", "s3-user-pages", "s3-user-search"):

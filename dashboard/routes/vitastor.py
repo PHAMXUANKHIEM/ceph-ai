@@ -3,6 +3,7 @@
 import asyncio
 import json
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -77,7 +78,7 @@ async def vitastor_logs_api(cluster_id: str | None = None, host: str = "", sourc
     rows = raw.splitlines(); selected = patterns[preset]
     if selected: rows = [line for line in rows if any(token in line.lower() for token in selected)]
     if keyword: rows = [line for line in rows if keyword.casefold() in line.casefold()]
-    return {"cluster": {"id": cluster_pk, "name": cluster_name}, "host": selected_host, "source": source, "preset": preset, "keyword": keyword, "lines": rows, "count": len(rows), "fetched_at": datetime.utcnow().isoformat() + "Z"}
+    return {"cluster": {"id": cluster_pk, "name": cluster_name}, "host": selected_host, "source": source, "preset": preset, "keyword": keyword, "lines": rows, "count": len(rows), "fetched_at": utc_now().isoformat() + "Z"}
 
 
 def _cluster_or_404(session, cluster_id: str | None) -> VitastorCluster:
@@ -170,12 +171,12 @@ async def create_vitastor_diagnostic(cluster_id: str = Form(...), user: str = De
     except Exception as exc:
         with db.SessionLocal() as session:
             row = session.get(VitastorDiagnosticRun, diagnostic_id)
-            row.status = "FAILED"; row.error_message = str(exc); row.finished_at = datetime.utcnow(); session.commit()
+            row.status = "FAILED"; row.error_message = str(exc); row.finished_at = utc_now(); session.commit()
         raise HTTPException(status_code=502, detail=f"AI chẩn đoán thất bại: {exc}") from exc
     with db.SessionLocal() as session:
         row = session.get(VitastorDiagnosticRun, diagnostic_id)
         row.status = "COMPLETED"; row.diagnosis_text = diagnosis_text
-        row.result_json = json.dumps(result, ensure_ascii=False); row.finished_at = datetime.utcnow()
+        row.result_json = json.dumps(result, ensure_ascii=False); row.finished_at = utc_now()
         session.commit(); return {"diagnostic": _diagnostic_dict(row)}
 
 
@@ -230,7 +231,7 @@ async def vitastor_overview_api(
         response = {
             "cluster": {"id": cluster_pk, "name": cluster_name},
             "stale": False,
-            "checked_at": datetime.utcnow().isoformat() + "Z",
+            "checked_at": utc_now().isoformat() + "Z",
             "summary": normalize_status(datasets["status"]),
             "etcd_detail": normalize_etcd(datasets.get("etcd_status"), datasets.get("etcd_health")),
             "pools": datasets.get("pools") if isinstance(datasets.get("pools"), list) else [],
@@ -260,7 +261,7 @@ async def vitastor_overview_api(
         cached_response = {k: v for k, v in response.items() if k != "cluster"}
         cached_response.update(cached_alert_state)
         cluster.last_status_json = json.dumps(cached_response)
-        cluster.last_checked_at = datetime.utcnow()
+        cluster.last_checked_at = utc_now()
         session.commit()
         return response
 
@@ -271,7 +272,7 @@ async def vitastor_metric_history(
     user: str = Depends(require_vitastor_login),
 ):
     hours = min(720, max(1, hours))
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = utc_now() - timedelta(hours=hours)
     with db.SessionLocal() as session:
         cluster = _cluster_or_404(session, cluster_id)
         points = session.query(VitastorMetricSample).filter(
@@ -338,7 +339,7 @@ async def create_vitastor_cluster(
     except VitastorConnectionError as exc:
         raise HTTPException(status_code=400, detail=f"Không xác minh được cụm: {exc}") from exc
     cached = {
-        "stale": False, "checked_at": datetime.utcnow().isoformat() + "Z",
+        "stale": False, "checked_at": utc_now().isoformat() + "Z",
         "summary": normalize_status(datasets["status"]),
         "etcd_detail": normalize_etcd(datasets.get("etcd_status"), datasets.get("etcd_health")),
         "pools": datasets.get("pools") if isinstance(datasets.get("pools"), list) else [],
@@ -347,7 +348,7 @@ async def create_vitastor_cluster(
         "section_errors": datasets.get("errors") or {},
     }
     probe.last_status_json = json.dumps(cached)
-    probe.last_checked_at = datetime.utcnow()
+    probe.last_checked_at = utc_now()
     with db.SessionLocal() as session:
         name_conflict = session.query(VitastorCluster).filter(VitastorCluster.name == values["name"]).first()
         existing = next((row for row in session.query(VitastorCluster).all() if same_cluster(row, values)), None)

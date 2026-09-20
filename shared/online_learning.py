@@ -14,6 +14,7 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from shared.time import utc_now
 from typing import Any
 
 from river import stats
@@ -293,7 +294,7 @@ def load_or_reset_state(
         row.state_checksum = snapshot_checksum(baseline)
         row.sample_count = 0
         row.last_learned_at = None
-        row.updated_at = datetime.utcnow()
+        row.updated_at = utc_now()
         return RiverMeanLearner(), row
 
 
@@ -312,7 +313,7 @@ def save_state(
     if not host or not metric:
         raise ValueError("online learner state requires host and metric")
     payload = learner.snapshot()
-    now = datetime.utcnow()
+    now = utc_now()
     row = session.scalar(
         select(OnlineLearnerState).where(
             OnlineLearnerState.cluster_key == _cluster_key(cluster_id),

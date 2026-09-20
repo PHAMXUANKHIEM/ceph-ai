@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -102,7 +103,7 @@ def large_omap_readiness(cluster_id: str) -> dict:
     This report deliberately reads persisted evidence/cases only. It never
     changes policy, promotes a playbook, or creates a synthetic learning case.
     """
-    now = datetime.utcnow()
+    now = utc_now()
     allowlisted_buckets = sorted({
         item.strip() for item in settings.large_omap_autoremediation_buckets.split(",")
         if item.strip()
@@ -341,7 +342,7 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
             cluster_name=cluster_name,
             trigger_threshold=settings.node_resource_forecast_trigger_threshold_percent,
         )
-        now = datetime.utcnow()
+        now = utc_now()
         alert_rows = session.query(NodeResourceForecastAlert).filter_by(
             cluster_name=cluster_name,
         ).order_by(NodeResourceForecastAlert.last_detected_at.desc()).limit(100).all()

@@ -6,6 +6,7 @@ import re
 import shlex
 import statistics
 from datetime import datetime
+from shared.time import utc_now
 
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.executor.volume_perf import _detect_knee
@@ -125,7 +126,7 @@ def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, 
 
     try:
         progress[0]["status"] = "running"
-        progress[0]["started_at"] = datetime.utcnow().isoformat()
+        progress[0]["started_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
         check = (
             "sudo -n true >/dev/null 2>&1 || { "
@@ -143,12 +144,12 @@ def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, 
         progress[0].update(
             status="done",
             message=f"Đã xác minh {device}: {disk_info or 'block device'}; phép đo chỉ đọc.",
-            finished_at=datetime.utcnow().isoformat(),
+            finished_at=utc_now().isoformat(),
         )
         write_progress(action_pk, progress)
 
         progress[1]["status"] = "running"
-        progress[1]["started_at"] = datetime.utcnow().isoformat()
+        progress[1]["started_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
         measured = []
         for depth in IODEPTH_STEPS:
@@ -180,14 +181,14 @@ def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, 
                 f"Đã đo iodepth={depth}: {len(samples)}/3 lần, lấy median {median_iops:.0f} IOPS."
             )
             write_progress(action_pk, progress)
-        progress[1].update(status="done", finished_at=datetime.utcnow().isoformat())
+        progress[1].update(status="done", finished_at=utc_now().isoformat())
 
         knee = _detect_knee(measured)
         progress[2].update(
             status="done",
             message="Hoàn tất benchmark đọc, không ghi dữ liệu lên ổ đĩa.",
-            started_at=datetime.utcnow().isoformat(),
-            finished_at=datetime.utcnow().isoformat(),
+            started_at=utc_now().isoformat(),
+            finished_at=utc_now().isoformat(),
             result={
                 "vm_ip": vm_ip,
                 "controller_ip": controller_ip,
@@ -203,6 +204,6 @@ def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, 
         return True
     except (ExecutorError, ValueError) as exc:
         current = next((step for step in progress if step["status"] == "running"), progress[-1])
-        current.update(status="failed", message=str(exc), finished_at=datetime.utcnow().isoformat())
+        current.update(status="failed", message=str(exc), finished_at=utc_now().isoformat())
         write_progress(action_pk, progress)
         return False

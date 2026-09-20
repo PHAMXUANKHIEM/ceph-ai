@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from sqlalchemy import or_
 
@@ -24,7 +25,7 @@ def _cluster_filter(column, cluster: Cluster):
 
 
 def build_digest(*, now: datetime | None = None, period_days: int = 7) -> list[tuple[str, str]]:
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     period_days = max(1, min(int(period_days), 31))
     start = now - timedelta(days=period_days)
     with db.SessionLocal() as session:

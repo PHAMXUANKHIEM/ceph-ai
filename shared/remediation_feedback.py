@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from sqlalchemy import or_
 
@@ -54,7 +55,7 @@ def _score(rows: list[RemediationCase]) -> dict:
 
 def summary(session, *, cluster_id: str, now: datetime | None = None) -> dict:
     """Return cluster-scoped feedback coverage, precision and recent trend."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     cluster = session.get(Cluster, cluster_id)
     query = session.query(RemediationCase)
     if cluster is not None and cluster.is_default:

@@ -6,6 +6,7 @@ import json
 import logging
 import shlex
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from config.settings import settings
 from shared import db
@@ -238,7 +239,7 @@ def map_volumes(cluster, keys: list[tuple[str, str]]) -> list[tuple[str, str, di
     return results
 def collect_and_store(cluster_id: str, cluster, *, now: datetime | None = None) -> int:
     """Refresh mappings for recently active RBD volumes, best effort."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     cutoff = now - timedelta(minutes=LOOKBACK_MINUTES)
     with db.SessionLocal() as session:
         recent = session.query(VolumeMetric).filter(

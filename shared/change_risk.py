@@ -6,6 +6,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from shared.time import utc_now
 
 from sqlalchemy.exc import IntegrityError
 
@@ -115,7 +116,7 @@ def assess_and_record(session, *, action: Action, incident: Incident | None = No
                     failure_count=result.failure_count, regression_count=result.regression_count,
                     summary=result.summary,
                     evidence_json=json.dumps(result.evidence, ensure_ascii=False, sort_keys=True),
-                    assessment_hash=result.fingerprint, analyzed_at=datetime.utcnow(),
+                    assessment_hash=result.fingerprint, analyzed_at=utc_now(),
                 )
                 session.add(row)
                 session.flush()
@@ -130,7 +131,7 @@ def assess_and_record(session, *, action: Action, incident: Incident | None = No
     row.summary = result.summary
     row.evidence_json = json.dumps(result.evidence, ensure_ascii=False, sort_keys=True)
     row.assessment_hash = result.fingerprint
-    row.analyzed_at = datetime.utcnow()
+    row.analyzed_at = utc_now()
     return result
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
+from shared.time import utc_now
 
 from config.settings import settings
 from shared.models import (
@@ -199,7 +200,7 @@ def ensure_shadow_model_pair(session, comparison, *, now: datetime | None = None
     promoted.  Only the explicit approval path may change selected state.
     """
     scope_type, scope_key, name, schema = _scope_model_identity(comparison)
-    when = now or datetime.utcnow()
+    when = now or utc_now()
     active = register_candidate(
         session, scope_type=scope_type, scope_key=scope_key, name=name,
         version=_version(comparison.active_algorithm, comparison.active_window_hours),
@@ -253,7 +254,7 @@ def record_shadow_evaluation(session, *, active_model, candidate_model, comparis
         candidate_model_id=candidate_model.id,
         active_model_id=active_model.id,
         target_at=target_at,
-        evaluated_at=now or datetime.utcnow(),
+        evaluated_at=now or utc_now(),
         active_evaluated=comparison.active_evaluated,
         candidate_evaluated=comparison.candidate_evaluated,
         active_mae=comparison.active_mae, candidate_mae=comparison.candidate_mae,
@@ -280,7 +281,7 @@ def _audit(session, *, candidate_model_id: str, previous_active_model_id: str | 
         actor=(actor or "").strip() or "unknown",
         reason=reason,
         evidence_json=json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True, default=str),
-        created_at=now or datetime.utcnow(),
+        created_at=now or utc_now(),
     )
     session.add(row)
     session.flush()
@@ -478,8 +479,8 @@ def register_candidate(
         **values,
         training_window_hours=int(training_window_hours),
         status="CANDIDATE",
-        created_at=now or datetime.utcnow(),
-        updated_at=now or datetime.utcnow(),
+        created_at=now or utc_now(),
+        updated_at=now or utc_now(),
     )
     session.add(row)
     session.flush()
@@ -509,7 +510,7 @@ def set_status(
         )
         if other is not None:
             raise ValueError("model registry scope already has an active model")
-    when = now or datetime.utcnow()
+    when = now or utc_now()
     row.status = status
     row.updated_at = when
     if status == "ACTIVE":

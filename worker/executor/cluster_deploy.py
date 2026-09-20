@@ -23,6 +23,7 @@ import shlex
 import time
 import uuid
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from config.settings import settings
 from sqlalchemy.exc import OperationalError
@@ -2991,7 +2992,7 @@ def _phase_gate_backup_osd_and_metadata(nodes: list[dict], action_params: dict, 
         last_job = backup_metadata.latest_successful_metadata_job()
     else:
         last_job = backup_metadata.latest_successful_metadata_job(gate_cluster_id)
-    needs_backup = last_job is None or last_job.created_at < datetime.utcnow() - timedelta(
+    needs_backup = last_job is None or last_job.created_at < utc_now() - timedelta(
         hours=_METADATA_BACKUP_FRESHNESS_HOURS
     )
     if needs_backup:
@@ -4022,14 +4023,14 @@ def run(
     if expected_fingerprint and expected_fingerprint != env_config.current_cluster_config_fingerprint():
         progress[0]["status"] = "failed"
         progress[0]["message"] = "Cấu hình cụm đã thay đổi sau khi đề xuất; tạo proposal mới trước khi chạy."
-        progress[0]["finished_at"] = datetime.utcnow().isoformat()
+        progress[0]["finished_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
         logger.warning("cluster_deploy.run: stale lifecycle proposal rejected: action=%s", action_pk)
         return False
 
     for index, (step_key, _label, _pct, fn) in enumerate(phases):
         progress[index]["status"] = "running"
-        progress[index]["started_at"] = datetime.utcnow().isoformat()
+        progress[index]["started_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
 
         def _on_host_update(host_status, _index=index):
@@ -4041,7 +4042,7 @@ def run(
         except DeployPhaseError as exc:
             progress[index]["status"] = "failed"
             progress[index]["message"] = str(exc)
-            progress[index]["finished_at"] = datetime.utcnow().isoformat()
+            progress[index]["finished_at"] = utc_now().isoformat()
             write_progress(action_pk, progress)
             logger.warning(
                 "cluster_deploy.run: phase %s failed for action %s: %s", step_key, action_pk, exc
@@ -4055,7 +4056,7 @@ def run(
         except Exception as exc:
             progress[index]["status"] = "failed"
             progress[index]["message"] = f"Lỗi không mong đợi: {exc}"
-            progress[index]["finished_at"] = datetime.utcnow().isoformat()
+            progress[index]["finished_at"] = utc_now().isoformat()
             write_progress(action_pk, progress)
             logger.exception(
                 "cluster_deploy.run: unexpected error in phase %s for action %s", step_key, action_pk
@@ -4068,7 +4069,7 @@ def run(
             return False
 
         progress[index]["status"] = "done"
-        progress[index]["finished_at"] = datetime.utcnow().isoformat()
+        progress[index]["finished_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
 
     try:

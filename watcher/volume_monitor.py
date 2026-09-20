@@ -39,6 +39,7 @@ import logging
 import threading
 from collections import deque
 from datetime import datetime
+from shared.time import utc_now
 from concurrent.futures import ThreadPoolExecutor
 
 from config.settings import settings
@@ -255,7 +256,7 @@ def persist_last_poll_metrics(cluster_id: str | None = None) -> None:
     samples = _last_poll_samples.get(cluster_id, [])
     if not samples:
         return
-    polled_at = datetime.utcnow()
+    polled_at = utc_now()
     with db.SessionLocal() as session:
         rows = [
             VolumeMetric(
@@ -339,7 +340,7 @@ def create_or_resolve_volume_incidents(
                 continue  # already has an open Incident — don't duplicate
 
             rationale = _rationale_for(detail)
-            detected_at = datetime.utcnow()
+            detected_at = utc_now()
             signal_evidence = {
                 "source": "rbd_perf_image_iostat",
                 "captured_at": detected_at.isoformat(),

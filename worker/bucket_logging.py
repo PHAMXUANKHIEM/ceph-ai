@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from shared.time import utc_now
 
 import boto3
 from botocore.config import Config
@@ -65,7 +66,7 @@ def _deliver(config: BucketLoggingConfig, cluster: Cluster) -> None:
             revoke_s3_access_key_with(host, config.owner, access_key, ssh_user, ssh_key, mode,
                                       cluster.ceph_rgw_container_name)
     config.checkpoint = fresh[-1][0]
-    config.last_delivery_at = datetime.utcnow()
+    config.last_delivery_at = utc_now()
     config.last_error = None
 
 
@@ -81,7 +82,7 @@ def collect_once() -> None:
             except Exception as exc:
                 logger.exception("compatibility bucket logging failed for %s", config.source_bucket)
                 config.last_error = str(exc)[:1000]
-            config.updated_at = datetime.utcnow()
+            config.updated_at = utc_now()
         session.commit()
 
 

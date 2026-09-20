@@ -6,6 +6,7 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta
+from shared.time import utc_now
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -254,7 +255,7 @@ def send_due_incident_reminders(
     tạo Incident là vô ích: cứ mỗi chu kỳ nhắc, cảnh báo đã mute lại được
     bắn tiếp.
     """
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     interval = max(60, settings.telegram_incident_reminder_interval_seconds)
     cutoff = now - timedelta(seconds=interval)
     sent = 0
@@ -633,7 +634,7 @@ def build_and_publish_incident(
         # not immediately create another identical AI request on the next
         # unrelated health transition or Watcher restart. Retry after a
         # bounded cooldown so newer evidence can still be reconsidered.
-        low_confidence_cutoff = datetime.utcnow() - timedelta(
+        low_confidence_cutoff = utc_now() - timedelta(
             seconds=settings.ai_low_confidence_retry_cooldown_seconds
         )
         low_confidence_query = (
@@ -655,7 +656,7 @@ def build_and_publish_incident(
         # provider/SSH failure must not create and Telegram-alert a new row
         # every time the same health check flaps during that failure window.
         already_open_codes.update(
-            _recent_failed_incident_codes(session, cluster_id, datetime.utcnow())
+            _recent_failed_incident_codes(session, cluster_id, utc_now())
         )
 
         # OSD_DOWN can recur immediately after a successful systemd restart
@@ -674,7 +675,7 @@ def build_and_publish_incident(
                 osd_query.filter(Incident.cluster_id == cluster_id)
                 if cluster_id is not None else osd_query.filter(Incident.cluster_id.is_(None))
             )
-            cutoff = datetime.utcnow() - timedelta(seconds=_OSD_RESTART_RETRY_AFTER_SECONDS)
+            cutoff = utc_now() - timedelta(seconds=_OSD_RESTART_RETRY_AFTER_SECONDS)
             open_osd_rows = osd_query.all()
             retryable = bool(open_osd_rows)
             for open_incident in open_osd_rows:
@@ -745,7 +746,7 @@ def build_and_publish_incident(
             # docstring for why this action was deliberately never wired
             # into Chat-with-AI/diagnosis in the first place).
             continue
-        detected_at = datetime.utcnow()
+        detected_at = utc_now()
         # 2026-08-20: dict rỗng truyền xuống làm out-param — collector điền
         # {osd_id: host} đã tra thật cho những OSD check này nêu đích danh.
         osd_host_map: dict[int, str] = {}
@@ -876,7 +877,7 @@ def _record_heartbeat_safe(
                 success=success,
                 mon_node=mon_node,
                 error_message=error_message,
-                polled_at=datetime.utcnow(),
+                polled_at=utc_now(),
             )
             session.commit()
     except Exception:
@@ -916,7 +917,7 @@ def run(
     # Avoid a restart stampede: health remains immediate, while expensive
     # auxiliary scans wait for their normal cadence in the production loop.
     # Finite test runs retain the historical first-iteration behavior.
-    initial_auxiliary_scan_at = datetime.utcnow() if max_iterations is None else None
+    initial_auxiliary_scan_at = utc_now() if max_iterations is None else None
     last_device_health_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_node_health_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_node_reachability_scan_at: Optional[datetime] = initial_auxiliary_scan_at
@@ -987,7 +988,7 @@ def run(
                 for code, detail in health.get("checks", {}).items()
                 if _ceph_check_is_muted(detail)
             )
-            status_now = datetime.utcnow()
+            status_now = utc_now()
             if (
                 last_health_status_sent_at is None
                 or (status_now - last_health_status_sent_at).total_seconds()
@@ -1062,7 +1063,7 @@ def run(
         # query. Keep their shared read models warm in one background scan so
         # page requests never open SSH sessions of their own.
         if max_iterations is None and cluster_id is not None:
-            status_now = datetime.utcnow()
+            status_now = utc_now()
             if (
                 last_status_snapshot_scan_at is None
                 or (status_now - last_status_snapshot_scan_at).total_seconds()
@@ -1084,7 +1085,7 @@ def run(
                 )
                 last_status_snapshot_scan_at = status_now
 
-            inventory_now = datetime.utcnow()
+            inventory_now = utc_now()
             if (
                 last_inventory_scan_at is None
                 or (inventory_now - last_inventory_scan_at).total_seconds()
@@ -1127,7 +1128,7 @@ def run(
                 )
             except Exception:
                 logger.exception("run: volume saturation check failed")
-        volume_now = datetime.utcnow()
+        volume_now = utc_now()
         if (
             last_volume_scan_at is None
             or (volume_now - last_volume_scan_at).total_seconds()
@@ -1141,7 +1142,7 @@ def run(
 
         # Aggregate Trash needs one query per RBD pool plus `ceph df`, so
         # cap it at once per minute even when the main poll is faster.
-        trash_now = datetime.utcnow()
+        trash_now = utc_now()
         if (
             last_trash_capacity_scan_at is None
             or (trash_now - last_trash_capacity_scan_at).total_seconds()
@@ -1165,7 +1166,7 @@ def run(
         # than running `ceph device ls`/`ceph osd dump` every single
         # watcher_poll_interval_seconds tick — see that setting's own
         # comment in config/settings.py for why.
-        now = datetime.utcnow()
+        now = utc_now()
         if (
             last_incident_reminder_scan_at is None
             or (now - last_incident_reminder_scan_at).total_seconds() >= 60
@@ -1486,14 +1487,14 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
         # cluster: a recent FAILED attempt must not spam alerts, but it must
         # become eligible again after the configured cooldown.
         already_open_codes.update(
-            _recent_failed_incident_codes(session, cluster.id, datetime.utcnow())
+            _recent_failed_incident_codes(session, cluster.id, utc_now())
         )
 
     envelopes = []
     for ceph_code, check_detail in current_checks.items():
         if ceph_code in already_open_codes:
             continue
-        detected_at = datetime.utcnow()
+        detected_at = utc_now()
         osd_host_map: dict[int, str] = {}
         nodes, log_excerpt = collector.collect_relevant_logs(
             ceph_code, check_detail, cluster=cluster, osd_host_map=osd_host_map
@@ -1784,7 +1785,7 @@ def run_observed_cluster_loop(
             _record_heartbeat_safe(True, None, None, cluster_id=cluster.id)
             current_status = health.get("status")
             current_checks = frozenset(health.get("checks", {}).keys())
-            status_now = datetime.utcnow()
+            status_now = utc_now()
             if (
                 last_health_status_sent_at is None
                 or (status_now - last_health_status_sent_at).total_seconds()
@@ -1820,7 +1821,7 @@ def run_observed_cluster_loop(
 
             if stop_event is not None and stop_event.is_set():
                 return
-            volume_now = datetime.utcnow()
+            volume_now = utc_now()
             if (
                 last_volume_scan_at is None
                 or (volume_now - last_volume_scan_at).total_seconds()
@@ -1840,7 +1841,7 @@ def run_observed_cluster_loop(
 
             if stop_event is not None and stop_event.is_set():
                 return
-            trash_now = datetime.utcnow()
+            trash_now = utc_now()
             if (
                 last_trash_capacity_scan_at is None
                 or (trash_now - last_trash_capacity_scan_at).total_seconds()
@@ -1852,7 +1853,7 @@ def run_observed_cluster_loop(
                 )
                 last_trash_capacity_scan_at = trash_now
 
-            now = datetime.utcnow()
+            now = utc_now()
             if stop_event is not None and stop_event.is_set():
                 return
             if (
@@ -1953,7 +1954,7 @@ def run_observed_cluster_loop(
             logger.exception("run_observed_cluster_loop(%r): unexpected error during poll iteration", cluster.name)
 
         if max_iterations is None:
-            status_now = datetime.utcnow()
+            status_now = utc_now()
             if (
                 last_status_snapshot_scan_at is None
                 or (status_now - last_status_snapshot_scan_at).total_seconds()
@@ -1967,7 +1968,7 @@ def run_observed_cluster_loop(
                 )
                 last_status_snapshot_scan_at = status_now
 
-            inventory_now = datetime.utcnow()
+            inventory_now = utc_now()
             if (
                 last_inventory_scan_at is None
                 or (inventory_now - last_inventory_scan_at).total_seconds()

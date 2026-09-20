@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
@@ -57,7 +58,7 @@ def allow_api_request(
     Store failures raise instead of allowing a request through, so a single
     replica cannot silently bypass the production limit.
     """
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     try:
         with db.SessionLocal() as session:
             _insert_row(session, key, now)

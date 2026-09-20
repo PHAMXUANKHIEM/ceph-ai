@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+from shared.time import utc_now
 
 import httpx
 
@@ -200,7 +201,7 @@ async def generate(incident_id: str) -> dict:
         if incident is None:
             raise PostmortemError("Incident đã bị xoá trong lúc tạo postmortem")
         incident.postmortem_json = json.dumps(result, ensure_ascii=False, sort_keys=True)
-        incident.postmortem_generated_at = datetime.utcnow()
+        incident.postmortem_generated_at = utc_now()
         incident.postmortem_prompt_version = PROMPT_VERSION
         session.commit()
     return result

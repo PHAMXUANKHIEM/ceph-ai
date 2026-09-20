@@ -5,6 +5,7 @@ import re
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from shared.time import utc_now
 from functools import lru_cache
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -977,7 +978,7 @@ def _run_recent_incidents(args: dict, cluster=None) -> str:
         raise ChatToolError("hours phải từ 1 đến 720")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
         raise ChatToolError("limit phải từ 1 đến 20")
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = utc_now() - timedelta(hours=hours)
     with db.SessionLocal() as session:
         rows = session.query(Incident).filter(
             Incident.cluster_id == _cluster_id(cluster), Incident.detected_at >= cutoff,

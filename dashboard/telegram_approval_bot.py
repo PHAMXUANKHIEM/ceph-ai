@@ -94,6 +94,7 @@ import re
 import threading
 import time
 from datetime import datetime
+from shared.time import utc_now
 from pathlib import Path
 
 from config.settings import settings
@@ -379,7 +380,7 @@ def _action_message_text(action: Action, incident: Incident | None, session) -> 
         lines.append(f"💻 Lệnh: {_compact_text(action.proposed_command, _MAX_COMMAND_CHARS)}")
     lines.append(f"🆔 {action.id[:8]}")
     if action.status == ActionStatus.GRACE_PENDING.value and action.grace_until is not None:
-        remaining = max(0, int((action.grace_until - datetime.utcnow()).total_seconds()))
+        remaining = max(0, int((action.grace_until - utc_now()).total_seconds()))
         lines.append(f"⏳ Autopilot lab sẽ chạy sau khoảng {remaining} giây nếu không bị hủy.")
     return "\n".join(lines)
 
@@ -526,7 +527,7 @@ def _notify_pending_actions_for_current_db() -> None:
 
             if changed:
                 action.telegram_message_ids = json.dumps(sent)
-                action.telegram_notified_at = datetime.utcnow()
+                action.telegram_notified_at = utc_now()
                 session.commit()
 
 

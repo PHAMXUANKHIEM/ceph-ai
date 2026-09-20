@@ -5,6 +5,7 @@ import logging
 import threading
 import uuid
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -149,7 +150,7 @@ def _lock_delegated_admission(session) -> None:
 def _check_delegated_admission(session, actor: str) -> None:
     """Bound delegated backlog atomically with the task insert transaction."""
     _lock_delegated_admission(session)
-    now = datetime.utcnow()
+    now = utc_now()
     global_active = (
         session.query(DelegatedAITask)
         .filter(DelegatedAITask.status.in_(_DELEGATED_ACTIVE_STATUSES))
@@ -584,7 +585,7 @@ async def delete_chat_session(session_id: str, request: Request, user: str = Dep
                 # watches this status and can stop an in-flight provider call;
                 # deleting the task in the same transaction would hide the
                 # cancellation signal from that watcher.
-                now = datetime.utcnow()
+                now = utc_now()
                 session.query(DelegatedAISubtask).filter(
                     DelegatedAISubtask.task_id.in_(active_task_ids),
                     DelegatedAISubtask.status.not_in(("COMPLETED", "FAILED", "CANCELLED")),
@@ -830,7 +831,7 @@ async def post_chat_message(
                 if task is not None:
                     task.status = "FAILED"
                     task.error = "Không đưa được task vào hàng đợi xử lý"
-                    task.finished_at = datetime.utcnow()
+                    task.finished_at = utc_now()
                 if message is not None:
                     message.content = with_romantic_address(
                         "Không đưa được delegated task vào Worker; kiểm tra RabbitMQ/Worker.",
@@ -1080,8 +1081,8 @@ async def cancel_delegated_task(task_id: str, request: Request, user: str = Depe
                 status="CANCELLED",
                 error="Đã hủy bởi operator",
                 lease_until=None,
-                finished_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                finished_at=utc_now(),
+                updated_at=utc_now(),
             )
         )
         if result.rowcount != 1:
@@ -1098,8 +1099,8 @@ async def cancel_delegated_task(task_id: str, request: Request, user: str = Depe
                 status="CANCELLED",
                 error="Sub-agent bị hủy theo delegated task",
                 lease_until=None,
-                finished_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                finished_at=utc_now(),
+                updated_at=utc_now(),
             )
         )
         message = session.get(ChatMessage, task.assistant_message_id)
@@ -1289,7 +1290,7 @@ async def _confirm_chat_action_core(
             ceph_code=CHAT_REQUEST_CEPH_CODE,
             status=IncidentStatus.NEW.value,
             log_excerpt=f"Yêu cầu qua Chat bởi {user}: {message.proposed_rationale or ''}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()  # assigns incident.id, needed by the Action FK below
@@ -1309,7 +1310,7 @@ async def _confirm_chat_action_core(
             action_params=json.dumps(action_params) if action_params else None,
             proposed_command=resolved_command,
             expires_at=(
-                datetime.utcnow() + timedelta(hours=max(1, int(settings.action_approval_expiry_hours)))
+                utc_now() + timedelta(hours=max(1, int(settings.action_approval_expiry_hours)))
                 if not is_safe else None
             ),
         )

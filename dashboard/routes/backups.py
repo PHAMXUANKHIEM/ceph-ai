@@ -24,6 +24,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -235,7 +236,7 @@ def _restore_preflight(
     if backup_in_flight:
         blockers.append("backup_in_flight")
     return {
-        "checked_at": datetime.utcnow().isoformat() + "Z",
+        "checked_at": utc_now().isoformat() + "Z",
         "cluster_id": cluster.id,
         "source": {"pool": pool, "image": image, "watcher_count": len(source.get("watchers") or []),
                    "snapshot_count": len(source.get("snapshots") or []),
@@ -281,7 +282,7 @@ def _restore_in_place_preflight(cluster, pool: str, image: str, selected_point: 
     if source.get("available") is False:
         blockers.append("source_unavailable")
     return {
-        "checked_at": datetime.utcnow().isoformat() + "Z",
+        "checked_at": utc_now().isoformat() + "Z",
         "cluster_id": cluster.id,
         "source": {"pool": pool, "image": image, "watcher_count": len(watchers),
                    "snapshot_count": len(source.get("snapshots") or []),
@@ -399,7 +400,7 @@ def _queue(tracked: list[dict], cluster=None) -> list[dict]:
 
 
 def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None = None) -> dict:
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     policy = load_backup_policy()
     def _hours(key: str, default: int) -> int:
         try:
@@ -748,7 +749,7 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
             ceph_code=RESTORE_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Đề xuất khôi phục {pool}/{image} từ backup (ghi đè dữ liệu hiện tại) bởi {user}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()  # assigns incident.id, needed by the Action FK below
@@ -852,7 +853,7 @@ async def propose_restore_as_new(request: Request, user: str = Depends(require_l
             ceph_code=RESTORE_AS_NEW_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Đề xuất restore {pool}/{image} thành {dest_pool}/{dest_image} bởi {user}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()
@@ -910,7 +911,7 @@ def _create_manual_backup_action(action_id: str, action_params: dict, user: str,
             ceph_code=MANUAL_BACKUP_CEPH_CODE,
             status=IncidentStatus.EXECUTING.value,
             log_excerpt=f"{label} bởi {user}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()
@@ -982,7 +983,7 @@ async def multi_cluster_backup_audit(user: str = Depends(require_login)):
     configuration remains a separate rollout item.
     """
     _require_admin_privilege(user)
-    now = datetime.utcnow()
+    now = utc_now()
     policy = load_backup_policy()
     default_drill = policy.get("restore_drill") or {}
     default_drill_configured = all(

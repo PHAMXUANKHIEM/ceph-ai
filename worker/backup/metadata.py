@@ -17,6 +17,7 @@ import hashlib
 import io
 import logging
 from datetime import datetime
+from shared.time import utc_now
 from typing import TYPE_CHECKING
 
 from shared import db
@@ -118,7 +119,7 @@ def run(
 ) -> bool:
     cluster = get_cluster(cluster_id)
     mon_ip = _first_mon_node(cluster)
-    prefix = f"metadata/{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
+    prefix = f"metadata/{utc_now().strftime('%Y%m%dT%H%M%SZ')}"
     run_id_base = prefix
 
     progress = [
@@ -132,7 +133,7 @@ def run(
     collected: dict[str, bytes] = {}
     for index, (name, cmd, binary) in enumerate(_ARTIFACTS):
         progress[index]["status"] = "running"
-        progress[index]["started_at"] = datetime.utcnow().isoformat()
+        progress[index]["started_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
         try:
             runner = execute_command_bytes if binary else execute_command
@@ -146,7 +147,7 @@ def run(
             return False
         collected[name] = output.encode() if isinstance(output, str) else output
         progress[index]["status"] = "done"
-        progress[index]["finished_at"] = datetime.utcnow().isoformat()
+        progress[index]["finished_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
 
     targets = resolve_targets(cluster)
@@ -180,7 +181,7 @@ def run(
                 status="SUCCESS",
                 backup_target_slot=slot,
                 remote_key=prefix,
-                finished_at=datetime.utcnow(),
+                finished_at=utc_now(),
             )
             session.add(job)
             session.flush()
@@ -209,7 +210,7 @@ def _record_failure(
             status="FAILED",
             backup_target_slot=backup_target_slot,
             error_message=message,
-            finished_at=datetime.utcnow(),
+            finished_at=utc_now(),
         )
         session.add(failed_job)
         session.commit()

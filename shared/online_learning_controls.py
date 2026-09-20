@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from shared.time import utc_now
 
 from shared.models import OnlineLearnerControl, OnlineLearnerOperatorAudit, OnlineLearnerState
 
@@ -43,7 +44,7 @@ def _audit(session, *, cluster_key: str, host: str, metric: str, action: str,
     row = OnlineLearnerOperatorAudit(
         cluster_key=cluster_key, host=host, metric=metric, action=action,
         actor=(actor or "unknown")[:64], reason=(reason or "operator control")[:4000],
-        target_id=target_id, created_at=now or datetime.utcnow(),
+        target_id=target_id, created_at=now or utc_now(),
     )
     session.add(row)
     session.flush()
@@ -61,7 +62,7 @@ def set_status(session, *, cluster_id: str | None, host: str, metric: str,
         raise ValueError("learner control status must be RUNNING or PAUSED")
     if not str(reason or "").strip():
         raise ValueError("operator reason is required")
-    when = now or datetime.utcnow()
+    when = now or utc_now()
     row = session.query(OnlineLearnerControl).filter_by(
         cluster_key=cluster_key, host=normalized_host, metric=normalized_metric,
     ).one_or_none()

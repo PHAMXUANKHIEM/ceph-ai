@@ -1,7 +1,7 @@
 """Vietnam-time display helpers.
 
 Every datetime in this codebase is stored as naive UTC
-(`datetime.utcnow()` — see shared/models.py's `default=` throughout).
+(`utc_now()` — see shared/models.py's `default=` throughout).
 Converting to Asia/Ho_Chi_Minh (UTC+7, no DST) happens ONLY here, at the
 two display boundaries (Jinja templates via `format_vn`, JSON API
 responses consumed by frontend JS via `to_utc_iso`) — storage, ordering,
@@ -9,6 +9,7 @@ and every other piece of business logic elsewhere stays UTC, untouched.
 """
 
 from datetime import datetime, timezone
+from shared.time import utc_now
 from zoneinfo import ZoneInfo
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")

@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from shared.time import utc_now
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from typing import Literal
@@ -319,7 +320,7 @@ def _bucket_audit_finish(audit_id: str, result: str, error: str | None = None) -
             cluster_id = row.cluster_id
             row.result = result
             row.error_message = error
-            row.completed_at = datetime.utcnow()
+            row.completed_at = utc_now()
             session.commit()
     if result == "succeeded" and cluster_id:
         invalidate_object_storage_cache(cluster_id, "buckets")
@@ -982,7 +983,7 @@ def _save_bucket_inventory_snapshot(cluster, host: str, names: list[str]) -> Non
                 session.add(snapshot)
             snapshot.rgw_host = host
             snapshot.bucket_names_json = json.dumps(clean_names, ensure_ascii=False)
-            snapshot.captured_at = datetime.utcnow()
+            snapshot.captured_at = utc_now()
             session.commit()
     except Exception:
         logger.exception("Failed to persist durable bucket inventory snapshot for cluster %s", cluster.id)
@@ -1652,7 +1653,7 @@ def _collect_rgw_audit_intelligence(cluster) -> dict:
     )
     result.update({
         "cluster_id": cluster.id,
-        "captured_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "captured_at": utc_now().isoformat(timespec="seconds") + "Z",
         "collection": {
             "status": "unavailable" if not hosts else "partial" if errors else "observed",
             "host_count": len(hosts),
@@ -1835,7 +1836,7 @@ async def bucket_access_diagnosis_api(
     )
     diagnosis["evidence_gaps"] = collection_gaps + diagnosis["evidence_gaps"]
     diagnosis["cluster_id"] = cluster.id
-    diagnosis["captured_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    diagnosis["captured_at"] = utc_now().isoformat(timespec="seconds") + "Z"
     diagnosis["rgw_evidence_status"] = rgw_evidence.get("status")
     return diagnosis
 
