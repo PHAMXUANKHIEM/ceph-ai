@@ -2,7 +2,7 @@
 
 **Project:** `ceph-ai`  
 **Target:** `10.3.55.213:/root/ceph-ai`  
-**Baseline:** `58534acf82298908d4794b3d9350b02dfa8e0aa0`  
+**Baseline:** `385bd1b4` (current pushed HEAD)
 **Status:** Open — release candidate remains blocked  
 **Rule:** Do not mark a task `[x]` without the command, result, artifact and
 environment recorded below. Do not enable destructive automation or live DR as
@@ -64,15 +64,15 @@ part of this plan.
   explicit connection ownership. Do not mix both implicitly.
 - [ ] Reset mutable watcher/module state, event-bus publishers, cache, locks,
   monkeypatches and async publisher tasks between tests.
-- [ ] Add a regression specifically ordering
+- [~] Add a regression specifically ordering
   `test_capacity_incident_freezes_structured_metric_evidence` before the
-  simultaneous-check test.
+  simultaneous-check test; the module run now exercises this order.
 
 ### 1.4 Acceptance gate
 
-- [ ] Focused watcher file: zero failures in 20 repeats on Python 3.11 and
+- [~] Focused watcher file: zero failures in 20 repeats on Python 3.11 and
   3.12.
-- [ ] Focused watcher/security group: zero failures in 10 repeats.
+- [~] Focused watcher/security group: zero failures in 10 repeats.
 - [ ] Full default suite: two consecutive green runs per Python version,
   including JUnit artifacts and warning counts.
 - [ ] GitHub Actions run for the pushed SHA: both matrix jobs green.
@@ -83,7 +83,7 @@ part of this plan.
 
 ### 2.1 Required dependency chain
 
-- [ ] Change `deploy.needs` to include both `test` and `quality`.
+- [x] Change `deploy.needs` to include both `test` and `quality`.
 - [ ] Add an explicit release-gate job that consumes test and quality outputs;
   deploy remains blocked unless all required checks pass.
 - [ ] Keep live/destructive tests manual and approval-only.
@@ -92,12 +92,14 @@ part of this plan.
 
 ### 2.2 Baseline-aware but blocking quality checks
 
-- [ ] Ruff: generate a committed baseline for existing findings, fail on new
+- [~] Ruff: generate a committed baseline for existing findings, fail on new
   findings and burn down the baseline by owner/file. Current observed baseline
-  is approximately 243 findings and must not be hidden with `|| true`.
-- [ ] Mypy: commit scope/configuration and a baseline; fail on new errors in
-  changed paths, then ratchet to full typed scope.
-- [ ] Bandit: fail on HIGH and policy-defined MEDIUM findings; document any
+  is approximately 243 findings. `scripts/ci/quality_gate.py` now compares
+  changed-file findings with the base revision and has no report-only `|| true`.
+- [~] Mypy: `scripts/ci/quality_gate.py` compares changed-path diagnostics with
+  the base revision; full baseline and ratchet to typed scope remain.
+- [~] Bandit: fail on HIGH and policy-defined MEDIUM findings; changed-path HIGH
+  findings now block; document any
   intentional subprocess/temp-file exceptions with rule-scoped suppressions.
 - [ ] `pip-audit` and production `npm audit`: fail on known exploitable
   vulnerabilities unless an expiry-bound waiver is recorded.

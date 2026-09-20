@@ -98,9 +98,9 @@ pytest -q -k 'not live and not integration' --junitxml=artifacts/pytest-repeat.x
 
 - [x] Rà toàn bộ path tạo incident trong `watcher/main.py`, đặc biệt path commit
   trước khi đọc `incident.id`.
-- [x] Dùng pattern được review: `session.flush()` rồi lấy id trước commit, hoặc
-  copy scalar `incident_id` trước commit; không đọc attribute ORM sau commit nếu
-  object có thể detached/expired.
+- [x] Dùng pattern được review: `session.flush()` rồi copy scalar
+  `incident_id`, inherit mute trong cùng transaction, rồi commit đúng một lần;
+  không đọc attribute ORM sau commit nếu object có thể detached/expired.
 - [x] Không dùng `expire_on_commit=False` để che lỗi toàn cục nếu chưa review
   transaction semantics.
 - [x] Bổ sung regression cho một check, nhiều check đồng thời, publish đủ event,
@@ -126,9 +126,10 @@ Evidence hiện tại trên server `10.3.55.213`:
 - `tests/test_watcher_incident_flow.py tests/test_watcher_main.py`: `73 passed`;
 - full deterministic Python 3.11: `3834 passed, 47 deselected, 235 warnings`
   trong `1748.10s`; JUnit: `/tmp/ceph-ai-pr01-py311-final.xml`;
-- `watcher/main.py` đã dùng `flush -> scalar id -> commit -> session.get(id)`
-  trước khi chạy mute inheritance, tránh đọc ORM attribute đã expired và tránh
-  query pre-commit làm nhiễu SQLite `StaticPool`;
+- Commit `0a3860a7` đã dùng `flush -> scalar id -> inherit mute -> one commit`
+  ở cả default và observed-cluster paths, tránh đọc ORM attribute đã expired;
+- `tests/test_watcher_incident_flow.py tests/test_watcher_main.py`: `73 passed`
+  trong ba lần liên tiếp trên server, không còn `incident disappeared after commit`;
 - `.github/workflows/ci-cd.yml` đã có matrix Python `3.11`/`3.12`, nhưng chưa có
   kết quả GitHub Actions Python 3.12 trong evidence; vì vậy PR-01 chưa được
   đánh dấu hoàn thành toàn bộ.
@@ -253,11 +254,13 @@ Tạo artifact không chứa secret cho từng service:
 
 ### PR-04.2 Static/security gates
 
-- [~] Ruff đã thêm với version pin và xuất SARIF; hiện report-only để đo baseline,
-  chưa chặn issue mới ở changed-files.
-- [~] mypy đã thêm với version pin và JUnit; chưa có config strict/baseline gate.
-- [~] Bandit, `pip-audit` và `npm audit` đã thêm; image scan/Trivy và SBOM còn thiếu.
-- [~] SARIF/JUnit/test evidence đã upload theo SHA; coverage, SBOM và image digest
+- [~] `scripts/ci/quality_gate.py` với Ruff/mypy changed-path baseline,
+  Bandit HIGH, `pip-audit`, production `npm audit` và dashboard build đã được
+  thêm; GitHub run cho commit `385bd1b4` đang chờ kết quả.
+- [~] mypy vẫn còn backlog lịch sử; gate chỉ cho phép giữ diagnostic cũ và fail
+  diagnostic mới, sau đó cần ratchet dần sang full typed scope.
+- [~] Image scan/Trivy và SBOM còn thiếu.
+- [~] JUnit/test evidence và quality artifact vẫn upload theo SHA; coverage, SBOM và image digest
   chưa được xuất.
 - [ ] Security/dependency/changed-path type regressions luôn block release.
 

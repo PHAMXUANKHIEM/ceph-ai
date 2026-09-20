@@ -53,6 +53,11 @@ def isolated_db(monkeypatch):
     monkeypatch.setattr(
         db_module, "SessionLocal", sessionmaker(bind=engine, autoflush=False, autocommit=False)
     )
+    # Keep incident lifecycle tests synchronous. The production alert helper
+    # may launch an AI humanizer thread; sharing that thread with SQLite's
+    # StaticPool can interleave transactions and make a committed second
+    # incident disappear from the in-memory connection.
+    monkeypatch.setattr(watcher_main.settings, "telegram_ai_humanize_enabled", False)
     yield engine
 
 
@@ -569,6 +574,7 @@ def test_recurrent_osd_down_retries_after_executed_action_verification_window(
 
 
 def test_incident_creation_sends_telegram_before_ai_diagnosis(isolated_db, monkeypatch):
+    monkeypatch.setattr(watcher_main.settings, "telegram_ai_humanize_enabled", True)
     monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async([]))
     monkeypatch.setattr(
         watcher_main.collector,
