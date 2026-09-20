@@ -331,11 +331,24 @@ Tạo artifact không chứa secret cho từng service:
 
 ### PR-06.1 Sửa mâu thuẫn discovery
 
-- [ ] Chốt `CEPH_RBD_POOLS` rỗng nghĩa là auto-discovery hay disable. Nếu giữ
-  behavior hiện tại, document auto-discovery và thêm biến explicit để tắt.
-- [ ] Đồng bộ README, `.env.example`, settings help text, startup log và Plan.
-- [ ] Ghi rõ SSH query, pool/image allowlist, timeout và tải dự kiến.
-- [ ] Thêm config-doc test kiểm tra semantics nhất quán.
+- [x] Chốt `CEPH_RBD_POOLS` rỗng nghĩa là auto-discovery; thêm
+  `CEPH_RBD_AUTO_DISCOVERY_ENABLED=false` để tắt rõ ràng.
+- [~] README, `.env.example`, settings help text và Plan đã đồng bộ; startup log
+  explicit về effective policy và tải dự kiến vẫn cần bổ sung.
+- [~] Code/documentation đã ghi SSH query và RBD application filtering; inventory
+  per-image, timeout và tải theo cluster cần đưa vào operator runbook.
+- [x] Regression test pin manual-list precedence, auto-discovery mặc định, disable
+  path và discovery failure fallback.
+
+### Evidence PR-06.1 hiện tại
+
+- Commit: `605fff56fd77c0cb6d12239ef16cebd807b169b3`.
+- `tests/test_ceph_client.py -k configured_rbd_pools`: `5 passed, 124 deselected,
+  1 warning` trên Python 3.11.
+- Hành vi thống nhất: danh sách explicit luôn thắng; danh sách rỗng auto-discovers
+  RBD application pools khi flag mặc định `true`; flag `false` trả empty và không
+  tạo SSH discovery call.
+- Còn chờ: startup effective-policy log và runbook định lượng SSH/query load.
 
 ### PR-06.2 Release manifest
 
