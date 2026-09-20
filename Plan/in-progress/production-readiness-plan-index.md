@@ -16,6 +16,7 @@
 8. [08 — Migration rollback discipline](production-readiness-08-migration-rollback.md)
 9. [09 — Time and warning hygiene](production-readiness-09-time-and-warnings.md)
 10. [10 — Load, chaos and rollback drills](production-readiness-10-chaos-and-release-readiness.md)
+11. [11 — Production reassessment and release-blocker closure](production-reassessment-plan.md)
 
 ## Release policy
 
@@ -36,3 +37,5 @@
 - Production 03 — PostgreSQL/migration foundation: **đang triển khai**; database gate, pool bounds, backup và restore/downgrade drill đã có evidence.
 - Production 05 — Security baseline: **đang triển khai**; production credential/database startup gates, CSRF, login/API rate limit, security regression, trusted proxy boundary và mutation audit đã có; cluster scope/tenant isolation review còn mở.
 - Production 01/02/04/06/07/08/09/10: **chưa nghiệm thu**; không bật LIMITED_AUTOPILOT.
+- Production reassessment: **mới lập kế hoạch** theo báo cáo đánh giá `e71ba63`;
+  các gate PR-01 đến PR-08 chưa được coi là bằng chứng nghiệm thu cho HEAD mới.
