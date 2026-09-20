@@ -236,21 +236,24 @@ Tạo artifact không chứa secret cho từng service:
 
 ### PR-04.1 CI matrix
 
-- [ ] Matrix Python 3.11 + 3.12; cùng dependency constraints và test addopts.
-- [ ] Pin Node 20, npm lockfile và image/system package versions.
-- [ ] Chạy unit, RabbitMQ ephemeral integration, migration, frontend build và
-  security regression thành required checks.
-- [ ] Không phụ thuộc proxy/credential/cache ngoài khai báo.
-- [ ] `live` và destructive tests manual/approval-only, không vào default CI.
+- [~] Matrix Python 3.11 + 3.12 cùng test addopts đã được khai báo; chưa có
+  GitHub Actions artifact xác nhận cả hai version trên commit này.
+- [x] Pin Node 20.x và dùng `npm ci` với `ceph-health-dashboard/package-lock.json`.
+- [~] Unit và frontend build là required qua `test`; RabbitMQ service đã khai báo
+  nhưng integration vẫn bị pytest addopts loại, migration/security chưa thành
+  required checks riêng.
+- [~] Workflow không dùng credential runtime; dependency/cache còn do
+  setup action/registry cung cấp và cần xác nhận trong Actions run.
+- [x] `live` và destructive tests vẫn manual/approval-only, không vào default CI.
 
 ### PR-04.2 Static/security gates
 
-- [ ] Thêm Ruff; trước hết chặn issue mới ở changed-files, sau đó giảm baseline
-  khoảng 1.063 issue theo module lớn.
-- [ ] Thêm type checker đã pin (mypy hoặc pyright), config strict theo module.
-- [ ] Thêm Bandit, `pip-audit`/SBOM, `npm audit` và image scan bằng Trivy hoặc
-  scanner tương đương.
-- [ ] Xuất SARIF/JUnit/coverage/SBOM theo commit/release artifact.
+- [~] Ruff đã thêm với version pin và xuất SARIF; hiện report-only để đo baseline,
+  chưa chặn issue mới ở changed-files.
+- [~] mypy đã thêm với version pin và JUnit; chưa có config strict/baseline gate.
+- [~] Bandit, `pip-audit` và `npm audit` đã thêm; image scan/Trivy và SBOM còn thiếu.
+- [~] SARIF/JUnit/test evidence đã upload theo SHA; coverage, SBOM và image digest
+  chưa được xuất.
 - [ ] Security/dependency/changed-path type regressions luôn block release.
 
 ### PR-04.3 Release report
@@ -265,6 +268,20 @@ Tạo artifact không chứa secret cho từng service:
 - Required checks xanh trên 3.11/3.12.
 - Không có required static/security job bị bỏ qua.
 - Warning budget và scan baseline được lưu; warning mới vượt budget làm CI fail.
+
+### Evidence PR-04 hiện tại
+
+- CI/tooling commit: `91e7ae03da6a07c420e9c7555beb21a549ec792f`.
+- Workflow đã có Python `3.11`/`3.12`, Node `20.x`, `npm ci`, JUnit test artifacts
+  và quality/security artifact upload.
+- Local server validation: workflow YAML parse pass; Python 3.11 security/auth
+  regression `44 passed, 1 warning`; `cryptography==50.0.1`; sau nâng pip/
+  setuptools, `pip-audit` trả `No known vulnerabilities found`.
+- Baseline trước khi gate: Ruff trên file thay đổi pass; Bandit quét hai file
+  thay đổi có baseline findings và toàn repo chưa được chặn; GitHub Actions 3.12
+  chưa có artifact trên server.
+- Còn chờ: chạy Actions thật cả hai Python, chuyển report-only thành required
+  gates sau khi xử lý baseline, thêm Trivy/SBOM/coverage/release report.
 
 ## 8. Workstream P1 — time and warning hygiene
 
