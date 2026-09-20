@@ -173,11 +173,11 @@ và nguyên nhân tăng trưởng; không biến cảnh báo ngưỡng hiện t�
   - Phát hiện bucket public ngoài ý muốn, policy/ACL quá rộng, key lâu không dùng,
     key không xoay vòng, quota bất thường và logging/audit gap.
   - Không gửi access/secret key vào prompt hoặc log.
-- [ ] **4.5 Audit-log intelligence**
+- [~] **4.5 Audit-log intelligence** — đã có API read-only `GET /api/object-storage/rgw-audit-intelligence` đọc native RGW ops-log/fallback từ tất cả node RGW, deduplicate transaction, tổng hợp requester/IP/status/latency/encryption và phát hiện bounded anonymous write, auth-failure burst, request burst/latency outlier. Không trả raw path/credential, không tạo Action. Baseline lịch sử/retention bền vững và kiểm chứng thực tế nhiều release còn thiếu.
   - Tổng hợp GET/PUT/DELETE bất thường theo requester, IP, User-Agent, thời gian,
     status code, kích thước và latency.
   - Có baseline, lọc false positive và retention policy.
-- [ ] **4.6 Kiểm thử**
+- [~] **4.6 Kiểm thử** — đã có unit/API/cluster-scope test cho tín hiệu anonymous write, auth-failure burst, baseline peer, deduplication và fail-closed read-only; còn thiếu fixture audit-log thật trên nhiều Ceph release và kiểm thử retention dài ngày.
   - RGW không có keyring, endpoint chết, permission denied, multisite thiếu cấu hình,
     unsupported release và malicious bucket metadata.
 
@@ -337,6 +337,7 @@ Một tính năng chỉ được coi là hoàn thành khi đáp ứng đủ:
 
 | Ngày | Hạng mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---|---|---|---|---|
+| 2026-09-20 | Pha 4.5/4.6 — RGW audit-log intelligence | Một phần | Thêm `watcher/rgw_audit_intelligence.py` và API `GET /api/object-storage/rgw-audit-intelligence`: đọc bounded native ops-log/fallback từ các RGW node, deduplicate transaction, baseline peer trong cửa sổ hiện tại, phát hiện anonymous write, auth-failure burst, request/latency outlier và encryption signal. Kết quả chỉ advisory/read-only, có evidence gap khi chưa có lịch sử bền vững; không trả raw request/credential và không tạo Action. Còn thiếu baseline/retention lịch sử và kiểm chứng nhiều Ceph release. | `pytest tests/test_rgw_audit_intelligence.py tests/test_rgw_access_log.py tests/test_rgw_bucket_diagnosis.py tests/test_rgw_evidence.py` + compileall | Chờ commit |
 | 2026-09-19 | Pha 4.2 — bucket access diagnosis | Một phần | Thêm DNS/TCP/TLS probe read-only có timeout và allowlist host, cùng bounded RGW daemon error evidence (`permission denied`, config missing, connection refused, timeout). Diagnosis hợp nhất access log, bucket stats, topology, probe và daemon error; fail-closed khi log/daemon unavailable, không tắt TLS verification và không tạo Action. Còn thiếu kiểm chứng probe trên nhiều Ceph release và error taxonomy đầy đủ hơn. | `pytest tests/test_rgw_bucket_diagnosis.py tests/test_rgw_bucket_diagnosis_extra.py tests/test_rgw_connectivity.py tests/test_rgw_evidence.py tests/test_dashboard_object_storage.py tests/test_object_storage_cache.py` (67/67 pass) + compileall | Chờ commit |
 | 2026-09-19 | Pha 4.1 — RGW evidence collector | Một phần | Thêm `watcher/rgw_evidence.py` và API `GET /api/object-storage/rgw-evidence`: đọc daemon/endpoint/frontend qua MON, realm/zonegroup/zone/sync qua `radosgw-admin`, map placement pools với `ceph df`, cache theo cluster và gắn nhãn stale/refresh error. Chỉ read-only, `recommendation_mode=EVIDENCE_ONLY`, `action_id=null`; legacy systemd/đa release cần kiểm chứng thêm. | `pytest tests/test_rgw_evidence.py tests/test_dashboard_object_storage.py tests/test_object_storage_cache.py` (61/61 pass) + compileall + `git diff --check` | Chờ commit |
 | 2026-09-19 | Pha 3.5 — public collector integration coverage | Một phần | Kiểm thử qua `collect_live_osd_signals()` thật: xác nhận luồng `ceph osd perf` + `ceph osd tree` + `ceph -s` kết hợp đúng OSD outlier và PG recovery state; khi `ceph -s` lỗi, OSD evidence vẫn giữ được còn recovery chuyển `not_available`. Chưa chạy workload recovery/network thực trên cụm thật. | `pytest tests/test_performance_rca.py tests/test_performance_rca_monitor.py tests/test_performance_simulation.py tests/test_performance_rca_ui.py` (26/26 pass) + compileall | Chờ commit |
