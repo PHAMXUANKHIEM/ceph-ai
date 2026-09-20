@@ -257,7 +257,12 @@ thích và xếp hạng trên dữ liệu từ deterministic planner.
 - [ ] **8.1 Remediation state machine**
   - `PROPOSED → APPROVED → EXECUTING → VERIFYING → SUCCEEDED/FAILED/ROLLED_BACK`.
   - Hỗ trợ expiry, cancellation, distributed lock và recovery sau worker restart.
-- [ ] **8.2 Universal post-check contract**
+- [~] **8.2 Universal post-check contract** — playbook registry hiện snapshot
+  chung `postcheck_contract` cho mọi action: hook đóng, timeout bounded 300s,
+  success criteria `fresh_telemetry/fault_absent/no_new_critical`, health floor,
+  rollback approval flag và fail-closed resolver cho inverse action chưa được
+  kiểm thử. Còn wiring health-floor thực tế, timeout worker và inverse rollback
+  cho từng action.
   - Mỗi action khai báo success criteria, thời gian chờ, health guard và evidence
     trước/sau.
 - [ ] **8.3 Rollback planner**
@@ -337,6 +342,7 @@ Một tính năng chỉ được coi là hoàn thành khi đáp ứng đủ:
 
 | Ngày | Hạng mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---|---|---|---|---|
+| 2026-09-20 | Pha 8.2 — universal post-check contract | Một phần | Bổ sung metadata contract đóng vào playbook snapshot: hook, timeout 300s, success criteria, health floor, rollback approval và resolver fail-closed khi chưa có inverse action đã kiểm thử. Không tự tạo rollback command và không mở autopilot. | `pytest tests/test_playbook_registry.py` + compileall + `git diff --check` | Chờ commit |
 | 2026-09-20 | Pha 4.5/4.6 — RGW audit-log intelligence | Một phần | Thêm `watcher/rgw_audit_intelligence.py` và API `GET /api/object-storage/rgw-audit-intelligence`: đọc bounded native ops-log/fallback từ các RGW node, deduplicate transaction, baseline peer trong cửa sổ hiện tại, phát hiện anonymous write, auth-failure burst, request/latency outlier và encryption signal. Kết quả chỉ advisory/read-only, có evidence gap khi chưa có lịch sử bền vững; không trả raw request/credential và không tạo Action. Còn thiếu baseline/retention lịch sử và kiểm chứng nhiều Ceph release. | `pytest tests/test_rgw_audit_intelligence.py tests/test_rgw_access_log.py tests/test_rgw_bucket_diagnosis.py tests/test_rgw_evidence.py` + compileall | Chờ commit |
 | 2026-09-19 | Pha 4.2 — bucket access diagnosis | Một phần | Thêm DNS/TCP/TLS probe read-only có timeout và allowlist host, cùng bounded RGW daemon error evidence (`permission denied`, config missing, connection refused, timeout). Diagnosis hợp nhất access log, bucket stats, topology, probe và daemon error; fail-closed khi log/daemon unavailable, không tắt TLS verification và không tạo Action. Còn thiếu kiểm chứng probe trên nhiều Ceph release và error taxonomy đầy đủ hơn. | `pytest tests/test_rgw_bucket_diagnosis.py tests/test_rgw_bucket_diagnosis_extra.py tests/test_rgw_connectivity.py tests/test_rgw_evidence.py tests/test_dashboard_object_storage.py tests/test_object_storage_cache.py` (67/67 pass) + compileall | Chờ commit |
 | 2026-09-19 | Pha 4.1 — RGW evidence collector | Một phần | Thêm `watcher/rgw_evidence.py` và API `GET /api/object-storage/rgw-evidence`: đọc daemon/endpoint/frontend qua MON, realm/zonegroup/zone/sync qua `radosgw-admin`, map placement pools với `ceph df`, cache theo cluster và gắn nhãn stale/refresh error. Chỉ read-only, `recommendation_mode=EVIDENCE_ONLY`, `action_id=null`; legacy systemd/đa release cần kiểm chứng thêm. | `pytest tests/test_rgw_evidence.py tests/test_dashboard_object_storage.py tests/test_object_storage_cache.py` (61/61 pass) + compileall + `git diff --check` | Chờ commit |
