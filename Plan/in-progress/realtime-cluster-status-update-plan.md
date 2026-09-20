@@ -578,9 +578,9 @@ không làm UI đứng; event cluster B không xuất hiện ở tab cluster A.
 
 - `tests/test_cluster_events.py`, `tests/test_cluster_snapshot.py`,
   `tests/test_dashboard_ws.py`: **18 passed**.
-- Health/Pool/PG/CRUSH/Nodes/collector regression: **47 passed, 1 warning**
-  in the current dashboard navigation/WebSocket/health-debug gate; the broader
-  deterministic release suite also passes.
+- Health/Pool/PG/CRUSH/Nodes/collector regression: **138 passed, 1 warning**
+  in the current realtime gate; Node 20 static bridge syntax checks and the
+  broader deterministic release suite also pass.
 - Node 20 frontend type-check and production build: **passed**.
 - Remaining: universal freshness badge, browser multi-tab proof, and
   event/load observability.
@@ -600,8 +600,12 @@ không làm UI đứng; event cluster B không xuất hiện ở tab cluster A.
   collector ưu tiên.
 - [ ] Chỉ chuyển `succeeded` sau post-check thấy state Ceph đã đổi; nếu chưa
   đổi thì giữ `verifying` và tiếp tục poll có giới hạn.
-- [ ] Event payload chứa `action_id`, `cluster_id`, `sections` và generation
-  mới nếu đã có; không chứa SSH key/token/command secret.
+- [x] Snapshot post-check event payload chứa bounded `action_id`,
+  `action_status`, `cluster_id`, `sections` và generation mới nếu đã có; không
+  chứa SSH key/token/command secret. Evidence: commit `12906def` and
+  `test_postcheck_snapshot_event_carries_bounded_action_metadata`.
+- [ ] Chuẩn hóa cùng contract cho mọi `action_state_changed` consumer/UI; các
+  trang mutation/progress vẫn cần nối event vào trạng thái hiển thị.
 - [ ] Nếu post-check thất bại, UI hiển thị lỗi và snapshot trước đó vẫn còn.
 
 **Exit gate:** thao tác thành công làm Pools/CRUSH/health cập nhật trong SLA;

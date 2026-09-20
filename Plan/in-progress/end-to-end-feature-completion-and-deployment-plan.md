@@ -184,12 +184,13 @@ Scope: RT-05 through RT-09.
   events are published after versioned cache commit; resolved-incident
   invalidations are published after the database commit that records the
   post-check-confirmed `RESOLVED` state. Evidence: `tests/test_dashboard_ws.py`
-  (`9 passed`).
+  and the bounded action metadata regression in commit `12906def`.
 - [x] Add mutation-to-invalidation mapping for pool, CRUSH, OSD, RGW, node, and
   deployment changes. The committed post-check hook maps resolved incident
   codes to bounded snapshot sections and keeps RGW changes on the status hint
   without sending object data through the event channel. Evidence:
-  `tests/test_dashboard_ws.py` (`12 passed`).
+  `tests/test_dashboard_ws.py` and the realtime regression gate (`138 passed,
+  1 warning`).
 - [ ] Add bounded retries, circuit breakers, concurrency limits, correlation
   IDs, stale alerts, cache-size monitoring, and event reconnect metrics.
   Current admin debug evidence now includes collector/cache/API/retry and

@@ -11,7 +11,7 @@ credentials or provider content.
 - Host: `10.3.55.213`
 - Repository: `/root/ceph-ai`
 - Branch: `main`
-- Observed application commit: `38ecab348a3c2f193d8f6b6d0ed4c713f6debaec`
+- Observed application commit: `12906def43c2f563f74b2aad6badd3698ffac7b1`
 - Rollback candidate: `55a510cd6b205e3ea3e1a6606dad6571197eb266`
 - Worktree: clean; reviewed feature, observability, and evidence commits are
   pushed to `origin/main`
@@ -27,7 +27,7 @@ credentials or provider content.
 - Full deterministic Python suite: `3817 passed, 47 deselected, 235
   warnings` in `1742.85s`; RC=0
 - Cross-cutting hardening gate: `110 passed, 1 warning` in `21.72s`; RC=0
-- Snapshot-page realtime gate: `47 passed, 1 warning` in `8.02s`; Node 20
+- Snapshot-page realtime gate: `138 passed, 1 warning` in `37.78s`; Node 20
   syntax checks passed for the shared bridge, PGs, Nodes, and CRUSH scripts.
 - Disposable SQLite migration round-trip: `upgrade=0 downgrade=0
   reupgrade=0`
