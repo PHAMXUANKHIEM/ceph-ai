@@ -194,11 +194,14 @@ def main() -> int:
     if not pip_audit:
         failures.append("pip-audit must be installed")
     else:
-        rc, _ = run_command(
+        rc, pip_audit_output = run_command(
             [pip_audit, "--format", "json", "--output", str(ARTIFACTS / "pip-audit.json")]
         )
         if rc:
-            failures.append("pip-audit reported vulnerable Python dependencies")
+            failures.append(
+                "pip-audit reported vulnerable Python dependencies\n"
+                + pip_audit_output[-4_000:]
+            )
 
     npm = shutil.which("npm")
     if not npm:
@@ -209,11 +212,21 @@ def main() -> int:
         )
         (ARTIFACTS / "npm-audit.txt").write_text(npm_output, encoding="utf-8")
         if rc:
-            failures.append("npm audit reported high-severity production vulnerabilities")
+            failures.append(
+                "npm audit reported high-severity production vulnerabilities\n"
+                + npm_output[-4_000:]
+            )
         rc, build_output = run_command([npm, "--prefix", "ceph-health-dashboard", "run", "build"])
         (ARTIFACTS / "dashboard-build.txt").write_text(build_output, encoding="utf-8")
         if rc:
-            failures.append("dashboard production build failed")
+            failures.append("dashboard production build failed\n" + build_output[-4_000:])
+
+    (ARTIFACTS / "quality-summary.txt").write_text(
+        "QUALITY GATE FAILED\n\n" + "\n\n".join(failures) + "\n"
+        if failures
+        else f"QUALITY GATE PASSED (base={base or 'none'}, changed_python={len(changed_py)})\n",
+        encoding="utf-8",
+    )
 
     if failures:
         print("QUALITY GATE FAILED")
