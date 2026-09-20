@@ -52,6 +52,11 @@ HEAD mới.
 
 Mỗi task phải có owner, commit SHA, rollback path, test command và evidence link.
 
+Kế hoạch follow-up sau đánh giá commit `58534acf` được tách chi tiết tại
+`Plan/in-progress/production-reassessment-follow-up-plan.md`. File đó là
+checklist thực thi cho lỗi watcher còn tái hiện, CI quality gate, environment/
+autopilot mismatch, staging, browser, DR và operator sign-off.
+
 ## 3. Thứ tự thực thi bắt buộc
 
 ```text
