@@ -112,6 +112,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+        with:
+          # quality_gate.py compares the pushed commit with github.event.before.
+          # A shallow checkout does not contain that baseline SHA.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
@@ -126,6 +130,8 @@ jobs:
       - name: Install application and pinned quality tools
         run: |
           python -m pip install --upgrade pip setuptools
+          python -m pip install --upgrade 'pip>=26.2'
+          python -m pip --version
           pip install -e .[dev]
           pip install ruff==0.12.10 mypy==1.17.1 bandit==1.8.6 pip-audit==2.9.0
           npm --prefix ceph-health-dashboard ci
