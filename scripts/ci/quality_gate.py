@@ -79,15 +79,22 @@ def archive_revision(revision: str, destination: Path) -> None:
         tar.extractall(destination, filter="data")
 
 
-def ruff_signature(output: str) -> set[tuple[str, str, str]]:
+def ruff_signature(output: str, *, root: Path = ROOT) -> set[tuple[str, str, str]]:
     try:
         findings: list[dict[str, Any]] = json.loads(output or "[]")
     except json.JSONDecodeError:
         return set()
-    return {
-        (str(item.get("filename", "")), str(item.get("code", "")), str(item.get("message", "")))
-        for item in findings
-    }
+    signatures = set()
+    for item in findings:
+        filename = str(item.get("filename", ""))
+        path = Path(filename)
+        if path.is_absolute():
+            try:
+                filename = str(path.relative_to(root))
+            except ValueError:
+                pass
+        signatures.add((filename, str(item.get("code", "")), str(item.get("message", ""))))
+    return signatures
 
 
 def mypy_signature(output: str) -> set[str]:
@@ -119,18 +126,21 @@ def compare_static_analysis(base: str | None, changed_py: list[str], failures: l
     # Ruff's non-zero status means findings exist; the baseline comparison
     # below decides whether those findings are new.
     del head_ruff_rc
+    head_ruff_signature = ruff_signature(head_ruff, root=ROOT)
 
     app_py = [path for path in changed_py if Path(path).parts[0] in APP_DIRS]
     head_mypy = ""
+    base_mypy = ""
     if app_py:
         _, head_mypy = run_command(
             [mypy, *app_py, "--ignore-missing-imports", "--no-error-summary"],
-            output=ARTIFACTS / "mypy-head.txt",
+        output=ARTIFACTS / "mypy-head.txt",
         )
 
     if base is None:
         base_ruff = "[]"
         base_mypy = ""
+        base_ruff_signature = set()
     else:
         with tempfile.TemporaryDirectory(prefix="ceph-ai-quality-base-") as temp_name:
             base_root = Path(temp_name)
@@ -141,6 +151,7 @@ def compare_static_analysis(base: str | None, changed_py: list[str], failures: l
                 cwd=base_root,
                 output=ARTIFACTS / "ruff-base.json",
             )
+            base_ruff_signature = ruff_signature(base_ruff, root=base_root)
             base_app_py = [path for path in app_py if (base_root / path).is_file()]
             if base_app_py:
                 _, base_mypy = run_command(
@@ -149,7 +160,7 @@ def compare_static_analysis(base: str | None, changed_py: list[str], failures: l
                     output=ARTIFACTS / "mypy-base.txt",
                 )
 
-    new_ruff = ruff_signature(head_ruff) - ruff_signature(base_ruff)
+    new_ruff = head_ruff_signature - base_ruff_signature
     if new_ruff:
         failures.append("new Ruff diagnostics: " + "; ".join(sorted(map(str, new_ruff))))
 
