@@ -1700,6 +1700,53 @@ async def rgw_audit_intelligence_api(request: Request, user: str = Depends(requi
     return await asyncio.to_thread(_cached_rgw_audit_intelligence, selected_cluster(request))
 
 
+@router.get("/api/object-storage/rgw-metrics")
+async def rgw_metrics_api(request: Request, user: str = Depends(require_login)):
+    """Return bounded RGW request metrics without exposing raw audit rows."""
+    del user
+    intelligence = await asyncio.to_thread(
+        _cached_rgw_audit_intelligence, selected_cluster(request)
+    )
+    observed = ((intelligence.get("window") or {}).get("observed") or {})
+    gaps = list(intelligence.get("evidence_gaps") or [])
+    gaps.append("Quota/capacity metrics cần bucket stats riêng; audit-log không đủ để suy luận quota.")
+    return {
+        "cluster_id": intelligence.get("cluster_id"),
+        "captured_at": intelligence.get("captured_at"),
+        "status": intelligence.get("status"),
+        "source": "rgw_audit_log",
+        "metrics": {
+            "request_count": int((intelligence.get("window") or {}).get("record_count") or 0),
+            "bytes_total": observed.get("bytes_total", 0),
+            "status_counts": observed.get("status_counts", {}),
+            "error_count": sum(
+                int(value) for key, value in (observed.get("status_counts") or {}).items()
+                if str(key).isdigit() and int(key) >= 400
+            ),
+            "error_rate_percent": round(
+                sum(
+                    int(value) for key, value in (observed.get("status_counts") or {}).items()
+                    if str(key).isdigit() and int(key) >= 400
+                ) * 100 / max(1, int((intelligence.get("window") or {}).get("record_count") or 0)),
+                2,
+            ),
+            "latency_median_ms": observed.get("latency_median_ms"),
+            "latency_p95_ms": observed.get("latency_p95_ms"),
+            "top_buckets": observed.get("bucket_counts", {}),
+            "top_requesters": observed.get("requester_counts", {}),
+            "top_user_agents": observed.get("user_agent_counts", {}),
+            "time_start": observed.get("time_start"),
+            "time_end": observed.get("time_end"),
+        },
+        "collection": intelligence.get("collection", {}),
+        "cache": intelligence.get("cache", {}),
+        "evidence_gaps": gaps,
+        "read_only": True,
+        "recommendation_mode": "EVIDENCE_ONLY",
+        "action_id": None,
+    }
+
+
 @router.get("/api/object-storage/multisite-diagnosis")
 async def multisite_diagnosis_api(request: Request, user: str = Depends(require_login)):
     del user

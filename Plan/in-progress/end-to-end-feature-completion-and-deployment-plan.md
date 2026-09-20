@@ -292,8 +292,10 @@ Scope: `Plan/object-storage-roadmap.md`.
   connectivity/diagnosis paths.
 - [ ] Implement object version delete/restore with confirmation, policy checks,
   Object Lock handling, and audit.
-- [ ] Add bounded RGW, bucket, and user metrics: requests, bytes, errors,
-  latency, and quota.
+- [~] Add bounded RGW, bucket, and user metrics: requests, bytes, errors,
+  latency, and quota. The read-only RGW audit metrics API now covers request,
+  bytes, status/error-rate, latency, top bucket/requester/User-Agent and
+  freshness; quota/Prometheus history and alert lifecycle remain open.
 - [ ] Add trend dashboards, top-consumer views, CSV/JSON reports, and secret
   redaction.
 - [ ] Add deduplicated/resolvable alerts for quota, 5xx, access denied, hot

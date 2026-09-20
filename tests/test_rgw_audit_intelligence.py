@@ -85,3 +85,34 @@ def test_audit_intelligence_api_is_authenticated_and_cluster_scoped(dashboard_cl
     assert response.status_code == 200
     assert response.json()["cluster_id"]
     assert response.json()["read_only"] is True
+
+
+def test_rgw_metrics_api_is_bounded_and_does_not_infer_quota(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        object_storage_route,
+        "_cached_rgw_audit_intelligence",
+        lambda cluster: {
+            "cluster_id": cluster.id, "captured_at": "2026-09-20T10:00:00Z",
+            "status": "analyzed", "collection": {"status": "observed"}, "cache": {},
+            "window": {"record_count": 10, "observed": {
+                "bytes_total": 2048, "status_counts": {"200": 8, "403": 2},
+                "latency_median_ms": 4.0, "latency_p95_ms": 19.0,
+                "bucket_counts": {"archive": 10}, "requester_counts": {"operator": 10},
+                "user_agent_counts": {"aws-cli": 10}, "time_start": "a", "time_end": "b",
+            }},
+            "evidence_gaps": [],
+        },
+    )
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+
+    response = dashboard_client.get("/api/object-storage/rgw-metrics")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metrics"]["request_count"] == 10
+    assert body["metrics"]["error_count"] == 2
+    assert body["metrics"]["error_rate_percent"] == 20.0
+    assert body["metrics"]["top_buckets"] == {"archive": 10}
+    assert body["action_id"] is None
+    assert body["read_only"] is True
+    assert any("quota" in gap.casefold() for gap in body["evidence_gaps"])
