@@ -243,8 +243,11 @@ Scope: BS-01 through BS-09 in
   monitoring tests.
 - [x] Implement QoS templates, diff, rollback, and unsupported-capability
   fail-closed behavior. Evidence: volume performance/policy tests.
-- [ ] Complete OpenStack Cinder volume/project/instance/attachment mapping and
-  orphan reporting.
+- [~] Complete OpenStack Cinder volume/project/instance/attachment mapping and
+  orphan reporting. Per-volume reconciliation and a bounded read-only
+  `/api/volumes/{pool}/cinder-mapping` report now classify managed/orphan/
+  unmanaged/insufficient-evidence; live Controller and two-way site-wide
+  orphan acceptance remain open.
 - [ ] Implement RBD mirroring inventory, lag/RPO, planned failover/failback,
   fencing, split-brain protection, and non-production DR drills.
 

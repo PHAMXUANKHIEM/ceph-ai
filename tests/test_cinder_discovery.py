@@ -51,6 +51,19 @@ def test_discover_cinder_volume_maps_attachments_without_exposing_credentials(mo
     assert "admin-openrc" in calls[0][1]
 
 
+def test_build_cinder_mapping_row_classifies_orphan_and_stays_read_only():
+    row = cinder_discovery.build_cinder_mapping_row(
+        f"volume-{VOLUME_ID}",
+        {"pool": "images", "image_id": VOLUME_ID, "provisioned_size": 20, "used_size": 10},
+        {"status": "not_found", "verified": True, "volume_id": VOLUME_ID},
+    )
+
+    assert row["mapping_status"] == "orphan"
+    assert row["management_source"] == "none"
+    assert row["read_only"] is True
+    assert row["mutation_supported"] is False
+
+
 def test_discover_cinder_volume_is_fail_closed_for_unconfigured_or_non_cinder_image():
     assert cinder_discovery.discover_cinder_volume(_cluster(), "custom-image")["status"] == "not_cinder"
     result = cinder_discovery.discover_cinder_volume(

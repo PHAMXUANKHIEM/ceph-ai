@@ -99,6 +99,45 @@ def normalize_cinder_volume(payload: dict, expected_id: str) -> dict:
     }
 
 
+def build_cinder_mapping_row(image: str, inventory: dict, cinder: dict) -> dict:
+    """Build one bounded RBD→Cinder mapping row without authorizing mutation."""
+    cinder = cinder if isinstance(cinder, dict) else {}
+    status = str(cinder.get("status") or "unknown")
+    if status == "managed" and cinder.get("verified"):
+        mapping_status = "managed"
+    elif status == "not_found" and cinder.get("verified"):
+        mapping_status = "orphan"
+    elif status == "not_cinder":
+        mapping_status = "unmanaged"
+    elif status in {"not_configured", "error"}:
+        mapping_status = "insufficient_evidence"
+    else:
+        mapping_status = "unknown"
+    return {
+        "image": image,
+        "image_id": inventory.get("image_id"),
+        "pool": inventory.get("pool"),
+        "provisioned_size": inventory.get("provisioned_size"),
+        "used_size": inventory.get("used_size"),
+        "mapping_status": mapping_status,
+        "management_source": "openstack_cinder" if mapping_status == "managed" else "none",
+        "cinder": {
+            "volume_id": cinder.get("volume_id"),
+            "name": cinder.get("name"),
+            "project_id": cinder.get("project_id"),
+            "volume_status": cinder.get("volume_status"),
+            "volume_type": cinder.get("volume_type"),
+            "availability_zone": cinder.get("availability_zone"),
+            "bootable": cinder.get("bootable"),
+            "multiattach": cinder.get("multiattach"),
+            "attachments": cinder.get("attachments") if isinstance(cinder.get("attachments"), list) else [],
+        },
+        "evidence_gap": cinder.get("error") if mapping_status == "insufficient_evidence" else None,
+        "read_only": True,
+        "mutation_supported": False,
+    }
+
+
 def reconcile_cinder_attachment(cinder: dict, watchers: list, locks: list) -> dict:
     """Compare stable Cinder state with Ceph evidence without mutating either side."""
     cinder_status = cinder.get("status")

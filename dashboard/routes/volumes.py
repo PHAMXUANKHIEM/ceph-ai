@@ -16,6 +16,7 @@ from config.settings import settings
 from dashboard import volume_perf_analysis
 from dashboard.cinder_discovery import (
     build_attachment_remediation,
+    build_cinder_mapping_row,
     discover_cinder_snapshots,
     discover_cinder_volume,
     reconcile_cinder_attachment,
@@ -1135,6 +1136,60 @@ async def volume_inventory_overview_api(
         logger.warning("volume_inventory_overview_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được tổng quan Pool: {exc}")
     return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **overview}
+
+
+@router.get("/api/volumes/{pool}/cinder-mapping")
+async def cinder_mapping_api(
+    request: Request,
+    pool: str,
+    search: str = Query("", max_length=128),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=20),
+    user: str = Depends(require_login),
+):
+    """Bounded, read-only report of RBD images mapped to Cinder consumers."""
+    del user
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        inventory, cache_state = _cached_rbd_inventory_with_state(cluster, pool)
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}") from exc
+    query = search.strip().casefold()
+    rows = [row for row in inventory if not query or query in str(row.get("name") or "").casefold()]
+    rows.sort(key=lambda row: str(row.get("name") or "").casefold())
+    total = len(rows)
+    pages = max(1, (total + page_size - 1) // page_size)
+    safe_page = min(page, pages)
+    selected = rows[(safe_page - 1) * page_size:safe_page * page_size]
+    cinder_rows = await asyncio.gather(*(
+        asyncio.to_thread(discover_cinder_volume, cluster, str(row.get("name") or ""))
+        for row in selected
+    ))
+    items = [build_cinder_mapping_row(
+        str(row.get("name") or ""), {**row, "pool": pool}, cinder,
+    ) for row, cinder in zip(selected, cinder_rows)]
+    counts = {status: sum(item["mapping_status"] == status for item in items)
+              for status in ("managed", "orphan", "unmanaged", "insufficient_evidence", "unknown")}
+    return {
+        "cluster_id": cluster.id,
+        "pool": pool,
+        "items": items,
+        "page": safe_page,
+        "page_size": page_size,
+        "pages": pages,
+        "total": total,
+        "summary": counts,
+        "collected_at": _cache_collected_at(cache_state),
+        "stale": bool(cache_state["stale"]),
+        "evidence_gaps": [
+            "Cinder is source of truth cho volume được quản lý; không suy đoán owner từ tên RBD.",
+            "Báo cáo không cấp quyền attach/detach và không xóa orphan tự động.",
+        ],
+        "read_only": True,
+        "mutation_supported": False,
+    }
 
 
 @router.get("/api/volumes/{pool}/pool-lifecycle")
