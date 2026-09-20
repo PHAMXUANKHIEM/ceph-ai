@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -90,7 +91,15 @@ def ruff_signature(output: str) -> set[tuple[str, str, str]]:
 
 
 def mypy_signature(output: str) -> set[str]:
-    return {line.strip() for line in output.splitlines() if ": error:" in line}
+    signatures: set[str] = set()
+    pattern = re.compile(r"^(.*?):\d+(?::\d+)?: error: (.*)$")
+    for line in output.splitlines():
+        match = pattern.match(line.strip())
+        if match:
+            # Ignore line movement caused by a small edit in the changed file;
+            # the diagnostic path/message/code is the stable signal.
+            signatures.add(f"{match.group(1)}: error: {match.group(2)}")
+    return signatures
 
 
 def compare_static_analysis(base: str | None, changed_py: list[str], failures: list[str]) -> None:
