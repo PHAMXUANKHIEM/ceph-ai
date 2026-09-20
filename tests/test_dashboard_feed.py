@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.exc import OperationalError
 import dashboard.routes.incidents as incidents_route
+from dashboard.vntime import format_vn
 
 from shared import db as db_module
 from shared.models import Action, AuditEntry, Incident, RemediationCase, WatcherHeartbeat
@@ -80,7 +81,7 @@ def test_incident_timeline_shows_group_context(dashboard_client):
     assert "group-root" in page.text
     assert "Network heartbeat interrupted." in page.text
     assert "/incidents/group-root/timeline" in page.text
-    assert root_detected_at.strftime("%d/%m/%Y") in page.text
+    assert format_vn(root_detected_at) in page.text
     assert root_detected_at.isoformat() not in page.text
 
 

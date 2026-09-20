@@ -17,7 +17,12 @@ def test_persistent_cache_survives_memory_reset(monkeypatch, tmp_path):
     monkeypatch.setattr(ceph_query_cache, "_memory", {})
     assert ceph_query_cache.get_or_load("rbd-trash", "cluster:pool", lambda: calls.append(2) or []) == [{"id": "a"}]
     assert calls == [1]
-    assert json.loads(next(tmp_path.iterdir()).read_text())["value"] == [{"id": "a"}]
+    # The cache also creates a per-key lock file.  Read the JSON snapshot by
+    # its deterministic path instead of relying on directory iteration order
+    # (an empty lock file can otherwise be selected on CI).
+    assert json.loads(
+        ceph_query_cache._path("rbd-trash", "cluster:pool").read_text()
+    )["value"] == [{"id": "a"}]
 
 
 def test_cache_metrics_distinguish_load_and_hit(monkeypatch, tmp_path):

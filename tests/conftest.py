@@ -154,6 +154,19 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "node_resource_live_ingest_enabled", False, raising=False)
     monkeypatch.setattr(settings, "ssh_key_path", str(test_ssh_key_path))
 
+    # Code Repair persists cursors, locks, nightly state, and capability-
+    # learning state under /var/lib/ceph-ai in production.  The test suite
+    # must redirect every one of those paths as a unit: running as root on a
+    # lab host used to hide this leak, while an unprivileged CI runner failed
+    # with PermissionError and could leave later tests order-dependent.
+    test_repair_dir = tmp_path / "code-repair"
+    test_repair_dir.mkdir()
+    monkeypatch.setattr(settings, "code_repair_cursor_file", str(test_repair_dir / "cursors.json"), raising=False)
+    monkeypatch.setattr(settings, "code_repair_lock_file", str(test_repair_dir / "supervisor.lock"), raising=False)
+    monkeypatch.setattr(settings, "code_repair_run_lock_file", str(test_repair_dir / "run.lock"), raising=False)
+    monkeypatch.setattr(settings, "ai_nightly_improvement_state_file", str(test_repair_dir / "nightly.json"), raising=False)
+    monkeypatch.setattr(settings, "ceph_capability_learning_state_file", str(test_repair_dir / "learning.json"), raising=False)
+
     # 2026-08-05 fix (found live), updated 2026-08-06 for the 3-independent-
     # channel redesign: a real .env on THIS machine had genuine Telegram
     # credentials configured (an operator actually testing the feature) —
