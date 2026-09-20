@@ -287,27 +287,45 @@ Tạo artifact không chứa secret cho từng service:
 
 ### PR-05.1 Time model
 
-- [ ] Tạo helper UTC timezone-aware duy nhất; model/API/log lưu UTC.
-- [ ] Inventory toàn bộ `datetime.utcnow()` trong production code, migration và
-  fixture; thay theo nhóm module, không sửa mù toàn repo.
-- [ ] Chuẩn hóa serialization/frontend timezone; parse dữ liệu naive cũ theo
-  assumption được ghi rõ.
-- [ ] Regression cho DST, TTL, cooldown, stale snapshot, retention, forecast và
-  backup RPO/RTO ở UTC và timezone non-UTC.
+- [~] Đã tạo helper UTC tập trung và migrate production call sites; helper hiện
+  trả naive UTC để tương thích các cột legacy, nên schema/model timezone-aware
+  chưa hoàn tất.
+- [~] Inventory production `dashboard config shared watcher worker` hiện còn
+  `0` call `datetime.utcnow()`; tests, migration và `.codex-stage` chưa migrate.
+- [~] Serialization hiện giữ contract legacy naive-UTC; conversion dữ liệu cũ và
+  API/frontend timezone contract vẫn cần một migration riêng.
+- [~] Regression nhóm model/watcher/backup/action cùng security/auth đạt `124
+  passed, 1 warning`; DST/timezone non-UTC và full RPO/RTO matrix chưa chạy.
 
 ### PR-05.2 Warning budget
 
-- [ ] Phân loại 17.000+ warning thành application, dependency, test và deprecation.
+- [~] Đã tách được warning focused hiện tại: regression 44/124 test chỉ còn một
+  warning deprecation từ Starlette/httpx; full-suite category report chưa rerun
+  sau migration clock.
 - [ ] Application warning mới là error trong CI; dependency warning có owner,
   upstream issue/version và expiry date.
-- [ ] Không dùng blanket `filterwarnings` để che warning logic.
+- [x] Không thêm blanket `filterwarnings` để che warning logic.
 - [ ] Release report có warning theo category, không chỉ tổng số.
 
 ### Acceptance PR-05
 
-- Không còn naive timestamp trong production path đã migrate.
-- Warning count không tăng; production warning blocker bằng zero.
+- [~] Không còn trực tiếp gọi `datetime.utcnow()` trong production path đã
+  migrate; helper/schema vẫn đang ở compatibility mode naive UTC.
+- [~] Focused warning count đã giảm còn một dependency deprecation; full-suite
+  warning budget và production blocker chưa được bật.
 - Warning còn lại có owner và ngày xử lý.
+
+### Evidence PR-05 hiện tại
+
+- Clock migration commit: `466e7e81fef7a49a830d113982072502e436720a`.
+- `grep` trên production package dirs: `0` direct `datetime.utcnow()` call sites;
+  helper `shared/time.py` dùng `datetime.now(timezone.utc)` rồi giữ naive-UTC
+  compatibility representation.
+- Regression sau migration: `124 passed, 1 warning` trên Python 3.11; focused
+  production-readiness/auth/security: `44 passed, 1 warning`.
+- Còn chờ: đổi DB columns/API contract sang timezone-aware, migrate tests/fixtures,
+  chạy full suite hai lần, phân loại warning toàn bộ và biến warning budget thành
+  required CI gate.
 
 ## 9. Workstream P1 — tài liệu và operator contract
 
