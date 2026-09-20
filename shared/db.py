@@ -200,6 +200,28 @@ def _sections_for_resolved_incident(incident: object) -> tuple[str, ...]:
     return tuple(section for section in ("health", "status", "pools", "pgs", "crush", "nodes") if section in sections)
 
 
+def _resolved_action_metadata(session: Session, incident_id: str | None) -> tuple[str | None, str | None]:
+    """Return the most recent action metadata for a post-check event.
+
+    The event remains a bounded invalidation hint. Only the Action primary key
+    and lifecycle status are exposed; command text, targets, and parameters
+    never travel through the event channel.
+    """
+    if not incident_id:
+        return None, None
+    row = session.execute(
+        text(
+            "SELECT id, status FROM actions "
+            "WHERE incident_id = :incident_id "
+            "ORDER BY created_at DESC, id DESC LIMIT 1"
+        ),
+        {"incident_id": incident_id},
+    ).first()
+    if row is None:
+        return None, None
+    return str(row[0]), str(row[1])
+
+
 @event.listens_for(Session, "after_flush")
 def _collect_cluster_state_events(session: Session, _flush_context) -> None:
     pending = session.info.setdefault(_CLUSTER_STATE_EVENTS_KEY, {})
@@ -213,7 +235,12 @@ def _collect_cluster_state_events(session: Session, _flush_context) -> None:
             continue
         cluster_id = str(getattr(incident, "cluster_id", "") or "").strip()
         if cluster_id:
-            pending[cluster_id] = _sections_for_resolved_incident(incident)
+            action_id, action_status = _resolved_action_metadata(session, getattr(incident, "id", None))
+            pending[cluster_id] = (
+                _sections_for_resolved_incident(incident),
+                action_id,
+                action_status,
+            )
 
 
 @event.listens_for(Session, "after_commit")
@@ -235,9 +262,15 @@ def _publish_cluster_state_events(session: Session) -> None:
     if not pending:
         return
     from shared.cluster_events import publish_event
-    for cluster_id, sections in pending.items():
+    for cluster_id, (sections, action_id, action_status) in pending.items():
         try:
-            publish_event(cluster_id, "snapshot_changed", sections=sections)
+            publish_event(
+                cluster_id,
+                "snapshot_changed",
+                sections=sections,
+                action_id=action_id,
+                action_status=action_status,
+            )
         except Exception:
             logger.exception("could not publish post-check snapshot invalidation for %s", cluster_id)
 

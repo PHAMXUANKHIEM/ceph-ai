@@ -193,6 +193,46 @@ def test_resolved_incident_publishes_snapshot_invalidation_after_commit(
     assert event["sections"] == ["health", "status", "pools"]
 
 
+def test_postcheck_snapshot_event_carries_bounded_action_metadata(
+    dashboard_client, default_cluster_id
+):
+    from shared import ceph_query_cache
+    from shared.cluster_events import EVENT_NAMESPACE, read_latest_event
+
+    ceph_query_cache.invalidate(EVENT_NAMESPACE, default_cluster_id)
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id=default_cluster_id,
+            ceph_code="CRUSH_MAP_DRIFT",
+            status="NEW",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id="reweight_osd",
+            classification=ActionClassification.RISKY.value,
+            status="EXECUTING",
+        )
+        session.add(action)
+        session.commit()
+        action_pk = action.id
+        ceph_query_cache.invalidate(EVENT_NAMESPACE, default_cluster_id)
+
+        action.status = "EXECUTED"
+        incident.status = "RESOLVED"
+        session.commit()
+
+    event = read_latest_event(default_cluster_id)
+    assert event["event"] == "snapshot_changed"
+    assert event["action_id"] == action_pk
+    assert event["action_status"] == "EXECUTED"
+    assert event["sections"] == ["health", "status", "crush"]
+    assert "proposed_command" not in event
+    assert "target_nodes" not in event
+
+
 @pytest.mark.parametrize(
     ("ceph_code", "expected_section"),
     [("CRUSH_MAP_DRIFT", "crush"), ("RGW_BUCKET_QUOTA", "status"), ("DEPLOY_FAILED", "nodes")],
