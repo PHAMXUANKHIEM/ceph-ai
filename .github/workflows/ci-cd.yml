@@ -138,6 +138,22 @@ jobs:
           set -o pipefail
           python scripts/ci/quality_gate.py 2>&1 | tee artifacts/quality-gate.log
 
+      - name: Surface quality gate evidence
+        if: failure()
+        run: |
+          summary="artifacts/quality/quality-summary.txt"
+          if [ -f "$summary" ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error title=quality gate::$line"
+            done < "$summary"
+            {
+              echo "## Quality gate failure"
+              cat "$summary"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error title=quality gate::quality-summary.txt was not produced"
+          fi
+
       - name: Upload quality and security reports
         if: always()
         uses: actions/upload-artifact@v4
