@@ -1,7 +1,9 @@
 import asyncio
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
@@ -195,6 +197,82 @@ def test_production_response_has_security_headers(monkeypatch, dashboard_client)
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-frame-options"] == "DENY"
     assert response.headers["referrer-policy"] == "same-origin"
+    set_cookie = response.headers["set-cookie"].lower()
+    assert "session=" in set_cookie
+    assert "secure" in set_cookie
+    assert "httponly" in set_cookie
+    assert "samesite=lax" in set_cookie
+
+
+def test_session_cookie_policy_is_secure_only_for_staging_and_production(monkeypatch):
+    monkeypatch.setattr(settings, "ceph_ai_environment", "development")
+    assert dashboard_app._session_cookie_https_only() is False
+    monkeypatch.setattr(settings, "ceph_ai_environment", "staging")
+    assert dashboard_app._session_cookie_https_only() is True
+
+    middleware = next(
+        item for item in dashboard_app.create_app().user_middleware if item.cls is SessionMiddleware
+    )
+    assert middleware.kwargs["https_only"] is True
+    assert middleware.kwargs["same_site"] == "lax"
+    assert middleware.kwargs["max_age"] == 14 * 24 * 60 * 60
+
+
+def test_trusted_forwarded_https_sets_hsts_and_secure_csrf_cookie(monkeypatch, dashboard_client):
+    monkeypatch.setattr(settings, "ceph_ai_environment", "production")
+    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
+    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_trusted_hosts", "internal.example")
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "https://admin.example")
+    monkeypatch.setattr(settings, "dashboard_trusted_proxy_ips", "127.0.0.1")
+
+    async def get_through_trusted_proxy():
+        transport = httpx.ASGITransport(
+            app=dashboard_app.create_app(),
+            client=("127.0.0.1", 12345),
+        )
+        async with httpx.AsyncClient(transport=transport, base_url="http://internal.example") as client:
+            return await client.get(
+                "/login",
+                headers={
+                    "X-Forwarded-Host": "admin.example",
+                    "X-Forwarded-Proto": "https",
+                },
+            )
+
+    response = asyncio.run(get_through_trusted_proxy())
+
+    assert response.status_code == 200
+    assert response.headers["strict-transport-security"] == "max-age=31536000"
+    set_cookie = response.headers["set-cookie"].lower()
+    assert "session=" in set_cookie
+    assert "ceph_ai_csrf=" in set_cookie
+    assert set_cookie.count("secure") >= 2
+
+
+def test_effective_scheme_ignores_forwarded_https_from_untrusted_client(monkeypatch):
+    monkeypatch.setattr(settings, "dashboard_trusted_proxy_ips", "10.0.0.0/8")
+    request = _request(
+        {
+            "Host": "internal.example",
+            "X-Forwarded-Proto": "https",
+        },
+        scheme="http",
+    )
+    assert dashboard_app._effective_request_scheme(request) == "http"
+
+
+def test_malformed_forwarded_scheme_is_rejected_even_from_trusted_proxy(monkeypatch):
+    monkeypatch.setattr(settings, "dashboard_trusted_proxy_ips", "127.0.0.1")
+    request = _request(
+        {
+            "Host": "internal.example",
+            "X-Forwarded-Proto": "javascript",
+        },
+        scheme="http",
+    )
+    assert dashboard_app._forwarded_headers_allowed(request) is False
+    assert dashboard_app._effective_request_scheme(request) == "http"
 
 
 def test_forwarded_headers_from_direct_client_are_rejected(monkeypatch, dashboard_client):
