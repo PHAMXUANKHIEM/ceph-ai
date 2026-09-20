@@ -33,6 +33,7 @@ POSTCHECK_HOOKS = frozenset({
     "pool_pg_health_telemetry",
 })
 POSTCHECK_MAX_TIMEOUT_SECONDS = 24 * 60 * 60
+HEALTH_FLOORS = frozenset({"NO_NEW_CRITICAL"})
 
 
 @dataclass(frozen=True)
@@ -208,6 +209,8 @@ def validate_contract(contract: PlaybookContract) -> tuple[str, ...]:
         errors.append("postcheck_timeout_seconds is outside the safe range")
     if not contract.health_floor:
         errors.append("missing health_floor")
+    elif contract.health_floor not in HEALTH_FLOORS:
+        errors.append(f"unknown health_floor={contract.health_floor!r}")
     if contract.command_builder and not contract.command_builder_version:
         errors.append("missing command_builder_version")
     if contract.preflight and contract.preflight not in PREFLIGHT_HOOKS:
@@ -280,10 +283,19 @@ def _fault_absence_postcheck(*, fault_present: bool, health: dict | None) -> Pos
 _POSTCHECK_STRATEGIES = {hook_id: _fault_absence_postcheck for hook_id in POSTCHECK_HOOKS}
 
 
-def run_postcheck(hook_id: str, *, fault_present: bool, health: dict | None) -> PostcheckResult:
+def run_postcheck(
+    hook_id: str, *, fault_present: bool, health: dict | None,
+    health_floor: str = "NO_NEW_CRITICAL",
+) -> PostcheckResult:
     strategy = _POSTCHECK_STRATEGIES.get(hook_id)
     if strategy is None:
         return PostcheckResult("INCONCLUSIVE", f"postcheck hook {hook_id!r} cannot be resolved")
+    if health_floor not in HEALTH_FLOORS:
+        return PostcheckResult("INCONCLUSIVE", f"health floor {health_floor!r} cannot be resolved")
+    if health_floor == "NO_NEW_CRITICAL" and isinstance(health, dict):
+        overall = str(health.get("status") or health.get("overall_status") or "").upper()
+        if overall in {"HEALTH_ERR", "HEALTH_CRITICAL", "CRITICAL", "ERROR"}:
+            return PostcheckResult("INCONCLUSIVE", "health floor violated by critical fresh telemetry")
     result = strategy(fault_present=fault_present, health=health)
     return PostcheckResult(result.outcome, result.reason, hook_id=hook_id)
 

@@ -156,8 +156,14 @@ def _evaluate_latest_postcheck(
     )
     if error:
         return PostcheckResult("INCONCLUSIVE", error), action
+    postcheck_contract = snapshot.get("postcheck_contract") if isinstance(snapshot, dict) else {}
+    health_floor = (
+        postcheck_contract.get("health_floor", "NO_NEW_CRITICAL")
+        if isinstance(postcheck_contract, dict) else "NO_NEW_CRITICAL"
+    )
     return run_postcheck(
         hook_id, fault_present=incident.ceph_code in current_codes, health=health,
+        health_floor=health_floor,
     ), action
 
 

@@ -188,3 +188,12 @@ def test_case_postcheck_resolution_uses_frozen_contract_and_fails_closed():
         action_id="resync_ntp", playbook_version="1", contract_snapshot=snapshot,
     )
     assert hook_id is None and "version" in error
+
+
+def test_postcheck_health_floor_fails_closed_on_fresh_critical_health():
+    result = run_postcheck(
+        "fresh_health_telemetry", fault_present=False,
+        health={"status": "HEALTH_ERR", "checks": {}},
+    )
+    assert result.outcome == "INCONCLUSIVE"
+    assert "health floor" in result.reason

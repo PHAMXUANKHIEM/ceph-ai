@@ -261,8 +261,8 @@ thích và xếp hạng trên dữ liệu từ deterministic planner.
   chung `postcheck_contract` cho mọi action: hook đóng, timeout bounded 300s,
   success criteria `fresh_telemetry/fault_absent/no_new_critical`, health floor,
   rollback approval flag và fail-closed resolver cho inverse action chưa được
-  kiểm thử. Còn wiring health-floor thực tế, timeout worker và inverse rollback
-  cho từng action.
+  kiểm thử; Watcher thực thi health-floor `NO_NEW_CRITICAL` trước khi xác nhận.
+  Còn timeout worker và inverse rollback cho từng action.
   - Mỗi action khai báo success criteria, thời gian chờ, health guard và evidence
     trước/sau.
 - [ ] **8.3 Rollback planner**
