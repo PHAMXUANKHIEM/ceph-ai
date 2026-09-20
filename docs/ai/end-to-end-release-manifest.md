@@ -11,10 +11,13 @@ credentials or provider content.
 - Host: `10.3.55.213`
 - Repository: `/root/ceph-ai`
 - Branch: `main`
-- Observed application commit: `12906def43c2f563f74b2aad6badd3698ffac7b1`
-- Rollback candidate: `55a510cd6b205e3ea3e1a6606dad6571197eb266`
-- Worktree: clean; reviewed feature, observability, and evidence commits are
-  pushed to `origin/main`
+- Observed application commit: `3394789a` (`security: mark log fingerprints
+  non-cryptographic`)
+- Rollback candidate: `6b4b122d`
+- Worktree: one pre-existing unrelated change remains in
+  `Plan/in-progress/natural-language-ceph-ai-plan.md`; this release work is
+  otherwise committed. `origin/main` is 12 commits behind the observed SHA and
+  deployment/push approval is not inferred from this manifest.
 - Deployment: not approved; running Podman services are externally managed
 
 ## Migration and artifacts
@@ -31,6 +34,8 @@ credentials or provider content.
   syntax checks passed for the shared bridge, PGs, Nodes, and CRUSH scripts.
 - Disposable SQLite migration round-trip: `upgrade=0 downgrade=0
   reupgrade=0`
+- Disposable SQLite backup rehearsal: backup artifact mode `0600`, migration
+  head restored to `m20260919nlcontext`, 105 tables present after re-upgrade.
 
 ## Safety controls
 
@@ -41,8 +46,15 @@ credentials or provider content.
   root-only permissions; `/var/lib/ceph-ai/backups` is absent.
 - Runtime ownership conflict remains: healthy Podman Dashboard/Worker/Watcher
   containers run independently of inactive systemd units.
-- Canary scope is the explicitly identified `CS-LAB` cluster
-  (`ac23b8ff-e235-414c-bed8-06894f3dedd3`); production scope is not assigned.
+- Database currently contains one `CS-LAB` cluster
+  (`ac23b8ff-e235-414c-bed8-06894f3dedd3`) marked
+  `autonomy_environment=production` with `autopilot_enabled=true`; this is an
+  unresolved operator safety/sign-off blocker and was not changed by this
+  plan. Application environment currently resolves as `development`, another
+  identity mismatch requiring operator review.
+- Browser canary is incomplete: Chromium local unauthenticated smoke reached
+  `/login` for 1/5/10 tabs; no valid operator credential was available for an
+  authenticated run.
 
 ## Verification log
 
@@ -51,6 +63,13 @@ credentials or provider content.
 - Node 20 production frontend build: passed
 - `alembic heads`: one head
 - Disposable migration: upgrade head → downgrade base → upgrade head passed
+- Disposable migration backup: `scripts/deploy/backup_database_before_migration.sh`
+  created a root-only `0600` SQLite artifact; checksum/size were recorded in
+  the rehearsal log without storing secrets.
+- `pip-audit -l`: no known vulnerabilities. Bandit after the fingerprint fix:
+  0 HIGH, 23 MEDIUM, 37 LOW; Ruff baseline remains 243 findings and is not
+  yet a blocking CI gate.
+- DR/backup/RGW/AI acceptance batch: `175 passed, 1 warning`.
 - Full suite command: `.venv/bin/pytest -q -k 'not live and not integration'`
 - Full suite result: passed; no unexplained failures
 - Hardening command: `.venv/bin/pytest -q tests/test_api_rate_limit.py
@@ -64,6 +83,7 @@ credentials or provider content.
 
 - Operator approval: `PENDING`
 - Approved deploy commit: `PENDING` (code is pushed but deployment is not authorized)
-- Migration backup/rehearsal: `PENDING`
+- Migration backup/rehearsal: `PARTIAL` (disposable SQLite passed; PostgreSQL
+  backup/restore and operator witness remain pending)
 - Rollback procedure: `Plan/in-progress/end-to-end-feature-completion-and-deployment-plan.md`
 - Automatic destructive remediation: disabled pending explicit per-cluster approval

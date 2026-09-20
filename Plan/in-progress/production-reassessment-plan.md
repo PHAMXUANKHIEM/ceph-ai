@@ -435,27 +435,35 @@ Các mục dưới đây chỉ được đánh dấu hoàn thành khi có eviden
 
 ### PR-08.1 Staging identity và ownership
 
-- [ ] Gán staging, canary, production cluster ID và owner; không dùng tên mơ hồ.
-- [ ] Ghi `autonomy_environment`, feature flags, allowed actions, maintenance
-  window và data isolation.
-- [ ] Chọn một runtime owner duy nhất giữa Podman/systemd; disable legacy owner
-  sau khi inventory và rollback path được lưu.
+- [~] Đã inventory được một cluster ID duy nhất `CS-LAB`;
+  database đang ghi `autonomy_environment=production`, `autopilot_enabled=true`
+  trong khi app environment là `development`. Đây là mismatch nguy hiểm cần
+  operator xác nhận/sửa trước khi sign-off; chưa tự ý đổi flag live.
+- [~] Container runtime inventory, non-root canary và systemd disabled đã có
+  evidence; Podman vẫn là owner đang chạy nhưng ownership chưa được operator
+  ký chính thức và code-repair còn root exception.
+- [ ] Owner/canary/production mapping, allowed-actions snapshot, maintenance
+  window và data-isolation record chưa được operator điền.
 
 ### PR-08.2 Rehearsal
 
-- [ ] Database backup → migration upgrade → health/API/browser smoke → rollback
-  migration/app → restore backup → verify data and audit.
-- [ ] Backup restore vào scratch, checksum/size verification, đo RPO/RTO.
-- [ ] Kill Worker/Watcher/Dashboard ở nhiều phase; chứng minh resume/reconcile
-  không chạy duplicate action.
-- [ ] Rollback bằng image digest + app SHA, không dùng `latest`.
+- [~] Disposable SQLite đã chạy upgrade head → backup `0600` → downgrade base
+  → re-upgrade head; head `m20260919nlcontext`, 105 tables sau re-upgrade,
+  backup artifact checksum/size được ghi nhận. PostgreSQL backup/restore,
+  health/API/browser auth smoke và audit verification còn chờ staging witness.
+- [~] Backup script/permission/checksum path đã được rehearsal; scratch restore
+  và RPO/RTO thật chưa có vì chưa được cấp staging storage/target.
+- [~] Worker/Watcher/Dashboard failure branches có fixture tests, chưa kill
+  live staging services ở nhiều phase vì runtime ownership chưa được chốt.
+- [~] Rollback SHA đã ghi trong manifest; image digest pinning và deployment
+  rehearsal chưa pass, không đánh dấu release approved.
 
 ### PR-08.3 Soak và live DR
 
-- [ ] Staging soak tối thiểu một maintenance cycle, có p95/p99, warning, error,
-  memory, disk, queue depth, duplicate owner và alert flood report.
-- [ ] Live DR drill chỉ sau safety approval: isolated target, backup chain, RBD
-  mirror/restore, fencing, failover, failback, measured RPO/RTO và cleanup.
+- [~] Browser unauthenticated baseline và service health snapshot đã có; soak
+  maintenance-cycle với p95/p99, resource, queue và alert-flood report chưa có.
+- [ ] Live DR drill chưa chạy: thiếu safety approval, isolated target, backup
+  chain/peer và operator witness; không coi unit/scratch tests là DR pass.
 - [ ] Không gọi live DR “pass” nếu chỉ có unit/scratch evidence.
 
 ### Acceptance PR-08
