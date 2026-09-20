@@ -59,6 +59,43 @@ jobs:
         # addopts) — the `live` suite makes real SSH/network calls to the
         # actual Ceph lab cluster and only ever runs manually, never in CI.
 
+      - name: Summarize test failures
+        if: failure()
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: |
+          python - <<'PY'
+          import html
+          import os
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          xml_path = pathlib.Path("artifacts") / f"pytest-{os.environ['PYTHON_VERSION']}.xml"
+          summary_path = pathlib.Path("artifacts") / f"pytest-failures-{os.environ['PYTHON_VERSION']}.txt"
+          failures = []
+          if xml_path.exists():
+              root = ET.parse(xml_path).getroot()
+              for case in root.iter("testcase"):
+                  failure = case.find("failure")
+                  error = case.find("error")
+                  detail = failure if failure is not None else error
+                  if detail is None:
+                      continue
+                  name = f"{case.attrib.get('classname', '')}::{case.attrib.get('name', '')}"
+                  message = (detail.attrib.get("message") or detail.text or "").strip()
+                  failures.append((name, message[:1000]))
+          lines = [f"Python {os.environ['PYTHON_VERSION']} pytest failures: {len(failures)}"]
+          for name, message in failures:
+              safe = message.replace("\n", " ").replace("%", "%25").replace("\r", "%0D")
+              print(f"::error title=pytest failure,file=.github::{name}: {safe}")
+              lines.append(f"- `{name}`: {message}")
+          summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          github_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if github_summary:
+              with open(github_summary, "a", encoding="utf-8") as stream:
+                  stream.write("## Pytest failures\n\n" + "\n".join(lines) + "\n")
+          PY
+
       - name: Upload test evidence (Python ${{ matrix.python-version }})
         if: always()
         uses: actions/upload-artifact@v4
