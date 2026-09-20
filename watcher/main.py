@@ -774,6 +774,19 @@ def build_and_publish_incident(
             )
             session.add(incident)
             try:
+                # Flush assigns the primary key while the ORM instance is
+                # still live.  Keep mute inheritance in this transaction so
+                # commit cannot expire/detach `incident` before its id is
+                # needed by the query and the outgoing envelope.
+                session.flush()
+                incident_id = incident.id
+                session.commit()
+                incident = session.get(Incident, incident_id)
+                if incident is None:
+                    raise RuntimeError(f"incident {incident_id} disappeared after commit")
+                notification_muted = alert_lifecycle.inherit_active_mute(
+                    session, incident, now=detected_at,
+                )
                 session.commit()
             except IntegrityError as exc:
                 # The DB partial unique index is the authoritative dedupe
@@ -795,18 +808,6 @@ def build_and_publish_incident(
                     ceph_code,
                 )
                 continue
-            # The INSERT has already been flushed by commit, but explicitly
-            # flush before reading the generated id so this path does not need
-            # a second SELECT/refresh against a SQLite StaticPool connection.
-            # That extra round trip is unnecessary and can race with another
-            # worker using the same test/development connection.
-            session.flush()
-            incident_id = incident.id
-            notification_muted = alert_lifecycle.inherit_active_mute(
-                session, incident, now=detected_at,
-            )
-            session.commit()
-
         if _ceph_check_is_muted(check_detail):
             notification_muted = True
             logger.info(
@@ -942,6 +943,7 @@ def run(
     last_status_snapshot_scan_at: Optional[datetime] = None
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
+
     while max_iterations is None or iterations < max_iterations:
         service_health.record_safe("watcher")
         poll_started_monotonic = time.monotonic()
@@ -1513,6 +1515,15 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
             )
             session.add(incident)
             try:
+                session.flush()
+                incident_id = incident.id
+                session.commit()
+                incident = session.get(Incident, incident_id)
+                if incident is None:
+                    raise RuntimeError(f"incident {incident_id} disappeared after commit")
+                notification_muted = alert_lifecycle.inherit_active_mute(
+                    session, incident, now=detected_at,
+                )
                 session.commit()
             except IntegrityError as exc:
                 session.rollback()
@@ -1531,13 +1542,6 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
                     ceph_code,
                 )
                 continue
-            session.refresh(incident)
-            incident_id = incident.id
-            notification_muted = alert_lifecycle.inherit_active_mute(
-                session, incident, now=detected_at,
-            )
-            session.commit()
-
         if _ceph_check_is_muted(check_detail):
             notification_muted = True
             logger.info(
@@ -1709,6 +1713,18 @@ def run_observed_cluster_loop(
     last_status_snapshot_scan_at: Optional[datetime] = None
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
+
+    def run_auxiliary_scan(name: str, callback: Callable[[], None]) -> None:
+        """Keep bounded/test loops free of orphan daemon scans.
+
+        The production observed-cluster loop is unbounded and can safely
+        dispatch slow collectors in daemon threads. A bounded invocation is
+        a deterministic probe used by tests and diagnostics; it must not
+        leave a callback running after its database fixture has moved on.
+        """
+        if max_iterations is None:
+            _run_auxiliary_scan(name, callback, background=True)
+
     while max_iterations is None or iterations < max_iterations:
         if stop_event is not None and stop_event.is_set():
             logger.info("run_observed_cluster_loop: stop requested for cluster id=%s", cluster.id)
@@ -1830,10 +1846,9 @@ def run_observed_cluster_loop(
                 or (trash_now - last_trash_capacity_scan_at).total_seconds()
                 >= getattr(settings, "trash_capacity_scan_interval_seconds", 300)
             ):
-                _run_auxiliary_scan(
+                run_auxiliary_scan(
                     f"trash-{cluster.id}",
                     lambda: trash_capacity_monitor.check_and_alert(cluster),
-                    background=True,
                 )
                 last_trash_capacity_scan_at = trash_now
 
@@ -1852,16 +1867,14 @@ def run_observed_cluster_loop(
                         or (now - last_volume_topology_scan_at).total_seconds()
                         >= settings.volume_topology_scan_interval_seconds
                     ):
-                        _run_auxiliary_scan(
+                        run_auxiliary_scan(
                             f"volume-topology-{cluster.id}",
                             lambda: volume_topology.collect_and_store(cluster.id, cluster),
-                            background=True,
                         )
                         last_volume_topology_scan_at = now
-                    _run_auxiliary_scan(
+                    run_auxiliary_scan(
                         f"performance-rca-{cluster.id}",
                         lambda: performance_rca_monitor.check_and_alert(cluster.id, cluster),
-                        background=True,
                     )
                 except Exception:
                     logger.exception(
@@ -1875,10 +1888,9 @@ def run_observed_cluster_loop(
                 last_host_metrics_scan_at is None
                 or (now - last_host_metrics_scan_at).total_seconds() >= 30
             ):
-                _run_auxiliary_scan(
+                run_auxiliary_scan(
                     f"host-metrics-{cluster.id}",
                     lambda: host_metrics.collect_and_store(cluster.id, cluster),
-                    background=True,
                 )
                 last_host_metrics_scan_at = now
 
@@ -1947,12 +1959,11 @@ def run_observed_cluster_loop(
                 or (status_now - last_status_snapshot_scan_at).total_seconds()
                 >= _DASHBOARD_STATUS_SNAPSHOT_INTERVAL_SECONDS
             ):
-                _run_auxiliary_scan(
+                run_auxiliary_scan(
                     f"status-{cluster.id}",
                     lambda status_cluster=cluster: cluster_snapshot_collector.collect_and_publish_status(
                         status_cluster
                     ),
-                    background=True,
                 )
                 last_status_snapshot_scan_at = status_now
 
@@ -1971,9 +1982,7 @@ def run_observed_cluster_loop(
                             inventory_cluster.name,
                         )
 
-                _run_auxiliary_scan(
-                    f"inventory-{cluster.id}", scan_inventory, background=True,
-                )
+                run_auxiliary_scan(f"inventory-{cluster.id}", scan_inventory)
                 last_inventory_scan_at = inventory_now
 
         iterations += 1

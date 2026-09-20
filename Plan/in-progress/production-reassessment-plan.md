@@ -71,7 +71,7 @@ owner, lý do, ngày hết hạn và blast-radius review.
 
 ## 4. Workstream P0 — deterministic suite và Python 3.12
 
-### PR-01.1 Reproduce và cô lập failure
+### PR-01.1 Reproduce và cô lập failure `[~]`
 
 - [ ] Tạo môi trường sạch riêng cho Python 3.11 và 3.12 từ cùng dependency
   constraints; không dùng database, cache, `.env` hoặc broker của service đang chạy.
@@ -89,19 +89,19 @@ pytest -q -k 'not live and not integration' --junitxml=artifacts/pytest.xml
 pytest -q -k 'not live and not integration' --junitxml=artifacts/pytest-repeat.xml
 ```
 
-### PR-01.2 Sửa ownership/lifecycle của Incident
+### PR-01.2 Sửa ownership/lifecycle của Incident `[x]`
 
-- [ ] Rà toàn bộ path tạo incident trong `watcher/main.py`, đặc biệt path commit
+- [x] Rà toàn bộ path tạo incident trong `watcher/main.py`, đặc biệt path commit
   trước khi đọc `incident.id`.
-- [ ] Dùng pattern được review: `session.flush()` rồi lấy id trước commit, hoặc
+- [x] Dùng pattern được review: `session.flush()` rồi lấy id trước commit, hoặc
   copy scalar `incident_id` trước commit; không đọc attribute ORM sau commit nếu
   object có thể detached/expired.
-- [ ] Không dùng `expire_on_commit=False` để che lỗi toàn cục nếu chưa review
+- [x] Không dùng `expire_on_commit=False` để che lỗi toàn cục nếu chưa review
   transaction semantics.
-- [ ] Bổ sung regression cho một check, nhiều check đồng thời, publish đủ event,
+- [x] Bổ sung regression cho một check, nhiều check đồng thời, publish đủ event,
   rollback transaction và session close/detach.
 
-### PR-01.3 Chặn test-state leakage
+### PR-01.3 Chặn test-state leakage `[~]`
 
 - [ ] Kiểm tra fixture database/cache/session/monkeypatch; mọi resource phải reset
   trong `yield`/finalizer.
@@ -115,6 +115,18 @@ pytest -q -k 'not live and not integration' --junitxml=artifacts/pytest-repeat.x
 - Failure pass khi chạy riêng, theo module, theo thứ tự ngẫu nhiên và full suite.
 - Không có `DetachedInstanceError`, order dependency hoặc state leakage chưa phân loại.
 - CI lưu JUnit, warning report, timing report và commit SHA.
+
+Evidence hiện tại trên server `10.3.55.213`:
+
+- `tests/test_watcher_incident_flow.py tests/test_watcher_main.py`: `73 passed`;
+- full deterministic Python 3.11: `3834 passed, 47 deselected, 235 warnings`
+  trong `1748.10s`; JUnit: `/tmp/ceph-ai-pr01-py311-final.xml`;
+- `watcher/main.py` đã dùng `flush -> scalar id -> commit -> session.get(id)`
+  trước khi chạy mute inheritance, tránh đọc ORM attribute đã expired và tránh
+  query pre-commit làm nhiễu SQLite `StaticPool`;
+- `.github/workflows/ci-cd.yml` đã có matrix Python `3.11`/`3.12`, nhưng chưa có
+  kết quả GitHub Actions Python 3.12 trong evidence; vì vậy PR-01 chưa được
+  đánh dấu hoàn thành toàn bộ.
 
 ## 5. Workstream P0 — session cookie và trusted HTTPS
 

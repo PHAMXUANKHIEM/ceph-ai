@@ -10,6 +10,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
     # A real (ephemeral, CI-only) broker — tests/test_mq.py needs one it
     # doesn't share with any other consumer, which a locally-run dev
     # instance can't guarantee (see that file's own comment on this).
@@ -28,7 +32,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: pip install -e .[dev]
@@ -36,7 +40,7 @@ jobs:
       - name: Build Ceph Health dashboard
         run: npm --prefix ceph-health-dashboard install && npm --prefix ceph-health-dashboard run build
 
-      - name: Run tests
+      - name: Run tests (Python ${{ matrix.python-version }})
         run: pytest
         # `-m 'not live'` is already pytest's default (pyproject.toml
         # addopts) — the `live` suite makes real SSH/network calls to the
