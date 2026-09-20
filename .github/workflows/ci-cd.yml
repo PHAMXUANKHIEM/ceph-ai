@@ -135,7 +135,8 @@ jobs:
           QUALITY_BASE_SHA: ${{ github.event.before || github.event.pull_request.base.sha }}
         run: |
           mkdir -p artifacts
-          python scripts/ci/quality_gate.py
+          set -o pipefail
+          python scripts/ci/quality_gate.py 2>&1 | tee artifacts/quality-gate.log
 
       - name: Upload quality and security reports
         if: always()
