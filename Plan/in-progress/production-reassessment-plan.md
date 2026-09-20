@@ -390,34 +390,46 @@ Các mục dưới đây chỉ được đánh dấu hoàn thành khi có eviden
 
 ### PR-07.3 DR/RBD mirroring
 
-- [ ] Peer setup/teardown trên disposable cluster, không đụng production peer.
-- [ ] Normalize mirror status/lag/RPO, planned failover/failback, fencing và
-  split-brain behavior.
-- [ ] Test checksum, recovery point, rollback và operator confirmation.
+- [~] Read-only mirror info/status query và pool/cluster scoping đã có contract
+  test; peer setup/teardown chưa chạy vì không có disposable peer được cấp và
+  không được chạm production peer.
+- [~] Mirror telemetry hiện trả raw Ceph info/status và xử lý disabled/error
+  fail-closed; lag/RPO normalization, planned failover/failback, fencing và
+  split-brain behavior chưa có implementation/runtime evidence.
+- [~] Restore/integrity/rollback/operator-confirmation contracts đã được test
+  trong bộ DR/backup; checksum và recovery point live vẫn chờ disposable DR.
+  Evidence hiện tại: mirror client tests và `175 passed, 1 warning` từ bộ
+  restore/backup/RGW/AI acceptance.
 
 ### PR-07.4 Backup multi-cluster
 
-- [ ] Audit API chứng minh cluster scope cho job/history/digest/anomaly/restore.
-- [ ] Thiết kế policy per-cluster cho Digest và RestoreDrill; không dùng singleton
-  global khi bật cluster phụ.
-- [ ] Test parallel backup hai cluster, inactive rejection và secret redaction.
+- [~] Backup/restore/digest/anomaly/restore-drill contract và secret-redaction
+  tests đã pass; các route đã mang cluster scope ở fixture hiện có.
+- [~] Policy per-cluster và inactive rejection có nhánh code/test, nhưng chưa
+  có audit evidence API trên hai cluster thật cùng lúc.
+- [~] Parallel backup hai cluster và live multi-cluster audit còn chờ staging
+  controller/storage; chưa dùng singleton global làm bằng chứng pass.
 
 ### PR-07.5 RGW monitoring/remediation
 
-- [ ] Review Prometheus metric names/labels/cardinality, retention, quota trend và
-  alert threshold.
-- [ ] Remediation chỉ typed action, preview/approval, idempotency, post-check,
-  rollback và audit; không gửi raw log/secret cho AI.
-- [ ] Test alert dedupe, silence, retry, failure và no-action mode.
+- [~] RGW evidence, audit, quota/diagnosis và multisite fixture tests đã pass;
+  metric names/labels/cardinality/retention cần review trên Prometheus thật.
+- [~] Guardrail hiện giữ remediation typed/approval/audit và redacts evidence;
+  end-to-end RGW remediation, idempotency/post-check/rollback runtime chưa có.
+- [~] Dedupe/failure/no-action branches có coverage fixture; silence/retry và
+  canary Prometheus/RGW evidence còn chờ staging.
 
 ### PR-07.6 AI post-check/rollback
 
-- [ ] Mọi action contract có timeout bounded, fresh telemetry, fault absence,
-  health floor và evidence before/after.
-- [ ] Worker timeout không để command mồ côi; lease/idempotency reconcile sau crash.
-- [ ] Inverse rollback phải được registry kiểm thử; thiếu inverse thì fail-closed
-  và yêu cầu operator runbook.
-- [ ] Failure injection cho post-check fail, rollback fail và partial success.
+- [~] Typed action policy, bounded executor/post-check, idempotency/lease và
+  Ceph/RBD reconciliation contracts đã có test; chưa chứng minh fresh telemetry
+  và health floor cho mọi action trên runtime thật.
+- [~] Worker crash/timeout/reconcile branches có fixture coverage, nhưng chưa
+  có kill/restart soak evidence với command orphan trên staging.
+- [~] Thiếu inverse rollback đã fail-closed trong registry/policy tests; operator
+  runbook và full action registry audit còn mở.
+- [~] Failure injection post-check/rollback/partial-success có coverage trong
+  bộ `175 passed`; chưa có live worker failure drill.
 
 ## 11. Workstream P0/P1 — staging, rollback và DR evidence
 
