@@ -1021,12 +1021,21 @@ def test_configured_rbd_pools_manual_setting_wins_over_auto_discovery(monkeypatc
 
 def test_configured_rbd_pools_auto_discovers_when_unset(monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_rbd_pools", "")
+    monkeypatch.setattr(ceph_client.settings, "ceph_rbd_auto_discovery_enabled", True)
     monkeypatch.setattr(ceph_client, "discover_rbd_pools", lambda: ["backups", "vms"])
     assert configured_rbd_pools() == ["backups", "vms"]
 
 
+def test_configured_rbd_pools_can_disable_auto_discovery(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_rbd_pools", "")
+    monkeypatch.setattr(ceph_client.settings, "ceph_rbd_auto_discovery_enabled", False)
+    monkeypatch.setattr(ceph_client, "discover_rbd_pools", lambda: (_ for _ in ()).throw(AssertionError("must not be called")))
+    assert configured_rbd_pools() == []
+
+
 def test_configured_rbd_pools_returns_empty_when_discovery_fails(monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_rbd_pools", "")
+    monkeypatch.setattr(ceph_client.settings, "ceph_rbd_auto_discovery_enabled", True)
 
     def failing_discover():
         raise CephQueryError("all MON nodes unreachable")

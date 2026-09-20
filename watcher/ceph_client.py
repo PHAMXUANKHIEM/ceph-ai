@@ -300,6 +300,8 @@ def configured_rbd_pools() -> list[str]:
     manual = [p.strip() for p in settings.ceph_rbd_pools.split(",") if p.strip()]
     if manual:
         return manual
+    if not settings.ceph_rbd_auto_discovery_enabled:
+        return []
     try:
         return discover_rbd_pools()
     except CephQueryError as exc:

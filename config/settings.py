@@ -153,6 +153,9 @@ class Settings(BaseSettings):
     # poll cost control, or a pool you deliberately don't want watched) —
     # once set, it's the ONLY list used, auto-discovery is skipped entirely.
     ceph_rbd_pools: str = ""
+    # Blank CEPH_RBD_POOLS auto-discovers RBD application pools by default.
+    # Set this false to disable the auxiliary RBD performance scans entirely.
+    ceph_rbd_auto_discovery_enabled: bool = True
     # RBD performance is an auxiliary signal, not part of the 15s health
     # heartbeat. Keeping it on its own cadence prevents each poll from
     # creating one cephadm/Podman shell per RBD pool.
