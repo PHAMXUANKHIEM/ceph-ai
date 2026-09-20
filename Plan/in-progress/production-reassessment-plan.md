@@ -364,17 +364,29 @@ Các mục dưới đây chỉ được đánh dấu hoàn thành khi có eviden
 
 ### PR-07.1 Browser/multi-tab
 
-- [ ] Playwright/Chromium smoke với auth hợp lệ trên 1/5/10 tab.
+- [~] Đã cài Chromium Playwright và chạy canary local không-auth trên 1/5/10 tab:
+  login/product-selection trả HTTP 200, p95 lần lượt 813/921/883 ms; HAR được
+  ghi tại `/tmp/pr07-browser.har`. Chưa thể đánh dấu auth acceptance vì server
+  chỉ có password hash và chưa có credential test/operator được cấp; lần thử
+  `admin/admin` bị giữ ở `/login`.
 - [ ] Đo p50/p95/p99, reconnect, stale badge, duplicate request và Ceph/SSH query
   count bằng DevTools/server metrics.
-- [ ] Có canary scope, timeout và trace/video khi fail.
+- [~] Canary scope/timeout đã cố định ở localhost, 20s navigation timeout và
+  chỉ GET sau login; trace/video khi fail và auth hợp lệ còn chờ credential.
 
 ### PR-07.2 Cinder mapping
 
-- [ ] Controller acceptance với volume/project, attachment/instance, orphan và
-  insufficient evidence.
-- [ ] Kiểm tra two-way mapping, pagination, tenant isolation và eventual consistency.
-- [ ] Không có mutation ngoài approval path; evidence theo cluster/site.
+- [~] Contract/controller fixture acceptance đã pass: volume/project,
+  attachment/instance, orphan, missing/insufficient evidence, snapshot,
+  reconciliation và approval-gated mutation.
+- [~] Pagination bounded (`page_size <= 20`), cluster scope và two-way
+  mapping đã có test; live controller, tenant-isolation với OpenStack policy
+  thật và eventual-consistency window còn chờ staging credential/controller.
+- [x] Mapping endpoint là read-only; attach/detach/snapshot mutation chỉ tạo
+  typed approval action và không có direct mutation path. Evidence:
+  `tests/test_cinder_discovery.py`, `tests/test_cinder_reconciliation.py`,
+  `tests/test_cinder_mapping_api.py`, `tests/test_dashboard_openstack.py`,
+  `tests/test_dashboard_volumes.py` — `177 passed, 1 warning`.
 
 ### PR-07.3 DR/RBD mirroring
 
