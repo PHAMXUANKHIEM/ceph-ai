@@ -193,19 +193,41 @@ Tạo artifact không chứa secret cho từng service:
 | full-executor | `aiagent` | read-only | artifact/state | capability key | allowlist | worker-owned |
 | code-repair | isolated identity | explicit write | no prod secret | none default | no Ceph mutation | approval-only |
 
-- [ ] Xác nhận bằng `id`, `/proc/1/status`, mount/capability inspection và
+- [x] Xác nhận bằng `id`, `/proc/1/status`, mount/capability inspection và
   container security options; không chỉ đọc compose.
-- [ ] Dashboard/Worker/Watcher không chạy root nếu không có risk exception.
-- [ ] SSH key read-only, owner đúng service user, scoped theo host/capability.
+- [~] Dashboard/Worker/Watcher không chạy root; full-executor, Telegram và
+  vault-monitor cũng đã chạy UID `10001`. Code-repair vẫn là root exception vì
+  đang ghi trực tiếp checkout, chưa có risk owner/expiry được ký.
+- [~] SSH private key `/root/.ssh` không còn mount vào app services; bootstrap
+  copy key vào `/var/lib/ceph-ai/full-executor-ssh` với owner `10001`, mode `0600`,
+  và các app dùng path này. Phạm vi host/capability và tách UID giữa app services
+  vẫn cần hoàn thiện.
 - [ ] Code-repair tách khỏi runtime image và production credentials; repository
   write phải qua explicit operator-approved job.
 - [ ] Xóa `curl | sh`; tải artifact tạm, verify checksum/signature rồi install.
 - [ ] Egress deny-by-default tới đúng Ceph, PostgreSQL, RabbitMQ và provider.
 
+### Evidence PR-03 hiện tại
+
+- Runtime/code commit: `85ddf8cde5cd7ae6ffdb06e9db3d94184a6a0220`.
+- `podman inspect`/`podman top` trên `10.3.55.213` xác nhận Dashboard, Worker,
+  Watcher, Telegram, full-executor và vault-monitor chạy `10001:10001`, rootfs
+  read-only, `no-new-privileges`, `cap_drop=ALL`; code-repair chạy root nhưng
+  rootfs read-only và chỉ checkout bind mount writable.
+- Sau recreate từng service: Dashboard, Worker, Watcher, Telegram, full-executor
+  và code-repair đều `healthy`; vault-monitor chạy không có healthcheck. Worker
+  và Watcher tiếp tục SSH authenticate thành công; Telegram không còn
+  `PermissionError` với state JSON sau ACL mask fix.
+- Credential mount trực tiếp `/root/.ssh` đã bị loại khỏi Dashboard/Worker/Watcher/
+  Telegram; runtime key được provision bởi `scripts/bootstrap_container_config.py`.
+- Còn chờ: code-repair workspace/approval isolation, egress policy, xóa installer
+  `curl | sh`, scope SSH theo capability/UID và root-exception sign-off.
+
 ### Acceptance PR-03
 
-- Container audit chứng minh non-root, `no-new-privileges`, capability tối thiểu,
-  mount đúng và không có secret ngoài scope.
+- [~] Container audit chứng minh non-root cho các service runtime chính,
+  `no-new-privileges`, capability tối thiểu và rootfs/mount policy; code-repair
+  root exception và secret/egress scope chưa đóng.
 - Prompt injection/path traversal/command injection/secret exfiltration tests pass.
 - Kill/restart không để lại process hoặc owner trùng.
 - Root exception (nếu bắt buộc) có risk owner và expiry.
