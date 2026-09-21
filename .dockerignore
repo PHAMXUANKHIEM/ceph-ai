@@ -12,3 +12,12 @@ __pycache__
 .deploy-backups
 docs
 Plan
+.codex-stage
+transfer
+*.bak
+*.bak-*
+backups
+**/*.bak
+**/*.bak-*
+**/schema*.sql
+**/backups

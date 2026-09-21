@@ -375,8 +375,9 @@ tests, and the default suite excludes live tests deterministically.
   backup store, not under `dashboard/static/` or application source paths.
 - [x] Verify the removed backup paths are no longer present under the static
   asset tree; a static-server smoke test remains recommended.
-- [ ] Scan the final diff and image context for secrets, tokens, cookies,
-  database URLs, key paths, and private schema data.
+- [x] Scan the final diff and image context for high-signal secrets, tokens, cookies,
+  database URLs, key paths, and private schema data; no high-signal secret signature
+  was found in the final source scan or image scan.
 
 ### 9.1 RR-07 verification result
 
@@ -389,6 +390,11 @@ tests, and the default suite excludes live tests deterministically.
   or private-key signature. Seventy-two tracked .codex-stage/transfer review
   artifacts remain outside the Dockerfile COPY paths; deletion is deferred until
   the owner confirms they are not recovery evidence.
+- The initial image build exposed ignored `*.bak-*` files under copied source
+  directories; `.dockerignore` now excludes `*.bak`, `*.bak-*`, recursive backup/schema
+  paths, `.codex-stage`, and `transfer`. A clean rebuild (`ceph-ai:rr07-scan`, image
+  ID `aeae2e51fc40`) contains no backup/review artifacts and no high-signal secret
+  signature.
 
 **Exit criteria:** no backup/schema artifact is tracked or included in the
 release image, and the final repository status is clean.
