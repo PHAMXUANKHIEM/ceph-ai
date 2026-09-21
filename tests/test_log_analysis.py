@@ -112,7 +112,9 @@ def test_log_finding_alert_uses_background_delivery(monkeypatch):
 
     log_analysis._maybe_alert(payload, [], None)
 
-    assert captured["background"] is True
+    # The transactional outbox owns async delivery; the sender must not
+    # spawn a second background thread that could be marked SENT too early.
+    assert captured["background"] is False
 
 
 def test_generic_finding_notification_is_concise_too(monkeypatch):

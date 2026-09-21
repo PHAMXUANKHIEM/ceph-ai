@@ -22,7 +22,7 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.settings import _mask_key, _require_admin_privilege, restart_watcher, restart_worker
 from dashboard.templating import make_templates
-from shared import db, env_config
+from shared import db, env_config, telegram_outbox
 from shared.models import TelegramChannelConfigChange, TelegramChannelLayout, TelegramManagedChannel
 from shared.telegram_client import TelegramSendError, send_telegram_message
 
@@ -933,3 +933,33 @@ async def telegram_channel_test(request: Request, channel: str, user: str = Depe
         "telegram_alert_channel.html",
         _context(user, test_successes={channel: "Đã gửi tin nhắn thử — kiểm tra Telegram."}, detail_channel=channel),
     )
+
+
+@router.get("/api/telegram-outbox/status", response_class=JSONResponse)
+async def telegram_outbox_status(user: str = Depends(require_login)):
+    """Admin-only queue metrics; payloads and credentials are never returned."""
+    _require_admin_privilege(user)
+    return JSONResponse(telegram_outbox.delivery_stats())
+
+
+@router.post("/api/telegram-outbox/replay", response_class=JSONResponse)
+async def telegram_outbox_replay(request: Request, user: str = Depends(require_login)):
+    """Explicitly requeue DEAD notifications, then let the worker deliver them."""
+    _require_admin_privilege(user)
+    try:
+        payload = await request.json()
+    except (TypeError, ValueError):
+        payload = {}
+    event_ids = payload.get("event_ids") if isinstance(payload, dict) else None
+    if event_ids is not None and (
+        not isinstance(event_ids, list)
+        or any(not isinstance(value, str) or not value.strip() for value in event_ids)
+    ):
+        raise HTTPException(status_code=422, detail="event_ids must be a list of non-empty strings")
+    raw_limit = payload.get("limit", 20) if isinstance(payload, dict) else 20
+    try:
+        limit = max(1, min(100, int(raw_limit)))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="limit is invalid") from None
+    replayed = telegram_outbox.replay_dead(event_ids=event_ids, limit=limit)
+    return JSONResponse({"replayed": replayed, "queue": telegram_outbox.delivery_stats()})

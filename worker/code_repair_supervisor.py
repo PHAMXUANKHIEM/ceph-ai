@@ -38,12 +38,12 @@ from worker.code_repair import (
     _role_account_dirs,
     _ai_process_environment,
     _run,
+    send_code_repair_alert,
 )
 from worker import ceph_capability_learning as ceph_learning
 from shared.ai_budget import AIBudgetError, check as check_ai_budget
 from shared.ai_observability import record_ai_attempt
 from shared import service_health
-from shared.telegram_alerts import send_code_repair_alert
 
 logger = logging.getLogger(__name__)
 REPAIR_COOLDOWN_SECONDS = 3600
@@ -385,7 +385,6 @@ def run_nightly_ai_improvement(repo: Path, state_path: Path, *, now: datetime | 
         with _repair_run_lock():
             return _run_nightly_ai_improvement_locked(repo, state_path, now=now)
     except Exception as exc:
-        current = now or datetime.now(timezone.utc)
         state = _load_nightly_state(state_path)
         # A runtime failure is retryable.  Do not consume this calendar day;
         # the systemd failure exit will invoke this job again after backoff.

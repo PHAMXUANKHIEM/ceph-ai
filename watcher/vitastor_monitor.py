@@ -6,13 +6,14 @@ import json
 import logging
 import time
 import statistics
-from datetime import datetime, timedelta
+import hashlib
+from datetime import timedelta
 from shared.time import utc_now
 
 from config.settings import settings
-from shared import db
+from shared import db, telegram_outbox
 from shared.models import VitastorCluster, VitastorMetricSample, VitastorNetworkMetricSample, VitastorNodeMetricSample, VitastorOsdMetricSample
-from shared.telegram_alerts import send_vitastor_alert
+from shared.telegram_alerts import send_vitastor_alert as _send_vitastor_alert_direct
 from vitastor.client import VitastorConnectionError, normalize_etcd, normalize_status, query_dashboard
 from vitastor.anomaly import detect_and_record, extract_entities
 from vitastor.node_metrics import query_node_hardware, query_node_network
@@ -20,6 +21,20 @@ from vitastor.remediation import reconcile_monitor_proposals
 
 logger = logging.getLogger(__name__)
 PROBLEM_STATES = {"WARNING", "CRITICAL", "UNREACHABLE"}
+
+
+def send_vitastor_alert(cluster_name: str, health: str, detail: str) -> bool:
+    """Deliver transition alerts through the durable post-commit outbox."""
+    fingerprint = hashlib.sha256(
+        f"{cluster_name}|{health}|{detail}".encode("utf-8")
+    ).hexdigest()[:24]
+    return telegram_outbox.enqueue_alert_call_and_dispatch(
+        event_id=f"vitastor:{cluster_name}:{health}:{fingerprint}",
+        category="vitastor",
+        function="send_vitastor_alert",
+        args=(cluster_name, health, detail),
+        sender=_send_vitastor_alert_direct,
+    )
 
 
 def _cached(cluster: VitastorCluster) -> dict:

@@ -7,11 +7,11 @@ import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
 
 from config.settings import settings
-from shared import db, service_health
+from shared import db, service_health, telegram_outbox
 from shared.mq import QUEUE_NAME, declare_topology, get_connection
 from shared.models import Cluster, Incident, IncidentStatus
 from shared.logging_redaction import install_logging_redaction
-from shared.telegram_alerts import send_ai_unavailable_alert
+from shared.telegram_alerts import send_ai_unavailable_alert as _send_ai_unavailable_alert_direct
 from shared.request_context import request_id_from_headers, reset_request_id, set_request_id
 from watcher import incident_grouping
 
@@ -94,23 +94,19 @@ def _notify_ai_diagnosis_failed(incident_id: str) -> None:
         if incident is None:
             return
         cluster_name = None
-        bot_token = chat_id = None
-        enabled = None
         if incident.cluster_id is not None:
             cluster = session.get(Cluster, incident.cluster_id)
             if cluster is not None:
                 cluster_name = cluster.name
-                if cluster.telegram_bot_token and cluster.telegram_chat_id:
-                    bot_token, chat_id = cluster.telegram_bot_token, cluster.telegram_chat_id
-                    enabled = cluster.telegram_enabled
         ceph_code, severity = incident.ceph_code, incident.severity
-    send_ai_unavailable_alert(
-        ceph_code,
-        severity,
+    telegram_outbox.enqueue_alert_call_and_dispatch(
+        event_id=f"ai-unavailable:{incident_id}",
+        category="incident",
+        function="send_ai_unavailable_alert",
+        args=(ceph_code, severity),
+        cluster_id=incident.cluster_id,
         cluster_name=cluster_name,
-        bot_token=bot_token,
-        chat_id=chat_id,
-        enabled=enabled,
+        sender=_send_ai_unavailable_alert_direct,
     )
 
 
@@ -363,6 +359,7 @@ async def _main() -> None:
     from worker.backup import scheduler as backup_scheduler
     from worker import bucket_logging, rgw_access_audit, delegated_tasks
     from worker.llm.router_client import diagnose_incident, poll_approved_actions
+    from shared import telegram_outbox
 
     # Story 4.3: the approved-RISKY-action poller runs alongside the
     # RabbitMQ consumer in the same process/event loop — only the Worker
@@ -379,6 +376,14 @@ async def _main() -> None:
                 service_health.record_safe("worker")
             await asyncio.sleep(15)
 
+    async def telegram_outbox_loop() -> None:
+        while True:
+            processed = await asyncio.to_thread(
+                telegram_outbox.dispatch_due,
+                limit=20,
+            )
+            await asyncio.sleep(2 if processed else 10)
+
     await asyncio.gather(
         _supervise("incident-consumer", lambda: run(process_incident=diagnose_incident)),
         _supervise("delegated-ai-consumer", delegated_tasks.run),
@@ -386,6 +391,7 @@ async def _main() -> None:
         _supervise("backup-scheduler", backup_scheduler.run),
         _supervise("bucket-logging", bucket_logging.run),
         _supervise("rgw-access-audit", rgw_access_audit.run),
+        _supervise("telegram-outbox", telegram_outbox_loop),
         _supervise("heartbeat", service_heartbeat),
     )
 

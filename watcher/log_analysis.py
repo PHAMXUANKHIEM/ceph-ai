@@ -62,7 +62,7 @@ from shared.models import (
     LogIngestStatus,
     LogPattern,
 )
-from shared import telegram_alerts
+from shared import telegram_alerts, telegram_outbox
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServer, CodexAppServerError
 from shared.ai_provider_runtime import refresh_chat_provider_flags
@@ -921,6 +921,8 @@ def analyze_window(
             # strings by _validate; _maybe_alert performs the final RGW
             # classification from both this value and trusted evidence.
             "affected_daemons": validated["affected_daemons"],
+            "dedupe_key": dedupe_key,
+            "finding_id": finding_id,
         }
 
     logger.warning(
@@ -962,27 +964,30 @@ def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster 
     if payload["severity"] not in _ALERTABLE_SEVERITIES:
         return
     try:
-        has_cluster_channel = bool(
-            cluster and cluster.telegram_bot_token and cluster.telegram_chat_id
-        )
-        telegram_alerts.send_log_finding_alert(
-            payload["title"],
-            payload["severity"],
-            payload["confidence"],
-            payload["summary"],
-            payload["root_cause"],
-            evidence_templates,
-            payload["recommended_action_id"],
-            payload["validation_notes"],
-            operator_commands=_operator_commands_for(payload, evidence_templates),
-            recommended_steps=payload.get("recommended_manual_steps"),
+        telegram_outbox.enqueue_alert_call_and_dispatch(
+            event_id=f"log-finding:{cluster.id if cluster is not None else 'default'}:{payload.get('dedupe_key') or payload.get('title') or 'unknown'}",
+            category="log-intelligence",
+            function="send_log_finding_alert",
+            args=(
+                payload["title"],
+                payload["severity"],
+                payload["confidence"],
+                payload["summary"],
+                payload["root_cause"],
+                evidence_templates,
+                payload["recommended_action_id"],
+                payload["validation_notes"],
+            ),
+            kwargs={
+                "operator_commands": _operator_commands_for(payload, evidence_templates),
+                "recommended_steps": payload.get("recommended_manual_steps"),
+                "daemon_types": payload.get("affected_daemons"),
+                "rca_stage": payload.get("rca_stage"),
+                "background": False,
+            },
+            cluster_id=str(cluster.id) if cluster is not None else None,
             cluster_name=cluster.name if cluster is not None else None,
-            bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
-            chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
-            enabled=cluster.telegram_enabled if has_cluster_channel else None,
-            daemon_types=payload.get("affected_daemons"),
-            rca_stage=payload.get("rca_stage"),
-            background=settings.telegram_ai_humanize_enabled,
+            sender=telegram_alerts.send_log_finding_alert,
         )
     except Exception:
         logger.exception("log_analysis: gửi cảnh báo Telegram thất bại")
@@ -1005,8 +1010,8 @@ def resolve_stale_findings(
 
     Trả về số bản ghi đã chuyển sang RESOLVED.
     """
-    resolved_items: list[tuple[str, list[str], str | None]] = []
-    pending_items: list[tuple[str, str, tuple[str, ...], str]] = []
+    resolved_items: list[tuple[str, str, list[str], str | None]] = []
+    pending_items: list[tuple[str, str, str, tuple[str, ...], str]] = []
     with db.SessionLocal() as session:
         open_findings = (
             session.query(LogFinding)
@@ -1060,8 +1065,11 @@ def resolve_stale_findings(
                         if should_notify:
                             finding.recovery_notified_at = window_start
                             pending_items.append((
-                                finding.title or "(không tiêu đề)", verification.summary,
-                                verification.live_facts, verification.code,
+                                finding.dedupe_key,
+                                finding.title or "(không tiêu đề)",
+                                verification.summary,
+                                verification.live_facts,
+                                verification.code,
                             ))
                         logger.warning(
                             "log_analysis: giữ finding RGW %s OPEN; recovery gate=%s — %s",
@@ -1080,7 +1088,10 @@ def resolve_stale_findings(
             # hết thì hàng chờ duyệt phải tự sạch.
             _resolve_incident_for(session, finding.dedupe_key)
             resolved_items.append((
-                finding.title or "(không tiêu đề)", daemon_types, verification_summary,
+                finding.dedupe_key,
+                finding.title or "(không tiêu đề)",
+                daemon_types,
+                verification_summary,
             ))
 
         # SessionLocal is configured with autoflush=False.  Persist lifecycle
@@ -1104,31 +1115,38 @@ def resolve_stale_findings(
             _resolve_incident_for(session, dedupe_key)
         session.commit()
 
-    for title, daemon_types, verification_summary in resolved_items:
+    for dedupe_key, title, daemon_types, verification_summary in resolved_items:
         try:
-            has_cluster_channel = bool(
-                cluster and cluster.telegram_bot_token and cluster.telegram_chat_id
-            )
-            telegram_alerts.send_log_finding_resolved_alert(
-                title,
+            telegram_outbox.enqueue_alert_call_and_dispatch(
+                event_id=f"log-finding-resolved:{cluster_id}:{dedupe_key}",
+                category="log-intelligence",
+                function="send_log_finding_resolved_alert",
+                args=(title,),
+                kwargs={
+                    "daemon_types": daemon_types,
+                    "verification_summary": verification_summary,
+                },
+                cluster_id=str(cluster.id) if cluster is not None else None,
                 cluster_name=cluster.name if cluster is not None else None,
-                bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
-                chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
-                enabled=cluster.telegram_enabled if has_cluster_channel else None,
-                daemon_types=daemon_types,
-                verification_summary=verification_summary,
+                sender=telegram_alerts.send_log_finding_resolved_alert,
             )
         except Exception:
-            logger.exception("log_analysis: gửi thông báo đã-hết thất bại")
+            logger.exception("log_analysis: log recovery notification failed")
 
-    for title, summary, live_facts, verification_code in pending_items:
+    for dedupe_key, title, summary, live_facts, verification_code in pending_items:
         try:
-            telegram_alerts.send_log_finding_recovery_pending_alert(
-                title, summary, live_facts, cluster_name=cluster.name if cluster else None,
-                verification_code=verification_code,
+            telegram_outbox.enqueue_alert_call_and_dispatch(
+                event_id=f"log-finding-recovery-pending:{cluster_id}:{dedupe_key}:{verification_code}",
+                category="log-intelligence",
+                function="send_log_finding_recovery_pending_alert",
+                args=(title, summary, live_facts),
+                kwargs={"verification_code": verification_code},
+                cluster_id=str(cluster.id) if cluster is not None else None,
+                cluster_name=cluster.name if cluster is not None else None,
+                sender=telegram_alerts.send_log_finding_recovery_pending_alert,
             )
         except Exception:
-            logger.exception("log_analysis: gửi thông báo recovery-chưa-đạt thất bại")
+            logger.exception("log_analysis: recovery-pending notification failed")
 
     if resolved_items:
         logger.info("log_analysis: đã đóng %d phát hiện log", len(resolved_items))

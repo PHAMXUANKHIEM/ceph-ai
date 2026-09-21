@@ -11,7 +11,7 @@ from shared.time import utc_now
 from sqlalchemy import func
 
 from config.settings import settings
-from shared import db, telegram_alerts
+from shared import db, telegram_alerts, telegram_outbox
 from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
 from shared.forecast_metrics import update_rolling_metrics
 from shared.learning_safety import RateLimiter
@@ -492,15 +492,28 @@ def deliver_pending_forecast_alerts(cluster_id: str | None) -> int:
             cluster_id=cluster_id, status="WARNING", telegram_sent_at=None,
         ).order_by(VolumeEarlyForecast.created_at).limit(50).all()
         for row in rows:
-            sent = telegram_alerts.send_volume_forecast_alert(
-                pool=row.pool, image=row.image, metric=row.metric,
-                horizon_hours=row.horizon_hours, current_value=row.current_value,
-                predicted_value=row.predicted_value,
-                threshold_type=row.threshold_type, threshold_value=row.threshold_value,
-                confidence=row.confidence, training_samples=row.training_samples,
-                training_window_hours=row.training_window_hours,
-                model_version=row.model_version, target_at=row.target_at,
+            sent = telegram_outbox.enqueue_alert_call_and_dispatch(
+                event_id=f"volume-forecast:{row.id}",
+                category="rbd-forecast",
+                function="send_volume_forecast_alert",
+                kwargs={
+                    "pool": row.pool,
+                    "image": row.image,
+                    "metric": row.metric,
+                    "horizon_hours": row.horizon_hours,
+                    "current_value": row.current_value,
+                    "predicted_value": row.predicted_value,
+                    "threshold_type": row.threshold_type,
+                    "threshold_value": row.threshold_value,
+                    "confidence": row.confidence,
+                    "training_samples": row.training_samples,
+                    "training_window_hours": row.training_window_hours,
+                    "model_version": row.model_version,
+                    "target_at": row.target_at.isoformat(),
+                },
+                cluster_id=cluster_id,
                 cluster_name=cluster.name,
+                sender=telegram_alerts.send_volume_forecast_alert,
             )
             if sent:
                 row.telegram_sent_at = utc_now()

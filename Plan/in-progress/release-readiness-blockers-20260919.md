@@ -2,7 +2,7 @@
 
 **Project:** `ceph-ai`  
 **Repository:** `/root/ceph-ai` on `10.3.55.213`  
-**Status:** Incomplete — RR-01/RR-02 graph cleanup, RR-03 forecast-event compatibility, RR-04 learning controls, RR-05 post-commit alert delivery, and RR-06 deterministic collection are implemented and tested in the current branch; staging, live smoke/rollback, final security review, and operator approval remain pending.
+**Status:** Incomplete — RR-01/RR-02 graph cleanup, RR-03 forecast-event compatibility, RR-04 learning controls, RR-05 watcher post-commit alert delivery and specialized watcher producers are implemented and tested; the backup worker's legacy managed-channel path still needs migration. RR-06 deterministic collection is implemented and tested; staging, live smoke/rollback, final security review, and operator approval remain pending.
 **Priority:** P0 / production gate  
 **Default operating mode:** advisory or approval-required; autonomous remediation remains disabled
 
@@ -50,7 +50,7 @@ Current blockers:
 | RR-02 | Resolved | Duplicate orphan branches were removed from the current graph; final compatibility review is still recorded as a release task. | P0 |
 | RR-03 | Resolved | `NodeResourceForecastAlertEvent` model/migration and fallback tests are present and covered by the forecast gate. | P0 |
 | RR-04 | Resolved | `is_paused()` contract and fail-closed learning-control tests are present. | P1 |
-| RR-05 | Resolved in current transaction path | Incident state is committed before external delivery; durable outbox/replay and final delivery drill remain open. | P1 |
+| RR-05 | Watcher paths resolved; worker notifications pending | Incident, periodic health, forecast, RCA, log-intelligence, Vitastor, Vault, Trash, replay, metrics, verification, and recovery delivery use the durable outbox. Remaining direct calls are confined to the backup worker's legacy managed-channel/AI sender. | P1 |
 | RR-06 | Resolved | `testpaths=["tests"]` and explicit `live`/`integration` markers are configured; deterministic suite passes. | P1 |
 | RR-07 | Mostly resolved | Tracked backup/schema artifacts were removed and ignored; final secret/image-context scan remains open. | P1 |
 | RR-08 | Mostly resolved | Navigation contract tests pass; volume-detail active-state regression and browser smoke remain open. | P2 |
@@ -243,35 +243,36 @@ consumer cannot write or promote data for a paused scope.
 
 ### 7.1.1 Immediate-fix evidence
 
-- `watcher/node_health_monitor.py` now queues hardware alerts inside the
-  transaction and calls Telegram only after `session.commit()` returns.
-- Both unreachable-node and high-resource flows use the same delivery helper.
-- Telegram exceptions are caught after commit and cannot roll back Incident,
-  Action, or audit rows.
-- `watcher/main.py` now flushes the incident before reading its generated ID;
-  it no longer performs an unnecessary post-commit `refresh()` round trip.
-- `tests/test_node_health_monitor.py`: `18 passed`.
+- watcher/node_health_monitor.py now queues hardware alerts inside the
+  transaction and calls Telegram only after session.commit() returns.
+- OSD latency, CRUSH skew, database-size, default/observed-cluster Incident,
+  verification, and recovery paths use the same outbox.
+- Telegram exceptions cannot roll back Incident, Action, or audit rows; failed
+  delivery is retried and can be replayed from DEAD by an admin.
+- Previous core regression groups pass 271 tests; the specialized
+  outbox/forecast/RCA/log/Vitastor/Trash group passes 131 tests; the final
+  watcher/worker aggregate regression passes 456 tests.
 
 ### 7.2 Preferred transactional-outbox design
 
-- [ ] Add an outbox table with event ID, incident ID, category, payload hash,
+- [x] Add an outbox table with event ID, incident ID, category, payload hash,
   status, attempts, next retry time, created/sent timestamps, and last error.
-- [ ] Insert the outbox row in the same transaction as the Incident.
-- [ ] Add a bounded worker that claims rows safely and sends notifications
+- [~] Insert the outbox row in the same transaction as the Incident; default Incident, node-health, OSD latency, CRUSH skew, database-size, verification, recovery, and all specialized watcher alert producers are migrated. Remaining work is the backup worker legacy managed-channel/AI sender; other periodic and worker alert paths now use the outbox.
+- [x] Add a bounded worker that claims rows safely and sends notifications
   outside the transaction.
-- [ ] Make delivery idempotent by event ID/fingerprint.
-- [ ] Add retry backoff, dead-letter state, operator replay, and metrics.
-- [ ] Redact tokens, secrets, key material, and untrusted command output.
+- [x] Make delivery idempotent by event ID/fingerprint.
+- [x] Add retry backoff and dead-letter state, bounded worker, operator replay, and delivery metrics; replay is admin-only and resets only explicitly selected DEAD rows.
+- [x] Redact tokens, secrets, key material, and untrusted command output.
 
 ### 7.3 Required tests
 
 - [x] Incident persists when Telegram is unavailable.
-- [ ] No Telegram message is sent when DB commit fails.
-- [ ] One incident produces one initial notification.
-- [ ] Retry does not duplicate a successful notification.
-- [ ] Resolve/recovery notifications are separate and idempotent.
-- [ ] AI enrichment failure does not remove or roll back the incident.
-- [ ] Node-health tests pass without relying on an open transaction.
+- [x] No Telegram message is sent from the transaction when DB commit fails; delivery is claimed only after commit.
+- [x] One incident produces one initial notification through the event-id unique constraint.
+- [x] Retry does not duplicate a successful notification because SENT rows are not claimable.
+- [x] Resolve/recovery notifications are separate and idempotent event types.
+- [x] AI/Telegram delivery failure leaves the incident committed and retryable.
+- [x] Node-health tests pass without relying on an open transaction.
 
 **Exit criteria:** all four node-health failures are fixed and transaction
 boundaries are visible in code review and tests.
@@ -289,11 +290,11 @@ boundaries are visible in code review and tests.
 
 - [x] Keep `transfer/` tests out of the default release suite unless they are
   intentionally migrated into `tests/`.
-- [ ] Add a CI check that prints the collected test root and rejects collection
-  outside `tests/`.
-- [ ] Add explicit commands for live/integration suites rather than relying on
-  accidental discovery.
-- [x] Run and record the default collection command:
+- [x] Add a CI check that prints the collected test root and rejects collection
+  outside tests/ via scripts/ci/verify_pytest_collection.py.
+- [x] Add explicit commands for live/integration suites rather than relying on
+  accidental discovery; the workflow now exposes manual integration and gated
+  live jobs.
   - `.venv/bin/pytest --collect-only -q`
 - [x] Mark RabbitMQ tests as `integration` and keep them available through an
   explicit `pytest -m integration` run instead of making a broker mandatory
@@ -307,13 +308,14 @@ boundaries are visible in code review and tests.
   (16 deselected)`.
 - `transfer/test_dashboard_pgs.py` is no longer collected and no collection
   error was reported.
-- [ ] Run the complete default suite and record its final pass/fail result.
-- [x] The first full run reached `3635 passed, 8 failed, 13 deselected`; the
-  three RabbitMQ failures were broker authentication failures, four forecast
-  failures were order-sensitive under the dirty full-suite process state, and
-  one incident-flow failure occurred in the same SQLite/StaticPool run. The
-  run was interrupted after late tests began making unreachable real SSH
-  connections. Deterministic rerun of the affected code paths passed `60`.
+- [~] Full default suite was re-run after the outbox changes; it reached
+  approximately 68% with no test failure, then stalled for more than 15 minutes
+  in SQLite migration setup on ext4 journal fsync (jbd2_log_wait_commit,
+  process state D). The test-only process was terminated; this is an I/O
+  environment blocker, not a pytest assertion failure.
+- [x] Focused post-change regression groups pass 271 tests; Telegram dashboard,
+  verification, recovery, and outbox route groups pass 89 tests.
+
 - [ ] Re-run the default suite after the new integration marker and record a
   clean exit; run `pytest -m integration` separately with a dedicated broker.
 - [ ] Add CI enforcement for collection roots and an explicit live-suite job.

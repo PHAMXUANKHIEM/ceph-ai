@@ -1021,7 +1021,7 @@ def send_incident_alert(
     rationale: str | None = None,
     *,
     background: bool = False,
-) -> None:
+) -> bool:
     """Called once per newly-created cluster-health Incident
     (watcher/main.py::build_and_publish_incident, one call per `ceph
     health detail` check) — a genuine cluster problem, NOT a Volume-
@@ -1061,7 +1061,7 @@ def send_incident_alert(
                 background=False,
             ),
         )
-        return
+        return True
 
     prefix = _INCIDENT_SEVERITY_PREFIX.get(severity or "", f"⚠️ {severity or 'SỰ CỐ'}")
     # Ngoại lệ DUY NHẤT của `_natural`: khối bằng chứng phải giữ nguyên bố
@@ -1087,7 +1087,7 @@ def send_incident_alert(
         text += f"\n🧠 Tóm tắt AI: {_natural(diagnosis_text)}"
     if reminder and rationale:
         text += f"\n🔧 Giải pháp: {_natural(rationale)}"
-    _send(
+    return _send(
         bot_token if bot_token is not None else settings.telegram_incident_bot_token,
         chat_id if chat_id is not None else settings.telegram_incident_chat_id,
         enabled if enabled is not None else settings.telegram_incident_enabled,
@@ -1667,7 +1667,7 @@ def send_incident_verified_alert(
     bot_token: str | None = None,
     chat_id: str | None = None,
     enabled: bool | None = None,
-) -> None:
+) -> bool:
     """"✅ ĐÃ KHẮC PHỤC" — gửi khi watcher/verify.py đã HỎI LẠI CỤM và xác
     nhận ceph_code không còn trong `ceph health detail` nữa.
 
@@ -1688,7 +1688,7 @@ def send_incident_verified_alert(
     text += "\nĐã kiểm chứng lại trên cụm: lỗi không còn xuất hiện trong `ceph health detail`."
     if attempted_command:
         text += f"\n💻 Lệnh đã chạy: {_compact(attempted_command, _MAX_FOLLOWUP_FIELD_CHARS)}"
-    _send(
+    return _send(
         bot_token if bot_token is not None else settings.telegram_incident_bot_token,
         chat_id if chat_id is not None else settings.telegram_incident_chat_id,
         enabled if enabled is not None else settings.telegram_incident_enabled,
@@ -1705,7 +1705,7 @@ def send_incident_verify_exhausted_alert(
     bot_token: str | None = None,
     chat_id: str | None = None,
     enabled: bool | None = None,
-) -> None:
+) -> bool:
     """"⚠️ CHƯA KHẮC PHỤC ĐƯỢC" — đã dùng hết
     `settings.incident_verify_max_attempts` vòng chẩn đoán lại mà lỗi vẫn
     còn. Đây là điểm hệ thống chủ động BỎ CUỘC và giao lại cho người, chứ
@@ -1718,7 +1718,7 @@ def send_incident_verify_exhausted_alert(
         f"\nĐã thử {attempts} vòng khắc phục + chẩn đoán lại, kiểm chứng trên cụm vẫn thấy lỗi."
         "\nDừng tự động xử lý — cần vận hành viên vào xem trực tiếp."
     )
-    _send(
+    return _send(
         bot_token if bot_token is not None else settings.telegram_incident_bot_token,
         chat_id if chat_id is not None else settings.telegram_incident_chat_id,
         enabled if enabled is not None else settings.telegram_incident_enabled,

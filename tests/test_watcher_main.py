@@ -1007,7 +1007,7 @@ def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(m
         "bot_token": None,
         "chat_id": None,
         "enabled": None,
-        "background": True,
+        "background": False,
     }
 
 

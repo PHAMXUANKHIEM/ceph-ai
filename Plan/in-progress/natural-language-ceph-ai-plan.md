@@ -591,7 +591,7 @@ pollute cached decisions. Fixed tool metadata remains in the closed registry.
   snapshot / RAG / structured output cho `CS-LAB`
   (`ac23b8ff-e235-414c-bed8-06894f3dedd3`), giữ fast-path/MCP tắt, và đã kiểm
   tra non-admin chỉ được phép trên cluster allowlist.
-- [ ] Theo dõi latency, cost, rejection và approval trong 24–72 giờ.
+- [x] Theo dõi latency, cost, rejection và approval trong 24–72 giờ; monitoring gate đạt tối thiểu 24 giờ và report đã được lưu trong rollout log.
 - [x] Tài liệu hóa prompt/model/index version trong release manifest.
 
 ### Rollback

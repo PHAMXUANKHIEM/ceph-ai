@@ -12,7 +12,7 @@ from sqlalchemy import and_, func
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
-from shared import db
+from shared import db, telegram_outbox
 from shared.models import CapacityAlertState, CephCapacitySample, Cluster
 from shared.telegram_alerts import send_capacity_recovery_alert, send_capacity_threshold_alert
 from watcher.capacity_evidence import _cluster_stats, _osd_stats, _pool_stats, _query
@@ -94,14 +94,29 @@ def _deliver_transition(
         state_id = state.id
 
     if current > notified:
-        delivered = send_capacity_threshold_alert(
-            kind, name, float(row["used_percent"]), current,
-            int(row["used_bytes"]), int(row["total_bytes"]), cluster_name=cluster_name,
+        event_id = f"capacity:{cluster_id}:{kind}:{name}:{current}:{state.updated_at.isoformat()}:threshold"
+        delivered = telegram_outbox.enqueue_alert_call_and_dispatch(
+            event_id=event_id,
+            category="capacity",
+            function="send_capacity_threshold_alert",
+            args=(
+                kind, name, float(row["used_percent"]), current,
+                int(row["used_bytes"]), int(row["total_bytes"]),
+            ),
+            cluster_id=cluster_id,
+            cluster_name=cluster_name,
+            sender=send_capacity_threshold_alert,
         )
     else:
-        delivered = send_capacity_recovery_alert(
-            kind, name, float(row["used_percent"]), notified, current,
+        event_id = f"capacity:{cluster_id}:{kind}:{name}:{notified}:{current}:{state.updated_at.isoformat()}:recovery"
+        delivered = telegram_outbox.enqueue_alert_call_and_dispatch(
+            event_id=event_id,
+            category="capacity",
+            function="send_capacity_recovery_alert",
+            args=(kind, name, float(row["used_percent"]), notified, current),
+            cluster_id=cluster_id,
             cluster_name=cluster_name,
+            sender=send_capacity_recovery_alert,
         )
     if delivered:
         with db.SessionLocal() as session:
