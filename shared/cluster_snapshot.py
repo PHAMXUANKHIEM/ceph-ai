@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from time import time
 from typing import Mapping
+from uuid import uuid4
 
 from config.settings import settings
 from shared import ceph_query_cache
@@ -213,6 +214,7 @@ def request_priority_refresh(
         if value in allowed and value not in normalized_sections:
             normalized_sections.append(value)
     marker = {
+        "request_id": uuid4().hex,
         "requested_at": _utc_now(),
         "sections": normalized_sections,
     }

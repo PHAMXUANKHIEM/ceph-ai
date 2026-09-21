@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
+from config.settings import settings
 from sqlalchemy import and_, or_
 
 from shared import db, telegram_alerts
@@ -297,6 +298,65 @@ def enqueue_alert_call_and_dispatch(
         return bool(row and row[0] == TelegramOutboxStatus.SENT.value)
 
 
+
+def enqueue_backup_alert(
+    session,
+    *,
+    event_id: str,
+    severity: str,
+    message: str,
+    backup_job_id: str | None = None,
+    cluster_id: str | None = None,
+    cluster_name: str | None = None,
+) -> str:
+    """Queue a backup alert without persisting Telegram credentials."""
+    payload = {
+        "kind": "backup_alert",
+        "severity": str(severity),
+        "message": str(message)[:4000],
+        "backup_job_id": backup_job_id,
+        "cluster_id": cluster_id,
+        "cluster_name": cluster_name,
+    }
+    return _enqueue(
+        session,
+        event_id=event_id,
+        incident_id=None,
+        category="backup",
+        payload=payload,
+    )
+
+
+def enqueue_backup_alert_and_dispatch(
+    *,
+    event_id: str,
+    severity: str,
+    message: str,
+    backup_job_id: str | None = None,
+    cluster_id: str | None = None,
+    cluster_name: str | None = None,
+) -> bool:
+    """Commit a backup alert before attempting delivery."""
+    with db.SessionLocal() as session:
+        event_id = enqueue_backup_alert(
+            session,
+            event_id=event_id,
+            severity=severity,
+            message=message,
+            backup_job_id=backup_job_id,
+            cluster_id=cluster_id,
+            cluster_name=cluster_name,
+        )
+        session.commit()
+    dispatch_due(event_ids=[event_id])
+    with db.SessionLocal() as session:
+        row = session.query(TelegramOutbox.status).filter(
+            TelegramOutbox.event_id == event_id,
+        ).one_or_none()
+        return bool(row and row[0] == TelegramOutboxStatus.SENT.value)
+
+
+
 def enqueue_incident_verified_alert(
     session,
     *,
@@ -488,6 +548,37 @@ def _cluster_channel_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+
+def _backup_channel_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
+    """Resolve backup credentials at send time; never read them from payload."""
+    cluster_id = payload.get("cluster_id")
+    if cluster_id:
+        with db.SessionLocal() as session:
+            cluster = session.get(Cluster, cluster_id)
+        if cluster is None:
+            return {
+                "cluster_name": payload.get("cluster_name"),
+                "bot_token": None,
+                "chat_id": None,
+                "enabled": False,
+                "managed_channel": False,
+            }
+        return {
+            "cluster_name": cluster.name,
+            "bot_token": cluster.telegram_bot_token,
+            "chat_id": cluster.telegram_chat_id,
+            "enabled": cluster.telegram_enabled,
+            "managed_channel": False,
+        }
+    return {
+        "cluster_name": payload.get("cluster_name") or settings.cluster_name,
+        "bot_token": settings.telegram_backup_bot_token,
+        "chat_id": settings.telegram_backup_chat_id,
+        "enabled": settings.telegram_backup_enabled,
+        "managed_channel": True,
+    }
+
+
 def _deliver(payload: dict[str, Any], sender: Callable[..., Any] | None = None) -> None:
     kind = payload.get("kind")
     if kind == "alert_call":
@@ -566,6 +657,19 @@ def _deliver(payload: dict[str, Any], sender: Callable[..., Any] | None = None) 
         if delivered is False:
             raise RuntimeError("Telegram exhausted alert delivery returned false")
         return
+
+
+    if kind == "backup_alert":
+        delivered = telegram_alerts.send_backup_alert(
+            payload["severity"],
+            payload["message"],
+            payload.get("backup_job_id"),
+            **_backup_channel_kwargs(payload),
+        )
+        if delivered is False:
+            raise RuntimeError("Telegram backup alert delivery returned false")
+        return
+
 
     if kind != "incident_alert":
         raise ValueError(f"unsupported telegram outbox payload kind: {kind!r}")

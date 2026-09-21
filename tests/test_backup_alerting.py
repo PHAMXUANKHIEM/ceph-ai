@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import worker.backup.alerting as alerting
-from shared import db as db_module
+from shared import db as db_module, telegram_alerts
 from shared.db import Base
 from shared.models import BackupJob
 
@@ -81,7 +81,7 @@ def test_send_alert_sends_telegram_when_configured(monkeypatch):
     _enable_telegram(monkeypatch)
     calls = []
     monkeypatch.setattr(
-        alerting, "send_telegram_message", lambda token, chat_id, text: calls.append((token, chat_id, text))
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append((token, chat_id, text))
     )
 
     alerting.send_alert("critical", "disk full", backup_job_id="job-1")
@@ -100,7 +100,7 @@ def test_send_alert_skips_telegram_when_not_configured(monkeypatch):
     monkeypatch.setattr(alerting.settings, "telegram_backup_bot_token", "", raising=False)
     monkeypatch.setattr(alerting.settings, "telegram_backup_chat_id", "", raising=False)
     calls = []
-    monkeypatch.setattr(alerting, "send_telegram_message", lambda *a: calls.append(a))
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", lambda *a: calls.append(a))
 
     alerting.send_alert("warning", "minor issue")
 
@@ -114,7 +114,7 @@ def test_send_alert_skips_telegram_when_disabled(monkeypatch):
     _enable_telegram(monkeypatch)
     monkeypatch.setattr(alerting.settings, "telegram_backup_enabled", False, raising=False)
     calls = []
-    monkeypatch.setattr(alerting, "send_telegram_message", lambda *a: calls.append(a))
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", lambda *a: calls.append(a))
 
     alerting.send_alert("warning", "minor issue")
 
@@ -126,7 +126,7 @@ def test_send_alert_skips_telegram_when_only_chat_id_configured(monkeypatch):
     monkeypatch.setattr(alerting.settings, "telegram_backup_bot_token", "", raising=False)
     monkeypatch.setattr(alerting.settings, "telegram_backup_chat_id", "-100999", raising=False)
     calls = []
-    monkeypatch.setattr(alerting, "send_telegram_message", lambda *a: calls.append(a))
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", lambda *a: calls.append(a))
 
     alerting.send_alert("warning", "minor issue")
 
@@ -138,9 +138,9 @@ def test_send_alert_swallows_telegram_failure(monkeypatch):
     _enable_telegram(monkeypatch)
 
     def _boom(token, chat_id, text):
-        raise alerting.TelegramSendError("bad token")
+        raise telegram_alerts.TelegramSendError("bad token")
 
-    monkeypatch.setattr(alerting, "send_telegram_message", _boom)
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", _boom)
 
     alerting.send_alert("critical", "should not raise")  # must not propagate
 
@@ -154,7 +154,7 @@ def test_send_alert_delivers_to_both_webhook_and_telegram_independently(monkeypa
         alerting.httpx, "post", lambda url, json, timeout: webhook_calls.append((url, json)) or FakeHttpxResponse()
     )
     monkeypatch.setattr(
-        alerting, "send_telegram_message", lambda token, chat_id, text: telegram_calls.append(text)
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: telegram_calls.append(text)
     )
 
     alerting.send_alert("warning", "both channels")
@@ -391,7 +391,7 @@ def test_check_overdue_and_failed_backups_covers_additional_cluster_and_routes_i
 
     telegram_calls = []
     monkeypatch.setattr(
-        alerting, "send_telegram_message", lambda token, chat_id, text: telegram_calls.append((token, chat_id, text))
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: telegram_calls.append((token, chat_id, text))
     )
 
     alerting.check_overdue_and_failed_backups()
@@ -421,7 +421,7 @@ def test_check_overdue_and_failed_backups_additional_cluster_without_telegram_is
         _make_additional_cluster(session, telegram_bot_token="", telegram_chat_id="")
 
     telegram_calls = []
-    monkeypatch.setattr(alerting, "send_telegram_message", lambda *a: telegram_calls.append(a))
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", lambda *a: telegram_calls.append(a))
 
     alerting.check_overdue_and_failed_backups()
 

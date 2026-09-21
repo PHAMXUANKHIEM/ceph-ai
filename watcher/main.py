@@ -1075,7 +1075,9 @@ def run(
         if max_iterations is None and cluster_id is not None:
             status_now = utc_now()
             priority = read_priority_refresh(cluster_id)
-            priority_marker = str(priority.get("requested_at", "")) if priority else ""
+            priority_marker = str(
+                priority.get("request_id") or priority.get("requested_at", "")
+            ) if priority else ""
             priority_due = bool(priority_marker and priority_marker != last_priority_refresh_marker)
             if (
                 last_status_snapshot_scan_at is None
@@ -1980,7 +1982,9 @@ def run_observed_cluster_loop(
         if max_iterations is None:
             status_now = utc_now()
             priority = read_priority_refresh(cluster.id)
-            priority_marker = str(priority.get("requested_at", "")) if priority else ""
+            priority_marker = str(
+                priority.get("request_id") or priority.get("requested_at", "")
+            ) if priority else ""
             priority_due = bool(priority_marker and priority_marker != last_priority_refresh_marker)
             if (
                 last_status_snapshot_scan_at is None

@@ -841,6 +841,64 @@ def _send(
     ) or managed_sent
 
 
+
+def send_backup_alert(
+    severity: str,
+    message: str,
+    backup_job_id: str | None = None,
+    *,
+    cluster_name: str | None = None,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+    enabled: bool | None = None,
+    managed_channel: bool = False,
+) -> bool:
+    """Deliver a backup alert after credentials were resolved by the outbox.
+
+    Secrets are supplied only at delivery time. A disabled or unconfigured
+    channel is a successful no-op, matching the legacy backup behaviour and
+    preventing pointless retries. The primary channel is delivered first;
+    managed channels are attempted only after that succeeds.
+    """
+    if not enabled or not bot_token or not chat_id:
+        return True
+
+    severity_prefix = {
+        "critical": "\U0001f534 CRITICAL",
+        "warning": "\U0001f7e1 WARNING",
+        "info": "ℹ️ INFO",
+    }.get(severity, severity.upper())
+    compact_message = "\n".join(
+        " ".join(line.split()) for line in (message or "").splitlines() if line.strip()
+    )
+    if len(compact_message) > 700:
+        compact_message = compact_message[:699].rstrip() + "…"
+    text = f"{severity_prefix}\n{compact_message}"
+    if backup_job_id:
+        text += f"\n🆔 Job: {backup_job_id[:8]}"
+    resolved_cluster = (cluster_name or "").strip()
+    if resolved_cluster:
+        text = f"\U0001f4cd Cụm: {resolved_cluster}\n{text}"
+
+    delivered = send_telegram_alert_with_ai(
+        bot_token,
+        chat_id,
+        True,
+        text,
+        context="cảnh báo backup Ceph",
+        send_func=send_telegram_message,
+    )
+    if not delivered:
+        return False
+    if managed_channel:
+        send_managed_channel_alert(
+            text,
+            cluster_name=resolved_cluster or None,
+            category="backup",
+        )
+    return True
+
+
 def send_managed_channel_alert(
     text: str,
     *,

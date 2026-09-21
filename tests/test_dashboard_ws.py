@@ -171,6 +171,7 @@ def test_action_lifecycle_realtime_contract_reaches_postcheck_success(
         assert verifying["action_id"] == action_id
         assert verifying["action_state"] == "verifying"
 
+        session.refresh(incident)
         incident.status = "RESOLVED"
         session.commit()
 
@@ -344,6 +345,9 @@ def test_postcheck_snapshot_event_carries_bounded_action_metadata(
         ceph_query_cache.invalidate(EVENT_NAMESPACE, default_cluster_id)
 
         action.status = "EXECUTED"
+        incident.status = "VERIFYING"
+        session.commit()
+        session.refresh(incident)
         incident.status = "RESOLVED"
         session.commit()
 

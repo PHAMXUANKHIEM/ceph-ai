@@ -166,3 +166,61 @@ def test_dead_event_can_be_replayed_and_stats_do_not_expose_payload(isolated_db,
         assert row.status == TelegramOutboxStatus.PENDING.value
         assert row.attempts == 0
         assert row.last_error is None
+
+
+def test_backup_alert_payload_never_contains_credentials(isolated_db, monkeypatch):
+    monkeypatch.setattr(telegram_outbox.settings, "telegram_backup_bot_token", "token-not-persisted")
+    monkeypatch.setattr(telegram_outbox.settings, "telegram_backup_chat_id", "-100999")
+    monkeypatch.setattr(telegram_outbox.settings, "telegram_backup_enabled", True)
+    with db.SessionLocal() as session:
+        event_id = telegram_outbox.enqueue_backup_alert(
+            session,
+            event_id="backup-alert:test-1",
+            severity="critical",
+            message="disk full",
+            backup_job_id="job-12345678",
+            cluster_name="CS-LAB",
+        )
+        session.commit()
+        row = session.query(TelegramOutbox).one()
+        assert event_id == row.event_id
+        assert "token-not-persisted" not in row.payload_json
+        assert "-100999" not in row.payload_json
+        payload = json.loads(row.payload_json)
+        assert payload["kind"] == "backup_alert"
+        assert payload["cluster_name"] == "CS-LAB"
+
+
+def test_backup_alert_dispatch_resolves_credentials_at_delivery(isolated_db, monkeypatch):
+    monkeypatch.setattr(telegram_outbox.settings, "telegram_backup_bot_token", "token-at-delivery")
+    monkeypatch.setattr(telegram_outbox.settings, "telegram_backup_chat_id", "-100999")
+    monkeypatch.setattr(telegram_outbox.settings, "telegram_backup_enabled", True)
+    calls = []
+
+    def fake_send(severity, message, backup_job_id, **kwargs):
+        calls.append((severity, message, backup_job_id, kwargs))
+        return True
+
+    monkeypatch.setattr(telegram_outbox.telegram_alerts, "send_backup_alert", fake_send)
+    assert telegram_outbox.enqueue_backup_alert_and_dispatch(
+        event_id="backup-alert:test-2",
+        severity="warning",
+        message="stale backup",
+        backup_job_id="job-2",
+        cluster_name="CS-LAB",
+    )
+    assert calls == [(
+        "warning",
+        "stale backup",
+        "job-2",
+        {
+            "cluster_name": "CS-LAB",
+            "bot_token": "token-at-delivery",
+            "chat_id": "-100999",
+            "enabled": True,
+            "managed_channel": True,
+        },
+    )]
+    with db.SessionLocal() as session:
+        row = session.query(TelegramOutbox).filter_by(event_id="backup-alert:test-2").one()
+        assert row.status == TelegramOutboxStatus.SENT.value
