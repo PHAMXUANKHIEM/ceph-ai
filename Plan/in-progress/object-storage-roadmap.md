@@ -247,7 +247,10 @@ toàn bộ object list vào memory hoặc làm lộ credential S3.
   tại; trend lịch sử dài hạn vẫn chờ retention store/Prometheus ở mục 5.1.
 - [ ] **5.3 Alert rules**: quota 80/90/95%, 5xx spike, access denied spike,
   hot bucket và access bất thường; deduplicate/resolve lifecycle qua Telegram.
-- [ ] **5.4 Export report CSV/JSON** có giới hạn quyền và không chứa secret.
+- [~] **5.4 Export report CSV/JSON**: đã thêm endpoint JSON/CSV dùng chung
+  bounded RGW metrics payload, cluster scope, Content-Disposition và không xuất
+  raw audit row/secret. Quyền export đang kế thừa read-only dashboard; cần
+  hoàn thiện retention/role policy ở hardening gate.
 - [~] **5.5 Test**: đã có test bounded aggregation, error-rate, deduplication,
   cluster scope, missing evidence và stale cache contract; còn thiếu threshold,
   timezone/retention dài hạn và cross-cluster alert isolation khi bật alert.
@@ -339,6 +342,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-09-21 | 6.1 / 6.2 | Đang làm | Thêm panel RGW Health / Multi-site trên Bucket Overview, dùng evidence và diagnosis API read-only để hiển thị daemon, endpoint, frontend, sync, realm/zonegroup/zone/period, lag/findings và capacity dependency; không có remediation tự động. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py tests/test_rgw_audit_intelligence.py tests/test_rgw_evidence.py tests/test_rgw_multisite_diagnosis.py`: 77 passed; `node --check dashboard/static/object_storage_buckets.js`, Python syntax và `git diff --check` sạch. | Chưa commit; tiếp theo hardening release gate, kiểm chứng failover/live-read-only và legacy systemd adapter. |
 | 2026-09-21 | 6.3 | Đang làm | Bổ sung danh sách finding/evidence gap trên panel RGW Health, chỉ render text đã chuẩn hóa từ diagnosis API, không tạo action hoặc thay đổi topology. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py tests/test_rgw_evidence.py tests/test_rgw_multisite_diagnosis.py`: 71 passed; JS/Python syntax và `git diff --check` sạch. | Chưa commit; tiếp theo viết runbook finding và release gate failover/legacy adapter. |
 | 2026-09-21 | 6.3 / 7.3 | Đang làm | Thêm runbook `docs/runbook-rgw-object-storage.md`: kiểm tra read-only, finding daemon/endpoint/sync/shard/period/capacity, object version safety và release acceptance; cấm remediation topology trong smoke test. | Tài liệu không làm thay đổi runtime; regression trước đó 71 passed vẫn đạt. | Chưa commit; tiếp theo bổ sung failover/legacy adapter acceptance và hardening gate. |
+| 2026-09-21 | 5.4 | Đang làm | Thêm export `GET /api/object-storage/rgw-metrics/export?format=json|csv`, dùng cùng payload với dashboard, giới hạn map/count và evidence gaps, không trả raw log hay secret. Thêm nút JSON/CSV trên panel Observability. | `pytest -q --disable-warnings tests/test_rgw_audit_intelligence.py tests/test_dashboard_object_storage.py`: 71 passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo review role/retention policy và alert lifecycle. |
 
 ## Ghi chú bàn giao
 

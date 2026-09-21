@@ -142,6 +142,7 @@
 
 .rgw-observability-card { overflow: hidden; border-color: rgba(34,211,238,.18); }
 .rgw-observability-card .card-header { align-items: flex-start; }
+.rgw-observability-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .rgw-observability-body { display: grid; gap: 14px; padding: 16px 20px 20px; }
 .rgw-metric-strip { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; }
 .rgw-metric-card { display: grid; gap: 4px; min-height: 68px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,.018); }

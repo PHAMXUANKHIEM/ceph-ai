@@ -614,6 +614,9 @@ function bucketHighlightJSON(value) {
   if (!panel) return;
   var status = document.getElementById("rgw-observability-status");
   var refresh = document.getElementById("rgw-observability-refresh");
+  document.querySelectorAll("[data-rgw-export]").forEach(function (link) {
+    link.href = "/api/object-storage/rgw-metrics/export?cluster=" + encodeURIComponent(panel.dataset.cluster) + "&format=" + encodeURIComponent(link.dataset.rgwExport);
+  });
 
   function formatBytes(value) {
     var size = Number(value);

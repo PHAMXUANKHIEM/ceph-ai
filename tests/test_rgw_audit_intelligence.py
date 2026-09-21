@@ -116,3 +116,23 @@ def test_rgw_metrics_api_is_bounded_and_does_not_infer_quota(dashboard_client, m
     assert body["action_id"] is None
     assert body["read_only"] is True
     assert any("quota" in gap.casefold() for gap in body["evidence_gaps"])
+
+
+def test_rgw_metrics_export_reuses_bounded_secret_free_payload(dashboard_client, monkeypatch):
+    monkeypatch.setattr(object_storage_route, "_rgw_metrics_payload", lambda cluster: {
+        "cluster_id": cluster.id, "captured_at": "2026-09-20T10:00:00Z", "source": "rgw_audit_log",
+        "metrics": {"request_count": 2, "bytes_total": 128, "top_buckets": {"archive": 2}},
+        "evidence_gaps": ["test gap"], "read_only": True, "action_id": None,
+    })
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+
+    json_response = dashboard_client.get("/api/object-storage/rgw-metrics/export?format=json")
+    csv_response = dashboard_client.get("/api/object-storage/rgw-metrics/export?format=csv")
+
+    assert json_response.status_code == 200
+    assert json_response.json()["metrics"]["request_count"] == 2
+    assert csv_response.status_code == 200
+    assert csv_response.headers["content-type"].startswith("text/csv")
+    assert "attachment; filename=rgw-metrics.csv" in csv_response.headers["content-disposition"]
+    assert "metrics.top_buckets,archive,2" in csv_response.text
+    assert "secret" not in csv_response.text.casefold()
