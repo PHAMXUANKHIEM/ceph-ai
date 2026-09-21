@@ -216,7 +216,7 @@ all forecast event tests pass without compatibility hacks.
 - [x] Add tests for missing control, paused scope, running scope, another
   cluster, and another metric.
 - [x] Add audit evidence for pause, resume, reset, and rejected writes.
-- [ ] Add explicit malformed-scope and database-error regression tests.
+- [x] Add explicit malformed-scope and database-error regression tests.
 
 ### 6.1 RR-04 verification result
 
