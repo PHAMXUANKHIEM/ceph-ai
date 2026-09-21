@@ -7,6 +7,10 @@
 
   var initialState = JSON.parse(initialStateEl.textContent || "{}");
   var notYetSupported = initialState.not_yet_supported_methods || [];
+  var deployPage = document.querySelector(".deploy-cluster-page");
+  var clusterId = deployPage ? deployPage.dataset.clusterId : "";
+  var realtimeAlert = document.getElementById("df-realtime-alert");
+  var activeActionId = initialState.action_id ? String(initialState.action_id) : "";
 
   var POLL_INTERVAL_MS = 2500;
   var TERMINAL_STATUSES = ["EXECUTED", "FAILED"];
@@ -472,14 +476,18 @@
   }
 
   var pollTimer = null;
+  var pollInFlight = false;
 
   function pollOnce() {
+    if (pollInFlight) return;
+    pollInFlight = true;
     fetch("/deploy-cluster/progress", { credentials: "same-origin" })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
       })
       .then(function (data) {
+        if (data.action_id) activeActionId = String(data.action_id);
         renderProgress(data.status, data.progress);
         if (data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1) {
           if (pollTimer) clearInterval(pollTimer);
@@ -489,7 +497,8 @@
       .catch(function () {
         // Transient network hiccup — next tick retries; no need to surface
         // this as a hard error the way a propose validation failure is.
-      });
+      })
+      .finally(function () { pollInFlight = false; });
   }
 
   if (logBox) {
@@ -515,5 +524,25 @@
         navigator.clipboard.writeText(text);
       }
     });
+  }
+
+  if (clusterId && window.CephClusterState) {
+    var unsubscribe = window.CephClusterState.subscribe(clusterId, function (event) {
+      if (activeActionId && event.action_id && String(event.action_id) !== activeActionId) return;
+      if (!activeActionId && event.action_id) return;
+      if (event.event === "snapshot_refresh_failed") {
+        if (realtimeAlert) {
+          realtimeAlert.textContent = "⚠ Post-check deploy chưa xác nhận được thay đổi; log hiện tại vẫn được giữ nguyên.";
+          realtimeAlert.hidden = false;
+        }
+        pollOnce();
+      } else if (event.event === "snapshot_changed") {
+        if (realtimeAlert) { realtimeAlert.hidden = true; realtimeAlert.textContent = ""; }
+        pollOnce();
+      } else if (event.event === "action_state_changed") {
+        pollOnce();
+      }
+    });
+    window.addEventListener("pagehide", function () { if (unsubscribe) unsubscribe(); });
   }
 })();

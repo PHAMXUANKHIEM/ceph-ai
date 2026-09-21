@@ -34,11 +34,13 @@ historical and must not be used as the current state.
 
 - `main` and `origin/main` are equal; the worktree is clean.
 - `.venv/bin/alembic heads` and `.venv/bin/alembic current` both report exactly
-  one current head: `m20260919nlcontext`.
+  one current head: `m20260921tgoutbox`.
 - `pyproject.toml` now scopes the default collection to `tests/` and excludes
   `live`/`integration` by default.
-- The deterministic release suite is recorded as `3817 passed, 47 deselected,
-  235 warnings`; the hardening gate is `110 passed, 1 warning`.
+- The historical deterministic release suite is recorded as `3817 passed, 47 deselected,
+  235 warnings`; the latest collection gate records `3921/3937` tests under `tests/`,
+  with 16 live/integration tests deselected. The focused regression gates remain the
+  release evidence until the full default execution is rerun cleanly.
 - The release manifest is `docs/ai/end-to-end-release-manifest.md`; deployment
   remains unapproved and autonomous remediation remains disabled.
 
@@ -46,7 +48,7 @@ Current blockers:
 
 | ID | Current status | Evidence / remaining work | Severity |
 | --- | --- | --- | --- |
-| RR-01 | Resolved | One Alembic head: `m20260919nlcontext`; staging/production rehearsal is still pending. | P0 |
+| RR-01 | Resolved | One Alembic head: `m20260921tgoutbox`; staging/production rehearsal is still pending. | P0 |
 | RR-02 | Resolved | Duplicate orphan branches were removed from the current graph; final compatibility review is still recorded as a release task. | P0 |
 | RR-03 | Resolved | `NodeResourceForecastAlertEvent` model/migration and fallback tests are present and covered by the forecast gate. | P0 |
 | RR-04 | Resolved | `is_paused()` contract and fail-closed learning-control tests are present. | P1 |
@@ -122,7 +124,7 @@ upgrade, successful production-like upgrade, and documented rollback.
 
 The revision IDs in the historical evidence below describe the intermediate
 graph reviewed on 2026-09-19. The current canonical graph is the single
-`m20260919nlcontext` head reported in Section 2; these older IDs are retained
+`m20260921tgoutbox` head reported in Section 2; these older IDs are retained
 for audit history and are not current blockers.
 
 - [x] Live database revision confirmed as `f4e5f6a7b8c9`; no live migration was
@@ -145,9 +147,9 @@ for audit history and are not current blockers.
   `d8e9f0a1b2c3` upgrade path is unchanged; its downgrade no longer removes
   columns owned by `d4f7a1c9e2b6`.
 - [x] The RR-03 migration `m20260919forecastevents` was subsequently reviewed
-  and committed as the parent of `m20260919nlcontext`; the current graph has
-  one head and the migration round-trip evidence is recorded in the release
-  manifest.
+  and committed as the parent of `m20260919nlcontext`; the current graph now has
+  one head at `m20260921tgoutbox`, and the migration round-trip evidence is
+  recorded in the release manifest.
 - [x] Freeze and review the current graph after the RR-03 migration was
   accepted; further production migration rehearsal remains a separate gate.
 - [ ] Backup validation and staging migration rehearsal remain pending.
@@ -310,7 +312,7 @@ boundaries are visible in code review and tests.
 
 - `pyproject.toml` now sets `testpaths = ["tests"]` and excludes both
   `live` and external `integration` tests by default.
-- Collection result after the integration marker: `3707/3723 tests collected
+- Latest collection result after the integration marker: `3921/3937 tests collected
   (16 deselected)`.
 - `transfer/test_dashboard_pgs.py` is no longer collected and no collection
   error was reported.
