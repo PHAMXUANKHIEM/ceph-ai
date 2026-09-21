@@ -86,6 +86,7 @@ BUCKET_DETAIL_STALE_TTL_SECONDS = 300
 MAX_LIFECYCLE_SCAN = 1000
 MAX_PURGE_BATCHES = 10000
 MAX_OBJECT_BROWSER_SCAN = 2000
+MAX_OBJECT_VERSION_SCAN = 1000
 MAX_PRESIGNED_EXPIRY_SECONDS = 900
 MAX_PRESIGNED_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024
 PRESIGNED_UPLOAD_TYPES = {
@@ -323,10 +324,18 @@ def _bucket_audit_finish(audit_id: str, result: str, error: str | None = None) -
         invalidate_object_storage_cache(cluster_id, "bucket-detail")
 
 
-def _start_governance_audit(cluster_id: str, actor: str, payload: dict, preview: str) -> str:
+def _start_governance_audit(
+    cluster_id: str,
+    actor: str,
+    payload: dict,
+    preview: str,
+    *,
+    target_type: str = "bucket",
+    target_id: str | None = None,
+) -> str:
     with db.SessionLocal() as session:
         row = ObjectStorageAuditEntry(cluster_id=cluster_id, actor=actor, action=payload["action"],
-            target_type="bucket", target_id=payload["bucket"], preview=preview, result="pending")
+            target_type=target_type, target_id=target_id or payload["bucket"], preview=preview, result="pending")
         session.add(row)
         session.commit()
         return row.id
@@ -1509,6 +1518,119 @@ def _object_detail(cluster, bucket: str, key: str, version_id: str, owner: str,
     return _with_owner_s3(cluster, payload, read)
 
 
+def _object_version_payload(body: dict, bucket: str) -> dict:
+    action = str(body.get("action") or "")
+    if action not in {"delete_version", "restore_version"}:
+        raise HTTPException(status_code=400, detail="Thao tác object version không hợp lệ")
+    base = _create_payload({"name": bucket, "owner": body.get("owner"), "endpoint": body.get("endpoint")})
+    key = str(body.get("key") or "")
+    version_id = str(body.get("version_id") or "")
+    if not key or len(key) > 1024 or any(ord(char) < 32 for char in key):
+        raise HTTPException(status_code=400, detail="Object key không hợp lệ")
+    if not version_id or len(version_id) > 1024 or any(ord(char) < 32 for char in version_id):
+        raise HTTPException(status_code=400, detail="Version ID không hợp lệ")
+    return {
+        "action": action, "bucket": base["name"], "owner": base["owner"],
+        "endpoint": base["endpoint"], "key": key, "version_id": version_id,
+    }
+
+
+def _object_version_inspect(cluster, payload: dict, detail: dict, capability: dict) -> dict:
+    """Read one version and its Object Lock state before any mutation."""
+    if str(detail.get("owner") or "") != payload["owner"]:
+        raise HTTPException(status_code=409, detail="Owner không khớp owner hiện tại của bucket")
+    browser = capability["object_browser"]
+    lock_status = str(detail.get("object_lock_status") or "unknown").lower()
+
+    def inspect(client):
+        listing = client.list_object_versions(
+            Bucket=payload["bucket"], Prefix=payload["key"], MaxKeys=MAX_OBJECT_VERSION_SCAN,
+        )
+        candidates = [
+            (item, False) for item in (listing.get("Versions") or [])
+            if item.get("Key") == payload["key"] and item.get("VersionId") == payload["version_id"]
+        ] + [
+            (item, True) for item in (listing.get("DeleteMarkers") or [])
+            if item.get("Key") == payload["key"] and item.get("VersionId") == payload["version_id"]
+        ]
+        if not candidates:
+            raise ObjectStorageError("Không tìm thấy object version; cần preview lại với version ID hiện tại.")
+        item, is_delete_marker = candidates[0]
+        retention = None
+        legal_hold = None
+        if browser["retention_supported"] and lock_status == "enabled" and not is_delete_marker:
+            try:
+                retention = client.get_object_retention(
+                    Bucket=payload["bucket"], Key=payload["key"], VersionId=payload["version_id"],
+                ).get("Retention")
+            except Exception as exc:
+                code = str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
+                if code not in {"NoSuchObjectLockConfiguration", "ObjectLockConfigurationNotFoundError", "NoSuchKey"}:
+                    raise
+            try:
+                legal_hold = client.get_object_legal_hold(
+                    Bucket=payload["bucket"], Key=payload["key"], VersionId=payload["version_id"],
+                ).get("LegalHold")
+            except Exception as exc:
+                code = str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
+                if code not in {"NoSuchObjectLockConfiguration", "ObjectLockConfigurationNotFoundError", "NoSuchKey"}:
+                    raise
+        retain_until = retention.get("RetainUntilDate") if isinstance(retention, dict) else None
+        if isinstance(retain_until, str):
+            try:
+                retain_until = datetime.fromisoformat(retain_until.replace("Z", "+00:00"))
+            except ValueError:
+                retain_until = None
+        if retain_until and retain_until.tzinfo is None:
+            retain_until = retain_until.replace(tzinfo=timezone.utc)
+        retention_active = bool(retain_until and retain_until > datetime.now(timezone.utc))
+        legal_hold_active = isinstance(legal_hold, dict) and str(legal_hold.get("Status") or "").upper() == "ON"
+        lock_unknown = payload["action"] == "delete_version" and lock_status == "unknown"
+        blocked_reason = None
+        if lock_unknown:
+            blocked_reason = "Không xác định được Object Lock của bucket; từ chối xóa để fail-closed."
+        elif payload["action"] == "delete_version" and retention_active:
+            blocked_reason = "Object version đang trong thời gian retention; không bypass governance/compliance."
+        elif payload["action"] == "delete_version" and legal_hold_active:
+            blocked_reason = "Object version đang có Legal Hold; phải gỡ hold theo policy riêng trước khi xóa."
+        return {
+            "key": payload["key"], "version_id": payload["version_id"],
+            "delete_marker": is_delete_marker, "size_bytes": int(item.get("Size") or 0),
+            "etag": str(item.get("ETag") or "").strip('"') or None,
+            "last_modified": str(item.get("LastModified") or "") or None,
+            "retention": retention, "legal_hold": legal_hold,
+            "retention_active": retention_active, "legal_hold_active": legal_hold_active,
+            "lock_check": "blocked" if blocked_reason else "passed" if lock_status != "unknown" else "not_applicable",
+            "allowed": blocked_reason is None,
+            "blocked_reason": blocked_reason,
+        }
+    return _with_owner_s3(cluster, {"bucket": payload["bucket"], "owner": payload["owner"], "endpoint": payload["endpoint"]}, inspect)
+
+
+def _object_version_preview(payload: dict, impact: dict) -> str:
+    action = "Xóa" if payload["action"] == "delete_version" else "Khôi phục"
+    target = "delete marker" if impact.get("delete_marker") else "version"
+    return (f"{action} {target} object s3://{payload['bucket']}/{payload['key']} "
+            f"version={payload['version_id']} size_bytes={impact.get('size_bytes', 0)}")
+
+
+def _execute_object_version(cluster, payload: dict, impact: dict) -> None:
+    def execute(client):
+        if payload["action"] == "delete_version":
+            client.delete_object(Bucket=payload["bucket"], Key=payload["key"], VersionId=payload["version_id"])
+        elif impact.get("delete_marker"):
+            # Removing a delete marker exposes the previous live version; it
+            # does not bypass Object Lock on that previous version.
+            client.delete_object(Bucket=payload["bucket"], Key=payload["key"], VersionId=payload["version_id"])
+        else:
+            client.copy_object(
+                Bucket=payload["bucket"], Key=payload["key"],
+                CopySource={"Bucket": payload["bucket"], "Key": payload["key"], "VersionId": payload["version_id"]},
+                MetadataDirective="COPY",
+            )
+    _with_owner_s3(cluster, {"bucket": payload["bucket"], "owner": payload["owner"], "endpoint": payload["endpoint"]}, execute)
+
+
 def _presigned_payload(body: dict) -> dict:
     action = str(body.get("action") or "")
     if action not in {"upload", "download"}:
@@ -2116,6 +2238,86 @@ async def bucket_object_detail_api(
     result.update(cluster_id=cluster.id, cluster_name=cluster.name,
                   ceph_version=capability["ceph_version"], ceph_release=capability["ceph_release"])
     return result
+
+
+@router.post("/api/object-storage/buckets/{bucket}/object-versions/preview")
+async def object_version_preview(
+    request: Request, bucket: str, user: str = Depends(require_login)
+):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được thay đổi object version")
+    body = await request.json()
+    payload = _object_version_payload(body, bucket)
+    cluster = selected_cluster(request)
+    try:
+        capability = await asyncio.to_thread(_cached_capabilities, cluster)
+        if not capability["bucket_governance"]["versioning"]:
+            raise HTTPException(status_code=409, detail=capability["bucket_governance"]["versioning_unavailable_reason"])
+        detail = await asyncio.to_thread(_detail, cluster, bucket)
+        impact = await asyncio.to_thread(_object_version_inspect, cluster, payload, detail, capability)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    confirmation = f"{payload['action'].upper()}:{bucket}:{payload['key']}:{payload['version_id']}"
+    return {
+        "action": payload["action"], "bucket": bucket, "key": payload["key"],
+        "version_id": payload["version_id"], "cluster_id": cluster.id,
+        "cluster_name": cluster.name, "ceph_version": capability["ceph_version"],
+        "ceph_release": capability["ceph_release"],
+        "risk": "critical" if payload["action"] == "delete_version" else "high",
+        "allowed": bool(impact["allowed"]), "blocked_reason": impact.get("blocked_reason"),
+        "confirmation_required": confirmation, "impact": impact,
+        "preview": _object_version_preview(payload, impact),
+        "retention_warning": "Không bypass Object Lock, governance retention hoặc legal hold.",
+    }
+
+
+@router.post("/api/object-storage/buckets/{bucket}/object-versions/execute")
+async def object_version_execute(
+    request: Request, bucket: str, user: str = Depends(require_login)
+):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được thay đổi object version")
+    body = await request.json()
+    payload = _object_version_payload(body, bucket)
+    confirmation = f"{payload['action'].upper()}:{bucket}:{payload['key']}:{payload['version_id']}"
+    if str(body.get("confirmation") or "") != confirmation:
+        raise HTTPException(status_code=400, detail=f"Nhập chính xác {confirmation} để xác nhận")
+    cluster = selected_cluster(request)
+    try:
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        if not capability["bucket_governance"]["versioning"]:
+            raise HTTPException(status_code=409, detail=capability["bucket_governance"]["versioning_unavailable_reason"])
+        detail = await asyncio.to_thread(_detail, cluster, bucket)
+        impact = await asyncio.to_thread(_object_version_inspect, cluster, payload, detail, capability)
+        if not impact["allowed"]:
+            raise HTTPException(status_code=409, detail=impact["blocked_reason"])
+        preview = _object_version_preview(payload, impact)
+        audit_id = await asyncio.to_thread(
+            _start_governance_audit,
+            cluster.id, user, payload, preview,
+            target_type="object", target_id=f"{bucket}/{payload['key']}@{payload['version_id']}",
+        )
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("cannot persist object version audit entry")
+        raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
+    try:
+        await asyncio.to_thread(_execute_object_version, cluster, payload, impact)
+    except (ObjectStorageError, RgwLogError) as exc:
+        safe_error = _safe_error(exc)
+        await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
+        raise HTTPException(status_code=502, detail=safe_error) from exc
+    except Exception as exc:
+        logger.exception("unexpected object version mutation failure")
+        safe_error = "Thao tác object version thất bại do RGW tạm thời không phản hồi."
+        await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
+        raise HTTPException(status_code=502, detail=safe_error) from exc
+    await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
+    return {"ok": True, "action": payload["action"], "bucket": bucket,
+            "key": payload["key"], "version_id": payload["version_id"], "request_id": audit_id}
 
 
 @router.post("/api/object-storage/objects/presign/preview")

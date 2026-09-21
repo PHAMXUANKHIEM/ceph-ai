@@ -211,6 +211,16 @@ code {
 }
 .object-storage-audit-pagination span { font: 600 .72rem/1.3 var(--font-mono); text-align: center; }
 .object-storage-audit-pagination .btn:disabled { cursor: not-allowed; opacity: .4; }
+.object-version-card[hidden] { display: none; }
+.object-version-card .card-body { display: grid; gap: 12px; }
+.object-version-card .audit-filters { margin: 0; }
+.object-version-card .audit-filters input[readonly] { color: var(--text-muted); }
+.object-version-card .command-preview { margin: 0; white-space: pre-wrap; }
+#object-browser-rows td:last-child { white-space: nowrap; }
+#object-browser-rows td:last-child .btn { margin: 2px 3px 2px 0; }
+@media (max-width: 900px) {
+  #object-browser-rows td:last-child { white-space: normal; min-width: 170px; }
+}
 .bucket-json-builder {
   margin: 16px 0; padding: 16px; border: 1px solid rgba(79, 140, 255, .28);
   border-radius: var(--radius-md); background: rgba(79, 140, 255, .055);

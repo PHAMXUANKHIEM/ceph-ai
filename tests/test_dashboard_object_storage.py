@@ -751,6 +751,8 @@ def test_non_admin_cannot_call_any_bucket_write_api(dashboard_client):
         "/api/object-storage/buckets/delete/preview",
         "/api/object-storage/buckets/delete/execute",
         "/api/object-storage/buckets/delete-all",
+        "/api/object-storage/buckets/archive/object-versions/preview",
+        "/api/object-storage/buckets/archive/object-versions/execute",
         "/api/object-storage/objects/presign/preview",
         "/api/object-storage/objects/presign/execute",
     ]
@@ -1374,6 +1376,148 @@ def test_object_detail_nautilus_skips_unsupported_tags_and_retention(dashboard_c
     assert response.json()["tags_supported"] is False
     assert "Octopus 15" in response.json()["tags_unavailable_reason"]
     assert response.json()["retention_supported"] is False
+
+
+def test_object_version_delete_preview_execute_is_audited_and_strongly_confirmed(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "_detail", lambda *args, **kwargs: {
+        "owner": "alice", "object_lock_status": "disabled",
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    revoked = []
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: revoked.append(args))
+    deleted = []
+
+    class FakeS3:
+        def list_object_versions(self, **kwargs):
+            assert kwargs == {"Bucket": "archive", "Prefix": "logs/a.txt", "MaxKeys": 1000}
+            return {"Versions": [{"Key": "logs/a.txt", "VersionId": "v1", "Size": 4, "ETag": '"abc"'}],
+                    "DeleteMarkers": []}
+
+        def delete_object(self, **kwargs):
+            deleted.append(kwargs)
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    body = {"action": "delete_version", "owner": "alice", "endpoint": "https://rgw.example.test",
+            "key": "logs/a.txt", "version_id": "v1"}
+    preview = dashboard_client.post("/api/object-storage/buckets/archive/object-versions/preview", json=body)
+    weak = dashboard_client.post("/api/object-storage/buckets/archive/object-versions/execute",
+                                 json={**body, "confirmation": "DELETE:archive:logs/a.txt:v1"})
+    executed = dashboard_client.post("/api/object-storage/buckets/archive/object-versions/execute",
+                                     json={**body, "confirmation": "DELETE_VERSION:archive:logs/a.txt:v1"})
+
+    assert preview.status_code == 200
+    assert preview.json()["allowed"] is True
+    assert preview.json()["confirmation_required"] == "DELETE_VERSION:archive:logs/a.txt:v1"
+    assert weak.status_code == 400
+    assert executed.status_code == 200
+    assert deleted == [{"Bucket": "archive", "Key": "logs/a.txt", "VersionId": "v1"}]
+    assert revoked == [("10.20.1.90", "alice", "TEMPACCESS")] * 3
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, executed.json()["request_id"])
+        assert audit.action == "delete_version"
+        assert audit.target_type == "object"
+        assert audit.target_id == "archive/logs/a.txt@v1"
+        assert audit.result == "succeeded"
+        assert "temp-secret" not in audit.preview
+
+
+def test_object_version_delete_is_blocked_by_object_lock(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "_detail", lambda *args, **kwargs: {
+        "owner": "alice", "object_lock_status": "enabled",
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: None)
+    deleted = []
+
+    class FakeS3:
+        def list_object_versions(self, **kwargs):
+            return {"Versions": [{"Key": "logs/a.txt", "VersionId": "v1", "Size": 4}],
+                    "DeleteMarkers": []}
+
+        def get_object_retention(self, **kwargs):
+            return {"Retention": {"Mode": "COMPLIANCE", "RetainUntilDate": "2030-01-01T00:00:00Z"}}
+
+        def get_object_legal_hold(self, **kwargs):
+            return {"LegalHold": {"Status": "OFF"}}
+
+        def delete_object(self, **kwargs):
+            deleted.append(kwargs)
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    body = {"action": "delete_version", "owner": "alice", "endpoint": "https://rgw.example.test",
+            "key": "logs/a.txt", "version_id": "v1"}
+    preview = dashboard_client.post("/api/object-storage/buckets/archive/object-versions/preview", json=body)
+    executed = dashboard_client.post("/api/object-storage/buckets/archive/object-versions/execute",
+                                     json={**body, "confirmation": "DELETE_VERSION:archive:logs/a.txt:v1"})
+
+    assert preview.status_code == 200
+    assert preview.json()["allowed"] is False
+    assert "retention" in preview.json()["blocked_reason"].lower()
+    assert executed.status_code == 409
+    assert deleted == []
+
+
+def test_object_version_restore_copies_a_previous_version_as_new_current_version(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "_detail", lambda *args, **kwargs: {
+        "owner": "alice", "object_lock_status": "enabled",
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: None)
+    copied = []
+
+    class FakeS3:
+        def list_object_versions(self, **kwargs):
+            return {"Versions": [{"Key": "logs/a.txt", "VersionId": "v1", "Size": 4}],
+                    "DeleteMarkers": []}
+
+        def get_object_retention(self, **kwargs):
+            return {"Retention": {"Mode": "COMPLIANCE", "RetainUntilDate": "2030-01-01T00:00:00Z"}}
+
+        def get_object_legal_hold(self, **kwargs):
+            return {"LegalHold": {"Status": "ON"}}
+
+        def copy_object(self, **kwargs):
+            copied.append(kwargs)
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    body = {"action": "restore_version", "owner": "alice", "endpoint": "https://rgw.example.test",
+            "key": "logs/a.txt", "version_id": "v1"}
+    preview = dashboard_client.post("/api/object-storage/buckets/archive/object-versions/preview", json=body)
+    executed = dashboard_client.post("/api/object-storage/buckets/archive/object-versions/execute",
+                                     json={**body, "confirmation": "RESTORE_VERSION:archive:logs/a.txt:v1"})
+
+    assert preview.status_code == 200
+    assert preview.json()["allowed"] is True
+    assert executed.status_code == 200
+    assert copied == [{
+        "Bucket": "archive", "Key": "logs/a.txt",
+        "CopySource": {"Bucket": "archive", "Key": "logs/a.txt", "VersionId": "v1"},
+        "MetadataDirective": "COPY",
+    }]
 
 
 def test_presigned_upload_is_size_type_limited_audited_and_secret_free(dashboard_client, monkeypatch):

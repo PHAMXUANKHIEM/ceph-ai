@@ -29,6 +29,9 @@
   const status = document.getElementById("object-browser-status");
   const next = document.getElementById("object-browser-next");
   let marker = "";
+  const versionCard = document.getElementById("object-version-actions");
+  let selectedVersionItem = null;
+  let approvedVersionAction = null;
 
   async function loadActivity() {
     const activity = document.getElementById("bucket-activity");
@@ -101,6 +104,59 @@
     } catch (error) { detailStatus.textContent = "Lỗi: " + error.message; }
   }
 
+  function versionPayload(action, item) {
+    return {
+      action: action,
+      owner: root.dataset.owner,
+      endpoint: document.getElementById("object-endpoint").value.trim(),
+      key: item.key,
+      version_id: item.version_id
+    };
+  }
+
+  async function versionCall(kind, payload) {
+    const url = "/api/object-storage/buckets/" + encodeURIComponent(root.dataset.bucket) +
+      "/object-versions/" + kind + "?cluster=" + encodeURIComponent(root.dataset.cluster);
+    const response = await fetch(url, {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || "Không thực hiện được object version operation");
+    return body;
+  }
+
+  async function previewVersionAction(action, item) {
+    if (!versionCard || !item || !item.version_id) return;
+    const endpoint = document.getElementById("object-endpoint").value.trim();
+    const versionStatus = document.getElementById("object-version-status");
+    if (!endpoint) {
+      versionStatus.textContent = "Nhập S3 endpoint trước khi preview thao tác version.";
+      versionCard.hidden = false;
+      return;
+    }
+    selectedVersionItem = item;
+    approvedVersionAction = null;
+    document.getElementById("object-version-action").value = action;
+    document.getElementById("object-version-key").value = item.key;
+    document.getElementById("object-version-id").value = item.version_id;
+    document.getElementById("object-version-preview").hidden = true;
+    document.getElementById("object-version-confirm-wrap").hidden = true;
+    versionCard.hidden = false;
+    versionStatus.textContent = "Đang kiểm tra version và Object Lock…";
+    try {
+      const body = await versionCall("preview", versionPayload(action, item));
+      approvedVersionAction = body;
+      const preview = document.getElementById("object-version-preview");
+      preview.hidden = false;
+      preview.textContent = body.preview + "\nMức rủi ro: " + body.risk + "\n" + body.retention_warning +
+        (body.allowed ? "\nĐược phép. Nhập đúng mã: " + body.confirmation_required : "\nBị chặn: " + body.blocked_reason);
+      document.getElementById("object-version-confirm-wrap").hidden = !body.allowed;
+      versionStatus.textContent = body.allowed ? "Preview hợp lệ; execute sẽ kiểm tra lại toàn bộ điều kiện." : "Thao tác bị chặn theo policy bảo vệ dữ liệu.";
+    } catch (error) {
+      versionStatus.textContent = "Lỗi preview: " + error.message;
+    }
+  }
+
   async function load(reset) {
     if (reset) marker = "";
     status.textContent = "Đang tải object…";
@@ -122,9 +178,19 @@
         const tr = document.createElement("tr");
         cell(tr, item.key); cell(tr, item.size); cell(tr, item.content_type);
         cell(tr, item.last_modified); cell(tr, item.version_id);
-        const action = document.createElement("td"); const button = document.createElement("button");
-        button.type = "button"; button.className = "btn btn-ghost btn-sm"; button.textContent = "Chi tiết";
-        button.addEventListener("click", function () { loadDetail(item); }); action.appendChild(button); tr.appendChild(action);
+        const action = document.createElement("td");
+        const detailButton = document.createElement("button");
+        detailButton.type = "button"; detailButton.className = "btn btn-ghost btn-sm"; detailButton.textContent = "Chi tiết";
+        detailButton.addEventListener("click", function () { loadDetail(item); }); action.appendChild(detailButton);
+        if (item.version_id && versionCard) {
+          const restoreButton = document.createElement("button");
+          restoreButton.type = "button"; restoreButton.className = "btn btn-ghost btn-sm"; restoreButton.textContent = "Khôi phục";
+          restoreButton.addEventListener("click", function () { previewVersionAction("restore_version", item); }); action.appendChild(restoreButton);
+          const deleteButton = document.createElement("button");
+          deleteButton.type = "button"; deleteButton.className = "btn btn-danger-outline btn-sm"; deleteButton.textContent = "Xóa version";
+          deleteButton.addEventListener("click", function () { previewVersionAction("delete_version", item); }); action.appendChild(deleteButton);
+        }
+        tr.appendChild(action);
         rows.appendChild(tr);
       });
       status.textContent = body.items.length ?
@@ -142,6 +208,32 @@
   next.addEventListener("click", function () { load(false); });
   load(true);
   loadActivity();
+
+  if (versionCard) {
+    const versionForm = document.getElementById("object-version-form");
+    const versionStatus = document.getElementById("object-version-status");
+    versionForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (selectedVersionItem) previewVersionAction(document.getElementById("object-version-action").value, selectedVersionItem);
+      else versionStatus.textContent = "Chọn một object version trong bảng trước.";
+    });
+    document.getElementById("object-version-execute").addEventListener("click", async function () {
+      if (!approvedVersionAction || !selectedVersionItem || !approvedVersionAction.allowed) return;
+      const payload = versionPayload(approvedVersionAction.action, selectedVersionItem);
+      payload.confirmation = document.getElementById("object-version-confirm").value.trim();
+      versionStatus.textContent = "Đang thực hiện và ghi audit…";
+      try {
+        const body = await versionCall("execute", payload);
+        versionStatus.textContent = "Đã hoàn tất " + body.action + " cho " + body.key + " (audit " + body.request_id + ").";
+        approvedVersionAction = null;
+        document.getElementById("object-version-confirm").value = "";
+        document.getElementById("object-version-confirm-wrap").hidden = true;
+        await load(true);
+      } catch (error) {
+        versionStatus.textContent = "Lỗi execute: " + error.message;
+      }
+    });
+  }
 
   const presignForm = document.getElementById("object-presign-form");
   if (presignForm) {

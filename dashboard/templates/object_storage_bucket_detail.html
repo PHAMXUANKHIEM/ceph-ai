@@ -30,7 +30,7 @@
     </section>
     {% if detail and not detail.loading and not detail.load_error %}
     <section class="card" id="object-browser" data-bucket="{{ bucket }}" data-owner="{{ detail.owner }}" data-cluster="{{ selected_cluster.id }}">
-      <div class="card-header"><div><h2>Object Browser</h2><p class="hint">Read-only từ bucket index RGW; mỗi trang tối đa 100 object, không tải toàn bộ bucket vào bộ nhớ.</p></div></div>
+      <div class="card-header"><div><h2>Object Browser</h2><p class="hint">Read-only từ bucket index RGW; mỗi trang tối đa 10 object, không tải toàn bộ bucket vào bộ nhớ.</p></div></div>
       <div class="card-body">
         <form id="object-browser-form" class="audit-filters">
           <label>Prefix<input id="object-prefix" maxlength="1024" placeholder="logs/2026/"></label>
@@ -60,6 +60,17 @@
         <button class="btn btn-primary btn-sm" type="submit">Preview</button>
       </form>
       <pre id="presign-preview" class="command-preview" hidden></pre><div id="presign-confirm-wrap" hidden><label>Xác nhận object key<input id="presign-confirm"></label><button id="presign-execute" class="btn btn-danger btn-sm" type="button">Tạo URL</button></div><p id="presign-status" class="hint"></p><div id="presign-result"></div>
+    </div></section>{% endif %}
+    {% if is_admin %}<section class="card object-version-card" id="object-version-actions" hidden><div class="card-header"><div><h2>Object version operations</h2><p class="hint">Preview và xác nhận mạnh trước khi xóa/khôi phục. Object Lock, retention và legal hold luôn được kiểm tra lại trên server.</p></div></div><div class="card-body">
+      <form id="object-version-form" class="audit-filters">
+        <label>Thao tác<select id="object-version-action"><option value="restore_version">Khôi phục version</option><option value="delete_version">Xóa version</option></select></label>
+        <label>Object key<input id="object-version-key" readonly></label>
+        <label>Version ID<input id="object-version-id" readonly></label>
+        <button class="btn btn-primary btn-sm" type="submit">Preview thao tác</button>
+      </form>
+      <pre id="object-version-preview" class="command-preview" hidden></pre>
+      <div id="object-version-confirm-wrap" hidden><label>Nhập chính xác mã xác nhận<input id="object-version-confirm" autocomplete="off" placeholder="DELETE_VERSION:bucket:key:version-id"></label><button id="object-version-execute" class="btn btn-danger btn-sm" type="button">Xác nhận thao tác</button></div>
+      <p id="object-version-status" class="hint"></p>
     </div></section>{% endif %}
     {% endif %}
     {% if detail and not detail.loading and not detail.load_error %}
