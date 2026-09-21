@@ -7,6 +7,8 @@ different freshness/timestamp shape.
 
 from __future__ import annotations
 
+import json
+from copy import deepcopy
 from datetime import datetime, timezone
 from time import time
 from typing import Mapping
@@ -25,6 +27,92 @@ DEFAULT_STALE_AFTER_SECONDS = settings.ceph_snapshot_max_age
 DEFAULT_MAX_STALE_SECONDS = 900
 REFRESH_STATE_MAX_AGE_SECONDS = DEFAULT_MAX_STALE_SECONDS
 PRIORITY_REFRESH_MAX_AGE_SECONDS = DEFAULT_MAX_STALE_SECONDS
+
+
+def _json_size_bytes(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _limit_crush_node(node: object, remaining: int) -> tuple[dict | None, int]:
+    if not isinstance(node, Mapping) or remaining <= 0:
+        return None, 0
+    limited = {key: deepcopy(value) for key, value in node.items() if key != "children"}
+    used = 1
+    children = []
+    for child in node.get("children") or []:
+        value, count = _limit_crush_node(child, remaining - used)
+        if value is None:
+            break
+        children.append(value)
+        used += count
+    if children:
+        limited["children"] = children
+    return limited, used
+
+
+def _limit_crush_payload(data: Mapping, max_nodes: int) -> dict:
+    limited = {key: deepcopy(value) for key, value in data.items() if key != "roots"}
+    remaining = max(0, int(max_nodes))
+    roots = []
+    for root in data.get("roots") or []:
+        value, count = _limit_crush_node(root, remaining)
+        if value is None:
+            break
+        roots.append(value)
+        remaining -= count
+    limited["roots"] = roots
+    limited["payload_truncated"] = True
+    return limited
+
+
+def _bound_section_payload(section: str, data: object) -> tuple[object, dict | None]:
+    """Bound large PG/CRUSH payloads before they enter the persistent cache."""
+    if section not in {"pgs", "crush"}:
+        return data, None
+    original_bytes = _json_size_bytes(data)
+    max_bytes = int(settings.ceph_snapshot_max_payload_bytes)
+    max_items = int(settings.ceph_snapshot_max_pgs if section == "pgs" else settings.ceph_snapshot_max_crush_nodes)
+    candidate = data
+    truncated = False
+    if section == "pgs" and isinstance(data, list):
+        candidate = data[:max_items]
+        truncated = len(candidate) < len(data)
+        if _json_size_bytes(candidate) > max_bytes:
+            low, high, best = 0, len(candidate), []
+            while low <= high:
+                middle = (low + high) // 2
+                probe = candidate[:middle]
+                if _json_size_bytes(probe) <= max_bytes:
+                    best = probe
+                    low = middle + 1
+                else:
+                    high = middle - 1
+            candidate = best
+            truncated = True
+    elif section == "crush" and isinstance(data, Mapping):
+        candidate = _limit_crush_payload(data, max_items)
+        truncated = _json_size_bytes(candidate) < original_bytes
+        if _json_size_bytes(candidate) > max_bytes:
+            low, high, best = 0, max_items, {"state": data.get("state"), "roots": [], "rules": [], "payload_truncated": True}
+            while low <= high:
+                middle = (low + high) // 2
+                probe = _limit_crush_payload(data, middle)
+                if _json_size_bytes(probe) <= max_bytes:
+                    best = probe
+                    low = middle + 1
+                else:
+                    high = middle - 1
+            candidate = best
+            truncated = True
+    if not truncated:
+        return data, None
+    return candidate, {
+        "truncated": True,
+        "original_bytes": original_bytes,
+        "stored_bytes": _json_size_bytes(candidate),
+        "max_bytes": max_bytes,
+        "max_items": max_items,
+    }
 
 
 def _key(cluster_id: str) -> str:
@@ -263,10 +351,11 @@ def publish_section_snapshot(
     normalized_section = str(section or "").strip()
     if not normalized_section:
         raise ValueError("section is required")
+    bounded_data, payload_limits = _bound_section_payload(normalized_section, data)
     snapshot = make_snapshot(
         normalized_id,
         {
-            normalized_section: data,
+            normalized_section: bounded_data,
             "section_name": normalized_section,
             "section_available": bool(section_available),
         },
@@ -275,6 +364,8 @@ def publish_section_snapshot(
         partial_errors=partial_errors,
         last_error=last_error,
     )
+    if payload_limits:
+        snapshot["payload_limits"] = {normalized_section: payload_limits}
     stored = ceph_query_cache.store_versioned(
         SECTION_SNAPSHOT_NAMESPACE,
         f"{normalized_id}:{normalized_section}",
