@@ -8,6 +8,24 @@ from shared.models import (
 )
 
 
+def test_promotion_is_blocked_for_unmigrated_scope(db_session):
+    active = ForecastModelRegistry(
+        scope_type="NODE_RESOURCE", scope_key="cluster-a|node-a|cpu",
+        name="resource", version="linear:1h", algorithm="linear",
+        feature_schema="resource-v2", training_window_hours=1, status="ACTIVE",
+    )
+    candidate = ForecastModelRegistry(
+        scope_type="NODE_RESOURCE", scope_key="cluster-a|node-a|cpu",
+        name="resource", version="candidate:1h", algorithm="candidate_d",
+        feature_schema="resource-v2", training_window_hours=1, status="SHADOW",
+    )
+    db_session.add_all((active, candidate))
+    db_session.flush()
+    decision = model_registry.request_promotion(db_session, candidate_id=candidate.id, actor="admin")
+    assert decision.allowed is False
+    assert "scope" in decision.reason
+
+
 def test_guarded_rollback_restores_exact_previous_model_within_target(db_session):
     scope = "CS-LAB|10.20.1.153|cpu"
     previous = ForecastModelRegistry(

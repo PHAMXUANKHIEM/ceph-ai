@@ -147,7 +147,7 @@ lag/rolling chỉ lấy dữ liệu trước `observed_at`, tránh leakage.
 - [x] Thêm `ForecastScope.canonical_key` và parser không đoán scope legacy hỏng.
 - [x] Quét và backfill các row legacy parse được bằng migration
   `m20260921forecastscope`; row không parse được vẫn để nullable.
-- [~] Chặn promotion nếu candidate có `UNKNOWN_SCOPE`, `MISSING_HOST_METRIC` hoặc
+- [x] Chặn promotion nếu candidate có `UNKNOWN_SCOPE`, `MISSING_HOST_METRIC` hoặc
   mixed feature schema.
 
 **Exit gate:** canary report hiển thị riêng từng host/metric/horizon; test suite
@@ -353,6 +353,10 @@ có report so sánh active/candidate và không tác động cluster.
   và xác nhận JSON-only state/resource policy.
 - [~] Chạy soak trên cluster/node thật trong tối thiểu 24 giờ; chưa được tự
   promotion và chưa bật remediation.
+
+- [x] Đã deploy migration scope lên server `10.3.55.213`; registry hiện có 192/192
+  row ở `forecast-scope-v2`, không còn row thiếu dimension. Watcher và dashboard
+  đã recreate và đều `healthy`.
 
 **Exit gate:** chỉ khi soak PASS, benchmark có report bất biến và operator ký
 approval mới được gửi promotion request; rollback vẫn dùng model version trước.

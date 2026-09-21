@@ -376,7 +376,10 @@ canary soak thực tế với operator approval; không tự bật candidate th�
 ### Nhật ký cập nhật 2026-09-21
 
 - Đã thêm migration `m20260921forecastscope` cho explicit registry dimensions;
-  backfill legacy chỉ khi parse được, không đoán scope lỗi.
+  backfill legacy chỉ khi parse được, không đoán scope lỗi; migration fix đã
+  đánh dấu 192/192 row production là `forecast-scope-v2`.
+- Promotion guard hiện fail-closed khi candidate còn `UNKNOWN_SCOPE` hoặc thiếu
+  dimension; không thể promote chỉ bằng cách đổi status.
 - Đã thêm `shared/forecast_features.py`, Candidate D isolation, River ADWIN,
   forecast benchmark nhiều model, shadow soak gate và release security/license/
   resource scan.

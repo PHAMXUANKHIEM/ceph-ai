@@ -196,6 +196,20 @@ def _comparison_scope(comparison) -> ForecastScope | None:
     )
 
 
+def _scope_ready(row: ForecastModelRegistry) -> bool:
+    """Promotion requires explicit, migrated dimensions; never guess legacy scope."""
+
+    return bool(
+        row.scope_schema == SCOPE_SCHEMA
+        and row.cluster_id
+        and row.entity_type
+        and row.entity_id
+        and row.metric
+        and row.horizon_hours
+        and (row.entity_type != "node" or row.host)
+    )
+
+
 def _version(algorithm: str, window_hours: int) -> str:
     return f"{algorithm}:{int(window_hours)}h"[:32]
 
@@ -352,6 +366,14 @@ def request_promotion(session, *, candidate_id: str, actor: str,
     ).one_or_none()
     if active is None:
         raise ValueError("scope has no active model")
+    if not _scope_ready(candidate):
+        reason = "promotion blocked: model registry scope is UNKNOWN_SCOPE or missing dimensions"
+        _audit(
+            session, candidate_model_id=candidate.id, previous_active_model_id=active.id,
+            event_type=PROMOTION_BLOCKED, actor=actor, reason=reason,
+            evidence={"scope_schema": candidate.scope_schema}, now=now,
+        )
+        return PromotionDecision(False, PROMOTION_BLOCKED, reason, {"scope_dimensions": False})
     decision = evaluate_guarded_promotion(_latest_evaluations(session, candidate, active), policy=policy)
     _audit(
         session, candidate_model_id=candidate.id, previous_active_model_id=active.id,
@@ -403,6 +425,14 @@ def approve_promotion(session, *, candidate_id: str, actor: str,
     ).one_or_none()
     if active is None:
         raise ValueError("scope has no active model")
+    if not _scope_ready(candidate):
+        reason = "promotion blocked: model registry scope is UNKNOWN_SCOPE or missing dimensions"
+        _audit(
+            session, candidate_model_id=candidate.id, previous_active_model_id=active.id,
+            event_type=PROMOTION_BLOCKED, actor=actor, reason=reason,
+            evidence={"scope_schema": candidate.scope_schema}, now=now,
+        )
+        raise ValueError(reason)
     decision = evaluate_guarded_promotion(_latest_evaluations(session, candidate, active), policy=policy)
     if not decision.allowed:
         _audit(
@@ -499,6 +529,11 @@ def register_candidate(
     if existing is not None:
         if existing.training_window_hours != int(training_window_hours):
             raise ValueError("model registry identity already exists with a different training window")
+        if dimensions and not _scope_ready(existing):
+            for key, value in dimensions.items():
+                setattr(existing, key, value)
+            existing.updated_at = now or utc_now()
+            session.flush()
         return existing
     row = ForecastModelRegistry(
         **values,

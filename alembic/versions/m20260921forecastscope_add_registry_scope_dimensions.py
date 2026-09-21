@@ -39,11 +39,13 @@ def upgrade() -> None:
         parts = [part.strip() for part in str(row["scope_key"] or "").split("|")]
         values = {"scope_schema": "legacy-v1"}
         if row["scope_type"] == "NODE_RESOURCE" and len(parts) == 3:
+            values["scope_schema"] = "forecast-scope-v2"
             values.update(
                 cluster_id=parts[0], entity_type="node", entity_id=parts[1],
                 host=parts[1], metric=parts[2], horizon_hours=row["training_window_hours"],
             )
         elif row["scope_type"] == "VOLUME" and len(parts) == 4:
+            values["scope_schema"] = "forecast-scope-v2"
             values.update(
                 cluster_id=parts[0], entity_type="volume", entity_id=f"{parts[1]}/{parts[2]}",
                 metric=parts[3], horizon_hours=row["training_window_hours"],
