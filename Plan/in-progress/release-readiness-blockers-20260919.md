@@ -2,7 +2,7 @@
 
 **Project:** `ceph-ai`  
 **Repository:** `/root/ceph-ai` on `10.3.55.213`  
-**Status:** Incomplete — RR-01/RR-02 graph cleanup, RR-03 forecast-event compatibility, RR-04 learning controls, RR-05 watcher post-commit alert delivery and specialized watcher producers are implemented and tested; the backup worker's legacy managed-channel path still needs migration. RR-06 deterministic collection is implemented and tested; staging, live smoke/rollback, final security review, and operator approval remain pending.
+**Status:** Incomplete — RR-01/RR-02 graph cleanup, RR-03 forecast-event compatibility, RR-04 learning controls, RR-05 watcher post-commit alert delivery, specialized watcher producers, and the backup worker legacy managed-channel/AI path are implemented and tested. RR-06 deterministic collection is implemented and tested; staging, live smoke/rollback, final security review, and operator approval remain pending.
 **Priority:** P0 / production gate  
 **Default operating mode:** advisory or approval-required; autonomous remediation remains disabled
 
@@ -50,7 +50,7 @@ Current blockers:
 | RR-02 | Resolved | Duplicate orphan branches were removed from the current graph; final compatibility review is still recorded as a release task. | P0 |
 | RR-03 | Resolved | `NodeResourceForecastAlertEvent` model/migration and fallback tests are present and covered by the forecast gate. | P0 |
 | RR-04 | Resolved | `is_paused()` contract and fail-closed learning-control tests are present. | P1 |
-| RR-05 | Watcher paths resolved; worker notifications pending | Incident, periodic health, forecast, RCA, log-intelligence, Vitastor, Vault, Trash, replay, metrics, verification, and recovery delivery use the durable outbox. Remaining direct calls are confined to the backup worker's legacy managed-channel/AI sender. | P1 |
+| RR-05 | Resolved | Incident, periodic health, forecast, RCA, log-intelligence, Vitastor, Vault, Trash, replay, metrics, verification, recovery, and backup-worker delivery use the durable outbox; credentials are resolved only at delivery time. | P1 |
 | RR-06 | Resolved | `testpaths=["tests"]` and explicit `live`/`integration` markers are configured; deterministic suite passes. | P1 |
 | RR-07 | Mostly resolved | Tracked backup/schema artifacts were removed and ignored; final secret/image-context scan remains open. | P1 |
 | RR-08 | Mostly resolved | Navigation contract tests pass; volume-detail active-state regression and browser smoke remain open. | P2 |
@@ -257,12 +257,18 @@ consumer cannot write or promote data for a paused scope.
 
 - [x] Add an outbox table with event ID, incident ID, category, payload hash,
   status, attempts, next retry time, created/sent timestamps, and last error.
-- [~] Insert the outbox row in the same transaction as the Incident; default Incident, node-health, OSD latency, CRUSH skew, database-size, verification, recovery, and all specialized watcher alert producers are migrated. Remaining work is the backup worker legacy managed-channel/AI sender; other periodic and worker alert paths now use the outbox.
+- [x] Insert the outbox row in the same transaction as the durable producer event; default Incident, node-health, OSD latency, CRUSH skew, database-size, verification, recovery, all specialized watcher producers, and the backup worker legacy managed-channel/AI sender are migrated. Other periodic and worker alert paths also use the outbox.
 - [x] Add a bounded worker that claims rows safely and sends notifications
   outside the transaction.
 - [x] Make delivery idempotent by event ID/fingerprint.
 - [x] Add retry backoff and dead-letter state, bounded worker, operator replay, and delivery metrics; replay is admin-only and resets only explicitly selected DEAD rows.
 - [x] Redact tokens, secrets, key material, and untrusted command output.
+- [x] Migrate the backup worker's independent global/cluster Telegram path to a
+  backup_alert outbox payload; only severity/message/job/cluster metadata is
+  persisted, while bot token and chat ID are resolved at delivery time.
+- [x] Preserve backup AI enrichment, managed-channel delivery, per-cluster
+  channel isolation, disabled-channel no-op behavior, retry/dead-letter
+  handling, and add regression/secret-persistence coverage (27 passed).
 
 ### 7.3 Required tests
 
