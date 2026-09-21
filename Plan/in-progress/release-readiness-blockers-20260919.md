@@ -53,7 +53,7 @@ Current blockers:
 | RR-05 | Resolved | Incident, periodic health, forecast, RCA, log-intelligence, Vitastor, Vault, Trash, replay, metrics, verification, recovery, and backup-worker delivery use the durable outbox; credentials are resolved only at delivery time. | P1 |
 | RR-06 | Resolved | `testpaths=["tests"]` and explicit `live`/`integration` markers are configured; deterministic suite passes. | P1 |
 | RR-07 | Mostly resolved | Tracked backup/schema artifacts were removed and ignored; final secret/image-context scan remains open. | P1 |
-| RR-08 | Mostly resolved | Navigation contract tests pass; volume-detail active-state regression and browser smoke remain open. | P2 |
+| RR-08 | Mostly resolved | Navigation contract tests and volume-detail active-state regression pass; browser smoke remains open. | P2 |
 
 ## 3. Rules for implementation
 
