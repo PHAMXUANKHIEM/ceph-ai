@@ -326,7 +326,7 @@ overdue/missing được gửi theo lifecycle, severity tăng được gửi nga
 cho phép xem/acknowledge với quyền admin. Còn thiếu escalation worker độc lập
 theo thời gian critical và deep-link UI hoàn chỉnh tới job/recovery point.
 
-### 7.5 Credential và ransomware resilience `[ ]`
+### 7.5 Credential và ransomware resilience `[~]`
 
 - Kiểm tra credential source và target tách biệt.
 - Hỗ trợ rotation không làm gián đoạn job đang chạy.
@@ -334,6 +334,13 @@ theo thời gian critical và deep-link UI hoàn chỉnh tới job/recovery poin
 - Cảnh báo policy có hai slot nhưng cùng failure domain.
 - Audit truy cập/restore/delete và retention lock.
 - Runbook credential loss, target compromise và key rotation.
+
+Phần hiện có đã tách credential theo từng target/cluster, probe có redaction và
+duplicate-target warning, retention/delete/restore đều đi qua audit, còn
+immutable target được probe metadata để xác nhận Object Lock mà không tạo
+artifact compliance không thể xóa. Còn thiếu kiểm tra failure domain rõ ràng,
+rotation orchestration không gián đoạn job và runbook/immutable write-delete
+probe dành cho lab có TTL an toàn.
 
 ## 8. Kiến trúc giao diện đề xuất
 

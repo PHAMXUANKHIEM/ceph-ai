@@ -92,3 +92,14 @@ def test_probe_does_not_touch_unconfigured_target(monkeypatch):
     assert result["status"] == "failed"
     assert result["steps"][0]["name"] == "configuration"
     assert called == []
+
+
+def test_immutable_target_reports_object_lock_without_creating_locked_probe(monkeypatch):
+    backend = FakeBackend()
+    monkeypatch.setattr(target_probe, "get_backend", lambda *args, **kwargs: backend)
+
+    result = target_probe.probe_target("a", _settings(), immutable_enabled=True)
+
+    assert result["immutability"]["required"] is True
+    assert result["immutability"]["status"] == "warning"
+    assert result["cleanup"]["status"] == "passed"

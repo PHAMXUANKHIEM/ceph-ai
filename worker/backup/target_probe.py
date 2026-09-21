@@ -61,7 +61,6 @@ def _step(steps: list[dict], name: str, fn, *, secrets: list[str]) -> object:
 
 def probe_target(slot: str, settings: Settings, *, immutable_enabled: bool = False) -> dict:
     """Probe one target with a random short-lived object, then clean it up."""
-    del immutable_enabled  # Never create a compliance-locked probe artifact.
     if slot not in {"a", "b"}:
         raise ValueError("slot phải là a hoặc b")
     transport = str(getattr(settings, f"backup_target_{slot}_transport", "") or "")
@@ -85,6 +84,19 @@ def probe_target(slot: str, settings: Settings, *, immutable_enabled: bool = Fal
             metadata_result = _step(result["steps"], "connection_and_metadata", metadata, secrets=secrets)
             if isinstance(metadata_result, dict):
                 result["metadata"] = metadata_result
+                object_lock = metadata_result.get("object_lock_enabled")
+                if immutable_enabled:
+                    result["immutability"] = {
+                        "required": True,
+                        "status": "passed" if object_lock is True else "warning",
+                        "detail": (
+                            "Object Lock đang bật."
+                            if object_lock is True
+                            else "Không xác nhận được Object Lock; không tạo artifact compliance để tránh rác không xóa được."
+                        ),
+                    }
+                else:
+                    result["immutability"] = {"required": False, "status": "not_required"}
         else:
             _step(result["steps"], "connection", lambda: "Backend đã khởi tạo", secrets=secrets)
         payload = (f"ceph-ai-target-probe:{slot}:{uuid.uuid4().hex}\n").encode("utf-8")
