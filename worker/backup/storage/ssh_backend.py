@@ -72,6 +72,19 @@ class SSHStorageBackend:
             raise SSHStorageBackendError(f"{self._host}: failed to connect/open SFTP: {exc}") from exc
         return client, sftp
 
+    def probe_metadata(self) -> dict:
+        """Return safe SFTP capacity metadata; never return key path."""
+        client, sftp = self._connect()
+        try:
+            usage = sftp.statvfs(self._landing_dir)
+            return {"host": self._host, "landing_dir": self._landing_dir,
+                    "capacity_bytes": usage.f_blocks * usage.f_frsize,
+                    "free_bytes": usage.f_bavail * usage.f_frsize,
+                    "object_lock_enabled": "unknown"}
+        finally:
+            sftp.close()
+            client.close()
+
     def _remote_path(self, remote_key: str) -> str:
         if (
             not remote_key

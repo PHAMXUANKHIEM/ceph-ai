@@ -741,6 +741,30 @@
     applyTransportVisibility();
   });
 
+  Array.prototype.forEach.call(document.querySelectorAll(".backup-target-test"), function (button) {
+    button.addEventListener("click", function () {
+      var slot = button.getAttribute("data-slot");
+      var fieldset = button.closest(".backup-target-slot");
+      var transport = fieldset && fieldset.querySelector(".backup-transport-select");
+      var result = fieldset && fieldset.querySelector(".backup-target-test-result");
+      if (transport && !transport.value) { if (result) result.textContent = "Chưa chọn kiểu kết nối."; return; }
+      button.disabled = true;
+      if (result) result.textContent = "Đang kiểm tra…";
+      fetch("/api/settings/backup-targets/" + encodeURIComponent(slot) + "/test", {method: "POST", credentials: "same-origin"})
+        .then(function (response) { return response.json().then(function (data) {
+          if (!response.ok) throw new Error(data.detail || "HTTP " + response.status); return data;
+        }); })
+        .then(function (data) {
+          var passed = data.status === "passed";
+          var passedSteps = (data.steps || []).filter(function (step) { return step.status === "passed"; }).length;
+          var totalSteps = (data.steps || []).length;
+          var warning = (data.warnings || []).length ? " · ⚠ " + data.warnings.join(", ") : "";
+          if (result) result.textContent = (passed ? "✅ Đạt" : "❌ Không đạt") + " · " + passedSteps + "/" + totalSteps + " bước" + warning;
+        }).catch(function (error) { if (result) result.textContent = "❌ " + error.message; })
+        .finally(function () { button.disabled = false; });
+    });
+  });
+
   // Settings sidebar (2026-07-24) — one section-panel visible at a time.
   // The server already picks which panel starts visible (settings.py's
   // _compute_active_section, so a form's error/success message after a

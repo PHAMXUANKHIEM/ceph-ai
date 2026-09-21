@@ -76,6 +76,8 @@ from worker.executor import commands as executor_commands
 from worker.executor.vm_perf import _vm_ssh_command
 from worker.policy.playbook_registry import registry_status_rows
 from worker.policy import gate as action_gate
+from worker.backup.policy_config import load_backup_policy
+from worker.backup.target_probe import probe_target
 
 logger = logging.getLogger(__name__)
 
@@ -3380,6 +3382,23 @@ def _validate_backup_target_slot(slot: str, submitted: dict) -> str | None:
         if any(not submitted[f"backup_target_{slot}_{f}"] for f in required):
             return f"{label}: cần điền đủ Access key, Secret key, Bucket (S3)"
     return None
+
+
+@router.post("/api/settings/backup-targets/{slot}/test")
+async def test_backup_target(slot: str, user: str = Depends(require_login)):
+    """Test one saved backup target with a short-lived probe artifact."""
+    _require_admin_privilege(user)
+    if slot not in {"a", "b"}:
+        raise HTTPException(status_code=400, detail="Backup target slot không hợp lệ.")
+    policy = load_backup_policy() or {}
+    immutable = any(
+        str(target.get("slot")) == slot and bool(target.get("immutable"))
+        for target in (policy.get("backup_targets") or []) if isinstance(target, dict)
+    )
+    result = await asyncio.to_thread(probe_target, slot, settings, immutable_enabled=immutable)
+    logger.info("backup target probe slot=%s actor=%s status=%s cleanup=%s", slot, user,
+                result.get("status"), result.get("cleanup", {}).get("status"))
+    return result
 
 
 @router.post("/settings/backup-targets", response_class=HTMLResponse)

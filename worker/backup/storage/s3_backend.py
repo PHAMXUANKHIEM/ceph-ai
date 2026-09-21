@@ -75,6 +75,21 @@ class S3StorageBackend:
             aws_secret_access_key=self._secret_key,
         )
 
+    def probe_metadata(self) -> dict:
+        """Return safe target metadata without exposing credentials."""
+        client = self._client()
+        client.head_bucket(Bucket=self._bucket)
+        object_lock = "unknown"
+        try:
+            config = client.get_object_lock_configuration(Bucket=self._bucket)
+            object_lock = config.get("ObjectLockConfiguration", {}).get("ObjectLockEnabled") == "Enabled"
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in {"ObjectLockConfigurationNotFoundError", "NoSuchObjectLockConfiguration", "404"}:
+                object_lock = False
+        return {"endpoint": self._endpoint_url or "AWS S3", "bucket": self._bucket,
+                "object_lock_enabled": object_lock, "capacity_bytes": None, "free_bytes": None}
+
     def upload(self, stream: BinaryIO, remote_key: str) -> UploadResult:
         digest = hashlib.sha256()
         size = 0

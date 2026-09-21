@@ -177,7 +177,7 @@ cross-restore và cluster inactive bị từ chối.
 atomic write, revision backup và API `GET/PUT /api/backups/policy`. Còn tiếp tục
 rollback revision, audit đầy đủ và reload Worker có xác nhận.
 
-### 6.2 Test Backup Target `[ ]`
+### 6.2 Test Backup Target `[~]`
 
 - Nút Test connection cho từng slot.
 - Xác minh DNS/network/TLS/authentication.
@@ -186,6 +186,16 @@ rollback revision, audit đầy đủ và reload Worker có xác nhận.
 - Kiểm tra S3 Object Lock/retention mode thực sự hoạt động.
 - Hiển thị quota/capacity và cảnh báo hai slot trỏ cùng host/bucket/site.
 - Redact access key, secret, token, SSH key path trong output/audit.
+
+Đã thêm API POST /api/settings/backup-targets/{slot}/test và nút kiểm tra trực
+tiếp trong từng Slot A/B. Probe dùng cùng storage backend với backup thật:
+kiểm tra connection/metadata, ghi artifact tạm có namespace riêng, stat/verify,
+download đối chiếu SHA-256 rồi cleanup. Response chỉ chứa step status, capacity
+an toàn và cảnh báo target trùng; secret, SSH key path và raw credential không
+được trả về. S3 Object Lock được kiểm tra ở mức bucket configuration; probe
+không tạo object compliance-lock dài ngày để tránh để lại rác không xoá được.
+Phần target health history/copy compliance và audit entry riêng sẽ tiếp tục ở
+6.3.
 
 ### 6.3 Target health và copy compliance `[ ]`
 

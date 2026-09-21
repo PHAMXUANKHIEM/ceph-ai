@@ -76,6 +76,8 @@
 .settings-redesign .settings-nav-item[data-section="dual-ai"]::before { content: "🤝"; }
 .settings-redesign .settings-nav-item[data-section="code-repair"]::before { content: "🤖"; }
 .settings-redesign .settings-nav-item[data-section="backup-targets"]::before { content: "💾"; }
+.settings-redesign .backup-target-test-row { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding-top: 12px; border-top: 1px solid rgba(148, 163, 184, 0.14); }
+.settings-redesign .backup-target-test-result { min-height: 1.2em; }
 .settings-redesign .settings-nav-item[data-section="router"]::before { content: "🔑"; }
 .settings-redesign .settings-nav-item[data-section="cost"]::before { content: "💰"; }
 .settings-redesign .settings-nav-item[data-section="cluster"]::before { content: "💎"; }

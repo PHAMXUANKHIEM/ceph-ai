@@ -669,6 +669,7 @@
               <input type="number" name="backup_target_a_immutable_lock_days" value="{{ backup_target_a_immutable_lock_days }}" min="1">
             </label>
             <p class="hint">Chỉ áp dụng nếu slot này được đánh dấu immutable trong <code>backup_policy.yaml</code>.</p>
+            <div class="backup-target-test-row"><button type="button" class="btn btn-ghost btn-sm backup-target-test" data-slot="a">🔌 Kiểm tra target</button><span class="hint backup-target-test-result" role="status" aria-live="polite"></span></div>
           </fieldset>
 
           <fieldset class="backup-target-slot" data-slot="b">
@@ -711,6 +712,7 @@
               <input type="number" name="backup_target_b_immutable_lock_days" value="{{ backup_target_b_immutable_lock_days }}" min="1">
             </label>
             <p class="hint">Chỉ áp dụng nếu slot này được đánh dấu immutable trong <code>backup_policy.yaml</code>.</p>
+            <div class="backup-target-test-row"><button type="button" class="btn btn-ghost btn-sm backup-target-test" data-slot="b">🔌 Kiểm tra target</button><span class="hint backup-target-test-result" role="status" aria-live="polite"></span></div>
           </fieldset>
 
           <p class="hint">Ai được ghi vào slot nào (danh sách <code>backup_targets:</code>) và slot nào là bản immutable cấu hình tại <code>worker/policy/backup_policy.yaml</code> — không phải ở đây.</p>
