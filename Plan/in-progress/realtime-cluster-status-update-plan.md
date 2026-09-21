@@ -656,7 +656,7 @@ thao tác thất bại không làm mất dữ liệu cũ hoặc báo thành côn
 
 - [ ] Có dashboard/log cho query duration, stale age, collector lag, event
   reconnect, WebSocket client count và refresh error.
-- [ ] Giới hạn concurrency theo cluster và toàn hệ thống.
+- [x] Giới hạn concurrency theo cluster và toàn hệ thống. Per-host/per-pool lease vẫn giữ nguyên; thêm process-wide semaphore dùng `ceph_max_concurrency`, timeout bounded và metric queue timeout.
 - [ ] Circuit breaker/backoff khi MON/Cephadm lỗi liên tiếp.
 - [x] Không retry đồng thời ở route, collector và browser theo cấp số nhân. Dashboard health chỉ đọc snapshot; refresh là POST async có lock/coalescing theo cluster; Watcher là owner duy nhất của Ceph health polling/retry; browser chỉ polling fallback, không tự retry Ceph.
 - [x] Alert nếu snapshot quá `max_stale_seconds`, collector chết hoặc event bus
@@ -989,3 +989,4 @@ mượt của toàn bộ các trang còn lại.
 | 2026-09-21 | RT-09.5 operational alerts | Admin diagnostics thêm event publish counters và alert bounded cho snapshot unavailable/stale, refresh error, Watcher heartbeat stale, event bus publish failure; không lộ payload/credential | `shared/cluster_events.py`, `dashboard/routes/system_health.py`, `tests/test_cluster_events.py`, `tests/test_ceph_debug.py` — **22 passed** |
 | 2026-09-21 | RT-09.6 correlation propagation | Event và priority refresh marker tự lấy request ID từ request context; request ID được giữ qua async refresh/action context để tra browser → event → collector/action, bounded và không chứa credential | `shared/request_context.py`, `shared/cluster_events.py`, `shared/cluster_snapshot.py`, `tests/test_cluster_events.py`, `tests/test_cluster_snapshot.py` — **35 passed** |
 | 2026-09-21 | RT-09.7 cache growth diagnostics | Thêm giới hạn `ceph_snapshot_cache_max_bytes`, metrics disk cache bounded (file count/bytes/largest file) và cảnh báo vượt ngưỡng; không tự xoá dữ liệu | `config/settings.py`, `shared/ceph_query_cache.py`, `dashboard/routes/system_health.py`, `tests/test_ceph_query_cache.py`, `tests/test_ceph_debug.py` — **17 passed** |
+| 2026-09-21 | RT-09.8 global concurrency cap | SSH lease có giới hạn toàn process bên cạnh giới hạn theo host/pool; chờ và timeout đều bounded, có metric để phân biệt queue pressure với Ceph failure | `shared/ceph_runner.py`, `tests/test_ceph_runner.py` — **8 passed** |

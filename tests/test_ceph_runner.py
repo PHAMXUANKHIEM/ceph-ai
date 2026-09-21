@@ -2,6 +2,7 @@ import paramiko
 import pytest
 import threading
 
+from shared import ceph_runner
 from shared.ceph_runner import (
     CephCommandRunner,
     CephConnectionPool,
@@ -216,5 +217,24 @@ def test_host_lease_wait_is_bounded_and_reported_as_queue_timeout():
     assert any(
         event["event"] == "queue_wait_timeout_total"
         and event["node"] == "10.0.0.4"
+        for event in get_metrics()["recent"]
+    )
+
+
+def test_process_global_lease_limit_is_bounded_and_reported(monkeypatch):
+    monkeypatch.setattr(ceph_runner, "_GLOBAL_COMMAND_SEMAPHORE", threading.BoundedSemaphore(1))
+    pool = CephConnectionPool(make_config(), client_factory=FakeClient)
+    assert ceph_runner._GLOBAL_COMMAND_SEMAPHORE.acquire(blocking=False)
+    try:
+        with pytest.raises(CephRunnerError, match="global SSH concurrency") as caught:
+            CephCommandRunner(pool).run("10.0.0.5", "ceph -s", 0.02)
+    finally:
+        ceph_runner._GLOBAL_COMMAND_SEMAPHORE.release()
+        pool.close()
+
+    assert caught.value.kind == "global_pool_wait_timeout"
+    assert any(
+        event["event"] == "global_queue_wait_timeout_total"
+        and event["node"] == "10.0.0.5"
         for event in get_metrics()["recent"]
     )

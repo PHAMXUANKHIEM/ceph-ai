@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Iterator
 
 import paramiko
+from config.settings import settings
 from shared.request_context import get_request_id
 
 
@@ -33,8 +34,11 @@ _METRICS = {
     "output_limit_failures_total": 0,
     "queue_wait_total": 0,
     "queue_wait_timeout_total": 0,
+    "global_queue_wait_total": 0,
+    "global_queue_wait_timeout_total": 0,
     "recent": [],
 }
+_GLOBAL_COMMAND_SEMAPHORE = threading.BoundedSemaphore(max(1, settings.ceph_max_concurrency))
 _CEPH_COMMAND_RE = re.compile(
     r"(?:^|[\s;&|])(?:sudo\s+)?(ceph|rbd|rados|radosgw-admin)\s+([A-Za-z0-9_.:-]+)"
 )
@@ -208,7 +212,7 @@ class CephConnectionPool:
 
     @contextmanager
     def lease(self, host: str, *, timeout: float | None = None) -> Iterator[paramiko.SSHClient]:
-        """Lease a host connection; concurrent commands on one host serialize."""
+        """Lease a host connection under host and process-wide limits."""
         with self._lock:
             host_lock = self._host_locks.setdefault(host, threading.Lock())
         wait_started = time.monotonic()
@@ -228,7 +232,29 @@ class CephConnectionPool:
                 host, "connect", "pool_wait_timeout",
                 "SSH host lease wait exceeded command deadline", wait_ms,
             )
+        global_acquired = False
         try:
+            global_wait_started = time.monotonic()
+            if timeout is None:
+                global_acquired = _GLOBAL_COMMAND_SEMAPHORE.acquire()
+            else:
+                remaining = timeout - (time.monotonic() - wait_started)
+                global_acquired = remaining > 0 and _GLOBAL_COMMAND_SEMAPHORE.acquire(timeout=remaining)
+            global_wait_ms = (time.monotonic() - global_wait_started) * 1000
+            if global_acquired:
+                _record_metric(
+                    "global_queue_wait_total", node=host, stage="global_command",
+                    duration_ms=round(global_wait_ms, 2),
+                )
+            else:
+                _record_metric(
+                    "global_queue_wait_timeout_total", node=host, stage="global_command",
+                    duration_ms=round(global_wait_ms, 2),
+                )
+                raise CephRunnerError(
+                    host, "connect", "global_pool_wait_timeout",
+                    "global SSH concurrency limit wait exceeded command deadline", global_wait_ms,
+                )
             try:
                 remaining = None if timeout is None else timeout - (time.monotonic() - wait_started)
                 if remaining is not None and remaining <= 0:
@@ -244,6 +270,8 @@ class CephConnectionPool:
                         self._close_client(host, client)
                 raise
         finally:
+            if global_acquired:
+                _GLOBAL_COMMAND_SEMAPHORE.release()
             host_lock.release()
 
     def invalidate(self, host: str) -> None:
