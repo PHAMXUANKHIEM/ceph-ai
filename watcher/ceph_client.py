@@ -200,6 +200,9 @@ last_successful_mon_node: str | None = None
 _MON_CIRCUITS: dict[str, CircuitBreaker] = {}
 _MON_CIRCUITS_LOCK = threading.Lock()
 _MAX_MON_CIRCUITS = 256
+_CEPHADM_CIRCUITS: dict[str, CircuitBreaker] = {}
+_CEPHADM_CIRCUITS_LOCK = threading.Lock()
+_MAX_CEPHADM_CIRCUITS = 256
 
 
 def _mon_circuit_key(host: str, container_name: str, ssh_user: str, ssh_key_path: str, exec_mode: str) -> str:
@@ -225,6 +228,38 @@ def get_mon_circuit_metrics() -> dict[str, int]:
     """Return bounded MON circuit state without exposing connection details."""
     with _MON_CIRCUITS_LOCK:
         circuits = list(_MON_CIRCUITS.values())
+    return {
+        "tracked": len(circuits),
+        "open": sum(1 for circuit in circuits if circuit.is_open),
+        "failures": sum(circuit.failures for circuit in circuits),
+    }
+
+
+def _cephadm_command_label(command: str) -> str:
+    inner = command.split("--", 1)[1] if "--" in command else command
+    tokens = inner.strip().split()
+    return " ".join(tokens[:3])[:96] or "unknown"
+
+
+def _cephadm_circuit(host: str, ssh_user: str, ssh_key_path: str, command: str) -> CircuitBreaker:
+    key = "|".join((host, ssh_user, ssh_key_path, _cephadm_command_label(command)))
+    with _CEPHADM_CIRCUITS_LOCK:
+        circuit = _CEPHADM_CIRCUITS.get(key)
+        if circuit is None:
+            if len(_CEPHADM_CIRCUITS) >= _MAX_CEPHADM_CIRCUITS:
+                _CEPHADM_CIRCUITS.pop(next(iter(_CEPHADM_CIRCUITS)))
+            circuit = CircuitBreaker(
+                failure_threshold=settings.ceph_mon_circuit_failure_threshold,
+                cooldown_seconds=settings.ceph_mon_circuit_cooldown_seconds,
+            )
+            _CEPHADM_CIRCUITS[key] = circuit
+        return circuit
+
+
+def get_cephadm_circuit_metrics() -> dict[str, int]:
+    """Return bounded cephadm circuit state without connection details."""
+    with _CEPHADM_CIRCUITS_LOCK:
+        circuits = list(_CEPHADM_CIRCUITS.values())
     return {
         "tracked": len(circuits),
         "open": sum(1 for circuit in circuits if circuit.is_open),
@@ -1721,7 +1756,10 @@ def _run_remote_command_with(
         )
     )
     owns_pool = pool is None
+    cephadm_circuit = _cephadm_circuit(host, ssh_user, ssh_key_path, command) if command.lstrip().startswith("cephadm shell") else None
     try:
+        if cephadm_circuit is not None and not cephadm_circuit.allow():
+            raise CephQueryError(f"{host}: cephadm circuit breaker open")
         # cephadm creates a transient Podman container per call. A bounded
         # host lock prevents concurrent app processes from stampeding one MON
         # without turning brief contention into a false MON failure.
@@ -1738,8 +1776,13 @@ def _run_remote_command_with(
             # The remote timeout owns the process group, so TERM/KILL reaches
             # flock and its cephadm/Podman descendants. Closing a Paramiko
             # channel alone does not reliably terminate those remote children.
-        return CephCommandRunner(active_pool).run(host, remote_command, remote_timeout)
+        result = CephCommandRunner(active_pool).run(host, remote_command, remote_timeout)
+        if cephadm_circuit is not None:
+            cephadm_circuit.record_success()
+        return result
     except CephRunnerError as exc:
+        if cephadm_circuit is not None:
+            cephadm_circuit.record_failure()
         raise CephQueryError(str(exc)) from exc
     finally:
         if owns_pool:

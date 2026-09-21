@@ -12,7 +12,7 @@ from shared.cluster_snapshot import read_snapshot
 from shared.clusters import list_active_clusters
 from shared.cluster_events import get_metrics as get_event_metrics
 from shared.ceph_runner import get_metrics as get_ceph_runner_metrics
-from watcher.ceph_client import get_mon_circuit_metrics
+from watcher.ceph_client import get_cephadm_circuit_metrics, get_mon_circuit_metrics
 from shared.ceph_query_cache import get_metrics as get_ceph_cache_metrics
 from shared.ceph_query_cache import get_storage_metrics
 from watcher.cluster_snapshot_collector import get_metrics as get_collector_metrics
@@ -138,6 +138,7 @@ def ceph_latency_debug(user: str = Depends(require_login)):
     return {
         "metrics": get_ceph_runner_metrics(),
         "mon_circuit": get_mon_circuit_metrics(),
+        "cephadm_circuit": get_cephadm_circuit_metrics(),
         "cache": get_ceph_cache_metrics(),
         "snapshot_collector": get_collector_metrics(),
         "api": get_api_metrics(),

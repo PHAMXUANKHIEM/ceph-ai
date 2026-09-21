@@ -22,6 +22,7 @@ def test_ceph_latency_debug_is_admin_only(dashboard_client):
     assert "retry" in response.json()
     assert "snapshot_freshness" in response.json()
     assert "mon_circuit" in response.json()
+    assert "cephadm_circuit" in response.json()
     assert "event_bus" in response.json()
     assert "operational_alerts" in response.json()
     assert "cache_storage" in response.json()

@@ -4,6 +4,7 @@ import threading
 import pytest
 
 import watcher.ceph_client as ceph_client
+from shared.ceph_runner import CephRunnerError
 from watcher.ceph_client import (
     CephQueryError,
     configured_rbd_pools,
@@ -301,6 +302,32 @@ def test_query_cluster_health_opens_mon_circuit_after_repeated_failures(monkeypa
         query_cluster_health_with(*args)
 
     assert calls == ["10.9.9.90", "10.9.9.90"]
+
+
+def test_cephadm_circuit_stops_repeated_remote_failures(monkeypatch):
+    calls = []
+
+    class FailingRunner:
+        def __init__(self, _pool):
+            pass
+
+        def run(self, host, command, timeout):
+            calls.append((host, command))
+            raise CephRunnerError(host, "command", "timeout", "cephadm unavailable")
+
+    monkeypatch.setattr(ceph_client, "CephCommandRunner", FailingRunner)
+    monkeypatch.setattr(ceph_client, "_CEPHADM_CIRCUITS", {})
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_circuit_failure_threshold", 2)
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_circuit_cooldown_seconds", 60)
+    command = "cephadm shell -- ceph -s --format json"
+
+    for _ in range(2):
+        with pytest.raises(CephQueryError, match="cephadm unavailable"):
+            ceph_client._run_remote_command_with("10.9.9.91", command, "root", "/tmp/key", 1)
+    with pytest.raises(CephQueryError, match="cephadm circuit breaker open"):
+        ceph_client._run_remote_command_with("10.9.9.91", command, "root", "/tmp/key", 1)
+
+    assert len(calls) == 2
 
 
 def test_query_cluster_health_with_raises_when_all_nodes_fail(fake_ssh):
