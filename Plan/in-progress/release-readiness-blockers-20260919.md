@@ -28,19 +28,20 @@ remediation.
 
 ## 2. Verified baseline
 
-Reconciled on 2026-09-20 against the server, repository, and current release
+Reconciled on 2026-09-21 against the server, repository, and current release
 manifest. The previous 2026-09-19 dirty-tree/two-head snapshot below is
 historical and must not be used as the current state.
 
 - `main` and `origin/main` are equal; the worktree is clean.
-- `.venv/bin/alembic heads` and `.venv/bin/alembic current` both report exactly
-  one current head: `m20260921tgoutbox`.
+- `.venv/bin/alembic heads` reports exactly one code head: `m20260921rgwmetrics`.
+  The connected database currently reports `m20260921tgoutbox`, so the new RGW
+  metrics migration is intentionally still unapplied; no live upgrade was run.
 - `pyproject.toml` now scopes the default collection to `tests/` and excludes
   `live`/`integration` by default.
-- The historical deterministic release suite is recorded as `3817 passed, 47 deselected,
-  235 warnings`; the latest collection gate records `3921/3937` tests under `tests/`,
-  with 16 live/integration tests deselected. The focused regression gates remain the
-  release evidence until the full default execution is rerun cleanly.
+- The latest collection gate records `3934/3950` tests under `tests/`, with 16
+  live/integration tests deselected. All 3934 collected default test nodes pass
+  when executed in four deterministic tmpfs shards; the single-process run remains
+  a performance/environment issue and is not used as migration approval evidence.
 - The release manifest is `docs/ai/end-to-end-release-manifest.md`; deployment
   remains unapproved and autonomous remediation remains disabled.
 
@@ -48,7 +49,7 @@ Current blockers:
 
 | ID | Current status | Evidence / remaining work | Severity |
 | --- | --- | --- | --- |
-| RR-01 | Resolved | One Alembic head: `m20260921tgoutbox`; staging/production rehearsal is still pending. | P0 |
+| RR-01 | Resolved | One code head: `m20260921rgwmetrics`; the connected database remains at `m20260921tgoutbox` until the pending staging/production rehearsal. | P0 |
 | RR-02 | Resolved | Duplicate orphan branches were removed from the current graph; final compatibility review is still recorded as a release task. | P0 |
 | RR-03 | Resolved | `NodeResourceForecastAlertEvent` model/migration and fallback tests are present and covered by the forecast gate. | P0 |
 | RR-04 | Resolved | `is_paused()` contract and fail-closed learning-control tests are present. | P1 |
@@ -124,7 +125,7 @@ upgrade, successful production-like upgrade, and documented rollback.
 
 The revision IDs in the historical evidence below describe the intermediate
 graph reviewed on 2026-09-19. The current canonical graph is the single
-`m20260921tgoutbox` head reported in Section 2; these older IDs are retained
+`m20260921rgwmetrics` head reported in Section 2; these older IDs are retained
 for audit history and are not current blockers.
 
 - [x] Live database revision confirmed as `f4e5f6a7b8c9`; no live migration was
@@ -154,6 +155,23 @@ for audit history and are not current blockers.
   accepted; further production migration rehearsal remains a separate gate.
 - [ ] Backup validation and staging migration rehearsal remain pending.
 - [ ] Operator approval and production migration window remain pending.
+
+### 4.5 Current graph and pending-head rehearsal evidence (2026-09-21)
+
+- [x] `alembic heads` returns only `m20260921rgwmetrics`; `alembic history --verbose`
+  shows the linear tail `m20260919forecastevents -> m20260919nlcontext ->
+  m20260921tgoutbox -> m20260921rgwmetrics`, with no unexplained head.
+- [x] The connected database was inspected read-only with `alembic current` and
+  remains at `m20260921tgoutbox`; no production migration was executed.
+- [x] Offline SQL from the current database revision to the code head creates only
+  `rgw_metric_snapshots`, its bounded `(cluster_id, captured_at)` index, and the
+  expected `alembic_version` update.
+- [x] A disposable SQLite rehearsal stamped at `m20260921tgoutbox` upgraded to
+  `m20260921rgwmetrics`, verified the table and index, then downgraded back and
+  verified that the table was removed.
+- [ ] PostgreSQL empty-database, production-like, backup, and staging rehearsal
+  remain pending; do not run `alembic upgrade head` on the connected database
+  until those gates and operator approval are complete.
 
 ## 5. Workstream RR-03 — restore the forecast-event model contract
 
