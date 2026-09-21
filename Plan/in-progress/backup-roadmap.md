@@ -293,7 +293,7 @@ consistency. Migration backfill các job cũ thành `crash-consistent`; test pol
 timeout/thaw và backup/dashboard đã pass. Còn thiếu adapter QEMU guest-agent/
 database dựng sẵn và cảnh báo lifecycle riêng cho từng workload.
 
-### 7.3 Capacity planning `[ ]`
+### 7.3 Capacity planning `[~]`
 
 - Dung lượng backup theo cluster/pool/image/target.
 - Tốc độ tăng trưởng ngày/tuần/tháng.
@@ -301,6 +301,14 @@ database dựng sẵn và cảnh báo lifecycle riêng cho từng workload.
 - Ước lượng full tiếp theo và local temporary space cần thiết.
 - Cảnh báo trước khi chạy nếu nguồn/temp/target thiếu capacity.
 - Hiển thị compression/dedup ratio nếu backend cung cấp dữ liệu đáng tin cậy.
+
+Đã thêm API capacity theo target với dữ liệu `probe_metadata()` của SSH/S3,
+recorded bytes, tăng trưởng quan sát trong cửa sổ 30 ngày, ước lượng full kế
+tiếp và số ngày còn lại theo free space. S3 không có capacity thì trả về
+`unknown`, không suy đoán; dashboard tải lazy summary để không làm chậm trang
+Overview. Có thêm test growth/forecast và preflight output. Còn thiếu chặn
+backup trực tiếp trước snapshot khi source/temp/target đã dưới ngưỡng và số liệu
+compression/dedup từ backend.
 
 ### 7.4 Alert lifecycle `[ ]`
 

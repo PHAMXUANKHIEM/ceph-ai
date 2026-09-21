@@ -57,6 +57,7 @@ from worker.backup.policy_config import (
     save_backup_policy,
 )
 from worker.backup.cluster_scope import parse_tracked_images
+from worker.backup import capacity as backup_capacity
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
@@ -586,6 +587,13 @@ async def backup_target_health_api(request: Request, user: str = Depends(require
     del user
     cluster = selected_cluster(request)
     return {"cluster_id": cluster.id, "targets": _target_health(cluster)}
+
+
+@router.get("/api/backups/capacity")
+async def backup_capacity_api(request: Request, user: str = Depends(require_login)):
+    del user
+    cluster = selected_cluster(request)
+    return {"cluster_id": cluster.id, **backup_capacity.overview(cluster)}
 
 
 @router.get("/api/backups/inventory")

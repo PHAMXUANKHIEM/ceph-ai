@@ -91,6 +91,7 @@
             </tr>{% endfor %}</tbody>
           </table></div>
           {% else %}<p class="hint">Chưa có backup target nào được cấu hình.</p>{% endif %}
+          <div id="backup-capacity-summary" class="hint" aria-live="polite">Đang tải capacity target…</div>
         </section>
         {% if protection.rows %}
         <div class="table-wrap backup-table-scroll"><table>

@@ -64,6 +64,25 @@
     loadInventory();
   }
 
+  var capacitySummary = document.getElementById("backup-capacity-summary");
+  if (capacitySummary) {
+    fetch("/api/backups/capacity", {credentials: "same-origin"})
+      .then(function (response) { return response.json().then(function (data) {
+        if (!response.ok) throw new Error(data.detail || "HTTP " + response.status); return data;
+      }); })
+      .then(function (data) {
+        var targets = data.targets || [];
+        if (!targets.length) { capacitySummary.textContent = "Chưa có dữ liệu capacity target."; return; }
+        capacitySummary.textContent = targets.map(function (target) {
+          var free = target.free_bytes == null ? "unknown" : Math.round(target.free_bytes / 1073741824) + " GiB còn trống";
+          var growth = target.daily_growth_bytes ? Math.round(target.daily_growth_bytes / 1048576) + " MiB/ngày" : "chưa đủ dữ liệu tăng trưởng";
+          var forecast = target.days_until_full == null ? "chưa dự báo ngày đầy" : "dự kiến đầy trong " + target.days_until_full + " ngày";
+          return "Slot " + String(target.slot).toUpperCase() + ": " + free + " · " + growth + " · " + forecast;
+        }).join(" | ");
+      })
+      .catch(function () { capacitySummary.textContent = "Không lấy được capacity target; kiểm tra trong Targets/API."; });
+  }
+
   Array.prototype.forEach.call(document.querySelectorAll("[data-backup-open-tab]"), function (button) {
     button.addEventListener("click", function () {
       var target = button.getAttribute("data-backup-open-tab");
