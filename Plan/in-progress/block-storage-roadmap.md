@@ -458,8 +458,13 @@ force-unlock/delete pool chỉ từ một tín hiệu quan sát.
     Cinder; thiếu Controller, VM hoặc Glance evidence thì trả partial/
     `insufficient_evidence`. Còn live Controller/Glance acceptance, snapshot
     đang được VM dùng thực tế và test image service unavailable.
-- [ ] **7.3 Multipath/NVMe-oF/iSCSI** nếu sản phẩm hỗ trợ gateway
-  - Inventory gateway/path/session, health và controlled reconnect/failover.
+- [~] **7.3 Multipath/NVMe-oF/iSCSI** nếu sản phẩm hỗ trợ gateway
+  - Đã có read-only `/api/volumes/{pool}/inventory/{image}/paths` và Volume
+    Detail card thu thập bounded evidence từ OpenStack compute node đã cấu hình:
+    multipath device/path state, NVMe-oF subsystem/path và iSCSI session. Không
+    nhận host tùy ý từ request; không reconnect/failover từ API. Không có
+    compute/gateway node thì trả `unsupported`; còn thiếu live gateway
+    acceptance và chứng minh mapping path → volume trên backend thật.
 - [ ] **7.4 API/CLI/IaC contract**
   - API versioning, OpenAPI, idempotency, webhook/job status và ví dụ Terraform
     hoặc SDK; không tạo một đường thực thi bỏ qua policy của Dashboard.
@@ -548,6 +553,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 
 | Ngày | Mục | Trạng thái | Thay đổi / bằng chứng | Kiểm thử | Commit / việc tiếp theo |
 |---|---:|---|---|---|---|
+| 2026-09-21 | BS-07.3 Multipath/NVMe-oF/iSCSI | Một phần | Thêm `dashboard/volume_path_discovery.py` và API read-only `/api/volumes/{pool}/inventory/{image}/paths`; parser bounded cho multipath/NVMe-oF/iSCSI, query chỉ chạy trên compute node đã cấu hình, reconnect/failover bị khóa. Volume Detail hiển thị host/path/session summary và evidence gaps. | `tests/test_volume_path_discovery.py tests/test_cinder_discovery.py tests/test_boot_dependencies_api.py`: `20 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn live gateway acceptance và mapping path-to-volume thực tế; giữ `[~]`. |
 | 2026-09-21 | BS-07.2 Boot-from-volume và Image Service | Một phần | Thêm read-only Cinder/Nova/Glance discovery và API `/api/volumes/{pool}/inventory/{image}/boot-dependencies`; Volume Detail hiển thị boot source, VM attachment, Glance image, snapshot delete guard và evidence gaps. Không attach/detach, xóa snapshot hoặc thay đổi control plane từ endpoint này. | `tests/test_cinder_discovery.py tests/test_boot_dependencies_api.py tests/test_cinder_mapping_api.py`: `18 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn live Controller/Glance acceptance và xác minh snapshot đang được VM sử dụng; giữ `[~]`. |
 | 2026-09-20 | BS-07 Cinder mapping report | Một phần | Thêm helper mapping và API read-only `/api/volumes/{pool}/cinder-mapping`: bounded theo pool/page, đối soát RBD inventory với Cinder volume/project/attachment/instance, phân loại managed/orphan/unmanaged/insufficient evidence; không attach/detach hoặc xóa orphan. Còn live Controller acceptance và orphan đối soát hai chiều toàn site. | `tests/test_cinder_discovery.py tests/test_cinder_mapping_api.py` + volume route gate; compileall và `git diff --check` | Commit `12e2ec3c`; còn live Controller/site-wide acceptance |
 | 2026-08-17 | Kế hoạch | Hoàn thành | Tạo roadmap Block Storage, ranh giới an toàn, kiến trúc, các pha, tiêu chí nghiệm thu và quy trình bàn giao. Hiện trạng code chỉ được ghi là cần audit, chưa công nhận hoàn thành. | Chưa chạy — tài liệu kế hoạch | Bắt đầu từ mục 0; lập inventory API/schema/test hiện có trước khi sửa mã. |
