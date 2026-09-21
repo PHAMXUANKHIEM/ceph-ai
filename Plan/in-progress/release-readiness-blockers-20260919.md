@@ -428,13 +428,18 @@ current product decision.
 
 - [ ] Replace remaining `datetime.utcnow()` calls with timezone-aware UTC
   datetimes, migration by migration, without changing stored semantics.
-- [ ] Verify RabbitMQ integration with a dedicated broker user and vhost.
+- [x] Verify RabbitMQ integration with a dedicated broker user and vhost.
 - [ ] Browser-test CSRF HTML buffering with large upload/form responses and
   streaming/error responses.
 - [ ] Verify `X-Forwarded-Proto` trust is restricted to configured proxies and
   that production cookies receive `Secure` behind TLS termination.
 - [ ] Add HSTS only when HTTPS enforcement is verified for every production
   entry point.
+
+Integration evidence (2026-09-21): `pytest -q -m integration` passed all 3
+RabbitMQ tests using a temporary dedicated user/vhost; the user, vhost, and
+test database were removed by the test cleanup trap. The default `guest` account
+was not used because RabbitMQ correctly rejects it over the published interface.
 
 ## 12. Release test matrix
 
