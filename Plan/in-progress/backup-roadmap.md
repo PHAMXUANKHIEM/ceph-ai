@@ -241,7 +241,7 @@ Response có run ID, job type, target, artifact key, base job, size, checksum,
 duration và timestamp; lỗi chỉ trả cờ `error_available`, không trả raw error.
 Deep-link và filter đầy đủ theo pool/image/type/target sẽ tiếp tục hoàn thiện.
 
-### 6.6 Manual retention/delete `[ ]`
+### 6.6 Manual retention/delete `[~]`
 
 - Hoàn thiện executor cho `backup_delete_manual`.
 - Preview recovery point, dependency và dung lượng sẽ giải phóng.
@@ -249,6 +249,12 @@ Deep-link và filter đầy đủ theo pool/image/type/target sẽ tiếp tục 
 - Chặn full còn diff phụ thuộc và object đang immutable.
 - Approval, audit và kết quả per-target.
 - Không báo đã xóa nếu backend từ chối hoặc chỉ xóa được một phần.
+
+Đã thêm preview retention theo pool/image và endpoint chạy retention có xác nhận
+nhập lại `pool/image` cùng preview token. Preview loại full còn incremental phụ
+thuộc và immutable target khỏi danh sách xóa; action chỉ được tạo khi kế hoạch
+không stale. Worker/backend vẫn là nơi thực hiện delete và sẽ fail rõ nếu target
+từ chối, còn UI preview chi tiết và kết quả per-target sẽ tiếp tục hoàn thiện.
 
 ## 7. P2 — Độ tin cậy nâng cao
 

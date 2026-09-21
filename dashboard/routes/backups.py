@@ -21,6 +21,7 @@ own docstrings note Dashboard display was left for this story to pick up.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
 from datetime import datetime, timedelta
@@ -78,6 +79,7 @@ BACKUP_PROGRESS_ACTION_IDS = (
     "restore_drill_execute",
     "restore_rbd_image_to_production",
     "restore_rbd_image_as_new",
+    "retention_sweep_delete",
 )
 # Same constant, same values, as dashboard/routes/volumes.py|deploy_cluster.py|
 # patch.py|upgrade.py|delete_cluster.py|convert_cluster.py — no shared helper
@@ -602,6 +604,39 @@ async def backup_inventory_api(request: Request, user: str = Depends(require_log
     )}
 
 
+@router.post("/api/backups/retention/preview")
+async def backup_retention_preview_api(request: Request, user: str = Depends(require_login)):
+    del user
+    body = await request.json()
+    pool, image = str(body.get("pool", "")).strip(), str(body.get("image", "")).strip()
+    if not _RBD_NAME_RE.fullmatch(pool) or not _RBD_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=422, detail="Pool/image không hợp lệ.")
+    return _retention_preview(pool, image, selected_cluster(request))
+
+
+@router.post("/api/backups/retention/run")
+async def backup_retention_run_api(request: Request, user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    body = await request.json()
+    pool, image = str(body.get("pool", "")).strip(), str(body.get("image", "")).strip()
+    if not _RBD_NAME_RE.fullmatch(pool) or not _RBD_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=422, detail="Pool/image không hợp lệ.")
+    if str(body.get("confirmation", "")).strip() != f"{pool}/{image}":
+        raise HTTPException(status_code=422, detail="Cần nhập đúng pool/image để xác nhận retention.")
+    cluster = selected_cluster(request)
+    preview = _retention_preview(pool, image, cluster)
+    if str(body.get("preview_token", "")) != preview["preview_token"]:
+        raise HTTPException(status_code=409, detail="Preview retention đã thay đổi; hãy tạo preview mới.")
+    if not preview["candidates"]:
+        raise HTTPException(status_code=409, detail="Không có artifact an toàn để xóa theo retention.")
+    action_pk = _create_manual_backup_action(
+        "retention_sweep_delete", {"pool": pool, "image": image,
+                                    "preview_token": preview["preview_token"]}, user, cluster,
+    )
+    return JSONResponse({"action_id": action_pk, "deleted_candidates": len(preview["candidates"]),
+                         "blocked_immutable": preview["blocked_immutable"]}, status_code=201)
+
+
 def _history(tracked: list[dict], cluster=None) -> list[dict]:
     """AC #4: >= `HISTORY_LIMIT_PER_IMAGE` most recent runs PER (pool,
     image) — Story 9.1's `Index(pool, image, created_at)` (the same one
@@ -669,6 +704,41 @@ def _inventory(cluster=None, *, page: int = 1, page_size: int = 25, filters: dic
                           "error_available": bool(row.error_message)})
     return {"items": items, "total": total, "page": page, "page_size": page_size,
             "pages": max(1, (total + page_size - 1) // page_size)}
+
+
+def _retention_preview(pool: str, image: str, cluster=None) -> dict:
+    """Calculate a deletion plan from durable jobs without deleting anything."""
+    policy = load_backup_policy() or {}
+    retention = policy.get("retention") or {}
+    keep = {"full": max(1, int(retention.get("keep_full_count", 3))),
+            "incremental": max(0, int(retention.get("keep_incremental_count", 7)))}
+    immutable_slots = {str(item.get("slot")) for item in (policy.get("backup_targets") or [])
+                       if isinstance(item, dict) and item.get("immutable")}
+    candidates = []
+    blocked = []
+    protected_ids = set()
+    with db.SessionLocal() as session:
+        query = session.query(BackupJob).filter(
+            BackupJob.pool == pool, BackupJob.image == image,
+            BackupJob.status == "SUCCESS", BackupJob.job_type.in_(("full", "incremental")),
+            _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True,
+        )
+        jobs = query.order_by(BackupJob.created_at.desc()).all()
+        protected_ids = {row.base_job_id for row in jobs if row.job_type == "incremental" and row.base_job_id}
+        for slot in sorted({row.backup_target_slot for row in jobs if row.backup_target_slot}):
+            for job_type in ("full", "incremental"):
+                scoped = [row for row in jobs if row.backup_target_slot == slot and row.job_type == job_type]
+                for row in scoped[keep[job_type]:]:
+                    if row.id in protected_ids or not row.remote_key:
+                        continue
+                    item = {"job_id": row.id, "target": slot, "job_type": job_type,
+                            "remote_key": row.remote_key, "immutable": slot in immutable_slots}
+                    (blocked if item["immutable"] else candidates).append(item)
+    token_payload = json.dumps(candidates, sort_keys=True, separators=(",", ":"))
+    token = hashlib.sha256(token_payload.encode("utf-8")).hexdigest()
+    return {"pool": pool, "image": image, "keep": keep, "candidates": candidates,
+            "blocked_immutable": len(blocked), "blocked": blocked,
+            "preview_token": token}
 
 
 def _digests(cluster=None) -> list[dict]:
@@ -1035,7 +1105,7 @@ def _create_manual_backup_action(action_id: str, action_params: dict, user: str,
         existing = (
             _in_flight_action_query(
                 session,
-                ("rbd_backup_run", "backup_metadata_run", "restore_drill_execute"),
+                ("rbd_backup_run", "backup_metadata_run", "restore_drill_execute", "retention_sweep_delete"),
                 cluster,
             )
             .first()
@@ -1046,6 +1116,8 @@ def _create_manual_backup_action(action_id: str, action_params: dict, user: str,
         label = (
             f"Backup RBD thủ công cho {action_params['pool']}/{action_params['image']}"
             if action_id == "rbd_backup_run"
+            else f"Retention thủ công cho {action_params['pool']}/{action_params['image']}"
+            if action_id == "retention_sweep_delete"
             else "RestoreDrill thủ công vào scratch image được cấu hình"
             if action_id == "restore_drill_execute"
             else "Backup metadata cụm thủ công"
