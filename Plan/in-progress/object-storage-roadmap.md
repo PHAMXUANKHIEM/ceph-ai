@@ -213,7 +213,7 @@ ra chỉ bằng một click hoặc qua request thiếu capability.
     Dashboard không proxy payload. S3 credential được gửi một lần trong body
     request TLS, chỉ dùng trong bộ nhớ để ký và không vào response/audit/DB;
     secret input được xóa khỏi UI ngay sau khi tạo URL.
-- [~] **4.4 Delete/restore version** với confirmation, audit và policy check.
+- [x] **4.4 Delete/restore version** với confirmation, audit và policy check.
   - Đã thêm preview/execute server-side cho `delete_version` và
     `restore_version`, admin-only, cluster-scoped và confirmation token gắn với
     bucket/key/version ID.
@@ -323,7 +323,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | Bucket Logging delivery | Đang làm | Thêm flow cấu hình tự chọn native/compatibility, persistence/checkpoint, worker delivery 5 phút, preview/confirmation/audit và UI. Native dùng PutBucketLogging từ Tentacle 20; compatibility ghi JSONL từ Beast log trên Ceph 14–19. | Targeted logging regression: 56 passed; Alembic một head `e5a7b9c2d401`; chạy full regression trước commit. | Chưa commit; cần kiểm chứng với RGW thật và policy của target bucket. |
 | 2026-08-17 | 4.2 | Hoàn thành | Thêm Object Detail read-only cho metadata, tags, version ID, retention và legal hold; owner/cluster validation, temporary-key cleanup và capability gate Octopus 15 cho Tagging/Object Lock. | Full Object Storage + migration regression: 120 tests passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 4.3 upload/download qua presigned URL. |
 | 2026-08-17 | 4.3 | Hoàn thành | Thêm preview/execute presigned upload/download, URL tối đa 15 phút, upload POST policy giới hạn type/size, version-aware download, admin RBAC, confirmation và secret-free audit. File đi trực tiếp client↔RGW, không proxy Dashboard. | Full Object Storage + migration regression: 122 tests passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 4.4 delete/restore object version. |
-| 2026-09-21 | 4.4 | Đang làm | Thêm Object Version Operations trên bucket detail: preview/execute xóa hoặc khôi phục version, confirmation token mạnh, re-check trước mutation, audit object-scoped, Object Lock/retention/legal-hold guard và UI action theo từng version. Restore version thường tạo current version mới; delete marker được xử lý riêng. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py`: 60 passed; `python3 -m py_compile`, `node --check dashboard/static/object_storage_browser.js`, `git diff --check` sạch. Test có cảnh báo RGW live timeout ở fallback capability nhưng không fail. | Chưa commit; tiếp theo chạy regression liên quan Object Storage/RGW, kiểm chứng RGW thật rồi đóng 4.4/4.5. |
+| 2026-09-21 | 4.4 | Hoàn thành | Thêm Object Version Operations trên bucket detail: preview/execute xóa hoặc khôi phục version, confirmation token mạnh, re-check trước mutation, audit object-scoped, Object Lock/retention/legal-hold guard và UI action theo từng version. Restore version thường tạo current version mới; delete marker được xử lý riêng. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py`: 60 passed; `python3 -m py_compile`, `node --check dashboard/static/object_storage_browser.js`, `git diff --check` sạch. Test có cảnh báo RGW live timeout ở fallback capability nhưng không fail. | Commit `a23ae94`, đã push `main`; tiếp theo hoàn tất 4.5 release matrix và kiểm chứng RGW thật. |
 
 ## Ghi chú bàn giao
 
