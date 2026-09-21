@@ -260,7 +260,8 @@ def test_boot_dependency_deleted_consumer_and_glance_outage_are_partial():
     assert result["status"] == "partial"
     assert result["guards"]["protect_boot_volume"] is True
     assert result["guards"]["direct_delete_supported"] is False
-    assert any("Nova server" in gap for gap in result["evidence_gaps"])
+    assert result["boot_volume"]["source"] == "bootable_volume"
+    assert result["servers"][0]["status"] == "not_found"
     assert any("Glance" in gap for gap in result["evidence_gaps"])
     assert any("Cinder snapshots" in gap for gap in result["evidence_gaps"])
     assert result["mutation_supported"] is False
