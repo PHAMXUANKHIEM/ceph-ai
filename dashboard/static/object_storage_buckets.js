@@ -667,3 +667,54 @@ function bucketHighlightJSON(value) {
   refresh.addEventListener("click", load);
   load();
 })();
+
+(function () {
+  var panel = document.getElementById("rgw-health");
+  if (!panel) return;
+  var status = document.getElementById("rgw-health-status");
+  var refresh = document.getElementById("rgw-health-refresh");
+  function text(id, value) { document.getElementById(id).textContent = value == null || value === "" ? "—" : String(value); }
+  function details(section) { return section && section.details && typeof section.details === "object" ? section.details : {}; }
+  function identity(section) {
+    var value = details(section);
+    return value.name || value.id || value.epoch || value.status || (section && section.status) || "—";
+  }
+  function state(section) {
+    var value = details(section);
+    return value.sync_status || value.status || (section && section.status) || "—";
+  }
+  function load() {
+    refresh.disabled = true;
+    status.textContent = "Đang tải RGW health và topology…";
+    var query = "?cluster=" + encodeURIComponent(panel.dataset.cluster);
+    Promise.all([
+      fetch("/api/object-storage/rgw-evidence" + query, {cache: "no-store"}).then(function (response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Không đọc được RGW evidence"); }); }),
+      fetch("/api/object-storage/multisite-diagnosis" + query, {cache: "no-store"}).then(function (response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Không đọc được multisite diagnosis"); }); })
+    ]).then(function (results) {
+      var evidence = results[0] || {};
+      var diagnosis = results[1] || {};
+      var daemons = evidence.daemons || {};
+      var endpoints = evidence.endpoints || {};
+      var frontend = evidence.frontend || {};
+      var sync = evidence.sync || {};
+      text("rgw-health-daemons", (daemons.items || []).length + " · " + (daemons.status || "—"));
+      text("rgw-health-endpoints", (endpoints.items || []).join(", ") || endpoints.status || "—");
+      text("rgw-health-frontend", (frontend.items || []).map(function (item) { return item.key + "=" + item.value; }).join(", ") || frontend.status || "—");
+      text("rgw-health-sync", state(sync));
+      text("rgw-health-realm", identity((evidence.topology || {}).realm));
+      text("rgw-health-zonegroup", identity((evidence.topology || {}).zonegroup));
+      text("rgw-health-zone", identity((evidence.topology || {}).zone));
+      text("rgw-health-period", identity(evidence.period));
+      var lag = diagnosis.observed && diagnosis.observed.lag ? diagnosis.observed.lag.seconds : null;
+      var findings = (diagnosis.findings || []).length;
+      text("rgw-health-diagnosis", (diagnosis.status || "—") + " · " + findings + " finding(s)" + (lag == null ? "" : " · lag " + lag + "s"));
+      var capacity = evidence.capacity || {};
+      text("rgw-health-capacity", "Capacity dependency: " + ((capacity.items || []).length ? (capacity.items || []).length + " placement pool(s) mapped" : (capacity.status || "not available")));
+      var gaps = (evidence.evidence_gaps || []).concat(diagnosis.evidence_gaps || []);
+      status.textContent = "Evidence " + (evidence.status || "unknown") + " · diagnosis " + (diagnosis.status || "unknown") + (gaps.length ? " · " + gaps[0] : "");
+    }).catch(function (error) { status.textContent = "Không tải được RGW health: " + error.message; })
+      .finally(function () { refresh.disabled = false; });
+  }
+  refresh.addEventListener("click", load);
+  load();
+})();

@@ -257,10 +257,13 @@ và cluster, không spam khi metric nguồn gián đoạn.
 
 ### 6. RGW và Multi-site Health — ưu tiên P2
 
-- [ ] **6.1 RGW service overview**: daemon up/down, endpoint reachability,
-  frontend config/version và capacity dependency.
-- [ ] **6.2 Multi-site topology**: realm, zonegroup, zone, master state và
-  replication/sync lag nếu triển khai.
+- [~] **6.1 RGW service overview**: đã có evidence collector và panel Bucket
+  Overview hiển thị daemon count/status, endpoint, frontend config, sync state
+  và capacity dependency theo cluster. Legacy systemd adapter và endpoint
+  reachability chủ động còn là release acceptance.
+- [~] **6.2 Multi-site topology**: đã có snapshot realm/zonegroup/zone/period,
+  sync status và diagnosis lag/shard/conflict/period-master ở chế độ read-only.
+  Cần tiếp tục kiểm chứng topology thật và các trạng thái failover.
 - [ ] **6.3 Read-only diagnostic**: command output chuẩn hóa, evidence snapshot,
   hướng dẫn xử lý; không tự sửa topology.
 - [ ] **6.4 Controlled remediation (chỉ sau khi có policy riêng)**: action đóng,
@@ -329,6 +332,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | 4.3 | Hoàn thành | Thêm preview/execute presigned upload/download, URL tối đa 15 phút, upload POST policy giới hạn type/size, version-aware download, admin RBAC, confirmation và secret-free audit. File đi trực tiếp client↔RGW, không proxy Dashboard. | Full Object Storage + migration regression: 122 tests passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 4.4 delete/restore object version. |
 | 2026-09-21 | 4.4 | Hoàn thành | Thêm Object Version Operations trên bucket detail: preview/execute xóa hoặc khôi phục version, confirmation token mạnh, re-check trước mutation, audit object-scoped, Object Lock/retention/legal-hold guard và UI action theo từng version. Restore version thường tạo current version mới; delete marker được xử lý riêng. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py`: 60 passed; `python3 -m py_compile`, `node --check dashboard/static/object_storage_browser.js`, `git diff --check` sạch. Test có cảnh báo RGW live timeout ở fallback capability nhưng không fail. | Commit `a23ae94`, đã push `main`; tiếp theo hoàn tất 4.5 release matrix và kiểm chứng RGW thật. |
 | 2026-09-21 | 4.5 / 5.2 | Đang làm | Hoàn thiện release-matrix tests cho Object Version và thêm RGW Observability panel trên Bucket Overview: requests, bytes, error rate, p95 latency, top buckets/requesters, refresh và evidence-gap status theo cluster. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py tests/test_rgw_audit_intelligence.py`: 70 passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo kiểm tra RGW service/multi-site health và giữ release acceptance live-read-only riêng. |
+| 2026-09-21 | 6.1 / 6.2 | Đang làm | Thêm panel RGW Health / Multi-site trên Bucket Overview, dùng evidence và diagnosis API read-only để hiển thị daemon, endpoint, frontend, sync, realm/zonegroup/zone/period, lag/findings và capacity dependency; không có remediation tự động. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py tests/test_rgw_audit_intelligence.py tests/test_rgw_evidence.py tests/test_rgw_multisite_diagnosis.py`: 77 passed; `node --check dashboard/static/object_storage_buckets.js`, Python syntax và `git diff --check` sạch. | Chưa commit; tiếp theo hardening release gate, kiểm chứng failover/live-read-only và legacy systemd adapter. |
 
 ## Ghi chú bàn giao
 

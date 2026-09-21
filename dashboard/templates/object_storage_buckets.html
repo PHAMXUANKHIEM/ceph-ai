@@ -56,6 +56,23 @@
       </div>
     </section>
 
+    <section id="rgw-health" class="card rgw-health-card" data-cluster="{{ selected_cluster.id }}" aria-labelledby="rgw-health-title">
+      <div class="card-header"><div><p class="eyebrow">RGW HEALTH / MULTI-SITE</p><h2 id="rgw-health-title">Service and topology evidence</h2><p class="hint">Snapshot read-only từ RGW, Ceph MON/MGR và sync status; không tự thay đổi topology.</p></div><button type="button" class="btn btn-ghost btn-sm" id="rgw-health-refresh">Làm mới</button></div>
+      <div class="rgw-health-body">
+        <div class="rgw-health-grid">
+          <div class="rgw-health-item"><span>Daemons</span><strong id="rgw-health-daemons">—</strong></div>
+          <div class="rgw-health-item"><span>Endpoints</span><strong id="rgw-health-endpoints">—</strong></div>
+          <div class="rgw-health-item"><span>Frontend</span><strong id="rgw-health-frontend">—</strong></div>
+          <div class="rgw-health-item"><span>Sync</span><strong id="rgw-health-sync">—</strong></div>
+        </div>
+        <div class="rgw-topology-grid">
+          <section><h3>Topology</h3><dl><div><dt>Realm</dt><dd id="rgw-health-realm">—</dd></div><div><dt>Zonegroup</dt><dd id="rgw-health-zonegroup">—</dd></div><div><dt>Zone</dt><dd id="rgw-health-zone">—</dd></div><div><dt>Period</dt><dd id="rgw-health-period">—</dd></div></dl></section>
+          <section><h3>Diagnosis</h3><p id="rgw-health-diagnosis" class="hint">Đang tải…</p><p id="rgw-health-capacity" class="hint">Capacity dependency: —</p></section>
+        </div>
+        <p id="rgw-health-status" class="hint" role="status">Đang tải RGW health…</p>
+      </div>
+    </section>
+
     {% set filters = "&query=" ~ quote_query(inventory.query) ~ "&owner=" ~ quote_query(inventory.owner or '') ~ "&quota=" ~ inventory.quota ~ "&usage=" ~ inventory.usage %}
     {% if inventory.refreshing or inventory.refresh_error %}<style>.bucket-empty-state-card:not(.bucket-loading-placeholder) { display: none !important; }</style>{% endif %}
     <section id="bucket-overview-panel" class="card bucket-overview-card{% if inventory.refreshing and not inventory.stale %} bucket-inventory-loading{% endif %}">
