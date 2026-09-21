@@ -28,6 +28,7 @@ BLOCK_STORAGE_OVERVIEW_LIMIT = 10
 # value while one background refresh is running for up to another 30 minutes.
 BLOCK_STORAGE_CACHE_TTL_SECONDS = 1800
 BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS = 3600
+BLOCK_STORAGE_API_VERSION = "v1"
 
 
 class BlockStorageInventory(list):
@@ -311,6 +312,57 @@ def _cached_block_storage(cluster) -> list[dict]:
         ttl_seconds=BLOCK_STORAGE_CACHE_TTL_SECONDS,
         stale_ttl_seconds=BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
     )
+
+
+@router.get("/api/v1/block-storage/contract", tags=["block-storage"])
+async def block_storage_api_contract(request: Request, user: str = Depends(require_login)):
+    """Publish the stable client contract without exposing credentials or commands."""
+    del user
+    _clusters, cluster = cluster_selection(request)
+    return {
+        "api_version": BLOCK_STORAGE_API_VERSION,
+        "resource": "block_storage",
+        "cluster_id": cluster.id,
+        "read_only": True,
+        "compatibility": {
+            "legacy_routes_supported": True,
+            "canonical_prefix": "/api/v1/block-storage",
+            "openapi": "/openapi.json",
+        },
+        "inventory": {
+            "endpoint": "/api/volumes/{pool}/inventory",
+            "detail_endpoint": "/api/volumes/{pool}/inventory/{image}",
+            "cluster_scope_required": True,
+            "stale_state_is_explicit": True,
+        },
+        "mutation": {
+            "direct_execution": False,
+            "response_status": "PENDING_APPROVAL",
+            "required_header": "Idempotency-Key",
+            "replay_is_safe": True,
+            "post_check_required": True,
+        },
+        "job_status": {
+            "action_id_returned": True,
+            "polling_supported": True,
+            "progress_is_bounded": True,
+            "terminal_states": ["EXECUTED", "FAILED", "REJECTED", "INCONCLUSIVE"],
+        },
+        "webhook": {
+            "block_storage_specific_webhook": False,
+            "fallback": "poll action status using action_id",
+        },
+        "iac": {
+            "terraform_provider": "not_available",
+            "sdk": "not_available",
+            "policy_bypass": False,
+        },
+        "error_contract": {
+            "unsupported": "HTTP 404/409 with operator-safe detail",
+            "backend_unavailable": "HTTP 502",
+            "missing_evidence": "HTTP 200 with status=INSUFFICIENT_EVIDENCE where applicable",
+        },
+    }
 
 
 @router.get("/block-storage", response_class=HTMLResponse)
