@@ -965,7 +965,15 @@ def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster 
         return
     try:
         telegram_outbox.enqueue_alert_call_and_dispatch(
-            event_id=f"log-finding:{cluster.id if cluster is not None else 'default'}:{payload.get('dedupe_key') or payload.get('title') or 'unknown'}",
+            # The dedupe key identifies the logical problem, while the
+            # finding id identifies one OPEN -> RESOLVED lifecycle.  Reusing
+            # only the logical key would make Telegram's durable outbox
+            # suppress a legitimate alert when the same problem reopens.
+            event_id=(
+                f"log-finding:{cluster.id if cluster is not None else 'default'}:"
+                f"{payload.get('dedupe_key') or payload.get('title') or 'unknown'}:"
+                f"{payload.get('finding_id') or 'unknown'}"
+            ),
             category="log-intelligence",
             function="send_log_finding_alert",
             args=(
@@ -1011,7 +1019,7 @@ def resolve_stale_findings(
     Trả về số bản ghi đã chuyển sang RESOLVED.
     """
     resolved_items: list[tuple[str, str, list[str], str | None]] = []
-    pending_items: list[tuple[str, str, str, tuple[str, ...], str]] = []
+    pending_items: list[tuple[str, str, str, str, tuple[str, ...], str, str]] = []
     with db.SessionLocal() as session:
         open_findings = (
             session.query(LogFinding)
@@ -1065,11 +1073,13 @@ def resolve_stale_findings(
                         if should_notify:
                             finding.recovery_notified_at = window_start
                             pending_items.append((
+                                finding.id,
                                 finding.dedupe_key,
                                 finding.title or "(không tiêu đề)",
                                 verification.summary,
                                 verification.live_facts,
                                 verification.code,
+                                window_start.isoformat(),
                             ))
                         logger.warning(
                             "log_analysis: giữ finding RGW %s OPEN; recovery gate=%s — %s",
@@ -1133,10 +1143,16 @@ def resolve_stale_findings(
         except Exception:
             logger.exception("log_analysis: log recovery notification failed")
 
-    for dedupe_key, title, summary, live_facts, verification_code in pending_items:
+    for finding_id, dedupe_key, title, summary, live_facts, verification_code, notified_at in pending_items:
         try:
             telegram_outbox.enqueue_alert_call_and_dispatch(
-                event_id=f"log-finding-recovery-pending:{cluster_id}:{dedupe_key}:{verification_code}",
+                # Keep one durable outbox event per finding lifecycle and
+                # reminder interval.  A repeated call for the same interval
+                # remains idempotent, while a later interval is deliverable.
+                event_id=(
+                    f"log-finding-recovery-pending:{cluster_id}:{finding_id}:"
+                    f"{verification_code}:{notified_at}"
+                ),
                 category="log-intelligence",
                 function="send_log_finding_recovery_pending_alert",
                 args=(title, summary, live_facts),
