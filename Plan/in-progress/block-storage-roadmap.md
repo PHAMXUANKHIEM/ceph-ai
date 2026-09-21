@@ -435,8 +435,11 @@ capacity và không áp QoS hoặc benchmark sai target.
   - Còn preflight create/configure/delete, autoscaler recommendation có
     capability detection theo release, quota/application tag action và live
     acceptance trên pool non-empty/unsupported backend.
-- [ ] **6.6 Test**: degraded cluster, insufficient replica/failure domains,
+- [~] **6.6 Test**: degraded cluster, insufficient replica/failure domains,
   stale lock, pool non-empty, unsupported EC/RBD feature và action guard.
+  - Đã bổ sung acceptance matrix cho degraded/stale PG, OSD không map được,
+    invalid replica policy, thiếu EC profile và stale inventory; còn live
+    Ceph acceptance và kiểm thử mutation guard qua Worker/approval.
 
 **Hoàn thành khi:** hệ thống chặn thao tác làm giảm độ bền dưới policy và không
 force-unlock/delete pool chỉ từ một tín hiệu quan sát.
@@ -471,8 +474,11 @@ force-unlock/delete pool chỉ từ một tín hiệu quan sát.
     post-check, action polling và fail-closed error contract. Contract ghi rõ
     Terraform provider/SDK và webhook riêng chưa có; không có đường bypass
     policy của Dashboard.
-- [ ] **7.5 Test**: orphan mapping, deleted consumer, multi-attach, control-plane
+- [~] **7.5 Test**: orphan mapping, deleted consumer, multi-attach, control-plane
   outage, tenant isolation và eventual consistency.
+  - Đã bổ sung acceptance matrix cho orphan/insufficient evidence, deleted
+    consumer, multi-attach, control-plane outage, pool scope và eventual
+    consistency; còn live Controller/Nova/Glance/gateway acceptance.
 
 **Hoàn thành khi:** thao tác đối với volume được quản lý bởi control plane ngoài
 luôn đi qua source of truth tương ứng và không làm lệch metadata.

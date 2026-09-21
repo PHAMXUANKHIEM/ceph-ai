@@ -15,6 +15,7 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
 from shared import audit, db, env_config
+from shared.clusters import get_default_cluster_id
 from shared.ceph_releases import codenames_oldest_first, versions_by_codename
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from watcher.ceph_client import HostKeyProvisionError, forget_host_key, provision_host_key
@@ -351,6 +352,7 @@ async def deploy_cluster_page(request: Request, user: str = Depends(require_logi
                 .order_by(Action.created_at.desc())
                 .first()
             )
+            realtime_cluster_id = get_default_cluster_id(session)
     except SQLAlchemyError:
         logger.exception("deploy_cluster_page: failed to query DB")
         raise HTTPException(
@@ -392,6 +394,7 @@ async def deploy_cluster_page(request: Request, user: str = Depends(require_logi
             "last_action": last_action,
             "last_action_params": last_action_params,
             "progress": progress,
+            "realtime_cluster_id": realtime_cluster_id,
         },
     )
 
@@ -597,4 +600,4 @@ async def deploy_cluster_progress(user: str = Depends(require_login)):
         except (TypeError, ValueError):
             progress = []
         progress = _with_step_display_times(progress)
-        return JSONResponse({"status": action.status, "progress": progress})
+        return JSONResponse({"status": action.status, "progress": progress, "action_id": action.id})

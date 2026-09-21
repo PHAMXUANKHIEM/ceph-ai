@@ -11,7 +11,7 @@
 <body>
   {% include "_nav.html" %}
 
-  <main class="page cluster-lifecycle-page deploy-cluster-page">
+  <main class="page cluster-lifecycle-page deploy-cluster-page" data-cluster-id="{{ realtime_cluster_id }}">
     <header class="lifecycle-page-header">
       <div><div class="lifecycle-eyebrow">CLUSTER LIFECYCLE / PROVISION</div><h1>Deploy Cluster</h1><p>Tạo kế hoạch triển khai Ceph theo từng node, xem trước lệnh và duyệt trước khi thực thi.</p></div>
       <span class="lifecycle-page-badge is-primary">PREVIEW / APPROVAL</span>
@@ -180,6 +180,7 @@
             <button type="button" class="btn btn-sm btn-ghost" id="df-log-copy">Copy</button>
           </div>
         </div>
+        <div id="df-realtime-alert" class="snapshot-event-alert" role="status" aria-live="polite" hidden></div>
         <div class="card-body">
           {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}
           <p><strong>Quy trình sẽ thực hiện:</strong></p>
@@ -211,7 +212,7 @@
   </main>
 
   <script type="application/json" id="deploy-initial-state">
-    {{ {"status": pending_action.status if pending_action else (last_action.status if last_action else None), "progress": progress, "not_yet_supported_methods": not_yet_supported_methods, "is_admin": is_admin}|tojson }}
+    {{ {"status": pending_action.status if pending_action else (last_action.status if last_action else None), "action_id": pending_action.id if pending_action else (last_action.id if last_action else None), "progress": progress, "not_yet_supported_methods": not_yet_supported_methods, "is_admin": is_admin}|tojson }}
   </script>
   <script type="application/json" id="versions-by-codename-data">
     {{ versions_by_codename|tojson }}
@@ -219,8 +220,8 @@
   <script type="application/json" id="deploy-last-action-params-data">
     {{ last_action_params|tojson }}
   </script>
+  <script src="/static/app.js?v={{ static_version }}"></script>
   <script src="/static/deploy_cluster.js?v={{ static_version }}"></script>
   <script src="/static/custom_selects.js?v={{ static_version }}"></script>
-  <script src="/static/app.js?v={{ static_version }}"></script>
 </body>
 </html>

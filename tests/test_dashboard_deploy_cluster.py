@@ -375,6 +375,7 @@ def test_progress_endpoint_returns_latest_action_status_and_progress(dashboard_c
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "APPROVED"
+    assert body["action_id"] == action_pk
     # 2026-07-28: the route now also annotates each step with
     # started_at_display/finished_at_display (deploy_cluster.py::
     # _with_step_display_times) — None here since this step dict has no
