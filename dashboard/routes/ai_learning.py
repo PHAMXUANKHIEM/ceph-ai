@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -246,6 +247,34 @@ def _volume_quality(mape: float | None, outcomes: int) -> tuple[str, str, float 
     return "NEEDS_IMPROVEMENT", "MAPE còn lớn hơn 20%.", accuracy
 
 
+def _model_quality_summary(evaluations: list[ForecastModelEvaluation]) -> dict:
+    """Aggregate bounded model-quality evidence for the read-only dashboard."""
+
+    def mean(name: str) -> float | None:
+        values = [float(getattr(row, name)) for row in evaluations if getattr(row, name) is not None]
+        return round(sum(values) / len(values), 4) if values else None
+
+    evidence = []
+    for row in evaluations:
+        try:
+            payload = json.loads(row.evidence_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        if isinstance(payload, dict):
+            evidence.append(payload)
+    return {
+        "evaluations": len(evaluations),
+        "paired_outcomes": sum(min(int(row.active_evaluated), int(row.candidate_evaluated)) for row in evaluations),
+        "active_mae": mean("active_mae"),
+        "candidate_mae": mean("candidate_mae"),
+        "active_smape": mean("active_smape"),
+        "candidate_smape": mean("candidate_smape"),
+        "candidate_bias": mean("candidate_bias"),
+        "drifted": sum(payload.get("candidate_drift_status") == "DRIFT" for payload in evidence),
+        "resource_budget_failures": sum(payload.get("resource_budget_ok") is False for payload in evidence),
+    }
+
+
 def model_promotion_status(cluster_id: str, cluster_name: str) -> dict:
     """Return registry state and guarded-promotion evidence for the UI.
 
@@ -286,7 +315,10 @@ def model_promotion_status(cluster_id: str, cluster_name: str) -> dict:
                 "status": row.status,
                 "promotion_reason": row.promotion_reason,
                 "blocked_reason": row.blocked_reason,
+                "scope_schema": row.scope_schema,
+                "scope_ready": model_registry._scope_ready(row),
                 "evaluation_count": len(evaluations),
+                "quality": _model_quality_summary(evaluations),
                 "latest_evaluation": {
                     "target_at": evaluations[0].target_at,
                     "status": evaluations[0].status,
