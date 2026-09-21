@@ -245,15 +245,21 @@ toàn bộ object list vào memory hoặc làm lộ credential S3.
   Overview, hiển thị request count, bytes, error rate, latency p95, top bucket
   và top requester theo cluster đang chọn. Hiện panel dùng cửa sổ audit hiện
   tại; trend lịch sử dài hạn vẫn chờ retention store/Prometheus ở mục 5.1.
-- [ ] **5.3 Alert rules**: quota 80/90/95%, 5xx spike, access denied spike,
-  hot bucket và access bất thường; deduplicate/resolve lifecycle qua Telegram.
+- [~] **5.3 Alert rules**: đã thêm `watcher/rgw_alerting.py` với rule
+  deterministic cho quota 80/90/95% (khi có bucket stats), 5xx spike, access
+  denied spike, hot bucket và access bất thường từ audit intelligence. Incident
+  dedupe theo `cluster_id + ceph_code + dedupe_key`, tự resolve khi tín hiệu
+  biến mất và gửi Telegram theo channel của đúng cluster. Worker Watcher đã
+  chạy scan audit rows và bounded `radosgw-admin bucket stats` mỗi 5 phút;
+  Prometheus/retention dài hạn và link Dashboard trực tiếp tới bucket vẫn còn.
 - [~] **5.4 Export report CSV/JSON**: đã thêm endpoint JSON/CSV dùng chung
   bounded RGW metrics payload, cluster scope, Content-Disposition và không xuất
   raw audit row/secret. Quyền export đang kế thừa read-only dashboard; cần
   hoàn thiện retention/role policy ở hardening gate.
-- [~] **5.5 Test**: đã có test bounded aggregation, error-rate, deduplication,
-  cluster scope, missing evidence và stale cache contract; còn thiếu threshold,
-  timezone/retention dài hạn và cross-cluster alert isolation khi bật alert.
+- [~] **5.5 Test**: đã bổ sung test threshold, fail-closed khi thiếu evidence,
+  wiring audit intelligence, dedupe/resolve lifecycle và cross-cluster
+  isolation; còn thiếu timezone/retention dài hạn, quota collector thật và
+  live RGW acceptance.
 
 **Hoàn thành khi:** cảnh báo chỉ gửi khi transition thật, có link về đúng bucket
 và cluster, không spam khi metric nguồn gián đoạn.
@@ -343,6 +349,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-09-21 | 6.3 | Đang làm | Bổ sung danh sách finding/evidence gap trên panel RGW Health, chỉ render text đã chuẩn hóa từ diagnosis API, không tạo action hoặc thay đổi topology. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py tests/test_rgw_evidence.py tests/test_rgw_multisite_diagnosis.py`: 71 passed; JS/Python syntax và `git diff --check` sạch. | Chưa commit; tiếp theo viết runbook finding và release gate failover/legacy adapter. |
 | 2026-09-21 | 6.3 / 7.3 | Đang làm | Thêm runbook `docs/runbook-rgw-object-storage.md`: kiểm tra read-only, finding daemon/endpoint/sync/shard/period/capacity, object version safety và release acceptance; cấm remediation topology trong smoke test. | Tài liệu không làm thay đổi runtime; regression trước đó 71 passed vẫn đạt. | Chưa commit; tiếp theo bổ sung failover/legacy adapter acceptance và hardening gate. |
 | 2026-09-21 | 5.4 | Đang làm | Thêm export `GET /api/object-storage/rgw-metrics/export?format=json|csv`, dùng cùng payload với dashboard, giới hạn map/count và evidence gaps, không trả raw log hay secret. Thêm nút JSON/CSV trên panel Observability. | `pytest -q --disable-warnings tests/test_rgw_audit_intelligence.py tests/test_dashboard_object_storage.py`: 71 passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo review role/retention policy và alert lifecycle. |
+| 2026-09-21 | 5.3 / 5.5 | Đang làm | Thêm `watcher/rgw_alerting.py`: rule quota 80/90/95% từ bounded `radosgw-admin bucket stats`, 5xx/access-denied spike, hot bucket và abnormal access từ audit intelligence. Tạo/update/resolve Incident scoped theo cluster và dedupe key; scan audit rows + quota mỗi 5 phút, không tạo Action hay mutation RGW. | `pytest -q --disable-warnings tests/test_rgw_alerting.py tests/test_rgw_audit_intelligence.py tests/test_watcher_incident_flow.py`: 52 passed; `python3 -m py_compile watcher/rgw_alerting.py watcher/main.py`; `git diff --check` sạch. | Chưa commit; tiếp theo bổ sung link target bucket, retention/Prometheus và live RGW/Telegram acceptance. |
 
 ## Ghi chú bàn giao
 

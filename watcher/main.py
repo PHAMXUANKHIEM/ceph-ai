@@ -37,6 +37,7 @@ from watcher import (
     host_metrics,
     learning_retention,
     performance_rca_monitor,
+    rgw_alerting,
     volume_topology,
     vitastor_monitor,
 )
@@ -930,6 +931,7 @@ def run(
     last_capacity_forecast_scan_at: Optional[datetime] = None
     last_database_size_scan_at: Optional[datetime] = None
     last_trash_capacity_scan_at: Optional[datetime] = None
+    last_rgw_alert_scan_at: Optional[datetime] = None
     last_incident_reminder_scan_at: Optional[datetime] = None
     # Giữ lại giữa các vòng: khi một lần poll health thất bại, dùng tiếp tập
     # mute của lần thành công gần nhất còn hơn là coi như không có gì bị mute
@@ -1163,6 +1165,26 @@ def run(
                 background=max_iterations is None,
             )
             last_trash_capacity_scan_at = trash_now
+
+        # RGW alerting consumes durable audit rows only.  It is independent
+        # from the Ceph health poll and never executes an RGW mutation.
+        rgw_now = utc_now()
+        if (
+            last_rgw_alert_scan_at is None
+            or (rgw_now - last_rgw_alert_scan_at).total_seconds()
+            >= rgw_alerting.RGW_ALERT_SCAN_INTERVAL_SECONDS
+        ):
+            def scan_rgw_alerts() -> None:
+                try:
+                    rgw_alerting.scan_and_alert(cluster_id)
+                except Exception:
+                    logger.exception("run: RGW alert scan failed")
+
+            _run_auxiliary_scan(
+                f"rgw-alerts-{cluster_id or 'default'}", scan_rgw_alerts,
+                background=max_iterations is None,
+            )
+            last_rgw_alert_scan_at = rgw_now
 
         # 2026-08-01 (Story C): DeviceHealth-driven evacuation-proposal scan
         # — own independent try/except (same isolation reasoning as the
@@ -1708,6 +1730,7 @@ def run_observed_cluster_loop(
     last_volume_scan_at: Optional[datetime] = None
     last_volume_topology_scan_at: Optional[datetime] = None
     last_trash_capacity_scan_at: Optional[datetime] = None
+    last_rgw_alert_scan_at: Optional[datetime] = None
     last_capacity_forecast_scan_at: Optional[datetime] = None
     last_capability_scan_at: Optional[datetime] = None
     last_log_intel_scan_at: Optional[datetime] = None
@@ -1854,6 +1877,18 @@ def run_observed_cluster_loop(
                     lambda: trash_capacity_monitor.check_and_alert(cluster),
                 )
                 last_trash_capacity_scan_at = trash_now
+
+            rgw_now = utc_now()
+            if (
+                last_rgw_alert_scan_at is None
+                or (rgw_now - last_rgw_alert_scan_at).total_seconds()
+                >= rgw_alerting.RGW_ALERT_SCAN_INTERVAL_SECONDS
+            ):
+                run_auxiliary_scan(
+                    f"rgw-alerts-{cluster.id}",
+                    lambda: rgw_alerting.scan_and_alert(cluster.id),
+                )
+                last_rgw_alert_scan_at = rgw_now
 
             now = utc_now()
             if stop_event is not None and stop_event.is_set():
