@@ -18,6 +18,7 @@ layers smarter severity classification and de-dup on top of this.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta
 from shared.time import utc_now
 from typing import TYPE_CHECKING
@@ -25,12 +26,10 @@ from typing import TYPE_CHECKING
 import httpx
 
 from config.settings import settings
-from shared import db
+from shared import db, telegram_outbox
 from shared.clusters import list_active_clusters
 from shared.models import BackupJob
 from shared.notification_channels import enqueue_external_alert
-from shared.telegram_alerts import send_managed_channel_alert, send_telegram_alert_with_ai
-from shared.telegram_client import TelegramSendError, send_telegram_message
 from worker.backup.cluster_scope import parse_tracked_images
 from worker.backup.policy_config import load_backup_policy
 
@@ -43,43 +42,16 @@ RPO_HOURS = 24
 METADATA_RPO_HOURS = 12
 RESTORE_DRILL_RPO_HOURS = 192
 WEBHOOK_TIMEOUT_SECONDS = 10
-_MAX_TELEGRAM_MESSAGE_CHARS = 700
-
-# Prefixed onto every Telegram message so a severity is readable at a
-# glance in a phone notification preview, before the operator even opens
-# the chat — the generic webhook payload already carries severity as a
-# separate JSON field, but a Telegram message is just one text blob.
-_TELEGRAM_SEVERITY_PREFIX = {
-    "critical": "\U0001f534 CRITICAL",  # red circle
-    "warning": "\U0001f7e1 WARNING",  # yellow circle
-    "info": "ℹ️ INFO",  # info symbol
-}
-
 
 def _send_telegram_alert(
     severity: str, message: str, backup_job_id: str | None, cluster: "Cluster | None" = None
 ) -> None:
-    """Best-effort, same posture as the webhook POST below — a Telegram
-    delivery failure (bad token, chat id the bot was never added to,
-    network) is logged and swallowed, never allowed to fail the backup/
-    drill run that triggered this alert. 2026-08-06: this Backup channel
-    has its own independent Bot Token/Chat ID (no longer shared with
-    Lỗi cụm/Phần cứng) — checked here (along with `telegram_backup_enabled`,
-    2026-08-07's separate on/off toggle) rather than relying on
-    send_telegram_message's own "missing config" error, so an operator who
-    simply hasn't set up (or has paused) this channel never sees a log
-    entry about it failing.
+    """Queue a backup notification and deliver it after the DB commit.
 
-    `cluster` (multi-tenant remediation Phase 3): `None` means the default
-    cluster (unchanged — the global `telegram_backup_*` channel above). An
-    additional cluster routes to its OWN Phase 2 channel
-    (`cluster.telegram_bot_token/chat_id`) instead — reusing the same
-    fields `dashboard/telegram_approval_bot.py::channels_for_incident`
-    already uses for its Incidents/RISKY approvals. If that cluster has no
-    channel configured, this is skipped (logged only) rather than falling
-    back to the global Backup channel — never leak one cluster's backup
-    status into another's ops channel, same narrowing posture Phase 2
-    itself established."""
+    Only non-secret alert context is persisted. Telegram credentials are
+    resolved by the outbox dispatcher at delivery time. A queue failure is
+    logged and swallowed so notification handling never breaks a backup run.
+    """
     if cluster is not None:
         if not cluster.telegram_enabled or not cluster.telegram_bot_token or not cluster.telegram_chat_id:
             logger.info(
@@ -87,7 +59,8 @@ def _send_telegram_alert(
                 cluster.id,
             )
             return
-        bot_token, chat_id, cluster_name = cluster.telegram_bot_token, cluster.telegram_chat_id, cluster.name.strip()
+        cluster_id = str(cluster.id)
+        cluster_name = cluster.name.strip()
     else:
         if (
             not settings.telegram_backup_enabled
@@ -95,34 +68,24 @@ def _send_telegram_alert(
             or not settings.telegram_backup_chat_id
         ):
             return
-        bot_token, chat_id = settings.telegram_backup_bot_token, settings.telegram_backup_chat_id
+        cluster_id = None
         cluster_name = settings.cluster_name.strip()
 
-    prefix = _TELEGRAM_SEVERITY_PREFIX.get(severity, severity.upper())
-    compact_message = "\n".join(
-        " ".join(line.split()) for line in message.splitlines() if line.strip()
+    event_id = (
+        f"backup-alert:{cluster_id or 'default'}:"
+        f"{backup_job_id or 'adhoc'}:{uuid.uuid4().hex}"
     )
-    if len(compact_message) > _MAX_TELEGRAM_MESSAGE_CHARS:
-        compact_message = compact_message[: _MAX_TELEGRAM_MESSAGE_CHARS - 1].rstrip() + "…"
-    text = f"{prefix}\n{compact_message}"
-    if backup_job_id:
-        text += f"\n🆔 Job: {backup_job_id[:8]}"
-    # 2026-08-07: same cluster-name prefix as shared/telegram_alerts.py's
-    # _with_cluster_prefix — this module has its own independent Backup
-    # channel/send path (see module docstring), so it needs its own copy
-    # rather than importing that helper across the watcher/worker boundary.
-    if cluster_name:
-        text = f"\U0001f4cd Cụm: {cluster_name}\n{text}"
-    send_telegram_alert_with_ai(
-        bot_token,
-        chat_id,
-        True,
-        text,
-        context="cảnh báo backup Ceph",
-        send_func=send_telegram_message,
-    )
-    if cluster is None:
-        send_managed_channel_alert(text, cluster_name=cluster_name, category="backup")
+    try:
+        telegram_outbox.enqueue_backup_alert_and_dispatch(
+            event_id=event_id,
+            severity=severity,
+            message=message,
+            backup_job_id=backup_job_id,
+            cluster_id=cluster_id,
+            cluster_name=cluster_name,
+        )
+    except Exception:
+        logger.exception("send_alert: failed to enqueue backup Telegram alert")
 
 
 def send_alert(

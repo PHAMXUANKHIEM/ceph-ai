@@ -204,6 +204,8 @@
   var pauseForm = document.getElementById("upgrade-live-pause-form");
   var resumeForm = document.getElementById("upgrade-live-resume-form");
   var polling = false;
+  var clusterId = tracker.dataset.clusterId || "";
+  var unsubscribe = null;
 
   function setBadge(text, kind) { if (!badge) return; badge.textContent = text; badge.className = "upgrade-status-badge is-" + kind; }
   function formatProgress(status) { var value = status.progress || "—"; if (status.progress_percent !== null && status.progress_percent !== undefined) value += " (" + Math.round(status.progress_percent) + "%)"; return value; }
@@ -220,6 +222,14 @@
     if (updated) updated.textContent = "Cập nhật " + new Date().toLocaleTimeString("vi-VN");
   }
   function poll() { if (polling) return; polling = true; fetch(statusUrl, {credentials: "same-origin", cache: "no-store"}).then(function (response) { return response.json().then(function (payload) { if (!response.ok && payload.ok !== false) payload = {ok: false, error: "HTTP " + response.status}; return payload; }); }).then(renderStatus).catch(function () { renderStatus({ok: false, error: "Không gọi được API theo dõi upgrade."}); }).finally(function () { polling = false; window.setTimeout(poll, interval); }); }
+  if (window.CephClusterState && clusterId) {
+    unsubscribe = window.CephClusterState.subscribe(clusterId, function (event) {
+      if (event.cluster_id && event.cluster_id !== clusterId) return;
+      var sections = event.sections || [];
+      if (!sections.length || sections.indexOf("health") !== -1 || sections.indexOf("status") !== -1 || sections.indexOf("nodes") !== -1) poll();
+    });
+  }
   if (pauseForm) pauseForm.addEventListener("submit", function (event) { if (!window.confirm("Tạm dừng tiến trình nâng cấp? Bạn cần kiểm tra trạng thái cụm trước khi tiếp tục.")) event.preventDefault(); });
+  window.addEventListener("pagehide", function () { if (unsubscribe) unsubscribe(); });
   poll();
 })();

@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import inspect, select
 
 from config.settings import settings
-from shared import db
+from shared import db, telegram_outbox
 from shared.predictive_alert_lifecycle import (
     AlertLifecycleState,
     NotificationState,
@@ -933,6 +933,7 @@ def sync_forecast_alerts(
             metric: _legacy_lifecycle_state(alert)
             for metric, alert in existing.items()
         }
+        pending_notifications: list[tuple[str, str, str]] = []
         for metric in ("cpu", "ram"):
             prediction = risky.get(metric)
             candidate = values.get(metric)
@@ -1240,23 +1241,30 @@ def sync_forecast_alerts(
                 or (now_naive - alert.last_notified_at).total_seconds() >= cooldown
             )
             if due and breach_ready and not duplicate_evidence:
-                sent = send_node_forecast_alert(
-                    host,
-                    metric,
-                    prediction.current_percent,
-                    prediction.predicted_percent,
-                    effective_hours_to_90,
-                    prediction.confidence,
-                    prediction.samples,
-                    window_hours,
+                session.flush()
+                event_id = (
+                    f"node-forecast:{cluster}:{host}:{metric}:"
+                    f"{alert.evidence_fingerprint}"
+                )
+                telegram_outbox.enqueue_alert_call(
+                    session,
+                    event_id=event_id,
+                    category="hardware",
+                    function="send_node_forecast_alert",
+                    args=(
+                        host,
+                        metric,
+                        prediction.current_percent,
+                        prediction.predicted_percent,
+                        effective_hours_to_90,
+                        prediction.confidence,
+                        prediction.samples,
+                        window_hours,
+                    ),
                     cluster_name=cluster,
                 )
-                if sent:
-                    alert.last_notified_at = now_naive
-                    alert.last_notified_evidence_fingerprint = alert.evidence_fingerprint
-                    alert.notification_state = NotificationState.SENT.value
-                else:
-                    alert.notification_state = NotificationState.FAILED.value
+                pending_notifications.append((event_id, alert.id, alert.evidence_fingerprint))
+                alert.notification_state = NotificationState.FAILED.value
             elif breach_ready:
                 alert.notification_state = (
                     NotificationState.SUPPRESSED.value
@@ -1299,4 +1307,25 @@ def sync_forecast_alerts(
                     evidence_fingerprint=alert.evidence_fingerprint,
                     occurred_at=now_naive,
                 ))
+
         session.commit()
+
+    for event_id, alert_id, evidence_fingerprint in pending_notifications:
+        telegram_outbox.dispatch_due(
+            event_ids=[event_id],
+            sender=send_node_forecast_alert,
+        )
+        with db.SessionLocal() as session:
+            outbox_row = session.query(telegram_outbox.TelegramOutbox).filter(
+                telegram_outbox.TelegramOutbox.event_id == event_id,
+            ).one_or_none()
+            alert = session.get(NodeResourceForecastAlert, alert_id)
+            if (
+                outbox_row is not None
+                and outbox_row.status == telegram_outbox.TelegramOutboxStatus.SENT.value
+                and alert is not None
+            ):
+                alert.last_notified_at = now_naive
+                alert.last_notified_evidence_fingerprint = evidence_fingerprint
+                alert.notification_state = NotificationState.SENT.value
+                session.commit()

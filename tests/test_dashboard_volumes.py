@@ -91,6 +91,23 @@ def test_unauthenticated_iostat_api_redirects_to_login(dashboard_client):
     assert response.headers["location"] == "/login"
 
 
+
+def test_volume_detail_marks_block_storage_nav_active_without_volumes_sidebar(
+    dashboard_client, monkeypatch,
+):
+    monkeypatch.setattr(volumes_route, "_rbd_pools_for_request", lambda request: ["vms"])
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/volumes/vms/vm-01")
+
+    assert response.status_code == 200
+    assert (
+        'href="/block-storage" class="nav-dropdown-item nav-dropdown-item-active">Block Storage'
+        in response.text
+    )
+    assert 'href="/volumes" class="nav-dropdown-item' not in response.text
+
+
 def test_volumes_page_lists_configured_pools(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _login(dashboard_client)

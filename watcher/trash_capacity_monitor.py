@@ -7,13 +7,14 @@ shell while another auxiliary watcher scan holds the host lock.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from config.settings import settings
-from shared import db
+from shared import db, telegram_outbox
 from shared.clusters import ensure_default_cluster
 from shared.models import RbdTrashUsage
-from shared.telegram_alerts import send_trash_capacity_alert
+from shared.telegram_alerts import send_trash_capacity_alert as _send_trash_capacity_alert_direct
 from watcher import ceph_client
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,45 @@ logger = logging.getLogger(__name__)
 TRASH_CAPACITY_RATIO_THRESHOLD = 0.20
 _was_over_threshold = False
 _was_over_threshold_by_cluster: dict[str, bool] = {}
+
+
+def send_trash_capacity_alert(
+    trash_bytes: int,
+    total_bytes: int,
+    ratio: float,
+    entry_count: int,
+    *,
+    cluster_name: str | None = None,
+    cluster_id: str | None = None,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+    enabled: bool | None = None,
+) -> bool:
+    """Queue Trash threshold alerts without persisting channel credentials."""
+    fingerprint = hashlib.sha256(
+        f"{cluster_id}|{cluster_name}|{trash_bytes}|{total_bytes}|{ratio}|{entry_count}".encode(
+            "utf-8"
+        )
+    ).hexdigest()[:24]
+
+    def sender(*args, **kwargs):
+        return _send_trash_capacity_alert_direct(
+            *args,
+            cluster_name=cluster_name,
+            bot_token=bot_token,
+            chat_id=chat_id,
+            enabled=enabled,
+        )
+
+    return telegram_outbox.enqueue_alert_call_and_dispatch(
+        event_id=f"trash-capacity:{cluster_id or 'default'}:{fingerprint}",
+        category="capacity",
+        function="send_trash_capacity_alert",
+        args=(trash_bytes, total_bytes, ratio, entry_count),
+        cluster_id=cluster_id,
+        cluster_name=cluster_name,
+        sender=sender,
+    )
 
 
 def _cluster_connection(cluster) -> tuple[list[str], str, str, str, str]:
@@ -187,6 +227,7 @@ def check_and_alert(cluster=None) -> dict:
             has_own_channel = bool(cluster.telegram_bot_token and cluster.telegram_chat_id)
             alert_kwargs = {
                 "cluster_name": cluster.name,
+                "cluster_id": str(cluster.id),
                 "bot_token": cluster.telegram_bot_token if has_own_channel else None,
                 "chat_id": cluster.telegram_chat_id if has_own_channel else None,
                 "enabled": cluster.telegram_enabled if has_own_channel else None,

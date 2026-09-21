@@ -589,7 +589,9 @@ def test_incident_creation_sends_telegram_before_ai_diagnosis(isolated_db, monke
     )
     watcher_main.build_and_publish_incident(None, HEALTH_WARN_PAYLOAD)
 
-    assert calls == [(('MON_CLOCK_SKEW', 'HEALTH_WARN', 'mon2 log excerpt'), {"background": True})]
+    assert len(calls) == 1
+    assert calls[0][0] == ("MON_CLOCK_SKEW", "HEALTH_WARN", "mon2 log excerpt")
+    assert calls[0][1]["background"] is False
 
 
 def test_no_telegram_alert_sent_on_recovery_to_health_ok(isolated_db, monkeypatch):

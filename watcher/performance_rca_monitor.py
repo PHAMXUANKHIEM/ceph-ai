@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 from shared.time import utc_now
 from hashlib import sha1
 
 from config.settings import settings
-from shared import alert_lifecycle, db, telegram_alerts
+from shared import alert_lifecycle, db, telegram_alerts, telegram_outbox
 from shared.models import Cluster, Incident, IncidentStatus
 from watcher.performance_rca import PERFORMANCE_RCA_PREFIX, report
 
@@ -172,12 +171,19 @@ def check_and_alert(cluster_id: str, cluster=None) -> int:
             session.commit()
         if muted:
             continue
-        sent = telegram_alerts.send_performance_rca_alert(
-            analysis,
+        fingerprint = sha1(
+            json.dumps(analysis, ensure_ascii=False, sort_keys=True, default=str).encode(
+                "utf-8"
+            )
+        ).hexdigest()[:24]
+        sent = telegram_outbox.enqueue_alert_call_and_dispatch(
+            event_id=f"performance-rca:{incident_id}:{fingerprint}",
+            category="incident",
+            function="send_performance_rca_alert",
+            args=(analysis,),
+            cluster_id=cluster.id,
             cluster_name=cluster.name,
-            bot_token=token if uses_cluster_channel else None,
-            chat_id=chat_id if uses_cluster_channel else None,
-            enabled=enabled if uses_cluster_channel else None,
+            sender=telegram_alerts.send_performance_rca_alert,
         )
         if not sent:
             continue

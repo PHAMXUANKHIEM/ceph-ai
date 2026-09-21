@@ -43,14 +43,13 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
 from shared.time import utc_now
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
-from shared import alert_lifecycle, audit, db
+from shared import alert_lifecycle, audit, db, telegram_outbox
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_database_size_alert
@@ -208,7 +207,7 @@ def create_or_resolve_database_size_incident(
     lại cái mới ngay sau đó. Cùng một lỗi, cùng một cách vá như
     watcher/crush_skew_monitor.py (xem docstring hàm tương ứng ở đó, kèm số
     liệu đo được). Mặc định None giữ nguyên hành vi cũ."""
-    pending_alerts = []
+    pending_event_ids = []
     with db.SessionLocal() as session:
         open_incident = (
             session.query(Incident)
@@ -265,7 +264,16 @@ def create_or_resolve_database_size_incident(
             )
 
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                pending_alerts.append(rationale)
+                pending_event_ids.append(
+                    telegram_outbox.enqueue_database_size_alert(
+                        session,
+                        incident_id=incident.id,
+                        message=rationale,
+                    )
+                )
         session.commit()
-    for rationale in pending_alerts:
-        send_database_size_alert(rationale)
+    telegram_outbox.dispatch_due(
+        limit=len(pending_event_ids),
+        event_ids=pending_event_ids,
+        sender=send_database_size_alert,
+    )

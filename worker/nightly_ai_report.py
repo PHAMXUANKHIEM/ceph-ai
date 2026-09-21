@@ -161,7 +161,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(name)s:%(message)s")
     try:
         from config.settings import settings
-        from shared.telegram_alerts import send_code_repair_alert
+        from worker.code_repair import send_code_repair_alert
 
         now = datetime.now(timezone.utc)
         state_path = Path(settings.ai_nightly_improvement_state_file)

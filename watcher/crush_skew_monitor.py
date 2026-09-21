@@ -41,10 +41,9 @@ or silently skipping.
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from shared.time import utc_now
 
-from shared import alert_lifecycle, audit, db
+from shared import alert_lifecycle, audit, db, telegram_outbox
 from shared.models import (
     Action,
     ActionStatus,
@@ -442,7 +441,7 @@ def create_or_resolve_crush_skew_incidents(
       * vắng mặt CHỈ vì streak chưa đủ -> vẫn đang vượt ngưỡng -> GIỮ MỞ
 
     Mặc định None giữ nguyên hành vi cũ cho mọi caller chưa cập nhật."""
-    pending_alerts = []
+    pending_event_ids = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -507,11 +506,18 @@ def create_or_resolve_crush_skew_incidents(
             )
 
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                pending_alerts.append((detail["signal"], _entity_label_for_alert(detail), rationale))
+                pending_event_ids.append(
+                    telegram_outbox.enqueue_crush_skew_alert(
+                        session,
+                        incident_id=incident.id,
+                        signal=detail["signal"],
+                        entity_label=_entity_label_for_alert(detail),
+                        message=rationale,
+                    )
+                )
         session.commit()
-    # External alert delivery may open its own DB session.  Commit the
-    # incident lifecycle first so an alert-side write cannot roll back the
-    # incident/action transaction (and so operators never receive an alert
-    # for a row that was not committed).
-    for signal, entity_label, rationale in pending_alerts:
-        send_crush_skew_alert(signal, entity_label, rationale)
+    telegram_outbox.dispatch_due(
+        limit=len(pending_event_ids),
+        event_ids=pending_event_ids,
+        sender=send_crush_skew_alert,
+    )

@@ -26,8 +26,20 @@ from pathlib import Path
 from config.settings import settings as app_settings
 from shared.ai_budget import AIBudgetError, check as check_ai_budget
 from shared.ai_observability import record_ai_attempt
-from shared.telegram_alerts import send_code_repair_alert
+from shared import telegram_alerts, telegram_outbox
 
+
+def send_code_repair_alert(text: str) -> bool:
+    """Durably deliver one code-repair status update."""
+    bucket = datetime.now(timezone.utc).date().isoformat()
+    fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+    return telegram_outbox.enqueue_alert_call_and_dispatch(
+        event_id=f"code-repair:{bucket}:{fingerprint}",
+        category="code-repair",
+        function="send_code_repair_alert",
+        args=(text,),
+        sender=telegram_alerts.send_code_repair_alert,
+    )
 
 ALLOWED_PREFIXES = ("config/", "dashboard/", "shared/", "tests/", "watcher/", "worker/")
 FORBIDDEN_PREFIXES = (".env", ".git", ".github/", ".codex", "alembic/versions/", "scripts/deploy/")

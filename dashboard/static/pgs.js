@@ -14,6 +14,7 @@
   const pageButtons = document.getElementById("pg-page-buttons");
   const pageInput = document.getElementById("pg-page-input");
   const pageRoot = document.getElementById("pgs-page");
+  const realtimeAlert = document.getElementById("pg-realtime-alert");
   const totalCount = document.getElementById("pg-total-count");
   const snapshotMeta = document.getElementById("pg-snapshot-meta");
   const detailPanel = document.getElementById("pg-detail-panel");
@@ -373,7 +374,11 @@
     if (realtimeConnected) stopFallback(); else startFallback();
   };
   const unsubscribe = window.CephClusterState?.subscribe(pageRoot.dataset.clusterId, (event) => {
-    if (!event.sections || event.sections.includes("pgs")) refreshSnapshot();
+    const sections = Array.isArray(event.sections) ? event.sections : [];
+    if (!sections.length || sections.includes("pgs")) {
+      window.CephClusterStateFeedback?.handle(realtimeAlert, event, "pgs", "Placement Groups");
+      refreshSnapshot();
+    }
   });
   window.addEventListener("ceph-cluster-state-connection", onConnection);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshSnapshot(); if (!realtimeConnected) startFallback(); });

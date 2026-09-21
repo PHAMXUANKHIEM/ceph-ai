@@ -1,6 +1,6 @@
 import asyncio
+import hashlib
 import fcntl
-import functools
 import logging
 import os
 import threading
@@ -51,7 +51,7 @@ from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from watcher.performance_rca import PERFORMANCE_RCA_PREFIX
-from shared import alert_lifecycle, audit, db, heartbeat, service_health, telegram_alerts
+from shared import alert_lifecycle, audit, db, heartbeat, service_health, telegram_alerts, telegram_outbox
 from shared.cluster_snapshot import read_priority_refresh
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
@@ -100,7 +100,7 @@ def _acquire_watcher_process_lock(lock_path: str | None = None):
         return None
 
 
-def _run_auxiliary_scan(name: str, callback: Callable[[], None], *, background: bool) -> None:
+def _run_auxiliary_scan(name: str, callback: Callable[[], None], *, background: bool) -> bool:
     """Keep slow auxiliary collectors from delaying the core health poll.
 
     Production uses one daemon thread and a non-overlap lock per collector;
@@ -108,12 +108,12 @@ def _run_auxiliary_scan(name: str, callback: Callable[[], None], *, background: 
     """
     if not background:
         callback()
-        return
+        return True
     with _BACKGROUND_SCAN_LOCKS_GUARD:
         lock = _BACKGROUND_SCAN_LOCKS.setdefault(name, threading.Lock())
     if not lock.acquire(blocking=False):
         logger.info("run: auxiliary scan %s is still running; skipping overlapping tick", name)
-        return
+        return False
 
     def run_and_release() -> None:
         try:
@@ -124,6 +124,7 @@ def _run_auxiliary_scan(name: str, callback: Callable[[], None], *, background: 
     threading.Thread(
         target=run_and_release, name=f"watcher-aux-{name}", daemon=True,
     ).start()
+    return True
 
 # Only these statuses represent a problem worth an Incident — a transition
 # back to HEALTH_OK is a recovery, not a new incident (Story 1.4 AC #4).
@@ -261,6 +262,7 @@ def send_due_incident_reminders(
     interval = max(60, settings.telegram_incident_reminder_interval_seconds)
     cutoff = now - timedelta(seconds=interval)
     sent = 0
+    pending_event_ids: list[str] = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -308,23 +310,22 @@ def send_due_incident_reminders(
                 # Vẫn giữ Incident cho Dashboard; chỉ không làm phiền nữa.
                 continue
             action = actions.get(incident.id)
-            has_cluster_channel = bool(cluster and cluster.telegram_bot_token and cluster.telegram_chat_id)
-            telegram_alerts.send_incident_alert(
-                incident.ceph_code,
-                incident.severity,
-                incident.log_excerpt,
-                cluster_name=cluster.name if cluster else None,
-                bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
-                chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
-                enabled=cluster.telegram_enabled if has_cluster_channel else None,
-                reminder=True,
-                diagnosis_text=incident.diagnosis_text,
-                rationale=action.rationale if action else None,
-                background=settings.telegram_ai_humanize_enabled,
+            pending_event_ids.append(
+                telegram_outbox.enqueue_incident_alert(
+                    session,
+                    incident,
+                    event_kind=f"reminder:{now.isoformat()}",
+                    rationale=action.rationale if action else None,
+                )
             )
             incident.telegram_reminded_at = now
             sent += 1
         session.commit()
+    if pending_event_ids:
+        telegram_outbox.dispatch_due(
+            limit=len(pending_event_ids),
+            event_ids=pending_event_ids,
+        )
     return sent
 
 
@@ -404,7 +405,7 @@ def _resolve_recovered_incidents(
     # Store plain notification values, never ORM rows. session.commit()
     # expires Cluster attributes and the session closes before Telegram is
     # sent; retaining Cluster here caused DetachedInstanceError every poll.
-    recovered: dict[tuple[str | None, str], dict] = {}
+    recovered: dict[tuple[str | None, str], str] = {}
     with db.SessionLocal() as session:
         cluster_filter = (
             or_(Incident.cluster_id == cluster_id, Incident.cluster_id.is_(None))
@@ -534,18 +535,15 @@ def _resolve_recovered_incidents(
                 cancel_pending_actions(session, incident.id)
                 key = (incident.cluster_id, incident.ceph_code)
                 if key not in recovered:
-                    cluster = (
-                        session.get(Cluster, incident.cluster_id)
-                        if incident.cluster_id is not None else None
+                    recovered[key] = telegram_outbox.enqueue_incident_verified_alert(
+                        session,
+                        incident_id=incident.id,
+                        ceph_code=incident.ceph_code,
                     )
-                    recovered[key] = verify._cluster_channel_kwargs(cluster)
         session.commit()
 
-    for (_cluster_id, ceph_code), channel_kwargs in recovered.items():
-        telegram_alerts.send_incident_verified_alert(
-            ceph_code,
-            **channel_kwargs,
-        )
+    for event_id in recovered.values():
+        telegram_outbox.dispatch_due(limit=1, event_ids=[event_id])
 
 
 def _reconcile_terminal_actions() -> int:
@@ -759,6 +757,8 @@ def build_and_publish_incident(
             ceph_code, check_detail
         )
         log_excerpt = _append_capacity_context(log_excerpt, signal_evidence_json)
+        ceph_check_muted = _ceph_check_is_muted(check_detail)
+        notification_event_id = None
 
         with db.SessionLocal() as session:
             incident = Incident(
@@ -786,6 +786,12 @@ def build_and_publish_incident(
                 notification_muted = alert_lifecycle.inherit_active_mute(
                     session, incident, now=detected_at,
                 )
+                if ceph_check_muted:
+                    notification_muted = True
+                if not notification_muted:
+                    notification_event_id = telegram_outbox.enqueue_incident_alert(
+                        session, incident,
+                    )
                 session.commit()
             except IntegrityError as exc:
                 # The DB partial unique index is the authoritative dedupe
@@ -807,22 +813,20 @@ def build_and_publish_incident(
                     ceph_code,
                 )
                 continue
-        if _ceph_check_is_muted(check_detail):
-            notification_muted = True
+        if ceph_check_muted:
             logger.info(
                 "build_and_publish_incident: %s bị mute trong Ceph; tạo Incident nhưng không gửi Telegram",
                 ceph_code,
             )
 
-        # Alert immediately; AI diagnosis is an enrichment and must never be
-        # a delivery dependency. send_incident_alert is best-effort and
-        # swallows Telegram failures, so RabbitMQ publishing still proceeds.
-        if not notification_muted:
-            telegram_alerts.send_incident_alert(
-                ceph_code,
-                check_detail.get("severity"),
-                log_excerpt,
-                background=settings.telegram_ai_humanize_enabled,
+        # The Incident and immutable notification event are committed before
+        # this bounded dispatch attempt. AI diagnosis remains an enrichment;
+        # a delivery failure leaves the outbox row retryable and never blocks
+        # RabbitMQ publishing.
+        if notification_event_id:
+            telegram_outbox.dispatch_due(
+                limit=1,
+                event_ids=[notification_event_id],
             )
         envelopes.append(
             publisher.build_envelope(
@@ -1000,15 +1004,23 @@ def run(
                         cluster = session.get(Cluster, cluster_id)
                         if cluster is not None:
                             session.expunge(cluster)
-                has_cluster_channel = bool(
-                    cluster and cluster.telegram_bot_token and cluster.telegram_chat_id
+                health_status = current_status or "UNKNOWN"
+                health_codes = sorted(current_checks)
+                bucket = int(status_now.timestamp()) // max(
+                    60, settings.telegram_health_status_interval_seconds
                 )
-                telegram_alerts.send_periodic_health_status(
-                    current_status or "UNKNOWN", list(current_checks),
+                fingerprint = hashlib.sha1(
+                    ",".join(health_codes).encode("utf-8"),
+                    usedforsecurity=False,
+                ).hexdigest()[:16]
+                telegram_outbox.enqueue_alert_call_and_dispatch(
+                    event_id=f"health-status:{cluster_id or 'default'}:{bucket}:{health_status}:{fingerprint}",
+                    category="incident",
+                    function="send_periodic_health_status",
+                    args=(health_status, health_codes),
+                    cluster_id=cluster_id,
                     cluster_name=cluster.name if cluster else settings.cluster_name,
-                    bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
-                    chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
-                    enabled=cluster.telegram_enabled if has_cluster_channel else None,
+                    sender=telegram_alerts.send_periodic_health_status,
                 )
                 last_health_status_sent_at = status_now
             # Every poll, regardless of whether the fingerprint below
@@ -1065,7 +1077,9 @@ def run(
         if max_iterations is None and cluster_id is not None:
             status_now = utc_now()
             priority = read_priority_refresh(cluster_id)
-            priority_marker = str(priority.get("requested_at", "")) if priority else ""
+            priority_marker = str(
+                priority.get("request_id") or priority.get("requested_at", "")
+            ) if priority else ""
             priority_due = bool(priority_marker and priority_marker != last_priority_refresh_marker)
             if (
                 last_status_snapshot_scan_at is None
@@ -1084,7 +1098,7 @@ def run(
                     except Exception:
                         logger.exception("run: dashboard status snapshot collection failed")
 
-                _run_auxiliary_scan(
+                status_scan_started = _run_auxiliary_scan(
                     f"status-{cluster_id}", scan_status, background=True,
                 )
                 last_status_snapshot_scan_at = status_now
@@ -1107,11 +1121,11 @@ def run(
                     except Exception:
                         logger.exception("run: inventory snapshot collection failed")
 
-                _run_auxiliary_scan(
+                inventory_scan_started = _run_auxiliary_scan(
                     f"inventory-{cluster_id}", scan_inventory, background=True,
                 )
                 last_inventory_scan_at = inventory_now
-            if priority_due:
+            if priority_due and status_scan_started and inventory_scan_started:
                 last_priority_refresh_marker = priority_marker
 
         # 2026-07-28: Volume (RBD) performance/saturation check — its own
@@ -1530,6 +1544,8 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
             ceph_code, check_detail, cluster=cluster
         )
         log_excerpt = _append_capacity_context(log_excerpt, signal_evidence_json)
+        ceph_check_muted = _ceph_check_is_muted(check_detail)
+        notification_event_id = None
 
         with db.SessionLocal() as session:
             incident = Incident(
@@ -1548,6 +1564,12 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
                 notification_muted = alert_lifecycle.inherit_active_mute(
                     session, incident, now=detected_at,
                 )
+                if ceph_check_muted:
+                    notification_muted = True
+                if not notification_muted:
+                    notification_event_id = telegram_outbox.enqueue_incident_alert(
+                        session, incident,
+                    )
                 session.commit()
             except IntegrityError as exc:
                 session.rollback()
@@ -1566,25 +1588,17 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
                     ceph_code,
                 )
                 continue
-        if _ceph_check_is_muted(check_detail):
-            notification_muted = True
+        if ceph_check_muted:
             logger.info(
                 "cluster %s: %s bị mute trong Ceph; tạo Incident nhưng không gửi Telegram",
                 cluster.id,
                 ceph_code,
             )
 
-        has_cluster_channel = bool(cluster.telegram_bot_token and cluster.telegram_chat_id)
-        if not notification_muted:
-            telegram_alerts.send_incident_alert(
-                ceph_code,
-                check_detail.get("severity"),
-                log_excerpt,
-                cluster_name=cluster.name,
-                bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
-                chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
-                enabled=cluster.telegram_enabled if has_cluster_channel else None,
-                background=settings.telegram_ai_humanize_enabled,
+        if notification_event_id:
+            telegram_outbox.dispatch_due(
+                limit=1,
+                event_ids=[notification_event_id],
             )
         envelopes.append(
             publisher.build_envelope(
@@ -1740,7 +1754,7 @@ def run_observed_cluster_loop(
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
 
-    def run_auxiliary_scan(name: str, callback: Callable[[], None]) -> None:
+    def run_auxiliary_scan(name: str, callback: Callable[[], None]) -> bool:
         """Keep bounded/test loops free of orphan daemon scans.
 
         The production observed-cluster loop is unbounded and can safely
@@ -1749,7 +1763,9 @@ def run_observed_cluster_loop(
         leave a callback running after its database fixture has moved on.
         """
         if max_iterations is None:
-            _run_auxiliary_scan(name, callback, background=True)
+            return _run_auxiliary_scan(name, callback, background=True)
+        callback()
+        return True
 
     while max_iterations is None or iterations < max_iterations:
         if stop_event is not None and stop_event.is_set():
@@ -1816,15 +1832,23 @@ def run_observed_cluster_loop(
                 or (status_now - last_health_status_sent_at).total_seconds()
                 >= settings.telegram_health_status_interval_seconds
             ):
-                has_cluster_channel = bool(
-                    cluster.telegram_bot_token and cluster.telegram_chat_id
+                health_status = current_status or "UNKNOWN"
+                health_codes = sorted(current_checks)
+                bucket = int(status_now.timestamp()) // max(
+                    60, settings.telegram_health_status_interval_seconds
                 )
-                telegram_alerts.send_periodic_health_status(
-                    current_status or "UNKNOWN", list(current_checks),
+                fingerprint = hashlib.sha1(
+                    ",".join(health_codes).encode("utf-8"),
+                    usedforsecurity=False,
+                ).hexdigest()[:16]
+                telegram_outbox.enqueue_alert_call_and_dispatch(
+                    event_id=f"health-status:{cluster.id}:{bucket}:{health_status}:{fingerprint}",
+                    category="incident",
+                    function="send_periodic_health_status",
+                    args=(health_status, health_codes),
+                    cluster_id=str(cluster.id),
                     cluster_name=cluster.name,
-                    bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
-                    chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
-                    enabled=cluster.telegram_enabled if has_cluster_channel else None,
+                    sender=telegram_alerts.send_periodic_health_status,
                 )
                 last_health_status_sent_at = status_now
             _resolve_recovered_incidents(
@@ -1993,7 +2017,9 @@ def run_observed_cluster_loop(
         if max_iterations is None:
             status_now = utc_now()
             priority = read_priority_refresh(cluster.id)
-            priority_marker = str(priority.get("requested_at", "")) if priority else ""
+            priority_marker = str(
+                priority.get("request_id") or priority.get("requested_at", "")
+            ) if priority else ""
             priority_due = bool(priority_marker and priority_marker != last_priority_refresh_marker)
             if (
                 last_status_snapshot_scan_at is None
@@ -2001,7 +2027,7 @@ def run_observed_cluster_loop(
                 >= _DASHBOARD_STATUS_SNAPSHOT_INTERVAL_SECONDS
                 or priority_due
             ):
-                run_auxiliary_scan(
+                status_scan_started = run_auxiliary_scan(
                     f"status-{cluster.id}",
                     lambda status_cluster=cluster: cluster_snapshot_collector.collect_and_publish_status(
                         status_cluster
@@ -2025,9 +2051,9 @@ def run_observed_cluster_loop(
                             inventory_cluster.name,
                         )
 
-                run_auxiliary_scan(f"inventory-{cluster.id}", scan_inventory)
+                inventory_scan_started = run_auxiliary_scan(f"inventory-{cluster.id}", scan_inventory)
                 last_inventory_scan_at = inventory_now
-            if priority_due:
+            if priority_due and status_scan_started and inventory_scan_started:
                 last_priority_refresh_marker = priority_marker
 
         iterations += 1

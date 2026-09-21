@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime, timedelta
 from shared.time import utc_now
@@ -9,14 +10,27 @@ from shared.time import utc_now
 from sqlalchemy import or_
 
 from config.settings import settings
-from shared import db
+from shared import db, telegram_outbox
 from shared.ai_cost import summary as ai_cost_summary
 from shared.clusters import list_active_clusters
 from shared.models import BackupJob, CephCapacitySample, Cluster, Incident
-from shared.telegram_alerts import send_ai_ops_digest_alert
+from shared.telegram_alerts import send_ai_ops_digest_alert as _send_ai_ops_digest_alert_direct
 
 logger = logging.getLogger(__name__)
 
+
+def send_ai_ops_digest_alert(text: str, *, cluster_name: str | None = None) -> bool:
+    fingerprint = hashlib.sha256(
+        f"{cluster_name or 'default'}|{text}".encode("utf-8")
+    ).hexdigest()[:24]
+    return telegram_outbox.enqueue_alert_call_and_dispatch(
+        event_id=f"ai-ops-digest:{fingerprint}",
+        category="incident",
+        function="send_ai_ops_digest_alert",
+        args=(text,),
+        cluster_name=cluster_name,
+        sender=_send_ai_ops_digest_alert_direct,
+    )
 
 def _cluster_filter(column, cluster: Cluster):
     if cluster.is_default:

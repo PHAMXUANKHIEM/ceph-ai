@@ -434,7 +434,9 @@ def build_boot_dependency_report(
         and any(str(item.get("volume_id") or "").lower() == volume_id.lower() for item in row.get("volumes_attached") or [])
     ]
     gaps = []
-    if not server_rows and cinder.get("attachments"):
+    if cinder.get("attachments") and (
+        not server_rows or any(row.get("status") != "ok" for row in server_rows)
+    ):
         gaps.append("Không đọc được Nova server cho attachment; boot source chưa được xác minh.")
     if image_id and not glance:
         gaps.append("Cinder có image metadata nhưng chưa đọc được Glance image.")

@@ -282,6 +282,57 @@ def _stamp_incident_failure(
         incident.failed_at = utc_now()
 
 
+class TelegramOutboxStatus(str, enum.Enum):
+    """Durable delivery states for notifications sent after DB commit."""
+
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    SENT = "SENT"
+    DEAD = "DEAD"
+
+
+class TelegramOutbox(Base):
+    """Transactional outbox for Telegram alert delivery.
+
+    Watcher transactions write the Incident and this immutable notification
+    payload together. A separate worker claims the row only after commit,
+    so a Telegram/provider failure cannot roll back or disappear with the
+    Incident transaction.
+    """
+
+    __tablename__ = "telegram_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PENDING','PROCESSING','SENT','DEAD')",
+            name="ck_telegram_outbox_status_valid",
+        ),
+        UniqueConstraint("event_id", name="uq_telegram_outbox_event_id"),
+        Index("ix_telegram_outbox_due", "status", "next_attempt_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    event_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    incident_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("incidents.id", ondelete="CASCADE"), nullable=True,
+    )
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=TelegramOutboxStatus.PENDING.value,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now,
+    )
+
+
 class ActionClassification(str, enum.Enum):
     # AI roadmap Pha 0.4 (Plan/ai-missing-features-roadmap.md, section
     # 3.3) -- 4-tier safety policy. READ_ONLY/SAFE both auto-execute

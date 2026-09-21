@@ -26,9 +26,9 @@ def test_auxiliary_scan_runs_in_background_and_prevents_overlap():
         release.wait(2)
         finished.set()
 
-    watcher_main._run_auxiliary_scan("test-nonblocking", slow_scan, background=True)
+    assert watcher_main._run_auxiliary_scan("test-nonblocking", slow_scan, background=True) is True
     assert started.wait(1)
-    watcher_main._run_auxiliary_scan("test-nonblocking", slow_scan, background=True)
+    assert watcher_main._run_auxiliary_scan("test-nonblocking", slow_scan, background=True) is False
     assert calls == ["run"]
     release.set()
     assert finished.wait(1)
@@ -1007,7 +1007,7 @@ def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(m
         "bot_token": None,
         "chat_id": None,
         "enabled": None,
-        "background": True,
+        "background": False,
     }
 
 

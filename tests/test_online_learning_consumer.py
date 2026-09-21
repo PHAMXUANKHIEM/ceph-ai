@@ -10,6 +10,7 @@ from shared.models import (
     Cluster,
     NodeResourceForecastRun,
     OnlineLearnerAudit,
+    OnlineLearnerCycleAudit,
     OnlineLearnerLabel,
     WatcherHeartbeat,
 )
@@ -189,3 +190,32 @@ def test_verified_outcome_waits_for_minimum_evidence(monkeypatch):
         session.commit()
         assert enqueue_verified_outcomes(session, max_rows=10) == 0
         assert session.query(OnlineLearnerLabel).count() == 0
+
+
+def test_control_database_failure_fails_closed(monkeypatch):
+    factory = _session(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_enabled", True)
+
+    def fail_closed_control(*args, **kwargs):
+        raise RuntimeError("control database unavailable")
+
+    monkeypatch.setattr(
+        "shared.online_learning_consumer.get_control",
+        fail_closed_control,
+    )
+    result = consume_sample(
+        cluster_id="cluster-a",
+        host="node-1",
+        metric="cpu",
+        value=42.0,
+        observed_at=datetime.now(timezone.utc),
+        sample_id="db-failure",
+        label=42.0,
+    )
+
+    assert result is None
+    with factory() as session:
+        assert session.query(OnlineLearnerAudit).filter_by(sample_id="db-failure").count() == 0
+        cycle = session.query(OnlineLearnerCycleAudit).order_by(OnlineLearnerCycleAudit.created_at.desc()).first()
+        assert cycle is not None
+        assert cycle.failed == 1

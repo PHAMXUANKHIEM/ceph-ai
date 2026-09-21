@@ -88,3 +88,44 @@ def test_block_candidate_never_changes_active_model(db_session):
     )
     assert blocked.status == "BLOCKED"
     assert db_session.get(type(active), active.id).status == "ACTIVE"
+
+
+import pytest
+
+
+def test_normalize_scope_rejects_malformed_scope():
+    with pytest.raises(ValueError, match="host is required"):
+        online_learning_controls.normalize_scope(
+            cluster_id="cluster-a", host="   ", metric="cpu",
+        )
+    with pytest.raises(ValueError, match="at most 255"):
+        online_learning_controls.normalize_scope(
+            cluster_id="cluster-a", host="n" * 256, metric="cpu",
+        )
+    with pytest.raises(ValueError, match="metric must be cpu or ram"):
+        online_learning_controls.normalize_scope(
+            cluster_id="cluster-a", host="node-a", metric="disk",
+        )
+
+
+def test_set_status_rejects_invalid_status_and_missing_reason(db_session):
+    with pytest.raises(ValueError, match="status must be RUNNING or PAUSED"):
+        online_learning_controls.set_status(
+            db_session,
+            cluster_id="cluster-a",
+            host="node-a",
+            metric="cpu",
+            status="ACTIVE",
+            actor="admin",
+            reason="invalid status",
+        )
+    with pytest.raises(ValueError, match="reason is required"):
+        online_learning_controls.set_status(
+            db_session,
+            cluster_id="cluster-a",
+            host="node-a",
+            metric="cpu",
+            status=online_learning_controls.PAUSED,
+            actor="admin",
+            reason=" ",
+        )

@@ -142,12 +142,14 @@ def test_priority_refresh_marker_is_cluster_scoped_and_bounded(monkeypatch, tmp_
         "cluster-a", ["pools", "secret", "pools", "health"]
     )
 
+    second_marker = cluster_snapshot.request_priority_refresh("cluster-a", ["nodes"])
+    assert marker["request_id"] != second_marker["request_id"]
     assert marker["sections"] == ["pools", "health"]
-    assert cluster_snapshot.read_priority_refresh("cluster-a")["requested_at"] == marker["requested_at"]
+    assert cluster_snapshot.read_priority_refresh("cluster-a")["request_id"] == second_marker["request_id"]
     assert cluster_snapshot.read_priority_refresh("cluster-b") is None
 
     monkeypatch.setattr(ceph_query_cache, "_memory", {})
-    assert cluster_snapshot.read_priority_refresh("cluster-a")["sections"] == ["pools", "health"]
+    assert cluster_snapshot.read_priority_refresh("cluster-a")["sections"] == ["nodes"]
 
 
 def test_persisted_snapshot_is_readable_after_process_restart(monkeypatch, tmp_path):

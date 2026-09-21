@@ -52,7 +52,7 @@
       {% if last_action %}<a class="btn btn-ghost btn-sm upgrade-download-button" href="/upgrade/log.md?cluster={{ selected_cluster.id }}" download><span aria-hidden="true">⇩</span> Tải nhật ký .md</a>{% endif %}
 
       {% if supports_cephadm %}
-      <section class="upgrade-live-inline" id="cephadm-upgrade-tracker" data-status-url="/upgrade/status{{ upgrade_cluster_query }}" data-poll-interval="5000">
+      <section class="upgrade-live-inline" id="cephadm-upgrade-tracker" data-cluster-id="{{ selected_cluster.id }}" data-status-url="/upgrade/status{{ upgrade_cluster_query }}" data-poll-interval="5000">
         <div id="upgrade-live-error" class="upgrade-live-error" {% if not progress_error %}hidden{% endif %}>{{ progress_error or '' }}</div>
         <div id="upgrade-live-running" class="upgrade-live-running" {% if not upgrade_is_running %}hidden{% endif %}>
           <span class="upgrade-live-state" id="upgrade-live-state">{% if upgrade_is_paused %}Tạm dừng{% else %}Đang chạy{% endif %}</span>

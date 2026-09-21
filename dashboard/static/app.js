@@ -114,6 +114,27 @@
     }
   };
 
+  // Adapter for legacy snapshot pages outside the React dashboard shell.
+  // Keep the last good snapshot visible, but make a failed post-check clear.
+  window.CephClusterStateFeedback = {
+    handle: function (element, event, section, label) {
+      if (!element || !event) return false;
+      var sections = Array.isArray(event.sections) ? event.sections : [];
+      if (sections.length && sections.indexOf(section) === -1) return false;
+      if (event.event === "snapshot_refresh_failed") {
+        var action = event.action_id ? " (action " + event.action_id + ")" : "";
+        element.textContent = "⚠ Không xác nhận được thay đổi " + label + action + ". Đang giữ dữ liệu snapshot gần nhất.";
+        element.hidden = false;
+        return true;
+      }
+      if (event.event === "snapshot_changed") {
+        element.hidden = true;
+        element.textContent = "";
+      }
+      return true;
+    }
+  };
+
   document.addEventListener("visibilitychange", function () {
     Object.keys(sessions).forEach(function (clusterId) {
       var session = sessions[clusterId];

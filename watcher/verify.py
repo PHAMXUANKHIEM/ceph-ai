@@ -54,7 +54,7 @@ from datetime import datetime
 from shared.time import utc_now
 
 from config.settings import settings
-from shared import audit, db, remediation_cases, telegram_alerts
+from shared import audit, db, remediation_cases, telegram_alerts, telegram_outbox
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, LogFinding, RemediationCase
 from watcher import publisher
 from watcher.ceph_code_families import is_monitor_owned
@@ -187,6 +187,7 @@ def verify_pending_incidents(
     counts = {"verified": 0, "retried": 0, "exhausted": 0}
     max_attempts = max(1, settings.incident_verify_max_attempts)
     envelopes: list[dict] = []
+    notification_events: list[tuple[str, object]] = []
 
     with db.SessionLocal() as session:
         pending = (
@@ -245,12 +246,14 @@ def verify_pending_incidents(
                     session, incident_id=incident.id, succeeded=True,
                     verified_at=now, post_state=health,
                 )
-                telegram_alerts.send_incident_verified_alert(
-                    incident.ceph_code,
-                    attempted_command=command,
-                    display_name=_incident_display_name(session, incident),
-                    **_cluster_channel_kwargs(cluster),
-                )
+                notification_events.append((
+                    telegram_outbox.enqueue_incident_verified_alert(
+                        session,
+                        incident_id=incident.id,
+                        ceph_code=incident.ceph_code,
+                        attempted_command=command,
+                        display_name=_incident_display_name(session, incident),
+                    ), telegram_alerts.send_incident_verified_alert))
                 counts["verified"] += 1
                 continue
 
@@ -270,11 +273,13 @@ def verify_pending_incidents(
                     session, incident_id=incident.id, succeeded=False,
                     verified_at=now, post_state=health,
                 )
-                telegram_alerts.send_incident_verify_exhausted_alert(
-                    incident.ceph_code,
-                    incident.verify_attempts,
-                    **_cluster_channel_kwargs(cluster),
-                )
+                notification_events.append((
+                    telegram_outbox.enqueue_incident_verify_exhausted_alert(
+                        session,
+                        incident_id=incident.id,
+                        ceph_code=incident.ceph_code,
+                        attempts=incident.verify_attempts,
+                    ), telegram_alerts.send_incident_verify_exhausted_alert))
                 counts["exhausted"] += 1
                 continue
 
@@ -309,6 +314,9 @@ def verify_pending_incidents(
             counts["retried"] += 1
 
         session.commit()
+
+    for event_id, sender in notification_events:
+        telegram_outbox.dispatch_due(event_ids=[event_id], sender=sender)
 
     if envelopes:
         try:

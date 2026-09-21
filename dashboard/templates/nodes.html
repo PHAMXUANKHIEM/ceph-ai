@@ -33,6 +33,7 @@
         <span class="node-snapshot-meta" id="node-snapshot-meta">{% if snapshot_meta.last_error %}Snapshot error: {{ snapshot_meta.last_error }}{% elif snapshot_meta.collected_at %}Snapshot {{ snapshot_meta.generation }} · {{ snapshot_meta.age_seconds|round(0) }}s{% if snapshot_meta.stale %} · stale{% endif %}{% else %}Chưa có snapshot{% endif %}</span>
       </div>
     </header>
+    <div id="nodes-realtime-alert" class="snapshot-event-alert" role="status" aria-live="polite" hidden></div>
 
     <section class="node-panel node-selector-panel" id="node-selector" data-cluster-id="{{ selected_cluster.id }}" aria-labelledby="node-selector-title">
       <div class="node-section-heading">

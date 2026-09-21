@@ -171,6 +171,7 @@ def test_action_lifecycle_realtime_contract_reaches_postcheck_success(
         assert verifying["action_id"] == action_id
         assert verifying["action_state"] == "verifying"
 
+        session.refresh(incident)
         incident.status = "RESOLVED"
         session.commit()
 
@@ -276,6 +277,44 @@ def test_resolved_incident_publishes_snapshot_invalidation_after_commit(
     assert event["event"] == "snapshot_changed"
     assert event["cluster_id"] == default_cluster_id
     assert event["sections"] == ["health", "status", "pools"]
+    assert "action_state" not in event
+
+
+def test_manual_resolution_with_action_does_not_claim_postcheck_success(
+    dashboard_client, default_cluster_id
+):
+    from shared import ceph_query_cache
+    from shared.cluster_events import EVENT_NAMESPACE, read_latest_event
+
+    ceph_query_cache.invalidate(EVENT_NAMESPACE, default_cluster_id)
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id=default_cluster_id,
+            ceph_code="POOL_FULL",
+            status="NEW",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        session.add(
+            Action(
+                incident_id=incident.id,
+                action_id="pool_scrub",
+                classification=ActionClassification.SAFE.value,
+                status=ActionStatus.EXECUTED.value,
+            )
+        )
+        session.commit()
+        ceph_query_cache.invalidate(EVENT_NAMESPACE, default_cluster_id)
+
+        incident.status = "RESOLVED"
+        session.commit()
+
+    event = read_latest_event(default_cluster_id)
+    assert event["event"] == "snapshot_changed"
+    assert event["action_status"] == ActionStatus.EXECUTED.value
+    assert event["action_state"] == "verifying"
+    assert event["action_state"] != "succeeded"
 
 
 def test_postcheck_snapshot_event_carries_bounded_action_metadata(
@@ -306,6 +345,9 @@ def test_postcheck_snapshot_event_carries_bounded_action_metadata(
         ceph_query_cache.invalidate(EVENT_NAMESPACE, default_cluster_id)
 
         action.status = "EXECUTED"
+        incident.status = "VERIFYING"
+        session.commit()
+        session.refresh(incident)
         incident.status = "RESOLVED"
         session.commit()
 

@@ -36,7 +36,7 @@ from datetime import datetime, timedelta
 from shared.time import utc_now
 
 from config.settings import settings
-from shared import alert_lifecycle, audit, db
+from shared import alert_lifecycle, audit, db, telegram_outbox
 from shared.incident_actions import cancel_pending_actions
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.telegram_alerts import send_node_alert
@@ -192,7 +192,7 @@ def create_or_resolve_device_health_incidents(current: dict[str, dict]) -> None:
     osd_latency_monitor.py) for each NEWLY created Incident only — this
     module previously created the Incident/Action silently with no
     notification at all, unlike its two sibling hardware monitors."""
-    pending_alerts = []
+    pending_event_ids = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -253,7 +253,17 @@ def create_or_resolve_device_health_incidents(current: dict[str, dict]) -> None:
             )
 
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                pending_alerts.append((detail["host"] or detail["mon_host"], rationale))
+                pending_event_ids.append(
+                    telegram_outbox.enqueue_node_alert(
+                        session,
+                        incident_id=incident.id,
+                        host=detail["host"] or detail["mon_host"],
+                        message=rationale,
+                    )
+                )
         session.commit()
-    for host, rationale in pending_alerts:
-        send_node_alert(host, rationale)
+    telegram_outbox.dispatch_due(
+        limit=len(pending_event_ids),
+        event_ids=pending_event_ids,
+        sender=send_node_alert,
+    )

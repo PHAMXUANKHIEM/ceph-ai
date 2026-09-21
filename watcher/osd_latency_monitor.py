@@ -38,10 +38,9 @@ from __future__ import annotations
 
 import json
 import statistics
-from datetime import datetime
 from shared.time import utc_now
 
-from shared import alert_lifecycle, audit, db
+from shared import alert_lifecycle, audit, db, telegram_outbox
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_osd_latency_alert
@@ -230,7 +229,7 @@ def create_or_resolve_osd_latency_incidents(
     watcher/crush_skew_monitor.py (xem docstring hàm tương ứng ở đó); cùng
     một khuôn streak-trong-RAM nên cùng một cách vá. Mặc định None giữ
     nguyên hành vi cũ."""
-    pending_alerts = []
+    pending_event_ids = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -287,7 +286,18 @@ def create_or_resolve_osd_latency_incidents(
             )
 
             if not alert_lifecycle.inherit_active_mute(session, incident):
-                pending_alerts.append((detail["osd_id"], detail["host"], rationale))
+                pending_event_ids.append(
+                    telegram_outbox.enqueue_osd_latency_alert(
+                        session,
+                        incident_id=incident.id,
+                        osd_id=detail["osd_id"],
+                        host=detail["host"],
+                        message=rationale,
+                    )
+                )
         session.commit()
-    for osd_id, host, rationale in pending_alerts:
-        send_osd_latency_alert(osd_id, host, rationale)
+    telegram_outbox.dispatch_due(
+        limit=len(pending_event_ids),
+        event_ids=pending_event_ids,
+        sender=send_osd_latency_alert,
+    )

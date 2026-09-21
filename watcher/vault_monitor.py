@@ -1,6 +1,7 @@
 """Read-only HashiCorp Vault security monitor with a dedicated Telegram channel."""
 from __future__ import annotations
 import argparse
+import hashlib
 import logging
 import os
 import time
@@ -8,8 +9,8 @@ from pathlib import Path
 from typing import Any
 import httpx
 from config.settings import settings
-from shared import env_config
-from shared.vault_alerts import send_vault_alert
+from shared import env_config, telegram_outbox
+from shared.vault_alerts import send_vault_alert as _send_vault_alert_direct
 
 logger = logging.getLogger(__name__)
 _ENV_NAMES = [
@@ -45,6 +46,25 @@ def _read_token(config: dict[str, Any]) -> str:
     except OSError:
         logger.warning("Vault token file cannot be read: %s", path)
     return config["token"]
+
+
+def send_vault_alert(
+    title: str,
+    severity: str,
+    detail: str,
+    remediation: str | None = None,
+) -> bool:
+    """Queue Vault findings through the durable alert delivery path."""
+    fingerprint = hashlib.sha256(
+        f"{title}|{severity}|{detail}|{remediation or ''}".encode("utf-8")
+    ).hexdigest()[:24]
+    return telegram_outbox.enqueue_alert_call_and_dispatch(
+        event_id=f"vault:{fingerprint}",
+        category="vault",
+        function="send_vault_alert",
+        args=(title, severity, detail, remediation),
+        sender=_send_vault_alert_direct,
+    )
 
 
 class VaultMonitor:
