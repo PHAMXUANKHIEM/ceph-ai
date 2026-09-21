@@ -658,7 +658,7 @@ thao tác thất bại không làm mất dữ liệu cũ hoặc báo thành côn
   reconnect, WebSocket client count và refresh error.
 - [ ] Giới hạn concurrency theo cluster và toàn hệ thống.
 - [ ] Circuit breaker/backoff khi MON/Cephadm lỗi liên tiếp.
-- [ ] Không retry đồng thời ở route, collector và browser theo cấp số nhân.
+- [x] Không retry đồng thời ở route, collector và browser theo cấp số nhân. Dashboard health chỉ đọc snapshot; refresh là POST async có lock/coalescing theo cluster; Watcher là owner duy nhất của Ceph health polling/retry; browser chỉ polling fallback, không tự retry Ceph.
 - [ ] Alert nếu snapshot quá `max_stale_seconds`, collector chết hoặc event bus
   không publish.
 - [ ] Ghi correlation id từ browser request → event → collector/action.
@@ -984,3 +984,4 @@ mượt của toàn bộ các trang còn lại.
 | 2026-09-21 | RT-09.1 freshness diagnostics | Admin diagnostics thêm snapshot freshness theo từng cluster: generation, collected/attempted time, age, stale, refreshing và last error; không lộ payload/credential | `dashboard/routes/system_health.py`, `tests/test_ceph_debug.py` — **4 passed** |
 | 2026-09-21 | RT-09.2 bounded inventory payloads | PG/CRUSH snapshot có giới hạn byte và số item/node cấu hình được; payload bị cắt giữ metadata `payload_limits`, không làm mất toàn bộ snapshot | `config/settings.py`, `shared/cluster_snapshot.py`, `tests/test_cluster_snapshot.py` — **2 tests added** |
 | 2026-09-21 | RT-09.3 MON circuit breaker | Health query có circuit breaker theo endpoint/credential/mode, cooldown + probe; khi MON lỗi liên tiếp không tiếp tục tạo SSH load, success reset state; diagnostics chỉ trả counter bounded | `config/settings.py`, `watcher/ceph_client.py`, `dashboard/routes/system_health.py`, `tests/test_ceph_client.py`, `tests/test_ceph_debug.py` |
+| 2026-09-21 | RT-09.4 retry ownership | Route không chạy Ceph và không tự retry; refresh được coalescing theo cluster; retry/backoff chỉ nằm trong Watcher health query, còn browser giữ polling fallback không nhân retry; regression xác nhận GET không schedule refresh và POST dùng async refresh | `dashboard/routes/incidents.py`, `ceph-health-dashboard/src/components/CephDashboard.tsx`, `tests/test_dashboard_health_api.py` — **2 tests** |
