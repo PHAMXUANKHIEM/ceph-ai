@@ -8,6 +8,7 @@ from shared.cluster_events import (
     publish_event,
     read_latest_event,
 )
+from shared.request_context import reset_request_id, set_request_id
 
 
 @pytest.mark.parametrize(
@@ -54,6 +55,18 @@ def test_event_rejects_unknown_event_and_filters_unknown_sections(monkeypatch, t
 
     event = publish_event("cluster-a", "snapshot_changed", sections=["health", "secret"])
     assert event["sections"] == ["health"]
+
+
+def test_event_carries_request_correlation_without_payload_data(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+    token = set_request_id("browser-action-42")
+    try:
+        event = publish_event("cluster-a", "snapshot_changed", sections=["health"])
+    finally:
+        reset_request_id(token)
+
+    assert event["request_id"] == "browser-action-42"
+    assert "credential" not in repr(event).lower()
 
 
 def test_action_state_event_keeps_cluster_and_status_metadata(monkeypatch, tmp_path):

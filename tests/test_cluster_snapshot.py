@@ -7,6 +7,7 @@ from time import time
 import pytest
 
 from shared import ceph_query_cache
+from shared.request_context import reset_request_id, set_request_id
 from shared import cluster_snapshot
 
 
@@ -150,6 +151,17 @@ def test_priority_refresh_marker_is_cluster_scoped_and_bounded(monkeypatch, tmp_
 
     monkeypatch.setattr(ceph_query_cache, "_memory", {})
     assert cluster_snapshot.read_priority_refresh("cluster-a")["sections"] == ["nodes"]
+
+
+def test_priority_refresh_preserves_request_correlation(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+    token = set_request_id("browser-action-43")
+    try:
+        marker = cluster_snapshot.request_priority_refresh("cluster-a", ["health"])
+    finally:
+        reset_request_id(token)
+
+    assert marker["request_id"] == "browser-action-43"
 
 
 def test_persisted_snapshot_is_readable_after_process_restart(monkeypatch, tmp_path):

@@ -12,6 +12,7 @@ from copy import deepcopy
 from threading import Lock
 
 from shared import ceph_query_cache
+from shared.request_context import get_request_id
 
 
 EVENT_NAMESPACE = "cluster-state-events"
@@ -90,6 +91,7 @@ def publish_event(
     action_state: str | None = None,
     generation: int | None = None,
     collected_at: str | None = None,
+    request_id: str | None = None,
 ) -> dict:
     """Publish one bounded event and return its persisted envelope."""
     normalized_cluster = _cluster_id(cluster_id)
@@ -115,6 +117,9 @@ def publish_event(
         payload["generation"] = int(generation)
     if collected_at:
         payload["collected_at"] = str(collected_at)
+    correlation_id = request_id or get_request_id()
+    if isinstance(correlation_id, str) and 1 <= len(correlation_id) <= 128:
+        payload["request_id"] = correlation_id
     try:
         stored = ceph_query_cache.store_versioned(EVENT_NAMESPACE, normalized_cluster, payload)
     except Exception:

@@ -17,6 +17,7 @@ from uuid import uuid4
 from config.settings import settings
 from shared import ceph_query_cache
 from shared.cluster_events import publish_event
+from shared.request_context import get_request_id
 
 SNAPSHOT_NAMESPACE = "cluster-snapshot"
 SECTION_SNAPSHOT_NAMESPACE = "cluster-section-snapshot"
@@ -302,7 +303,7 @@ def request_priority_refresh(
         if value in allowed and value not in normalized_sections:
             normalized_sections.append(value)
     marker = {
-        "request_id": uuid4().hex,
+        "request_id": get_request_id() or uuid4().hex,
         "requested_at": _utc_now(),
         "sections": normalized_sections,
     }
