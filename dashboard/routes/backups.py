@@ -37,7 +37,7 @@ from dashboard.vntime import format_vn_clock
 from config.settings import settings
 from shared import audit, db
 from shared.cluster_nodes import configured_nodes
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from shared.models import (
     Action,
     ActionClassification,
@@ -586,6 +586,22 @@ async def backup_target_health_api(request: Request, user: str = Depends(require
     return {"cluster_id": cluster.id, "targets": _target_health(cluster)}
 
 
+@router.get("/api/backups/inventory")
+async def backup_inventory_api(request: Request, user: str = Depends(require_login)):
+    del user
+    cluster = selected_cluster(request)
+    params = request.query_params
+    try:
+        page = int(params.get("page", "1"))
+        page_size = int(params.get("page_size", "25"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="page/page_size không hợp lệ.") from exc
+    return {"cluster_id": cluster.id, **_inventory(
+        cluster, page=page, page_size=page_size,
+        filters={key: params.get(key, "") for key in ("search", "pool", "image", "job_type", "backup_target_slot", "status")},
+    )}
+
+
 def _history(tracked: list[dict], cluster=None) -> list[dict]:
     """AC #4: >= `HISTORY_LIMIT_PER_IMAGE` most recent runs PER (pool,
     image) — Story 9.1's `Index(pool, image, created_at)` (the same one
@@ -620,6 +636,39 @@ def _history(tracked: list[dict], cluster=None) -> list[dict]:
                 )
     rows_out.sort(key=lambda h: h["created_at"] or datetime.min, reverse=True)
     return rows_out
+
+
+def _inventory(cluster=None, *, page: int = 1, page_size: int = 25, filters: dict | None = None) -> dict:
+    """Return a paginated inventory independent from the current policy."""
+    filters = filters or {}
+    page = max(1, int(page))
+    page_size = min(100, max(10, int(page_size)))
+    with db.SessionLocal() as session:
+        query = session.query(BackupJob).filter(
+            _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True
+        )
+        for field in ("pool", "image", "job_type", "backup_target_slot", "status"):
+            value = str(filters.get(field) or "").strip()
+            if value:
+                query = query.filter(getattr(BackupJob, field) == value)
+        search = str(filters.get("search") or "").strip()
+        if search:
+            needle = f"%{search}%"
+            query = query.filter(or_(BackupJob.pool.ilike(needle), BackupJob.image.ilike(needle),
+                                     BackupJob.run_id.ilike(needle), BackupJob.remote_key.ilike(needle)))
+        total = query.with_entities(func.count(BackupJob.id)).scalar() or 0
+        rows = query.order_by(BackupJob.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+        items = []
+        for row in rows:
+            items.append({"job_id": row.id, "run_id": row.run_id, "pool": row.pool, "image": row.image,
+                          "job_type": row.job_type, "status": row.status, "backup_target_slot": row.backup_target_slot,
+                          "remote_key": row.remote_key, "base_job_id": row.base_job_id, "size_bytes": row.size_bytes,
+                          "sha256": row.sha256, "duration_seconds": row.duration_seconds,
+                          "created_at": row.created_at.isoformat() if row.created_at else None,
+                          "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+                          "error_available": bool(row.error_message)})
+    return {"items": items, "total": total, "page": page, "page_size": page_size,
+            "pages": max(1, (total + page_size - 1) // page_size)}
 
 
 def _digests(cluster=None) -> list[dict]:
@@ -716,6 +765,7 @@ async def index(request: Request, user: str = Depends(require_login)):
             "queue": _queue(tracked, cluster),
             "protection": protection,
             "history": _history(tracked, cluster),
+            "inventory": _inventory(cluster),
             "digests": _digests(cluster),
             "anomalies": _anomalies(cluster),
             "tracked_images": tracked,

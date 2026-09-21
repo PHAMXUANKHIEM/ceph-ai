@@ -6922,3 +6922,6 @@ body:not(.dashboard-page-shell) .chat-fab,
 .backup-target-health-status.is-failed { background: rgba(239, 68, 68, .14); color: #fca5a5; }
 .backup-target-health-status.is-never, .backup-target-health-status.is-unknown { background: rgba(148, 163, 184, .14); color: #cbd5e1; }
 .btn-backup-retry { margin-left: .5rem; }
+.backup-inventory-toolbar { display: flex; gap: .7rem; margin-bottom: 1rem; }
+.backup-inventory-toolbar input { flex: 1; min-width: 220px; }
+.backup-inventory-pagination { display: flex; align-items: center; justify-content: center; gap: .8rem; margin-top: 1rem; }

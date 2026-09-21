@@ -29,6 +29,7 @@
       <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-progress" data-backup-tab="progress"><span aria-hidden="true">↻</span>Đang chạy <b id="backup-tab-progress-count">0</b></button>
       <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-queue" data-backup-tab="queue"><span aria-hidden="true">≡</span>Hàng đợi <b>{{ queue|length }}</b></button>
       <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-history" data-backup-tab="history"><span aria-hidden="true">◷</span>Lịch sử <b>{{ history|length }}</b></button>
+      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-inventory" data-backup-tab="inventory"><span aria-hidden="true">▦</span>Inventory <b>{{ inventory.total }}</b></button>
       <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-anomalies" data-backup-tab="anomalies"><span aria-hidden="true">△</span>Bất thường <b>{{ anomalies|length }}</b></button>
       <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-digests" data-backup-tab="digests"><span aria-hidden="true">▤</span>Digest <b>{{ digests|length }}</b></button>
       {% if is_admin %}<button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-policy" data-backup-tab="policy"><span aria-hidden="true">⚙</span>Policies <b>{{ backup_policy_revisions|length }}</b></button>{% endif %}
@@ -195,6 +196,15 @@
         {% else %}
         <div class="backup-empty-state"><span class="backup-empty-icon" aria-hidden="true">◷</span><h3>Chưa có lịch sử backup</h3><p>Chưa có lịch sử backup nào. Hãy chạy backup đầu tiên từ Hàng đợi.</p><button type="button" class="btn btn-ghost btn-sm" data-backup-open-tab="queue">Chạy backup đầu tiên →</button></div>
         {% endif %}
+      </div>
+    </section>
+
+    <section class="card backup-tab-panel" id="backup-panel-inventory" data-backup-panel="inventory" role="tabpanel" hidden>
+      <div class="card-header backup-panel-header"><div><div class="backup-panel-kicker">Independent inventory</div><h2>Backup Inventory</h2></div><span class="backup-panel-meta" id="backup-inventory-total">{{ inventory.total }} artifacts</span></div>
+      <div class="card-body">
+        <div class="backup-inventory-toolbar"><input id="backup-inventory-search" type="search" placeholder="Tìm pool, image, run ID hoặc artifact…"><select id="backup-inventory-page-size"><option value="10">10 / trang</option><option value="25" selected>25 / trang</option><option value="50">50 / trang</option></select><select id="backup-inventory-status"><option value="">Tất cả status</option><option value="SUCCESS">SUCCESS</option><option value="FAILED">FAILED</option><option value="RUNNING">RUNNING</option></select></div>
+        <div class="table-wrap backup-table-scroll"><table><thead><tr><th>Pool/Image</th><th>Type</th><th>Target</th><th>Status</th><th>Run ID / Artifact</th><th>Size</th><th>Checksum</th><th>Created</th></tr></thead><tbody id="backup-inventory-body">{% for item in inventory.items %}<tr><td><code>{{ item.pool or '—' }}/{{ item.image or '—' }}</code></td><td>{{ item.job_type }}</td><td>{{ item.backup_target_slot or '—' }}</td><td>{{ item.status }}</td><td><code>{{ item.run_id }}</code>{% if item.remote_key %}<br><span class="hint">{{ item.remote_key }}</span>{% endif %}</td><td>{{ item.size_bytes or 0 }}</td><td><code>{{ item.sha256 or '—' }}</code></td><td>{{ item.created_at or '—' }}</td></tr>{% else %}<tr><td colspan="8" class="hint">Chưa có backup artifact.</td></tr>{% endfor %}</tbody></table></div>
+        <div class="backup-inventory-pagination"><button type="button" class="btn btn-ghost btn-sm" id="backup-inventory-prev">←</button><span id="backup-inventory-page">Trang 1/1</span><button type="button" class="btn btn-ghost btn-sm" id="backup-inventory-next">→</button></div>
       </div>
     </section>
 

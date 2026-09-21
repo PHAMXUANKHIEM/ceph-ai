@@ -24,6 +24,46 @@
   });
   if (backupTabs.length) activateBackupTab("protection");
 
+  var inventoryBody = document.getElementById("backup-inventory-body");
+  var inventorySearch = document.getElementById("backup-inventory-search");
+  var inventorySize = document.getElementById("backup-inventory-page-size");
+  var inventoryStatus = document.getElementById("backup-inventory-status");
+  var inventoryPageEl = document.getElementById("backup-inventory-page");
+  var inventoryTotalEl = document.getElementById("backup-inventory-total");
+  var inventoryPage = 1;
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>\"']/g, function (char) {
+      return {"&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;"}[char];
+    });
+  }
+  function loadInventory() {
+    if (!inventoryBody) return;
+    var params = new URLSearchParams({page: String(inventoryPage), page_size: inventorySize ? inventorySize.value : "25",
+      search: inventorySearch ? inventorySearch.value : "", status: inventoryStatus ? inventoryStatus.value : ""});
+    fetch("/api/backups/inventory?" + params.toString(), {credentials: "same-origin"})
+      .then(function (response) { return response.json().then(function (data) {
+        if (!response.ok) throw new Error(data.detail || "HTTP " + response.status); return data;
+      }); })
+      .then(function (data) {
+        var items = data.items || [];
+        inventoryBody.innerHTML = items.length ? items.map(function (item) {
+          return "<tr><td><code>" + escapeHtml((item.pool || "—") + "/" + (item.image || "—")) + "</code></td><td>" + escapeHtml(item.job_type) + "</td><td>" + escapeHtml(item.backup_target_slot || "—") + "</td><td>" + escapeHtml(item.status) + "</td><td><code>" + escapeHtml(item.run_id) + "</code>" + (item.remote_key ? "<br><span class='hint'>" + escapeHtml(item.remote_key) + "</span>" : "") + "</td><td>" + escapeHtml(item.size_bytes || 0) + "</td><td><code>" + escapeHtml(item.sha256 || "—") + "</code></td><td>" + escapeHtml(item.created_at || "—") + "</td></tr>";
+        }).join("") : "<tr><td colspan='8' class='hint'>Không tìm thấy artifact.</td></tr>";
+        if (inventoryPageEl) inventoryPageEl.textContent = "Trang " + data.page + "/" + data.pages;
+        if (inventoryTotalEl) inventoryTotalEl.textContent = data.total + " artifacts";
+        var prev = document.getElementById("backup-inventory-prev"); var next = document.getElementById("backup-inventory-next");
+        if (prev) prev.disabled = data.page <= 1; if (next) next.disabled = data.page >= data.pages;
+      }).catch(function () { inventoryBody.innerHTML = "<tr><td colspan='8' class='hint'>Không tải được inventory.</td></tr>"; });
+  }
+  if (inventoryBody) {
+    [inventorySearch, inventorySize, inventoryStatus].forEach(function (element) {
+      if (element) element.addEventListener(element === inventorySearch ? "input" : "change", function () { inventoryPage = 1; loadInventory(); });
+    });
+    document.getElementById("backup-inventory-prev").addEventListener("click", function () { if (inventoryPage > 1) { inventoryPage--; loadInventory(); } });
+    document.getElementById("backup-inventory-next").addEventListener("click", function () { inventoryPage++; loadInventory(); });
+    loadInventory();
+  }
+
   Array.prototype.forEach.call(document.querySelectorAll("[data-backup-open-tab]"), function (button) {
     button.addEventListener("click", function () {
       var target = button.getAttribute("data-backup-open-tab");

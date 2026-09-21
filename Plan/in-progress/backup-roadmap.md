@@ -226,7 +226,7 @@ hoặc job chưa FAILED. History có nút Retry tương ứng. Cơ chế stale R
 hiện có của Worker tiếp tục được dùng; resume multipart, cancel an toàn, trạng
 thái mở rộng và reconciliation chi tiết sẽ làm tiếp.
 
-### 6.5 Backup inventory độc lập policy `[ ]`
+### 6.5 Backup inventory độc lập policy `[~]`
 
 - Lịch sử toàn bộ BackupJob, kể cả image đã bỏ khỏi tracked list.
 - Search/filter theo cluster, pool, image, type, target, status và thời gian.
@@ -234,6 +234,12 @@ thái mở rộng và reconciliation chi tiết sẽ làm tiếp.
 - Trang chi tiết job: run ID, chain, artifact, size, checksum, duration và error.
 - Export CSV/JSON có redaction.
 - Deep-link từ alert/digest/audit tới job liên quan.
+
+Đã bổ sung workspace Inventory và API `GET /api/backups/inventory`: query độc
+lập policy, scope theo cluster, filter search/status và phân trang server-side.
+Response có run ID, job type, target, artifact key, base job, size, checksum,
+duration và timestamp; lỗi chỉ trả cờ `error_available`, không trả raw error.
+Deep-link và filter đầy đủ theo pool/image/type/target sẽ tiếp tục hoàn thiện.
 
 ### 6.6 Manual retention/delete `[ ]`
 
