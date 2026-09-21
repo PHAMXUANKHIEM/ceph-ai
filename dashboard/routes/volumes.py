@@ -72,6 +72,7 @@ from watcher.block_storage_pool_lifecycle import build_pool_lifecycle_inventory
 from watcher.block_storage_policy import build_durability_policy
 from watcher.capacity_failure_simulation import simulate as simulate_capacity_failure
 from watcher.capacity_forecast import forecasts as capacity_forecasts
+from dashboard.volume_path_discovery import build_path_report, collect_host_path_evidence, configured_compute_nodes
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
@@ -2711,6 +2712,28 @@ async def volume_inventory_detail_api(
     detail["metric_summary"] = metric_summary
     detail["audit_summary"] = audit_summary
     return {"cluster_id": cluster.id, "collected_at": utc_now().isoformat() + "Z", **detail}
+
+
+@router.get("/api/volumes/{pool}/inventory/{image}/paths")
+async def volume_path_inventory_api(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Return bounded read-only multipath/NVMe-oF/iSCSI evidence."""
+    del user
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if not image or len(image) > 128 or "\x00" in image or "/" in image:
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+    hosts = configured_compute_nodes(cluster)
+    if not hosts:
+        return build_path_report(cluster, image, {"status": "not_configured", "verified": False}, [])
+    cinder = await asyncio.to_thread(discover_cinder_volume, cluster, image)
+    evidence = await asyncio.gather(*(
+        asyncio.to_thread(collect_host_path_evidence, cluster, host)
+        for host in hosts
+    ))
+    return build_path_report(cluster, image, cinder, list(evidence))
 
 
 @router.get("/api/volumes/{pool}/inventory/{image}/boot-dependencies")
