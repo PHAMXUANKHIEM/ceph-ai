@@ -696,7 +696,8 @@ def _inventory(cluster=None, *, page: int = 1, page_size: int = 25, filters: dic
         items = []
         for row in rows:
             items.append({"job_id": row.id, "run_id": row.run_id, "pool": row.pool, "image": row.image,
-                          "job_type": row.job_type, "status": row.status, "backup_target_slot": row.backup_target_slot,
+                          "job_type": row.job_type, "status": row.status, "consistency_mode": row.consistency_mode,
+                          "backup_target_slot": row.backup_target_slot,
                           "remote_key": row.remote_key, "base_job_id": row.base_job_id, "size_bytes": row.size_bytes,
                           "sha256": row.sha256, "duration_seconds": row.duration_seconds,
                           "created_at": row.created_at.isoformat() if row.created_at else None,

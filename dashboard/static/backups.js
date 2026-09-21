@@ -47,13 +47,13 @@
       .then(function (data) {
         var items = data.items || [];
         inventoryBody.innerHTML = items.length ? items.map(function (item) {
-          return "<tr><td><code>" + escapeHtml((item.pool || "—") + "/" + (item.image || "—")) + "</code></td><td>" + escapeHtml(item.job_type) + "</td><td>" + escapeHtml(item.backup_target_slot || "—") + "</td><td>" + escapeHtml(item.status) + "</td><td><code>" + escapeHtml(item.run_id) + "</code>" + (item.remote_key ? "<br><span class='hint'>" + escapeHtml(item.remote_key) + "</span>" : "") + "</td><td>" + escapeHtml(item.size_bytes || 0) + "</td><td><code>" + escapeHtml(item.sha256 || "—") + "</code></td><td>" + escapeHtml(item.created_at || "—") + "</td></tr>";
-        }).join("") : "<tr><td colspan='8' class='hint'>Không tìm thấy artifact.</td></tr>";
+          return "<tr><td><code>" + escapeHtml((item.pool || "—") + "/" + (item.image || "—")) + "</code></td><td>" + escapeHtml(item.job_type) + "</td><td>" + escapeHtml(item.consistency_mode || "crash-consistent") + "</td><td>" + escapeHtml(item.backup_target_slot || "—") + "</td><td>" + escapeHtml(item.status) + "</td><td><code>" + escapeHtml(item.run_id) + "</code>" + (item.remote_key ? "<br><span class='hint'>" + escapeHtml(item.remote_key) + "</span>" : "") + "</td><td>" + escapeHtml(item.size_bytes || 0) + "</td><td><code>" + escapeHtml(item.sha256 || "—") + "</code></td><td>" + escapeHtml(item.created_at || "—") + "</td></tr>";
+        }).join("") : "<tr><td colspan='9' class='hint'>Không tìm thấy artifact.</td></tr>";
         if (inventoryPageEl) inventoryPageEl.textContent = "Trang " + data.page + "/" + data.pages;
         if (inventoryTotalEl) inventoryTotalEl.textContent = data.total + " artifacts";
         var prev = document.getElementById("backup-inventory-prev"); var next = document.getElementById("backup-inventory-next");
         if (prev) prev.disabled = data.page <= 1; if (next) next.disabled = data.page >= data.pages;
-      }).catch(function () { inventoryBody.innerHTML = "<tr><td colspan='8' class='hint'>Không tải được inventory.</td></tr>"; });
+      }).catch(function () { inventoryBody.innerHTML = "<tr><td colspan='9' class='hint'>Không tải được inventory.</td></tr>"; });
   }
   if (inventoryBody) {
     [inventorySearch, inventorySize, inventoryStatus].forEach(function (element) {

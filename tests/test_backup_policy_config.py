@@ -34,6 +34,18 @@ def test_save_policy_is_atomic_and_preserves_revision(monkeypatch, tmp_path):
     assert revisions[0]["actor"] == "admin"
 
 
+def test_application_consistency_hooks_are_normalized():
+    policy = _policy()
+    policy["tracked_images"][0].update({
+        "consistency_mode": "application-consistent",
+        "application_consistency": {"pre_hook": ["freeze"], "post_hook": ["thaw"], "timeout_seconds": 12},
+    })
+    normalized = policy_config.validate_backup_policy(policy)
+    entry = normalized["tracked_images"][0]
+    assert entry["consistency_mode"] == "application-consistent"
+    assert entry["application_consistency"]["timeout_seconds"] == 12
+
+
 @pytest.mark.parametrize("bad", [
     {"backup_targets": [{"slot": "a"}, {"slot": "a"}]},
     {"backup_targets": [{"slot": "a"}], "tracked_images": [{"pool": "bad/pool", "image": "x"}]},

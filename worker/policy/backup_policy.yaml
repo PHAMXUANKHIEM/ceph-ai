@@ -25,6 +25,10 @@ required_copy_count: 2
 # blank below is a documentation placeholder — CEPH_RBD_POOLS in the real
 # .env is currently blank too (no lab workload configured yet), so this
 # list starts empty until an operator adds real entries.
+# Each tracked image defaults to crash-consistent.  For a VM/database that
+# supports quiescing, set consistency_mode to application-consistent and
+# provide fixed argument-vector hooks; the worker runs pre_hook before the
+# RBD snapshot and post_hook in every success/failure path.
 tracked_images: []
 
 # Maximum acceptable age of the latest successful recovery point. Shared by

@@ -15,6 +15,8 @@ from uuid import uuid4
 
 import yaml
 
+from worker.backup import application_consistency
+
 POLICY_PATH = os.path.join(os.path.dirname(__file__), "..", "policy", "backup_policy.yaml")
 POLICY_REVISION_DIR = os.environ.get(
     "CEPH_AI_BACKUP_POLICY_REVISION_DIR", "/var/lib/ceph-ai/backup-policy-revisions"
@@ -101,6 +103,17 @@ def validate_backup_policy(policy: dict) -> dict:
             entry["required_copy_count"] = _bounded_int(
                 item["required_copy_count"], "required_copy_count", 1, len(clean_targets)
             )
+        try:
+            consistency = application_consistency.normalize_policy(item)
+        except (TypeError, ValueError) as exc:
+            raise BackupPolicyValidationError(str(exc)) from exc
+        entry["consistency_mode"] = consistency.mode
+        if consistency.mode == "application-consistent":
+            entry["application_consistency"] = {
+                "pre_hook": list(consistency.pre_hook),
+                "post_hook": list(consistency.post_hook),
+                "timeout_seconds": consistency.timeout_seconds,
+            }
         clean_tracked.append(entry)
     normalized["tracked_images"] = clean_tracked
     normalized["rpo_hours"] = _bounded_int(normalized.get("rpo_hours", 24), "rpo_hours", 1, 8760)

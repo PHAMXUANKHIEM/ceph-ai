@@ -275,7 +275,7 @@ apply; kết quả lưu target slot, thời lượng và cleanup scratch vẫn c
 đúng cluster và đúng target trước khi tạo action. Còn thiếu giữ evidence theo TTL
 và drill tự động độc lập định kỳ cho cả A/B.
 
-### 7.2 Application-consistent backup `[ ]`
+### 7.2 Application-consistent backup `[~]`
 
 - QEMU guest-agent freeze/thaw hoặc hook tích hợp hypervisor.
 - Pre/post hook có timeout và output redaction.
@@ -283,6 +283,15 @@ và drill tự động độc lập định kỳ cho cả A/B.
 - Hook chuyên biệt cho database/workload khi cần.
 - Gắn nhãn `crash-consistent` hoặc `application-consistent` vào BackupJob.
 - Cảnh báo nếu policy yêu cầu application consistency nhưng hook thất bại.
+
+Đã thêm `consistency_mode` theo từng tracked image. Với
+`application-consistent`, operator cấu hình pre/post hook dạng danh sách tham
+số và timeout 1..300 giây; worker chạy hook trên host worker, truyền context
+pool/image, redact output, và luôn thử post-hook thaw kể cả khi pre-hook hoặc
+snapshot/export thất bại. BackupJob, progress và inventory lưu/hiển thị nhãn
+consistency. Migration backfill các job cũ thành `crash-consistent`; test policy,
+timeout/thaw và backup/dashboard đã pass. Còn thiếu adapter QEMU guest-agent/
+database dựng sẵn và cảnh báo lifecycle riêng cho từng workload.
 
 ### 7.3 Capacity planning `[ ]`
 

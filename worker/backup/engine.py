@@ -40,7 +40,7 @@ from config.settings import settings
 from shared import audit, db
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import BackupJob
-from worker.backup import ai_analysis, anomaly
+from worker.backup import ai_analysis, anomaly, application_consistency
 from worker.backup import metadata as backup_metadata
 from worker.backup import restore
 from worker.backup import restore_drill
@@ -224,6 +224,7 @@ def _claim_running_backup(
     image: str,
     job_type: str,
     base_job_id: str | None,
+    consistency_mode: str = "crash-consistent",
 ) -> str | None:
     """Atomically claim the image for one RBD export.
 
@@ -239,6 +240,7 @@ def _claim_running_backup(
             pool=pool,
             image=image,
             job_type=job_type,
+            consistency_mode=consistency_mode,
             status="RUNNING",
             base_job_id=base_job_id,
         )
@@ -319,6 +321,17 @@ def _run_rbd_backup(
         return False
 
     cluster = get_cluster(cluster_id)
+
+    tracked_policy = next(
+        (item for item in (load_backup_policy().get("tracked_images") or [])
+         if item.get("pool") == pool and item.get("image") == image),
+        {},
+    ) if cluster is None else {}
+    try:
+        consistency_policy = application_consistency.normalize_policy(tracked_policy)
+    except (TypeError, ValueError) as exc:
+        logger.error("backup_engine._run_rbd_backup: invalid consistency policy for %s/%s: %s", pool, image, exc)
+        return False
 
     try:
         target_bindings = resolve_targets(cluster)
@@ -406,6 +419,7 @@ def _run_rbd_backup(
         image,
         job_type,
         base_job.id if base_job is not None else None,
+        consistency_policy.mode,
     )
     if running_job_id is None:
         logger.info(
@@ -418,7 +432,18 @@ def _run_rbd_backup(
     snap_name = f"backup-{utc_now().strftime('%Y%m%dT%H%M%SZ')}"
 
     progress = _make_progress(total_bytes=0)
+    progress[0]["consistency_mode"] = consistency_policy.mode
     write_progress(action_pk, progress)
+
+    try:
+        consistency_session = application_consistency.begin(consistency_policy, pool, image)
+    except application_consistency.ApplicationConsistencyError as exc:
+        logger.error("backup_engine._run_rbd_backup: application consistency pre-hook failed: %s", exc)
+        progress[0]["status"] = "failed"
+        progress[0]["message"] = str(exc)
+        write_progress(action_pk, progress)
+        _mark_running_failed(running_job_id, str(exc))
+        return False
 
     try:
         execute_command(
@@ -427,6 +452,10 @@ def _run_rbd_backup(
         )
     except Exception as exc:
         logger.exception("backup_engine._run_rbd_backup: rbd snap create failed for %s/%s", pool, image)
+        try:
+            application_consistency.thaw(consistency_session, pool, image)
+        except application_consistency.ApplicationConsistencyError as thaw_exc:
+            logger.error("backup_engine._run_rbd_backup: thaw hook failed after snapshot error: %s", thaw_exc)
         _mark_running_failed(running_job_id, str(exc))
         progress[0]["status"] = "failed"
         progress[0]["message"] = str(exc)
@@ -549,6 +578,7 @@ def _run_rbd_backup(
                         else None
                     ),
                     backup_target_slot=slot,
+                    consistency_mode=consistency_policy.mode,
                     remote_key=remote_key,
                     size_bytes=size_bytes,
                     sha256=sha256,
@@ -621,6 +651,12 @@ def _run_rbd_backup(
             ai_analysis.analyze_backup_job(failed_job)
         return False
     finally:
+        try:
+            application_consistency.thaw(consistency_session, pool, image)
+        except application_consistency.ApplicationConsistencyError as exc:
+            logger.error("backup_engine._run_rbd_backup: application consistency thaw hook failed: %s", exc)
+            progress[0]["consistency_warning"] = str(exc)
+            write_progress(action_pk, progress)
         if tmp_path is not None and os.path.exists(tmp_path):
             os.remove(tmp_path)
         # Incremental snapshots are never used as a future diff base (all

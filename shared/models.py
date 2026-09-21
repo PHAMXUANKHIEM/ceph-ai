@@ -2113,6 +2113,11 @@ class BackupJob(Base):
     image: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # "full" | "incremental" | "metadata" | "restore_drill"
     job_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    # "crash-consistent" or "application-consistent".  Nullable keeps old
+    # rows readable while the migration backfills them to crash-consistent.
+    consistency_mode: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default="crash-consistent"
+    )
     # "RUNNING" | "SUCCESS" | "FAILED"
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     # Self-FK: for an "incremental" row, the id of the "full" BackupJob its
