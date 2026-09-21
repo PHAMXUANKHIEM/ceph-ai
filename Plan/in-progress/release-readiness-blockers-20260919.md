@@ -316,6 +316,7 @@ boundaries are visible in code review and tests.
   (16 deselected)`.
 - `transfer/test_dashboard_pgs.py` is no longer collected and no collection
   error was reported.
+- CI now runs the collection-root verifier and exposes explicit integration/live jobs.
 - [~] Full default suite was re-run after the outbox changes; it reached
   approximately 68% with no test failure, then stalled for more than 15 minutes
   in SQLite migration setup on ext4 journal fsync (jbd2_log_wait_commit,
@@ -326,7 +327,7 @@ boundaries are visible in code review and tests.
 
 - [ ] Re-run the default suite after the new integration marker and record a
   clean exit; run `pytest -m integration` separately with a dedicated broker.
-- [ ] Add CI enforcement for collection roots and an explicit live-suite job.
+- [x] Add CI enforcement for collection roots and an explicit live-suite job.
 
 **Exit criteria:** default collection has no import error, no `transfer/`
 tests, and the default suite excludes live tests deterministically.
@@ -361,6 +362,10 @@ tests, and the default suite excludes live tests deterministically.
 - `git status` no longer lists the `.env.bak-*`, `*.bak-*`, or `backups/*.sql`
   recovery files.
 - Published Git history was not rewritten.
+- A high-signal scan of tracked application source found no token, API-key,
+  or private-key signature. Seventy-two tracked .codex-stage/transfer review
+  artifacts remain outside the Dockerfile COPY paths; deletion is deferred until
+  the owner confirms they are not recovery evidence.
 
 **Exit criteria:** no backup/schema artifact is tracked or included in the
 release image, and the final repository status is clean.
