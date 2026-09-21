@@ -23,6 +23,7 @@ from dashboard.templating import make_templates
 from shared import db
 from shared.cluster_snapshot import DEFAULT_MAX_STALE_SECONDS, read_section_snapshot
 from shared.models import CrushOsdDistribution, CrushStructureSnapshot
+from watcher.crush_placement_advisor import build_crush_placement_advisor
 
 router = APIRouter()
 templates = make_templates()
@@ -279,6 +280,37 @@ async def crush_map_tree_api(request: Request, user: str = Depends(require_login
             available=True,
         )
         return response
+
+
+@router.get("/api/crush-map/placement-advisor")
+async def crush_placement_advisor_api(request: Request, user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    cluster = selected_cluster(request)
+    snapshot = read_section_snapshot(
+        cluster.id,
+        "crush",
+        stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    crush_snapshot = (snapshot or {}).get("crush")
+    result = build_crush_placement_advisor(
+        cluster_id=str(cluster.id),
+        cluster_name=str(cluster.name),
+        crush_snapshot=crush_snapshot,
+    )
+    result["evidence"] = {
+        "crush": {
+            "generation": (snapshot or {}).get("generation", 0),
+            "collected_at": (snapshot or {}).get("collected_at"),
+            "published_at": (snapshot or {}).get("published_at"),
+            "age_seconds": (snapshot or {}).get("age_seconds"),
+            "stale": bool((snapshot or {}).get("stale", True)),
+            "available": bool(snapshot and crush_snapshot),
+            "last_error": (snapshot or {}).get("last_error"),
+        }
+    }
+    result["stale"] = result["evidence"]["crush"]["stale"]
+    return result
 
 
 @router.get("/api/crush-map/history")

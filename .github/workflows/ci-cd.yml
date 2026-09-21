@@ -149,6 +149,39 @@ jobs:
           set -o pipefail
           python scripts/ci/quality_gate.py 2>&1 | tee artifacts/quality-gate.log
 
+      - name: Build immutable CI image
+        env:
+          IMAGE_TAG: ceph-ai:ci-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker build --pull --tag "$IMAGE_TAG" .
+          docker image inspect "$IMAGE_TAG" --format '{{.Id}}' > artifacts/image-digest.txt
+
+      - name: Scan image for blocking vulnerabilities
+        env:
+          IMAGE_TAG: ceph-ai:ci-${{ github.sha }}
+        run: |
+          set +e
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock:ro \
+            -v "$PWD/artifacts:/out" \
+            aquasec/trivy:0.64.1 image \
+            --format json --output /out/trivy-image.json \
+            --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "$IMAGE_TAG"
+          rc=$?
+          set -e
+          exit "$rc"
+
+      - name: Generate image SBOM
+        env:
+          IMAGE_TAG: ceph-ai:ci-${{ github.sha }}
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock:ro \
+            -v "$PWD/artifacts:/out" \
+            anchore/syft:v1.18.1 "docker:$IMAGE_TAG" \
+            -o cyclonedx-json=/out/sbom.cyclonedx.json
+
       - name: Surface quality gate evidence
         if: failure()
         run: |
@@ -182,7 +215,7 @@ jobs:
           if-no-files-found: warn
 
   deploy:
-    needs: [test, quality]
+    needs: [test, quality, release_gate]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: [self-hosted, linux, x64, ceph-ai-lab]
     timeout-minutes: 30
@@ -202,6 +235,42 @@ jobs:
           cd "$CEPH_AI_DEPLOY_DIR"
           test "$(git rev-parse --show-toplevel)" = "$CEPH_AI_DEPLOY_DIR"
           DEPLOY_REF="$DEPLOY_SHA" bash scripts/deploy/restart_container_stack.sh
+
+  release_gate:
+    needs: [test, quality]
+    if: always() && needs.test.result == 'success' && needs.quality.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - name: Download test and quality evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-evidence-*"
+          path: artifacts
+          merge-multiple: true
+
+      - name: Verify release evidence
+        run: python scripts/ci/release_gate.py --require-ci-artifacts
+
+      - name: Upload release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-${{ github.sha }}
+          path: artifacts/release/
+          if-no-files-found: error
 
 
   integration:

@@ -23,6 +23,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
 
+from shared.forecast_anomaly import candidate_d_alerts, candidate_d_isolation_scores
+
 
 @dataclass(frozen=True)
 class Point:
@@ -44,6 +46,18 @@ class BenchmarkResult:
     false_positive_rate: float | None
     event_recall: float | None
     mean_detection_delay_seconds: float | None
+    cpu_time_ms: float
+
+
+@dataclass(frozen=True)
+class ForecastBenchmarkResult:
+    model: str
+    evaluated: int
+    skipped: int
+    mae: float | None
+    rmse: float | None
+    smape: float | None
+    bias: float | None
     cpu_time_ms: float
 
 
@@ -204,12 +218,75 @@ def _pyod(points: list[Point], *, threshold: float, history_size: int) -> list[b
         ) from exc
 
 
+def _forecast_score(name: str, pairs: list[tuple[float, float]], skipped: int, cpu_ms: float) -> ForecastBenchmarkResult:
+    if not pairs:
+        return ForecastBenchmarkResult(name, 0, skipped, None, None, None, None, round(cpu_ms, 3))
+    errors = [predicted - actual for predicted, actual in pairs]
+    return ForecastBenchmarkResult(
+        model=name,
+        evaluated=len(pairs),
+        skipped=skipped,
+        mae=sum(abs(error) for error in errors) / len(errors),
+        rmse=math.sqrt(sum(error * error for error in errors) / len(errors)),
+        smape=sum(
+            0.0 if abs(predicted) + abs(actual) == 0 else 200.0 * abs(predicted - actual) / (abs(predicted) + abs(actual))
+            for predicted, actual in pairs
+        ) / len(pairs),
+        bias=sum(errors) / len(errors),
+        cpu_time_ms=round(cpu_ms, 3),
+    )
+
+
+def run_forecast_benchmark(
+    points: list[Point], *, horizon: int = 1, season_length: int = 24,
+) -> list[ForecastBenchmarkResult]:
+    """Compare bounded forecasting baselines without writes or side effects."""
+
+    horizon = max(1, int(horizon))
+    season_length = max(2, int(season_length))
+    ordered = list(points)
+    models = ("naive", "seasonal_naive", "linear")
+    pairs: dict[str, list[tuple[float, float]]] = {name: [] for name in models}
+    skipped = {name: 0 for name in models}
+    started = {name: time.process_time_ns() for name in models}
+    for index in range(len(ordered) - horizon):
+        history = [point.value for point in ordered[:index + 1]]
+        actual = ordered[index + horizon].value
+        if not history:
+            for name in models:
+                skipped[name] += 1
+            continue
+        pairs["naive"].append((history[-1], actual))
+        if len(history) < season_length:
+            skipped["seasonal_naive"] += 1
+        else:
+            pairs["seasonal_naive"].append((history[-season_length], actual))
+        if len(history) < 2:
+            skipped["linear"] += 1
+        else:
+            x_mean = (len(history) - 1) / 2
+            y_mean = sum(history) / len(history)
+            denominator = sum((item - x_mean) ** 2 for item in range(len(history)))
+            slope = sum((item - x_mean) * (value - y_mean) for item, value in enumerate(history)) / denominator
+            pairs["linear"].append((y_mean + slope * (len(history) - 1 + horizon - x_mean), actual))
+    results = []
+    for name in models:
+        cpu_ms = (time.process_time_ns() - started[name]) / 1_000_000
+        results.append(_forecast_score(name, pairs[name], skipped[name], cpu_ms))
+    return results
+
+
 def run_benchmark(points: list[Point], *, history_size: int = 24, threshold: float = 3.5) -> dict[str, object]:
     if len(points) <= history_size:
         raise ValueError("dataset is shorter than the benchmark history window")
     detectors = {
         "robust_baseline": lambda: _baseline(points, threshold=threshold, history_size=history_size),
         "river_half_space_trees": lambda: _river(points, threshold=0.8, history_size=history_size),
+        "candidate_d_isolation": lambda: candidate_d_alerts(
+            candidate_d_isolation_scores(
+                [{"value": point.value} for point in points], history_size=history_size,
+            ), threshold=threshold,
+        ),
     }
     results: list[BenchmarkResult] = []
     unavailable: dict[str, str] = {}
@@ -239,6 +316,9 @@ def run_benchmark(points: list[Point], *, history_size: int = 24, threshold: flo
         "threshold": threshold,
         "results": [asdict(result) for result in results],
         "unavailable": unavailable,
+        "forecast_results": [
+            asdict(result) for result in run_forecast_benchmark(points)
+        ],
         "side_effects": "read-only; no database, alert, notification, remediation, or model-state writes",
     }
 

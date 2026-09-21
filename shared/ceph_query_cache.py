@@ -12,6 +12,7 @@ from threading import RLock
 from time import monotonic, sleep, time
 from typing import Callable, Dict, Tuple, TypeVar
 
+from config.settings import settings
 
 T = TypeVar("T")
 _lock = RLock()
@@ -30,7 +31,11 @@ _metrics = {
     "cache_stale_total": 0,
     "cache_load_total": 0,
     "cache_refresh_enqueued_total": 0,
+    "cache_prune_runs_total": 0,
+    "cache_pruned_files_total": 0,
+    "cache_prune_errors_total": 0,
 }
+_last_prune_monotonic = 0.0
 
 
 class CacheLockError(RuntimeError):
@@ -63,7 +68,7 @@ def get_storage_metrics(*, max_entries: int = 20_000) -> dict[str, int | bool]:
             if index >= max_entries:
                 truncated = True
                 break
-            if not entry.is_file() or entry.is_symlink():
+            if not entry.is_file() or entry.is_symlink() or entry.suffix != ".json":
                 continue
             try:
                 size = max(0, int(entry.stat().st_size))
@@ -87,6 +92,64 @@ def get_storage_metrics(*, max_entries: int = 20_000) -> dict[str, int | bool]:
         "largest_file_bytes": largest_file_bytes,
         "truncated": truncated,
     }
+
+
+def prune_disk_cache(*, max_bytes: int | None = None, max_files: int | None = None) -> dict[str, int | bool]:
+    """Delete only the oldest JSON cache payloads after the configured limit.
+
+    Cache records are replace-in-place snapshots, so pruning never removes a
+    historical database row or an active lock. The bounded scan also removes
+    the previous source of unbounded growth: orphaned event/refresh payloads.
+    """
+    byte_limit = max(1, int(max_bytes or settings.ceph_snapshot_cache_max_bytes))
+    file_limit = max(1, int(max_files or settings.ceph_realtime_cache_max_files))
+    try:
+        entries = [
+            entry for entry in _cache_dir.iterdir()
+            if entry.is_file() and not entry.is_symlink() and entry.suffix == ".json"
+        ]
+        rows = []
+        total_bytes = 0
+        for entry in entries:
+            try:
+                stat_result = entry.stat()
+            except OSError:
+                continue
+            size = max(0, int(stat_result.st_size))
+            rows.append((stat_result.st_mtime_ns, entry, size))
+            total_bytes += size
+        rows.sort(key=lambda item: item[0])
+        removed = 0
+        while rows and (len(rows) > file_limit or total_bytes > byte_limit):
+            _mtime, entry, size = rows.pop(0)
+            try:
+                entry.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue
+            total_bytes = max(0, total_bytes - size)
+            removed += 1
+            with _lock:
+                for key in [key for key in _memory if _path(*key) == entry]:
+                    _memory.pop(key, None)
+        with _lock:
+            _metrics["cache_prune_runs_total"] += 1
+            _metrics["cache_pruned_files_total"] += removed
+        return {"available": True, "removed": removed, "files": len(rows), "bytes": total_bytes}
+    except OSError:
+        _record_cache_metric("cache_prune_errors_total")
+        return {"available": False, "removed": 0, "files": 0, "bytes": 0}
+
+
+def _maybe_prune_disk_cache() -> None:
+    global _last_prune_monotonic
+    now = monotonic()
+    with _lock:
+        if now - _last_prune_monotonic < float(settings.ceph_realtime_cache_prune_interval_seconds):
+            return
+        _last_prune_monotonic = now
+    prune_disk_cache()
 
 
 def _path(namespace: str, key: str) -> Path:
@@ -293,6 +356,7 @@ def store(namespace: str, key: str, value: object) -> None:
             text = _write(namespace, key, created_at, value)
             if text:
                 _memory[cache_key] = (created_at, text)
+    _maybe_prune_disk_cache()
 
 
 def store_versioned(namespace: str, key: str, value: dict) -> dict:
@@ -324,7 +388,9 @@ def store_versioned(namespace: str, key: str, value: dict) -> dict:
             if not text:
                 raise CachePersistenceError(f"could not persist cache value for {namespace}:{key}")
             _memory[cache_key] = (created_at, text)
-        return stored
+        result = stored
+    _maybe_prune_disk_cache()
+    return result
 
 
 def update_value(namespace: str, key: str, updates: dict) -> dict | None:

@@ -5,6 +5,7 @@ import bcrypt
 
 from shared import db as db_module
 from shared.models import Cluster, CrushOsdDistribution, CrushStructureSnapshot, User
+import dashboard.routes.crush_map as crush_route
 
 
 def _login(client):
@@ -244,6 +245,54 @@ def test_api_tree_ok_partial_distribution_data(dashboard_client):
     osd1 = host["children"][1]
     assert osd1["has_distribution_data"] is False
     assert osd1["bytes_used"] is None
+
+
+def test_placement_advisor_api_is_admin_only_and_snapshot_scoped(
+    dashboard_client, monkeypatch
+):
+    _login(dashboard_client)
+    monkeypatch.setattr(crush_route, "read_section_snapshot", lambda *_args, **_kwargs: {
+        "generation": 7,
+        "collected_at": "2026-09-21T10:00:00Z",
+        "stale": False,
+        "crush": {
+            "state": "ok",
+            "roots": [{
+                "id": -1,
+                "name": "default",
+                "type": "root",
+                "children": [{
+                    "id": -2,
+                    "name": "host-a",
+                    "type": "host",
+                    "weight_normalized": 1.0,
+                    "bytes_used": 900,
+                    "children": [],
+                }, {
+                    "id": -3,
+                    "name": "host-b",
+                    "type": "host",
+                    "weight_normalized": 1.0,
+                    "bytes_used": 100,
+                    "children": [],
+                }],
+            }],
+            "rules": [{
+                "rule_name": "replicated",
+                "steps": [{"op": "chooseleaf_firstn", "type": "host"}],
+            }],
+        },
+    })
+
+    response = dashboard_client.get("/api/crush-map/placement-advisor")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["findings"][0]["code"] == "CRUSH_WEIGHT_USAGE_SKEW"
+    assert body["read_only"] is True
+    assert body["action_id"] is None
+    assert body["evidence"]["crush"]["generation"] == 7
+    assert body["stale"] is False
 
 
 def test_api_tree_returns_crush_rules_from_snapshot(dashboard_client):

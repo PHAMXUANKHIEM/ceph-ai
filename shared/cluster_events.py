@@ -24,6 +24,9 @@ _METRICS_LOCK = Lock()
 _METRICS = {
     "publish_success_total": 0,
     "publish_failure_total": 0,
+    "action_state_changed_total": 0,
+    "snapshot_changed_total": 0,
+    "snapshot_refresh_failed_total": 0,
 }
 
 
@@ -126,6 +129,7 @@ def publish_event(
         _record_metric("publish_failure_total")
         raise
     _record_metric("publish_success_total")
+    _record_metric(f"{normalized_event}_total")
     return stored
 
 
@@ -133,6 +137,8 @@ def publish_action_state_event(
     cluster_id: str,
     action_id: str,
     status: str,
+    *,
+    request_id: str | None = None,
 ) -> dict:
     """Publish a committed Action lifecycle transition for the UI.
 
@@ -147,6 +153,7 @@ def publish_action_state_event(
         action_id=action_id,
         action_status=status,
         action_state=action_state_for_status(status),
+        request_id=request_id,
     )
 
 

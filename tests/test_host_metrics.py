@@ -21,6 +21,35 @@ def test_telemetry_hosts_includes_all_configured_ceph_roles(monkeypatch):
     ]
 
 
+def test_telemetry_targets_collapse_ip_aliases_by_physical_hostname(monkeypatch):
+    nodes = [
+        {"host": "10.3.53.1", "roles": ["MON", "MGR"]},
+        {"host": "10.3.53.69", "roles": ["MON", "RGW"]},
+        {"host": "10.3.54.118", "roles": ["MON", "RGW"]},
+        {"host": "10.20.1.39", "roles": ["OSD"]},
+        {"host": "10.20.1.153", "roles": ["OSD"]},
+        {"host": "10.20.1.195", "roles": ["OSD"]},
+    ]
+    hostnames = {
+        "10.3.53.1": "ceph1",
+        "10.20.1.39": "ceph1",
+        "10.3.53.69": "ceph2",
+        "10.20.1.153": "ceph2",
+        "10.3.54.118": "ceph3",
+        "10.20.1.195": "ceph3",
+    }
+    monkeypatch.setattr(host_metrics, "configured_nodes", lambda _cluster: nodes)
+    monkeypatch.setattr(host_metrics, "_identity", lambda _cluster_id, host, _cluster: hostnames[host])
+
+    targets = host_metrics._telemetry_targets("cluster-a", SimpleNamespace())
+
+    assert [target["host"] for target in targets] == [
+        "10.3.53.1", "10.3.53.69", "10.3.54.118"
+    ]
+    assert targets[0]["roles"] == ["MGR", "MON", "OSD"]
+    assert targets[0]["aliases"] == ["10.3.53.1", "10.20.1.39"]
+
+
 def test_parse_node_metrics_includes_network_rates_without_counting_loopback():
     raw = """===CPU1===
 cpu  100 0 100 800 0 0 0 0

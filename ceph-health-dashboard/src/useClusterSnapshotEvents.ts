@@ -7,7 +7,13 @@ export type SnapshotEvent = {
   action_id?: string;
   action_status?: string;
   action_state?: "queued" | "running" | "verifying" | "succeeded" | "failed" | "rejected";
+  request_id?: string;
 };
+
+function requestId(): string {
+  const cryptoApi = window.crypto as Crypto & { randomUUID?: () => string };
+  return cryptoApi.randomUUID?.() || `browser-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 /**
  * Subscribe to cluster invalidation hints. HTTP remains the source of truth;
@@ -32,7 +38,7 @@ export function useClusterSnapshotEvents(
     const connect = () => {
       if (stopped || document.hidden) return;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const url = `${protocol}//${window.location.host}/ws/cluster-state?cluster_id=${encodeURIComponent(clusterId)}`;
+      const url = `${protocol}//${window.location.host}/ws/cluster-state?cluster_id=${encodeURIComponent(clusterId)}&request_id=${encodeURIComponent(requestId())}&reconnect=${attempt > 0 ? "1" : "0"}`;
       socket = new WebSocket(url);
       socket.onopen = () => { attempt = 0; };
       socket.onmessage = (message) => {

@@ -84,12 +84,18 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   const [snapshotMeta, setSnapshotMeta] = useState<SnapshotMeta>(bootstrap.snapshotMeta || {});
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [realtimeError, setRealtimeError] = useState<string | null>(null);
+  const [actionState, setActionState] = useState<string | null>(null);
   const handleRealtimeEvent = useCallback((event: SnapshotEvent) => {
+    if (event.event === "action_state_changed") {
+      setActionState(event.action_state || event.action_status || "updated");
+      return;
+    }
     if (!event.sections?.includes("pools")) return;
     if (event.event === "snapshot_refresh_failed") {
       setRealtimeError("Post-check thay đổi Pool thất bại; đang giữ snapshot Pool gần nhất.");
     } else if (event.event === "snapshot_changed") {
       setRealtimeError(null);
+      setActionState(null);
     }
   }, []);
   const eventVersion = useClusterSnapshotEvents(bootstrap.clusterId, handleRealtimeEvent);
@@ -146,6 +152,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
       const sequence = ++requestSequence;
       fetch(`/api/pools?cluster_id=${encodeURIComponent(bootstrap.clusterId)}`, {
         credentials: "same-origin", signal: controller.signal,
+        headers: { "X-Request-ID": `browser-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
       })
         .then(async (response) => {
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -205,6 +212,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
             <ErrorState message={<>Không xác nhận được thay đổi Pool: {realtimeError || bootstrap.queryError || snapshotError || snapshotMeta.last_error}</>} />
           </div>
         )}
+        {actionState && <div className="mx-5 mt-3 rounded-md border border-sky-700/50 bg-sky-950/30 px-3 py-2 text-sm text-sky-200" role="status" aria-live="polite">Cập nhật action: <strong>{actionState}</strong>. Đang chờ snapshot Pool mới.</div>}
         <div className="px-5 pt-3 text-xs text-slate-500" role="status" aria-live="polite"><RefreshCw size={13} className="mr-1 inline" />{SNAPSHOT_STATE_LABEL[snapshotState]}{snapshotMeta.collected_at ? ` · generation ${snapshotMeta.generation ?? 0} · ${snapshotMeta.age_seconds == null ? "" : `${Math.round(snapshotMeta.age_seconds)}s ago`}` : ""}</div>
         {bootstrap.createSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu tạo pool đã được gửi tới Worker.</div>}
         {bootstrap.actionSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu {actionLabels[bootstrap.actionSuccess] || bootstrap.actionSuccess} pool đã được gửi tới Worker.</div>}

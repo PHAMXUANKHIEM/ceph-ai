@@ -33,6 +33,73 @@ def test_pg_filter_script_builds_pool_options_from_rendered_rows():
     assert "pg-osd-pill" in script
 
 
+def test_pool_pg_advisor_api_is_snapshot_scoped_and_read_only(dashboard_client, monkeypatch):
+    def snapshot(_cluster_id, section, **_kwargs):
+        if section == "pools":
+            return {
+                "pools": [{"name": "data", "pgs": 1024, "size": 3}],
+                "collected_at": "2026-09-21T10:00:00Z",
+                "age_seconds": 5,
+                "stale": False,
+                "section_available": True,
+            }
+        return {
+            "pgs": [{
+                "pool": "data",
+                "state": "active+clean",
+                "acting": [0, 1, 2],
+            }],
+            "collected_at": "2026-09-21T10:00:00Z",
+            "age_seconds": 5,
+            "stale": False,
+            "section_available": True,
+        }
+
+    monkeypatch.setattr(pgs_route, "read_section_snapshot", snapshot)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/pools/pg-advisor")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["recommendation_mode"] == "ADVISORY"
+    assert body["read_only"] is True
+    assert body["action_id"] is None
+    assert body["findings"][0]["code"] == "POOL_PG_DENSITY_OUTLIER"
+    assert body["evidence"]["pools"]["stale"] is False
+    assert body["stale"] is False
+
+
+def test_scrub_schedule_api_uses_shared_pg_snapshot(dashboard_client, monkeypatch):
+    monkeypatch.setattr(pgs_route, "read_section_snapshot", lambda *_args, **_kwargs: {
+        "pgs": [{
+            "pgid": "1.a",
+            "pool": "data",
+            "state": "active+clean",
+            "last_scrub": "2026-09-10T00:00:00Z",
+            "last_deep_scrub": "2026-09-01T00:00:00Z",
+        }],
+        "generation": 4,
+        "collected_at": "2026-09-21T10:00:00Z",
+        "age_seconds": 5,
+        "stale": False,
+        "section_available": True,
+    })
+    _login(dashboard_client)
+
+    response = dashboard_client.get(
+        "/api/pgs/scrub-schedule?maintenance_start_hour=22&maintenance_end_hour=6"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schedule"][0]["status"] == "scheduled_advisory"
+    assert body["read_only"] is True
+    assert body["action_id"] is None
+    assert body["evidence"]["pgs"]["generation"] == 4
+    assert body["stale"] is False
+
+
 def test_pgs_page_returns_all_pgs_with_pool_and_scrub_details(dashboard_client, monkeypatch):
     calls = []
 

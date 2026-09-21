@@ -139,6 +139,18 @@ def test_alembic_upgrade_head_creates_online_learner_cycle_audit_table(tmp_path,
     assert columns == {column.name for column in OnlineLearnerCycleAudit.__table__.columns}
 
 
+def test_alembic_upgrade_head_creates_online_backend_identity_columns(tmp_path, monkeypatch):
+    db_path = tmp_path / "migration_online_backend.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+    con = sqlite3.connect(db_path)
+    audit_columns = {row[1] for row in con.execute("PRAGMA table_info(online_learner_audit)")}
+    cycle_columns = {row[1] for row in con.execute("PRAGMA table_info(online_learner_cycle_audit)")}
+    con.close()
+    expected = {"backend_name", "backend_version", "feature_schema"}
+    assert expected <= audit_columns
+    assert expected <= cycle_columns
+
+
 @pytest.mark.parametrize("table_name, model", [
     ("online_learner_controls", OnlineLearnerControl),
     ("online_learner_operator_audits", OnlineLearnerOperatorAudit),

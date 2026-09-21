@@ -22,11 +22,15 @@ from sqlalchemy import select
 
 from shared.models import OnlineLearnerState
 from shared.online_learning_gate import OnlineLearningGateStatus
+from shared.online_model_backend import BackendMetadata, OnlineModelBackend
 
 
 MODEL_ALGORITHM = "river_mean"
 MODEL_VERSION = "river-mean-v1"
 DEFAULT_FEATURE_SCHEMA = "scalar-v1"
+BACKEND_NAME = "river"
+BACKEND_VERSION = "0.25.0"
+SNAPSHOT_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,9 @@ class RiverMeanLearner:
 
     algorithm = MODEL_ALGORITHM
     version = MODEL_VERSION
+    backend_name = BACKEND_NAME
+    backend_version = BACKEND_VERSION
+    feature_schema = DEFAULT_FEATURE_SCHEMA
 
     def __init__(self) -> None:
         self._mean = stats.Mean()
@@ -163,14 +170,40 @@ class RiverMeanLearner:
         """Return only JSON-safe state; never serialize executable objects."""
 
         return {
+            "schema_version": SNAPSHOT_SCHEMA_VERSION,
             "algorithm": self.algorithm,
             "version": self.version,
             "sample_count": self.sample_count,
             "mean": self.value,
         }
 
+    def metadata(self) -> BackendMetadata:
+        return BackendMetadata(
+            backend_name=self.backend_name,
+            backend_version=self.backend_version,
+            algorithm=self.algorithm,
+            model_version=self.version,
+            feature_schema=self.feature_schema,
+        )
+
+    def resource_cost(self) -> dict[str, float]:
+        """Return bounded, local-only cost evidence for this tiny backend."""
+
+        return {"state_bytes": float(len(_canonical_json(self.snapshot())))}
+
     @classmethod
     def from_snapshot(cls, snapshot: dict[str, Any]) -> "RiverMeanLearner":
+        if not isinstance(snapshot, dict):
+            raise ValueError("online learner snapshot must be an object")
+        schema_version = snapshot.get("schema_version", 0)
+        if schema_version not in (0, SNAPSHOT_SCHEMA_VERSION):
+            raise ValueError("online learner snapshot schema version mismatch")
+        required = {"algorithm", "version", "sample_count", "mean"}
+        if schema_version == SNAPSHOT_SCHEMA_VERSION:
+            required.add("schema_version")
+        missing = required.difference(snapshot)
+        if missing:
+            raise ValueError("online learner snapshot is incomplete")
         if snapshot.get("algorithm") != cls.algorithm:
             raise ValueError("online learner snapshot algorithm mismatch")
         if snapshot.get("version") != cls.version:
@@ -190,7 +223,7 @@ class RiverMeanLearner:
 
 
 def guarded_update(
-    learner: RiverMeanLearner,
+    learner: OnlineModelBackend,
     value: float,
     decision,
     *,

@@ -362,3 +362,19 @@ def test_monitor_owned_code_keeps_resolving_immediately(isolated_db):
 
     with db_module.SessionLocal() as session:
         assert session.get(Incident, incident_id).status == IncidentStatus.RESOLVED.value
+
+
+def test_frozen_postcheck_timeout_fails_closed_without_claiming_success(isolated_db):
+    incident_id = _seed()
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id=incident_id).one()
+        action.executed_at = datetime.utcnow() - timedelta(seconds=301)
+        session.commit()
+    case_id = _attach_case(incident_id)
+
+    counts = verify.verify_pending_incidents(set(), health={"checks": {}})
+
+    assert counts["exhausted"] == 1
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, incident_id).status == IncidentStatus.FAILED.value
+        assert session.get(RemediationCase, case_id).outcome == "INCONCLUSIVE"

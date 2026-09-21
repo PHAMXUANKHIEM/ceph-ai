@@ -66,6 +66,7 @@ class ShadowComparison:
     scope_key: str | None = None
     active_window_hours: int | None = None
     candidate_window_hours: int | None = None
+    horizon_hours: int | None = None
     candidate_drift_status: str | None = None
     candidate_drift_score: float | None = None
     resource_budget_ok: bool | None = True
@@ -342,6 +343,7 @@ def compare_persisted_forecast_runs(session, *, minimum_evaluated: int | None = 
                 scope_key=f"{state.cluster_name}|{state.host}|{state.metric.lower()}",
                 active_window_hours=state.window_hours,
                 candidate_window_hours=window,
+                horizon_hours=max(1, int(round((paired_rows[0].target_at - paired_rows[0].predicted_at).total_seconds() / 3600))) if paired_rows else None,
                 candidate_drift_status=(
                     "DRIFT" if any(getattr(row, "drift_status", None) == "DRIFT" for row in candidate_rows)
                     else "STABLE"
@@ -407,5 +409,6 @@ def compare_persisted_forecast_runs(session, *, minimum_evaluated: int | None = 
                 scope_key=f"{state.cluster_id}|{state.pool}|{state.image}|{state.metric.lower()}",
                 active_window_hours=state.window_hours,
                 candidate_window_hours=window,
+                horizon_hours=max(1, int(round((paired_rows[0].target_at - paired_rows[0].predicted_at).total_seconds() / 3600))) if paired_rows else None,
             ))
     return results

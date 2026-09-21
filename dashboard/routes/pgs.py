@@ -7,7 +7,7 @@ from datetime import datetime
 from shared.time import utc_now
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from dashboard.routes import auth
@@ -24,6 +24,9 @@ from shared.object_storage_cache import (
 )
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
+from watcher.pool_pg_advisor import build_pool_pg_advisor
+from watcher.scrub_scheduler import build_scrub_schedule
+from watcher.inconsistent_object_analysis import analyze_inconsistent_objects
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
@@ -352,6 +355,92 @@ async def pools_snapshot_api(request: Request, user: str = Depends(require_login
         max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
     )
     return _inventory_api_response(snapshot, "pools", cluster.id, [])
+
+
+@router.get("/api/pools/pg-advisor")
+async def pool_pg_advisor_api(request: Request, user: str = Depends(require_login)):
+    """Return advisory-only Pool/PG findings from shared inventory snapshots."""
+    del user
+    cluster = cluster_selection(request)[1]
+    pool_snapshot = read_section_snapshot(
+        cluster.id,
+        "pools",
+        stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    pg_snapshot = read_section_snapshot(
+        cluster.id,
+        "pgs",
+        stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    result = build_pool_pg_advisor(
+        cluster_id=str(cluster.id),
+        cluster_name=str(cluster.name),
+        pool_rows=(pool_snapshot or {}).get("pools", []),
+        pg_rows=(pg_snapshot or {}).get("pgs", []),
+    )
+    result["evidence"] = {
+        "pools": _inventory_meta(pool_snapshot, str(cluster.id)),
+        "pgs": _inventory_meta(pg_snapshot, str(cluster.id)),
+    }
+    result["stale"] = bool(
+        result["evidence"]["pools"]["stale"] or result["evidence"]["pgs"]["stale"]
+    )
+    return result
+
+
+@router.get("/api/pgs/scrub-schedule")
+async def scrub_schedule_api(
+    request: Request,
+    maintenance_start_hour: int | None = Query(None, ge=0, le=23),
+    maintenance_end_hour: int | None = Query(None, ge=0, le=23),
+    user: str = Depends(require_login),
+):
+    """Return advisory-only scrub scheduling from the shared PG snapshot."""
+    del user
+    cluster = cluster_selection(request)[1]
+    snapshot = read_section_snapshot(
+        cluster.id,
+        "pgs",
+        stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    result = build_scrub_schedule(
+        cluster_id=str(cluster.id),
+        cluster_name=str(cluster.name),
+        pg_rows=(snapshot or {}).get("pgs", []),
+        maintenance_start_hour=maintenance_start_hour,
+        maintenance_end_hour=maintenance_end_hour,
+    )
+    result["evidence"] = {
+        "pgs": _inventory_meta(snapshot, str(cluster.id)),
+    }
+    result["stale"] = result["evidence"]["pgs"]["stale"]
+    return result
+
+
+@router.get("/api/pgs/inconsistent-objects")
+async def inconsistent_objects_api(request: Request, user: str = Depends(require_login)):
+    """Return read-only inconsistency evidence; never performs repair."""
+    del user
+    cluster = cluster_selection(request)[1]
+    snapshot = read_section_snapshot(
+        cluster.id,
+        "pgs",
+        stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    result = analyze_inconsistent_objects(
+        cluster_id=str(cluster.id),
+        cluster_name=str(cluster.name),
+        pg_rows=(snapshot or {}).get("pgs", []),
+    )
+    result["evidence"] = {
+        "pgs": _inventory_meta(snapshot, str(cluster.id)),
+    }
+    result["stale"] = result["evidence"]["pgs"]["stale"]
+    return result
 
 
 @router.get("/api/pgs")

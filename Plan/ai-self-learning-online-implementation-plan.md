@@ -1,1 +1,1 @@
-in-progress/ai-self-learning-online-implementation-plan.md
+completed/ai-self-learning-online-implementation-plan.md

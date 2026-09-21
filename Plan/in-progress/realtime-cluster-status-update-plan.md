@@ -639,11 +639,15 @@ không làm UI đứng; event cluster B không xuất hiện ở tab cluster A.
   verifying/succeeded/failed/rejected`; WebSocket forward contract và frontend
   type đã được cập nhật. Evidence: `tests/test_cluster_events.py`,
   `tests/test_dashboard_ws.py` — **24 passed** (2026-09-21).
-- [ ] Nối contract `action_state_changed` vào mọi consumer/UI của các trang
-  mutation/progress; không đánh dấu mục này chỉ vì payload đã chuẩn hóa.
-- [~] Consumer Cluster Overview và Pools đã nhận `snapshot_refresh_failed` để
-  hiển thị lỗi post-check và giữ snapshot cũ; `snapshot_changed` sẽ gỡ cảnh
-  báo. Các trang mutation/progress còn lại vẫn cần migrate.
+- [x] Nối contract `action_state_changed` vào mọi consumer/UI hiện có: shared
+  legacy socket fan-out phát `ceph-cluster-state-event` và
+  `ceph-action-state-changed`; Cluster Overview/Pools hiển thị lifecycle state;
+  Nodes/PGs/CRUSH/Upgrade/Deploy đều nhận cùng event và refresh/poll theo
+  đúng action. Không tạo thêm socket riêng theo từng trang.
+- [x] Consumer Cluster Overview và Pools nhận `snapshot_refresh_failed` để
+  hiển thị lỗi post-check và giữ snapshot cũ; `snapshot_changed` gỡ cảnh báo.
+  Các trang mutation/progress còn lại dùng shared subscription để nhận
+  `queued/running/verifying/succeeded/failed/rejected`.
 - [x] Nếu post-check thất bại sau `VERIFYING`, phát `snapshot_refresh_failed`
   với `action_state=failed`; snapshot tốt trước đó không bị invalidate. Evidence:
   `test_failed_postcheck_publishes_error_without_claiming_snapshot_success` —
@@ -656,15 +660,42 @@ thao tác thất bại không làm mất dữ liệu cũ hoặc báo thành côn
 
 - [x] Có dashboard/log cho query duration, stale age, collector lag, event
   reconnect, WebSocket client count và refresh error qua admin diagnostics bounded
-  (`/api/debug/ceph-latency`), không lộ payload/credential.
-- [x] Giới hạn concurrency theo cluster và toàn hệ thống. Per-host/per-pool lease vẫn giữ nguyên; thêm process-wide semaphore dùng `ceph_max_concurrency`, timeout bounded và metric queue timeout.
-- [x] Circuit breaker/backoff khi MON/Cephadm lỗi liên tiếp. Health query có breaker theo MON; `cephadm shell` có breaker theo host/credential/command label, cooldown + half-open probe.
+  (`/api/debug/ceph-latency`), không lộ payload/credential. Bổ sung
+  `shared/realtime_observability.py`, histogram duration bounded theo cluster /
+  query, `collector_lag_seconds` trong snapshot và trạng thái client/event trong
+  `dashboard/ws.py`.
+- [x] Giới hạn concurrency theo cluster và toàn hệ thống. Per-host/per-pool lease vẫn giữ nguyên; thêm `ClusterConcurrency` process-wide/per-cluster dùng `ceph_max_concurrency`, timeout bounded và metric slot reject/inflight.
+- [x] Circuit breaker/backoff khi MON/Cephadm lỗi liên tiếp. Ngoài breaker hiện có ở MON/cephadm, collector có breaker theo `cluster + tier + query`, exponential cooldown, jitter và half-open probe; một inventory section lỗi không mở circuit cho section khác.
 - [x] Không retry đồng thời ở route, collector và browser theo cấp số nhân. Dashboard health chỉ đọc snapshot; refresh là POST async có lock/coalescing theo cluster; Watcher là owner duy nhất của Ceph health polling/retry; browser chỉ polling fallback, không tự retry Ceph.
 - [x] Alert nếu snapshot quá `max_stale_seconds`, collector chết hoặc event bus
   không publish. Diagnostics admin trả alert bounded cho snapshot unavailable/stale,
   refresh error, Watcher heartbeat stale và event publish failure.
-- [x] Ghi correlation id từ browser request → event → collector/action. HTTP request context được giữ khi enqueue refresh/action; event và priority marker chỉ lưu request ID bounded, không lưu credential/payload.
-- [x] Kiểm tra disk cache growth; payload CRUSH/PG phải có giới hạn kích thước. Cache diagnostics đo file count/bytes/largest file với scan bounded; cảnh báo khi vượt `ceph_snapshot_cache_max_bytes`, còn PG/CRUSH đã có payload limits.
+- [x] Ghi correlation id từ browser request → event → collector/action. HTTP
+  request context được giữ khi enqueue refresh/action; shared fetch adapter,
+  React fetch và WebSocket đều gửi `X-Request-ID`/`request_id`; event và
+  priority marker chỉ lưu request ID bounded, không lưu credential/payload.
+- [x] Kiểm soát disk cache growth; payload CRUSH/PG phải có giới hạn kích thước.
+  Cache diagnostics đo file count/bytes/largest file với scan bounded; bổ sung
+  prune oldest JSON payload theo `ceph_snapshot_cache_max_bytes` và
+  `ceph_realtime_cache_max_files`, có metric prune/error; PG/CRUSH vẫn có
+  payload limits.
+- [x] Browser load/isolation test 1/5/10 tabs và p95 latency: đã chạy bằng
+  Chrome với `scripts/realtime_browser_test.mjs`, read-only và authenticated.
+  Live dashboard (1 active cluster) ghi nhận p95 khoảng **157/174/296 ms**.
+  Môi trường isolation tạm thời có 2 active clusters ghi nhận **286.95 /
+  171.67 / 118.18 ms** cho 1/5/10 tabs; các tab luân phiên A/B trả đúng
+  `cluster_id`, còn WebSocket probe ngoài scope đóng `1008`. Không chạy lệnh
+  thay đổi dữ liệu Ceph.
+
+**RT-08/RT-09 implementation evidence (2026-09-21):**
+
+- Backend regression: `24 passed` cho realtime controls/cache/events/collector;
+  WebSocket/event regression: `28 passed`.
+- Frontend TypeScript/Vite production build: passed bằng Node 22; bundle được
+  cập nhật từ source vào `dashboard/static/ceph-health/`.
+- Browser benchmark đã hoàn tất; hạn chế còn lại là staging isolation dùng
+  SQLite snapshot-less test data, nên p95 trên phản ánh API snapshot/cache và
+  auth/session, không phải latency của Ceph/SSH collector thật.
 
 **Exit gate:** có thể trả lời từ log/metric: dữ liệu đang chậm do collector,
 Ceph, SSH, cache hay browser; không suy đoán bằng timestamp giao diện.

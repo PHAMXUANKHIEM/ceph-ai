@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import re
+from time import monotonic
 from copy import deepcopy
 from threading import Lock
 
@@ -11,6 +13,8 @@ from shared.cluster_events import read_latest_event
 from shared.cluster_snapshot import section_snapshot_fingerprint, snapshot_fingerprint
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.models import Incident
+from shared.request_context import reset_request_id, set_request_id
+from shared.realtime_observability import record_query
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -23,12 +27,16 @@ _METRICS = {
     "cluster_state_messages_total": 0,
     "cluster_state_disconnects_total": 0,
     "cluster_state_policy_rejections_total": 0,
+    "cluster_state_connections_open": 0,
+    "cluster_state_reconnect_total": 0,
+    "cluster_state_events_action_total": 0,
+    "cluster_state_events_snapshot_total": 0,
 }
 
 
-def _record_metric(name: str) -> None:
+def _record_metric(name: str, delta: int = 1) -> None:
     with _METRICS_LOCK:
-        _METRICS[name] += 1
+        _METRICS[name] += delta
 
 
 def get_metrics() -> dict:
@@ -127,6 +135,7 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
     dashboard clients.
     """
     if not websocket.session.get("user") or websocket.session.get("product") == "vitastor":
+        await websocket.accept()
         await websocket.close(code=WS_POLICY_VIOLATION)
         return
 
@@ -138,12 +147,20 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
     requested_id = websocket.query_params.get("cluster_id") or websocket.query_params.get("cluster")
     if requested_id and requested_id != selected_id:
         _record_metric("cluster_state_policy_rejections_total")
+        await websocket.accept()
         await websocket.close(code=WS_POLICY_VIOLATION)
         return
 
     await websocket.accept()
     _record_metric("cluster_state_connections_total")
+    _record_metric("cluster_state_connections_open")
+    if websocket.query_params.get("reconnect") == "1":
+        _record_metric("cluster_state_reconnect_total")
     connection_open = True
+    requested_request_id = websocket.query_params.get("request_id", "").strip()
+    request_token = None
+    if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", requested_request_id):
+        request_token = set_request_id(requested_request_id)
     last_event_id = None
     initial = read_latest_event(selected_id)
     if initial:
@@ -151,7 +168,14 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
     try:
         while True:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            started = monotonic()
             current = read_latest_event(selected_id)
+            record_query(
+                selected_id,
+                "ws_event_read",
+                (monotonic() - started) * 1000,
+                status="success" if current is not None else "empty",
+            )
             if not current or current.get("generation") == last_event_id:
                 continue
             last_event_id = current.get("generation")
@@ -165,9 +189,14 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
                     **({"action_status": current["action_status"]} if current.get("action_status") else {}),
                     **({"action_state": current["action_state"]} if current.get("action_state") else {}),
                     **({"action_id": current["action_id"]} if current.get("action_id") else {}),
+                    **({"request_id": current["request_id"]} if current.get("request_id") else {}),
                 }
             )
             _record_metric("cluster_state_messages_total")
+            if current.get("event") == "action_state_changed":
+                _record_metric("cluster_state_events_action_total")
+            elif current.get("event") == "snapshot_changed":
+                _record_metric("cluster_state_events_snapshot_total")
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -175,3 +204,6 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
     finally:
         if connection_open:
             _record_metric("cluster_state_disconnects_total")
+            _record_metric("cluster_state_connections_open", -1)
+        if request_token is not None:
+            reset_request_id(request_token)

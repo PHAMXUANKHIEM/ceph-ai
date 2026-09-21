@@ -211,7 +211,9 @@ Tạo artifact không chứa secret cho từng service:
 - [ ] Code-repair tách khỏi runtime image và production credentials; repository
   write phải qua explicit operator-approved job.
 - [ ] Xóa `curl | sh`; tải artifact tạm, verify checksum/signature rồi install.
-- [ ] Egress deny-by-default tới đúng Ceph, PostgreSQL, RabbitMQ và provider.
+- [~] Đã thêm `scripts/deploy/production_readiness_preflight.sh` để fail-closed
+  khi thiếu egress policy; target hiện vẫn `CEPH_AI_EGRESS_POLICY=unset` và
+  `iptables OUTPUT ACCEPT`, nên egress deny-by-default chưa đạt.
 
 ### Evidence PR-03 hiện tại
 
@@ -259,16 +261,21 @@ Tạo artifact không chứa secret cho từng service:
   thêm; GitHub run cho commit `385bd1b4` đang chờ kết quả.
 - [~] mypy vẫn còn backlog lịch sử; gate chỉ cho phép giữ diagnostic cũ và fail
   diagnostic mới, sau đó cần ratchet dần sang full typed scope.
-- [~] Image scan/Trivy và SBOM còn thiếu.
-- [~] JUnit/test evidence và quality artifact vẫn upload theo SHA; coverage, SBOM và image digest
-  chưa được xuất.
-- [ ] Security/dependency/changed-path type regressions luôn block release.
+- [~] Đã thêm build image immutable theo commit, Trivy HIGH/CRITICAL scan và
+  CycloneDX SBOM vào workflow; chưa có GitHub Actions result xanh cho HEAD mới.
+- [~] JUnit/test evidence và quality artifact vẫn upload theo SHA; `release_gate.py`
+  đã thêm report JSON gồm SHA, test, migration head, scan, SBOM và image ID.
+  Coverage/warning budget và dependency hash còn cần hoàn thiện.
+- [~] Security/dependency/changed-path type regressions block khi job quality
+  và release gate chạy xanh; cần xác nhận trên Actions run thực tế.
 
 ### PR-04.3 Release report
 
-- [ ] Report gồm SHA, Python/Node, dependency hash, Alembic head, test counts,
-  deselected, failures, warnings, coverage, scans và image digest.
-- [ ] Report không chứa secret hoặc environment dump nguyên bản.
+- [~] `scripts/ci/release_gate.py` tạo report JSON/text gồm SHA, Python/Node,
+  Alembic head, JUnit test counts, quality/pip-audit/image scan/SBOM status và
+  image ID; rollback SHA, coverage và warning budget vẫn là phần cần bổ sung.
+- [x] Report không chứa secret hoặc environment dump nguyên bản; chỉ ghi
+  trạng thái, đường dẫn artifact và các giá trị định danh an toàn.
 - [ ] Full suite chạy hai lần; flaky test phải fail gate hoặc có waiver hết hạn.
 
 ### Acceptance PR-04
@@ -450,20 +457,27 @@ Các mục dưới đây chỉ được đánh dấu hoàn thành khi có eviden
 - [~] Container runtime inventory, non-root canary và systemd disabled đã có
   evidence; Podman vẫn là owner đang chạy nhưng ownership chưa được operator
   ký chính thức và code-repair còn root exception.
+- [~] Read-only production preflight xác nhận một Podman worker/watcher/Telegram
+  consumer và không có legacy service unit active; vẫn fail ở environment unset,
+  autopilot đang bật và egress deny-by-default chưa có.
 - [ ] Owner/canary/production mapping, allowed-actions snapshot, maintenance
   window và data-isolation record chưa được operator điền.
 
 ### PR-08.2 Rehearsal
 
 - [~] Disposable SQLite đã chạy upgrade head → backup `0600` → downgrade base
-  → re-upgrade head; head `m20260919nlcontext`, 105 tables sau re-upgrade,
+  → re-upgrade head; head `m20260921rgwmetrics`, 105 tables sau re-upgrade,
   backup artifact checksum/size được ghi nhận. PostgreSQL backup/restore,
   health/API/browser auth smoke và audit verification còn chờ staging witness.
+- [~] Đã thêm `scripts/deploy/staging_migration_rehearsal.sh`; script bắt buộc
+  staging PostgreSQL/target/confirmation riêng, backup trước migration, kiểm tra
+  `pg_restore --list` và ghi report `0600`. Chưa chạy vì chưa có target cô lập.
 - [~] Backup script/permission/checksum path đã được rehearsal; scratch restore
   và RPO/RTO thật chưa có vì chưa được cấp staging storage/target.
 - [~] Worker/Watcher/Dashboard failure branches có fixture tests, chưa kill
   live staging services ở nhiều phase vì runtime ownership chưa được chốt.
-- [~] Rollback SHA đã ghi trong manifest; image digest pinning và deployment
+- [~] Rollback SHA chưa được operator chọn cho release này; image ID hiện đã
+  được ghi nhận và CI sẽ xuất cùng SBOM/scan, nhưng immutable-image deployment
   rehearsal chưa pass, không đánh dấu release approved.
 
 ### PR-08.3 Soak và live DR

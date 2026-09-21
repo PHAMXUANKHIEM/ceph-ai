@@ -20,6 +20,7 @@ from shared.models import (
     NodeResourceModelState,
     VolumeModelState,
 )
+from shared.forecast_scope import ForecastScope, SCOPE_SCHEMA, parse_legacy_scope
 
 MODEL_STATUSES = {"CANDIDATE", "SHADOW", "ACTIVE", "RETIRED", "BLOCKED"}
 REGISTRY_SCOPE_TYPES = {"NODE_RESOURCE", "VOLUME"}
@@ -186,6 +187,29 @@ def _scope_model_identity(comparison) -> tuple[str, str, str, str]:
     return comparison.scope_type, comparison.scope_key, name, schema
 
 
+def _comparison_scope(comparison) -> ForecastScope | None:
+    """Parse a comparison scope without inventing missing dimensions."""
+
+    horizon = getattr(comparison, "horizon_hours", None) or 1
+    return parse_legacy_scope(
+        comparison.scope_type, comparison.scope_key, horizon_hours=int(horizon),
+    )
+
+
+def _scope_ready(row: ForecastModelRegistry) -> bool:
+    """Promotion requires explicit, migrated dimensions; never guess legacy scope."""
+
+    return bool(
+        row.scope_schema == SCOPE_SCHEMA
+        and row.cluster_id
+        and row.entity_type
+        and row.entity_id
+        and row.metric
+        and row.horizon_hours
+        and (row.entity_type != "node" or row.host)
+    )
+
+
 def _version(algorithm: str, window_hours: int) -> str:
     return f"{algorithm}:{int(window_hours)}h"[:32]
 
@@ -205,7 +229,7 @@ def ensure_shadow_model_pair(session, comparison, *, now: datetime | None = None
         session, scope_type=scope_type, scope_key=scope_key, name=name,
         version=_version(comparison.active_algorithm, comparison.active_window_hours),
         algorithm=comparison.active_algorithm, feature_schema=schema,
-        training_window_hours=comparison.active_window_hours, now=when,
+        training_window_hours=comparison.active_window_hours, scope=_comparison_scope(comparison), now=when,
     )
     current_active = session.query(ForecastModelRegistry).filter_by(
         scope_type=scope_type, scope_key=scope_key, status="ACTIVE",
@@ -220,7 +244,7 @@ def ensure_shadow_model_pair(session, comparison, *, now: datetime | None = None
         session, scope_type=scope_type, scope_key=scope_key, name=name,
         version=_version(comparison.candidate_algorithm, comparison.candidate_window_hours),
         algorithm=comparison.candidate_algorithm, feature_schema=schema,
-        training_window_hours=comparison.candidate_window_hours, now=when,
+        training_window_hours=comparison.candidate_window_hours, scope=_comparison_scope(comparison), now=when,
     )
     if candidate.status == "CANDIDATE":
         set_status(session, candidate, status="SHADOW", reason="persisted shadow evaluation", now=when)
@@ -342,6 +366,14 @@ def request_promotion(session, *, candidate_id: str, actor: str,
     ).one_or_none()
     if active is None:
         raise ValueError("scope has no active model")
+    if not _scope_ready(candidate):
+        reason = "promotion blocked: model registry scope is UNKNOWN_SCOPE or missing dimensions"
+        _audit(
+            session, candidate_model_id=candidate.id, previous_active_model_id=active.id,
+            event_type=PROMOTION_BLOCKED, actor=actor, reason=reason,
+            evidence={"scope_schema": candidate.scope_schema}, now=now,
+        )
+        return PromotionDecision(False, PROMOTION_BLOCKED, reason, {"scope_dimensions": False})
     decision = evaluate_guarded_promotion(_latest_evaluations(session, candidate, active), policy=policy)
     _audit(
         session, candidate_model_id=candidate.id, previous_active_model_id=active.id,
@@ -393,6 +425,14 @@ def approve_promotion(session, *, candidate_id: str, actor: str,
     ).one_or_none()
     if active is None:
         raise ValueError("scope has no active model")
+    if not _scope_ready(candidate):
+        reason = "promotion blocked: model registry scope is UNKNOWN_SCOPE or missing dimensions"
+        _audit(
+            session, candidate_model_id=candidate.id, previous_active_model_id=active.id,
+            event_type=PROMOTION_BLOCKED, actor=actor, reason=reason,
+            evidence={"scope_schema": candidate.scope_schema}, now=now,
+        )
+        raise ValueError(reason)
     decision = evaluate_guarded_promotion(_latest_evaluations(session, candidate, active), policy=policy)
     if not decision.allowed:
         _audit(
@@ -453,6 +493,7 @@ def rollback_promotion(session, *, candidate_id: str, actor: str,
 def register_candidate(
     session, *, scope_type: str, scope_key: str, name: str, version: str,
     algorithm: str, feature_schema: str, training_window_hours: int,
+    scope: ForecastScope | None = None,
     now: datetime | None = None,
 ) -> ForecastModelRegistry:
     """Create or return an immutable-identity candidate registration."""
@@ -470,13 +511,33 @@ def register_candidate(
         raise ValueError("model registry identity fields are required")
     if int(training_window_hours) <= 0:
         raise ValueError("training_window_hours must be positive")
+    explicit_scope = scope or parse_legacy_scope(
+        values["scope_type"], values["scope_key"], horizon_hours=int(training_window_hours),
+    )
+    dimensions = {}
+    if explicit_scope is not None:
+        dimensions = {
+            "scope_schema": SCOPE_SCHEMA,
+            "cluster_id": explicit_scope.cluster_id,
+            "entity_type": explicit_scope.entity_type,
+            "entity_id": explicit_scope.entity_id,
+            "host": explicit_scope.host,
+            "metric": explicit_scope.metric,
+            "horizon_hours": explicit_scope.horizon_hours,
+        }
     existing = session.query(ForecastModelRegistry).filter_by(**values).one_or_none()
     if existing is not None:
         if existing.training_window_hours != int(training_window_hours):
             raise ValueError("model registry identity already exists with a different training window")
+        if dimensions and not _scope_ready(existing):
+            for key, value in dimensions.items():
+                setattr(existing, key, value)
+            existing.updated_at = now or utc_now()
+            session.flush()
         return existing
     row = ForecastModelRegistry(
         **values,
+        **dimensions,
         training_window_hours=int(training_window_hours),
         status="CANDIDATE",
         created_at=now or utc_now(),

@@ -27,6 +27,7 @@ def test_river_mean_learns_incrementally_without_heavy_batch_state():
     assert learner.sample_count == 2
     assert learner.predict_one() == 50.0
     assert learner.snapshot() == {
+        "schema_version": 1,
         "algorithm": "river_mean",
         "version": "river-mean-v1",
         "sample_count": 2,
@@ -41,6 +42,30 @@ def test_snapshot_round_trip_is_json_safe():
     restored = RiverMeanLearner.from_snapshot(learner.snapshot())
     assert restored.sample_count == 2
     assert restored.value == 20.0
+
+
+def test_replay_of_same_input_and_snapshot_is_deterministic():
+    values = [10.0, 20.0, 30.0, 40.0]
+    first = RiverMeanLearner()
+    second = RiverMeanLearner()
+    for value in values:
+        first.learn_one(value)
+        second.learn_one(value)
+    assert first.snapshot() == second.snapshot()
+    assert first.predict_one() == second.predict_one()
+
+
+def test_legacy_snapshot_without_schema_version_is_migrated_in_memory():
+    legacy = {
+        "algorithm": "river_mean",
+        "version": "river-mean-v1",
+        "sample_count": 2,
+        "mean": 20.0,
+    }
+    restored = RiverMeanLearner.from_snapshot(legacy)
+    assert restored.sample_count == 2
+    assert restored.value == 20.0
+    assert restored.snapshot()["schema_version"] == 1
 
 
 def test_guarded_update_respects_audit_shadow_and_active_modes():
@@ -68,6 +93,21 @@ def test_invalid_values_and_snapshots_fail_closed():
         RiverMeanLearner.from_snapshot({
             "algorithm": "river_mean", "version": "river-mean-v1",
             "sample_count": 1, "mean": None,
+        })
+    with pytest.raises(ValueError):
+        RiverMeanLearner.from_snapshot({
+            "schema_version": 1,
+            "algorithm": "river_mean",
+            "version": "river-mean-v1",
+            "sample_count": 0,
+        })
+    with pytest.raises(ValueError):
+        RiverMeanLearner.from_snapshot({
+            "schema_version": 99,
+            "algorithm": "river_mean",
+            "version": "river-mean-v1",
+            "sample_count": 0,
+            "mean": None,
         })
 
 

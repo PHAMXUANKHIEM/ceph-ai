@@ -7,6 +7,7 @@ from shared import db
 from shared.models import Cluster
 from watcher.capacity_forecast import forecasts
 from watcher.capacity_failure_simulation import simulate
+from watcher.capacity_planner import plan_capacity
 
 router = APIRouter()
 templates = make_templates()
@@ -20,6 +21,15 @@ def _cluster(cluster_id: str | None) -> Cluster:
             raise HTTPException(404, "Không tìm thấy cụm Ceph đang hoạt động")
         session.expunge(row)
         return row
+
+
+@router.post("/api/capacity-planner")
+async def capacity_planner_api(request: Request, _user: str = Depends(require_login)):
+    try:
+        payload = await request.json()
+        return plan_capacity(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/capacity-forecast")

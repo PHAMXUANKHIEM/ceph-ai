@@ -96,6 +96,13 @@ class Settings(BaseSettings):
     ceph_retry_max_delay_seconds: float = Field(default=5.0, gt=0, le=300)
     ceph_mon_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
     ceph_mon_circuit_cooldown_seconds: int = Field(default=30, ge=1, le=3600)
+    # Realtime snapshot collection guard. These bounds apply to the Watcher
+    # collector as a whole, not only to one SSH command.
+    ceph_realtime_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
+    ceph_realtime_circuit_base_cooldown_seconds: float = Field(default=5.0, gt=0, le=300)
+    ceph_realtime_circuit_max_cooldown_seconds: float = Field(default=120.0, gt=0, le=3600)
+    ceph_realtime_cache_prune_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    ceph_realtime_cache_max_files: int = Field(default=20_000, ge=100, le=1_000_000)
     # Slow read models for Pools/PGs/CRUSH/Nodes. Browser requests read the
     # persisted section snapshots instead of starting their own Ceph queries.
     dashboard_inventory_poll_interval_seconds: int = Field(default=60, gt=0)

@@ -10,12 +10,15 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterable
+from shared.time import utc_now
 
 
 INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 STABLE = "STABLE"
 DRIFT = "DRIFT"
+ADWIN_INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,175 @@ class DriftReport:
     alert_rate_increase: float | None
     reason: str
     confidence_multiplier: float
+
+
+@dataclass(frozen=True)
+class AdwinReport:
+    detector: str
+    detector_version: str
+    status: str
+    score: float
+    sample_count: int
+    width: float
+    estimation: float | None
+    delta: float
+    detected_at: datetime | None
+    scope_key: str | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class AdwinStreamsReport:
+    """Independent ADWIN evidence for residual, error and raw metric streams."""
+
+    status: str
+    streams: dict[str, AdwinReport]
+    drifted_streams: tuple[str, ...]
+    scope_key: str | None
+
+
+class RiverAdwinStreams:
+    """Keep the three required ADWIN streams isolated and bounded."""
+
+    STREAMS = ("residual", "absolute_error", "metric")
+
+    def __init__(self, *, delta: float = 0.002, scope_key: str | None = None):
+        self.scope_key = (scope_key or "").strip() or None
+        self._detectors = {
+            name: RiverAdwinDetector(delta=delta, scope_key=f"{self.scope_key}|{name}")
+            for name in self.STREAMS
+        }
+
+    def update(
+        self, *, residual: float, absolute_error: float, metric: float,
+        quality_status: str = "OK", observed_at: datetime | None = None,
+    ) -> AdwinStreamsReport:
+        values = {
+            "residual": residual,
+            "absolute_error": absolute_error,
+            "metric": metric,
+        }
+        for name, value in values.items():
+            self._detectors[name].update(value, quality_status=quality_status, observed_at=observed_at)
+        return self.report()
+
+    def report(self) -> AdwinStreamsReport:
+        reports = {name: detector.report() for name, detector in self._detectors.items()}
+        drifted = tuple(name for name, report in reports.items() if report.status == DRIFT)
+        statuses = {report.status for report in reports.values()}
+        status = DRIFT if drifted else (STABLE if statuses == {STABLE} else ADWIN_INSUFFICIENT_DATA)
+        return AdwinStreamsReport(status, reports, drifted, self.scope_key)
+
+    def snapshot(self) -> dict:
+        return {
+            "detector": "river_adwin_streams",
+            "detector_version": RiverAdwinDetector.detector_version,
+            "scope_key": self.scope_key,
+            "streams": {name: detector.snapshot() for name, detector in self._detectors.items()},
+        }
+
+    @classmethod
+    def from_snapshot(cls, snapshot: dict) -> "RiverAdwinStreams":
+        if snapshot.get("detector") != "river_adwin_streams":
+            raise ValueError("ADWIN streams snapshot detector mismatch")
+        raw_streams = snapshot.get("streams")
+        if not isinstance(raw_streams, dict) or set(raw_streams) != set(cls.STREAMS):
+            raise ValueError("ADWIN streams snapshot is incomplete")
+        first = RiverAdwinDetector.from_snapshot(raw_streams[cls.STREAMS[0]])
+        bundle = cls(delta=first.delta, scope_key=snapshot.get("scope_key"))
+        bundle._detectors[cls.STREAMS[0]] = first
+        for name in cls.STREAMS[1:]:
+            bundle._detectors[name] = RiverAdwinDetector.from_snapshot(raw_streams[name])
+        return bundle
+
+
+class RiverAdwinDetector:
+    """Bounded River ADWIN adapter for shadow drift evidence.
+
+    Only finite, quality-checked outcomes are accepted.  Snapshots contain a
+    bounded numeric replay buffer rather than a pickle or executable object,
+    so corruption/version mismatch fails closed.
+    """
+
+    detector = "river_adwin"
+    detector_version = "river-0.25-adwin-v1"
+
+    def __init__(self, *, delta: float = 0.002, scope_key: str | None = None, max_snapshot_samples: int = 512):
+        if not 0.0 < float(delta) < 1.0:
+            raise ValueError("ADWIN delta must be between 0 and 1")
+        if int(max_snapshot_samples) < 32:
+            raise ValueError("ADWIN snapshot buffer is too small")
+        self.delta = float(delta)
+        self.scope_key = (scope_key or "").strip() or None
+        self.max_snapshot_samples = int(max_snapshot_samples)
+        self._values: list[float] = []
+        self._detector = self._new_detector()
+        self._detected_at: datetime | None = None
+
+    def _new_detector(self):
+        try:
+            from river import drift
+        except ImportError as exc:  # pragma: no cover - dependency is production-pinned
+            raise RuntimeError("River is required for ADWIN drift detection") from exc
+        return drift.ADWIN(delta=self.delta)
+
+    @property
+    def sample_count(self) -> int:
+        return len(self._values)
+
+    def update(self, value: float, *, quality_status: str = "OK", observed_at: datetime | None = None) -> AdwinReport:
+        if quality_status != "OK":
+            return self.report(reason=f"quality gate: {quality_status}")
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return self.report(reason="non-finite outcome rejected")
+        self._values.append(numeric)
+        self._values = self._values[-self.max_snapshot_samples:]
+        self._detector.update(numeric)
+        if bool(self._detector.drift_detected):
+            self._detected_at = observed_at or utc_now()
+        return self.report(reason="ADWIN drift detected" if self._detector.drift_detected else "ADWIN stable")
+
+    def report(self, *, reason: str | None = None) -> AdwinReport:
+        count = self.sample_count
+        detected = bool(getattr(self._detector, "drift_detected", False))
+        status = DRIFT if detected else (STABLE if count >= 10 else ADWIN_INSUFFICIENT_DATA)
+        estimation = getattr(self._detector, "estimation", None)
+        return AdwinReport(
+            detector=self.detector,
+            detector_version=self.detector_version,
+            status=status,
+            score=1.0 if detected else 0.0,
+            sample_count=count,
+            width=float(getattr(self._detector, "width", count) or 0.0),
+            estimation=float(estimation) if estimation is not None else None,
+            delta=self.delta,
+            detected_at=self._detected_at,
+            scope_key=self.scope_key,
+            reason=reason or ("ADWIN drift detected" if detected else "ADWIN stable"),
+        )
+
+    def snapshot(self) -> dict:
+        return {
+            "detector": self.detector,
+            "detector_version": self.detector_version,
+            "delta": self.delta,
+            "scope_key": self.scope_key,
+            "values": list(self._values),
+            "detected_at": self._detected_at.isoformat() if self._detected_at else None,
+        }
+
+    @classmethod
+    def from_snapshot(cls, snapshot: dict) -> "RiverAdwinDetector":
+        if snapshot.get("detector") != cls.detector or snapshot.get("detector_version") != cls.detector_version:
+            raise ValueError("ADWIN snapshot detector/version mismatch")
+        values = snapshot.get("values", [])
+        if not isinstance(values, list) or len(values) > 512:
+            raise ValueError("invalid ADWIN snapshot values")
+        detector = cls(delta=float(snapshot["delta"]), scope_key=snapshot.get("scope_key"))
+        for value in values:
+            detector.update(float(value))
+        return detector
 
 
 def _finite(values: Iterable[float | None]) -> list[float]:

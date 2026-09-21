@@ -50,7 +50,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from shared.time import utc_now
 
 from config.settings import settings
@@ -127,6 +127,7 @@ def _previous_attempts(session, incident_id: str) -> list[dict]:
 
 def _evaluate_latest_postcheck(
     session, incident: Incident, *, current_codes: set[str], health: dict | None,
+    now: datetime | None = None,
 ) -> tuple[PostcheckResult, Action | None]:
     action = (
         session.query(Action)
@@ -162,6 +163,27 @@ def _evaluate_latest_postcheck(
         postcheck_contract.get("health_floor", "NO_NEW_CRITICAL")
         if isinstance(postcheck_contract, dict) else "NO_NEW_CRITICAL"
     )
+    timeout_seconds = (
+        postcheck_contract.get("timeout_seconds", 300)
+        if isinstance(postcheck_contract, dict) else 300
+    )
+    try:
+        timeout_seconds = int(timeout_seconds)
+    except (TypeError, ValueError):
+        return PostcheckResult("INCONCLUSIVE", "post-check timeout contract is malformed"), action
+    if (
+        timeout_seconds <= 0
+        or timeout_seconds > 24 * 60 * 60
+        or (
+            now is not None
+            and action.executed_at is not None
+            and now >= action.executed_at + timedelta(seconds=timeout_seconds)
+        )
+    ):
+        return PostcheckResult(
+            "INCONCLUSIVE",
+            f"post-check timeout exceeded ({timeout_seconds}s); operator review required",
+        ), action
     return run_postcheck(
         hook_id, fault_present=incident.ceph_code in current_codes, health=health,
         health_floor=health_floor,
@@ -213,7 +235,7 @@ def verify_pending_incidents(
                 continue
 
             postcheck, verified_action = _evaluate_latest_postcheck(
-                session, incident, current_codes=current_codes, health=health,
+                session, incident, current_codes=current_codes, health=health, now=now,
             )
             if postcheck.outcome == "INCONCLUSIVE":
                 incident.status = IncidentStatus.FAILED.value

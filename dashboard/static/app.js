@@ -1,4 +1,30 @@
 (function () {
+  // Attach one safe correlation ID to every same-origin XHR/fetch made by
+  // legacy pages. React consumers set the same header explicitly, while this
+  // fallback covers the server-rendered pages and action forms that still use
+  // small fetch helpers.
+  if (!window.CephRequestContext && window.fetch) {
+    var nativeFetch = window.fetch.bind(window);
+    var nextRequestId = function () {
+      return (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID()
+        : "browser-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
+    };
+    window.CephRequestContext = { next: nextRequestId };
+    window.fetch = function (input, init) {
+      var request = input instanceof Request ? input : null;
+      var target = request ? request.url : String(input || "");
+      var sameOrigin = target.indexOf(window.location.origin) === 0 || target.charAt(0) === "/";
+      if (!sameOrigin) return nativeFetch(input, init);
+      var headers = new Headers(request ? request.headers : (init && init.headers));
+      if (!headers.has("X-Request-ID")) headers.set("X-Request-ID", nextRequestId());
+      var nextInit = Object.assign({}, init || {}, { headers: headers });
+      return nativeFetch(input, nextInit);
+    };
+  }
+})();
+
+(function () {
   // Client-side column sort for any data table on the page (Incident Feed,
   // Audit Trail) — purely a display convenience over the rows the server
   // already rendered, no re-fetch. Skips the single "empty state" row
@@ -67,7 +93,7 @@
     session.connect = function () {
       if (session.stopped || session.socket || document.hidden) return;
       var protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      session.socket = new WebSocket(protocol + "//" + window.location.host + "/ws/cluster-state?cluster_id=" + encodeURIComponent(clusterId));
+      session.socket = new WebSocket(protocol + "//" + window.location.host + "/ws/cluster-state?cluster_id=" + encodeURIComponent(clusterId) + "&reconnect=" + (session.attempt > 0 ? "1" : "0"));
       session.socket.onopen = function () {
         session.attempt = 0;
         session.connected = true;
@@ -77,6 +103,13 @@
         try {
           var payload = JSON.parse(message.data);
           if (!payload.event || (payload.cluster_id && payload.cluster_id !== clusterId)) return;
+          // Keep one transport fan-out for every legacy page. Consumers that
+          // do not own the action may ignore it, but no page needs a second
+          // socket or a private action polling loop.
+          window.dispatchEvent(new CustomEvent("ceph-cluster-state-event", { detail: payload }));
+          if (payload.event === "action_state_changed") {
+            window.dispatchEvent(new CustomEvent("ceph-action-state-changed", { detail: payload }));
+          }
           session.callbacks.slice().forEach(function (callback) { callback(payload); });
         } catch (_) {
           // HTTP fallback remains authoritative when an event is malformed.
@@ -119,6 +152,13 @@
   window.CephClusterStateFeedback = {
     handle: function (element, event, section, label) {
       if (!element || !event) return false;
+      if (event.event === "action_state_changed") {
+        var state = event.action_state || event.action_status || "updated";
+        var action = event.action_id ? " (action " + event.action_id + ")" : "";
+        element.textContent = "⟳ Action" + action + ": " + state + ".";
+        element.hidden = false;
+        return true;
+      }
       var sections = Array.isArray(event.sections) ? event.sections : [];
       if (sections.length && sections.indexOf(section) === -1) return false;
       if (event.event === "snapshot_refresh_failed") {

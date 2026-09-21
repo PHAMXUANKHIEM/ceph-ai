@@ -28,6 +28,27 @@ def test_index_shows_incident_from_db(dashboard_client):
     assert "/timeline" in response.text
 
 
+def test_unified_event_timeline_api_is_cluster_scoped_and_read_only(dashboard_client):
+    with db_module.SessionLocal() as session:
+        session.add(Incident(
+            id="timeline-api-inc",
+            ceph_code="OSD_DOWN",
+            status="NEW",
+            detected_at=datetime.utcnow(),
+        ))
+        session.commit()
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/api/events/timeline?limit=20")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["read_only"] is True
+    assert body["recommendation_mode"] == "EVIDENCE_ONLY"
+    assert any(event["kind"] == "incident_detected" for event in body["events"])
+    assert body["cluster_id"]
+
+
 def test_incident_timeline_page_and_postmortem_generation(dashboard_client, monkeypatch):
     with db_module.SessionLocal() as session:
         session.add(Incident(

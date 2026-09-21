@@ -90,7 +90,8 @@ phê duyệt, post-check và audit.
 
 ### Pha 1 — AI Capacity Forecasting — P0
 
-- [ ] **1.1 Time-series pipeline**
+- [~] **1.1 Time-series pipeline**
+  - Thêm bounded UTC normalizer cho raw/used/available, pool, thin provisioning, volume/snapshot growth, replica/EC overhead và failure-domain reserve; dedup timestamp, lọc dữ liệu lỗi/cũ/tương lai, đánh dấu gap/counter reset và không tự điền giá trị thiếu. Chưa nối toàn bộ collector production vào pipeline.
   - Thu thập lịch sử raw/used/available, pool usage, thin provisioning, growth của
     volume/snapshot, replication/EC overhead và failure-domain reserve.
   - Chuẩn hóa timezone, khoảng trống dữ liệu, reset counter và retention.
@@ -169,10 +170,15 @@ và nguyên nhân tăng trưởng; không biến cảnh báo ngưỡng hiện t�
 - [~] **4.3 Multi-site diagnosis** — thêm read-only `GET /api/object-storage/multisite-diagnosis`, bổ sung evidence `sync error list` và `period get`, phân tích deterministic replication lag, shard error, master state, period/epoch mismatch và conflict; mọi finding đều có evidence, next check, `action_id=null` và không tự resync/resolve/commit period. Còn thiếu kiểm chứng trực tiếp trên nhiều Ceph release và dữ liệu multisite thật.
   - Phân tích replication lag, shard error, master state, period/epoch mismatch và
     conflict; chỉ đưa hướng dẫn read-only ở pha đầu.
-- [ ] **4.4 Security insight**
+- [~] **4.4 Security insight**
   - Phát hiện bucket public ngoài ý muốn, policy/ACL quá rộng, key lâu không dùng,
     key không xoay vòng, quota bất thường và logging/audit gap.
   - Không gửi access/secret key vào prompt hoặc log.
+  - Slice đầu tiên đã có contract GET /api/object-storage/security-insights:
+    đọc user search-index cache, phát hiện access key active quá tuổi xoay vòng,
+    trả ADVISORY/read_only/action_id=null và evidence gap rõ ràng.
+    Chưa kết luận ACL/policy public, quota bất thường, audit coverage hoặc
+    unused-key nếu collector chưa cung cấp evidence tương ứng.
 - [~] **4.5 Audit-log intelligence** — đã có API read-only `GET /api/object-storage/rgw-audit-intelligence` đọc native RGW ops-log/fallback từ tất cả node RGW, deduplicate transaction, tổng hợp requester/IP/status/latency/encryption và phát hiện bounded anonymous write, auth-failure burst, request burst/latency outlier. Không trả raw path/credential, không tạo Action. Baseline lịch sử/retention bền vững và kiểm chứng thực tế nhiều release còn thiếu.
   - Tổng hợp GET/PUT/DELETE bất thường theo requester, IP, User-Agent, thời gian,
     status code, kích thước và latency.
@@ -186,22 +192,38 @@ phiên bản và hoàn toàn read-only.
 
 ### Pha 5 — AI Pool/PG, CRUSH và Scrub Intelligence — P2
 
-- [ ] **5.1 Pool/PG advisor**
+- [~] **5.1 Pool/PG advisor**
   - Đề xuất PG, autoscaler mode, replica hoặc EC profile dựa trên workload, số OSD,
     device class và failure domain.
   - So sánh trạng thái hiện tại với phương án đề xuất.
-- [ ] **5.2 CRUSH placement advisor**
+  - Slice đầu tiên đã có API GET /api/pools/pg-advisor đọc shared pool/PG
+    snapshots, chặn tư vấn khi PG degraded/undersized/stale và phát hiện PG
+    density outlier theo giả định explicit. Chưa tự đề xuất autoscaler, EC,
+    device class hoặc failure-domain khi thiếu evidence.
+- [~] **5.2 CRUSH placement advisor**
   - Phân tích skew, host/rack concentration, rule mismatch và failure-domain risk.
   - Mô phỏng data movement và khả năng chịu lỗi trước thay đổi.
-- [ ] **5.3 Smart scrub scheduler**
+  - Slice đầu tiên đã có API GET /api/crush-map/placement-advisor đọc CRUSH
+    snapshot: phát hiện usage lệch so với weight và rule yêu cầu failure-domain
+    không tồn tại. Chưa khẳng định PG placement thực tế khi thiếu acting/up
+    mapping, pool-to-rule binding và failure-domain loss model.
+- [~] **5.3 Smart scrub scheduler**
   - Chọn cửa sổ scrub theo tải, tuổi lần scrub, risk signal và maintenance window.
   - Không trì hoãn quá giới hạn an toàn đã cấu hình.
-- [ ] **5.4 Inconsistent-object analysis**
+  - Slice đầu tiên đã có API GET /api/pgs/scrub-schedule đọc PG snapshot:
+    xếp lịch scrub/deep-scrub theo tuổi timestamp, recovery/backfill/peering và
+    maintenance window; PG quá hạn safety limit được đánh dấu must_not_defer.
+    Chưa tự chạy scrub, đổi cờ scrub hoặc lấy load thực từ OSD.
+- [~] **5.4 Inconsistent-object analysis**
   - Thu thập PG/object evidence và phân loại inconsistency/corruption.
   - `repair`, object `fix` hoặc thao tác có nguy cơ mất bản sao luôn DESTRUCTIVE/RISKY.
-- [ ] **5.5 Kiểm thử**
+  - Slice đầu tiên đã có API GET /api/pgs/inconsistent-objects: phân loại
+    inconsistent/unfound/corrupt/scrub evidence, bounded object samples và
+    khóa repair thành DESTRUCTIVE/RISKY; thiếu object-level evidence thì fail-closed.
+- [~] **5.5 Kiểm thử**
   - Nearfull, degraded/recovery, undersized pool, mixed device class, CRUSH hierarchy
     lỗi và simulation sai/thiếu dữ liệu.
+  - Đã có test cho degraded/recovery, PG state composite, thiếu evidence và repair fail-closed; các scenario live/mixed-device còn thiếu.
 
 **Hoàn thành khi:** advisor chứng minh được tác động placement/capacity và không tự
 thay đổi PG, CRUSH hoặc dữ liệu.
@@ -215,38 +237,51 @@ thay đổi PG, CRUSH hoặc dữ liệu.
 >
 > - [x] **L0 — Thu thập + fingerprint** · [x] **L1 — Triage tất định** · [x] **L2 — Phân tích AI** (2026-08-18) · [x] **L3 — Cảnh báo + vòng đời** · [x] **L4 — Dashboard + đề xuất** (2026-08-19). Xem nhật ký mục 8.
 > - [x] **L6 — Kiểm thử đầu-cuối + runbook** (2026-08-19, `docs/runbook-log-intelligence.md`).
-> - [ ] L5 adapter Loki chạy thật (chờ hạ tầng đội RCA)
+> - [~] L5 adapter Loki đã có code, timeout/circuit breaker, label validation và nút test kết nối; chưa bật production vì còn chờ Loki/shipper thật từ hạ tầng đội RCA.
 
-- [ ] **6.1 Unified event timeline**
+- [~] **6.1 Unified event timeline**
   - Hợp nhất health transition, metric anomaly, alert, proposal, approval, command,
     post-check và operator event theo cluster/time.
-- [ ] **6.2 Correlation và root-cause chain**
+  - Slice đầu tiên đã có API GET /api/events/timeline hợp nhất Incident, Action,
+    Audit, lifecycle, Object Storage audit và RGW audit theo cluster/time,
+    có dedup/bounded limit/evidence gap và không trả raw object key/secret.
+- [~] **6.2 Correlation và root-cause chain**
   - Nhóm các alert liên quan, phân biệt nguyên nhân với hệ quả và lưu confidence.
-- [ ] **6.3 AI postmortem**
+  - Slice đầu tiên đã có root-cause chain theo Incident Timeline; mỗi candidate có
+    citation event ID, role, confidence và đánh dấu candidate_only khi chưa đủ causal evidence.
+- [~] **6.3 AI postmortem**
   - Sinh impact, timeline, root cause, contributing factors, response assessment,
     recovery evidence và follow-up action.
   - Mọi câu khẳng định phải liên kết tới event/evidence nguồn.
-- [ ] **6.4 Export và review workflow**
+  - Luồng postmortem citation validator hiện có đã được nối qua root-cause chain
+    API; thiếu evidence vẫn phải nêu limitation, không tự tạo root cause.
+- [~] **6.4 Export và review workflow**
   - Cho phép operator chỉnh sửa/phê duyệt trước khi xuất Markdown/PDF hoặc gửi đi.
-- [ ] **6.5 Kiểm thử**
+  - Đã có export Markdown chỉ từ field postmortem đã validate, citation hợp lệ,
+    cùng review approve/reject có audit event; chưa có PDF/editor UI.
+- [~] **6.5 Kiểm thử**
   - Event tới trễ, clock skew, duplicate incident, thiếu log, nhiều sự cố đồng thời
     và prompt injection trong log/message.
+  - Đã test timeline bounded/dedup, timestamp lỗi, citation validation và thiếu root signal; còn thiếu clock skew/log injection end-to-end.
 
 **Hoàn thành khi:** postmortem có thể kiểm chứng từng kết luận và không bịa timeline.
 
 ### Pha 7 — AI Capacity Planner — P2
 
-- [ ] **7.1 Workload model**
+- [~] **7.1 Workload model**
   - Nhập số VM/volume, dung lượng, IOPS, throughput, latency target, growth, RPO/RTO
     và failure domain.
-- [ ] **7.2 Topology planner**
+  - Slice đầu tiên đã có POST /api/capacity-planner với model Ceph/Vitastor,
+    replica/EC, headroom, growth, capacity/performance OSD sizing và deterministic
+    scenario comparison; thiếu price catalog/benchmark thì trả unknown.
+- [~] **7.2 Topology planner**
   - Đề xuất số node/OSD, media class, replica/EC, headroom và network requirement.
   - Hỗ trợ Ceph và Vitastor bằng model tách biệt.
-- [ ] **7.3 Scenario comparison**
+- [~] **7.3 Scenario comparison**
   - So sánh cost/capacity/performance/durability và mô phỏng mất host/rack.
-- [ ] **7.4 Explainability và export**
+- [~] **7.4 Explainability và export**
   - Hiển thị công thức, giả định, confidence và dữ liệu đầu vào; không chỉ trả văn bản AI.
-- [ ] **7.5 Kiểm thử**
+- [~] **7.5 Kiểm thử**
   - Golden scenarios, boundary values, impossible SLA, thiếu failure domain và mixed disk.
 
 **Hoàn thành khi:** cùng một input cho kết quả tính toán tái lập được, AI chỉ giải
@@ -254,7 +289,8 @@ thích và xếp hạng trên dữ liệu từ deterministic planner.
 
 ### Pha 8 — Closed-loop Remediation và Rollback dùng chung — P3
 
-- [ ] **8.1 Remediation state machine**
+- [~] **8.1 Remediation state machine**
+  - Thêm canonical state contract không cần migration: transition hợp lệ, expiry, cancellation, distributed lock và worker-restart recovery fail-closed. Chưa nối toàn bộ executor/DB lifecycle vào contract.
   - `PROPOSED → APPROVED → EXECUTING → VERIFYING → SUCCEEDED/FAILED/ROLLED_BACK`.
   - Hỗ trợ expiry, cancellation, distributed lock và recovery sau worker restart.
 - [~] **8.2 Universal post-check contract** — playbook registry hiện snapshot
@@ -262,15 +298,18 @@ thích và xếp hạng trên dữ liệu từ deterministic planner.
   success criteria `fresh_telemetry/fault_absent/no_new_critical`, health floor,
   rollback approval flag và fail-closed resolver cho inverse action chưa được
   kiểm thử; Watcher thực thi health-floor `NO_NEW_CRITICAL` trước khi xác nhận.
-  Còn timeout worker và inverse rollback cho từng action.
+  Đã nối timeout contract vào Watcher verify; timeout/malformed timeout chuyển sang INCONCLUSIVE và yêu cầu operator review. Còn timeout ở worker dispatch và inverse rollback cho từng action.
   - Mỗi action khai báo success criteria, thời gian chờ, health guard và evidence
     trước/sau.
-- [ ] **8.3 Rollback planner**
+- [~] **8.3 Rollback planner**
+  - Thêm planner gọi frozen playbook contract, chỉ cho supported khi inverse action đã đăng ký và có evidence test; destructive/data-repair và thiếu inverse đều fail-closed. Hiện chưa có action production nào đủ evidence để bật rollback.
   - Chỉ đánh dấu rollback-supported khi có inverse action đã kiểm thử.
   - Không giả rollback cho delete/purge/data repair hoặc thay đổi không đảo ngược.
-- [ ] **8.4 Controlled RGW/Block/Vitastor actions**
+- [~] **8.4 Controlled RGW/Block/Vitastor actions**
+  - Thêm allowlist/preflight contract cho RGW, Block và Vitastor; bắt buộc capability, target, fresh telemetry, shadow/canary và approval; không sinh shell command. Chưa mở action ghi thật.
   - Mở từng action sau shadow mode và canary; RISKY/DESTRUCTIVE luôn cần phê duyệt.
-- [ ] **8.5 Kiểm thử failure injection**
+- [~] **8.5 Kiểm thử failure injection**
+  - Đã test transition sai, lock mismatch, expiry, worker restart, unknown action, thiếu shadow và thiếu approval; còn thiếu injection end-to-end trên SSH/worker/partial success/rollback.
   - Timeout, SSH disconnect, partial success, stale approval, concurrent action,
     failed post-check, failed rollback và worker crash.
 
@@ -279,18 +318,23 @@ thao tác thủ công, có audit và không tuyên bố thành công trước po
 
 ### Pha 9 — Safe Autopilot nhiều cấp — P3
 
-- [ ] **9.1 Ba chế độ vận hành**
+- [~] **9.1 Ba chế độ vận hành**
+  - Thêm contract ADVISORY/APPROVAL_REQUIRED/LIMITED_AUTOPILOT; chưa thay thế cờ Autopilot hiện hữu trong runtime.
   - `ADVISORY`: chỉ chẩn đoán/đề xuất.
   - `APPROVAL_REQUIRED`: operator duyệt từng action.
   - `LIMITED_AUTOPILOT`: tự chạy tập SAFE đã duyệt trước trong phạm vi/time window.
-- [ ] **9.2 Guardrails**
+- [~] **9.2 Guardrails**
+  - Thêm evaluator fail-closed cho kill switch, cluster gate, allowlist, maintenance window, action budget, blast radius, cooldown, health floor và SAFE-only; cần nối vào runtime trước khi coi là hoàn thành.
   - Maintenance window, action budget, blast-radius limit, health floor, cooldown,
     kill switch và per-cluster allowlist.
-- [ ] **9.3 Shadow mode và promotion**
+- [~] **9.3 Shadow mode và promotion**
+  - Đã có trust_engine shadow decision/evaluation, precision, unsafe miss và promotion candidate; promotion vẫn phải do operator duyệt, không tự mở Autopilot.
   - Đo precision, false-positive, expected/actual outcome trước khi action được nâng cấp.
-- [ ] **9.4 Operator controls**
+- [~] **9.4 Operator controls**
+  - Đã có global/cluster/action-policy controls, audit và promotion approval trong Settings; bổ sung operator snapshot hiển thị mode, gate và lý do bị chặn. Chưa có màn hình riêng cho mọi runtime decision.
   - Hiển thị rõ chế độ hiện tại, action sắp chạy, lịch sử, lý do dừng và cách vô hiệu hóa.
-- [ ] **9.5 Kiểm thử**
+- [~] **9.5 Kiểm thử**
+  - Đã kiểm thử guardrail bypass, mode, budget, health floor, unknown action, lock mismatch và restart recovery; còn split-brain worker/provider unavailable end-to-end.
   - Guardrail bypass, policy reload, split-brain worker, kill switch, budget exhaustion
     và model/provider unavailable.
 
@@ -342,6 +386,20 @@ Một tính năng chỉ được coi là hoàn thành khi đáp ứng đủ:
 
 | Ngày | Hạng mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---|---|---|---|---|
+| 2026-09-21 | Pha 7.1–7.5 — Capacity planner deterministic core | Một phần | Thêm workload/topology planner cho Ceph và Vitastor, so sánh replica/EC, tính headroom/growth/capacity/performance OSD, warning failure-domain và explainability; cost/benchmark không đủ evidence thì unknown. Thêm POST /api/capacity-planner. | pytest tests/test_capacity_planner.py tests/test_capacity_forecast.py tests/test_capacity_failure_simulation.py + compileall + git diff --check | Chờ commit |
+| 2026-09-21 | Pha 6.4/6.5 — Postmortem export và review | Một phần | Thêm export Markdown evidence-only và review approve/reject có AuditEntry; citation không tồn tại bị loại, không sửa evidence gốc. Bổ sung test renderer và timeline edge cases. Chưa có PDF/editor UI. | pytest tests/test_incident_postmortem.py tests/test_dashboard_feed.py tests/test_unified_event_timeline.py + compileall + git diff --check | Chờ commit |
+| 2026-09-21 | Pha 6.2/6.3 — Root-cause chain và postmortem evidence | Một phần | Thêm deterministic root-cause chain có citation event ID, confidence và evidence gaps; API GET /api/incidents/{incident_id}/root-cause-chain, chỉ candidate_only khi chưa chứng minh causal link. Tận dụng postmortem validator hiện có, không tự sinh conclusion không có evidence. | pytest tests/test_root_cause_chain.py tests/test_dashboard_feed.py + compileall + git diff --check | Chờ commit |
+| 2026-09-21 | Pha 6.1 — Unified event timeline contract | Một phần | Thêm merger bounded/read-only và API GET /api/events/timeline: hợp nhất Incident/Action/Audit/lifecycle/Object Storage/RGW events theo cluster, timestamp, source; malformed timestamp và empty source được ghi evidence gap. | pytest tests/test_unified_event_timeline.py + compileall + git diff --check | Chờ commit |
+| 2026-09-21 | Pha 5.4/5.5 — Inconsistent-object analysis | Một phần | Thêm analyzer read-only từ PG state/health evidence, sample object bounded, phân loại severity và repair policy DESTRUCTIVE/RISKY; API GET /api/pgs/inconsistent-objects không tạo repair command. Test fail-closed khi thiếu object-level evidence. | pytest tests/test_inconsistent_object_analysis.py tests/test_dashboard_pgs.py + compileall + git diff --check | Chờ commit |
+| 2026-09-21 | Pha 5.3 — Smart scrub scheduler contract | Một phần | Thêm scheduler deterministic, read-only từ PG snapshot: due/deep-scrub, deferred khi recovery/backfill/peering, safety overdue không được trì hoãn, maintenance window tùy chọn. Không chạy command, không đổi scrub flags. Thêm API GET /api/pgs/scrub-schedule và test fail-closed. | pytest tests/test_scrub_scheduler.py tests/test_dashboard_pgs.py + compileall + git diff --check | Chờ commit |
+| 2026-09-21 | Pha 5.2 — CRUSH placement advisor contract | Một phần | Thêm advisor deterministic, read-only từ CRUSH snapshot: phát hiện weight/usage skew và failure-domain mismatch của rule; movement/failure risk giữ unknown nếu thiếu PG placement evidence. Thêm API GET /api/crush-map/placement-advisor, RBAC admin và test fail-closed. | pytest tests/test_crush_placement_advisor.py tests/test_dashboard_crush_map.py + compileall + git diff --check | Chờ commit |
+| 2026-09-21 | Pha 5.1 — Pool/PG advisor contract | Một phần | Thêm advisor deterministic, read-only từ shared pool/PG inventory: phát hiện unsafe PG state và PG density outlier; mọi output có ADVISORY/read_only/action_id=null, không sinh command. Thiếu autoscaler/device class/failure-domain/EC movement evidence thì trả evidence gap. Thêm API GET /api/pools/pg-advisor và test fail-closed. | pytest tests/test_pool_pg_advisor.py + compileall + git diff --check | Chờ commit |
+| 2026-09-21 | Pha 4.4 — RGW Security Insight contract | Một phần | Thêm collector suy luận deterministic, bounded từ S3 user search-index cache: phát hiện access key active quá ngưỡng 90 ngày, fail-closed khi inventory/created_at thiếu, không trả raw key/secret, không tạo Action. Thêm API GET /api/object-storage/security-insights với cache age/stale metadata và test advisory contract. Còn thiếu bucket ACL/policy public, quota/anomaly, audit coverage và unused-key evidence. | pytest tests/test_rgw_security_insight.py tests/test_dashboard_object_storage_users.py + compileall + git diff --check | Chờ commit |
+| 2026-09-21 | L5 — Loki adapter readiness | Một phần | Xác nhận adapter Loki đã có query_range bounded, UTC nanoseconds, label validation, retry/circuit breaker, partial-result contract và check_reachable; không thể xác nhận live khi hạ tầng Loki/shipper chưa được cấp. | Bộ test log_intel/Loki hiện có; cần smoke test trên endpoint thật trước khi bật production | Chờ hạ tầng |
+| 2026-09-21 | Pha 1.1 — bounded time-series normalization | Một phần | Thêm shared/time_series_pipeline.py: chuẩn hóa UTC, retention, dedup, invalid evidence, gap, counter reset và capacity metric allowlist; không ghi DB và không bịa metric thiếu. | pytest tests/test_time_series_pipeline.py tests/test_capacity_planner.py tests/test_capacity_forecast.py tests/test_capacity_failure_simulation.py (20 passed) + compileall + git diff --check | Chờ commit |
+| 2026-09-21 | Pha 8.2 — post-check timeout wiring | Một phần | Watcher đọc timeout từ frozen postcheck contract, reject timeout malformed/out-of-range và chuyển action sang INCONCLUSIVE thay vì báo thành công; thêm regression test. | pytest nhóm incident verification/playbook/state/rollback/controlled-action/autopilot (40 passed) + compileall + git diff --check | Chờ commit |
+| 2026-09-21 | Pha 9.3/9.4/9.5 — shadow promotion và operator controls | Một phần | Xác nhận trust_engine đã có shadow evaluation/promotion candidate fail-closed; Settings đã có global/cluster/action policy và promotion approval; bổ sung operator snapshot và mở rộng test guardrail. Promotion vẫn không tự bật execution. | 195 passed, 3 deselected, 14 warnings trong nhóm playbook/trust/settings/guardrail; còn thiếu split-brain/provider unavailable end-to-end | Chờ commit |
+| 2026-09-21 | Pha 8.1/8.3/8.4/8.5 và Pha 9.1/9.2 — state machine, rollback và guardrails | Một phần | Thêm canonical remediation state machine không migration, expiry/cancellation/lock/restart recovery; rollback planner fail-closed theo frozen playbook và evidence inverse; controlled-action allowlist cho RGW/Block/Vitastor; evaluator ba mode và guardrails. Chưa nối toàn bộ executor, chưa có inverse production đã kiểm thử và chưa bật autopilot ghi thật. | pytest các test state machine, rollback, controlled action, autopilot guardrails, playbook registry và remediation cases (34 passed) + compileall + git diff --check | Chờ commit |
 | 2026-09-20 | Pha 8.2 — universal post-check contract | Một phần | Bổ sung metadata contract đóng vào playbook snapshot: hook, timeout 300s, success criteria, health floor, rollback approval và resolver fail-closed khi chưa có inverse action đã kiểm thử. Không tự tạo rollback command và không mở autopilot. | `pytest tests/test_playbook_registry.py` + compileall + `git diff --check` | Commit `a24cc90c`; còn wiring health-floor/timeout và inverse rollback |
 | 2026-09-20 | Pha 4.5/4.6 — RGW audit-log intelligence | Một phần | Thêm `watcher/rgw_audit_intelligence.py` và API `GET /api/object-storage/rgw-audit-intelligence`: đọc bounded native ops-log/fallback từ các RGW node, deduplicate transaction, baseline peer trong cửa sổ hiện tại, phát hiện anonymous write, auth-failure burst, request/latency outlier và encryption signal. Kết quả chỉ advisory/read-only, có evidence gap khi chưa có lịch sử bền vững; không trả raw request/credential và không tạo Action. Còn thiếu baseline/retention lịch sử và kiểm chứng nhiều Ceph release. | `pytest tests/test_rgw_audit_intelligence.py tests/test_rgw_access_log.py tests/test_rgw_bucket_diagnosis.py tests/test_rgw_evidence.py` + compileall | Chờ commit |
 | 2026-09-19 | Pha 4.2 — bucket access diagnosis | Một phần | Thêm DNS/TCP/TLS probe read-only có timeout và allowlist host, cùng bounded RGW daemon error evidence (`permission denied`, config missing, connection refused, timeout). Diagnosis hợp nhất access log, bucket stats, topology, probe và daemon error; fail-closed khi log/daemon unavailable, không tắt TLS verification và không tạo Action. Còn thiếu kiểm chứng probe trên nhiều Ceph release và error taxonomy đầy đủ hơn. | `pytest tests/test_rgw_bucket_diagnosis.py tests/test_rgw_bucket_diagnosis_extra.py tests/test_rgw_connectivity.py tests/test_rgw_evidence.py tests/test_dashboard_object_storage.py tests/test_object_storage_cache.py` (67/67 pass) + compileall | Chờ commit |

@@ -89,6 +89,39 @@ def test_user_buckets_are_loaded_through_a_separate_scoped_endpoint(dashboard_cl
     assert response.json() == {"uid": "alice", "buckets": ["photos", "backups"]}
 
 
+def test_security_insights_are_advisory_and_use_the_cached_user_index(
+    dashboard_client, monkeypatch
+):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "_cached_user_search_index", lambda _cluster: {
+        "items": [{
+            "uid": "alice",
+            "access_keys": [{
+                "created_at": "2025-01-01T00:00:00Z",
+                "status": "active",
+                "access_key_last4": "LEAK",
+            }],
+        }],
+    })
+    monkeypatch.setattr(route, "cache_state", lambda *_args: {
+        "available": True, "age_seconds": 5, "refreshing": False,
+    })
+    _login(dashboard_client)
+
+    response = dashboard_client.get(
+        "/api/object-storage/security-insights?key_rotation_days=90"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["recommendation_mode"] == "ADVISORY"
+    assert body["read_only"] is True
+    assert body["action_id"] is None
+    assert body["summary"]["rotation_gap_count"] == 1
+    assert body["findings"][0]["target"]["uid"] == "alice"
+    assert "LEAK" not in response.text
+
+
 def test_users_page_search_and_empty_state(dashboard_client, monkeypatch):
     _configure(monkeypatch)
     monkeypatch.setattr(route, "fetch_s3_user_list", lambda host: ["alice", "bob"])

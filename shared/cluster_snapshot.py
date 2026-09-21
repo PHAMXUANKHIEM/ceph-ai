@@ -18,6 +18,7 @@ from config.settings import settings
 from shared import ceph_query_cache
 from shared.cluster_events import publish_event
 from shared.request_context import get_request_id
+from shared.realtime_observability import record_snapshot_freshness
 
 SNAPSHOT_NAMESPACE = "cluster-snapshot"
 SECTION_SNAPSHOT_NAMESPACE = "cluster-section-snapshot"
@@ -532,6 +533,17 @@ def _read_snapshot_by_key(
         return None
     snapshot["age_seconds"] = round(age_seconds, 1)
     snapshot["stale"] = age_seconds > stale_after_seconds
+    # Collection lag is the time between the collector's timestamp and the
+    # durable publish. It is separate from snapshot age, which measures how
+    # old the data is when a browser reads it.
+    snapshot["collector_lag_seconds"] = round(
+        max(0.0, age_seconds - _age_from_timestamp(snapshot.get("published_at"), 0.0)), 3
+    )
+    record_snapshot_freshness(
+        cluster_id,
+        age_seconds=age_seconds,
+        collector_lag_seconds=snapshot["collector_lag_seconds"],
+    )
     # Cờ refresh được ghi theo CLUSTER, không theo từng section. Trước đây
     # chỗ này truyền `storage_key` ("<cluster>:<section>") nên mọi section
     # snapshot vĩnh viễn báo refreshing=False.

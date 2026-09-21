@@ -9,7 +9,10 @@ from sqlalchemy.pool import StaticPool
 
 from shared import db
 from shared.db import Base
-from shared.incident_postmortem import PostmortemError, build_timeline, generate, validate_postmortem
+from shared.incident_postmortem import (
+    PostmortemError, build_timeline, generate, render_postmortem_markdown,
+    validate_postmortem,
+)
 from shared.models import Action, AuditEntry, Incident
 
 
@@ -65,6 +68,28 @@ def test_validation_rejects_invented_citation(factory):
     )} | {"citations": ["audit:not-real"]}
     with pytest.raises(PostmortemError, match="citation"):
         validate_postmortem(result, timeline)
+
+
+def test_render_postmortem_markdown_keeps_only_valid_citations():
+    timeline = {
+        "incident_id": "inc-1",
+        "ceph_code": "OSD_DOWN",
+        "status": "RESOLVED",
+        "events": [{"id": "event:1"}],
+    }
+    content = render_postmortem_markdown(timeline, {
+        "root_cause": "OSD failure",
+        "impact": "IO degraded",
+        "actions_taken": "Restarted daemon",
+        "verification": "Health recovered",
+        "prevention": "Review hardware",
+        "limitations": "No rack evidence",
+        "citations": ["event:1", "event:not-real"],
+    })
+
+    assert "OSD failure" in content
+    assert "- event:1" in content
+    assert "event:not-real" not in content
 
 
 def test_generate_persists_validated_postmortem_without_holding_session(factory, monkeypatch):

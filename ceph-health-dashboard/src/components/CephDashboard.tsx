@@ -26,6 +26,7 @@ type DashboardHealth = {
   refreshing?: boolean;
   age_seconds?: number | null;
   cache_age_seconds?: number;
+  collector_lag_seconds?: number | null;
   cluster_id?: string;
   generation?: number;
   collected_at?: string | null;
@@ -79,14 +80,18 @@ export function CephDashboard() {
   const [refreshPending, setRefreshPending] = useState(false);
   const [dismissedIssue, setDismissedIssue] = useState<string | null>(null);
   const [realtimeError, setRealtimeError] = useState<string | null>(null);
+  const [actionState, setActionState] = useState<string | null>(null);
   const selectedCluster = new URLSearchParams(window.location.search).get("cluster") || "";
   const clusterName = document.getElementById("ceph-dashboard-root")?.getAttribute("data-cluster-name") || selectedCluster || "Cluster";
   const handleRealtimeEvent = useCallback((event: SnapshotEvent) => {
     if (event.event === "snapshot_refresh_failed") {
       const action = event.action_id ? ` (action ${event.action_id})` : "";
       setRealtimeError(`Post-check mutation thất bại${action}; đang giữ snapshot tốt gần nhất.`);
+    } else if (event.event === "action_state_changed") {
+      setActionState(event.action_state || event.action_status || "updated");
     } else if (event.event === "snapshot_changed") {
       setRealtimeError(null);
+      setActionState(null);
     }
   }, []);
   const eventVersion = useClusterSnapshotEvents(selectedCluster, handleRealtimeEvent);
@@ -99,7 +104,7 @@ export function CephDashboard() {
     const url = selectedCluster
       ? "/api/dashboard/health/refresh?cluster=" + encodeURIComponent(selectedCluster)
       : "/api/dashboard/health/refresh";
-    fetch(url, { method: "POST", credentials: "same-origin" })
+    fetch(url, { method: "POST", credentials: "same-origin", headers: { "X-Request-ID": `browser-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` } })
       .then(async (response) => {
         if (!response.ok) throw new Error("HTTP " + response.status);
       })
@@ -117,7 +122,7 @@ export function CephDashboard() {
       controller?.abort();
       controller = new AbortController();
       const url = selectedCluster ? "/api/dashboard/health?cluster=" + encodeURIComponent(selectedCluster) : "/api/dashboard/health";
-      fetch(url, { credentials: "same-origin", signal: controller.signal })
+      fetch(url, { credentials: "same-origin", signal: controller.signal, headers: { "X-Request-ID": `browser-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` } })
       .then(async (response) => {
         if (!response.ok) {
           let detail = "HTTP " + response.status;
@@ -201,7 +206,7 @@ export function CephDashboard() {
               label={SNAPSHOT_STATE_LABEL[snapshotState]}
               icon={Wifi}
             />
-            <span className="snapshot-time">{formatAge(health.age_seconds)}</span>
+            <span className="snapshot-time">{formatAge(health.age_seconds)}{health.collector_lag_seconds != null ? ` · collector lag ${health.collector_lag_seconds.toFixed(2)}s` : ""}</span>
             <button className="dashboard-refresh" type="button" onClick={requestRefresh} disabled={refreshPending} aria-label="Làm mới dữ liệu">
               <RefreshCw size={15} className={refreshPending ? "dashboard-spin" : ""} aria-hidden="true" /> Làm mới
             </button>
@@ -224,6 +229,7 @@ export function CephDashboard() {
           onDismiss={() => setDismissedIssue(issueKey)}
         />
       )}
+      {actionState && <div className="mb-3 rounded-md border border-sky-700/50 bg-sky-950/30 px-3 py-2 text-sm text-sky-200" role="status" aria-live="polite">Cập nhật action: <strong>{actionState}</strong>. Dữ liệu sẽ được đọc lại từ snapshot sau khi collector xác nhận.</div>}
       {health.refreshing && <LoadingState message="Đang đồng bộ dữ liệu cụm…" />}
       {!health.refreshing && health.stale && dismissedIssue !== issueKey && (
         <ErrorState

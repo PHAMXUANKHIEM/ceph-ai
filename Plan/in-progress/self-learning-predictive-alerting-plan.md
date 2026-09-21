@@ -110,7 +110,9 @@ Bằng chứng kiểm thử bước đã hoàn thành:
 - [x] Candidate A: linear regression hiện tại.
 - [x] Candidate B: robust rolling median/quantile.
 - [x] Candidate C: seasonal baseline theo giờ/ngày đã được giữ trong volume learning; phần seasonal cho CPU/RAM vẫn để riêng vì chưa đủ bằng chứng chu kỳ.
-- [ ] Candidate D: lightweight clustering hoặc isolation score.
+- [x] Candidate D: bounded multivariate isolation score có trong
+  `shared/forecast_anomaly.py`, offline benchmark và runtime `SHADOW_ONLY`; không
+  phát alert/remediation ngoài approval.
 - [ ] Chưa đưa deep learning vào phase đầu vì dữ liệu label chưa ổn định.
 
 ### Bước 2.3 — Consensus kiểu Netdata
@@ -368,4 +370,22 @@ Không nên bắt đầu bằng deep-learning model mới. Với dữ liệu hi�
 
 ### Bước tiếp theo sẽ làm
 
-Bước tiếp theo: chạy canary thực tế với operator approval; không tự bật candidate thành active.
+Bước tiếp theo: hoàn thiện ba ADWIN streams, cấu hình feature theo
+metric/horizon, sau đó chạy canary soak thực tế với operator approval; không tự
+bật candidate thành active.
+
+### Nhật ký cập nhật 2026-09-21
+
+- Đã thêm migration `m20260921forecastscope` cho explicit registry dimensions;
+  backfill legacy chỉ khi parse được, không đoán scope lỗi; migration fix đã
+  đánh dấu 192/192 row production là `forecast-scope-v2`.
+- Promotion guard hiện fail-closed khi candidate còn `UNKNOWN_SCOPE` hoặc thiếu
+  dimension; không thể promote chỉ bằng cách đổi status.
+- Feature quality, Candidate D và ADWIN residual đã được nối vào Node Watcher ở
+  dạng evidence bounded; Dashboard đã hiển thị quality summary của model.
+- Đã thêm `shared/forecast_features.py`, Candidate D isolation, River ADWIN,
+  forecast benchmark nhiều model, shadow soak gate và release security/license/
+  resource scan.
+- Bằng chứng: `33 passed` cho migration + model registry + drift + scope/features
+  + benchmark/soak; py_compile và `git diff --check` đạt; release scan trả `PASS`.
+- Còn lại: 24-hour live soak và operator acceptance trên cluster Ceph thật.

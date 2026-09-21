@@ -175,6 +175,39 @@ async def _call_model(payload: dict) -> dict:
     raise PostmortemError("AI response contained no postmortem tool call")
 
 
+def render_postmortem_markdown(timeline: dict, postmortem: dict | None) -> str:
+    """Render only validated postmortem fields and event citations."""
+    report = postmortem if isinstance(postmortem, dict) else {}
+    lines = [
+        f"# Incident Postmortem: {timeline.get('incident_id', 'unknown')}",
+        "",
+        f"- Ceph code: {timeline.get('ceph_code') or '—'}",
+        f"- Status: {timeline.get('status') or '—'}",
+        f"- Severity: {timeline.get('severity') or '—'}",
+        "",
+    ]
+    labels = (
+        ("root_cause", "Root cause"),
+        ("impact", "Impact"),
+        ("actions_taken", "Actions taken"),
+        ("verification", "Verification"),
+        ("prevention", "Prevention"),
+        ("limitations", "Limitations"),
+    )
+    for key, label in labels:
+        value = str(report.get(key) or "Chưa có")
+        lines.extend([f"## {label}", value, ""])
+    lines.extend(["## Evidence citations", ""])
+    allowed = {str(event.get("id")) for event in timeline.get("events", [])}
+    for citation in report.get("citations") or []:
+        if str(citation) in allowed:
+            lines.append(f"- {citation}")
+    if not lines[-1].startswith("- "):
+        lines.append("- Chưa có citation hợp lệ")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def validate_postmortem(result: dict, timeline: dict) -> dict:
     fields = ("root_cause", "impact", "actions_taken", "verification", "prevention", "limitations")
     if not isinstance(result, dict) or any(

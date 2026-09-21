@@ -12,6 +12,7 @@ from config.settings import settings
 from shared import db
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import HostMetricSample
+from shared.telemetry_nodes import collapse_nodes
 from watcher import ceph_client
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics, collect_node_metrics_with
 
@@ -33,6 +34,27 @@ def _osd_hosts(cluster) -> list[str]:
 def _telemetry_hosts(cluster) -> list[str]:
     """Return every configured node that can be shown in Node Monitoring."""
     return [node["host"] for node in configured_nodes(cluster) if node.get("host")]
+
+
+def _telemetry_targets(cluster_id: str, cluster) -> list[dict]:
+    """Return one telemetry target per physical host.
+
+    The configuration may expose different IP aliases for MON and OSD on the
+    same machine.  Resolve the host identity once (cached per cluster/address)
+    and sample only the preferred physical-host target.
+    """
+    configured = configured_nodes(cluster)
+    identities = {
+        host: _identity(cluster_id, host, cluster)
+        for host in (node.get("host") for node in configured)
+        if host
+    }
+    targets = collapse_nodes(configured, identities)
+    for target in targets:
+        # If identity lookup failed, avoid a second SSH lookup in the worker;
+        # the configured address is still a safe and valid fallback identity.
+        target["sample_node_name"] = target.get("node_name") or target["host"]
+    return targets
 
 
 def _identity(cluster_id: str, host: str, cluster) -> str | None:
@@ -68,6 +90,7 @@ def _collect_sample(
     user: str,
     key_path: str,
     now: datetime,
+    node_name: str | None = None,
 ) -> HostMetricSample | None:
     try:
         metrics = (
@@ -78,7 +101,7 @@ def _collect_sample(
         return HostMetricSample(
             cluster_id=cluster_id,
             host=host,
-            node_name=_identity(cluster_id, host, cluster),
+            node_name=node_name if node_name is not None else _identity(cluster_id, host, cluster),
             cpu_percent=float(metrics.get("cpu_percent", 0)),
             mem_percent=float(metrics.get("mem_percent", 0)),
             disk_read_iops=float(metrics.get("disk_read_iops", 0)),
@@ -107,20 +130,29 @@ def _prune_due(cluster_id: str, now: datetime) -> bool:
 
 
 def collect_and_store(cluster_id: str, cluster=None, *, now: datetime | None = None) -> int:
-    """Collect one sample per configured node; failed hosts are skipped."""
+    """Collect one sample per physical node; failed hosts are skipped."""
     now = now or utc_now()
-    hosts = _telemetry_hosts(cluster)
-    if not hosts:
+    targets = _telemetry_targets(cluster_id, cluster)
+    if not targets:
         return 0
     if cluster is None:
         user, key_path = settings.ssh_user, settings.ssh_key_path
     else:
         user, key_path, _mode, _container = resolve_ssh_creds(cluster)
 
-    with ThreadPoolExecutor(max_workers=min(8, len(hosts)), thread_name_prefix="host-metrics") as executor:
+    with ThreadPoolExecutor(max_workers=min(8, len(targets)), thread_name_prefix="host-metrics") as executor:
         futures = [
-            executor.submit(_collect_sample, cluster_id, host, cluster, user, key_path, now)
-            for host in hosts
+            executor.submit(
+                _collect_sample,
+                cluster_id,
+                target["host"],
+                cluster,
+                user,
+                key_path,
+                now,
+                target["sample_node_name"],
+            )
+            for target in targets
         ]
         samples = [sample for future in futures if (sample := future.result()) is not None]
     if not samples:

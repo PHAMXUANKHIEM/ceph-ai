@@ -230,6 +230,8 @@ Tiếp theo: kiểm thử trên dữ liệu lịch sử trước khi cho River c
 - [x] Có MAE, RMSE, SMAPE, bias và false-positive guard.
 - [x] Candidate không gửi notification hoặc remediation.
 - [x] Bổ sung evidence drift của candidate để so sánh chất lượng trước/sau drift; không dùng candidate đang `DRIFT` làm cơ sở promotion.
+- [x] Ghi nhận rõ consumer hiện chỉ cập nhật model với `target="shadow"`;
+  không có đường cập nhật `active`, notification hoặc remediation từ consumer.
 
 #### Bước 5.2 — Promotion policy
 
@@ -239,6 +241,11 @@ Tiếp theo: kiểm thử trên dữ liệu lịch sử trước khi cho River c
 - [x] Có rollback và append-only audit.
 - [x] Chặn promotion nếu resource budget hoặc poll latency vượt ngưỡng.
 - [x] Chặn promotion nếu evidence drift của candidate không đạt; lỗi evidence hoặc runtime state thiếu cũng fail-closed và ghi audit `PROMOTION_BLOCKED`.
+- [x] Nối promotion với `shared/model_registry.py`: shadow evaluation đăng ký
+  cặp active/candidate và evaluation; request/approve/rollback cập nhật registry,
+  runtime selected state và append-only audit, luôn giữ operator approval.
+- [x] Kiểm thử đủ lifecycle `CANDIDATE → SHADOW → ACTIVE → RETIRED/rollback`;
+  candidate chỉ được active sau guarded evidence và operator approval.
 
 #### Bước 5.3 — Canary rollout
 
@@ -252,6 +259,20 @@ Tiếp theo: kiểm thử trên dữ liệu lịch sử trước khi cho River c
 - [x] Sửa registry drift do adaptive window selection: đồng bộ baseline `linear:<window>h` chưa có promotion/rollback governance; scope đã có governance vẫn fail-closed.
 - [x] So sánh alert volume, false positive, early detection và CPU cost bằng canary report 72 giờ: snapshot mới nhất có `364` runs, `188` evaluated, `2` lifecycle events, `0` false positives, `0` early detections, `7` cycles, MAE `5.5251` và `3358.786 ms` CPU time; không có warning/critical outcome để kết luận candidate tốt hơn.
 - [x] Giữ nguyên scope trong suốt acceptance; không mở rộng canary khi chưa có operator approval cho change request tiếp theo.
+- [x] Mọi registry row promotion phải có đủ `cluster_id + host + metric` cùng
+  `scope_schema`/horizon; scope legacy hoặc thiếu host/metric bị
+  `PROMOTION_BLOCKED`, không được đoán từ `scope_key`.
+
+Evidence bổ sung cho Phase 5:
+
+- `tests/test_model_registry.py tests/test_model_registry_lifecycle.py
+  tests/test_canary.py tests/test_online_learning_consumer.py`: `14 passed`.
+- Lifecycle test xác nhận shadow pair, full scope dimensions, guarded promotion,
+  selected runtime state và rollback về đúng active model trước đó.
+- Scope regression test xác nhận `cluster + host + metric` thiếu hoặc không hợp
+  lệ sẽ bị chặn và ghi `PROMOTION_BLOCKED`.
+- Consumer regression xác nhận target luôn là `shadow`, không thể ghi trực tiếp
+  vào active model.
 
 Canary scope đã được giữ nguyên; việc theo dõi tiếp theo và promotion sang `ACTIVE` là operational follow-up riêng, không phải blocker của implementation này.
 
@@ -386,7 +407,11 @@ chưa có candidate được promote nên chưa đánh dấu rollback acceptance
 - [x] Bước 4.3 — alert quality/consensus boundary, drift state và evidence-rich lifecycle reason.
 - [x] Bước 5.1 — shadow metrics, paired target evidence và drift-aware comparison.
 - [x] Bước 5.2 — guarded promotion, resource/latency/drift gates, operator approval, rollback và append-only audit.
+- [x] Bước 5.2 bổ sung — promotion đã nối trực tiếp với model registry và có
+  regression lifecycle cho candidate/shadow/active/rollback.
 - [x] Bước 5.3 — canary guard, lifecycle evidence, acceptance API/UI và resource-cost telemetry read-only.
+- [x] Bước 5.3 bổ sung — registry scope bắt buộc đủ cluster/host/metric và
+  fail-closed khi thiếu dimension.
 - [x] Bước 6.1 — dashboard online-learning status, quality gate, drift, latency và verified feedback read-only.
 - [x] Bước 6.2 — forecast detail gồm actual/predicted, interval, model/version, confidence/consensus và MAE/SMAPE.
 - [x] Bước 6.3 — operator controls đã viết/test, deploy production và verify hành vi trên live canary.
@@ -402,3 +427,18 @@ chưa có candidate được promote nên chưa đánh dấu rollback acceptance
 - [x] Bounded database pool — Watcher/Worker/Dashboard dùng `pool=5`, `overflow=0`, `timeout=10s`; sau sửa không có QueuePool timeout mới trong observation hiện tại.
 
 Kết luận: **đã hoàn tất implementation và acceptance của guarded self-learning/predictive-alerting canary**. Production tiếp tục giữ `SHADOW_ONLY`; River/PyOD không được promote; promotion sang `ACTIVE` và mở rộng scope là change request riêng sau khi có đủ verified feedback.
+
+## 9. Roadmap cải tiến theo repository
+
+Các bước cải tiến tiếp theo được tách khỏi acceptance hiện tại tại
+[`Plan/in-progress/ai-self-learning-repository-improvement-plan.md`](../in-progress/ai-self-learning-repository-improvement-plan.md).
+
+- [ ] Phase 0 — contract/adapter boundary và dependency policy.
+- [ ] Phase 1 — River replay determinism, snapshot migration và resource benchmark.
+- [ ] Phase 2 — Evidently offline data-quality/drift/evaluation report.
+- [ ] Phase 3 — NannyML cho delayed/no-label feedback.
+- [ ] Phase 4 — MLflow registry adapter sau local registry, có checksum và rollback.
+- [ ] Phase 5 — Vowpal Wabbit contextual-bandit research sandbox.
+- [ ] Phase 6 — Alibi Detect benchmark cho drift/anomaly.
+- [ ] Phase 7 — Feast chỉ mở khi có nhiều consumer cần shared feature store.
+- [ ] Phase 8 — acceptance 72 giờ, staging rollback và operator sign-off.

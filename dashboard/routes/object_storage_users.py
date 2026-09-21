@@ -54,6 +54,7 @@ from watcher.rgw_access_log import (
     execute_s3_user_setting,
     execute_s3_user_setting_with,
 )
+from watcher.rgw_security_insight import build_security_insights
 
 router = APIRouter()
 templates = make_templates()
@@ -575,6 +576,34 @@ async def users_api(request: Request, query: str = Query("", max_length=MAX_QUER
         effective_page_size = page_size if page_size in USER_PAGE_SIZES else PAGE_SIZE
         return await asyncio.to_thread(
             _cached_inventory, selected_cluster(request), query, page, effective_page_size
+        )
+    except RgwLogError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+
+
+@router.get("/api/object-storage/security-insights")
+async def security_insights_api(
+    request: Request,
+    key_rotation_days: int = Query(90, ge=1, le=3650),
+    user: str = Depends(require_login),
+):
+    """Return advisory-only, secret-safe RGW security findings."""
+    del user
+    cluster = selected_cluster(request)
+    try:
+        snapshot = await asyncio.to_thread(_cached_user_search_index, cluster)
+        state = cache_state("s3-user-search", f"{cluster.id}:index")
+        return build_security_insights(
+            cluster_id=str(cluster.id),
+            cluster_name=str(cluster.name),
+            user_snapshot=snapshot,
+            key_rotation_days=key_rotation_days,
+            stale=bool(
+                state.get("available")
+                and state.get("age_seconds") is not None
+                and state["age_seconds"] >= USER_SEARCH_TTL_SECONDS
+            ),
+            evidence_age_seconds=state.get("age_seconds"),
         )
     except RgwLogError as exc:
         raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc

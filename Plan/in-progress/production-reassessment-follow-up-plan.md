@@ -84,8 +84,8 @@ part of this plan.
 ### 2.1 Required dependency chain
 
 - [x] Change `deploy.needs` to include both `test` and `quality`.
-- [ ] Add an explicit release-gate job that consumes test and quality outputs;
-  deploy remains blocked unless all required checks pass.
+- [x] Add an explicit `release_gate` job that consumes test and quality outputs;
+  deploy now depends on `test`, `quality` and `release_gate`.
 - [ ] Keep live/destructive tests manual and approval-only.
 - [ ] Prevent a push to `main` from deploying a failed or unreviewed release;
   use a protected environment/approval for the lab deploy.
@@ -101,18 +101,20 @@ part of this plan.
 - [~] Bandit: fail on HIGH and policy-defined MEDIUM findings; changed-path HIGH
   findings now block; document any
   intentional subprocess/temp-file exceptions with rule-scoped suppressions.
-- [ ] `pip-audit` and production `npm audit`: fail on known exploitable
+- [x] `pip-audit` and production `npm audit`: fail on known exploitable
   vulnerabilities unless an expiry-bound waiver is recorded.
-- [ ] Add Trivy image scan, SBOM generation, image digest and dependency hashes
-  to the release artifact.
+- [~] Add Trivy image scan, SBOM generation and immutable image ID to the CI
+  artifact; the workflow is implemented but still needs a green Actions run on
+  the release SHA. Dependency hashes are still pending.
 - [ ] Add coverage and warning budget by category; a new application warning
   fails the gate unless waived with owner and expiry.
 
 ### 2.3 Release evidence
 
-- [ ] Generate one machine-readable report containing SHA, Python/Node versions,
-  dependency hashes, image digest, Alembic head, test counts, warnings, scan
-  results, rollback SHA and artifact links.
+- [~] `scripts/ci/release_gate.py` generates a machine-readable report with
+  SHA, Python/Node, image ID, Alembic head, JUnit test counts and scan status.
+  Dependency hashes, warning budget, rollback SHA and artifact links still need
+  to be completed in the CI evidence.
 - [ ] Reconcile the manifest with the actual GitHub run; never state full-suite
   pass from a local-only run.
 
@@ -135,8 +137,10 @@ part of this plan.
   immutable artifact promotion.
 - [ ] Remove `curl | sh`; download a versioned artifact, verify checksum/signature
   and install from a controlled path.
-- [ ] Enforce deny-by-default egress and verify allowed destinations for Ceph,
-  PostgreSQL, RabbitMQ and AI provider.
+- [~] Add a read-only fail-closed preflight for deny-by-default egress and
+  verify allowed destinations for Ceph, PostgreSQL, RabbitMQ and AI provider.
+  The current target fails because `CEPH_AI_EGRESS_POLICY` is unset and host
+  `OUTPUT` is `ACCEPT`; no firewall state was changed automatically.
 
 ## 4. P1 — browser and feature acceptance
 
@@ -165,9 +169,11 @@ part of this plan.
 
 - [ ] Assign explicit staging/canary/production IDs, owners, maintenance
   window, feature flags, allowed actions and data-isolation boundary.
-- [ ] On staging PostgreSQL: backup → migration upgrade → health/API/browser
-  smoke → application rollback → migration rollback/re-upgrade → backup restore;
-  verify checksum, audit rows, RPO and RTO.
+- [~] Added `scripts/deploy/staging_migration_rehearsal.sh`, which requires an
+  explicit isolated PostgreSQL URL/target/confirmation, performs backup before
+  `alembic upgrade head`, validates `pg_restore --list`, and writes a 0600
+  report. It was not run because no isolated staging target was provisioned.
+  The full health/API/browser/rollback/restore witness remains pending.
 - [ ] Kill Worker, Watcher and Dashboard at pre-defined phases; prove resume,
   lease reconciliation and no duplicate action.
 - [ ] Roll back using immutable app SHA and image digest, never `latest`.
@@ -190,7 +196,41 @@ part of this plan.
   green, live-DR status is explicitly accepted or formally deferred with an
   owner/expiry, and no unapproved production automation remains.
 
-## 7. Current ownership/blocker table
+## 7. Production Readiness
+
+Đây là nhóm gate bắt buộc trước release chính thức. Các mục `[~]` đã có
+automation hoặc evidence một phần nhưng chưa được coi là pass; các mục `[!]`
+đang bị chặn bởi target/approval/safety window.
+
+- [x] Migration một Alembic head — `m20260921rgwmetrics`; target database đang
+  ở đúng head.
+- [~] Staging migration rehearsal — đã có script safety-gated
+  `scripts/deploy/staging_migration_rehearsal.sh`, nhưng chưa có PostgreSQL
+  staging cô lập để chạy witness.
+- [x] Backup trước migration — canonical backup script đã tạo artifact `0600`
+  trong disposable rehearsal; staging PostgreSQL backup/restore vẫn pending.
+- [~] Clean-checkout full test và CI evidence — workflow có matrix Python
+  3.11/3.12, JUnit artifact và `release_gate`; cần một Actions run xanh trên
+  đúng release SHA.
+- [~] Dependency/image scan, SBOM và pip-audit — pip-audit/npm audit đã là
+  blocking gate; Trivy, CycloneDX SBOM và image ID đã thêm vào workflow, chờ CI
+  evidence thực tế.
+- [!] Browser smoke/load test — baseline unauthenticated đã có; authenticated
+  1/5/10-tab và load report cần credential staging, chưa được cấp.
+- [!] Runtime owner và identity mapping — Podman stack không có legacy unit
+  active, nhưng operator chưa ký owner; `CEPH_AI_ENVIRONMENT` unset còn DB
+  ghi CS-LAB là production.
+- [!] Egress deny-by-default — preflight đã fail-closed vì policy unset và
+  `iptables OUTPUT ACCEPT`; chưa tự ý thay đổi firewall trên host thật.
+- [!] Live DR drill trên target cô lập — chưa có target, backup chain/peer,
+  fencing và written safety approval.
+- [~] Rollback bằng immutable SHA/image digest — image ID đã được ghi nhận và
+  CI sẽ export cùng SBOM; rollback SHA/operator witness/deployment rehearsal
+  còn pending.
+- [~] Release manifest và operator sign-off — manifest đã cập nhật theo head,
+  image ID và blocker thật; security/operations approval vẫn `PENDING`.
+
+### Current ownership/blocker table
 
 | Workstream | Current state | Required owner/evidence |
 |---|---|---|

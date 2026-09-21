@@ -17,6 +17,7 @@ from shared.models import (
 from shared.online_learning_consumer import consume_sample, consume_samples
 from shared.online_learning_controls import PAUSED, set_status
 from shared.online_learning_labels import enqueue_verified_outcomes
+import shared.online_learning_consumer as consumer_module
 
 
 def _session(monkeypatch):
@@ -50,6 +51,9 @@ def test_consumer_audits_no_label_without_learning(monkeypatch):
         audit = session.scalar(select(OnlineLearnerAudit).where(OnlineLearnerAudit.sample_id == "s-1"))
         assert audit is not None
         assert audit.quality_status == "NO_LABEL"
+        assert audit.backend_name == "river"
+        assert audit.backend_version == "0.25.0"
+        assert audit.feature_schema == "scalar-v1"
 
 
 def test_consumer_requires_healthy_runtime_before_shadow_update(monkeypatch):
@@ -72,6 +76,51 @@ def test_consumer_requires_healthy_runtime_before_shadow_update(monkeypatch):
     assert result is not None
     assert result.quality.status == "READY_TO_LEARN"
     assert result.update_applied is False  # AUDIT_ONLY remains fail-closed
+
+
+def test_consumer_never_targets_active_model(monkeypatch):
+    _session(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_enabled", True)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_require_verified_label", False)
+    targets = []
+    original = consumer_module.guarded_update
+
+    def capture_target(*args, **kwargs):
+        targets.append(kwargs.get("target", "shadow"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(consumer_module, "guarded_update", capture_target)
+    now = datetime.now(timezone.utc)
+    with consumer_module.db.SessionLocal() as session:
+        session.add(Cluster(id="cluster-shadow", name="CS-LAB", ceph_mon_nodes="", ssh_user="root", ssh_key_path="/tmp/key"))
+        session.commit()
+
+    result = consumer_module.consume_sample(
+        cluster_id="cluster-shadow", host="node-1", metric="cpu", value=42.0,
+        observed_at=now, sample_id="shadow-target-only", label=42.0,
+    )
+
+    assert result is not None
+    assert targets == ["shadow"]
+
+
+def test_cycle_audit_records_backend_identity(monkeypatch):
+    factory = _session(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_enabled", True)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_require_verified_label", True)
+    now = datetime.now(timezone.utc)
+
+    consume_sample(
+        cluster_id="cluster-cycle", host="node-1", metric="cpu", value=42.0,
+        observed_at=now, sample_id="cycle-backend", label=None,
+    )
+
+    with factory() as session:
+        cycle = session.scalar(select(OnlineLearnerCycleAudit))
+        assert cycle is not None
+        assert cycle.backend_name == "river"
+        assert cycle.backend_version == "0.25.0"
+        assert cycle.feature_schema == "scalar-v1"
 
 
 def test_paused_scope_skips_audit_and_learning_write(monkeypatch):

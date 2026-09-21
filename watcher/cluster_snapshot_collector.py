@@ -29,6 +29,14 @@ from shared.cluster_snapshot import (
     read_snapshot,
 )
 from shared.cluster_nodes import configured_nodes
+from shared.telemetry_nodes import collapse_nodes
+from shared.realtime_controls import (
+    COLLECTOR_CONCURRENCY,
+    CircuitOpenError,
+    CollectionBusyError,
+    circuit_for,
+)
+from shared.realtime_observability import record_query
 from watcher.ceph_client import query_cluster_health_with, query_cluster_status_with
 from watcher.inventory_queries import build_crush_tree_response, collect_pg_rows, collect_pool_rows
 
@@ -146,6 +154,33 @@ def _record_collection_duration(cluster_id: str | None, started: float) -> None:
         _METRICS["last_completed_at"] = _utc_now()
 
 
+def _run_collector_query(cluster, tier: str, query: str, loader):
+    """Run one collector query through concurrency and circuit guards."""
+    cluster_id = str(getattr(cluster, "id", "") or "")
+    started = monotonic()
+    # Keep failures isolated by query. A broken PG query must not open the
+    # circuit for Nodes/CRUSH/Pool data from the same cluster.
+    circuit = circuit_for(cluster_id, f"{tier}:{query}")
+    if not circuit.allow():
+        record_query(cluster_id, query, 0.0, status="circuit_open")
+        raise CircuitOpenError(f"realtime circuit open for {cluster_id}:{tier}")
+    try:
+        timeout = settings.ceph_health_timeout if tier == "health" else settings.ceph_inventory_timeout
+        with COLLECTOR_CONCURRENCY.slot(cluster_id, timeout_seconds=timeout):
+            result = loader()
+    except CollectionBusyError:
+        record_query(cluster_id, query, (monotonic() - started) * 1000, status="busy")
+        raise
+    except Exception as exc:
+        circuit.record_failure(exc)
+        record_query(cluster_id, query, (monotonic() - started) * 1000, status="error")
+        raise
+    else:
+        circuit.record_success()
+        record_query(cluster_id, query, (monotonic() - started) * 1000, status="success")
+        return result
+
+
 def collect_and_publish_health(
     cluster,
     *,
@@ -164,13 +199,18 @@ def collect_and_publish_health(
         nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]
     with health_collection_lock(cluster.id):
         try:
-            health = query_cluster_health_with(
-                nodes,
-                cluster.ceph_container_name,
-                cluster.ssh_user,
-                cluster.ssh_key_path,
-                cluster.ceph_exec_mode,
-                update_sticky_fallback=False,
+            health = _run_collector_query(
+                cluster,
+                "health",
+                "ceph_health",
+                lambda: query_cluster_health_with(
+                    nodes,
+                    cluster.ceph_container_name,
+                    cluster.ssh_user,
+                    cluster.ssh_key_path,
+                    cluster.ceph_exec_mode,
+                    update_sticky_fallback=False,
+                ),
             )
             publish_health_snapshot(
                 cluster.id,
@@ -205,13 +245,18 @@ def collect_and_publish_status(
         nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]
     with status_collection_lock(cluster.id):
         try:
-            status = query_cluster_status_with(
-                nodes,
-                cluster.ceph_container_name,
-                cluster.ssh_user,
-                cluster.ssh_key_path,
-                cluster.ceph_exec_mode,
-                update_sticky_fallback=False,
+            status = _run_collector_query(
+                cluster,
+                "status",
+                "ceph_status",
+                lambda: query_cluster_status_with(
+                    nodes,
+                    cluster.ceph_container_name,
+                    cluster.ssh_user,
+                    cluster.ssh_key_path,
+                    cluster.ceph_exec_mode,
+                    update_sticky_fallback=False,
+                ),
             )
             publish_section_snapshot(
                 cluster.id,
@@ -264,7 +309,33 @@ def _collect_crush_tree(cluster) -> dict:
 
 def _collect_node_summary(cluster) -> dict:
     nodes = configured_nodes(cluster)
-    return {"nodes": nodes, "total": len(nodes)}
+    identities = {}
+    # HostMetricSample is already produced by the telemetry collector.  Use
+    # its latest hostname mapping to present physical nodes in inventory while
+    # leaving all configured aliases available to Ceph/SSH operations.
+    from sqlalchemy import func
+    from shared import db
+    from shared.models import HostMetricSample
+
+    with db.SessionLocal() as session:
+        latest = (
+            session.query(
+                HostMetricSample.host,
+                HostMetricSample.node_name,
+                func.max(HostMetricSample.collected_at).label("latest_at"),
+            )
+            .filter(HostMetricSample.cluster_id == cluster.id)
+            .group_by(HostMetricSample.host, HostMetricSample.node_name)
+            .order_by(func.max(HostMetricSample.collected_at).desc())
+            .all()
+        )
+    # A hostname is stable for a configured address; prefer the most recently
+    # observed non-empty identity if historical rows contain older values.
+    for host, node_name, _latest_at in latest:
+        if host and node_name:
+            identities.setdefault(host, node_name)
+    collapsed = collapse_nodes(nodes, identities)
+    return {"nodes": collapsed, "total": len(collapsed)}
 
 
 class CephSnapshotCollector:
@@ -313,7 +384,12 @@ class CephSnapshotCollector:
                     thread_name_prefix="ceph-inventory",
                 )
                 futures = {
-                    executor.submit(copy_context().run, loader, cluster): (section, empty_data)
+                    executor.submit(
+                        copy_context().run,
+                        lambda loader=loader, section=section: _run_collector_query(
+                            cluster, "inventory", f"inventory_{section}", lambda: loader(cluster)
+                        ),
+                    ): (section, empty_data)
                     for section, (loader, empty_data) in loaders.items()
                 }
                 remaining = max(0.0, deadline - monotonic())

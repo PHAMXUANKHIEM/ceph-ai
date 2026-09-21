@@ -12,6 +12,7 @@ from dashboard.templating import make_templates
 from shared.cluster_nodes import configured_nodes as _configured_nodes
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.cluster_snapshot import DEFAULT_MAX_STALE_SECONDS, read_section_snapshot
+from shared.telemetry_nodes import collapse_nodes
 from shared import db
 from shared.models import HostMetricSample
 from shared.object_storage_cache import get_or_load, state as cache_state
@@ -96,7 +97,41 @@ def _downsample_metrics(points: list[dict], max_points: int) -> list[dict]:
 def _nodes_for_cluster(cluster):
     # The default row mirrors `.env` only at lifecycle sync points; use the
     # live Settings singleton for it, exactly as legacy callers did.
-    return _configured_nodes() if cluster.is_default else _configured_nodes(cluster)
+    configured = _configured_nodes() if cluster.is_default else _configured_nodes(cluster)
+    identities = {}
+    if configured and cluster.id:
+        from sqlalchemy import func
+
+        with db.SessionLocal() as session:
+            latest = (
+                session.query(
+                    HostMetricSample.host,
+                    HostMetricSample.node_name,
+                    func.max(HostMetricSample.collected_at).label("latest_at"),
+                )
+                .filter(HostMetricSample.cluster_id == cluster.id)
+                .group_by(HostMetricSample.host, HostMetricSample.node_name)
+                .order_by(func.max(HostMetricSample.collected_at).desc())
+                .all()
+            )
+        for host, node_name, _latest_at in latest:
+            if host and node_name:
+                identities.setdefault(host, node_name)
+    return collapse_nodes(configured, identities)
+
+
+def _collapse_snapshot_nodes(cluster, snapshot_nodes):
+    """Normalize old six-address snapshots before they reach the browser."""
+    display_nodes = _nodes_for_cluster(cluster)
+    identities = {}
+    for node in display_nodes:
+        node_name = node.get("node_name")
+        if not node_name:
+            continue
+        for alias in [node.get("host"), *(node.get("aliases") or [])]:
+            if alias:
+                identities[alias] = node_name
+    return collapse_nodes(snapshot_nodes, identities)
 
 
 @router.get("/nodes", response_class=HTMLResponse)
@@ -110,12 +145,20 @@ async def nodes_page(request: Request, user: str = Depends(require_login)):
         max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
     )
     snapshot_data = snapshot.get("nodes", {}) if snapshot else {}
-    nodes = snapshot_data.get("nodes") if isinstance(snapshot_data, dict) else None
+    snapshot_nodes = snapshot_data.get("nodes") if isinstance(snapshot_data, dict) else None
     # Configuration is a safe local fallback until the first Watcher inventory
     # snapshot exists; it does not open an SSH session.
-    nodes = nodes if isinstance(nodes, list) else _nodes_for_cluster(cluster)
+    nodes = (
+        _collapse_snapshot_nodes(cluster, snapshot_nodes)
+        if isinstance(snapshot_nodes, list)
+        else _nodes_for_cluster(cluster)
+    )
     requested_host = request.query_params.get("host")
-    known_hosts = {n["host"] for n in nodes}
+    # Keep old alias URLs valid even though the selector now displays one
+    # physical node per hostname.
+    known_hosts = {n["host"] for n in _configured_nodes() if n.get("host")} if cluster.is_default else {
+        n["host"] for n in _configured_nodes(cluster) if n.get("host")
+    }
     if requested_host and requested_host not in known_hosts:
         raise HTTPException(status_code=404, detail="Node không nằm trong danh sách đã cấu hình")
     # No default node — landing on /nodes with no ?host= shows the empty
@@ -123,7 +166,15 @@ async def nodes_page(request: Request, user: str = Depends(require_login)):
     # first. A node is only selected when the operator actually picks one
     # (or deep-links with ?host=).
     selected_host = requested_host
-    selected_node = next((n for n in nodes if n["host"] == selected_host), None)
+    selected_node = next(
+        (
+            n for n in nodes
+            if n["host"] == selected_host or selected_host in n.get("aliases", [])
+        ),
+        None,
+    )
+    if selected_node is not None:
+        selected_host = selected_node["host"]
 
     return templates.TemplateResponse(
         request,
@@ -160,6 +211,10 @@ async def node_summary_api(request: Request, user: str = Depends(require_login))
     data = snapshot.get("nodes", {}) if snapshot else {}
     if not isinstance(data, dict):
         data = {}
+    elif isinstance(data.get("nodes"), list):
+        data = dict(data)
+        data["nodes"] = _collapse_snapshot_nodes(cluster, data["nodes"])
+        data["total"] = len(data["nodes"])
     return {
         "data": data,
         "meta": {
@@ -183,9 +238,16 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
     # choosing using the Watcher keypair (SSRF-via-SSH). Only nodes the
     # operator already configured for this cluster are queryable.
     cluster = selected_cluster(request)
-    allowed_hosts = {n["host"] for n in _nodes_for_cluster(cluster)}
+    configured = _configured_nodes() if cluster.is_default else _configured_nodes(cluster)
+    allowed_hosts = {n["host"] for n in configured if n.get("host")}
+    display_nodes = _nodes_for_cluster(cluster)
+    canonical = next(
+        (node["host"] for node in display_nodes if host == node["host"] or host in node.get("aliases", [])),
+        host,
+    )
     if host not in allowed_hosts:
         raise HTTPException(status_code=404, detail="Node không nằm trong danh sách đã cấu hình")
+    host = canonical
     range_name = _normalize_node_range(
         request.query_params.get("range")
         or request.query_params.get("time_range")

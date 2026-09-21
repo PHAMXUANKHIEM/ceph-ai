@@ -17,6 +17,8 @@ from shared.ceph_query_cache import get_metrics as get_ceph_cache_metrics
 from shared.ceph_query_cache import get_storage_metrics
 from watcher.cluster_snapshot_collector import get_metrics as get_collector_metrics
 from shared.api_observability import get_metrics as get_api_metrics
+from shared.realtime_controls import circuit_metrics, get_metrics as get_realtime_control_metrics
+from shared.realtime_observability import get_metrics as get_realtime_observability_metrics
 from shared.retry import get_metrics as get_retry_metrics
 from shared.natural_language.nl_metrics import get_natural_language_metrics
 from dashboard.ws import get_metrics as get_websocket_metrics
@@ -45,6 +47,7 @@ def _snapshot_freshness_metrics() -> dict[str, object]:
                     "age_seconds": snapshot.get("age_seconds"),
                     "stale": bool(snapshot.get("stale")),
                     "refreshing": bool(snapshot.get("refreshing")),
+                    "collector_lag_seconds": snapshot.get("collector_lag_seconds"),
                     "last_error": snapshot.get("last_error"),
                 })
             return {"clusters": rows, "cluster_count": len(rows)}
@@ -146,6 +149,9 @@ def ceph_latency_debug(user: str = Depends(require_login)):
         "natural_language": get_natural_language_metrics(),
         "websocket": get_websocket_metrics(),
         "snapshot_freshness": freshness,
+        "realtime": get_realtime_observability_metrics(),
+        "realtime_controls": get_realtime_control_metrics(),
+        "realtime_circuits": circuit_metrics(),
         "event_bus": event_bus,
         "cache_storage": cache_storage,
         "operational_alerts": _operational_alerts(freshness, services, event_bus, cache_storage),

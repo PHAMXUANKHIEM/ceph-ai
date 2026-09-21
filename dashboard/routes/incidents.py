@@ -8,8 +8,8 @@ from urllib.parse import quote, urlencode
 from datetime import datetime, timedelta
 from shared.time import utc_now
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -26,11 +26,14 @@ from dashboard.templating import make_templates
 from dashboard.vntime import format_vn
 from shared import audit, change_risk, db, heartbeat
 from shared import incident_postmortem, trust_engine
+from shared.unified_event_timeline import merge_event_sources
+from shared.root_cause_chain import build_root_cause_chain
 from dashboard import alert_center
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import (
     Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus,
+    IncidentTimelineEvent, ObjectStorageAuditEntry, RgwAccessAuditEvent,
     RemediationCase, WatcherHeartbeat,
 )
 from shared.cluster_snapshot import (
@@ -362,6 +365,183 @@ def _incident_in_selected_cluster(session, incident_id: str, selected_cluster: C
         if selected_cluster.is_default else Incident.cluster_id == selected_cluster.id
     )
     return query.one_or_none()
+
+
+@router.get("/api/events/timeline")
+async def unified_event_timeline_api(
+    request: Request,
+    limit: int = Query(200, ge=1, le=500),
+    user: str = Depends(require_login),
+):
+    """Merge cluster-scoped lifecycle, audit and RGW events read-only."""
+    del user
+    _clusters, cluster = _resolve_selected_cluster(
+        "", request.session.get("selected_cluster_id", "")
+    )
+    with db.SessionLocal() as session:
+        incident_scope = (
+            or_(Incident.cluster_id == cluster.id, Incident.cluster_id.is_(None))
+            if cluster.is_default else Incident.cluster_id == cluster.id
+        )
+        incidents = (
+            session.query(Incident)
+            .filter(incident_scope)
+            .order_by(Incident.detected_at.desc(), Incident.id.desc())
+            .limit(limit)
+            .all()
+        )
+        incident_ids = [incident.id for incident in incidents]
+        actions = (
+            session.query(Action).filter(Action.incident_id.in_(incident_ids))
+            .order_by(Action.created_at.desc(), Action.id.desc()).limit(limit).all()
+            if incident_ids else []
+        )
+        audits = (
+            session.query(AuditEntry).filter(AuditEntry.incident_id.in_(incident_ids))
+            .order_by(AuditEntry.created_at.desc(), AuditEntry.id.desc()).limit(limit).all()
+            if incident_ids else []
+        )
+        lifecycle = (
+            session.query(IncidentTimelineEvent)
+            .filter(IncidentTimelineEvent.incident_id.in_(incident_ids))
+            .order_by(IncidentTimelineEvent.created_at.desc(), IncidentTimelineEvent.id.desc())
+            .limit(limit).all()
+            if incident_ids else []
+        )
+        object_audits = (
+            session.query(ObjectStorageAuditEntry)
+            .filter(ObjectStorageAuditEntry.cluster_id == cluster.id)
+            .order_by(ObjectStorageAuditEntry.created_at.desc(), ObjectStorageAuditEntry.id.desc())
+            .limit(limit).all()
+        )
+        rgw_events = (
+            session.query(RgwAccessAuditEvent)
+            .filter(RgwAccessAuditEvent.cluster_id == cluster.id)
+            .order_by(RgwAccessAuditEvent.event_at.desc(), RgwAccessAuditEvent.id.desc())
+            .limit(limit).all()
+        )
+        sources = {
+            "incident": [{
+                "id": row.id, "at": row.detected_at, "kind": "incident_detected",
+                "actor": "watcher", "summary": row.ceph_code, "incident_id": row.id,
+                "cluster_id": row.cluster_id,
+            } for row in incidents],
+            "action": [{
+                "id": row.id, "at": row.created_at, "kind": "action_proposed",
+                "actor": "system", "summary": row.rationale or row.action_id,
+                "incident_id": row.incident_id, "action_id": row.id,
+                "status": row.status, "cluster_id": cluster.id,
+            } for row in actions],
+            "audit": [{
+                "id": row.id, "at": row.created_at, "kind": row.event_type,
+                "actor": row.actor, "summary": row.event_type,
+                "incident_id": row.incident_id, "action_id": row.action_id,
+                "cluster_id": cluster.id,
+            } for row in audits],
+            "lifecycle": [{
+                "id": row.id, "at": row.created_at, "kind": row.event_type,
+                "actor": row.actor, "summary": row.event_type,
+                "incident_id": row.incident_id, "action_id": row.action_id,
+                "cluster_id": cluster.id,
+            } for row in lifecycle],
+            "object_storage": [{
+                "id": row.id, "at": row.created_at, "kind": row.action,
+                "actor": row.actor, "summary": row.action,
+                "status": row.result, "target": row.target_type,
+                "cluster_id": row.cluster_id,
+            } for row in object_audits],
+            "rgw": [{
+                "id": row.id, "at": row.event_at, "kind": row.action,
+                "actor": row.requester or "anonymous", "summary": row.action,
+                "status": row.http_status, "target": row.bucket,
+                "cluster_id": row.cluster_id,
+            } for row in rgw_events],
+        }
+    result = merge_event_sources(sources, limit=limit)
+    result["cluster_id"] = str(cluster.id)
+    result["cluster_name"] = str(cluster.name)
+    return result
+
+
+@router.get("/api/incidents/{incident_id}/root-cause-chain")
+async def root_cause_chain_api(
+    request: Request,
+    incident_id: str,
+    user: str = Depends(require_login),
+):
+    """Return citation-linked root-cause candidates without executing actions."""
+    del user
+    _clusters, selected = _resolve_selected_cluster(
+        "", request.session.get("selected_cluster_id", "")
+    )
+    with db.SessionLocal() as session:
+        incident = _incident_in_selected_cluster(session, incident_id, selected)
+        if incident is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy Incident trong cụm đang chọn")
+        timeline = incident_postmortem.build_timeline(session, incident_id)
+    return build_root_cause_chain(timeline)
+
+
+@router.get("/api/incidents/{incident_id}/postmortem/export")
+async def export_incident_postmortem(
+    request: Request,
+    incident_id: str,
+    user: str = Depends(require_login),
+):
+    _clusters, selected = _resolve_selected_cluster(
+        "", request.session.get("selected_cluster_id", "")
+    )
+    with db.SessionLocal() as session:
+        incident = _incident_in_selected_cluster(session, incident_id, selected)
+        if incident is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy Incident trong cụm đang chọn")
+        timeline = incident_postmortem.build_timeline(session, incident_id)
+        try:
+            postmortem = json.loads(incident.postmortem_json) if incident.postmortem_json else None
+        except (TypeError, ValueError):
+            postmortem = None
+    content = incident_postmortem.render_postmortem_markdown(timeline, postmortem)
+    return PlainTextResponse(
+        content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="incident-{incident_id}-postmortem.md"'},
+    )
+
+
+@router.post("/api/incidents/{incident_id}/postmortem/review")
+async def review_incident_postmortem(
+    request: Request,
+    incident_id: str,
+    user: str = Depends(require_login),
+):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được review postmortem")
+    body = await request.json()
+    decision = str(body.get("decision") or "").strip().lower()
+    note = str(body.get("note") or "").strip()
+    if decision not in {"approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="Review decision không hợp lệ")
+    if decision == "rejected" and len(note) < 5:
+        raise HTTPException(status_code=400, detail="Review reject cần note ít nhất 5 ký tự")
+    _clusters, selected = _resolve_selected_cluster(
+        "", request.session.get("selected_cluster_id", "")
+    )
+    with db.SessionLocal() as session:
+        incident = _incident_in_selected_cluster(session, incident_id, selected)
+        if incident is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy Incident trong cụm đang chọn")
+        if not incident.postmortem_json:
+            raise HTTPException(status_code=409, detail="Incident chưa có postmortem để review")
+        audit.record(
+            session,
+            incident_id=incident.id,
+            action_id=None,
+            event_type=f"postmortem_review_{decision}",
+            actor=user,
+            evidence={"note": note[:1000], "decision": decision},
+        )
+        session.commit()
+    return {"incident_id": incident_id, "decision": decision, "reviewed_by": user, "read_only": False}
 
 
 @router.get("/incidents/{incident_id}/timeline", response_class=HTMLResponse)
@@ -1029,6 +1209,7 @@ def _dashboard_health_snapshot_response(
             "published_at": snapshot.get("published_at") if snapshot else None,
             "age_seconds": snapshot.get("age_seconds") if snapshot else None,
             "cache_age_seconds": snapshot.get("age_seconds") if snapshot else None,
+            "collector_lag_seconds": snapshot.get("collector_lag_seconds") if snapshot else None,
             "health_available": bool(snapshot.get("health_available", True)) if snapshot else False,
             "stale": (
                 bool(snapshot.get("stale", True)) or not snapshot.get("health_available", True)

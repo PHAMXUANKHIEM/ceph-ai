@@ -17,6 +17,9 @@ from shared.learning_runtime import evaluate
 from shared.online_learning_controls import get_control
 from shared.models import OnlineLearnerAudit, OnlineLearnerCycleAudit
 from shared.online_learning import (
+    BACKEND_NAME,
+    BACKEND_VERSION,
+    DEFAULT_FEATURE_SCHEMA,
     MODEL_VERSION,
     LearningCircuitBreaker,
     guarded_update,
@@ -37,6 +40,7 @@ from shared.online_learning_labels import (
     normalize_metric,
     ready_label_for_sample,
 )
+from shared.online_model_backend import metadata_for_backend
 
 logger = logging.getLogger(__name__)
 _CIRCUIT_BREAKER = LearningCircuitBreaker(
@@ -295,6 +299,7 @@ def _consume_one(
                 metric=metric,
                 learned_at=observed,
             )
+        backend = metadata_for_backend(learner)
         session.add(OnlineLearnerAudit(
             cluster_key=cluster_key,
             host=host,
@@ -309,6 +314,9 @@ def _consume_one(
             runtime_reason=runtime.reason,
             update_applied=update.applied,
             model_version=MODEL_VERSION,
+            backend_name=backend.backend_name,
+            backend_version=backend.backend_version,
+            feature_schema=backend.feature_schema,
         ))
         session.commit()
         return ConsumedSample(
@@ -365,6 +373,9 @@ def consume_samples(samples: Iterable[dict]) -> list[ConsumedSample]:
                 runtime_mode=(
                     next(iter(runtime_modes)) if len(runtime_modes) == 1 else "MIXED"
                 ) if runtime_modes else "NO_RESULT",
+                backend_name=BACKEND_NAME,
+                backend_version=BACKEND_VERSION,
+                feature_schema=DEFAULT_FEATURE_SCHEMA,
             ))
             session.commit()
     return results
