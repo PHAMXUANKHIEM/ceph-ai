@@ -659,8 +659,9 @@ thao tác thất bại không làm mất dữ liệu cũ hoặc báo thành côn
 - [ ] Giới hạn concurrency theo cluster và toàn hệ thống.
 - [ ] Circuit breaker/backoff khi MON/Cephadm lỗi liên tiếp.
 - [x] Không retry đồng thời ở route, collector và browser theo cấp số nhân. Dashboard health chỉ đọc snapshot; refresh là POST async có lock/coalescing theo cluster; Watcher là owner duy nhất của Ceph health polling/retry; browser chỉ polling fallback, không tự retry Ceph.
-- [ ] Alert nếu snapshot quá `max_stale_seconds`, collector chết hoặc event bus
-  không publish.
+- [x] Alert nếu snapshot quá `max_stale_seconds`, collector chết hoặc event bus
+  không publish. Diagnostics admin trả alert bounded cho snapshot unavailable/stale,
+  refresh error, Watcher heartbeat stale và event publish failure.
 - [ ] Ghi correlation id từ browser request → event → collector/action.
 - [ ] Kiểm tra disk cache growth; payload CRUSH/PG phải có giới hạn kích thước.
 
@@ -985,3 +986,4 @@ mượt của toàn bộ các trang còn lại.
 | 2026-09-21 | RT-09.2 bounded inventory payloads | PG/CRUSH snapshot có giới hạn byte và số item/node cấu hình được; payload bị cắt giữ metadata `payload_limits`, không làm mất toàn bộ snapshot | `config/settings.py`, `shared/cluster_snapshot.py`, `tests/test_cluster_snapshot.py` — **2 tests added** |
 | 2026-09-21 | RT-09.3 MON circuit breaker | Health query có circuit breaker theo endpoint/credential/mode, cooldown + probe; khi MON lỗi liên tiếp không tiếp tục tạo SSH load, success reset state; diagnostics chỉ trả counter bounded | `config/settings.py`, `watcher/ceph_client.py`, `dashboard/routes/system_health.py`, `tests/test_ceph_client.py`, `tests/test_ceph_debug.py` |
 | 2026-09-21 | RT-09.4 retry ownership | Route không chạy Ceph và không tự retry; refresh được coalescing theo cluster; retry/backoff chỉ nằm trong Watcher health query, còn browser giữ polling fallback không nhân retry; regression xác nhận GET không schedule refresh và POST dùng async refresh | `dashboard/routes/incidents.py`, `ceph-health-dashboard/src/components/CephDashboard.tsx`, `tests/test_dashboard_health_api.py` — **2 tests** |
+| 2026-09-21 | RT-09.5 operational alerts | Admin diagnostics thêm event publish counters và alert bounded cho snapshot unavailable/stale, refresh error, Watcher heartbeat stale, event bus publish failure; không lộ payload/credential | `shared/cluster_events.py`, `dashboard/routes/system_health.py`, `tests/test_cluster_events.py`, `tests/test_ceph_debug.py` — **22 passed** |

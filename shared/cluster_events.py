@@ -8,6 +8,8 @@ large cluster payloads never travel through the WebSocket.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from copy import deepcopy
+from threading import Lock
 
 from shared import ceph_query_cache
 
@@ -17,6 +19,22 @@ EVENT_MAX_AGE_SECONDS = 900
 ALLOWED_EVENTS = {"snapshot_changed", "action_state_changed", "snapshot_refresh_failed"}
 ALLOWED_SECTIONS = {"health", "status", "pools", "pgs", "crush", "nodes"}
 ACTION_STATES = {"queued", "running", "verifying", "succeeded", "failed", "rejected"}
+_METRICS_LOCK = Lock()
+_METRICS = {
+    "publish_success_total": 0,
+    "publish_failure_total": 0,
+}
+
+
+def _record_metric(name: str) -> None:
+    with _METRICS_LOCK:
+        _METRICS[name] += 1
+
+
+def get_metrics() -> dict[str, int]:
+    """Return bounded event-publish counters without event payloads."""
+    with _METRICS_LOCK:
+        return deepcopy(_METRICS)
 
 # Keep the persisted Action enum available for compatibility while exposing a
 # small UI contract.  EXECUTED/AUTO_EXECUTED mean that the command finished;
@@ -97,7 +115,13 @@ def publish_event(
         payload["generation"] = int(generation)
     if collected_at:
         payload["collected_at"] = str(collected_at)
-    return ceph_query_cache.store_versioned(EVENT_NAMESPACE, normalized_cluster, payload)
+    try:
+        stored = ceph_query_cache.store_versioned(EVENT_NAMESPACE, normalized_cluster, payload)
+    except Exception:
+        _record_metric("publish_failure_total")
+        raise
+    _record_metric("publish_success_total")
+    return stored
 
 
 def publish_action_state_event(

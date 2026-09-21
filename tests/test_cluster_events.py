@@ -3,6 +3,7 @@ import pytest
 from shared import ceph_query_cache
 from shared.cluster_events import (
     action_state_for_status,
+    get_metrics,
     publish_action_state_event,
     publish_event,
     read_latest_event,
@@ -43,6 +44,7 @@ def test_event_is_persistent_and_cluster_scoped(monkeypatch, tmp_path):
     assert current["sections"] == ["health"]
     assert current["generation"] == first["generation"]
     assert read_latest_event("cluster-b")["sections"] == ["pools"]
+    assert get_metrics()["publish_success_total"] >= 2
 
 
 def test_event_rejects_unknown_event_and_filters_unknown_sections(monkeypatch, tmp_path):

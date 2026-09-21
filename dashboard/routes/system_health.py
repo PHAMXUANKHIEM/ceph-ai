@@ -9,6 +9,7 @@ from shared.service_health import status
 from shared import db
 from shared.cluster_snapshot import read_snapshot
 from shared.clusters import list_active_clusters
+from shared.cluster_events import get_metrics as get_event_metrics
 from shared.ceph_runner import get_metrics as get_ceph_runner_metrics
 from watcher.ceph_client import get_mon_circuit_metrics
 from shared.ceph_query_cache import get_metrics as get_ceph_cache_metrics
@@ -50,6 +51,58 @@ def _snapshot_freshness_metrics() -> dict[str, object]:
         return {"clusters": [], "cluster_count": 0, "available": False}
 
 
+def _operational_alerts(
+    freshness: dict[str, object],
+    services: dict[str, dict],
+    event_bus: dict[str, int],
+) -> list[dict[str, object]]:
+    """Build bounded operator alerts from the realtime data-path signals."""
+    alerts: list[dict[str, object]] = []
+    for row in freshness.get("clusters", []):
+        if not isinstance(row, dict):
+            continue
+        cluster_id = row.get("cluster_id")
+        age = row.get("age_seconds")
+        if not row.get("available"):
+            alerts.append({
+                "code": "snapshot_unavailable",
+                "severity": "critical",
+                "cluster_id": cluster_id,
+                "message": "Chưa có snapshot realtime cho cluster.",
+            })
+        elif row.get("stale"):
+            alerts.append({
+                "code": "snapshot_stale",
+                "severity": "warning",
+                "cluster_id": cluster_id,
+                "age_seconds": age,
+                "message": "Snapshot đã quá hạn freshness; kiểm tra Watcher hoặc MON.",
+            })
+        if row.get("last_error"):
+            alerts.append({
+                "code": "snapshot_refresh_error",
+                "severity": "warning",
+                "cluster_id": cluster_id,
+                "message": str(row["last_error"])[:240],
+            })
+
+    watcher = services.get("watcher") or {}
+    if not watcher.get("healthy"):
+        alerts.append({
+            "code": "watcher_heartbeat_stale",
+            "severity": "critical",
+            "message": "Watcher không còn heartbeat hợp lệ.",
+        })
+    if int(event_bus.get("publish_failure_total", 0)) > 0:
+        alerts.append({
+            "code": "event_bus_publish_failed",
+            "severity": "warning",
+            "message": "Event bus đã có lần publish thất bại; realtime có thể chậm.",
+            "failure_total": int(event_bus["publish_failure_total"]),
+        })
+    return alerts[:50]
+
+
 @router.get("/api/system/health")
 def system_health():
     services = {name: status(name) for name in ("watcher", "worker")}
@@ -67,6 +120,9 @@ def ceph_latency_debug(user: str = Depends(require_login)):
         raise HTTPException(status_code=403, detail="Chỉ admin được xem chẩn đoán Ceph")
     # Keep ``metrics`` backward-compatible for existing admin tooling while
     # exposing the cache and collector counters as additive fields.
+    freshness = _snapshot_freshness_metrics()
+    services = {name: status(name) for name in ("watcher", "worker")}
+    event_bus = get_event_metrics()
     return {
         "metrics": get_ceph_runner_metrics(),
         "mon_circuit": get_mon_circuit_metrics(),
@@ -76,5 +132,7 @@ def ceph_latency_debug(user: str = Depends(require_login)):
         "retry": get_retry_metrics(),
         "natural_language": get_natural_language_metrics(),
         "websocket": get_websocket_metrics(),
-        "snapshot_freshness": _snapshot_freshness_metrics(),
+        "snapshot_freshness": freshness,
+        "event_bus": event_bus,
+        "operational_alerts": _operational_alerts(freshness, services, event_bus),
     }
