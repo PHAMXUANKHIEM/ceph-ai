@@ -711,6 +711,13 @@ function bucketHighlightJSON(value) {
       var capacity = evidence.capacity || {};
       text("rgw-health-capacity", "Capacity dependency: " + ((capacity.items || []).length ? (capacity.items || []).length + " placement pool(s) mapped" : (capacity.status || "not available")));
       var gaps = (evidence.evidence_gaps || []).concat(diagnosis.evidence_gaps || []);
+      var findingsList = document.getElementById("rgw-health-findings");
+      findingsList.replaceChildren();
+      var messages = (diagnosis.findings || []).slice(0, 5).map(function (item) {
+        return (item.severity || "info").toUpperCase() + ": " + (item.summary || item.code || "Finding");
+      }).concat(gaps.slice(0, 3).map(function (gap) { return "GAP: " + gap; }));
+      if (!messages.length) messages.push("Không có finding hoặc evidence gap trong snapshot hiện tại.");
+      messages.forEach(function (message) { var li = document.createElement("li"); li.textContent = message; findingsList.appendChild(li); });
       status.textContent = "Evidence " + (evidence.status || "unknown") + " · diagnosis " + (diagnosis.status || "unknown") + (gaps.length ? " · " + gaps[0] : "");
     }).catch(function (error) { status.textContent = "Không tải được RGW health: " + error.message; })
       .finally(function () { refresh.disabled = false; });

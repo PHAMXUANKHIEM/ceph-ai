@@ -171,6 +171,8 @@
 .rgw-topology-grid dl { display: grid; gap: 7px; margin: 0; }
 .rgw-topology-grid dl > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; }
 .rgw-topology-grid dd { overflow: hidden; margin: 0; color: var(--text); font: 600 .78rem/1.35 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.rgw-health-findings { display: grid; gap: 5px; margin: 10px 0 0; padding-left: 16px; color: var(--text-muted); font-size: .75rem; line-height: 1.4; }
+.rgw-health-findings li::marker { color: #22d3ee; }
 .rgw-health-body > .hint { margin: 0; }
 @media (max-width: 760px) { .rgw-health-grid, .rgw-topology-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 480px) { .rgw-health-grid, .rgw-topology-grid { grid-template-columns: 1fr; } }
