@@ -188,6 +188,31 @@ def test_section_snapshot_reports_the_cluster_refresh_state(monkeypatch, tmp_pat
     assert cluster_snapshot.read_section_snapshot("cluster-a", "pools")["refreshing"] is False
 
 
+def test_large_pg_section_is_bounded_before_cache_publish(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+    monkeypatch.setattr(cluster_snapshot.settings, "ceph_snapshot_max_payload_bytes", 220)
+    rows = [{"pgid": f"1.{index}", "state": "active+clean", "pool": "rbd"} for index in range(30)]
+
+    stored = cluster_snapshot.publish_section_snapshot("cluster-a", "pgs", rows)
+
+    assert len(stored["pgs"]) < len(rows)
+    assert stored["payload_limits"]["pgs"]["truncated"] is True
+    assert stored["payload_limits"]["pgs"]["stored_bytes"] <= 220
+
+
+def test_large_crush_section_is_bounded_before_cache_publish(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+    monkeypatch.setattr(cluster_snapshot.settings, "ceph_snapshot_max_payload_bytes", 300)
+    tree = {"state": "ok", "roots": [{"id": -1, "type": "root", "children": [
+        {"id": index, "type": "osd", "name": "osd." + str(index)} for index in range(50)
+    ]}], "rules": []}
+
+    stored = cluster_snapshot.publish_section_snapshot("cluster-a", "crush", tree)
+
+    assert stored["crush"].get("payload_truncated") is True
+    assert stored["payload_limits"]["crush"]["stored_bytes"] <= 300
+
+
 def test_fingerprint_changes_on_publish_without_reading_the_payload(monkeypatch, tmp_path):
     _isolate_cache(monkeypatch, tmp_path)
     assert cluster_snapshot.snapshot_fingerprint("cluster-a") is None
