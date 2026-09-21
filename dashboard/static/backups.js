@@ -235,8 +235,29 @@
   var restoreDrillBtn = document.getElementById("btn-restore-drill-now");
   if (restoreDrillBtn) {
     restoreDrillBtn.addEventListener("click", function () {
+      var targetSelect = document.getElementById("restore-drill-target");
+      var pointSelect = document.getElementById("restore-drill-recovery-point");
+      var payload = {
+        target_slot: targetSelect ? targetSelect.value : "",
+        recovery_point_job_id: pointSelect ? pointSelect.value : ""
+      };
       if (window.confirm("Chạy RestoreDrill vào scratch image đã cấu hình? Volume nguồn production sẽ không bị thay đổi.")) {
-        postRunNow("/backups/restore-drill/run-now", {}, restoreDrillBtn);
+        postRunNow("/backups/restore-drill/run-now", payload, restoreDrillBtn);
+      }
+    });
+  }
+
+  var restoreDrillTarget = document.getElementById("restore-drill-target");
+  var restoreDrillPoint = document.getElementById("restore-drill-recovery-point");
+  if (restoreDrillTarget && restoreDrillPoint) {
+    restoreDrillTarget.addEventListener("change", function () {
+      var target = restoreDrillTarget.value;
+      Array.prototype.forEach.call(restoreDrillPoint.options, function (option, index) {
+        if (index === 0) { option.hidden = false; return; }
+        option.hidden = !!target && option.getAttribute("data-target") !== target;
+      });
+      if (restoreDrillPoint.selectedOptions.length && restoreDrillPoint.selectedOptions[0].hidden) {
+        restoreDrillPoint.value = "";
       }
     });
   }

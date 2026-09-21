@@ -6921,6 +6921,7 @@ body:not(.dashboard-page-shell) .chat-fab,
 .backup-target-health-status.is-running { background: rgba(14, 165, 233, .14); color: #7dd3fc; }
 .backup-target-health-status.is-failed { background: rgba(239, 68, 68, .14); color: #fca5a5; }
 .backup-target-health-status.is-never, .backup-target-health-status.is-unknown { background: rgba(148, 163, 184, .14); color: #cbd5e1; }
+.backup-drill-select { min-width: 145px; max-width: 210px; }
 .btn-backup-retry { margin-left: .5rem; }
 .backup-inventory-toolbar { display: flex; gap: .7rem; margin-bottom: 1rem; }
 .backup-inventory-toolbar input { flex: 1; min-width: 220px; }

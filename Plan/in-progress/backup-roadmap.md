@@ -258,7 +258,7 @@ từ chối, còn UI preview chi tiết và kết quả per-target sẽ tiếp t
 
 ## 7. P2 — Độ tin cậy nâng cao
 
-### 7.1 Full-chain Restore Drill `[ ]`
+### 7.1 Full-chain Restore Drill `[~]`
 
 - Drill full + toàn bộ incremental chain.
 - Chọn ngẫu nhiên recovery point cũ, không chỉ bản full mới nhất.
@@ -266,6 +266,14 @@ từ chối, còn UI preview chi tiết và kết quả per-target sẽ tiếp t
 - Lưu download speed, restore duration, verify duration và RTO thực tế.
 - Cảnh báo khi không có drill thành công trong ngưỡng policy.
 - Không dọn scratch nếu cấu hình giữ evidence phục vụ điều tra; có TTL riêng.
+
+Đã nâng RestoreDrill để chọn recovery point full hoặc incremental lịch sử, chọn
+target A/B hoặc tự động, và chạy chung `restore_image()` với full + toàn bộ diff
+đến đúng mốc đã chọn. Progress lưu target, recovery point, full job và diff đã
+apply; kết quả lưu target slot, thời lượng và cleanup scratch vẫn chạy trong
+`finally`. Dashboard có selector target/recovery point; endpoint kiểm tra point
+đúng cluster và đúng target trước khi tạo action. Còn thiếu giữ evidence theo TTL
+và drill tự động độc lập định kỳ cho cả A/B.
 
 ### 7.2 Application-consistent backup `[ ]`
 

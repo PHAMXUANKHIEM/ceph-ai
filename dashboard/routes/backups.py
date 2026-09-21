@@ -816,6 +816,10 @@ async def index(request: Request, user: str = Depends(require_login)):
     backup_policy["retention"].setdefault("keep_incremental_count", 7)
     tracked = _tracked_images(cluster)
     protection = _protection_overview(tracked, cluster)
+    drill_config = backup_policy.get("restore_drill") or {}
+    drill_points = []
+    if all(drill_config.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image")):
+        drill_points = _recovery_points(drill_config["pool"], drill_config["image"], cluster)
     latest_backup_at = max(
         (row["latest_at"] for row in protection["rows"] if row.get("latest_at")),
         default=None,
@@ -845,6 +849,7 @@ async def index(request: Request, user: str = Depends(require_login)):
             "backup_summary": backup_summary,
             "backup_policy": backup_policy,
             "backup_policy_revisions": list_policy_revisions(),
+            "drill_recovery_points": drill_points,
         },
     )
 
@@ -1214,7 +1219,20 @@ async def run_restore_drill_now(request: Request, user: str = Depends(require_lo
     drill_config = load_backup_policy().get("restore_drill") or {}
     if not all(drill_config.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image")):
         raise HTTPException(status_code=409, detail="RestoreDrill chưa được cấu hình đầy đủ trong backup policy.")
-    action_pk = _create_manual_backup_action("restore_drill_execute", {}, user, cluster)
+    body = await request.json()
+    target_slot = str(body.get("target_slot", "")).strip() or None
+    recovery_point_job_id = str(body.get("recovery_point_job_id", "")).strip() or None
+    if target_slot not in {None, "a", "b"}:
+        raise HTTPException(status_code=422, detail="Target RestoreDrill không hợp lệ.")
+    if recovery_point_job_id:
+        points = _recovery_points(drill_config["pool"], drill_config["image"], cluster)
+        selected = next((point for point in points if point["job_id"] == recovery_point_job_id), None)
+        if selected is None or (target_slot and selected["backup_target_slot"] != target_slot):
+            raise HTTPException(status_code=409, detail="Recovery point không hợp lệ hoặc không thuộc target đã chọn.")
+    action_pk = _create_manual_backup_action(
+        "restore_drill_execute",
+        {"target_slot": target_slot, "recovery_point_job_id": recovery_point_job_id}, user, cluster,
+    )
     return JSONResponse({"action_id": action_pk}, status_code=201)
 
 

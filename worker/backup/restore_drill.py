@@ -1,19 +1,16 @@
-"""RestoreDrill (Story 9.4, PRD FR-10) — `restore_drill_execute` action_id,
+"""RestoreDrill (Story 9.4/7.1, PRD FR-10) — `restore_drill_execute` action_id,
 dispatched from `worker/backup/engine.py::run()`. Periodically restores
-the most recent successful FULL backup of a configured "canary" image into
+the selected recovery point of a configured "canary" image into
 a dedicated scratch pool/image (never the operator's real data), verifies
 it byte-for-byte via a re-export + checksum compare, then cleans up —
 proves a backup is actually restorable, not just present.
 
-Scope note: only restores the latest FULL export, not a full+diff chain —
-proving the restore MECHANISM works end-to-end is this story's job; full
-chain restore for a real disaster is Story 9.7's `worker/backup/restore.py`
-(not yet written when this story was implemented — see Dev Notes below).
+The operator may select a historical recovery point and target slot A/B. The
+same full+incremental restore engine used by production restore is exercised;
+the scratch image is always isolated and cleaned up in the finally path.
 
-Contains a MINIMAL restore-to-scratch helper duplicated here rather than in
-a shared `worker/backup/restore.py` — Story 9.7 is expected to factor the
-real, general-purpose (full+diff chain) restore script out into that
-module; this file will then call it instead of its own private helpers.
+The legacy full-only helper remains for compatibility with installations that
+have no incremental chain; new chain drills use `worker/backup/restore.py`.
 """
 
 from __future__ import annotations
@@ -57,7 +54,9 @@ def _first_mon_node() -> str:
     return nodes[0]
 
 
-def _latest_successful_full_backup(pool: str, image: str) -> BackupJob | None:
+def _latest_successful_recovery_point(
+    pool: str, image: str, target_slot: str | None = None, recovery_point_job_id: str | None = None,
+) -> BackupJob | None:
     """Default cluster only (multi-tenant remediation Phase 3 keeps
     RestoreDrill out of scope — its own `backup_policy.yaml` config is a
     single global dict, not a per-cluster list). `cluster_id.is_(None)`
@@ -65,18 +64,27 @@ def _latest_successful_full_backup(pool: str, image: str) -> BackupJob | None:
     own BackupJob rows for a same-named pool/image (Phase 3), which must
     never leak into the default cluster's drill."""
     with db.SessionLocal() as session:
-        return (
-            session.query(BackupJob)
-            .filter(
-                BackupJob.pool == pool,
-                BackupJob.image == image,
-                BackupJob.cluster_id.is_(None),
-                BackupJob.job_type == "full",
+        if recovery_point_job_id:
+            query = session.query(BackupJob).filter(BackupJob.id == recovery_point_job_id)
+        else:
+            query = session.query(BackupJob).filter(
+                BackupJob.pool == pool, BackupJob.image == image,
+                BackupJob.cluster_id.is_(None), BackupJob.job_type.in_(("full", "incremental")),
                 BackupJob.status == "SUCCESS",
-            )
-            .order_by(BackupJob.created_at.desc())
-            .first()
-        )
+            ).order_by(BackupJob.created_at.desc())
+        job = query.first()
+        if job is None or job.pool != pool or job.image != image or job.cluster_id is not None:
+            return None
+        if job.job_type not in ("full", "incremental") or job.status != "SUCCESS":
+            return None
+        if target_slot and job.backup_target_slot != target_slot:
+            return None
+        return job
+
+
+def _latest_successful_full_backup(pool: str, image: str) -> BackupJob | None:
+    """Backward-compatible helper for callers/tests that need only a full."""
+    return _latest_successful_recovery_point(pool, image, target_slot=None)
 
 
 def _import_backup_to_scratch(mon_ip: str, local_path: str, scratch_pool: str, scratch_image: str) -> None:
@@ -186,18 +194,20 @@ def _assert_scratch_absent(mon_ip: str, scratch_pool: str, scratch_image: str) -
     )
 def _record_result(
     pool: str, image: str, success: bool, started_at: datetime, error_message: str | None,
-    size_bytes: int = 0,
+    size_bytes: int = 0, backup_target_slot: str | None = None,
+    recovery_point_job_id: str | None = None,
 ) -> None:
     with db.SessionLocal() as session:
         session.add(
             BackupJob(
-                run_id=f"drill-{started_at.strftime('%Y%m%dT%H%M%SZ')}",
+                run_id=f"drill-{started_at.strftime('%Y%m%dT%H%M%SZ')}-{backup_target_slot or 'auto'}",
                 pool=pool,
                 image=image,
                 job_type="restore_drill",
                 status="SUCCESS" if success else "FAILED",
                 error_message=error_message,
                 size_bytes=size_bytes,
+                backup_target_slot=backup_target_slot,
                 duration_seconds=(utc_now() - started_at).total_seconds(),
                 created_at=started_at,
                 finished_at=utc_now(),
@@ -223,16 +233,35 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
     progress = [{"step": "restore_drill", "status": "running", "started_at": started_at.isoformat()}]
     write_progress(action_pk, progress)
 
-    backup_job = _latest_successful_full_backup(pool, image)
+    target_slot = action_params.get("target_slot") or None
+    recovery_point_job_id = action_params.get("recovery_point_job_id") or None
+    if target_slot not in {None, "a", "b"}:
+        logger.error("restore_drill.run: invalid target_slot=%r", target_slot)
+        return False
+    backup_job = _latest_successful_recovery_point(pool, image, target_slot, recovery_point_job_id)
     if backup_job is None:
-        message = f"Không có bản backup full thành công nào cho {pool}/{image} để thử khôi phục"
+        message = f"Không có recovery point thành công phù hợp cho {pool}/{image} để thử khôi phục"
         logger.error("restore_drill.run: %s", message)
-        _record_result(pool, image, False, started_at, message)
+        _record_result(pool, image, False, started_at, message, backup_target_slot=target_slot,
+                       recovery_point_job_id=recovery_point_job_id)
         alerting.send_alert("critical", message)
         return False
 
     mon_ip = _first_mon_node()
-    backend = get_backend(backup_job.backup_target_slot, settings)
+    progress[0]["target_slot"] = backup_job.backup_target_slot
+    progress[0]["recovery_point_job_id"] = backup_job.id
+    write_progress(action_pk, progress)
+    chain_full, diff_jobs = restore_chain._backup_chain(
+        pool, image, cluster_id=None, recovery_point_job_id=backup_job.id
+    )
+    if chain_full is None:
+        message = f"Recovery point {backup_job.id} không có full base hợp lệ hoặc lệch target"
+        _record_result(pool, image, False, started_at, message,
+                       backup_target_slot=backup_job.backup_target_slot,
+                       recovery_point_job_id=backup_job.id)
+        alerting.send_alert("critical", message, backup_job_id=backup_job.id)
+        return False
+    backend = get_backend(chain_full.backup_target_slot, settings)
 
     tmp_path = None
     scratch_created = False
@@ -243,8 +272,7 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
         # full + import-diff chain used by an actual recovery, while the
         # existing full-only path remains the small compatibility path for
         # installations that have not enabled incremental backups.
-        chain_full, diff_jobs = restore_chain._backup_chain(pool, image, cluster_id=None)
-        if chain_full is not None and chain_full.id == backup_job.id and diff_jobs:
+        if diff_jobs:
             scratch_created = True
             progress[0]["mode"] = "full+incremental"
             progress[0]["full_job_id"] = chain_full.id
@@ -258,13 +286,16 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
                 scratch_image,
                 cluster_id=None,
                 cleanup_new_destination_on_failure=True,
+                recovery_point_job_id=backup_job.id,
             )
             if not result.success:
                 progress[0]["applied_diff_job_ids"] = result.applied_diff_job_ids
                 progress[0]["message"] = result.error_message or "full + incremental restore chain failed"
                 write_progress(action_pk, progress)
                 raise RestoreDrillError(result.error_message or "full + incremental restore chain failed")
-            _record_result(pool, image, True, started_at, None, result.size_bytes)
+            _record_result(pool, image, True, started_at, None, result.size_bytes,
+                           backup_target_slot=chain_full.backup_target_slot,
+                           recovery_point_job_id=backup_job.id)
             progress[0]["status"] = "done"
             progress[0]["finished_at"] = utc_now().isoformat()
             progress[0]["full_job_id"] = result.full_job_id
@@ -312,14 +343,18 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
                 f"checksum mismatch after restore: source={source_sha256} restored={restored_sha256}"
             )
 
-        _record_result(pool, image, True, started_at, None, backup_job.size_bytes or 0)
+        _record_result(pool, image, True, started_at, None, backup_job.size_bytes or 0,
+                       backup_target_slot=chain_full.backup_target_slot,
+                       recovery_point_job_id=backup_job.id)
         progress[0]["status"] = "done"
         progress[0]["finished_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
         return True
     except Exception as exc:
         logger.exception("restore_drill.run: failed for %s/%s", pool, image)
-        _record_result(pool, image, False, started_at, str(exc), backup_job.size_bytes or 0)
+        _record_result(pool, image, False, started_at, str(exc), backup_job.size_bytes or 0,
+                       backup_target_slot=chain_full.backup_target_slot,
+                       recovery_point_job_id=backup_job.id)
         progress[0]["status"] = "failed"
         progress[0]["message"] = str(exc)
         write_progress(action_pk, progress)
