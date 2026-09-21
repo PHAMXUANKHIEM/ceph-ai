@@ -15,6 +15,7 @@
   var rulesEl = document.getElementById("crush-rules-list");
   var rulesEmptyEl = document.getElementById("crush-rules-empty");
   var snapshotBadgeEl = document.getElementById("crush-snapshot-badge");
+  var realtimeAlertEl = document.getElementById("crush-realtime-alert");
   var refreshBtn = document.getElementById("crush-tree-refresh");
   var rootPickerWrap = document.getElementById("crush-root-picker-wrap");
   var rootPicker = document.getElementById("crush-root-picker");
@@ -384,7 +385,11 @@
     poll();
   });
   var unsubscribe = window.CephClusterState && window.CephClusterState.subscribe(clusterId, function (event) {
-    if (!event.sections || event.sections.indexOf("crush") !== -1) {
+    var sections = Array.isArray(event.sections) ? event.sections : [];
+    if (!sections.length || sections.indexOf("crush") !== -1) {
+      if (window.CephClusterStateFeedback) {
+        window.CephClusterStateFeedback.handle(realtimeAlertEl, event, "crush", "CRUSH Map");
+      }
       lastPayload = null;
       poll();
     }

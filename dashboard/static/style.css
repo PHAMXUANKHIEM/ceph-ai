@@ -1392,6 +1392,7 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .node-range-picker select { min-height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-surface); color: var(--text); font: .76rem var(--font-sans); }
 .node-range-picker select:focus { outline: none; border-color: var(--accent-hover); box-shadow: var(--focus-ring); }
 .node-snapshot-meta { color: var(--text-muted); font: .68rem var(--font-mono); white-space: nowrap; }
+.snapshot-event-alert { margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--critical-border); border-left: 3px solid var(--critical); border-radius: var(--radius-sm); color: #fecaca; background: var(--critical-bg); font-size: .78rem; line-height: 1.45; }
 .node-panel { padding: 18px 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); }
 .node-section-heading { margin-bottom: 12px; }
 .node-section-heading h2, .node-panel-heading h2 { margin-top: 4px; font-size: 1.08rem; }

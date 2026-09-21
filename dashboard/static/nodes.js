@@ -3,6 +3,7 @@
   var nodeSelector = document.getElementById("node-selector");
   var nodeList = document.getElementById("node-list");
   var nodeSnapshotMeta = document.getElementById("node-snapshot-meta");
+  var realtimeAlert = document.getElementById("nodes-realtime-alert");
   var clusterId = nodeSelector ? nodeSelector.dataset.clusterId : "";
   var inventoryRequestInFlight = false;
   var rangeSelect = document.getElementById("node-time-range");
@@ -109,7 +110,13 @@
       if (realtimeConnected) stopInventoryFallback(); else startInventoryFallback();
     };
     var unsubscribe = window.CephClusterState && window.CephClusterState.subscribe(clusterId, function (event) {
-      if (!event.sections || event.sections.indexOf("nodes") !== -1) refreshNodeInventory();
+      var sections = Array.isArray(event.sections) ? event.sections : [];
+      if (!sections.length || sections.indexOf("nodes") !== -1) {
+        if (window.CephClusterStateFeedback) {
+          window.CephClusterStateFeedback.handle(realtimeAlert, event, "nodes", "Node inventory");
+        }
+        refreshNodeInventory();
+      }
     });
     window.addEventListener("ceph-cluster-state-connection", onConnection);
     document.addEventListener("visibilitychange", function () { if (!document.hidden) refreshNodeInventory(); if (!realtimeConnected) startInventoryFallback(); });

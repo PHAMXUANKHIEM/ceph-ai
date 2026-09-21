@@ -24,6 +24,7 @@
         </div>
         <a href="/pgs?cluster={{ selected_cluster.id }}" class="btn btn-ghost btn-sm">↻ Làm mới</a>
       </header>
+      <div id="pg-realtime-alert" class="snapshot-event-alert" role="status" aria-live="polite" hidden></div>
 
       {% if query_error %}
       <div class="card-body"><p class="error">Không lấy được PG từ cluster: {{ query_error }}</p></div>
