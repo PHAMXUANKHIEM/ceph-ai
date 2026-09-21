@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
+from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from shared.service_health import status
@@ -13,6 +14,7 @@ from shared.cluster_events import get_metrics as get_event_metrics
 from shared.ceph_runner import get_metrics as get_ceph_runner_metrics
 from watcher.ceph_client import get_mon_circuit_metrics
 from shared.ceph_query_cache import get_metrics as get_ceph_cache_metrics
+from shared.ceph_query_cache import get_storage_metrics
 from watcher.cluster_snapshot_collector import get_metrics as get_collector_metrics
 from shared.api_observability import get_metrics as get_api_metrics
 from shared.retry import get_metrics as get_retry_metrics
@@ -55,6 +57,7 @@ def _operational_alerts(
     freshness: dict[str, object],
     services: dict[str, dict],
     event_bus: dict[str, int],
+    cache_storage: dict[str, object],
 ) -> list[dict[str, object]]:
     """Build bounded operator alerts from the realtime data-path signals."""
     alerts: list[dict[str, object]] = []
@@ -100,6 +103,14 @@ def _operational_alerts(
             "message": "Event bus đã có lần publish thất bại; realtime có thể chậm.",
             "failure_total": int(event_bus["publish_failure_total"]),
         })
+    if cache_storage.get("available") and int(cache_storage.get("bytes", 0)) > settings.ceph_snapshot_cache_max_bytes:
+        alerts.append({
+            "code": "snapshot_cache_growth",
+            "severity": "warning",
+            "bytes": int(cache_storage["bytes"]),
+            "limit_bytes": settings.ceph_snapshot_cache_max_bytes,
+            "message": "Disk cache snapshot đã vượt ngưỡng cấu hình.",
+        })
     return alerts[:50]
 
 
@@ -123,6 +134,7 @@ def ceph_latency_debug(user: str = Depends(require_login)):
     freshness = _snapshot_freshness_metrics()
     services = {name: status(name) for name in ("watcher", "worker")}
     event_bus = get_event_metrics()
+    cache_storage = get_storage_metrics()
     return {
         "metrics": get_ceph_runner_metrics(),
         "mon_circuit": get_mon_circuit_metrics(),
@@ -134,5 +146,6 @@ def ceph_latency_debug(user: str = Depends(require_login)):
         "websocket": get_websocket_metrics(),
         "snapshot_freshness": freshness,
         "event_bus": event_bus,
-        "operational_alerts": _operational_alerts(freshness, services, event_bus),
+        "cache_storage": cache_storage,
+        "operational_alerts": _operational_alerts(freshness, services, event_bus, cache_storage),
     }

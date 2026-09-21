@@ -32,10 +32,22 @@ def test_cache_metrics_distinguish_load_and_hit(monkeypatch, tmp_path):
 
     assert ceph_query_cache.get_or_load("metrics", "cluster", lambda: {"ok": True}) == {"ok": True}
     assert ceph_query_cache.get_or_load("metrics", "cluster", lambda: {"ok": False}) == {"ok": True}
-
     after = ceph_query_cache.get_metrics()
     assert after["cache_load_total"] >= before["cache_load_total"] + 1
     assert after["cache_hit_total"] >= before["cache_hit_total"] + 1
+
+
+def test_storage_metrics_are_bounded_and_include_file_sizes(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    (tmp_path / "one.json").write_text("123", encoding="utf-8")
+    (tmp_path / "two.lock").write_text("12", encoding="utf-8")
+
+    metrics = ceph_query_cache.get_storage_metrics()
+
+    assert metrics["available"] is True
+    assert metrics["files"] >= 2
+    assert metrics["bytes"] >= 5
+    assert metrics["largest_file_bytes"] >= 3
 
 
 def test_background_refresh_propagates_request_correlation(monkeypatch, tmp_path):

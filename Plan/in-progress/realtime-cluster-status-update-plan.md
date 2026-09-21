@@ -663,7 +663,7 @@ thao tác thất bại không làm mất dữ liệu cũ hoặc báo thành côn
   không publish. Diagnostics admin trả alert bounded cho snapshot unavailable/stale,
   refresh error, Watcher heartbeat stale và event publish failure.
 - [x] Ghi correlation id từ browser request → event → collector/action. HTTP request context được giữ khi enqueue refresh/action; event và priority marker chỉ lưu request ID bounded, không lưu credential/payload.
-- [ ] Kiểm tra disk cache growth; payload CRUSH/PG phải có giới hạn kích thước.
+- [x] Kiểm tra disk cache growth; payload CRUSH/PG phải có giới hạn kích thước. Cache diagnostics đo file count/bytes/largest file với scan bounded; cảnh báo khi vượt `ceph_snapshot_cache_max_bytes`, còn PG/CRUSH đã có payload limits.
 
 **Exit gate:** có thể trả lời từ log/metric: dữ liệu đang chậm do collector,
 Ceph, SSH, cache hay browser; không suy đoán bằng timestamp giao diện.
@@ -988,3 +988,4 @@ mượt của toàn bộ các trang còn lại.
 | 2026-09-21 | RT-09.4 retry ownership | Route không chạy Ceph và không tự retry; refresh được coalescing theo cluster; retry/backoff chỉ nằm trong Watcher health query, còn browser giữ polling fallback không nhân retry; regression xác nhận GET không schedule refresh và POST dùng async refresh | `dashboard/routes/incidents.py`, `ceph-health-dashboard/src/components/CephDashboard.tsx`, `tests/test_dashboard_health_api.py` — **2 tests** |
 | 2026-09-21 | RT-09.5 operational alerts | Admin diagnostics thêm event publish counters và alert bounded cho snapshot unavailable/stale, refresh error, Watcher heartbeat stale, event bus publish failure; không lộ payload/credential | `shared/cluster_events.py`, `dashboard/routes/system_health.py`, `tests/test_cluster_events.py`, `tests/test_ceph_debug.py` — **22 passed** |
 | 2026-09-21 | RT-09.6 correlation propagation | Event và priority refresh marker tự lấy request ID từ request context; request ID được giữ qua async refresh/action context để tra browser → event → collector/action, bounded và không chứa credential | `shared/request_context.py`, `shared/cluster_events.py`, `shared/cluster_snapshot.py`, `tests/test_cluster_events.py`, `tests/test_cluster_snapshot.py` — **35 passed** |
+| 2026-09-21 | RT-09.7 cache growth diagnostics | Thêm giới hạn `ceph_snapshot_cache_max_bytes`, metrics disk cache bounded (file count/bytes/largest file) và cảnh báo vượt ngưỡng; không tự xoá dữ liệu | `config/settings.py`, `shared/ceph_query_cache.py`, `dashboard/routes/system_health.py`, `tests/test_ceph_query_cache.py`, `tests/test_ceph_debug.py` — **17 passed** |

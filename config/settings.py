@@ -89,6 +89,7 @@ class Settings(BaseSettings):
     ceph_snapshot_max_payload_bytes: int = Field(default=4_000_000, ge=65_536, le=64_000_000)
     ceph_snapshot_max_pgs: int = Field(default=50_000, ge=100, le=1_000_000)
     ceph_snapshot_max_crush_nodes: int = Field(default=20_000, ge=100, le=500_000)
+    ceph_snapshot_cache_max_bytes: int = Field(default=512_000_000, ge=1_000_000, le=10_000_000_000)
     ceph_max_concurrency: int = Field(default=8, gt=0, le=128)
     ceph_max_retries: int = Field(default=2, ge=0, le=10)
     ceph_retry_base_delay_seconds: float = Field(default=0.25, gt=0, le=60)

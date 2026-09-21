@@ -52,6 +52,43 @@ def get_metrics() -> dict[str, int]:
         return dict(_metrics)
 
 
+def get_storage_metrics(*, max_entries: int = 20_000) -> dict[str, int | bool]:
+    """Return bounded on-disk cache usage without reading cached payloads."""
+    files = 0
+    bytes_total = 0
+    largest_file_bytes = 0
+    truncated = False
+    try:
+        for index, entry in enumerate(_cache_dir.iterdir()):
+            if index >= max_entries:
+                truncated = True
+                break
+            if not entry.is_file() or entry.is_symlink():
+                continue
+            try:
+                size = max(0, int(entry.stat().st_size))
+            except OSError:
+                continue
+            files += 1
+            bytes_total += size
+            largest_file_bytes = max(largest_file_bytes, size)
+    except OSError:
+        return {
+            "available": False,
+            "files": 0,
+            "bytes": 0,
+            "largest_file_bytes": 0,
+            "truncated": False,
+        }
+    return {
+        "available": True,
+        "files": files,
+        "bytes": bytes_total,
+        "largest_file_bytes": largest_file_bytes,
+        "truncated": truncated,
+    }
+
+
 def _path(namespace: str, key: str) -> Path:
     safe_namespace = "".join(char if char.isalnum() or char in "-_" else "-" for char in namespace)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
