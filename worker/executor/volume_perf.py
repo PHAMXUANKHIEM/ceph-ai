@@ -32,6 +32,7 @@ import shlex
 import statistics
 import uuid
 from datetime import datetime
+from shared.time import utc_now
 
 from shared import db
 from shared.models import VolumePerfSweep
@@ -347,7 +348,7 @@ def run(
     def _record_failure(step_index: int, message: str, measured_steps: list[dict] | None = None) -> None:
         progress[step_index]["status"] = "failed"
         progress[step_index]["message"] = message
-        progress[step_index]["finished_at"] = datetime.utcnow().isoformat()
+        progress[step_index]["finished_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
         with db.SessionLocal() as session:
             row = session.get(VolumePerfSweep, sweep_id)
@@ -356,31 +357,31 @@ def run(
                 row.error_message = message
                 if measured_steps is not None:
                     row.steps_json = json.dumps(measured_steps)
-                row.finished_at = datetime.utcnow()
+                row.finished_at = utc_now()
                 session.commit()
 
     def _cleanup() -> str | None:
         cleanup_step = progress[3]
         cleanup_step["status"] = "running"
-        cleanup_step["started_at"] = datetime.utcnow().isoformat()
+        cleanup_step["started_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
         try:
             _remove_scratch_image(mon_ip, pool)
         except VolumePerfError as exc:
             cleanup_step["status"] = "failed"
             cleanup_step["message"] = str(exc)
-            cleanup_step["finished_at"] = datetime.utcnow().isoformat()
+            cleanup_step["finished_at"] = utc_now().isoformat()
             write_progress(action_pk, progress)
             return str(exc)
         cleanup_step["status"] = "done"
         cleanup_step["message"] = "Đã xóa scratch image; lần đo sau sẽ tạo image mới."
-        cleanup_step["finished_at"] = datetime.utcnow().isoformat()
+        cleanup_step["finished_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
         return None
 
     # --- prepare ---
     progress[0]["status"] = "running"
-    progress[0]["started_at"] = datetime.utcnow().isoformat()
+    progress[0]["started_at"] = utc_now().isoformat()
     write_progress(action_pk, progress)
     try:
         _check_fio_available(mon_ip)
@@ -391,12 +392,12 @@ def run(
         _record_failure(0, message)
         return False
     progress[0]["status"] = "done"
-    progress[0]["finished_at"] = datetime.utcnow().isoformat()
+    progress[0]["finished_at"] = utc_now().isoformat()
     write_progress(action_pk, progress)
 
     # --- sweep ---
     progress[1]["status"] = "running"
-    progress[1]["started_at"] = datetime.utcnow().isoformat()
+    progress[1]["started_at"] = utc_now().isoformat()
     write_progress(action_pk, progress)
 
     steps: list[dict] = []
@@ -430,14 +431,14 @@ def run(
             break
 
     progress[1]["status"] = "done"
-    progress[1]["finished_at"] = datetime.utcnow().isoformat()
+    progress[1]["finished_at"] = utc_now().isoformat()
     write_progress(action_pk, progress)
 
     knee = _detect_knee(steps)
 
     # --- diagnostics (best-effort — must never fail an otherwise-good sweep) ---
     progress[2]["status"] = "running"
-    progress[2]["started_at"] = datetime.utcnow().isoformat()
+    progress[2]["started_at"] = utc_now().isoformat()
     write_progress(action_pk, progress)
     try:
         qos_notes = _collect_qos_notes(mon_ip, pool)
@@ -450,7 +451,7 @@ def run(
         logger.exception("volume_perf.run: bottleneck diagnostics failed for action %s", action_pk)
         bottleneck_notes = None
     progress[2]["status"] = "done"
-    progress[2]["finished_at"] = datetime.utcnow().isoformat()
+    progress[2]["finished_at"] = utc_now().isoformat()
     write_progress(action_pk, progress)
 
     cleanup_error = _cleanup()
@@ -470,7 +471,7 @@ def run(
                 row.knee_latency_p99_ms = knee["latency_p99_ms"]
             row.qos_notes = qos_notes
             row.bottleneck_notes = bottleneck_notes
-            row.finished_at = datetime.utcnow()
+            row.finished_at = utc_now()
             session.commit()
 
     return True

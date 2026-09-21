@@ -4,6 +4,7 @@ import logging
 import re
 from collections import Counter
 from datetime import datetime
+from shared.time import utc_now
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -510,7 +511,7 @@ async def create_pool(
             ceph_code=POOL_CREATE_CEPH_CODE,
             status=IncidentStatus.APPROVED.value,
             log_excerpt=f"{user} yêu cầu tạo pool {params['pool_name']} với {pg_num} PG",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()
@@ -613,7 +614,7 @@ async def pool_action(
             ceph_code=POOL_ACTION_CEPH_CODE,
             status=incident_status.value,
             log_excerpt=f"{user} yêu cầu {labels[action_id]} pool {name}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()

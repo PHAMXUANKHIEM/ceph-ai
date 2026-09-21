@@ -16,6 +16,24 @@ EVENT_NAMESPACE = "cluster-state-events"
 EVENT_MAX_AGE_SECONDS = 900
 ALLOWED_EVENTS = {"snapshot_changed", "action_state_changed", "snapshot_refresh_failed"}
 ALLOWED_SECTIONS = {"health", "status", "pools", "pgs", "crush", "nodes"}
+ACTION_STATES = {"queued", "running", "verifying", "succeeded", "failed", "rejected"}
+
+# Keep the persisted Action enum available for compatibility while exposing a
+# small UI contract.  EXECUTED/AUTO_EXECUTED mean that the command finished;
+# the cluster is only considered succeeded after the separate post-check
+# emits the `snapshot_changed` event.
+_ACTION_STATE_BY_STATUS = {
+    "PENDING": "queued",
+    "PENDING_APPROVAL": "queued",
+    "APPROVED": "queued",
+    "EXECUTING": "running",
+    "GRACE_PENDING": "running",
+    "INCONCLUSIVE": "verifying",
+    "AUTO_EXECUTED": "verifying",
+    "EXECUTED": "verifying",
+    "FAILED": "failed",
+    "REJECTED": "rejected",
+}
 
 
 def _cluster_id(cluster_id: str) -> str:
@@ -36,6 +54,14 @@ def _sections(sections: Iterable[str] | None) -> list[str]:
     return result
 
 
+def action_state_for_status(status: str | None) -> str | None:
+    """Map the internal Action status to the bounded realtime UI contract."""
+    if status is None:
+        return None
+    normalized = str(status).strip().upper()
+    return _ACTION_STATE_BY_STATUS.get(normalized)
+
+
 def publish_event(
     cluster_id: str,
     event: str,
@@ -43,6 +69,7 @@ def publish_event(
     sections: Iterable[str] | None = None,
     action_id: str | None = None,
     action_status: str | None = None,
+    action_state: str | None = None,
     generation: int | None = None,
     collected_at: str | None = None,
 ) -> dict:
@@ -60,6 +87,12 @@ def publish_event(
         payload["action_id"] = str(action_id)
     if action_status:
         payload["action_status"] = str(action_status)
+    normalized_action_state = action_state or action_state_for_status(action_status)
+    if normalized_action_state not in ACTION_STATES:
+        if normalized_action_state is not None:
+            raise ValueError(f"unsupported action state: {normalized_action_state!r}")
+    elif normalized_action_state:
+        payload["action_state"] = normalized_action_state
     if generation is not None:
         payload["generation"] = int(generation)
     if collected_at:
@@ -84,6 +117,7 @@ def publish_action_state_event(
         "action_state_changed",
         action_id=action_id,
         action_status=status,
+        action_state=action_state_for_status(status),
     )
 
 

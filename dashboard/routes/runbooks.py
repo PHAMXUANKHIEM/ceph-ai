@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
@@ -151,7 +152,7 @@ async def runbook_feedback(
         if row is None:
             raise HTTPException(status_code=404, detail="Không tìm thấy runbook để đánh giá")
         feedback_note = note.strip()[:2000] or None
-        feedback_at = datetime.utcnow()
+        feedback_at = utc_now()
         session.add(AIRunbookFeedback(
             runbook_id=row.id, rating=rating, note=feedback_note,
             submitted_by=user[:128], created_at=feedback_at,

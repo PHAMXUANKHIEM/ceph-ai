@@ -10,8 +10,27 @@ _WHITESPACE_RE = re.compile(r"\s+")
 _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _OSD_RE = re.compile(r"\bosd(?:\s*(?:id|so|so\s*osd))?\s*[-:#]?\s*(\d+)\b")
 _PG_RE = re.compile(r"\bpg(?:id)?\s*[-:#]?\s*([0-9a-f]+(?:\.[0-9a-f]+)?)\b", re.I)
-_PERCENT_RE = re.compile(
-    r"(?:trên|hon|hơn|>=|>|ít nhất|tu|từ)\s*(\d{1,3})(?:\s*%)?"
+_POOL_RE = re.compile(r"\bpool\s*[-:#]?\s*([a-zA-Z0-9][a-zA-Z0-9_.-]*)\b", re.I)
+_VOLUME_RE = re.compile(
+    r"\b(?:volume|rbd|image|cinder)\s*[-:#]?\s*([a-zA-Z0-9][a-zA-Z0-9_.:-]*)\b",
+    re.I,
+)
+_BUCKET_RE = re.compile(
+    r"\b(?:bucket|container)\s*[-:#]?\s*([a-zA-Z0-9][a-zA-Z0-9_.-]*)\b", re.I
+)
+_HOST_RE = re.compile(
+    r"\b(?:node|host|may\s*chu|may\s*ch)\s*[-:#]?\s*([a-zA-Z0-9][a-zA-Z0-9_.-]*)\b",
+    re.I,
+)
+_REQUEST_ID_RE = re.compile(
+    r"\b(?:request\s*id|request_id|req(?:uest)?[-_ ]?id)\s*[-:#]?\s*([a-zA-Z0-9][a-zA-Z0-9_.:-]*)\b",
+    re.I,
+)
+_PERCENT_GTE_RE = re.compile(
+    r"(?:tren|hon|it nhat|>=|>|tu)\s*(\d{1,3})(?:\s*%)?"
+)
+_PERCENT_LTE_RE = re.compile(
+    r"(?:duoi|it hon|thap hon|<=|<|below)\s*(\d{1,3})(?:\s*%)?"
 )
 _DURATION_RE = re.compile(
     r"\b(\d+)\s*(giây|giay|s|phút|phut|m|giờ|gio|h|ngày|ngay|d)\b"
@@ -29,9 +48,14 @@ def fold_text(text: str) -> str:
 
 def detect_language(text: str) -> str:
     folded = fold_text(text)
+    if any(char in text for char in "ăâđêôơưĂÂĐÊÔƠƯáàảãạắằẳẵặấầẩẫậéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ"):
+        return "vi"
     vietnamese_markers = (
         " cụm ", " suc khoe ", " dung luong ", " kiem tra ", " dang ",
         " cho toi ", " xem ", " tai sao ", " loi ", " node ",
+        " ngay ", " gio ", " phut ", " de xuat ", " khuyen nghi ",
+        " giai thich ", " phan tich ", " giup toi ", " toi can ", " ho tro ",
+        " nen lam gi ",
     )
     if any(marker in f" {folded} " for marker in vietnamese_markers):
         return "vi"
@@ -58,11 +82,36 @@ def extract_entities(text: str) -> tuple[str, tuple[str, ...], dict[str, object]
     elif ips:
         resource_type = "node"
         resource_ids.extend(ips)
+    else:
+        pool_ids = tuple(match.group(1) for match in _POOL_RE.finditer(text))
+        volume_ids = tuple(match.group(1) for match in _VOLUME_RE.finditer(text))
+        bucket_ids = tuple(match.group(1) for match in _BUCKET_RE.finditer(text))
+        host_ids = tuple(match.group(1) for match in _HOST_RE.finditer(folded))
+        request_ids = tuple(match.group(1) for match in _REQUEST_ID_RE.finditer(text))
+        if pool_ids:
+            resource_type = "pool"
+            resource_ids.extend(pool_ids)
+        elif volume_ids:
+            resource_type = "volume"
+            resource_ids.extend(volume_ids)
+        elif bucket_ids:
+            resource_type = "bucket"
+            resource_ids.extend(bucket_ids)
+        elif host_ids:
+            resource_type = "node"
+            resource_ids.extend(host_ids)
+        elif request_ids:
+            resource_type = "request"
+            resource_ids.extend(request_ids)
 
-    percent_match = _PERCENT_RE.search(folded)
+    percent_match = _PERCENT_GTE_RE.search(folded)
     if percent_match:
         filters["utilization_gte"] = int(percent_match.group(1))
-    elif any(term in folded for term in ("gan day", "gan day", "nearfull", "near full")):
+    else:
+        percent_lte_match = _PERCENT_LTE_RE.search(folded)
+        if percent_lte_match:
+            filters["utilization_lte"] = int(percent_lte_match.group(1))
+    if not filters and any(term in folded for term in ("nearfull", "near full")):
         filters["utilization_gte"] = 80
 
     return resource_type, tuple(resource_ids), filters
@@ -86,4 +135,3 @@ def extract_time_range(text: str) -> tuple[int | None, str | None]:
         "ngay": 86400, "ngày": 86400, "d": 86400,
     }[unit]
     return amount * multiplier, match.group(0)
-

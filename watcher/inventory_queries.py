@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import json
 from datetime import datetime, timedelta
+from shared.time import utc_now
 import re
 
 from shared.cluster_nodes import resolve_ssh_creds
@@ -328,7 +329,7 @@ def build_crush_tree_response(latest, cluster_id: str, include_legacy_null: bool
     diff = json.loads(latest.diff_json) if latest.diff_json else None
     changes = (
         _crush_changes(diff, created_at)
-        if diff is not None and datetime.utcnow() - latest.created_at <= timedelta(hours=24)
+        if diff is not None and utc_now() - latest.created_at <= timedelta(hours=24)
         else {}
     )
     distribution = _crush_distribution(cluster_id, include_legacy_null)

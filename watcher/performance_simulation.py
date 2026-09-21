@@ -9,6 +9,7 @@ failure-domain safety.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from shared.time import utc_now
 from typing import Mapping
 
 
@@ -142,7 +143,7 @@ def _set_duration(result: dict, values: Mapping[str, object], bytes_to_move: flo
 
 def simulate_scenario(payload: Mapping[str, object], *, now: datetime | None = None) -> dict:
     """Return a typed simulation preview; never return an executable action."""
-    now = (now or datetime.utcnow()).replace(tzinfo=None)
+    now = (now or utc_now()).replace(tzinfo=None)
     result = _base_result(payload, now)
     values = payload.get("values") if isinstance(payload.get("values"), Mapping) else {}
     if result["status"] != "insufficient_evidence":

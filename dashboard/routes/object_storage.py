@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from shared.time import utc_now
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from typing import Literal
@@ -38,8 +39,10 @@ from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 from watcher.rgw_evidence import get_rgw_evidence
 from watcher.rgw_bucket_diagnosis import build_bucket_access_diagnosis
+from watcher.rgw_multisite_diagnosis import build_multisite_diagnosis
 from watcher.rgw_access_log import fetch_rgw_error_log, fetch_rgw_error_log_with
 from watcher.rgw_connectivity import probe_endpoint
+from watcher.rgw_audit_intelligence import build_rgw_audit_intelligence
 from watcher.rgw_access_log import (
     RgwLogError,
     fetch_bucket_access_log,
@@ -60,6 +63,8 @@ from watcher.rgw_access_log import (
     execute_bucket_quota_with,
     fetch_bucket_objects,
     fetch_bucket_objects_with,
+    fetch_rgw_audit_log,
+    fetch_rgw_audit_log_with,
     purge_bucket,
     purge_bucket_with,
 )
@@ -79,6 +84,8 @@ BUCKET_LIST_TTL_SECONDS = 30
 BUCKET_LIST_STALE_TTL_SECONDS = 300
 RGW_S3_CONNECT_TIMEOUT_SECONDS = 3
 RGW_S3_READ_TIMEOUT_SECONDS = 5
+RGW_AUDIT_TTL_SECONDS = 60
+RGW_AUDIT_STALE_TTL_SECONDS = 300
 BUCKET_ACTIVITY_TTL_SECONDS = 30
 BUCKET_ACTIVITY_STALE_TTL_SECONDS = 300
 BUCKET_DETAIL_TTL_SECONDS = 30
@@ -314,7 +321,7 @@ def _bucket_audit_finish(audit_id: str, result: str, error: str | None = None) -
             cluster_id = row.cluster_id
             row.result = result
             row.error_message = error
-            row.completed_at = datetime.utcnow()
+            row.completed_at = utc_now()
             session.commit()
     if result == "succeeded" and cluster_id:
         invalidate_object_storage_cache(cluster_id, "buckets")
@@ -985,7 +992,7 @@ def _save_bucket_inventory_snapshot(cluster, host: str, names: list[str]) -> Non
                 session.add(snapshot)
             snapshot.rgw_host = host
             snapshot.bucket_names_json = json.dumps(clean_names, ensure_ascii=False)
-            snapshot.captured_at = datetime.utcnow()
+            snapshot.captured_at = utc_now()
             session.commit()
     except Exception:
         logger.exception("Failed to persist durable bucket inventory snapshot for cluster %s", cluster.id)
@@ -1728,6 +1735,156 @@ async def rgw_evidence_api(request: Request, user: str = Depends(require_login))
     return await asyncio.to_thread(get_rgw_evidence, selected_cluster(request))
 
 
+def _collect_rgw_audit_intelligence(cluster) -> dict:
+    """Collect bounded native RGW audit rows from every configured RGW host."""
+    hosts = _rgw_hosts(cluster)
+    records: list[dict] = []
+    errors: list[str] = []
+
+    def read(host: str) -> tuple[list[dict], str | None]:
+        try:
+            if cluster.is_default:
+                return fetch_rgw_audit_log(host), None
+            ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+            return fetch_rgw_audit_log_with(host, ssh_user, ssh_key_path), None
+        except Exception as exc:
+            return [], type(exc).__name__
+
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(hosts)))) as executor:
+        for host, (rows, error) in zip(hosts, executor.map(read, hosts)):
+            records.extend(row for row in rows if isinstance(row, dict))
+            if error:
+                errors.append(f"{host}:{error}")
+
+    # Native ops-log rows carry a transaction id.  The fallback log may not;
+    # use a stable bounded tuple there so the same request on two RGW daemons
+    # is not counted twice in normal active/standby deployments.
+    deduped: dict[tuple, dict] = {}
+    for row in records:
+        key = (
+            str(row.get("transaction_id") or ""),
+            str(row.get("timestamp_raw") or row.get("timestamp") or ""),
+            str(row.get("remote_addr") or ""),
+            str(row.get("method") or ""),
+            str(row.get("bucket") or ""),
+            int(row.get("status") or 0),
+        )
+        deduped.setdefault(key, row)
+    result = build_rgw_audit_intelligence(
+        list(deduped.values()), source_hosts=hosts,
+    )
+    result.update({
+        "cluster_id": cluster.id,
+        "captured_at": utc_now().isoformat(timespec="seconds") + "Z",
+        "collection": {
+            "status": "unavailable" if not hosts else "partial" if errors else "observed",
+            "host_count": len(hosts),
+            "successful_hosts": len(hosts) - len(errors),
+            "errors": sorted(errors)[:8],
+        },
+    })
+    if errors:
+        result["evidence_gaps"] = list(result.get("evidence_gaps") or [])
+        result["evidence_gaps"].append("Không đọc được audit-log từ tất cả RGW node; kết quả chỉ là phần quan sát được.")
+    if not hosts:
+        result["evidence_gaps"] = list(result.get("evidence_gaps") or [])
+        result["evidence_gaps"].append("Chưa cấu hình node RGW để đọc audit-log.")
+    return result
+
+
+def _cached_rgw_audit_intelligence(cluster) -> dict:
+    key = f"{cluster.id}:audit"
+    result = get_or_load(
+        "rgw-audit-intelligence",
+        key,
+        lambda: _collect_rgw_audit_intelligence(cluster),
+        ttl_seconds=RGW_AUDIT_TTL_SECONDS,
+        stale_ttl_seconds=RGW_AUDIT_STALE_TTL_SECONDS,
+    )
+    cache = cache_state("rgw-audit-intelligence", key)
+    age = cache.get("age_seconds")
+    result["cache"] = {
+        "age_seconds": round(float(age), 1) if age is not None else None,
+        "stale": bool(age is not None and age >= RGW_AUDIT_TTL_SECONDS),
+        "refreshing": bool(cache.get("refreshing")),
+        "refresh_error": bool(cache.get("error")),
+        "ttl_seconds": RGW_AUDIT_TTL_SECONDS,
+        "stale_ttl_seconds": RGW_AUDIT_STALE_TTL_SECONDS,
+    }
+    if result["cache"]["stale"]:
+        result["evidence_gaps"] = list(result.get("evidence_gaps") or [])
+        result["evidence_gaps"].append("Dữ liệu audit intelligence đang stale; cần chờ refresh thành công.")
+    return result
+
+
+@router.get("/api/object-storage/rgw-audit-intelligence")
+async def rgw_audit_intelligence_api(request: Request, user: str = Depends(require_login)):
+    del user
+    return await asyncio.to_thread(_cached_rgw_audit_intelligence, selected_cluster(request))
+
+
+@router.get("/api/object-storage/rgw-metrics")
+async def rgw_metrics_api(request: Request, user: str = Depends(require_login)):
+    """Return bounded RGW request metrics without exposing raw audit rows."""
+    del user
+    intelligence = await asyncio.to_thread(
+        _cached_rgw_audit_intelligence, selected_cluster(request)
+    )
+    observed = ((intelligence.get("window") or {}).get("observed") or {})
+    gaps = list(intelligence.get("evidence_gaps") or [])
+    gaps.append("Quota/capacity metrics cần bucket stats riêng; audit-log không đủ để suy luận quota.")
+    return {
+        "cluster_id": intelligence.get("cluster_id"),
+        "captured_at": intelligence.get("captured_at"),
+        "status": intelligence.get("status"),
+        "source": "rgw_audit_log",
+        "metrics": {
+            "request_count": int((intelligence.get("window") or {}).get("record_count") or 0),
+            "bytes_total": observed.get("bytes_total", 0),
+            "status_counts": observed.get("status_counts", {}),
+            "error_count": sum(
+                int(value) for key, value in (observed.get("status_counts") or {}).items()
+                if str(key).isdigit() and int(key) >= 400
+            ),
+            "error_rate_percent": round(
+                sum(
+                    int(value) for key, value in (observed.get("status_counts") or {}).items()
+                    if str(key).isdigit() and int(key) >= 400
+                ) * 100 / max(1, int((intelligence.get("window") or {}).get("record_count") or 0)),
+                2,
+            ),
+            "latency_median_ms": observed.get("latency_median_ms"),
+            "latency_p95_ms": observed.get("latency_p95_ms"),
+            "top_buckets": observed.get("bucket_counts", {}),
+            "top_requesters": observed.get("requester_counts", {}),
+            "top_user_agents": observed.get("user_agent_counts", {}),
+            "time_start": observed.get("time_start"),
+            "time_end": observed.get("time_end"),
+        },
+        "collection": intelligence.get("collection", {}),
+        "cache": intelligence.get("cache", {}),
+        "evidence_gaps": gaps,
+        "read_only": True,
+        "recommendation_mode": "EVIDENCE_ONLY",
+        "action_id": None,
+    }
+
+
+@router.get("/api/object-storage/multisite-diagnosis")
+async def multisite_diagnosis_api(request: Request, user: str = Depends(require_login)):
+    del user
+    cluster = selected_cluster(request)
+    rgw_evidence = await asyncio.to_thread(get_rgw_evidence, cluster)
+    diagnosis = await asyncio.to_thread(build_multisite_diagnosis, rgw_evidence)
+    diagnosis.update({
+        "cluster_id": cluster.id,
+        "captured_at": rgw_evidence.get("captured_at"),
+        "rgw_evidence_status": rgw_evidence.get("status"),
+        "cache": rgw_evidence.get("cache", {}),
+    })
+    return diagnosis
+
+
 @router.get("/api/object-storage/buckets/{bucket}/diagnosis")
 async def bucket_access_diagnosis_api(
     request: Request,
@@ -1801,7 +1958,7 @@ async def bucket_access_diagnosis_api(
     )
     diagnosis["evidence_gaps"] = collection_gaps + diagnosis["evidence_gaps"]
     diagnosis["cluster_id"] = cluster.id
-    diagnosis["captured_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    diagnosis["captured_at"] = utc_now().isoformat(timespec="seconds") + "Z"
     diagnosis["rgw_evidence_status"] = rgw_evidence.get("status")
     return diagnosis
 

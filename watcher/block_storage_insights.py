@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
+from shared.time import utc_now
 import json
 from typing import Iterable, Mapping
 
@@ -72,7 +73,7 @@ def _with_advisory(
     evidence TTL prevents a UI consumer from treating a stale read-only scan
     as a current approval to mutate the cluster.
     """
-    captured = _as_datetime(evidence_at) or datetime.utcnow()
+    captured = _as_datetime(evidence_at) or utc_now()
     payload.update({
         "recommendation_mode": "ADVISORY",
         "read_only": True,
@@ -120,7 +121,7 @@ def build_inventory_insights(
     protected when a snapshot policy exists.
     """
 
-    now = (now or datetime.utcnow()).replace(tzinfo=None)
+    now = (now or utc_now()).replace(tzinfo=None)
     since = now - timedelta(days=max(1, int(history_days)))
     policy_keys = policy_keys or set()
     result: list[dict] = []
@@ -208,7 +209,7 @@ def build_snapshot_clone_insights(
     """
 
     policy_keys = policy_keys or set()
-    captured = (evidence_at or datetime.utcnow()).replace(tzinfo=None).isoformat() + "Z"
+    captured = (evidence_at or utc_now()).replace(tzinfo=None).isoformat() + "Z"
     result: list[dict] = []
     for detail in detail_rows:
         pool = str(detail.get("pool") or "")
@@ -299,7 +300,7 @@ def build_protection_gap_insights(
     image individually.
     """
 
-    now = (now or datetime.utcnow()).replace(tzinfo=None)
+    now = (now or utc_now()).replace(tzinfo=None)
     policy_keys = policy_keys or set()
     backup_max_age_hours = max(1, int(backup_max_age_hours))
     restore_drill_max_age_hours = max(1, int(restore_drill_max_age_hours))
@@ -445,7 +446,7 @@ def persist_dependency_snapshots(
 ) -> int:
     """Persist one bounded observation per queried image and prune old rows."""
 
-    captured = (captured_at or datetime.utcnow()).replace(tzinfo=None)
+    captured = (captured_at or utc_now()).replace(tzinfo=None)
     rows = []
     for detail in detail_rows:
         pool = str(detail.get("pool") or "")

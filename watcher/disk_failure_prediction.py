@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from shared.time import utc_now
 
 from shared import db
 from shared.models import Action, CrushOsdDistribution, Incident
@@ -44,7 +45,7 @@ def _level(score: int) -> str:
 
 
 def predict(cluster_id: str, *, now: datetime | None = None) -> dict:
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     cutoff = now - timedelta(days=90)
     with db.SessionLocal() as session:
         osds = session.query(CrushOsdDistribution).filter_by(cluster_id=cluster_id).order_by(

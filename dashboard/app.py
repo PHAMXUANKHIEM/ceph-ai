@@ -87,6 +87,8 @@ _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _CSRF_SESSION_KEY = "_ceph_ai_csrf_token"
 _CSRF_COOKIE_NAME = "ceph_ai_csrf"
 _UNSAFE_METHODS = frozenset(("POST", "PUT", "PATCH", "DELETE"))
+_SESSION_COOKIE_MAX_AGE = 14 * 24 * 60 * 60
+_SESSION_COOKIE_SAMESITE = "lax"
 install_logging_redaction()
 
 
@@ -182,6 +184,32 @@ def _forwarded_headers_allowed(request) -> bool:
     return not forwarded_host or bool(re.fullmatch(r"[^\s/:]+(?::\d{1,5})?", forwarded_host))
 
 
+def _effective_request_scheme(request) -> str | None:
+    """Return the scheme proven by the socket or a configured proxy.
+
+    ``request.url.scheme`` is the scheme seen by the ASGI process and is often
+    ``http`` when TLS terminates at a reverse proxy.  The forwarded scheme is
+    trusted only when the direct socket peer is configured as a proxy and the
+    complete forwarded-header policy accepts the request.  In every other
+    case, fall back to the socket scheme so a client cannot turn on HTTPS-only
+    behavior by sending a forged header.
+    """
+    socket_scheme = request.url.scheme.lower()
+    if socket_scheme not in {"http", "https"}:
+        socket_scheme = None
+    if not _request_from_trusted_proxy(request):
+        return socket_scheme
+    forwarded_scheme = request.headers.get("x-forwarded-proto", "").split(",")[-1].strip().lower()
+    if forwarded_scheme and _forwarded_headers_allowed(request):
+        return forwarded_scheme
+    return socket_scheme
+
+
+def _session_cookie_https_only() -> bool:
+    """Require Secure session cookies outside local/development HTTP."""
+    return settings.ceph_ai_environment.strip().lower() in {"production", "staging"}
+
+
 def _source_origin(request) -> str | None:
     """Return the Origin/Referer origin supplied by a browser request."""
     source = request.headers.get("origin") or request.headers.get("referer")
@@ -202,14 +230,11 @@ def _request_origin(request) -> str | None:
     DASHBOARD_ALLOWED_ORIGINS.
     """
     host = request.headers.get("host", "").strip().lower()
-    scheme = request.url.scheme.lower()
-    if _request_from_trusted_proxy(request):
+    scheme = _effective_request_scheme(request)
+    if _request_from_trusted_proxy(request) and _forwarded_headers_allowed(request):
         forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[-1].strip()
-        forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[-1].strip().lower()
         if forwarded_host:
             host = forwarded_host.lower()
-        if forwarded_proto:
-            scheme = forwarded_proto
     if not host:
         return None
     if scheme not in {"http", "https"}:
@@ -497,19 +522,26 @@ def create_app() -> FastAPI:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "same-origin")
-        if request.url.scheme == "https":
+        effective_scheme = _effective_request_scheme(request)
+        if effective_scheme == "https":
             response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
         if csrf_token is not None:
             return await _protect_html_response(
                 response,
                 csrf_token,
-                secure_cookie=request.url.scheme == "https",
+                secure_cookie=_session_cookie_https_only() or effective_scheme == "https",
             )
         return response
 
     # Added after the product middleware so SessionMiddleware wraps it and
     # `request.session` is available inside the namespace guard.
-    application.add_middleware(SessionMiddleware, secret_key=settings.session_secret_key, same_site="lax")
+    application.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.session_secret_key,
+        max_age=_SESSION_COOKIE_MAX_AGE,
+        same_site=_SESSION_COOKIE_SAMESITE,
+        https_only=_session_cookie_https_only(),
+    )
     if settings.ceph_ai_environment == "production":
         application.add_middleware(
             TrustedHostMiddleware,

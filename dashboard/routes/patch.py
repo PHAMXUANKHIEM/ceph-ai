@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import datetime
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -89,7 +90,7 @@ def _decode_action_params(action: Action | None) -> dict:
 def _relative_patch_time(value: datetime | None) -> str:
     if value is None:
         return "—"
-    seconds = max(0, int((datetime.utcnow() - value).total_seconds()))
+    seconds = max(0, int((utc_now() - value).total_seconds()))
     if seconds < 60:
         return "vừa xong"
     if seconds < 3600:
@@ -349,7 +350,7 @@ async def upload_patch(
         doc.filename = filename
         doc.content = content
         doc.uploaded_by = user
-        doc.uploaded_at = datetime.utcnow()
+        doc.uploaded_at = utc_now()
         session.commit()
 
     return RedirectResponse(url="/patch", status_code=303)
@@ -381,7 +382,7 @@ async def propose_patch_build(request: Request, user: str = Depends(require_logi
             ceph_code=CLUSTER_PATCH_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Đề xuất build & copy patch {document.filename!r} bởi {user}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()
@@ -447,7 +448,7 @@ async def propose_patch_install(request: Request, user: str = Depends(require_lo
             ceph_code=CLUSTER_PATCH_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Đề xuất cài đặt patch đã build lên {len(target_nodes)} node bởi {user}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()

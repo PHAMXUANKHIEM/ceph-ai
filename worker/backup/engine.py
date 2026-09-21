@@ -30,6 +30,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime
+from shared.time import utc_now
 from typing import TYPE_CHECKING
 
 import paramiko
@@ -259,7 +260,7 @@ def _mark_running_failed(running_job_id: str, error_message: str) -> None:
             return
         row.status = "FAILED"
         row.error_message = error_message
-        row.finished_at = datetime.utcnow()
+        row.finished_at = utc_now()
         session.commit()
 
 
@@ -337,7 +338,7 @@ def _run_rbd_backup(
         )
         return False
 
-    stale_cutoff = datetime.utcnow().timestamp() - STALE_RUNNING_TIMEOUT_SECONDS
+    stale_cutoff = utc_now().timestamp() - STALE_RUNNING_TIMEOUT_SECONDS
     running = _latest_backup_job(pool, image, job_type=None, cluster_id=cluster_id)
     if running is not None and running.status == "RUNNING":
         if running.created_at.timestamp() > stale_cutoff:
@@ -360,7 +361,7 @@ def _run_rbd_backup(
             if row is not None:
                 row.status = "FAILED"
                 row.error_message = "Presumed crashed — superseded by a fresh scheduled run"
-                row.finished_at = datetime.utcnow()
+                row.finished_at = utc_now()
                 session.commit()
 
     previous_full_jobs = _latest_successful_full_jobs_by_slot(pool, image, cluster_id, target_slots)
@@ -380,7 +381,7 @@ def _run_rbd_backup(
     is_full = any(slot not in previous_full_jobs for slot in target_slots)
     if not is_full and full_refresh_days:
         is_full = any(
-            (datetime.utcnow() - job.created_at).days >= full_refresh_days
+            (utc_now() - job.created_at).days >= full_refresh_days
             for job in previous_full_jobs.values()
         )
     base_jobs_by_slot = {} if is_full else previous_full_jobs
@@ -414,7 +415,7 @@ def _run_rbd_backup(
             image,
         )
         return True
-    snap_name = f"backup-{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
+    snap_name = f"backup-{utc_now().strftime('%Y%m%dT%H%M%SZ')}"
 
     progress = _make_progress(total_bytes=0)
     write_progress(action_pk, progress)
@@ -475,7 +476,7 @@ def _run_rbd_backup(
                 export_cmd, timeout=max(0.1, deadline - time.monotonic())
             )
             progress[0]["status"] = "running"
-            progress[0]["started_at"] = datetime.utcnow().isoformat()
+            progress[0]["started_at"] = utc_now().isoformat()
             write_progress(action_pk, progress)
 
             tracked_stream = _ProgressTrackingReader(
@@ -522,7 +523,7 @@ def _run_rbd_backup(
                 raise BackupEngineError(
                     f"active BackupJob claim {running_job_id} disappeared before commit"
                 )
-            finished_at = datetime.utcnow()
+            finished_at = utc_now()
             duration_seconds = time.monotonic() - tracked_stream._started_at
             first_slot, first_key, _first_backend = uploaded_targets[0]
             running_job.status = "SUCCESS"
@@ -566,7 +567,7 @@ def _run_rbd_backup(
         # to invalidate or delete an already successful backup.
         try:
             progress[0]["status"] = "done"
-            progress[0]["finished_at"] = datetime.utcnow().isoformat()
+            progress[0]["finished_at"] = utc_now().isoformat()
             progress[0]["bytes_transferred"] = size_bytes
             write_progress(action_pk, progress)
 
@@ -738,7 +739,7 @@ def _run_restore_to_production(
             "backup_engine._run_restore_to_production: recovery_point_job_id is required"
         )
         return False
-    progress = [{"step": "preflight_recheck", "status": "running", "started_at": datetime.utcnow().isoformat()},
+    progress = [{"step": "preflight_recheck", "status": "running", "started_at": utc_now().isoformat()},
                 {"step": "restore", "status": "pending"}]
     write_progress(action_pk, progress)
 
@@ -786,13 +787,13 @@ def _run_restore_to_production(
         except (CephQueryError, ValueError, BackupEngineError) as exc:
             progress[0]["status"] = "failed"
             progress[0]["message"] = str(exc)
-            progress[0]["finished_at"] = datetime.utcnow().isoformat()
+            progress[0]["finished_at"] = utc_now().isoformat()
             write_progress(action_pk, progress)
             logger.error("backup_engine._run_restore_to_production: %s", exc)
             return False
     progress[0]["status"] = "done"
-    progress[0]["finished_at"] = datetime.utcnow().isoformat()
-    progress[1].update({"status": "running", "started_at": datetime.utcnow().isoformat()})
+    progress[0]["finished_at"] = utc_now().isoformat()
+    progress[1].update({"status": "running", "started_at": utc_now().isoformat()})
     write_progress(action_pk, progress)
     slot = restore.latest_backup_target_slot(
         pool, image, cluster_id=cluster_id, recovery_point_job_id=recovery_point_job_id
@@ -830,7 +831,7 @@ def _run_restore_to_production(
         return False
 
     progress[1]["status"] = "done"
-    progress[1]["finished_at"] = datetime.utcnow().isoformat()
+    progress[1]["finished_at"] = utc_now().isoformat()
     write_progress(action_pk, progress)
     return True
 
@@ -846,7 +847,7 @@ def _run_retention_sweep(
     if not is_valid_rbd_name(pool) or not is_valid_rbd_name(image):
         logger.error("backup_engine._run_retention_sweep: missing pool/image in action_params for %s", action_pk)
         return False
-    progress = [{"step": "retention", "status": "running", "started_at": datetime.utcnow().isoformat()}]
+    progress = [{"step": "retention", "status": "running", "started_at": utc_now().isoformat()}]
     write_progress(action_pk, progress)
     try:
         _sweep_retention_after_success(pool, image, incident_id, action_pk, cluster_id)
@@ -857,6 +858,6 @@ def _run_retention_sweep(
         write_progress(action_pk, progress)
         return False
     progress[0]["status"] = "done"
-    progress[0]["finished_at"] = datetime.utcnow().isoformat()
+    progress[0]["finished_at"] = utc_now().isoformat()
     write_progress(action_pk, progress)
     return True

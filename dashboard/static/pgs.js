@@ -363,6 +363,19 @@
       }).catch(() => { /* Keep the last good table during a transient snapshot error. */ });
   }
   refreshSnapshot();
-  const refreshTimer = window.setInterval(refreshSnapshot, 10000);
-  document.addEventListener("visibilitychange", refreshSnapshot);
+  let realtimeConnected = false;
+  let refreshTimer = window.setInterval(refreshSnapshot, 10000);
+  const stopFallback = () => { if (refreshTimer !== null) { window.clearInterval(refreshTimer); refreshTimer = null; } };
+  const startFallback = () => { if (refreshTimer === null) refreshTimer = window.setInterval(refreshSnapshot, 10000); };
+  const onConnection = (event) => {
+    if (event.detail?.clusterId !== pageRoot.dataset.clusterId) return;
+    realtimeConnected = event.detail.connected === true;
+    if (realtimeConnected) stopFallback(); else startFallback();
+  };
+  const unsubscribe = window.CephClusterState?.subscribe(pageRoot.dataset.clusterId, (event) => {
+    if (!event.sections || event.sections.includes("pgs")) refreshSnapshot();
+  });
+  window.addEventListener("ceph-cluster-state-connection", onConnection);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshSnapshot(); if (!realtimeConnected) startFallback(); });
+  window.addEventListener("pagehide", () => { unsubscribe?.(); window.removeEventListener("ceph-cluster-state-connection", onConnection); stopFallback(); });
 })();

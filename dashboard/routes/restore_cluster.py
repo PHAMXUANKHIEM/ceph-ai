@@ -15,6 +15,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -310,7 +311,7 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
             log_excerpt=(
                 f"Đề xuất khôi phục cụm Ceph sau thảm họa ({version}) bởi {user} — {len(nodes)} node"
             ),
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()  # assigns incident.id, needed by the Action FK below
@@ -324,7 +325,7 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
             target_nodes=json.dumps(target_nodes),
             action_params=json.dumps(action_params),
             proposed_command=preview_command,
-            expires_at=datetime.utcnow() + timedelta(hours=max(1, settings.action_approval_expiry_hours)),
+            expires_at=utc_now() + timedelta(hours=max(1, settings.action_approval_expiry_hours)),
             idempotency_key=gate.CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY,
         )
         session.add(action)

@@ -51,6 +51,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime
+from shared.time import utc_now
 
 from config.settings import settings
 from shared import audit, db, remediation_cases, telegram_alerts
@@ -156,8 +157,14 @@ def _evaluate_latest_postcheck(
     )
     if error:
         return PostcheckResult("INCONCLUSIVE", error), action
+    postcheck_contract = snapshot.get("postcheck_contract") if isinstance(snapshot, dict) else {}
+    health_floor = (
+        postcheck_contract.get("health_floor", "NO_NEW_CRITICAL")
+        if isinstance(postcheck_contract, dict) else "NO_NEW_CRITICAL"
+    )
     return run_postcheck(
         hook_id, fault_present=incident.ceph_code in current_codes, health=health,
+        health_floor=health_floor,
     ), action
 
 
@@ -176,7 +183,7 @@ def verify_pending_incidents(
     trông y hệt "cụm hoàn toàn khoẻ", và sẽ báo đã khắc phục cho mọi
     Incident đang chờ xác minh. Xem điều kiện gọi trong watcher/main.py.
     """
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     counts = {"verified": 0, "retried": 0, "exhausted": 0}
     max_attempts = max(1, settings.incident_verify_max_attempts)
     envelopes: list[dict] = []

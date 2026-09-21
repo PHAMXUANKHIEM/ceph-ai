@@ -14,6 +14,7 @@ import os
 import socket
 import uuid
 from datetime import datetime, timedelta
+from shared.time import utc_now
 from types import SimpleNamespace
 
 from sqlalchemy import and_, exists, or_, update
@@ -107,7 +108,7 @@ class _ProviderCallBudget:
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return utc_now()
 
 
 def _lease_deadline(seconds: int) -> datetime:

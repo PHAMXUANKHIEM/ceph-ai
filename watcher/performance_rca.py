@@ -14,6 +14,7 @@ import logging
 import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from shared import db
 from shared.models import CrushOsdDistribution, HostMetricSample, VolumeMetric, VolumeOsdMapping
@@ -527,7 +528,7 @@ def build_report(
     live_signals: dict | None = None,
 ) -> dict:
     """Build a deterministic report from already-collected evidence."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     window_hours = max(1, min(int(window_hours or DEFAULT_WINDOW_HOURS), MAX_WINDOW_HOURS))
     window_start = now - timedelta(hours=window_hours)
     query = session.query(VolumeMetric).filter(
@@ -804,7 +805,7 @@ def build_report(
 
 def collect_live_osd_signals(cluster) -> dict:
     """Collect only cheap, read-only OSD latency evidence for one cluster."""
-    captured_at = datetime.utcnow()
+    captured_at = utc_now()
     try:
         nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]
         ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(cluster)

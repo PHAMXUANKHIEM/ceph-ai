@@ -1,12 +1,13 @@
 """Shared Alert Center lifecycle checks used by Dashboard and Watcher."""
 
 from datetime import datetime
+from shared.time import utc_now
 
 from shared.models import Incident
 
 
 def is_active_mute(incident: Incident, *, now: datetime | None = None) -> bool:
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     return bool(incident.muted_until and incident.muted_until > now)
 
 
@@ -16,7 +17,7 @@ def inherit_active_mute(session, incident: Incident, *, now: datetime | None = N
     Alert Center controls must not stop detection or Incident creation. This
     only carries the notification preference forward for the mute window.
     """
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     if is_active_mute(incident, now=now):
         return True
     source = (

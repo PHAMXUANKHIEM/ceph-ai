@@ -45,9 +45,11 @@ class NaturalLanguageIntent:
     needs_clarification: bool = False
     clarification_question: str | None = None
     parser_version: str = "nl-v1"
+    prompt_version: str | None = None
+    model: str | None = None
+    decision_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["resource_ids"] = list(self.resource_ids)
         return result
-

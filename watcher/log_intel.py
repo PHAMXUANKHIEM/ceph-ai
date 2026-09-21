@@ -30,6 +30,7 @@ import re
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from sqlalchemy import text
 
@@ -175,7 +176,9 @@ def fingerprint_of(template: str, daemon_type: str) -> str:
     Gộp cả `daemon_type` vào: cùng một câu chữ phát ra từ mon và từ osd là
     hai hiện tượng khác nhau với người điều tra, không nên gộp số đếm.
     """
-    return hashlib.sha1(f"{daemon_type}\x00{template}".encode()).hexdigest()
+    return hashlib.sha1(
+        f"{daemon_type}\x00{template}".encode(), usedforsecurity=False
+    ).hexdigest()
 
 
 def parse_log_line(line: str, host: str, daemon_type: str) -> LogRecord | None:
@@ -231,7 +234,7 @@ def parse_log_lines(raw_output: str, host: str, daemon_type: str) -> list[LogRec
 def _parse_ceph_timestamp(value: str) -> datetime | None:
     """Ceph ghi offset múi giờ dạng '+0700' (không có dấu hai chấm).
 
-    Trả về UTC **naive** -- toàn bộ codebase này dùng `datetime.utcnow()`
+    Trả về UTC **naive** -- toàn bộ codebase này dùng `utc_now()`
     naive, nên trả về tz-aware sẽ vỡ ngay ở phép so sánh cửa sổ thời gian
     ("can't compare offset-naive and offset-aware datetimes"). Một dòng log
     ghi 10:23 +0700 phải thành 03:23 UTC, nếu không mọi bản ghi từ cụm ở
@@ -335,7 +338,7 @@ def _scan_and_store_unlocked(
             if cluster is not None:
                 session.expunge(cluster)
 
-    window_end = datetime.utcnow()
+    window_end = utc_now()
     fallback_start = window_end - timedelta(minutes=max(1, settings.log_intel_window_minutes))
     window_start = fallback_start
     # Advance only from a complete run. PARTIAL/FAILED must be replayed on
@@ -756,7 +759,7 @@ def prune_old_rows(now: datetime | None = None) -> tuple[int, int, int]:
     evidence vào -- xoá nó sẽ làm rỗng bằng chứng của những kết luận còn
     hiệu lực.
     """
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     obs_cutoff = now - timedelta(days=max(1, settings.log_intel_observation_retention_days))
     run_cutoff = now - timedelta(days=max(1, settings.log_intel_pattern_retention_days))
     finding_cutoff = now - timedelta(days=max(1, settings.log_intel_finding_retention_days))

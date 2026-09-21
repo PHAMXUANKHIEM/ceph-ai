@@ -6,6 +6,7 @@ import hashlib
 import re
 import httpx
 from datetime import datetime
+from shared.time import utc_now
 from urllib.parse import urlparse
 
 from config.settings import settings
@@ -85,7 +86,7 @@ async def generate(*, doc_url: str, release_notes: str, actor: str) -> list[Capa
                 max_major=max_major, doc_url=doc_url, evidence_excerpt=excerpt[:4000],
                 source_sha256=source_sha256,
                 rationale=str(item.get("rationale") or "AI extraction")[:4000], proposed_by=actor,
-                status="PENDING", created_at=datetime.utcnow())
+                status="PENDING", created_at=utc_now())
             session.add(row); created.append(row)
         session.commit()
         for row in created: session.refresh(row); session.expunge(row)
@@ -108,6 +109,6 @@ def review(proposal_id: str, *, approve: bool, actor: str):
             entry = capability_matrix.create_entry(**values, verified_by=actor, session=session,
                 notes=f"AI-assisted draft; operator approved. Evidence: {excerpt[:1000]}. Rationale: {rationale[:1000]}")
             row.created_entry_id = entry.id
-        row.status = "APPROVED" if approve else "REJECTED"; row.reviewed_by = actor; row.reviewed_at = datetime.utcnow()
+        row.status = "APPROVED" if approve else "REJECTED"; row.reviewed_by = actor; row.reviewed_at = utc_now()
         session.commit(); session.refresh(row)
         session.expunge(row); return row

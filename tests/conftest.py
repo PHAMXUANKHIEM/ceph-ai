@@ -154,6 +154,33 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "node_resource_live_ingest_enabled", False, raising=False)
     monkeypatch.setattr(settings, "ssh_key_path", str(test_ssh_key_path))
 
+    # Code Repair persists cursors, locks, nightly state, and capability-
+    # learning state under /var/lib/ceph-ai in production.  The test suite
+    # must redirect every one of those paths as a unit: running as root on a
+    # lab host used to hide this leak, while an unprivileged CI runner failed
+    # with PermissionError and could leave later tests order-dependent.
+    test_repair_dir = tmp_path / "code-repair"
+    test_repair_dir.mkdir()
+    monkeypatch.setattr(settings, "code_repair_cursor_file", str(test_repair_dir / "cursors.json"), raising=False)
+    monkeypatch.setattr(settings, "code_repair_lock_file", str(test_repair_dir / "supervisor.lock"), raising=False)
+    monkeypatch.setattr(settings, "code_repair_run_lock_file", str(test_repair_dir / "run.lock"), raising=False)
+    monkeypatch.setattr(settings, "ai_nightly_improvement_state_file", str(test_repair_dir / "nightly.json"), raising=False)
+    monkeypatch.setattr(settings, "ceph_capability_learning_state_file", str(test_repair_dir / "learning.json"), raising=False)
+
+    # Telegram Chat persists mode, cluster, confirmation, and interrupted
+    # Single Full markers under the same production state volume.  Redirect
+    # the module-level paths too; a non-root CI runner must not attempt to
+    # create /var/lib/ceph-ai merely because a mode-selection test clears an
+    # old confirmation.
+    from dashboard import telegram_chat
+
+    test_telegram_dir = tmp_path / "telegram-state"
+    test_telegram_dir.mkdir()
+    monkeypatch.setattr(telegram_chat, "_FULL_RUN_STATE_PATH", test_telegram_dir / "full-runs.json")
+    monkeypatch.setattr(telegram_chat, "_MODE_STATE_PATH", test_telegram_dir / "modes.json")
+    monkeypatch.setattr(telegram_chat, "_CLUSTER_STATE_PATH", test_telegram_dir / "clusters.json")
+    monkeypatch.setattr(telegram_chat, "_CONFIRM_STATE_PATH", test_telegram_dir / "confirmations.json")
+
     # 2026-08-05 fix (found live), updated 2026-08-06 for the 3-independent-
     # channel redesign: a real .env on THIS machine had genuine Telegram
     # credentials configured (an operator actually testing the feature) —
@@ -192,6 +219,10 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     # ordinary unit tests open a real Telegram getUpdates connection.  Keep
     # the suite hermetic; tests for the listener must enable/mock it locally.
     monkeypatch.setattr(settings, "telegram_listener_enabled", False, raising=False)
+    # Unit tests must not leak daemon humanizer threads into another test's
+    # SQLite StaticPool transaction. Tests that verify background delivery
+    # explicitly opt in with their own monkeypatch.
+    monkeypatch.setattr(settings, "telegram_ai_humanize_enabled", False, raising=False)
     # 2026-08-07: cluster_name is written the same way (plain setattr in
     # dashboard/routes/telegram_alerts.py::telegram_cluster_name_submit,
     # not monkeypatch.setattr) — same leak-across-tests/inherits-real-.env

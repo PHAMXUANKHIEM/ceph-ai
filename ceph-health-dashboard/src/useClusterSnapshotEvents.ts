@@ -1,23 +1,32 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-type SnapshotEvent = {
+export type SnapshotEvent = {
   event?: string;
   cluster_id?: string;
   sections?: string[];
+  action_id?: string;
+  action_status?: string;
+  action_state?: "queued" | "running" | "verifying" | "succeeded" | "failed" | "rejected";
 };
 
 /**
  * Subscribe to cluster invalidation hints. HTTP remains the source of truth;
  * polling continues in the consumer as a fallback for proxies without WS.
  */
-export function useClusterSnapshotEvents(clusterId: string): number {
+export function useClusterSnapshotEvents(
+  clusterId: string,
+  onEvent?: (event: SnapshotEvent) => void,
+): number {
   const [eventVersion, setEventVersion] = useState(0);
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent;
 
   useEffect(() => {
     if (!clusterId) return;
     let stopped = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+    let coalesceTimer: number | null = null;
     let attempt = 0;
 
     const connect = () => {
@@ -30,7 +39,16 @@ export function useClusterSnapshotEvents(clusterId: string): number {
         try {
           const payload = JSON.parse(message.data) as SnapshotEvent;
           if (payload.event && (!payload.cluster_id || payload.cluster_id === clusterId)) {
-            setEventVersion((value) => value + 1);
+            onEventRef.current?.(payload);
+            // A collector can publish several section changes in one refresh.
+            // Coalesce them briefly so one commit does not trigger one HTTP
+            // read per event/tab while preserving the latest invalidation.
+            if (coalesceTimer === null) {
+              coalesceTimer = window.setTimeout(() => {
+                coalesceTimer = null;
+                if (!stopped) setEventVersion((value) => value + 1);
+              }, 150);
+            }
           }
         } catch {
           // Ignore malformed hints; the normal HTTP fallback remains active.
@@ -59,6 +77,7 @@ export function useClusterSnapshotEvents(clusterId: string): number {
     return () => {
       stopped = true;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      if (coalesceTimer !== null) window.clearTimeout(coalesceTimer);
       socket?.close();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };

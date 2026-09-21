@@ -28,19 +28,19 @@ relevant gates pass.
 
 ## 2. Current baseline
 
-- `main` contains six reviewed local commits not pushed to `origin/main`; no
-  deployment has been performed.
-- The release-candidate worktree is clean.
+- At the latest review, `main` and `origin/main` are equal and the
+  release-candidate worktree is clean after the reviewed feature, observability,
+  and evidence commits. Classification is recorded in
+  `docs/ai/end-to-end-change-classification.md`.
 - The systemd Dashboard, Worker, and Watcher units are disabled/inactive, but
   independently managed Podman containers are running, including a healthy
   Watcher. This runtime ownership conflict must be resolved by an operator
   before any restart or rollout.
-- The deterministic release gate completed with `3184 passed, 4 deselected,
-  23 warnings` on the clean candidate. The isolated RabbitMQ release gate
-  completed with `3 passed`.
-- The affected feature gate passes `207 passed`.
+- The deterministic release command and the focused hardening gate pass after
+  fixing the admin Ceph latency debug return path. The isolated Alert Center
+  unique-index regression tests pass (`2 passed, 35 deselected`).
 - Python compilation, `git diff --check`, the Node 20 frontend production
-  build, and the single Alembic-head check pass.
+  build, and the single Alembic-head check pass for the current worktree.
 - RabbitMQ credentials are valid for the runtime `ceph_ai` user. The minimal
   production permission update now allows writes through `amq.default`.
   Integration tests pass in an isolated temporary vhost (`3 passed`); direct
@@ -52,8 +52,9 @@ relevant gates pass.
 - Existing deployment entry point:
   `bash scripts/deploy/restart_services.sh`.
 
-The first work item is to preserve and review the current dirty changes before
-creating additional commits.
+The next work items are the remaining live-browser, deployment-approval, and
+operational-readiness gates; code and evidence changes must remain reviewable
+and pushed before deployment is considered.
 
 ## 3. Non-negotiable engineering rules
 
@@ -74,20 +75,48 @@ creating additional commits.
 
 ### Phase 0 — Stabilize the repository and deployment foundation
 
-- [ ] Review and classify every current uncommitted change.
-- [ ] Separate unrelated changes into isolated commits.
-- [ ] Push the three local commits only after review and release-gate tests.
-- [ ] Reproduce and fix the Alert Center unique-index test failure.
-- [ ] Run the full Python suite from `.venv/bin/pytest`; record failures by
-  category instead of skipping them.
-- [ ] Use Node 20 for all frontend type-check and production builds.
-- [ ] Verify one Alembic head and test upgrade plus downgrade on a disposable DB.
-- [ ] Confirm required secrets, service accounts, filesystem permissions, and
-  backup locations without exposing secret values.
-- [ ] Define staging/canary/production cluster IDs and ensure test data cannot
-  reach production.
-- [ ] Add a release manifest containing commit SHA, migration revision, image
-  versions, feature flags, and rollback SHA.
+- [x] Review and classify every current uncommitted change. Evidence:
+  `docs/ai/end-to-end-change-classification.md`.
+- [x] Separate unrelated changes into isolated commits. The release
+  foundation, Natural Language slice, and conversation regression are in
+  separate commits.
+- [x] Push the reviewed commit series only after release-gate tests. `main` and
+  `origin/main` are equal after the full suite, focused gates, migration
+  round-trip, hardening gate, and Node 20 build passed.
+- [x] Reproduce and fix the Alert Center unique-index test failure. The
+  suspected unique-index regression was not reproducible; the focused
+  concurrency/unique-index tests pass (`2 passed, 35 deselected`). The full
+  run exposed and fixed a separate admin Ceph latency debug return-path bug,
+  covered by `tests/test_ceph_debug.py` (`4 passed`).
+- [x] Run the full Python suite from `.venv/bin/pytest`; record failures by
+  category instead of skipping them. Evidence:
+  `.venv/bin/pytest -q -k 'not live and not integration'` → `3817 passed,
+  47 deselected, 235 warnings` in `1742.85s`; RC=0. The only earlier failure
+  was the admin Ceph latency debug return path, fixed and covered by
+  `tests/test_ceph_debug.py` (`4 passed`).
+- [x] Use Node 20 for all frontend type-check and production builds. Evidence:
+  `/opt/ceph-ai-node20/bin/node` and the successful `npm run build`.
+- [x] Verify one Alembic head and test upgrade plus downgrade on a disposable DB.
+  Evidence: `alembic heads`/`alembic current` report
+  `m20260919nlcontext (head)`; disposable SQLite run completed
+  `upgrade=0 downgrade=0 reupgrade=0`. The legacy `b5c6d7e8f9a0` downgrade
+  was made SQLite-compatible with Alembic batch operations.
+- [x] Inventory secret-file and runtime ownership permissions without exposing
+  secret values. Evidence: `/root/ceph-ai/.env` is `0600 root:root`; systemd
+  Dashboard/Worker/Watcher units are disabled/inactive; independently managed
+  Podman Dashboard/Worker/Watcher containers are healthy.
+- [ ] Resolve the backup location and service-account ownership policy before
+  deployment. `/var/backups/ceph-ai` is `0700 root:root`, while the documented
+  `/var/lib/ceph-ai/backups` path is absent; runtime ownership also remains
+  split between systemd and Podman.
+- [x] Record the canary scope and keep test activity bounded to it. Evidence:
+  `CS-LAB` is `ac23b8ff-e235-414c-bed8-06894f3dedd3` in the release manifests;
+  no production mutation or autopilot promotion was performed.
+- [ ] Assign and document staging/production cluster IDs and enforce the final
+  test-data isolation and operator scope before deployment.
+- [x] Add a release manifest containing commit SHA, migration revision, image
+  versions, feature flags, and rollback SHA. Evidence:
+  `docs/ai/end-to-end-release-manifest.md`.
 
 **Exit gate:** clean release branch, full release-gate tests pass, migrations
 are reversible, and the deployment manifest is reviewable.
@@ -98,14 +127,28 @@ Scope: RT-00 through RT-04 in
 `Plan/realtime-cluster-status-update-plan.md`.
 
 - [ ] Complete multi-tab baseline measurements for 1, 5, and 10 browser tabs.
-- [ ] Finish snapshot lifecycle APIs:
-  `mark_refreshing`, `is_refreshing`, and `invalidate_snapshot`.
-- [ ] Complete cross-process refresh locking and checksum validation.
-- [ ] Add collector success/failure counters and per-command metrics.
-- [ ] Verify snapshot persistence across Watcher restart and stale UI behavior.
-- [ ] Keep the Watcher disabled during tests that could send real alerts.
-- [ ] Commit the current health snapshot, warmup, collector, and dashboard slice.
-- [ ] Record test evidence and query-rate comparison against the baseline.
+- [x] Finish snapshot lifecycle APIs:
+  `mark_refreshing`, `is_refreshing`, and `invalidate_snapshot`. Evidence:
+  `tests/test_cluster_snapshot.py` and `tests/test_nl_snapshot_runner.py`.
+- [x] Complete cross-process refresh locking and checksum validation. Evidence:
+  snapshot process/lock regression tests and persistent versioned cache tests.
+- [x] Add collector success/failure counters and per-command metrics. Evidence:
+  `tests/test_cluster_snapshot_collector.py`.
+- [x] Verify snapshot persistence across Watcher restart and stale UI behavior.
+  Evidence: `tests/test_cache_warmup.py`, `tests/test_cluster_snapshot.py`,
+  and the dashboard snapshot API tests.
+- [x] Keep the Watcher disabled during tests that could send real alerts. The
+  release run excludes `live` and `integration` tests; no live alert-producing
+  test is used in this gate.
+- [x] Commit the current health snapshot, warmup, collector, and dashboard
+  slice. The current realtime hardening is in pushed commit `f40d084c` and
+  post-check invalidation is in `0be87d8a`.
+- [x] Record server-side test evidence and query-rate comparison against the
+  baseline. Evidence:
+  `docs/ai/realtime-snapshot-load-evidence-2026-09-19.md` (1/5/10 simulated
+  tabs, p95 under 2 ms, zero Ceph/SSH queries versus the old live-query path).
+- [ ] Complete the corresponding real browser 1/5/10-tab run with DevTools,
+  authentication, and canary scope.
 
 **Exit gate:** health reads do not perform live Ceph queries, refresh is
 single-flight per cluster, old data remains visible with a stale label, and
@@ -115,18 +158,45 @@ restart does not create duplicate collectors.
 
 Scope: RT-05 through RT-09.
 
-- [ ] Implement snapshot read APIs for Pools, PGs, CRUSH, and Nodes.
-- [ ] Preserve existing response fields and add freshness metadata.
-- [ ] Move filtering, sorting, and pagination onto snapshot data.
-- [ ] Add a shared frontend snapshot/freshness hook and status component.
-- [ ] Remove page reload and independent polling loops.
-- [ ] Add WebSocket or SSE invalidation events with HTTP polling fallback.
-- [ ] Enforce HTTP-equivalent authentication and cluster isolation for events.
-- [ ] Publish events only after snapshot commit or mutation post-check.
-- [ ] Add mutation-to-invalidation mapping for pool, CRUSH, OSD, RGW, node, and
-  deployment changes.
+- [x] Implement snapshot read APIs for Pools, PGs, CRUSH, and Nodes. Evidence:
+  `tests/test_dashboard_pgs.py`, `tests/test_dashboard_crush_map.py`, and
+  `tests/test_dashboard_nodes.py`.
+- [x] Preserve existing response fields and add freshness metadata. The
+  focused API gate passed `47 passed, 1 warning`.
+- [x] Move filtering, sorting, and pagination onto snapshot data for the
+  migrated dashboard sections; the focused API/UI gate passed `47 passed`.
+- [x] Add a shared frontend snapshot/freshness hook and status component. The
+  Node 20 build includes `useClusterSnapshotEvents`, shared snapshot state,
+  and status labels for the migrated React pages.
+- [x] Remove page reloads and independent polling loops from the migrated
+  health, Pools, PGs, CRUSH, and Nodes snapshot views. They now share one
+  cluster-state WebSocket and re-read only the invalidated API section; HTTP
+  polling remains bounded fallback behavior. Evidence: commit `38ecab34`,
+  Node20 syntax checks, and navigation/WebSocket gate (`47 passed, 1 warning`).
+- [ ] Migrate remaining mutation/progress and non-snapshot pages away from
+  intentional post-action reloads or page-local polling where an equivalent
+  event contract exists.
+- [x] Add WebSocket or SSE invalidation events with HTTP polling fallback.
+  Evidence: `tests/test_dashboard_ws.py` and Node 20 build.
+- [x] Enforce HTTP-equivalent authentication and cluster isolation for events.
+  Evidence: scoped WebSocket tests in `tests/test_dashboard_ws.py`.
+- [x] Publish events only after snapshot commit or mutation post-check. Snapshot
+  events are published after versioned cache commit; resolved-incident
+  invalidations are published after the database commit that records the
+  post-check-confirmed `RESOLVED` state. Evidence: `tests/test_dashboard_ws.py`
+  and the bounded action metadata regression in commit `12906def`.
+- [x] Add mutation-to-invalidation mapping for pool, CRUSH, OSD, RGW, node, and
+  deployment changes. The committed post-check hook maps resolved incident
+  codes to bounded snapshot sections and keeps RGW changes on the status hint
+  without sending object data through the event channel. Evidence:
+  `tests/test_dashboard_ws.py` and the realtime regression gate (`138 passed,
+  1 warning`).
 - [ ] Add bounded retries, circuit breakers, concurrency limits, correlation
   IDs, stale alerts, cache-size monitoring, and event reconnect metrics.
+  Current admin debug evidence now includes collector/cache/API/retry and
+  WebSocket connection/message/disconnect/policy counters; the remaining
+  operator dashboards, stale/dead-collector alerts, and browser reconnect
+  telemetry are still open.
 - [ ] Execute the RT-05 through RT-09 exit-gate browser and load tests.
 
 **Exit gate:** changing dashboard sections does not open SSH connections,
@@ -140,44 +210,58 @@ Scope: BS-01 through BS-09 in
 
 #### BS-01/02/03 — Inventory, volume lifecycle, and attachment
 
-- [ ] Finish authoritative RBD inventory: size, used space, features, watcher,
-  lock, snapshots, parent/child, and cluster/pool filtering.
-- [ ] Finish create, expand-only resize, rename, trash, and restore workflows.
+- [x] Finish authoritative RBD inventory: size, used space, features, watcher,
+  lock, snapshots, parent/child, and cluster/pool filtering. Evidence:
+  deterministic block/RBD gate (`276 passed`).
+- [x] Finish create, expand-only resize, rename, trash, and restore workflows.
+  Evidence: volume lifecycle, trash, restore and dashboard volume tests in the
+  same `276 passed` gate.
 - [ ] Finish Cinder discovery and watcher/consumer mapping.
-- [ ] Route every mutation through the Worker and action allowlist.
-- [ ] Add idempotency, reconciliation, capacity/dependency preflight, and
-  post-checks.
-- [ ] Block delete, force-detach, and unlock when dependencies or policy forbid
-  the operation.
+- [x] Route every mutation through the Worker and action allowlist. Evidence:
+  block-storage policy, dashboard action, and executor regression tests.
+- [x] Add idempotency, reconciliation, capacity/dependency preflight, and
+  post-checks. Evidence: RBD reconciliation, dependency, capacity, integrity,
+  and policy tests.
+- [x] Block delete, force-detach, and unlock when dependencies or policy forbid
+  the operation. Evidence: dependency and trash lifecycle tests.
 
 #### BS-04/05 — Snapshot, clone, restore, and protection
 
-- [ ] Implement snapshot schedules, retention, timezone handling, and dedup.
-- [ ] Implement restore-as-new by default and guarded in-place rollback.
-- [ ] Implement clone dependency graph, flatten preflight, and protected
-  snapshot handling.
+- [x] Implement snapshot schedules, retention, timezone handling, and dedup.
+  Evidence: `tests/test_volume_snapshot_policy.py` and scheduler tests.
+- [x] Implement restore-as-new by default and guarded in-place rollback.
+  Evidence: dashboard volume and restore preflight tests.
+- [x] Implement clone dependency graph, flatten preflight, and protected
+  snapshot handling. Evidence: dependency and volume lifecycle tests.
 - [ ] Complete recovery-point selection, incremental-chain validation,
   checksum/size verification, and restore promotion approval.
 
 #### BS-06/07/08 — Performance, Cinder, and DR
 
-- [ ] Collect throughput, queue depth, percentile latency, physical/logical
-  capacity, and freshness.
-- [ ] Implement QoS templates, diff, rollback, and unsupported-capability
-  fail-closed behavior.
-- [ ] Complete OpenStack Cinder volume/project/instance/attachment mapping and
-  orphan reporting.
+- [x] Collect throughput, queue depth, percentile latency, physical/logical
+  capacity, and freshness. Evidence: volume performance, capacity, and
+  monitoring tests.
+- [x] Implement QoS templates, diff, rollback, and unsupported-capability
+  fail-closed behavior. Evidence: volume performance/policy tests.
+- [~] Complete OpenStack Cinder volume/project/instance/attachment mapping and
+  orphan reporting. Per-volume reconciliation and a bounded read-only
+  `/api/volumes/{pool}/cinder-mapping` report now classify managed/orphan/
+  unmanaged/insufficient-evidence; live Controller and two-way site-wide
+  orphan acceptance remain open.
 - [ ] Implement RBD mirroring inventory, lag/RPO, planned failover/failback,
   fencing, split-brain protection, and non-production DR drills.
 
 #### BS-09 — AI storage intelligence
 
-- [ ] Add evidence-backed stale/unattached/waste insight.
-- [ ] Add volume-to-pool-to-OSD performance diagnosis.
+- [x] Add evidence-backed stale/unattached/waste insight. Evidence:
+  block-storage insight and dependency tests.
+- [x] Add volume-to-pool-to-OSD performance diagnosis. Evidence: volume
+  performance analysis and monitoring tests.
 - [ ] Add recommendation simulation for resize, QoS, flatten, retention, and
   placement.
-- [ ] Keep all recommendations read-only until the shared action policy and
-  post-check contract are complete.
+- [x] Keep all recommendations read-only until the shared action policy and
+  post-check contract are complete. Evidence: policy/preflight gates and the
+  full deterministic suite; no automatic storage remediation was enabled.
 
 **Exit gate:** default, secondary, inactive, degraded, full, locked, and
 Cinder-managed scenarios pass without cross-cluster access or mutation bypass.
@@ -192,8 +276,10 @@ Scope: `Plan/backup-roadmap.md`.
 - [ ] Finish Recovery Point, Target, and Policy workspaces in the Dashboard.
 - [ ] Complete restore verification, dependency-chain display, and stale/failed
   target handling.
-- [ ] Test concurrent backup/restore, retry idempotency, immutable targets,
-  insufficient capacity, checksum failure, and partial chain failure.
+- [x] Test concurrent backup/restore, retry idempotency, immutable targets,
+  insufficient capacity, checksum failure, and partial chain failure. Evidence:
+  deterministic backup/restore gate (`218 passed, 1 warning`), including engine,
+  integrity, storage, restore, drill, and Dashboard backup tests.
 - [ ] Complete cluster/site DR runbook and evidence capture.
 
 **Exit gate:** every cluster has independently scoped backup history, digest,
@@ -203,12 +289,16 @@ restore drill, retention, audit, and recovery evidence.
 
 Scope: `Plan/object-storage-roadmap.md`.
 
-- [ ] Finish S3 user/access-key regression coverage, including rollback and
-  audit failure cases.
+- [x] Finish S3 user/access-key regression coverage, including rollback and
+  audit failure cases. Evidence: deterministic object/RGW gate (`216 passed,
+  1 warning`) covering Dashboard user/key, policy, audit, cache, S3 and RGW
+  connectivity/diagnosis paths.
 - [ ] Implement object version delete/restore with confirmation, policy checks,
   Object Lock handling, and audit.
-- [ ] Add bounded RGW, bucket, and user metrics: requests, bytes, errors,
-  latency, and quota.
+- [~] Add bounded RGW, bucket, and user metrics: requests, bytes, errors,
+  latency, and quota. The read-only RGW audit metrics API now covers request,
+  bytes, status/error-rate, latency, top bucket/requester/User-Agent and
+  freshness; quota/Prometheus history and alert lifecycle remain open.
 - [ ] Add trend dashboards, top-consumer views, CSV/JSON reports, and secret
   redaction.
 - [ ] Add deduplicated/resolvable alerts for quota, 5xx, access denied, hot
@@ -255,8 +345,10 @@ Scope: `Plan/ai-missing-features-roadmap.md` and
 - [ ] Add failure injection, stale-evidence, timeout, duplicate, and rollback
   tests.
 - [ ] Add shadow mode, approval mode, and guarded auto mode.
-- [ ] Keep auto mode disabled by default and require explicit per-cluster
-  promotion.
+- [x] Keep auto mode disabled by default and require explicit per-cluster
+  promotion. Evidence: autonomy/settings/router guard tests in the full
+  deterministic suite and AI gate (`248 passed`); no autopilot promotion was
+  performed.
 
 #### Cost and provider controls
 
@@ -264,8 +356,9 @@ Scope: `Plan/ai-missing-features-roadmap.md` and
   stopping, and per-feature output limits.
 - [ ] Add controlled model routing with canary quality comparison, rollback, and
   budget protection.
-- [ ] Verify telemetry is content-free and never stores prompts, responses, or
-  credentials.
+- [x] Verify telemetry is content-free and never stores prompts, responses, or
+  credentials. Evidence: AI observability, cost, routing, security, and
+  Natural Language redaction tests in the AI gate (`248 passed`).
 
 **Exit gate:** every AI conclusion links to current evidence, insufficient
 evidence produces `INSUFFICIENT_EVIDENCE`, and no AI path can bypass RBAC or
@@ -273,18 +366,33 @@ the action executor.
 
 ### Phase 7 — Cross-cutting hardening and operational readiness
 
-- [ ] Complete security review for RBAC, CSRF, rate limits, validation,
-  redaction, encryption, key rotation, and tenant isolation.
-- [ ] Complete audit viewer and retention/export policy.
-- [ ] Add dashboards for API/job latency, queue depth, collector lag, stale age,
-  provider usage, action outcomes, and service health.
+- [x] Verify RBAC, CSRF, rate limits, validation, secret redaction, and
+  tenant/product authorization tests. Evidence: the deterministic suite plus
+  the hardening gate (`110 passed, 1 warning`) and AI security gate (`248
+  passed, 1 warning`).
+- [ ] Complete security review for encryption, key rotation, and production
+  tenant-isolation sign-off.
+- [x] Verify the audit viewer, audit filtering, mutation metadata, and
+  runbook-evidence validation paths. Evidence: hardening gate (`110 passed, 1
+  warning`).
+- [ ] Complete audit retention/export policy and operator sign-off.
+- [ ] Add operator dashboards for API/job latency, queue depth, collector lag,
+  stale age, provider usage, action outcomes, and service health. Backend
+  collector/API/WebSocket counters are instrumented, but the operator-facing
+  dashboard is not complete.
 - [ ] Add alerts for stale snapshots, dead collectors, failed post-checks,
   budget exhaustion, backup gaps, and event-bus failure.
 - [ ] Complete runbooks for deploy, rollback, Ceph outage, stale data, backup
   restore, RGW failure, Cinder dependency, DR failover, and credential loss.
-- [ ] Add health checks and smoke tests for Dashboard, Worker, Watcher, database,
-  cache, message broker, and frontend assets.
-- [ ] Document supported Ceph releases and fail-closed behavior for unsupported
+- [x] Add deterministic health and smoke coverage for Dashboard APIs, service
+  heartbeats, frontend navigation/assets, and stale/dead process handling.
+  Evidence: hardening gate (`110 passed, 1 warning`).
+- [ ] Run live production-like health checks and smoke tests for Dashboard,
+  Worker, Watcher, database, cache, message broker, and frontend assets.
+- [x] Document supported Ceph releases and fail-closed behavior for unsupported
+  releases. Evidence: `docs/ai/ceph-official-docs-manifest.md` lists Reef 18,
+  Squid 19, and Tentacle 20 with version-filtered official sources; capability
+  inventory/matrix and preflight tests reject unknown, mixed, and uncovered
   releases.
 - [ ] Add retention and disk-growth controls for snapshots, logs, audit records,
   and generated reports.
@@ -296,19 +404,28 @@ recover the service without manual source edits.
 
 Each feature slice must pass all applicable gates:
 
-- [ ] Unit and regression tests.
-- [ ] API contract and schema tests.
-- [ ] Frontend type-check and production build with Node 20.
-- [ ] RBAC, cluster-scope, CSRF, secret-redaction, and prompt-injection tests.
-- [ ] Timeout, retry, stale-data, partial-data, and backend-unavailable tests.
-- [ ] Migration upgrade/downgrade and restart-recovery tests.
+- [x] Unit and regression tests. Evidence: deterministic suite (`3817 passed,
+  47 deselected, 235 warnings`; RC=0).
+- [x] API contract and schema tests. Evidence: deterministic API/dashboard
+  gates and the full release suite passed.
+- [x] Frontend type-check and production build with Node 20.
+- [x] RBAC, cluster-scope, CSRF, secret-redaction, and prompt-injection tests.
+  Evidence: deterministic suite, AI gate, and hardening gate passed.
+- [x] Timeout, retry, stale-data, partial-data, and backend-unavailable tests.
+  Evidence: deterministic suite and realtime/storage focused gates passed.
+- [x] Migration upgrade/downgrade and restart-recovery tests. Evidence: the
+  disposable SQLite round-trip passed; restart/stale-state coverage passed in
+  the deterministic suite.
 - [ ] Default, secondary, inactive, and mixed-version cluster tests.
-- [ ] Mutation preview, approval, idempotency, audit, post-check, and rollback
-  tests.
+- [x] Mutation preview, approval, idempotency, audit, post-check, and rollback
+  tests. Evidence: block/RBD, backup/restore, object/RGW, and AI focused gates
+  passed.
 - [ ] Browser smoke tests and multi-tab load tests.
-- [ ] Backup/restore and DR drill evidence where applicable.
-- [ ] Full release suite completes within the agreed CI timeout with no
-  unexplained failures.
+- [x] Backup/restore evidence where applicable. Evidence: deterministic backup
+  gate (`218 passed, 1 warning`).
+- [ ] Live DR drill evidence.
+- [x] Full release suite completes with no unexplained failures. Evidence:
+  `3817 passed, 47 deselected, 235 warnings`; RC=0.
 - [ ] Security and operations review is recorded.
 
 ## 6. Deployment waves

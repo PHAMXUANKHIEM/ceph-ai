@@ -7,6 +7,7 @@ it never changes an Incident or suppresses an alert at the source.
 
 from collections import OrderedDict
 from datetime import datetime
+from shared.time import utc_now
 from math import ceil
 
 
@@ -61,7 +62,7 @@ def build_alert_groups(incidents, *, max_groups: int | None = None) -> list[dict
         group["acknowledged_by"] = getattr(representative, "acknowledged_by", None)
         group["muted_until"] = getattr(representative, "muted_until", None)
         group["is_muted"] = bool(
-            group["muted_until"] and group["muted_until"] > datetime.utcnow()
+            group["muted_until"] and group["muted_until"] > utc_now()
         )
     return result if max_groups is None else result[:max_groups]
 

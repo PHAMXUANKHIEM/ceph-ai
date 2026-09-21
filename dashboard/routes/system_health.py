@@ -9,6 +9,8 @@ from shared.ceph_query_cache import get_metrics as get_ceph_cache_metrics
 from watcher.cluster_snapshot_collector import get_metrics as get_collector_metrics
 from shared.api_observability import get_metrics as get_api_metrics
 from shared.retry import get_metrics as get_retry_metrics
+from shared.natural_language.nl_metrics import get_natural_language_metrics
+from dashboard.ws import get_metrics as get_websocket_metrics
 
 router = APIRouter()
 
@@ -36,4 +38,6 @@ def ceph_latency_debug(user: str = Depends(require_login)):
         "snapshot_collector": get_collector_metrics(),
         "api": get_api_metrics(),
         "retry": get_retry_metrics(),
+        "natural_language": get_natural_language_metrics(),
+        "websocket": get_websocket_metrics(),
     }

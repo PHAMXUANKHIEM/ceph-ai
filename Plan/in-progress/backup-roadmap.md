@@ -136,7 +136,7 @@ execute; thay đổi trạng thái giữa hai thời điểm làm action fail-cl
 **Hoàn thành khi:** overview trả lời được “volume nào không đạt RPO?”, “backup
 nào chưa từng được drill?” và “nếu restore bây giờ mất khoảng bao lâu?”.
 
-### 5.5 Audit và sửa multi-cluster scope `[ ]`
+### 5.5 Audit và sửa multi-cluster scope `[~]`
 
 - [x] Join `Incident.cluster_id` trong mọi query dedup/in-flight Action của Backup Dashboard.
 - Scope BackupJob, anomaly, digest, drill, retention và restore chain thống nhất.
@@ -150,9 +150,13 @@ Tiến độ audit:
 
 - [x] History, queue, overview, anomaly baseline, cảnh báo, retention và restore
   chain đã lọc theo cluster; AI không coi success ở cluster khác là đã phục hồi.
+- [~] API read-only `/api/backups/multi-cluster-audit` đã tổng hợp posture, job
+  24h, Digest, RestoreDrill, target readiness và evidence gaps theo từng cluster;
+  response không chứa secret hoặc raw error. Test chứng minh secondary cluster
+  không lộ secret và được gắn gap `RESTORE_DRILL_NOT_CONFIGURED`.
 - [ ] Backup Digest và RestoreDrill vẫn chỉ chạy cho cluster mặc định vì lịch/
-  cấu hình hiện là singleton trong `backup_policy.yaml`; Dashboard chủ động ẩn
-  Digest ở cluster phụ. Cần thiết kế policy theo cluster trước khi bật hai tính năng này.
+  cấu hình hiện là singleton trong `backup_policy.yaml`; cần thiết kế policy
+  theo cluster trước khi bật hai tính năng này.
 
 **Hoàn thành khi:** test hai cluster chứng minh không cross-read/cross-block/
 cross-restore và cluster inactive bị từ chối.

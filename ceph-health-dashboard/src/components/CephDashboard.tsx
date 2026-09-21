@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, ChartNoAxesCombined, Clock3, Database, Gauge, HardDrive, PieChart, RefreshCw, Server, ShieldCheck, SquareTerminal, Wifi } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { CephHealthCard } from "./CephHealthCard";
@@ -9,7 +9,8 @@ import { PageHeader } from "./PageHeader";
 import { PlacementGroupsCard } from "./PlacementGroupsCard";
 import { StatusBadge } from "./StatusBadge";
 import { StatusCard } from "./StatusCard";
-import { useClusterSnapshotEvents } from "../useClusterSnapshotEvents";
+import { useClusterSnapshotEvents, type SnapshotEvent } from "../useClusterSnapshotEvents";
+import { getSnapshotState, SNAPSHOT_STATE_LABEL } from "../snapshotState";
 
 type StatusDatum = { title: string; value: string; subtitle: string; icon: LucideIcon; meter?: number | null };
 type DashboardHealth = {
@@ -62,10 +63,7 @@ const formatAge = (age: number | null | undefined) => {
 };
 
 const formatSnapshotState = (health: DashboardHealth) => {
-  if (health.refreshing) return "Đang đồng bộ";
-  if (health.stale) return "Snapshot cũ";
-  if (health.health_available === false) return "Chưa sẵn sàng";
-  return "Đang cập nhật";
+  return SNAPSHOT_STATE_LABEL[getSnapshotState(health, { hasData: Boolean(health.collected_at) })];
 };
 
 const formatErrorValue = (value: unknown) => {
@@ -80,9 +78,18 @@ export function CephDashboard() {
   const [reloadToken, setReloadToken] = useState(0);
   const [refreshPending, setRefreshPending] = useState(false);
   const [dismissedIssue, setDismissedIssue] = useState<string | null>(null);
+  const [realtimeError, setRealtimeError] = useState<string | null>(null);
   const selectedCluster = new URLSearchParams(window.location.search).get("cluster") || "";
   const clusterName = document.getElementById("ceph-dashboard-root")?.getAttribute("data-cluster-name") || selectedCluster || "Cluster";
-  const eventVersion = useClusterSnapshotEvents(selectedCluster);
+  const handleRealtimeEvent = useCallback((event: SnapshotEvent) => {
+    if (event.event === "snapshot_refresh_failed") {
+      const action = event.action_id ? ` (action ${event.action_id})` : "";
+      setRealtimeError(`Post-check mutation thất bại${action}; đang giữ snapshot tốt gần nhất.`);
+    } else if (event.event === "snapshot_changed") {
+      setRealtimeError(null);
+    }
+  }, []);
+  const eventVersion = useClusterSnapshotEvents(selectedCluster, handleRealtimeEvent);
 
   const requestRefresh = () => {
     if (refreshPending) return;
@@ -163,7 +170,9 @@ export function CephDashboard() {
     }
   ], [health]);
 
-  const issueKey = loadError
+  const issueKey = realtimeError
+    ? `realtime:${realtimeError}`
+    : loadError
     ? `load:${loadError}`
     : health.refreshing ? null
       : health.stale ? `stale:${health.last_error || "snapshot"}`
@@ -173,6 +182,10 @@ export function CephDashboard() {
     if (health.last_error && !entries.some(([key]) => key === "snapshot")) entries.unshift(["snapshot", health.last_error]);
     return entries.slice(0, 4);
   }, [health.last_error, health.partial_errors]);
+  const snapshotState = getSnapshotState(health, {
+    error: loadError,
+    hasData: Boolean(health.collected_at),
+  });
 
   return (
     <main className="ceph-dashboard">
@@ -184,8 +197,8 @@ export function CephDashboard() {
         actions={
           <>
             <StatusBadge
-              tone={loadError ? "critical" : health.stale ? "warning" : "healthy"}
-              label={loadError ? "Mất kết nối" : health.stale ? "Dữ liệu cũ" : "Đang kết nối"}
+              tone={snapshotState === "error" ? "critical" : snapshotState === "stale" || snapshotState === "refreshing" ? "warning" : snapshotState === "fresh" ? "healthy" : "neutral"}
+              label={SNAPSHOT_STATE_LABEL[snapshotState]}
               icon={Wifi}
             />
             <span className="snapshot-time">{formatAge(health.age_seconds)}</span>
@@ -199,6 +212,15 @@ export function CephDashboard() {
         <ErrorState
           message={<><strong>Không tải được dữ liệu cụm đã chọn.</strong> {loadError}</>}
           onRetry={() => setReloadToken((value) => value + 1)}
+          onDismiss={() => setDismissedIssue(issueKey)}
+        />
+      )}
+      {realtimeError && dismissedIssue !== issueKey && (
+        <ErrorState
+          tone="warning"
+          message={<><strong>Thay đổi cụm chưa được xác nhận.</strong> {realtimeError}</>}
+          onRetry={() => setReloadToken((value) => value + 1)}
+          retryLabel="Đọc lại snapshot"
           onDismiss={() => setDismissedIssue(issueKey)}
         />
       )}

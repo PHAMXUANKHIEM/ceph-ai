@@ -13,6 +13,7 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 _ACTION_STATE_EVENTS_KEY = "ceph_ai_action_state_events"
+_CLUSTER_STATE_EVENTS_KEY = "ceph_ai_cluster_state_events"
 
 
 def _validate_production_database_url(url: str) -> None:
@@ -174,6 +175,90 @@ def _collect_action_state_events(session: Session, _flush_context) -> None:
         pending[(cluster_id, str(action.id))] = str(state)
 
 
+def _sections_for_resolved_incident(incident: object) -> tuple[str, ...]:
+    """Map a post-check-confirmed Incident to bounded snapshot sections.
+
+    The Worker/Watcher owns the authoritative refresh. This hook only emits a
+    small invalidation hint after the database commit that records RESOLVED;
+    it never claims that a command succeeded before the post-check.
+    """
+    code = str(getattr(incident, "ceph_code", "") or "").upper()
+    sections = {"health", "status"}
+    if "POOL" in code:
+        sections.add("pools")
+    if "PG" in code:
+        sections.add("pgs")
+    if "CRUSH" in code:
+        sections.add("crush")
+    if "OSD" in code or "NODE" in code or "HOST" in code:
+        sections.add("nodes")
+    if any(token in code for token in ("DEPLOY", "UPGRADE", "SERVICE")):
+        sections.add("nodes")
+    # RGW/bucket incidents intentionally invalidate the bounded cluster
+    # status section; no raw object-storage payload is sent through this
+    # event channel.
+    return tuple(section for section in ("health", "status", "pools", "pgs", "crush", "nodes") if section in sections)
+
+
+def _resolved_action_metadata(session: Session, incident_id: str | None) -> tuple[str | None, str | None]:
+    """Return the most recent action metadata for a post-check event.
+
+    The event remains a bounded invalidation hint. Only the Action primary key
+    and lifecycle status are exposed; command text, targets, and parameters
+    never travel through the event channel.
+    """
+    if not incident_id:
+        return None, None
+    row = session.execute(
+        text(
+            "SELECT id, status FROM actions "
+            "WHERE incident_id = :incident_id "
+            "ORDER BY created_at DESC, id DESC LIMIT 1"
+        ),
+        {"incident_id": incident_id},
+    ).first()
+    if row is None:
+        return None, None
+    return str(row[0]), str(row[1])
+
+
+@event.listens_for(Session, "after_flush")
+def _collect_cluster_state_events(session: Session, _flush_context) -> None:
+    pending = session.info.setdefault(_CLUSTER_STATE_EVENTS_KEY, {})
+    for incident in set(session.dirty):
+        if incident.__class__.__name__ != "Incident":
+            continue
+        inspected = inspect(incident)
+        if not inspected.attrs.status.history.has_changes():
+            continue
+        current_status = str(getattr(incident, "status", ""))
+        previous_statuses = inspected.attrs.status.history.deleted
+        previous_status = str(previous_statuses[-1]) if previous_statuses else ""
+        if current_status in {"RESOLVED", "IncidentStatus.RESOLVED"}:
+            event_name = "snapshot_changed"
+            action_state = "succeeded"
+        elif current_status in {"FAILED", "IncidentStatus.FAILED"} and previous_status in {
+            "VERIFYING", "IncidentStatus.VERIFYING",
+        }:
+            # A command may have exited successfully while the post-check
+            # still proves that the fault remains. Notify the UI without
+            # invalidating/removing the last good snapshot.
+            event_name = "snapshot_refresh_failed"
+            action_state = "failed"
+        else:
+            continue
+        cluster_id = str(getattr(incident, "cluster_id", "") or "").strip()
+        if cluster_id:
+            action_id, action_status = _resolved_action_metadata(session, getattr(incident, "id", None))
+            pending[cluster_id] = (
+                event_name,
+                _sections_for_resolved_incident(incident),
+                action_id,
+                action_status,
+                action_state if action_id else None,
+            )
+
+
 @event.listens_for(Session, "after_commit")
 def _publish_action_state_events(session: Session) -> None:
     pending = session.info.pop(_ACTION_STATE_EVENTS_KEY, {})
@@ -187,6 +272,33 @@ def _publish_action_state_events(session: Session) -> None:
             logger.exception("could not publish committed Action state for %s", action_id)
 
 
+@event.listens_for(Session, "after_commit")
+def _publish_cluster_state_events(session: Session) -> None:
+    pending = session.info.pop(_CLUSTER_STATE_EVENTS_KEY, {})
+    if not pending:
+        return
+    from shared.cluster_events import publish_event
+    from shared.cluster_snapshot import request_priority_refresh
+    for cluster_id, (event_name, sections, action_id, action_status, action_state) in pending.items():
+        if event_name == "snapshot_changed":
+            try:
+                request_priority_refresh(cluster_id, list(sections))
+            except Exception:
+                logger.exception("could not request priority snapshot refresh for %s", cluster_id)
+        try:
+            publish_event(
+                cluster_id,
+                event_name,
+                sections=sections,
+                action_id=action_id,
+                action_status=action_status,
+                action_state=action_state,
+            )
+        except Exception:
+            logger.exception("could not publish post-check snapshot invalidation for %s", cluster_id)
+
+
 @event.listens_for(Session, "after_rollback")
 def _discard_action_state_events(session: Session) -> None:
     session.info.pop(_ACTION_STATE_EVENTS_KEY, None)
+    session.info.pop(_CLUSTER_STATE_EVENTS_KEY, None)

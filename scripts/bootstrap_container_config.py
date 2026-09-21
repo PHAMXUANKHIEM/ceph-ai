@@ -22,6 +22,20 @@ FULL_EXECUTOR_UID = "10001"
 FULL_EXECUTOR_ACCOUNT_ROOT = Path("/var/lib/ceph-ai/full-executor-accounts")
 FULL_EXECUTOR_SSH_ROOT = Path("/var/lib/ceph-ai/full-executor-ssh")
 FULL_EXECUTOR_SECRET_ROOT = Path("/var/lib/ceph-ai/full-executor-secrets")
+RUNTIME_UID = "10001"
+RUNTIME_ROOT = Path("/var/lib/ceph-ai")
+RUNTIME_DIR = Path("/run/ceph-ai")
+RUNTIME_STATE_FILES = frozenset(
+    {
+        "ceph-capability-learning.json",
+        "dual-ai-execution.lock",
+        "telegram-chat-clusters.json",
+        "telegram-chat-modes.json",
+        "telegram-single-full-confirmations.json",
+        "telegram-single-full-runs.json",
+        "telegram-update-offsets.json",
+    }
+)
 DUAL_AGENT_ACCOUNT_PATHS = (".codex-account", ".claude-account", ".ai-accounts")
 LEGACY_DUAL_AGENT_WRITE_PATHS = (
     "config", "dashboard", "shared", "watcher", "worker", "tests", "vitastor",
@@ -202,6 +216,27 @@ def _ensure_full_executor_credentials(values: dict) -> None:
         _copy_secret_file(Path(f"{source}.pub"), FULL_EXECUTOR_SSH_ROOT / "id_ed25519.pub")
 
 
+def _grant_runtime_service_access() -> None:
+    """Prepare the shared non-root app UID's narrow state boundaries."""
+    subprocess.run(["setfacl", "-m", f"u:{RUNTIME_UID}:x", str(RUNTIME_ROOT)], check=True)
+    RUNTIME_DIR.mkdir(mode=0o750, parents=True, exist_ok=True)
+    subprocess.run(["setfacl", "-Rm", f"u:{RUNTIME_UID}:rwX,m::rwX", str(RUNTIME_DIR)], check=True)
+    config_dir = TARGET.parent
+    config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    subprocess.run(["setfacl", "-m", f"u:{RUNTIME_UID}:rwx", str(config_dir)], check=True)
+    if TARGET.exists():
+        subprocess.run(["setfacl", "-m", f"u:{RUNTIME_UID}:rw", str(TARGET)], check=True)
+    for path in RUNTIME_ROOT.iterdir():
+        if path.is_file() and path.name in RUNTIME_STATE_FILES:
+            subprocess.run(["setfacl", "-m", f"u:{RUNTIME_UID}:rw,m::rw", str(path)], check=True)
+        elif path.is_file():
+            subprocess.run(["setfacl", "-x", f"u:{RUNTIME_UID}", str(path)], check=False)
+    for relative in ("cache", "ai-tasks", "backups", "backups_missing", "release-artifacts", "ssh"):
+        path = RUNTIME_ROOT / relative
+        path.mkdir(mode=0o750, parents=True, exist_ok=True)
+        subprocess.run(["setfacl", "-Rm", f"u:{RUNTIME_UID}:rwX,m::rwX", str(path)], check=True)
+
+
 def main() -> None:
     TARGET.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not TARGET.exists():
@@ -218,6 +253,9 @@ def main() -> None:
     _grant_dual_agent_workspace_access()
     values = dotenv_values(TARGET)
     _configure_container_rabbitmq(values)
+    # The RabbitMQ bootstrap may atomically replace TARGET; apply runtime ACLs
+    # last so the non-root services retain access to the current file.
+    _grant_runtime_service_access()
 
 
 if __name__ == "__main__":

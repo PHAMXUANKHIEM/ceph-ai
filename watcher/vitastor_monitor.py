@@ -7,6 +7,7 @@ import logging
 import time
 import statistics
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from config.settings import settings
 from shared import db
@@ -62,7 +63,7 @@ def _persist(cluster_id: str, cache: dict, alert_state: str) -> None:
         row = session.get(VitastorCluster, cluster_id)
         if row is not None:
             row.last_status_json = json.dumps(cache)
-            row.last_checked_at = datetime.utcnow()
+            row.last_checked_at = utc_now()
             session.commit()
 
 
@@ -89,7 +90,7 @@ def _record_metrics(cluster_id: str, datasets: dict, summary: dict, etcd_detail:
         _number(value.get("bps")) for value in recovery.values() if isinstance(value, dict)
     )
     capacity, etcd, osds = summary.get("capacity", {}), summary.get("etcd", {}), summary.get("osds", {})
-    now = datetime.utcnow()
+    now = utc_now()
     with db.SessionLocal() as session:
         session.add(VitastorMetricSample(
             cluster_id=cluster_id, health=str(summary.get("health") or "UNKNOWN"),
@@ -257,7 +258,7 @@ def _collect_hardware(cluster: VitastorCluster, datasets: dict, cache: dict) -> 
         except Exception as exc:
             logger.warning("Vitastor hardware scan failed for %s: %s", host, exc)
             results.append({"host": host, "error": str(exc), "devices": []})
-    now = datetime.utcnow()
+    now = utc_now()
     with db.SessionLocal() as session:
         for result in results:
             devices = result.get("devices") or []
@@ -297,7 +298,7 @@ def _collect_network(cluster: VitastorCluster, datasets: dict, cache: dict) -> l
         except Exception as exc:
             logger.warning("Vitastor network scan failed for %s: %s", source, exc)
             results.append({"source": source, "interfaces": [], "probes": [], "error": str(exc)})
-    now = datetime.utcnow()
+    now = utc_now()
     with db.SessionLocal() as session:
         for result in results:
             for probe in result.get("probes") or []:
@@ -331,7 +332,7 @@ def _collect_network(cluster: VitastorCluster, datasets: dict, cache: dict) -> l
 def poll_cluster_once(cluster: VitastorCluster) -> str:
     """Poll one cluster, alert only on state transitions, and return its state."""
     cache = _cached(cluster)
-    checked_at = datetime.utcnow().isoformat() + "Z"
+    checked_at = utc_now().isoformat() + "Z"
     previous = str(cache.get("_telegram_health") or "")
     try:
         datasets = query_dashboard(*_connection_args(cluster))

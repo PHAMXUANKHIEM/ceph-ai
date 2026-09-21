@@ -226,8 +226,10 @@ thất bại được lưu trong Object Storage Audit; credential không đượ
 audit log.
 
 Để dùng **Block Storage**, cấu hình `CEPH_RBD_POOLS` nếu chỉ muốn giới hạn
-inventory ở một số pool. Nếu để trống, hành vi khám phá pool phụ thuộc cấu
-hình và quyền Ceph hiện tại của cụm.
+inventory ở một số pool. Nếu để trống, hệ thống tự động phát hiện các pool có
+application `rbd` (phụ thuộc quyền SSH/Ceph của cụm). Đặt
+`CEPH_RBD_AUTO_DISCOVERY_ENABLED=false` nếu muốn tắt hoàn toàn quét hiệu năng
+RBD khi không khai báo danh sách pool.
 
 ## 7. Khởi tạo database
 

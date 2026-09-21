@@ -153,6 +153,9 @@ class Settings(BaseSettings):
     # poll cost control, or a pool you deliberately don't want watched) —
     # once set, it's the ONLY list used, auto-discovery is skipped entirely.
     ceph_rbd_pools: str = ""
+    # Blank CEPH_RBD_POOLS auto-discovers RBD application pools by default.
+    # Set this false to disable the auxiliary RBD performance scans entirely.
+    ceph_rbd_auto_discovery_enabled: bool = True
     # RBD performance is an auxiliary signal, not part of the 15s health
     # heartbeat. Keeping it on its own cadence prevents each poll from
     # creating one cephadm/Podman shell per RBD pool.
@@ -314,6 +317,27 @@ class Settings(BaseSettings):
     # Phase 2 snapshot evidence is opt-in until the collector coverage for all
     # fixed tools has been verified in staging. It never opens SSH itself.
     ai_natural_language_snapshot_runner_enabled: bool = False
+    # Phase 5 runbook retrieval is opt-in. Retrieved documentation is supporting
+    # context only and can never replace live/fixture Ceph evidence.
+    ai_natural_language_rag_enabled: bool = False
+    # Provider-free answer for validated read-only snapshot queries. Disabled
+    # by default until operators enable it for a canary/test cluster.
+    ai_natural_language_fast_path_enabled: bool = False
+    ai_natural_language_intent_timeout_seconds: float = Field(default=2.0, ge=0.1, le=10.0)
+    ai_natural_language_retrieval_timeout_seconds: float = Field(default=2.0, ge=0.1, le=10.0)
+    # Natural-language production rollout is admin-only by default. If this is
+    # disabled, only explicitly listed test/canary cluster ids are allowed.
+    ai_natural_language_admin_only: bool = True
+    ai_natural_language_rollout_clusters: str = ""
+    ai_natural_language_snapshot_refresh_enabled: bool = False
+    ai_natural_language_structured_output_enabled: bool = False
+    # Optional provider model ids by NL workload. Empty values keep the
+    # provider's normal configured model; values are selected only for the
+    # matching role and still pass through cost-routing policy.
+    ai_natural_language_small_model: str = ""
+    ai_natural_language_fast_model: str = ""
+    ai_natural_language_strong_model: str = ""
+    ai_natural_language_mcp_enabled: bool = False
 
     ai_cost_routing_mode: str = "advisory"
     ai_cost_routing_canary_percent: int = Field(default=0, ge=0, le=100)

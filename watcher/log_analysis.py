@@ -36,6 +36,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
+from shared.time import utc_now
 from pathlib import Path
 
 import httpx
@@ -663,7 +664,7 @@ def _dedupe_key(cluster_id: str, evidence_ids: list[str], verdict: str) -> str:
     """Cùng bộ mẫu evidence -> cùng khoá, để L3 không gửi lại cảnh báo cho
     cùng một hiện tượng ở mỗi lần quét."""
     material = f"{cluster_id}\x00{verdict}\x00{'|'.join(sorted(evidence_ids))}"
-    return hashlib.sha1(material.encode()).hexdigest()
+    return hashlib.sha1(material.encode(), usedforsecurity=False).hexdigest()
 
 
 def _evidence_ids(finding: LogFinding) -> set[str]:
@@ -1312,7 +1313,7 @@ def _maybe_propose_action(
                 cluster_id=cluster_id,
                 ceph_code=ceph_code,
                 status=IncidentStatus.PENDING_APPROVAL.value,
-                detected_at=datetime.utcnow(),
+                detected_at=utc_now(),
                 log_excerpt=rationale,
             )
             session.add(incident)

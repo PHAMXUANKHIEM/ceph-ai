@@ -1,0 +1,2901 @@
+{
+  "case_count": 100,
+  "cases": [
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "cluster_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_cluster_status",
+          "get_health_detail",
+          "get_mon_stat"
+        ]
+      },
+      "id": "cluster-health-warning",
+      "text": "Cụm đang HEALTH_WARN vì sao?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "cluster_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_cluster_status",
+          "get_health_detail",
+          "get_mon_stat"
+        ]
+      },
+      "id": "cluster-overview",
+      "text": "Cho tôi tổng quan cụm Ceph này"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "osd",
+          "time_range_seconds": null
+        },
+        "intent": "osd_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_stat",
+          "get_osd_tree"
+        ]
+      },
+      "id": "osd-down",
+      "text": "OSD nào đang down?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {
+            "utilization_gte": 85
+          },
+          "resource_ids": [
+            "osd.12"
+          ],
+          "resource_type": "osd",
+          "time_range_seconds": null
+        },
+        "intent": "osd_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_stat",
+          "get_osd_tree"
+        ]
+      },
+      "id": "osd-threshold",
+      "text": "OSD 12 đang nearfull trên 85%"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "1.a"
+          ],
+          "resource_type": "pg",
+          "time_range_seconds": null
+        },
+        "intent": "pg_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_pg_stat",
+          "get_health_detail"
+        ]
+      },
+      "id": "pg-degraded",
+      "text": "PG 1.a nào đang degraded?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "data"
+          ],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "pool_capacity",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_df",
+          "get_pool_list"
+        ]
+      },
+      "id": "pool-capacity",
+      "text": "Pool data còn bao nhiêu dung lượng?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {
+            "utilization_lte": 70
+          },
+          "resource_ids": [
+            "metadata"
+          ],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "pool_capacity",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_df",
+          "get_pool_list"
+        ]
+      },
+      "id": "pool-low-watermark",
+      "text": "Pool metadata nào dưới 70%?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "ceph-01"
+          ],
+          "resource_type": "node",
+          "time_range_seconds": null
+        },
+        "intent": "node_metrics",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "node-metrics-host",
+      "text": "Xem CPU và RAM của node ceph-01"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "10.3.55.213"
+          ],
+          "resource_type": "node",
+          "time_range_seconds": 7200
+        },
+        "intent": "node_metrics",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "node-metrics-ip",
+      "text": "Độ trễ của máy chủ 10.3.55.213 trong 2 giờ"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "backups"
+          ],
+          "resource_type": "bucket",
+          "time_range_seconds": null
+        },
+        "intent": "rgw_diagnosis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "rgw-bucket",
+      "text": "Kiểm tra RGW bucket backups"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "rbd-data"
+          ],
+          "resource_type": "volume",
+          "time_range_seconds": null
+        },
+        "intent": "volume_insight",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "volume-insight",
+      "text": "Phân tích volume rbd-data"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "crush",
+          "time_range_seconds": null
+        },
+        "intent": "crush_analysis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_tree"
+        ]
+      },
+      "id": "crush-failure-domain",
+      "text": "Phân tích CRUSH failure domain của cụm"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "req-123"
+          ],
+          "resource_type": "request",
+          "time_range_seconds": 7200
+        },
+        "intent": "log_search",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "log-request-id",
+      "text": "Tìm log theo request_id req-123 trong 2 giờ gần đây"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "backup",
+          "time_range_seconds": null
+        },
+        "intent": "backup_status",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "backup-rpo",
+      "text": "Trạng thái backup và RPO hiện tại"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "explain_incident",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "explain-incident",
+      "text": "Giải thích incident khiến nhiều PG degraded"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "recommend_action",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "recommend-next-step",
+      "text": "Nên làm gì tiếp theo?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "log",
+          "time_range_seconds": 86400
+        },
+        "intent": "log_search",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "log-yesterday",
+      "text": "Xem audit log hôm qua"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pg",
+          "time_range_seconds": 21600
+        },
+        "intent": "pg_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_pg_stat",
+          "get_health_detail"
+        ]
+      },
+      "id": "pg-last-hours",
+      "text": "Kiểm tra PG stuck trong 6 giờ"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": null,
+          "time_range_seconds": null
+        },
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "safety": "clarification_required",
+        "tools": []
+      },
+      "id": "unknown-help",
+      "text": "Giúp tôi với"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": null,
+          "time_range_seconds": null
+        },
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "safety": "clarification_required",
+        "tools": []
+      },
+      "id": "ambiguous-osd-pool",
+      "text": "Kiểm tra OSD và pool"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "osd.1",
+            "osd.2"
+          ],
+          "resource_type": "osd",
+          "time_range_seconds": null
+        },
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "safety": "clarification_required",
+        "tools": []
+      },
+      "id": "ambiguous-multiple-osds",
+      "text": "Kiểm tra OSD 1 và OSD 2"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "data",
+            "metadata"
+          ],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "safety": "clarification_required",
+        "tools": []
+      },
+      "id": "ambiguous-multiple-pools",
+      "text": "Kiểm tra pool data và pool metadata"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "test-rbd"
+          ],
+          "resource_type": "volume",
+          "time_range_seconds": null
+        },
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "safety": "clarification_required",
+        "tools": []
+      },
+      "id": "mutation-delete-volume",
+      "text": "Xóa volume test-rbd"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "cluster_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_cluster_status",
+          "get_health_detail",
+          "get_mon_stat"
+        ]
+      },
+      "id": "cluster-004",
+      "text": "Sức khỏe Ceph hiện tại thế nào?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "cluster_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_cluster_status",
+          "get_health_detail",
+          "get_mon_stat"
+        ]
+      },
+      "id": "cluster-005",
+      "text": "Cụm có vấn đề gì không?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": 3600
+        },
+        "intent": "cluster_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_cluster_status",
+          "get_health_detail",
+          "get_mon_stat"
+        ]
+      },
+      "id": "cluster-006",
+      "text": "Xem trạng thái cluster trong 1 giờ qua"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "cluster_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_cluster_status",
+          "get_health_detail",
+          "get_mon_stat"
+        ]
+      },
+      "id": "cluster-007",
+      "text": "Ceph health detail báo gì?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "cluster_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_cluster_status",
+          "get_health_detail",
+          "get_mon_stat"
+        ]
+      },
+      "id": "cluster-008",
+      "text": "Tong quan suc khoe cum Ceph"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "cluster_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_cluster_status",
+          "get_health_detail",
+          "get_mon_stat"
+        ]
+      },
+      "id": "cluster-009",
+      "text": "Cụm đang HEALTH_WARN hay HEALTH_OK?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "cluster_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_cluster_status",
+          "get_health_detail",
+          "get_mon_stat"
+        ]
+      },
+      "id": "cluster-010",
+      "text": "Kiểm tra sức khỏe Ceph"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "cluster_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_cluster_status",
+          "get_health_detail",
+          "get_mon_stat"
+        ]
+      },
+      "id": "cluster-011",
+      "text": "Cluster health hiện giờ"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "osd",
+          "time_range_seconds": null
+        },
+        "intent": "osd_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_stat",
+          "get_osd_tree"
+        ]
+      },
+      "id": "osd-004",
+      "text": "Có OSD nào bị out không?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "osd",
+          "time_range_seconds": null
+        },
+        "intent": "osd_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_stat",
+          "get_osd_tree"
+        ]
+      },
+      "id": "osd-005",
+      "text": "Kiểm tra OSD down"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "osd",
+          "time_range_seconds": null
+        },
+        "intent": "osd_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_stat",
+          "get_osd_tree"
+        ]
+      },
+      "id": "osd-006",
+      "text": "OSD nào đang down gần đây?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "osd",
+          "time_range_seconds": null
+        },
+        "intent": "osd_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_stat",
+          "get_osd_tree"
+        ]
+      },
+      "id": "osd-007",
+      "text": "OSD nào đang chậm hoặc lỗi disk?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "osd",
+          "time_range_seconds": null
+        },
+        "intent": "osd_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_stat",
+          "get_osd_tree"
+        ]
+      },
+      "id": "osd-008",
+      "text": "Xem danh sách OSD down"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "osd.4"
+          ],
+          "resource_type": "osd",
+          "time_range_seconds": null
+        },
+        "intent": "osd_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_stat",
+          "get_osd_tree"
+        ]
+      },
+      "id": "osd-009",
+      "text": "OSD 4 có đang in không?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "osd",
+          "time_range_seconds": null
+        },
+        "intent": "osd_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_stat",
+          "get_osd_tree"
+        ]
+      },
+      "id": "osd-010",
+      "text": "Kiểm tra disk của OSD"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "osd",
+          "time_range_seconds": null
+        },
+        "intent": "osd_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_stat",
+          "get_osd_tree"
+        ]
+      },
+      "id": "osd-011",
+      "text": "OSD nào đang out?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pg",
+          "time_range_seconds": null
+        },
+        "intent": "pg_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_pg_stat",
+          "get_health_detail"
+        ]
+      },
+      "id": "pg-004",
+      "text": "PG nào đang undersizd?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pg",
+          "time_range_seconds": 1800
+        },
+        "intent": "pg_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_pg_stat",
+          "get_health_detail"
+        ]
+      },
+      "id": "pg-005",
+      "text": "PG nào inactive trong 30 phút?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pg",
+          "time_range_seconds": null
+        },
+        "intent": "pg_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_pg_stat",
+          "get_health_detail"
+        ]
+      },
+      "id": "pg-006",
+      "text": "Có PG stuck không?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pg",
+          "time_range_seconds": null
+        },
+        "intent": "pg_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_pg_stat",
+          "get_health_detail"
+        ]
+      },
+      "id": "pg-007",
+      "text": "Kiểm tra PG đang peering"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pg",
+          "time_range_seconds": 86400
+        },
+        "intent": "pg_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_pg_stat",
+          "get_health_detail"
+        ]
+      },
+      "id": "pg-008",
+      "text": "PG bị degraded từ hôm qua"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pg",
+          "time_range_seconds": null
+        },
+        "intent": "pg_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_pg_stat",
+          "get_health_detail"
+        ]
+      },
+      "id": "pg-009",
+      "text": "PG nào stale hoặc không active?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pg",
+          "time_range_seconds": null
+        },
+        "intent": "pg_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_pg_stat",
+          "get_health_detail"
+        ]
+      },
+      "id": "pg-010",
+      "text": "Xem placement group lỗi"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pg",
+          "time_range_seconds": null
+        },
+        "intent": "pg_health",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_pg_stat",
+          "get_health_detail"
+        ]
+      },
+      "id": "pg-011",
+      "text": "Tình trạng PG recovery hiện nay"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "pool_capacity",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_df",
+          "get_pool_list"
+        ]
+      },
+      "id": "pool-004",
+      "text": "Pool nào gần đầy nhất?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "rbd"
+          ],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "pool_capacity",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_df",
+          "get_pool_list"
+        ]
+      },
+      "id": "pool-005",
+      "text": "Dung lượng pool rbd"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "pool_capacity",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_df",
+          "get_pool_list"
+        ]
+      },
+      "id": "pool-006",
+      "text": "Pool nào đang full?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "pool_capacity",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_df",
+          "get_pool_list"
+        ]
+      },
+      "id": "pool-007",
+      "text": "Kiểm tra capacity các pool"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "data"
+          ],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "pool_capacity",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_df",
+          "get_pool_list"
+        ]
+      },
+      "id": "pool-008",
+      "text": "Pool data sử dụng bao nhiêu phần trăm?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "pool_capacity",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_df",
+          "get_pool_list"
+        ]
+      },
+      "id": "pool-009",
+      "text": "Còn bao nhiêu dung lượng storage?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "pool_capacity",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_df",
+          "get_pool_list"
+        ]
+      },
+      "id": "pool-010",
+      "text": "Top pool dùng nhiều dung lượng"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "pool_capacity",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_df",
+          "get_pool_list"
+        ]
+      },
+      "id": "pool-011",
+      "text": "Pool nào vượt ngưỡng 90 phần trăm?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "nao"
+          ],
+          "resource_type": "node",
+          "time_range_seconds": null
+        },
+        "intent": "node_metrics",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "node-004",
+      "text": "Node nào CPU cao?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "trong"
+          ],
+          "resource_type": "node",
+          "time_range_seconds": 900
+        },
+        "intent": "node_metrics",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "node-005",
+      "text": "RAM các node trong 15 phút"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "storage-01"
+          ],
+          "resource_type": "node",
+          "time_range_seconds": null
+        },
+        "intent": "node_metrics",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "node-006",
+      "text": "IOPS của node storage-01"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "nao"
+          ],
+          "resource_type": "node",
+          "time_range_seconds": null
+        },
+        "intent": "node_metrics",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "node-007",
+      "text": "Node nào latency cao nhất?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "ceph-02"
+          ],
+          "resource_type": "node",
+          "time_range_seconds": null
+        },
+        "intent": "node_metrics",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "node-008",
+      "text": "Kiểm tra máy chủ ceph-02"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "nao"
+          ],
+          "resource_type": "node",
+          "time_range_seconds": null
+        },
+        "intent": "node_metrics",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "node-009",
+      "text": "May chu nao dang cham"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "trong"
+          ],
+          "resource_type": "node",
+          "time_range_seconds": 3600
+        },
+        "intent": "node_metrics",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "node-010",
+      "text": "Xem throughput node trong 1 giờ"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "node",
+          "time_range_seconds": null
+        },
+        "intent": "node_metrics",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "node-011",
+      "text": "CPU RAM IOPS của cụm node"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "rgw",
+          "time_range_seconds": null
+        },
+        "intent": "rgw_diagnosis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "rgw-004",
+      "text": "RGW có lỗi S3 nào không?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "rgw",
+          "time_range_seconds": null
+        },
+        "intent": "rgw_diagnosis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "rgw-005",
+      "text": "Kiểm tra RGW access"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "rgw",
+          "time_range_seconds": null
+        },
+        "intent": "rgw_diagnosis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "rgw-006",
+      "text": "Bucket nào bị lỗi quota?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "rgw",
+          "time_range_seconds": null
+        },
+        "intent": "rgw_diagnosis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "rgw-007",
+      "text": "RGW sync đang lỗi không?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "rgw",
+          "time_range_seconds": null
+        },
+        "intent": "rgw_diagnosis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "rgw-008",
+      "text": "Xem status request S3 gần đây"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "rgw",
+          "time_range_seconds": null
+        },
+        "intent": "rgw_diagnosis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "rgw-009",
+      "text": "Phân tích object storage"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "volume",
+          "time_range_seconds": null
+        },
+        "intent": "volume_insight",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "volume-004",
+      "text": "Volume nào stale?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "volume",
+          "time_range_seconds": null
+        },
+        "intent": "volume_insight",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "volume-005",
+      "text": "Kiểm tra RBD chưa attach"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "volume",
+          "time_range_seconds": null
+        },
+        "intent": "volume_insight",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "volume-006",
+      "text": "Volume nào có protection gap?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "volume",
+          "time_range_seconds": null
+        },
+        "intent": "volume_insight",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "volume-007",
+      "text": "Hiệu năng block storage thế nào?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "image"
+          ],
+          "resource_type": "volume",
+          "time_range_seconds": null
+        },
+        "intent": "volume_insight",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "volume-008",
+      "text": "Phân tích RBD image hiện tại"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "crush",
+          "time_range_seconds": null
+        },
+        "intent": "crush_analysis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_tree"
+        ]
+      },
+      "id": "crush-004",
+      "text": "Xem CRUSH tree"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "crush",
+          "time_range_seconds": null
+        },
+        "intent": "crush_analysis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_tree"
+        ]
+      },
+      "id": "crush-005",
+      "text": "CRUSH rule có lệch không?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "crush",
+          "time_range_seconds": null
+        },
+        "intent": "crush_analysis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_tree"
+        ]
+      },
+      "id": "crush-006",
+      "text": "Kiểm tra failure domain"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "crush",
+          "time_range_seconds": null
+        },
+        "intent": "crush_analysis",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": [
+          "get_osd_tree"
+        ]
+      },
+      "id": "crush-007",
+      "text": "Phân tích skew trong CRUSH"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "log",
+          "time_range_seconds": null
+        },
+        "intent": "log_search",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "log-004",
+      "text": "Tìm audit log lỗi"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "log",
+          "time_range_seconds": null
+        },
+        "intent": "log_search",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "log-005",
+      "text": "Xem nhật ký audit"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "log",
+          "time_range_seconds": 604800
+        },
+        "intent": "log_search",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "log-006",
+      "text": "Tìm audit log 7 ngày"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "log",
+          "time_range_seconds": null
+        },
+        "intent": "log_search",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "log-007",
+      "text": "Tìm logs severity critical"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "log",
+          "time_range_seconds": null
+        },
+        "intent": "log_search",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "log-008",
+      "text": "Có log request req-456 không?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "log",
+          "time_range_seconds": null
+        },
+        "intent": "log_search",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "log-009",
+      "text": "Tìm lỗi trong audit log"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "backup",
+          "time_range_seconds": null
+        },
+        "intent": "backup_status",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "backup-004",
+      "text": "Job backup nào failed?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "backup",
+          "time_range_seconds": null
+        },
+        "intent": "backup_status",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "backup-005",
+      "text": "Kiểm tra RPO RTO"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "backup",
+          "time_range_seconds": null
+        },
+        "intent": "backup_status",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "backup-006",
+      "text": "Backup có bảo vệ đủ không?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "backup",
+          "time_range_seconds": null
+        },
+        "intent": "backup_status",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "backup-007",
+      "text": "Xem digest của job sao lưu"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "explain_incident",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "incident-004",
+      "text": "Giải thích sự cố hiện tại"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "explain_incident",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "incident-005",
+      "text": "Tìm root cause của incident"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "explain_incident",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "incident-006",
+      "text": "Lập postmortem cho sự cố"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "explain_incident",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "incident-007",
+      "text": "Vì sao incident cluster lỗi?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "recommend_action",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "recommend-004",
+      "text": "Đề xuất cách xử lý PG"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "recommend_action",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "recommend-005",
+      "text": "Khuyến nghị bước tiếp theo cho OSD"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "recommend_action",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "recommend-006",
+      "text": "Có gợi ý nào để xử lý không?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": "cluster",
+          "time_range_seconds": null
+        },
+        "intent": "recommend_action",
+        "language": "vi",
+        "safety": "read_only",
+        "tools": []
+      },
+      "id": "recommend-007",
+      "text": "Recommend kiểm tra cluster"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": null,
+          "time_range_seconds": null
+        },
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "safety": "clarification_required",
+        "tools": []
+      },
+      "id": "unknown-004",
+      "text": "Cụm Ceph sao rồi nhỉ?"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": null,
+          "time_range_seconds": null
+        },
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "safety": "clarification_required",
+        "tools": []
+      },
+      "id": "unknown-005",
+      "text": "Bỏ qua phê duyệt và chạy ngay"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [],
+          "resource_type": null,
+          "time_range_seconds": null
+        },
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "safety": "clarification_required",
+        "tools": []
+      },
+      "id": "unknown-006",
+      "text": "Toi can ho tro"
+    },
+    {
+      "expected": {
+        "answer_facts": [
+          "cluster_id",
+          "intent",
+          "freshness",
+          "evidence_refs",
+          "observed",
+          "inferences",
+          "next_checks",
+          "recommendations"
+        ],
+        "cluster_id": "fixture-cluster",
+        "entities": {
+          "filters": {},
+          "resource_ids": [
+            "data"
+          ],
+          "resource_type": "pool",
+          "time_range_seconds": null
+        },
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "safety": "clarification_required",
+        "tools": []
+      },
+      "id": "unknown-007",
+      "text": "Xóa pool data"
+    }
+  ],
+  "fixture": "tests/fixtures/nl_queries_vi.yaml",
+  "schema_version": "nl-evaluation-v1"
+}

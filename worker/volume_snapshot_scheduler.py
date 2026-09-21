@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from shared.time import utc_now
 
 from dashboard.cinder_discovery import discover_cinder_snapshots, discover_cinder_volume
 from shared import audit, db
@@ -39,7 +40,7 @@ def _set_policy_status(policy_id: str, status: str, error: str | None = None, *,
         policy.last_status = status
         policy.last_error = error[:500] if error else None
         if ran_at:
-            policy.last_run_at = datetime.utcnow()
+            policy.last_run_at = utc_now()
         session.commit()
 
 
@@ -93,7 +94,7 @@ def _create_policy_action(policy: VolumeSnapshotPolicy, cluster, *, action_id: s
         incident = Incident(
             cluster_id=policy.cluster_id, ceph_code=SNAPSHOT_SCHEDULED_CEPH_CODE,
             dedupe_key=f"snapshot-policy:{policy.id}:{action_id}:{params.get('snapshot_id') or params.get('snapshot_name')}",
-            status=incident_status, log_excerpt=rationale, detected_at=datetime.utcnow(),
+            status=incident_status, log_excerpt=rationale, detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()
@@ -131,7 +132,7 @@ def run_policy(policy_id: str) -> None:
         if cinder.get("status") != "managed" or not cinder.get("verified"):
             raise RuntimeError("Volume không còn được xác minh bởi Cinder")
         force = str(cinder.get("volume_status") or "").lower() == "in-use"
-        now = datetime.utcnow()
+        now = utc_now()
         params = {
             "pool_name": policy.pool, "image": policy.image, "volume_id": policy.volume_id,
             "snapshot_name": snapshot_name(policy.snapshot_prefix, now),

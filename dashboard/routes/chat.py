@@ -1,9 +1,11 @@
 import asyncio
+import hashlib
 import json
 import logging
 import threading
 import uuid
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -28,11 +30,14 @@ from dashboard.routes.auth import require_login
 from dashboard.cluster_scope import selected_cluster
 from dashboard.vntime import to_utc_iso
 from shared import audit, db
+from shared.ai_redaction import redact_text
 from shared.ai_limits import normalize_rate_limits
 from shared.claude_cli import ClaudeCLIError, claude_status
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.cluster_nodes import configured_nodes
 from shared.ai_delegation import enqueue_task
+from shared.cluster_snapshot import DEFAULT_MAX_STALE_SECONDS, read_snapshot
+from shared.natural_language import resolve_natural_language_turn
 from shared.models import (
     Action,
     ActionClassification,
@@ -50,6 +55,7 @@ from worker.executor.ssh_executor import ExecutorError
 from worker.llm.router_client import VALID_ACTION_IDS
 from worker.policy import gate
 from worker.policy.gate import VALID_BLUESTORE_ACTION_IDS, VALID_MANAGEMENT_ACTION_IDS
+from worker.preflight import run_preflight
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +150,7 @@ def _lock_delegated_admission(session) -> None:
 def _check_delegated_admission(session, actor: str) -> None:
     """Bound delegated backlog atomically with the task insert transaction."""
     _lock_delegated_admission(session)
-    now = datetime.utcnow()
+    now = utc_now()
     global_active = (
         session.query(DelegatedAITask)
         .filter(DelegatedAITask.status.in_(_DELEGATED_ACTIVE_STATUSES))
@@ -257,6 +263,7 @@ def _message_to_dict(message: ChatMessage) -> dict:
         "proposed_command_preview": message.proposed_command_preview,
         "proposed_status": message.proposed_status,
         "tools_used": json.loads(message.tools_used) if message.tools_used else None,
+        "nl_context": json.loads(message.nl_context_json) if message.nl_context_json else None,
         "created_at": to_utc_iso(message.created_at),
     }
 
@@ -578,7 +585,7 @@ async def delete_chat_session(session_id: str, request: Request, user: str = Dep
                 # watches this status and can stop an in-flight provider call;
                 # deleting the task in the same transaction would hide the
                 # cancellation signal from that watcher.
-                now = datetime.utcnow()
+                now = utc_now()
                 session.query(DelegatedAISubtask).filter(
                     DelegatedAISubtask.task_id.in_(active_task_ids),
                     DelegatedAISubtask.status.not_in(("COMPLETED", "FAILED", "CANCELLED")),
@@ -722,10 +729,14 @@ async def post_chat_message(
             .limit(MAX_HISTORY_MESSAGES)
             .all()
         )
-        history = [
-            {"role": m.role, "content": m.content}
-            for m in reversed(recent_messages)
-        ]
+        history = []
+        for m in reversed(recent_messages):
+            item = {"role": m.role, "content": m.content}
+            if m.cluster_id is not None:
+                item["cluster_id"] = m.cluster_id
+            if m.nl_context_json:
+                item["nl_context"] = json.loads(m.nl_context_json)
+            history.append(item)
         previous = recent_messages[0] if recent_messages else None
         pending_node_command_id = (
             previous.id
@@ -740,7 +751,38 @@ async def post_chat_message(
             # in one transaction. Checking counts in an earlier session lets
             # concurrent HTTP requests bypass the global/actor limits.
             _check_delegated_admission(session, user)
-        user_message = ChatMessage(session_id=session_id, cluster_id=cluster.id, role="user", content=text, actor=user)
+        nl_context_json = None
+        try:
+            parsed_intent, conversation_state = resolve_natural_language_turn(
+                text,
+                history,
+                cluster_id=str(cluster.id),
+            )
+            safe_intent = {
+                "intent": parsed_intent.intent,
+                "language": parsed_intent.language,
+                "cluster_id": parsed_intent.cluster_id,
+                "resource_type": parsed_intent.resource_type,
+                "resource_ids": list(parsed_intent.resource_ids),
+                "filters": dict(parsed_intent.filters),
+                "time_range": parsed_intent.time_range.to_dict(),
+                "mode": parsed_intent.mode,
+                "confidence": parsed_intent.confidence,
+                "needs_clarification": parsed_intent.needs_clarification,
+                "parser_version": parsed_intent.parser_version,
+                "decision_reason": parsed_intent.decision_reason,
+            }
+            nl_context_json = json.dumps(
+                {"state": conversation_state.to_dict(), "intent": safe_intent},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        except Exception:  # pragma: no cover - parser must never block chat
+            logger.exception("natural_language.context_persistence_failed")
+        user_message = ChatMessage(
+            session_id=session_id, cluster_id=cluster.id, role="user", content=text,
+            actor=user, nl_context_json=nl_context_json,
+        )
         session.add(user_message)
         session.flush()
         user_message_dict = _message_to_dict(user_message)
@@ -789,7 +831,7 @@ async def post_chat_message(
                 if task is not None:
                     task.status = "FAILED"
                     task.error = "Không đưa được task vào hàng đợi xử lý"
-                    task.finished_at = datetime.utcnow()
+                    task.finished_at = utc_now()
                 if message is not None:
                     message.content = with_romantic_address(
                         "Không đưa được delegated task vào Worker; kiểm tra RabbitMQ/Worker.",
@@ -940,6 +982,10 @@ async def post_chat_message(
             proposed_command_preview=proposal.get("command_preview") if proposal else None,
             proposed_status="PENDING" if proposal else None,
             tools_used=json.dumps(tools_used) if tools_used else None,
+            nl_context_json=(
+                json.dumps(result["nl_context"], ensure_ascii=False, separators=(",", ":"))
+                if result.get("nl_context") else None
+            ),
         )
         session.add(assistant_message)
         session.commit()
@@ -1035,8 +1081,8 @@ async def cancel_delegated_task(task_id: str, request: Request, user: str = Depe
                 status="CANCELLED",
                 error="Đã hủy bởi operator",
                 lease_until=None,
-                finished_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                finished_at=utc_now(),
+                updated_at=utc_now(),
             )
         )
         if result.rowcount != 1:
@@ -1053,8 +1099,8 @@ async def cancel_delegated_task(task_id: str, request: Request, user: str = Depe
                 status="CANCELLED",
                 error="Sub-agent bị hủy theo delegated task",
                 lease_until=None,
-                finished_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                finished_at=utc_now(),
+                updated_at=utc_now(),
             )
         )
         message = session.get(ChatMessage, task.assistant_message_id)
@@ -1218,12 +1264,33 @@ async def _confirm_chat_action_core(
             classification,
         ) = _validate_chat_action_proposal(session, message)
 
+        origin_prompt = (
+            session.query(ChatMessage)
+            .filter(
+                ChatMessage.session_id == message.session_id,
+                ChatMessage.actor == user,
+                ChatMessage.role == "user",
+                ChatMessage.created_at <= message.created_at,
+            )
+            .order_by(ChatMessage.created_at.desc())
+            .first()
+        )
+        prompt_hash = hashlib.sha256(
+            str(origin_prompt.content if origin_prompt is not None else "").encode("utf-8")
+        ).hexdigest()
+        parsed_intent = None
+        if origin_prompt is not None and origin_prompt.nl_context_json:
+            try:
+                parsed_intent = json.loads(origin_prompt.nl_context_json).get("intent")
+            except (TypeError, ValueError, AttributeError):
+                parsed_intent = None
+
         incident = Incident(
             cluster_id=cluster.id,
             ceph_code=CHAT_REQUEST_CEPH_CODE,
             status=IncidentStatus.NEW.value,
             log_excerpt=f"Yêu cầu qua Chat bởi {user}: {message.proposed_rationale or ''}",
-            detected_at=datetime.utcnow(),
+            detected_at=utc_now(),
         )
         session.add(incident)
         session.flush()  # assigns incident.id, needed by the Action FK below
@@ -1242,6 +1309,10 @@ async def _confirm_chat_action_core(
             target_nodes=json.dumps(target_nodes),
             action_params=json.dumps(action_params) if action_params else None,
             proposed_command=resolved_command,
+            expires_at=(
+                utc_now() + timedelta(hours=max(1, int(settings.action_approval_expiry_hours)))
+                if not is_safe else None
+            ),
         )
         session.add(action)
         session.flush()
@@ -1256,6 +1327,20 @@ async def _confirm_chat_action_core(
             action_id=action.id,
             event_type=audit.EVENT_CHAT_ACTION_REQUESTED,
             actor=user,
+            evidence={
+                "prompt_hash": prompt_hash,
+                "parsed_intent": parsed_intent,
+                "action_id": action_id,
+                "preview": {
+                    "target_nodes": list(target_nodes),
+                    "command": redact_text(resolved_command) if resolved_command else None,
+                    "classification": classification.value,
+                },
+                "approval": {
+                    "required": not is_safe,
+                    "status": "pending_approval" if not is_safe else "approved",
+                },
+            },
         )
         if not is_safe:
             # Same event the Incident-triggered RISKY path fires
@@ -1312,12 +1397,64 @@ async def simulate_chat_action(message_id: str, user: str = Depends(require_logi
             action_classification,
         ) = _validate_chat_action_proposal(session, message)
         classification = action_classification.value
+        preflight_result = run_preflight(
+            session,
+            cluster_id=str(getattr(_cluster, "id", "") or "") or None,
+            action_id=action_id,
+        )
+        preflight = {
+            "allowed": bool(preflight_result.allowed),
+            "reason": preflight_result.reason,
+            "capability_status": preflight_result.capability_status,
+        }
+        health_snapshot = read_snapshot(
+            str(getattr(_cluster, "id", "") or ""),
+            max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+        ) if getattr(_cluster, "id", None) else None
+        health_preflight = {
+            "allowed": classification == ActionClassification.READ_ONLY.value or bool(
+                health_snapshot and not health_snapshot.get("stale", True)
+            ),
+            "stale": bool(health_snapshot.get("stale", True)) if health_snapshot else True,
+            "collected_at": health_snapshot.get("collected_at") if health_snapshot else None,
+            "reason": (
+                None if health_snapshot and not health_snapshot.get("stale", True)
+                else "Thiếu health snapshot fresh cho preflight; không coi preview là sẵn sàng execute."
+            ),
+        }
+        if not health_preflight["allowed"] and preflight["allowed"]:
+            preflight["allowed"] = False
+            preflight["reason"] = health_preflight["reason"]
+        preflight["health"] = health_preflight
         approval = {
             ActionClassification.READ_ONLY.value: "Không chạy thay đổi; chỉ đọc dữ liệu khi được xác nhận.",
             ActionClassification.SAFE.value: "Nếu xác nhận, Worker có thể thực hiện theo policy SAFE.",
             ActionClassification.RISKY.value: "Nếu xác nhận, action vẫn chờ operator duyệt qua Telegram.",
             ActionClassification.DESTRUCTIVE.value: "Nếu xác nhận, action vẫn chờ duyệt qua Telegram; xem kỹ tác động phá huỷ.",
         }[classification]
+        preview = {
+            "action": action_id,
+            "target": list(target_nodes),
+            "command": command_preview,
+            "risk": classification,
+            "expected_impact": (
+                "Thay đổi trạng thái theo action đã chọn; xác nhận tác động cụ thể "
+                "trước khi duyệt."
+            ),
+            "rollback_limitation": (
+                "Rollback phụ thuộc action/policy; không coi preview là cam kết "
+                "rollback tự động."
+            ),
+            "evidence_timestamp": to_utc_iso(message.created_at),
+            "expires_at": (
+                to_utc_iso(
+                    message.created_at
+                    + timedelta(hours=max(1, int(settings.action_approval_expiry_hours)))
+                )
+                if classification != ActionClassification.SAFE.value else None
+            ),
+            "preflight": preflight,
+        }
         return {
             "mode": "dry_run",
             "will_execute": False,
@@ -1327,6 +1464,8 @@ async def simulate_chat_action(message_id: str, user: str = Depends(require_logi
             "target_nodes": target_nodes,
             "command_preview": command_preview,
             "approval": approval,
+            "preview": preview,
+            "preflight": preflight,
             "steps": [
                 {"step": "validate_proposal", "status": "passed", "detail": "Action, node và tham số còn hợp lệ."},
                 {"step": "contact_cluster", "status": "skipped", "detail": "Mô phỏng không mở SSH và không gọi Ceph."},

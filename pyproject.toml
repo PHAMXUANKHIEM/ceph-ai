@@ -15,6 +15,7 @@ dependencies = [
     "bcrypt==5.0.0",
     "itsdangerous==2.2.0",
     "paramiko==5.0.0",
+    "cryptography==50.0.1",
     "openai==2.46.0",
     "httpx==0.28.1",
     "pyyaml==6.0.3",
@@ -47,5 +48,6 @@ dashboard = ["templates/*.html", "static/*"]
 testpaths = ["tests"]
 markers = [
     "live: makes real network/SSH calls to the Ceph lab cluster — excluded by default, run with `pytest -m live`",
+    "integration: requires an external service such as RabbitMQ",
 ]
-addopts = "-m 'not live'"
+addopts = "-m 'not live and not integration'"

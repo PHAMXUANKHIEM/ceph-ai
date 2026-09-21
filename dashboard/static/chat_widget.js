@@ -52,6 +52,7 @@
   var MINIMIZE_ICON = "⌄";
   var RESTORE_ICON = "⌃";
   var TYPING_ID = "chat-typing-indicator";
+  var typingStageTimer = null;
   // Must match dashboard/chat_client.py's MISSING_AI_CONFIG_MESSAGE exactly
   // — the backend sends this as plain text (chat bubbles never carry HTML),
   // so the frontend detects this exact known sentinel to render an actual
@@ -70,6 +71,7 @@
   var dualProcessing = false;
   var activeDualSessionId = null;
   var dualStopRequestedSessionId = null;
+  var activeChatAbortController = null;
   var activeDelegatedTasks = {};
   var unreadCount = 0;
 
@@ -406,6 +408,14 @@
       if (!paragraph) {
         paragraph = document.createElement("p");
         paragraph.className = "chat-md-p";
+        var sectionLabel = line.trim().toLowerCase();
+        if (/^(đã quan sát|observed|quan sát được)\s*:/.test(sectionLabel)) {
+          paragraph.classList.add("chat-nl-observed");
+        } else if (/^(suy luận|inferences?|nhận định)\s*:/.test(sectionLabel)) {
+          paragraph.classList.add("chat-nl-inferred");
+        } else if (/^(khuyến nghị|recommendations?|đề xuất)\s*:/.test(sectionLabel)) {
+          paragraph.classList.add("chat-nl-recommended");
+        }
         target.appendChild(paragraph);
       } else {
         paragraph.appendChild(document.createTextNode(" "));
@@ -441,6 +451,41 @@
     sources.appendChild(list);
     bubble.appendChild(sources);
     return bubble;
+  }
+
+  function buildNlContextDetail(context) {
+    if (!context || context.schema_version !== "nl-context-v1") return null;
+    var wrap = document.createElement("details");
+    wrap.className = "chat-nl-evidence-detail";
+    var summary = document.createElement("summary");
+    summary.textContent = "Evidence detail";
+    wrap.appendChild(summary);
+    var body = document.createElement("div");
+    body.className = "chat-nl-evidence-body";
+    var freshness = context.freshness || {};
+    var freshnessLabel = freshness.stale ? "stale" : "fresh";
+    if (freshness.partial) freshnessLabel += ", partial";
+    if (freshness.refreshing) freshnessLabel += ", refreshing";
+    var timestamps = (context.evidence_refs || []).map(function (item) {
+      return item.metadata && (item.metadata.collected_at || item.metadata.published_at);
+    }).filter(Boolean);
+    [
+      ["Intent", context.intent || "—"],
+      ["Cluster", context.cluster_id || "—"],
+      ["Timestamp", timestamps[0] || "—"],
+      ["Freshness", freshnessLabel],
+      ["Tools", (context.evidence_refs || []).map(function (item) { return item.tool_name; }).filter(Boolean).join(", ") || "—"],
+      ["Citations", (context.citations || []).map(function (item) { return item.source_id; }).filter(Boolean).join(", ") || "—"],
+    ].forEach(function (item) {
+      var row = document.createElement("div");
+      var label = document.createElement("strong");
+      label.textContent = item[0] + ": ";
+      row.appendChild(label);
+      row.appendChild(document.createTextNode(item[1]));
+      body.appendChild(row);
+    });
+    wrap.appendChild(body);
+    return wrap;
   }
 
   // Long operational answers are useful, but they must not push the composer
@@ -557,6 +602,10 @@
     if (message.proposed_action_id) {
       bubble.appendChild(buildProposal(message));
     }
+    if (!isUser && message.nl_context) {
+      var nlDetail = buildNlContextDetail(message.nl_context);
+      if (nlDetail) container.appendChild(nlDetail);
+    }
     if (!isUser && message.tools_used && message.tools_used.length) {
       container.appendChild(buildToolsUsedBadge(message.tools_used));
     }
@@ -637,6 +686,20 @@
 
     var bubble = document.createElement("div");
     bubble.className = "chat-msg-bubble";
+    var stage = document.createElement("span");
+    stage.className = "chat-typing-stage";
+    stage.textContent = "Đang hiểu câu hỏi";
+    stage.setAttribute("aria-live", "polite");
+    bubble.appendChild(stage);
+    var stages = ["Đang lấy evidence", "Đang phân tích", "Đang tổng hợp câu trả lời"];
+    var stageIndex = 0;
+    if (typingStageTimer) window.clearInterval(typingStageTimer);
+    typingStageTimer = window.setInterval(function () {
+      var current = document.getElementById(TYPING_ID);
+      if (!current || !stage.isConnected) return;
+      stageIndex = (stageIndex + 1) % stages.length;
+      stage.textContent = stages[stageIndex];
+    }, 1200);
     var dots = document.createElement("span");
     dots.className = "chat-typing-dots";
     dots.innerHTML = "<span></span><span></span><span></span>";
@@ -648,6 +711,10 @@
   }
 
   function removeTypingIndicator() {
+    if (typingStageTimer) {
+      window.clearInterval(typingStageTimer);
+      typingStageTimer = null;
+    }
     var el = document.getElementById(TYPING_ID);
     if (el) el.remove();
   }
@@ -904,7 +971,15 @@
   }
 
   if (stopBtn) {
-    stopBtn.addEventListener("click", function () { stopDualChat(activeDualSessionId); });
+    stopBtn.addEventListener("click", function () {
+      if (activeChatAbortController) {
+        stopBtn.disabled = true;
+        stopBtn.textContent = "Đang dừng…";
+        activeChatAbortController.abort();
+        return;
+      }
+      stopDualChat(activeDualSessionId);
+    });
   }
 
   // --- error line -----------------------------------------------------------
@@ -1595,6 +1670,10 @@
     // is ready (possibly several tool round trips), so this is the actual
     // wait, not a fixed-duration decoration.
     showTypingIndicator();
+    activeChatAbortController = new AbortController();
+    stopBtn.hidden = false;
+    stopBtn.disabled = false;
+    stopBtn.textContent = "Dừng";
 
     var requestBody = { content: text, session_id: currentSessionId, mode: modeSelectEl ? modeSelectEl.value : "single" };
     if (isDashboardInline && dashboardContext) requestBody.dashboard_context = dashboardContext;
@@ -1604,6 +1683,7 @@
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(requestBody),
+      signal: activeChatAbortController.signal,
     })
       .then(handleAuthRedirect)
       .then(function (response) {
@@ -1635,6 +1715,10 @@
       .catch(function (err) {
         removeTypingIndicator();
         if (err.message === "unauthenticated") return;
+        if (err.name === "AbortError") {
+          showError("Đã dừng yêu cầu chat.");
+          return;
+        }
         if (err.userMessage && err.userMessage.session_id) {
           currentSessionId = err.userMessage.session_id;
         }
@@ -1647,6 +1731,10 @@
         showError(err instanceof TypeError ? NETWORK_ERROR_MESSAGE : err.message);
       })
       .finally(function () {
+        activeChatAbortController = null;
+        stopBtn.hidden = true;
+        stopBtn.disabled = false;
+        stopBtn.textContent = "Dừng";
         inputEl.disabled = false;
         refreshSendEnabled();
         inputEl.focus();
@@ -1711,6 +1799,9 @@
     var btn = event.target.closest(".chat-confirm-btn");
     if (!btn) return;
     var messageId = btn.dataset.messageId;
+    if (!window.confirm("Xác nhận gửi action này vào hàng chờ approval? Lệnh chưa được chạy ở bước này.")) {
+      return;
+    }
     btn.disabled = true;
     btn.textContent = "Đang xử lý...";
 

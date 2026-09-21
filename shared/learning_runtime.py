@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from shared.time import utc_now
 
 from config.settings import settings
 from shared import heartbeat
@@ -91,7 +92,7 @@ def evaluate(
 ) -> LearningRuntimeDecision:
     """Return the current learning decision; never mutates the database."""
 
-    checked_at = now or datetime.utcnow()
+    checked_at = now or utc_now()
     if not settings.online_learning_enabled:
         return _blocked("DISABLED", "online learning feature flag is disabled", checked_at=checked_at)
     if settings.online_learning_kill_switch:

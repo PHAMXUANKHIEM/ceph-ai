@@ -44,6 +44,21 @@ def test_shared_shell_does_not_inject_redundant_generic_page_heading():
     assert 'className = "page-heading"' not in source
 
 
+def test_snapshot_pages_share_one_websocket_and_keep_http_fallback():
+    source = APP_JS.read_text(encoding="utf-8")
+    assert "window.CephClusterState" in source
+    assert "/ws/cluster-state?cluster_id=" in source
+    assert "ceph-cluster-state-connection" in source
+    for name in ("pgs.js", "nodes.js", "crush_map.js"):
+        page_source = (Path("dashboard/static") / name).read_text(encoding="utf-8")
+        assert "CephClusterState" in page_source
+        assert "ceph-cluster-state-connection" in page_source
+    # Event hints must remain invalidations; the pages re-read their scoped API
+    # rather than accepting a WebSocket payload as the data source.
+    assert "/api/pgs?cluster_id=" in (Path("dashboard/static") / "pgs.js").read_text(encoding="utf-8")
+    assert "/api/crush-map/tree?cluster_id=" in (Path("dashboard/static") / "crush_map.js").read_text(encoding="utf-8")
+
+
 def test_shared_navigation_seeds_every_non_permission_gated_group():
     source = APP_JS.read_text(encoding="utf-8")
 

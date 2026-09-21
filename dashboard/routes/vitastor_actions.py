@@ -3,6 +3,7 @@ dashboard/routes/actions.py, isolated under the ``/vitastor`` namespace."""
 
 import json
 from datetime import datetime
+from shared.time import utc_now
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
@@ -127,7 +128,7 @@ def _execute_approved(action_pk: str, actor: str) -> None:
         row = session.get(VitastorRemediationAction, action_pk)
         row.status = VitastorActionStatus.EXECUTED.value
         row.result_output = output
-        row.executed_at = datetime.utcnow()
+        row.executed_at = utc_now()
         record_audit(session, row.cluster_id, row.id, "EXECUTED", actor, output[-500:] or "(không có output)")
         session.commit()
 

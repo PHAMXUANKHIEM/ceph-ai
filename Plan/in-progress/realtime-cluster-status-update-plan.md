@@ -6,9 +6,9 @@
 
 **Ngày lập kế hoạch:** 2026-09-14
 
-**Trạng thái:** Đang triển khai từng lát cắt có test; RT-00 đến RT-05 đã có
-implementation, RT-06/RT-07 đã có event/fallback foundation và vẫn còn các
-mutation producer and status-component items mở.
+**Trạng thái:** Đang triển khai theo vertical slice có test; RT-00 đến RT-06
+đã có foundation, RT-07 còn một số trang cần chuẩn hóa UI, RT-08/RT-09 đang
+được thực hiện theo inventory và source mapping.
 
 ---
 
@@ -139,6 +139,26 @@ WebSocket này chưa phát thay đổi của:
   gửi lệnh.
 - Mọi dữ liệu phải tiếp tục scoped bằng `cluster_id`; không fallback âm thầm về
   cluster mặc định.
+
+### 3.5 Repo và mã nguồn tham khảo đã chọn
+
+Các repo dưới đây chỉ là nguồn tham khảo cho pattern; không copy nguyên kiến
+trúc hoặc đưa thêm service khi vertical slice hiện tại chưa chứng minh cần thiết:
+
+- [`sysid/sse-starlette`](https://github.com/sysid/sse-starlette): SSE production
+  cho FastAPI/Starlette, heartbeat, disconnect và test patterns.
+- [`Azure/fetch-event-source`](https://github.com/Azure/fetch-event-source):
+  client SSE có custom headers, retry, visibility handling và error policy.
+- [`AkshatSoni26/longshot`](https://github.com/AkshatSoni26/longshot): pattern
+  replay-then-tail, sequence monotonic, Redis Streams + live tail và idempotency.
+- [`centrifugal/centrifugo`](https://github.com/centrifugal/centrifugo): lựa
+  chọn scale-out khi cần nhiều realtime gateway; chưa đưa vào dependency mặc định.
+- [`ag2ai/faststream`](https://github.com/ag2ai/faststream): tham khảo adapter
+  RabbitMQ/Redis/Kafka và AsyncAPI; chưa thay `shared/mq.py` trong lát cắt này.
+- [`TanStack/query`](https://github.com/TanStack/query): cache/invalidation phía
+  frontend; event chỉ làm invalidate/refetch snapshot, không đẩy payload lớn.
+
+Nguồn mapping mutation nội bộ: [`docs/realtime/mutation-inventory.md`](../../docs/realtime/mutation-inventory.md).
 
 ---
 
@@ -524,12 +544,16 @@ thị ngay; snapshot mới tự thay đúng section.
   chặn và `cluster_id` trên query phải khớp cluster đã chọn.
 - [x] Collector/snapshot publisher phát `snapshot_changed` sau khi commit
   snapshot/section thành công.
-- [ ] Worker publish `action_state_changed` sau mỗi transition state bền vững.
-- [ ] CRUSH/Pool mutation publish sau post-check, không publish “success” ngay
-  khi mới enqueue.
-- [ ] Debounce event liên tiếp trong khoảng 100–300 ms để một batch query chỉ
-  tạo một lần refresh UI; hiện server giữ event mới nhất và client coalesce
-  bằng generation.
+- [x] Worker/DB publish `action_state_changed` sau mỗi transition state bền
+  vững, sau commit và không sau rollback. Evidence: `shared/db.py` hooks and
+  `tests/test_dashboard_ws.py` action-state commit/rollback tests.
+- [x] CRUSH/Pool and related mutation scope publish sau post-check-confirmed
+  `Incident.RESOLVED`, không publish “success” ngay khi mới enqueue. Evidence:
+  resolved-incident mapping tests for Pool, CRUSH, RGW, and Deploy.
+- [x] Debounce event liên tiếp trong khoảng 100–300 ms để một batch query chỉ
+  tạo một lần refresh UI; server giữ event mới nhất, React coalesces trong
+  150 ms, và legacy snapshot pages share one socket. Evidence: commit
+  `38ecab34` and `tests/test_dashboard_ws.py`.
 - [x] Client reconnect exponential backoff; HTTP polling vẫn là fallback khi
   WebSocket không được proxy hỗ trợ hoặc event bị mất.
 
@@ -538,58 +562,92 @@ không làm UI đứng; event cluster B không xuất hiện ở tab cluster A.
 
 ### RT-07 — Chuẩn hóa frontend status/freshness
 
-- [~] Health and Pools React pages now use abortable, sequence-safe reads,
-  shared cluster event invalidation, hidden-tab handling, and HTTP fallback.
-  Equivalent treatment for every remaining section is still open.
+- [~] Health and Pools React pages plus PG/CRUSH/Nodes snapshot pages now use
+  scoped event invalidation, hidden-tab handling, and HTTP fallback. Health/
+  Pools use abortable sequence-safe reads; equivalent treatment for every
+  remaining section is still open.
 - [x] Tạo shared hook `useClusterSnapshotEvents()` với reconnect backoff,
   cluster filtering và no-payload event handling.
-- [ ] Các trạng thái phải phân biệt:
+- [~] Các trạng thái phải phân biệt:
   - `loading`: chưa có snapshot;
   - `refreshing`: đang lấy snapshot mới nhưng vẫn có dữ liệu cũ;
   - `fresh`: trong freshness budget;
   - `stale`: quá budget nhưng còn snapshot dùng được;
   - `error`: refresh thất bại;
-  - `unknown`: chưa từng có dữ liệu.
-- [ ] Không dùng `window.location.reload()` để cập nhật read-only state.
-- [ ] Fetch có `AbortController`, tránh response cũ ghi đè response mới.
-- [ ] Không chạy polling khi tab hidden; khi tab visible lại fetch một lần.
-- [ ] Cập nhật timestamp bằng `collected_at` từ server, không bằng `updated_at`
-  lúc route render.
-- [ ] Nút `Refresh` chỉ trigger background refresh và disable chống double click;
-  không chờ SSH trong browser request.
-- [ ] Giữ giao diện cũ khi JS lỗi ở mức HTML snapshot tối thiểu hoặc báo lỗi rõ;
-  không để toàn trang trắng.
+  - `unknown`: chưa từng có dữ liệu. React health/Pools implement the shared
+    labels; remaining pages still need the same visual contract.
+- [~] Không dùng `window.location.reload()` để cập nhật read-only state trong
+  health, Pools, PGs, CRUSH và Nodes; mutation/progress pages still have
+  intentional reloads.
+- [~] Fetch có `AbortController`, tránh response cũ ghi đè response mới trong
+  React health/Pools and sequence guards in migrated legacy reads; the remaining
+  static pages still need abort wiring.
+- [x] Không chạy polling khi tab hidden; khi tab visible lại fetch một lần cho
+  các migrated snapshot pages.
+- [~] Cập nhật timestamp bằng `collected_at` từ server cho migrated snapshot
+  pages; remaining pages still need the shared freshness component.
+- [~] Nút `Refresh` chỉ trigger background refresh và disable chống double click;
+  health/Pools/CRUSH satisfy this, while remaining mutation pages are open.
+- [x] Giữ giao diện cũ khi JS lỗi ở mức HTML snapshot tối thiểu hoặc báo lỗi rõ;
+  server-rendered snapshot pages keep their initial table/status markup.
 
 **Exit gate:** mọi trang có cùng cách hiển thị freshness, không còn refresh loop
 3 giây và không nhấp nháy toàn trang.
 
-**RT-06/RT-07 evidence (2026-09-14):**
+**RT-06/RT-07 evidence (2026-09-19):**
 
 - `tests/test_cluster_events.py`, `tests/test_cluster_snapshot.py`,
   `tests/test_dashboard_ws.py`: **18 passed**.
-- Health/Pool/PG/CRUSH/Nodes/collector regression: **68 passed**.
+- Health/Pool/PG/CRUSH/Nodes/collector regression: **138 passed, 1 warning**
+  in the current realtime gate; Node 20 static bridge syntax checks and the
+  broader deterministic release suite also pass.
 - Node 20 frontend type-check and production build: **passed**.
-- Remaining: action-state producers, mutation post-check invalidation,
-  universal freshness badge, and event/load observability.
+- Remaining: universal freshness badge, browser multi-tab proof, and
+  event/load observability.
 
 ### RT-08 — Invalidation sau mutation và liên kết trạng thái
 
-- [ ] Liệt kê mọi mutation ảnh hưởng cluster state:
+- [x] Liệt kê mọi mutation ảnh hưởng cluster state và map sang section/event;
+  evidence: `docs/realtime/mutation-inventory.md` (2026-09-21).
+  Các hạng mục còn lại trong RT-08 chỉ được đánh dấu sau khi producer/post-check
+  tương ứng có test và evidence riêng:
   - pool create/edit/delete/protection;
   - CRUSH add/remove/reweight/rule change;
   - OSD/service restart;
   - upgrade/deploy;
   - RGW/S3 configuration;
   - node/cluster config.
-- [ ] Sau khi Worker nhận request: trạng thái UI là `queued/running`, chưa
-  invalidate thành công.
-- [ ] Sau khi executor hoàn tất: invalidate section liên quan và trigger
-  collector ưu tiên.
-- [ ] Chỉ chuyển `succeeded` sau post-check thấy state Ceph đã đổi; nếu chưa
-  đổi thì giữ `verifying` và tiếp tục poll có giới hạn.
-- [ ] Event payload chứa `action_id`, `cluster_id`, `sections` và generation
-  mới nếu đã có; không chứa SSH key/token/command secret.
-- [ ] Nếu post-check thất bại, UI hiển thị lỗi và snapshot trước đó vẫn còn.
+- [x] Sau khi Worker nhận request: trạng thái UI là `queued/running`, chưa
+  invalidate thành công; Action commit events đã phát đúng hai trạng thái.
+  Evidence: `test_action_lifecycle_realtime_contract_reaches_postcheck_success`
+  (2026-09-21).
+- [x] Sau khi executor hoàn tất và post-check xác nhận thành công: ghi marker
+  priority refresh theo cluster; Watcher đọc marker để chạy status/inventory
+  collector sớm hơn cadence, không block request Dashboard. Evidence:
+  `shared/cluster_snapshot.py`, `watcher/main.py`,
+  `test_priority_refresh_marker_is_cluster_scoped_and_bounded` — **55 passed**
+  (2026-09-21).
+- [x] Chỉ chuyển `succeeded` sau post-check thấy state Ceph đã đổi; nếu chưa
+  đổi thì giữ `verifying` và tiếp tục poll có giới hạn. Evidence: lifecycle
+  contract test và `tests/test_incident_verification.py` (2026-09-21).
+- [x] Snapshot post-check event payload chứa bounded `action_id`,
+  `action_status`, `cluster_id`, `sections` và generation mới nếu đã có; không
+  chứa SSH key/token/command secret. Evidence: commit `12906def` and
+  `test_postcheck_snapshot_event_carries_bounded_action_metadata`.
+- [x] Chuẩn hóa bounded contract cho `action_state_changed`: giữ nguyên
+  `action_status` nội bộ và bổ sung `action_state` gồm `queued/running/
+  verifying/succeeded/failed/rejected`; WebSocket forward contract và frontend
+  type đã được cập nhật. Evidence: `tests/test_cluster_events.py`,
+  `tests/test_dashboard_ws.py` — **24 passed** (2026-09-21).
+- [ ] Nối contract `action_state_changed` vào mọi consumer/UI của các trang
+  mutation/progress; không đánh dấu mục này chỉ vì payload đã chuẩn hóa.
+- [~] Consumer Cluster Overview và Pools đã nhận `snapshot_refresh_failed` để
+  hiển thị lỗi post-check và giữ snapshot cũ; `snapshot_changed` sẽ gỡ cảnh
+  báo. Các trang mutation/progress còn lại vẫn cần migrate.
+- [x] Nếu post-check thất bại sau `VERIFYING`, phát `snapshot_refresh_failed`
+  với `action_state=failed`; snapshot tốt trước đó không bị invalidate. Evidence:
+  `test_failed_postcheck_publishes_error_without_claiming_snapshot_success` —
+  **39 passed** (2026-09-21).
 
 **Exit gate:** thao tác thành công làm Pools/CRUSH/health cập nhật trong SLA;
 thao tác thất bại không làm mất dữ liệu cũ hoặc báo thành công giả.
@@ -905,3 +963,15 @@ hơn; vấn đề cần giải quyết là data path, không phải tốc độ 
 **Điểm bắt đầu đề xuất:** đọc và review RT-00 đến RT-04 trước; sau khi chốt
 schema snapshot và cadence health mới viết code. Đây là phần quyết định 80% độ
 mượt của toàn bộ các trang còn lại.
+
+## 13. Execution log
+
+| Ngày | Work package | Kết quả | Evidence |
+| --- | --- | --- | --- |
+| 2026-09-21 | RT-08.1 mutation inventory | Hoàn thành; phân loại mutation theo section, lifecycle event và post-check owner | `docs/realtime/mutation-inventory.md` |
+| 2026-09-21 | Source selection | Hoàn thành; chọn SSE + fetch-event-source + replay-then-tail làm pattern tham khảo | Mục 3.5 |
+| 2026-09-21 | RT-08.2 action state contract | Hoàn thành contract bounded, giữ raw status, forward qua WebSocket và khai báo frontend type; backend realtime tests đạt | `tests/test_cluster_events.py`, `tests/test_dashboard_ws.py` — **24 passed** |
+| 2026-09-21 | RT-08.3 lifecycle/post-check gate | Xác nhận event sequence `queued → running → verifying → succeeded`; không phát `succeeded` trước post-check | `tests/test_dashboard_ws.py`, `tests/test_incident_verification.py` — **38 passed** |
+| 2026-09-21 | RT-08.4 failed post-check event | Phát `snapshot_refresh_failed` với bounded action metadata, giữ snapshot trước đó và không báo thành công giả | `shared/db.py`, `tests/test_dashboard_ws.py` — **39 passed** |
+| 2026-09-21 | RT-08.5 priority collector refresh | Post-check success ghi marker persistent; Watcher ưu tiên status/inventory refresh và marker tự hết hạn | `shared/cluster_snapshot.py`, `watcher/main.py`, `tests/test_cluster_snapshot.py` — **55 passed** |
+| 2026-09-21 | RT-08.6 first UI consumers | Cluster Overview và Pools hiển thị failure event, giữ snapshot cũ và tự clear khi snapshot mới thành công; frontend type-check/build đạt bằng Node 22 tạm thời | `ceph-health-dashboard/src/useClusterSnapshotEvents.ts`, `CephDashboard.tsx`, `PoolsPage.tsx`, `dashboard/static/ceph-health/app.js` |

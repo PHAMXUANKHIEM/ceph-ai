@@ -199,6 +199,13 @@ def test_nodes_page_and_metrics_use_selected_additional_cluster(dashboard_client
     )
     response = dashboard_client.get("/api/nodes/10.99.0.20/metrics")
     assert response.status_code == 200
+    # The endpoint deliberately refreshes telemetry in the background on a
+    # cache miss so the first paint is not blocked by SSH. Wait for that
+    # refresh before asserting the selected cluster's credentials.
+    for _ in range(50):
+        if calls:
+            break
+        time.sleep(0.01)
     assert calls == [("10.99.0.20", "ceph-secondary", "/keys/secondary")]
 
     # A host from the default cluster must not pass the selected cluster's whitelist.

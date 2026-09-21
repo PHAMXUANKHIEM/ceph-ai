@@ -11,6 +11,7 @@ page itself).
 """
 
 from datetime import datetime
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -170,7 +171,7 @@ async def create_capability_matrix_entry(
         inner_command=inner_command,
         doc_url=doc_url,
         verified_by=user,
-        verified_at=datetime.utcnow(),
+        verified_at=utc_now(),
         min_major=min_major_value,
         max_major=max_major_value,
         flag=flag.strip() or None,

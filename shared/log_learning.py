@@ -5,6 +5,7 @@ import hashlib
 import json
 from collections import defaultdict
 from datetime import datetime
+from shared.time import utc_now
 
 from shared.models import (
     Action,
@@ -152,8 +153,8 @@ def record_finding_sample(session, finding: LogFinding, *, now: datetime | None 
         label="UNVERIFIED",
         eligible_for_learning=False,
         exclusion_reason=exclusion,
-        created_at=now or datetime.utcnow(),
-        updated_at=now or datetime.utcnow(),
+        created_at=now or utc_now(),
+        updated_at=now or utc_now(),
     )
     session.add(sample)
     session.flush()
@@ -180,7 +181,7 @@ def evaluate_sample(session, sample: LogLearningSample, *, now: datetime | None 
         sample.eligible_for_learning = True
         sample.exclusion_reason = None
         sample.outcome_source = "OPERATOR_VERDICT"
-        sample.verified_at = sample.operator_verdict_at or (now or datetime.utcnow())
+        sample.verified_at = sample.operator_verdict_at or (now or utc_now())
     else:
         finding = session.get(LogFinding, sample.log_finding_id)
         sample.incident_id = finding.correlated_incident_id if finding else sample.incident_id
@@ -198,7 +199,7 @@ def evaluate_sample(session, sample: LogLearningSample, *, now: datetime | None 
                 sample.eligible_for_learning = True
                 sample.exclusion_reason = None
                 sample.outcome_source = "OPERATOR_VERDICT" if bad_verdict else "RECURRENCE_EVALUATOR"
-                sample.verified_at = case.verified_at or (now or datetime.utcnow())
+                sample.verified_at = case.verified_at or (now or utc_now())
             elif case.outcome == "VERIFIED_SUCCESS":
                 sample.state = "VERIFIED_SUCCESS"
                 sample.label = "VERIFIED_SUCCESS"
@@ -226,7 +227,7 @@ def evaluate_sample(session, sample: LogLearningSample, *, now: datetime | None 
                 sample.eligible_for_learning = True
                 sample.exclusion_reason = None
                 sample.outcome_source = "EXECUTION_RESULT"
-                sample.verified_at = case.verified_at or (now or datetime.utcnow())
+                sample.verified_at = case.verified_at or (now or utc_now())
             else:
                 sample.state = "DIAGNOSED"
                 sample.label = "UNVERIFIED"
@@ -242,7 +243,7 @@ def evaluate_sample(session, sample: LogLearningSample, *, now: datetime | None 
             sample.label = "UNVERIFIED"
             sample.eligible_for_learning = False
             sample.exclusion_reason = "no correlated incident"
-    sample.updated_at = now or datetime.utcnow()
+    sample.updated_at = now or utc_now()
     after = (
         sample.incident_id, sample.remediation_case_id, sample.action_id, sample.state,
         sample.label, sample.eligible_for_learning, sample.exclusion_reason,
@@ -265,7 +266,7 @@ def set_operator_verdict(
         raise ValueError("a reason of at least 5 characters is required")
     if len(note) > 2000:
         raise ValueError("operator note is too long")
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     previous = {
         "verdict": sample.operator_verdict,
         "note": sample.operator_note,
@@ -291,7 +292,7 @@ def reclassify_unverified_samples(session, *, now: datetime | None = None, limit
     """Apply the current server catalogue to unverified legacy snapshots."""
     from watcher.log_semantics import derive_identity
 
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     samples = (
         session.query(LogLearningSample)
         .filter(LogLearningSample.eligible_for_learning.is_(False))
@@ -380,7 +381,7 @@ def correlate_unverified_samples(session, *, now: datetime | None = None, limit:
         sample.incident_id = incident.id
         sample.state = "CORRELATED"
         sample.exclusion_reason = "awaiting Remediation Case"
-        sample.updated_at = now or datetime.utcnow()
+        sample.updated_at = now or utc_now()
         changed += 1
     session.commit()
     return changed
@@ -388,7 +389,7 @@ def correlate_unverified_samples(session, *, now: datetime | None = None, limit:
 
 def reconcile_samples(session, *, now: datetime | None = None, limit: int = 500) -> int:
     """Create missing samples and refresh outcome projections in bounded batches."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     existing_ids = {row[0] for row in session.query(LogLearningSample.log_finding_id).all()}
     findings = (
         session.query(LogFinding).filter(~LogFinding.id.in_(existing_ids)).order_by(LogFinding.created_at).limit(limit).all()
@@ -410,7 +411,7 @@ def recompute_fault_stats(session, *, now: datetime | None = None) -> int:
     """Idempotently replace audit-only aggregates; never proposes promotion."""
     from shared.trust_engine import wilson_lower_bound
 
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     grouped: dict[tuple[str, str, str, str, str], list[LogLearningSample]] = defaultdict(list)
     for sample in session.query(LogLearningSample).all():
         key = (

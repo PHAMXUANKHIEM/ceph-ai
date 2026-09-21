@@ -44,6 +44,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime
+from shared.time import utc_now
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -231,7 +232,7 @@ def create_or_resolve_database_size_incident(
             incident = Incident(
                 ceph_code=DATABASE_SIZE_HIGH_PREFIX,
                 status=IncidentStatus.PENDING_APPROVAL.value,
-                detected_at=datetime.utcnow(),
+                detected_at=utc_now(),
                 log_excerpt=rationale,
             )
             session.add(incident)

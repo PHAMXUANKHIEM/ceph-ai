@@ -5,6 +5,7 @@ import asyncio
 import json
 import uuid
 from collections import deque
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -351,9 +352,9 @@ async def save_cluster_connection(
                         setattr(existing, key, value)
                     existing.is_active = True
                     existing.last_status_json = json.dumps(status)
-                    existing.last_checked_at = datetime.utcnow()
+                    existing.last_checked_at = utc_now()
                 else:
-                    session.add(VitastorCluster(**values, is_active=True, last_status_json=json.dumps(status), last_checked_at=datetime.utcnow(), created_by=user))
+                    session.add(VitastorCluster(**values, is_active=True, last_status_json=json.dumps(status), last_checked_at=utc_now(), created_by=user))
                 session.commit()
     return templates.TemplateResponse(request, "vitastor/settings.html", _settings_context(user, active_section="cluster", cluster_error=error, cluster_success=None if error else f"Đã kết nối cụm {values['name']!r}.", cluster_values=values))
 
@@ -371,7 +372,7 @@ async def check_cluster_connection(request: Request, cluster_id: str, user: str 
             status = await asyncio.to_thread(query_status, *args)
             from datetime import datetime
             with db.SessionLocal() as session:
-                cluster = session.get(VitastorCluster, cluster_id); cluster.last_status_json = json.dumps(status); cluster.last_checked_at = datetime.utcnow(); session.commit()
+                cluster = session.get(VitastorCluster, cluster_id); cluster.last_status_json = json.dumps(status); cluster.last_checked_at = utc_now(); session.commit()
             success = f"Kết nối cụm {name!r} hoạt động."
         except VitastorConnectionError as exc: error = f"Kiểm tra {name!r} thất bại: {exc}"
     return templates.TemplateResponse(request, "vitastor/settings.html", _settings_context(user, active_section="cluster", cluster_error=error, cluster_success=success))

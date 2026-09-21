@@ -7,9 +7,16 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
     # A real (ephemeral, CI-only) broker — tests/test_mq.py needs one it
     # doesn't share with any other consumer, which a locally-run dev
     # instance can't guarantee (see that file's own comment on this).
@@ -28,22 +35,151 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: npm
+          cache-dependency-path: ceph-health-dashboard/package-lock.json
 
       - name: Install dependencies
-        run: pip install -e .[dev]
+        run: |
+          python -m pip install --upgrade pip setuptools
+          python -m pip install --upgrade 'pip>=26.2'
+          python -m pip --version
+          pip install -e .[dev]
 
       - name: Build Ceph Health dashboard
-        run: npm --prefix ceph-health-dashboard install && npm --prefix ceph-health-dashboard run build
+        run: npm --prefix ceph-health-dashboard ci && npm --prefix ceph-health-dashboard run build
 
-      - name: Run tests
-        run: pytest
+      - name: Run tests (Python ${{ matrix.python-version }})
+        run: |
+          mkdir -p artifacts
+          pytest --junitxml="artifacts/pytest-${{ matrix.python-version }}.xml"
         # `-m 'not live'` is already pytest's default (pyproject.toml
         # addopts) — the `live` suite makes real SSH/network calls to the
         # actual Ceph lab cluster and only ever runs manually, never in CI.
 
-  deploy:
+      - name: Summarize test failures
+        if: failure()
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: |
+          python - <<'PY'
+          import html
+          import os
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          xml_path = pathlib.Path("artifacts") / f"pytest-{os.environ['PYTHON_VERSION']}.xml"
+          summary_path = pathlib.Path("artifacts") / f"pytest-failures-{os.environ['PYTHON_VERSION']}.txt"
+          failures = []
+          if xml_path.exists():
+              root = ET.parse(xml_path).getroot()
+              for case in root.iter("testcase"):
+                  failure = case.find("failure")
+                  error = case.find("error")
+                  detail = failure if failure is not None else error
+                  if detail is None:
+                      continue
+                  name = f"{case.attrib.get('classname', '')}::{case.attrib.get('name', '')}"
+                  message = (detail.attrib.get("message") or detail.text or "").strip()
+                  failures.append((name, message[:1000]))
+          lines = [f"Python {os.environ['PYTHON_VERSION']} pytest failures: {len(failures)}"]
+          for name, message in failures:
+              safe = message.replace("\n", " ").replace("%", "%25").replace("\r", "%0D")
+              print(f"::error title=pytest failure,file=.github::{name}: {safe}")
+              lines.append(f"- `{name}`: {message}")
+          summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          github_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if github_summary:
+              with open(github_summary, "a", encoding="utf-8") as stream:
+                  stream.write("## Pytest failures\n\n" + "\n".join(lines) + "\n")
+          PY
+
+      - name: Upload test evidence (Python ${{ matrix.python-version }})
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-evidence-python-${{ matrix.python-version }}-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: ignore
+
+  quality:
     needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # quality_gate.py compares the pushed commit with github.event.before.
+          # A shallow checkout does not contain that baseline SHA.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: npm
+          cache-dependency-path: ceph-health-dashboard/package-lock.json
+
+      - name: Install application and pinned quality tools
+        run: |
+          python -m pip install --upgrade pip setuptools
+          python -m pip install --upgrade 'pip>=26.2'
+          python -m pip --version
+          pip install -e .[dev]
+          pip install ruff==0.12.10 mypy==1.17.1 bandit==1.8.6 pip-audit==2.9.0
+          npm --prefix ceph-health-dashboard ci
+
+      - name: Run blocking quality and security gate
+        env:
+          # Compare changed-file diagnostics with the commit's parent/base so
+          # the existing static-analysis backlog cannot hide new regressions.
+          QUALITY_BASE_SHA: ${{ github.event.before || github.event.pull_request.base.sha }}
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          python scripts/ci/quality_gate.py 2>&1 | tee artifacts/quality-gate.log
+
+      - name: Surface quality gate evidence
+        if: failure()
+        run: |
+          summary="artifacts/quality/quality-summary.txt"
+          if [ -f "$summary" ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error title=quality gate::$line"
+            done < "$summary"
+            {
+              echo "## Quality gate failure"
+              cat "$summary"
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ -f artifacts/quality-gate.log ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error title=quality gate traceback::$line"
+            done < artifacts/quality-gate.log
+            {
+              echo "## Quality gate traceback"
+              cat artifacts/quality-gate.log
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error title=quality gate::quality-summary.txt was not produced"
+          fi
+
+      - name: Upload quality and security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-security-evidence-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: warn
+
+  deploy:
+    needs: [test, quality]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: [self-hosted, linux, x64, ceph-ai-lab]
     timeout-minutes: 30
@@ -54,6 +190,7 @@ jobs:
       - name: Deploy pushed commit to the container stack
         env:
           DEPLOY_SHA: ${{ github.sha }}
+          CEPH_AI_DEPLOY_ALLOWED_DIRTY_PATHS: Plan/in-progress/natural-language-ceph-ai-plan.md
           # The active compose deployment lives here. A self-hosted runner
           # may override this repository variable for another lab host.
           CEPH_AI_DEPLOY_DIR: ${{ vars.CEPH_AI_DEPLOY_DIR || '/root/ceph-ai' }}

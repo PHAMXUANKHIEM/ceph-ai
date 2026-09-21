@@ -11,6 +11,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from shared.time import utc_now
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -130,7 +131,7 @@ def _update_error_alert_with_ai(
             if event is not None:
                 event.telegram_humanization_status = "completed"
                 event.telegram_humanization_error = None
-                event.telegram_humanized_at = datetime.utcnow()
+                event.telegram_humanized_at = utc_now()
                 session.commit()
     except Exception as exc:
         logger.exception("RGW alert AI update failed for message %s", message_id)
@@ -289,7 +290,7 @@ def _naive_utc(value: object) -> datetime:
         if value.tzinfo is not None:
             return value.astimezone(timezone.utc).replace(tzinfo=None)
         return value
-    return datetime.utcnow()
+    return utc_now()
 
 
 def _event_name(event: RgwAccessAuditEvent) -> str:
@@ -483,10 +484,10 @@ def _deliver_pending(session) -> None:
             )
             if external_queued:
                 event.external_alert_queued = True
-                event.external_alert_queued_at = datetime.utcnow()
+                event.external_alert_queued_at = utc_now()
         if not telegram_configured:
             event.telegram_sent = True
-            event.telegram_sent_at = datetime.utcnow()
+            event.telegram_sent_at = utc_now()
             event.telegram_error = None
             session.commit()
             continue
@@ -505,7 +506,7 @@ def _deliver_pending(session) -> None:
                 break
             continue
         event.telegram_sent = True
-        event.telegram_sent_at = datetime.utcnow()
+        event.telegram_sent_at = utc_now()
         event.telegram_error = None
         session.commit()
 
@@ -562,7 +563,7 @@ def _deliver_pending(session) -> None:
             )
             if external_queued:
                 event.external_alert_queued = True
-                event.external_alert_queued_at = datetime.utcnow()
+                event.external_alert_queued_at = utc_now()
 
         if needs_ai:
             if not telegram_configured:
@@ -587,7 +588,7 @@ def _deliver_pending(session) -> None:
 
         if not telegram_configured:
             event.telegram_sent = True
-            event.telegram_sent_at = datetime.utcnow()
+            event.telegram_sent_at = utc_now()
             event.telegram_error = None
             session.commit()
             continue
@@ -610,7 +611,7 @@ def _deliver_pending(session) -> None:
                 break
             continue
         event.telegram_sent = True
-        event.telegram_sent_at = datetime.utcnow()
+        event.telegram_sent_at = utc_now()
         event.telegram_error = None
         if message_id is None:
             event.telegram_humanization_status = "failed"
@@ -688,12 +689,12 @@ def _process_analysis_jobs(limit: int = 1) -> None:
             if event is None or cluster is None:
                 job.status = "FAILED"
                 job.error = "source event or cluster no longer exists"
-                job.finished_at = datetime.utcnow()
+                job.finished_at = utc_now()
                 session.commit()
                 continue
             job.status = "RUNNING"
             job.attempts += 1
-            job.started_at = datetime.utcnow()
+            job.started_at = utc_now()
             job_id, cluster_id = job.id, job.cluster_id
             host, message = event.rgw_host, event.message
             session.expunge(cluster)
@@ -746,7 +747,7 @@ def _process_analysis_jobs(limit: int = 1) -> None:
                 row.status = "COMPLETED"
                 row.ingest_run_id = run_id
                 row.finding_id = finding_id
-                row.finished_at = datetime.utcnow()
+                row.finished_at = utc_now()
                 session.commit()
             _send_analysis_status(
                 "✅ AI PHÂN TÍCH RGW HOÀN TẤT\n"
@@ -762,7 +763,7 @@ def _process_analysis_jobs(limit: int = 1) -> None:
                 if row:
                     row.status = "FAILED"
                     row.error = public_error[:1000]
-                    row.finished_at = datetime.utcnow()
+                    row.finished_at = utc_now()
                     session.commit()
             try:
                 _send_analysis_status(
@@ -788,7 +789,7 @@ def prune_old_access_events(now: datetime | None = None) -> int:
     này không có khoá ngoại nào trỏ vào (không như log_intel's
     LogFinding -> LogIngestRun), nên không cần thứ tự xoá đặc biệt như
     `watcher/log_intel.py::prune_old_rows`. Trả về số dòng đã xoá."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     cutoff = now - timedelta(days=max(1, settings.rgw_access_audit_retention_days))
     with db.SessionLocal() as session:
         deleted = (

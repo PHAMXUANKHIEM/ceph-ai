@@ -55,3 +55,11 @@ def test_time_range_supports_hours_and_yesterday():
     assert route_natural_language("xem log trong 2 giờ").time_range.duration_seconds == 7200
     assert route_natural_language("xem log hôm qua").time_range.duration_seconds == 86400
 
+
+def test_intent_cache_returns_isolated_filter_mapping():
+    first = route_natural_language("Kiểm tra OSD 12 trên 80%", cluster_id="prod")
+    first.filters["test_only"] = True
+
+    second = route_natural_language("Kiểm tra OSD 12 trên 80%", cluster_id="prod")
+
+    assert second.filters == {"utilization_gte": 80}

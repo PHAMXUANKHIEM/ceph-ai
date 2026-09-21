@@ -48,7 +48,10 @@ JOB = "ceph-ai-node-metrics"
 def _forecast_alert_events_table_available(session) -> bool:
     """Return whether the post-RR-03 event table is installed."""
     try:
-        return bool(inspect(session.get_bind()).has_table("node_resource_forecast_alert_events"))
+        # Use the session's active connection.  Inspecting the Engine directly
+        # can borrow a second connection (notably with SQLite StaticPool) and
+        # roll back the transaction that contains the lifecycle update.
+        return bool(inspect(session.connection()).has_table("node_resource_forecast_alert_events"))
     except Exception:
         return False
 
@@ -916,6 +919,10 @@ def sync_forecast_alerts(
         )
 
     with db.SessionLocal() as session:
+        # Resolve schema compatibility before any lifecycle writes.  Keeping
+        # the inspection outside the pending-write phase prevents an
+        # inspector from interfering with the active transaction.
+        forecast_events_available = _forecast_alert_events_table_available(session)
         existing = {
             row.metric: row
             for row in session.query(NodeResourceForecastAlert).filter_by(
@@ -1279,7 +1286,7 @@ def sync_forecast_alerts(
                 evidence_version=alert.evidence_version,
                 changed_at=now_naive,
             ))
-            if _forecast_alert_events_table_available(session):
+            if forecast_events_available:
                 session.add(NodeResourceForecastAlertEvent(
                     alert_id=alert.id,
                     cluster_name=alert.cluster_name,

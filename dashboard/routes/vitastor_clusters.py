@@ -3,6 +3,7 @@
 import asyncio
 import json
 from datetime import datetime
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -145,16 +146,16 @@ async def create_cluster(
         if metadata_backup_location:
             status["initial_metadata_backup"] = {
                 "path": str(metadata_backup_location).splitlines()[-1],
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": utc_now().isoformat() + "Z",
             }
         if existing is not None:
             for key, value in submitted.items():
                 setattr(existing, key, value)
             existing.is_active = True
             existing.last_status_json = json.dumps(status)
-            existing.last_checked_at = datetime.utcnow()
+            existing.last_checked_at = utc_now()
         else:
-            session.add(VitastorCluster(**submitted, is_active=True, last_status_json=json.dumps(status), last_checked_at=datetime.utcnow(), created_by=user))
+            session.add(VitastorCluster(**submitted, is_active=True, last_status_json=json.dumps(status), last_checked_at=utc_now(), created_by=user))
         session.commit()
     action = "cập nhật/đổi tên" if existing_id else "thêm"
     suffix = f" Đã lưu metadata ban đầu tại {metadata_backup_location!r}." if metadata_backup_location else ""
@@ -176,7 +177,7 @@ async def check_cluster(request: Request, cluster_id: str, user: str = Depends(r
         return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, error=f"Kiểm tra {cluster_name!r} thất bại: {exc}"))
     with db.SessionLocal() as session:
         cluster = session.get(VitastorCluster, cluster_id)
-        cluster.last_status_json, cluster.last_checked_at = json.dumps(status), datetime.utcnow()
+        cluster.last_status_json, cluster.last_checked_at = json.dumps(status), utc_now()
         session.commit()
     return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, success=f"Kết nối cụm {cluster_name!r} hoạt động."))
 

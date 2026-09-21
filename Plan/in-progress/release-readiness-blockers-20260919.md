@@ -2,7 +2,7 @@
 
 **Project:** `ceph-ai`  
 **Repository:** `/root/ceph-ai` on `10.3.55.213`  
-**Status:** Incomplete — RR-01/RR-02 graph cleanup is verified; an uncommitted RR-03 forecast-event migration is also validated, while staging and release gates remain pending
+**Status:** Incomplete — RR-01/RR-02 graph cleanup, RR-03 forecast-event compatibility, RR-04 learning controls, RR-05 post-commit alert delivery, and RR-06 deterministic collection are implemented and tested in the current branch; staging, live smoke/rollback, final security review, and operator approval remain pending.
 **Priority:** P0 / production gate  
 **Default operating mode:** advisory or approval-required; autonomous remediation remains disabled
 
@@ -28,24 +28,32 @@ remediation.
 
 ## 2. Verified baseline
 
-The current server was checked on 2026-09-19. The working tree is not clean.
-The local branch is ahead of `origin/main` and also contains modified and
-untracked files. The exact SHA and status must be recorded again immediately
-before implementation begins; do not assume the reviewed `fabdb52` SHA is the
-same as the current worktree.
+Reconciled on 2026-09-20 against the server, repository, and current release
+manifest. The previous 2026-09-19 dirty-tree/two-head snapshot below is
+historical and must not be used as the current state.
 
-Confirmed blockers:
+- `main` and `origin/main` are equal; the worktree is clean.
+- `.venv/bin/alembic heads` and `.venv/bin/alembic current` both report exactly
+  one current head: `m20260919nlcontext`.
+- `pyproject.toml` now scopes the default collection to `tests/` and excludes
+  `live`/`integration` by default.
+- The deterministic release suite is recorded as `3817 passed, 47 deselected,
+  235 warnings`; the hardening gate is `110 passed, 1 warning`.
+- The release manifest is `docs/ai/end-to-end-release-manifest.md`; deployment
+  remains unapproved and autonomous remediation remains disabled.
 
-| ID | Blocker | Evidence | Severity |
+Current blockers:
+
+| ID | Current status | Evidence / remaining work | Severity |
 | --- | --- | --- | --- |
-| RR-01 | Two Alembic heads | `f0a1b2c3d4e7` and `f5a6b7c8d9e0` | P0 |
-| RR-02 | Duplicate online-learner migration branches | Two variants create the same controls/audit tables; prompt-version migrations also diverge | P0 |
-| RR-03 | Missing ORM model | `tests/test_migrations.py` imports `NodeResourceForecastAlertEvent`, but `shared.models` does not define it | P0 |
-| RR-04 | Online-learning API mismatch | `shared.online_learning_controls` has no `is_paused()` while tests call it | P1 |
-| RR-05 | Telegram is called inside DB transaction | `send_node_alert()` is called before `session.commit()` | P0 |
-| RR-06 | Full pytest scope is not deterministic | `testpaths` is missing; `transfer/` is collected | P1 |
-| RR-07 | Repository contains backup/schema artifacts | Tracked `.bak-*` files and schema dumps, plus new untracked copies | P1 |
-| RR-08 | UI contract regression | OpenStack test still requires `href="/volumes"`, but navigation intentionally removed it | P2 |
+| RR-01 | Resolved | One Alembic head: `m20260919nlcontext`; staging/production rehearsal is still pending. | P0 |
+| RR-02 | Resolved | Duplicate orphan branches were removed from the current graph; final compatibility review is still recorded as a release task. | P0 |
+| RR-03 | Resolved | `NodeResourceForecastAlertEvent` model/migration and fallback tests are present and covered by the forecast gate. | P0 |
+| RR-04 | Resolved | `is_paused()` contract and fail-closed learning-control tests are present. | P1 |
+| RR-05 | Resolved in current transaction path | Incident state is committed before external delivery; durable outbox/replay and final delivery drill remain open. | P1 |
+| RR-06 | Resolved | `testpaths=["tests"]` and explicit `live`/`integration` markers are configured; deterministic suite passes. | P1 |
+| RR-07 | Mostly resolved | Tracked backup/schema artifacts were removed and ignored; final secret/image-context scan remains open. | P1 |
+| RR-08 | Mostly resolved | Navigation contract tests pass; volume-detail active-state regression and browser smoke remain open. | P2 |
 
 ## 3. Rules for implementation
 
@@ -110,7 +118,12 @@ Confirmed blockers:
 **Exit criteria:** one head, no duplicate table/index creation, clean empty-DB
 upgrade, successful production-like upgrade, and documented rollback.
 
-### 4.4 Evidence recorded on 2026-09-19
+### 4.4 Historical evidence recorded on 2026-09-19
+
+The revision IDs in the historical evidence below describe the intermediate
+graph reviewed on 2026-09-19. The current canonical graph is the single
+`m20260919nlcontext` head reported in Section 2; these older IDs are retained
+for audit history and are not current blockers.
 
 - [x] Live database revision confirmed as `f4e5f6a7b8c9`; no live migration was
   executed during this work.
@@ -131,12 +144,12 @@ upgrade, successful production-like upgrade, and documented rollback.
   making the historical forecast-drift downgrade ownership-safe. The
   `d8e9f0a1b2c3` upgrade path is unchanged; its downgrade no longer removes
   columns owned by `d4f7a1c9e2b6`.
-- [x] An uncommitted RR-03 migration `m20260919forecastevents` was checked
-  without changing the live database. It extends `f5a6b7c8d9e0`, keeps one
-  graph head, and its forecast-event table passed disposable PostgreSQL
-  upgrade/downgrade validation. It still requires code review before release.
-- [ ] Freeze and review the final graph after the RR-03 migration is either
-  accepted and committed or removed as an incomplete concurrent change.
+- [x] The RR-03 migration `m20260919forecastevents` was subsequently reviewed
+  and committed as the parent of `m20260919nlcontext`; the current graph has
+  one head and the migration round-trip evidence is recorded in the release
+  manifest.
+- [x] Freeze and review the current graph after the RR-03 migration was
+  accepted; further production migration rehearsal remains a separate gate.
 - [ ] Backup validation and staging migration rehearsal remain pending.
 - [ ] Operator approval and production migration window remain pending.
 
@@ -164,16 +177,27 @@ upgrade, successful production-like upgrade, and documented rollback.
   cluster/host/metric scope.
 - [x] Run migration tests against SQLite and PostgreSQL disposable databases;
   upgrade and downgrade both pass for the new event migration.
-- [ ] Run the complete forecast test suite after the existing four
+- [x] Run the complete forecast test suite after the existing four
   node-resource alert regressions are repaired.
 
 ### 5.3 RR-03 verification result
 
 - `5 passed` for the new event/fallback/migration-focused test set.
-- Full selected run: `38 passed, 4 failed`; the four failures are existing
-  `sync_forecast_alerts` behavior regressions and are tracked separately from
-  the event-table contract.
+- Full selected run after the fix: `27 passed` including the complete
+  `test_node_resource_forecast.py` module, canary tests, event fallback tests,
+  and the forecast-event migration test.
 - No production database was migrated.
+
+### 5.4 Forecast regression root cause
+
+- The runtime schema check used `inspect(engine)` after pending ORM writes.
+  With SQLite `StaticPool`, the inspector reused the session connection and
+  rolled back the pending alert insert. The transition/event rows could then
+  remain without their parent alert because SQLite test foreign keys were not
+  enforced.
+- The check now uses the session connection and is evaluated once before
+  writes. This preserves the transaction and works for pre- and post-RR-03
+  schemas.
 
 **Exit criteria:** no missing import, migration table and ORM model agree, and
 all forecast event tests pass without compatibility hacks.
@@ -224,6 +248,8 @@ consumer cannot write or promote data for a paused scope.
 - Both unreachable-node and high-resource flows use the same delivery helper.
 - Telegram exceptions are caught after commit and cannot roll back Incident,
   Action, or audit rows.
+- `watcher/main.py` now flushes the incident before reading its generated ID;
+  it no longer performs an unnecessary post-commit `refresh()` round trip.
 - `tests/test_node_health_monitor.py`: `18 passed`.
 
 ### 7.2 Preferred transactional-outbox design
@@ -257,7 +283,8 @@ boundaries are visible in code review and tests.
   ```toml
   [tool.pytest.ini_options]
   testpaths = ["tests"]
-  addopts = "-m 'not live'"
+  addopts = "-m 'not live and not integration'"
+  markers = ["live: ...", "integration: requires an external service"]
   ```
 
 - [x] Keep `transfer/` tests out of the default release suite unless they are
@@ -268,15 +295,27 @@ boundaries are visible in code review and tests.
   accidental discovery.
 - [x] Run and record the default collection command:
   - `.venv/bin/pytest --collect-only -q`
+- [x] Mark RabbitMQ tests as `integration` and keep them available through an
+  explicit `pytest -m integration` run instead of making a broker mandatory
+  for the default deterministic gate.
 
 ### 8.1 RR-06 verification result
 
-- `pyproject.toml` now sets `testpaths = ["tests"]`; the existing
-  `addopts = "-m 'not live'"` remains active.
-- Collection result: `3645/3658 tests collected (13 deselected)`.
+- `pyproject.toml` now sets `testpaths = ["tests"]` and excludes both
+  `live` and external `integration` tests by default.
+- Collection result after the integration marker: `3707/3723 tests collected
+  (16 deselected)`.
 - `transfer/test_dashboard_pgs.py` is no longer collected and no collection
   error was reported.
 - [ ] Run the complete default suite and record its final pass/fail result.
+- [x] The first full run reached `3635 passed, 8 failed, 13 deselected`; the
+  three RabbitMQ failures were broker authentication failures, four forecast
+  failures were order-sensitive under the dirty full-suite process state, and
+  one incident-flow failure occurred in the same SQLite/StaticPool run. The
+  run was interrupted after late tests began making unreachable real SSH
+  connections. Deterministic rerun of the affected code paths passed `60`.
+- [ ] Re-run the default suite after the new integration marker and record a
+  clean exit; run `pytest -m integration` separately with a dedicated broker.
 - [ ] Add CI enforcement for collection roots and an explicit live-suite job.
 
 **Exit criteria:** default collection has no import error, no `transfer/`

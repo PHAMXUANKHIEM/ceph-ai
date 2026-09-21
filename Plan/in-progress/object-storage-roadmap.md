@@ -234,16 +234,19 @@ toàn bộ object list vào memory hoặc làm lộ credential S3.
 
 ### 5. Observability, Alerting và Reporting — ưu tiên P1
 
-- [ ] **5.1 Thu thập metric RGW/bucket/user**: requests, bytes in/out, 4xx/5xx,
-  latency và quota usage; chọn Prometheus nếu sẵn có, fallback collector
-  read-only có retention.
+- [~] **5.1 Thu thập metric RGW/bucket/user**: đã có API read-only
+  `/api/object-storage/rgw-metrics` lấy bounded native RGW audit-log/fallback,
+  tổng hợp requests, bytes, 4xx/5xx, latency, top bucket/requester/User-Agent
+  và time range theo cluster; cache stale-if-error dùng chung audit collector.
+  Quota/capacity usage, Prometheus source và retention lịch sử dài hạn còn thiếu.
 - [ ] **5.2 Dashboard trend/top consumers** theo bucket, user, endpoint và
   thời gian; filter phải giữ cluster scope.
 - [ ] **5.3 Alert rules**: quota 80/90/95%, 5xx spike, access denied spike,
   hot bucket và access bất thường; deduplicate/resolve lifecycle qua Telegram.
 - [ ] **5.4 Export report CSV/JSON** có giới hạn quyền và không chứa secret.
-- [ ] **5.5 Test**: threshold, dedup, timezone, metric missing/stale và
-  cross-cluster alert isolation.
+- [~] **5.5 Test**: đã có test bounded aggregation, error-rate, deduplication,
+  cluster scope, missing evidence và stale cache contract; còn thiếu threshold,
+  timezone/retention dài hạn và cross-cluster alert isolation khi bật alert.
 
 **Hoàn thành khi:** cảnh báo chỉ gửi khi transition thật, có link về đúng bucket
 và cluster, không spam khi metric nguồn gián đoạn.
@@ -298,6 +301,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 
 | Ngày | Mục | Trạng thái | Thay đổi / bằng chứng | Kiểm thử | Commit / việc tiếp theo |
 |---|---:|---|---|---|---|
+| 2026-09-20 | 5.1/5.5 | Một phần | Thêm API `GET /api/object-storage/rgw-metrics` dùng audit stream RGW bounded, trả request/bytes/status/error-rate/latency/top bucket/requester/User-Agent/time range và evidence gap quota rõ ràng. Không trả raw log/secret, không tạo Action; Prometheus/quota usage/retention dài hạn/alert lifecycle còn thiếu. | `tests/test_rgw_audit_intelligence.py` + Object Storage/dashboard gate: `233 passed`; AI/RGW gate: `401 passed`; compileall và `git diff --check` đạt | Commit `05807bb9`; còn live RGW/Prometheus acceptance |
 | 2026-08-16 | Kế hoạch | Hoàn thành | Tạo roadmap, tiêu chí an toàn, thứ tự triển khai và quy trình bàn giao. Baseline access-log đã được rà mã nguồn nhưng chưa audit test trong roadmap này. | Chưa chạy — tài liệu kế hoạch | Bắt đầu từ 0.4 và 1.1 |
 | 2026-08-16 | 1.1–1.4 | Đang làm | Thêm Object Storage Bucket Overview/Detail read-only, API scoped theo cluster, RGW bucket-list/stats adaptor an toàn, search tên, pagination, empty/error state, per-row stats degradation và điều hướng. Thêm regression suite. | `python3 -m py_compile` route/adaptor/test và `node --check dashboard/static/app.js` đạt; `git diff --check` sạch. `pytest` chưa chạy: Python thiếu pytest/FastAPI và ensurepip nên không tạo được venv tạm. | Chưa commit. Cài `python3-venv` hoặc cung cấp môi trường test rồi chạy `tests/test_dashboard_object_storage.py` + hồi quy RGW; hoàn tất filter/sort và detail enrichment. |
 | 2026-08-17 | 1.1–1.4 | Hoàn thành | Thêm filter owner/quota/usage, sort, pagination giữ filter, capability versioning/object-lock fail-soft, chỉ báo policy/lifecycle, deep link Access Log điền sẵn bucket, request/error trend, operator read-only, giới hạn metadata fan-out và redaction credential trong lỗi RGW. | `.venv/bin/pytest -q tests/test_rgw_access_log.py tests/test_dashboard_object_storage.py tests/test_dashboard_bucket_access_log.py`: 54 passed; `git diff --check` sạch. | Commit `699560f`, đã push `main`. |

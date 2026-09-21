@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from shared.time import utc_now
 from typing import TYPE_CHECKING
 
 import httpx
@@ -233,16 +234,16 @@ def check_overdue_and_failed_backups() -> None:
             target_rpo = rpo_hours
         targets.append((pool, image, f"{pool}/{image}", target_rpo))
     for pool, image, label, target_rpo in targets:
-        _check_target(pool, image, label, datetime.utcnow() - timedelta(hours=target_rpo),
+        _check_target(pool, image, label, utc_now() - timedelta(hours=target_rpo),
                       rpo_hours=target_rpo)
     _check_target(None, None, "metadata cụm",
-                  datetime.utcnow() - timedelta(hours=metadata_rpo_hours),
+                  utc_now() - timedelta(hours=metadata_rpo_hours),
                   rpo_hours=metadata_rpo_hours, job_type="metadata")
 
     drill_config = policy.get("restore_drill") or {}
     if all(drill_config.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image")):
         _check_target(drill_config["pool"], drill_config["image"], "RestoreDrill",
-                      datetime.utcnow() - timedelta(hours=drill_rpo_hours),
+                      utc_now() - timedelta(hours=drill_rpo_hours),
                       rpo_hours=drill_rpo_hours, job_type="restore_drill")
 
     with db.SessionLocal() as session:
@@ -257,8 +258,8 @@ def check_overdue_and_failed_backups() -> None:
         ]
         for pool, image, label in cluster_targets:
             _check_target(pool, image, label,
-                          datetime.utcnow() - timedelta(hours=cluster_rpo_hours),
+                          utc_now() - timedelta(hours=cluster_rpo_hours),
                           cluster=cluster, rpo_hours=cluster_rpo_hours)
         _check_target(None, None, f"metadata cụm ({cluster.name})",
-                      datetime.utcnow() - timedelta(hours=metadata_rpo_hours),
+                      utc_now() - timedelta(hours=metadata_rpo_hours),
                       cluster=cluster, rpo_hours=metadata_rpo_hours, job_type="metadata")

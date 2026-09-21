@@ -39,7 +39,7 @@ def _alert_event_table_available(session) -> bool:
     does not, so import-time model detection is not sufficient.
     """
     try:
-        return bool(inspect(session.get_bind()).has_table("node_resource_forecast_alert_events"))
+        return bool(inspect(session.connection()).has_table("node_resource_forecast_alert_events"))
     except Exception:
         return False
 

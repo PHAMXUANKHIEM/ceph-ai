@@ -11,7 +11,16 @@ x-app: &app
     CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
     CEPH_AI_RUNTIME_DIR: /run/ceph-ai
     CEPH_AI_CONTAINERIZED: "true"
+    SSH_KEY_PATH: /var/lib/ceph-ai/full-executor-ssh/id_ed25519
   init: true
+  user: "10001:10001"
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=128m
   stop_grace_period: 45s
   restart: unless-stopped
   volumes:
@@ -50,12 +59,11 @@ services:
       # never write auth.json, even though the CLI itself is now reachable.
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
-      - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
-      - ${SSH_KEY_PATH}.pub:${SSH_KEY_PATH}.pub:ro
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
+      SSH_KEY_PATH: /var/lib/ceph-ai/full-executor-ssh/id_ed25519
       TELEGRAM_LISTENER_ENABLED: "false"
       # The Dashboard's own Settings page (Codex/Claude account login,
       # rate-limit lookup) and web Chatbox spawn these CLIs directly, same
@@ -86,13 +94,11 @@ services:
       # same two subtrees and needs them writable despite /app being :ro.
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
-      - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
-      - ${SSH_KEY_PATH}.pub:${SSH_KEY_PATH}.pub:ro
-      - /etc/ceph-ai-secrets/single-full-executor.token:/run/secrets/single-full-executor.token:ro
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
+      SSH_KEY_PATH: /var/lib/ceph-ai/full-executor-ssh/id_ed25519
       # The dedicated gateway is the sole getUpdates consumer in containers.
       # dashboard-web keeps TELEGRAM_LISTENER_ENABLED=false, so this must be
       # enabled here or Telegram commands are silently never received.
@@ -102,7 +108,7 @@ services:
       CEPH_AI_DUAL_WORKSPACE: /var/lib/ceph-ai/dual-workspace
       PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       SINGLE_FULL_EXECUTOR_URL: http://full-executor:8787
-      SINGLE_FULL_EXECUTOR_TOKEN_FILE: /run/secrets/single-full-executor.token
+      SINGLE_FULL_EXECUTOR_TOKEN_FILE: /var/lib/ceph-ai/full-executor-secrets/token
     depends_on: [full-executor]
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('telegram-ai', stale_after_seconds=30)['healthy'])\""]
@@ -173,12 +179,11 @@ services:
       - /root/.codex/packages:/opt/codex-packages:ro
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
-      - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
-      - ${SSH_KEY_PATH}.pub:${SSH_KEY_PATH}.pub:ro
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
+      SSH_KEY_PATH: /var/lib/ceph-ai/full-executor-ssh/id_ed25519
       PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('watcher', stale_after_seconds=45)['healthy'])\""]
@@ -219,12 +224,11 @@ services:
       - /root/.codex/packages:/opt/codex-packages:ro
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
-      - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
-      - ${SSH_KEY_PATH}.pub:${SSH_KEY_PATH}.pub:ro
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
+      SSH_KEY_PATH: /var/lib/ceph-ai/full-executor-ssh/id_ed25519
       PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('worker', stale_after_seconds=45)['healthy'])\""]
@@ -238,6 +242,9 @@ services:
     mem_limit: 1g
     memswap_limit: 1g
     pids_limit: 256
+    # Repository mutation remains an explicit root exception until the repair
+    # job gets its own write-only workspace and approval-scoped identity.
+    user: "root"
     command: ["python", "-m", "worker.code_repair_supervisor"]
     volumes:
       - ./:/app:rw

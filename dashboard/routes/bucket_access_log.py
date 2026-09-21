@@ -20,6 +20,7 @@ these 2 fields, not the only one.
 import asyncio
 import logging
 from datetime import datetime, timezone
+from shared.time import utc_now
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -106,7 +107,7 @@ def _apply_logging(cluster, payload: dict, mode: str) -> None:
         if payload["action"] == "disable":
             if row:
                 row.enabled = False
-                row.updated_at = datetime.utcnow()
+                row.updated_at = utc_now()
             session.commit()
             return
         if row is None:
@@ -119,7 +120,7 @@ def _apply_logging(cluster, payload: dict, mode: str) -> None:
         row.mode = mode
         row.enabled = True
         row.last_error = None
-        row.updated_at = datetime.utcnow()
+        row.updated_at = utc_now()
         session.commit()
 
 
@@ -559,10 +560,10 @@ async def bucket_logging_execute(request: Request, user: str = Depends(require_l
     except Exception as exc:
         with db.SessionLocal() as session:
             row = session.get(ObjectStorageAuditEntry, audit_id)
-            row.result = "failed"; row.error_message = "Không áp dụng được Bucket Logging"; row.completed_at = datetime.utcnow()
+            row.result = "failed"; row.error_message = "Không áp dụng được Bucket Logging"; row.completed_at = utc_now()
             session.commit()
         raise HTTPException(status_code=502, detail="Không áp dụng được Bucket Logging") from exc
     with db.SessionLocal() as session:
         row = session.get(ObjectStorageAuditEntry, audit_id)
-        row.result = "succeeded"; row.completed_at = datetime.utcnow(); session.commit()
+        row.result = "succeeded"; row.completed_at = utc_now(); session.commit()
     return {"ok": True, "mode": mode, "request_id": audit_id}

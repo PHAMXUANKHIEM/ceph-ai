@@ -3,7 +3,11 @@ import json
 import logging
 import re
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from shared.time import utc_now
+from functools import lru_cache
+from pathlib import Path
 from typing import Awaitable, Callable
 
 import httpx
@@ -18,13 +22,24 @@ from shared.codex_app_server import CodexAppServer, CodexAppServerError, codex_a
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared.ai_routing import choose_model
+from shared.natural_language.nl_metrics import record_natural_language_metric
 from shared.ai_output import output_budget_instruction, trim_text_to_token_budget
 from shared import db
+from shared.cluster_snapshot import claim_refresh, mark_refreshing
 from shared.natural_language import (
+    ActionPlanningError,
     SnapshotQueryRunner,
+    build_read_only_rca,
+    build_default_knowledge_store,
     execute_query_plan,
     plan_query,
+    render_read_only_rca,
     route_natural_language,
+    resolve_natural_language_turn,
+    parse_provider_answer,
+    render_provider_answer,
+    validate_provider_answer,
+    validate_action_preview,
 )
 from shared.incident_postmortem import build_timeline
 from shared.models import CephCapacitySample, Incident
@@ -33,6 +48,7 @@ from watcher.capacity_forecast import forecasts as capacity_forecasts
 from watcher.capacity_failure_simulation import simulate as capacity_failure_simulation
 from watcher.disk_failure_prediction import predict as disk_failure_prediction
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics, collect_node_metrics_with
+from watcher import cluster_snapshot_collector
 from watcher.ceph_client import (
     CephQueryError,
     query_rbd_trash,
@@ -145,6 +161,171 @@ _BLUESTORE_HISTORY_RE = re.compile(
     r"(?i)(?:BLUESTORE_NO_PER_POOL_OMAP|legacy\s+\(not per-pool\)|bluestore.*omap|omap.*bluestore)"
 )
 
+_NL_RAG_COMPONENTS = {
+    "cluster_health": "health",
+    "osd_health": "osd",
+    "pg_health": "pg",
+    "crush_analysis": "crush",
+    "log_search": "log",
+    "backup_status": "backup",
+    "explain_incident": "rca",
+}
+
+
+@lru_cache(maxsize=1)
+def _natural_language_knowledge_store():
+    return build_default_knowledge_store(Path(__file__).resolve().parents[1])
+
+
+@lru_cache(maxsize=256)
+def _retrieve_natural_language_runbook_cached(
+    query: str,
+    component: str | None,
+    language: str | None,
+    index_revision: str,
+):
+    """Cache immutable retrieval results and invalidate by index revision."""
+
+    return _natural_language_knowledge_store().retrieve(
+        query,
+        component=component,
+        language=language,
+        top_k=3,
+        strict_version=True,
+    )
+
+
+def _retrieve_natural_language_runbook(intent, user_text):
+    component = _NL_RAG_COMPONENTS.get(intent.intent) or intent.resource_type
+    try:
+        store = _natural_language_knowledge_store()
+        language = intent.language if intent.language in {"vi", "en"} else None
+        return _retrieve_natural_language_runbook_cached(
+            str(user_text), component, language, store.manifest()["index_revision"]
+        )
+    except Exception:  # pragma: no cover - defensive chat availability boundary
+        logger.exception("natural_language.runbook_retrieval_failed")
+        return None
+
+
+def _natural_language_rollout_allowed(actor: str, cluster=None) -> bool:
+    if auth.is_admin_user(actor):
+        return True
+    cluster_id = str(getattr(cluster, "id", "") or "").strip()
+    allowed = {
+        item.strip() for item in str(
+            getattr(settings, "ai_natural_language_rollout_clusters", "")
+        ).split(",") if item.strip()
+    }
+    return bool(cluster_id and cluster_id in allowed and not getattr(
+        settings, "ai_natural_language_admin_only", True
+    ))
+
+
+def _natural_language_rollout_evidence(actor: str, cluster=None, *, allowed: bool) -> dict:
+    """Return redacted rollout metadata safe to persist with chat evidence.
+
+    This is deliberately configuration-only: it records which access scope and
+    feature flags governed a turn, never the rollout allowlist itself or any
+    prompt/provider secret.  Persisting it with ``nl_context`` makes shadow and
+    canary decisions reconstructable after a rollback.
+    """
+
+    is_admin = auth.is_admin_user(actor)
+    scope = "admin" if is_admin else "canary" if allowed else "shadow"
+    return {
+        "scope": scope,
+        "rollout_allowed": bool(allowed),
+        "admin_only": bool(getattr(settings, "ai_natural_language_admin_only", True)),
+        "feature_flags": {
+            "query_planner": bool(settings.ai_natural_language_query_planner_enabled),
+            "snapshot_runner": bool(settings.ai_natural_language_snapshot_runner_enabled),
+            "rag": bool(settings.ai_natural_language_rag_enabled),
+            "fast_path": bool(settings.ai_natural_language_fast_path_enabled),
+            "structured_output": bool(settings.ai_natural_language_structured_output_enabled),
+            "snapshot_refresh": bool(settings.ai_natural_language_snapshot_refresh_enabled),
+            "mcp": bool(settings.ai_natural_language_mcp_enabled),
+        },
+    }
+
+
+def _attach_natural_language_context(result: dict, context: dict | None) -> dict:
+    if context is not None:
+        if result.pop("_nl_validation_rejected", False):
+            context.setdefault("telemetry", {})["validation_rejected"] = True
+        result["nl_context"] = context
+    return result
+
+
+def _apply_structured_natural_language_output(
+    result: dict,
+    report,
+    *,
+    enabled: bool,
+) -> dict:
+    """Validate provider JSON against deterministic facts, failing closed."""
+    if not enabled or report is None:
+        return result
+    try:
+        answer = parse_provider_answer(result.get("reply_text") or "")
+        answer = validate_provider_answer(
+            answer,
+            report.to_dict(),
+            cluster_id=report.cluster_id,
+        )
+    except Exception:
+        logger.warning("natural_language.structured_output_invalid", exc_info=True)
+        record_natural_language_metric("validation_rejection", source="structured_output")
+        result["_nl_validation_rejected"] = True
+        result["reply_text"] = render_read_only_rca(report)
+        result["citations"] = []
+        return result
+    if answer.validation_errors:
+        record_natural_language_metric("validation_rejection", source="structured_output")
+        result["_nl_validation_rejected"] = True
+        logger.warning(
+            "natural_language.structured_output_rejected errors=%s",
+            ",".join(answer.validation_errors),
+        )
+        result["reply_text"] = render_read_only_rca(report)
+        result["citations"] = []
+        return result
+    result["reply_text"] = render_provider_answer(answer)
+    result["citations"] = list(answer.citations)
+    return result
+
+
+_NLP_SNAPSHOT_REFRESH_TASKS: set[asyncio.Task] = set()
+
+
+async def _enqueue_natural_language_snapshot_refresh(cluster) -> bool:
+    """Enqueue one non-blocking health refresh after a stale read."""
+    cluster_id = str(getattr(cluster, "id", "") or "").strip()
+    if not cluster_id or not claim_refresh(cluster_id):
+        return False
+
+    async def refresh() -> None:
+        try:
+            mon_nodes = [
+                node.strip() for node in str(getattr(cluster, "ceph_mon_nodes", "")).split(",")
+                if node.strip()
+            ] or None
+            await asyncio.to_thread(
+                cluster_snapshot_collector.collect_and_publish_health,
+                cluster,
+                mon_nodes=mon_nodes,
+                collection_started_at=cluster_snapshot_collector.collection_timestamp(),
+            )
+        except Exception:
+            logger.exception("natural_language.snapshot_refresh_failed cluster_id=%s", cluster_id)
+        finally:
+            mark_refreshing(cluster_id, False)
+
+    task = asyncio.create_task(refresh())
+    _NLP_SNAPSHOT_REFRESH_TASKS.add(task)
+    task.add_done_callback(_NLP_SNAPSHOT_REFRESH_TASKS.discard)
+    return True
+
 
 def is_ceph_scoped(user_text: str, history: list[dict] | None = None) -> bool:
     if _CEPH_SCOPE_RE.search(user_text or ""):
@@ -174,6 +355,25 @@ def _truncate_chat_text(text: str, limit: int) -> str:
     head = max(1, int(available * 0.6))
     tail = max(1, available - head)
     return text[:head] + marker + text[-tail:]
+
+
+def _summarize_omitted_history(history: list[dict]) -> str:
+    """Create a small structural summary without replaying old raw prompts."""
+    user_messages = [item for item in history if item.get("role") == "user"]
+    intents: list[str] = []
+    for item in user_messages:
+        try:
+            intent = route_natural_language(str(item.get("content") or ""))
+        except Exception:  # pragma: no cover - defensive context boundary
+            continue
+        if intent.intent != "unknown_or_ambiguous" and intent.intent not in intents:
+            intents.append(intent.intent)
+    scope = ", ".join(intents[:5]) or "chưa xác định"
+    return (
+        f"[Tóm tắt lịch sử cũ: {len(user_messages)} lượt user, "
+        f"{len(history) - len(user_messages)} lượt assistant; intent: {scope}. "
+        "Không dùng summary này làm live evidence.]"
+    )
 
 
 def _pack_chat_history(history: list[dict]) -> list[dict]:
@@ -208,14 +408,20 @@ def _pack_chat_history(history: list[dict]) -> list[dict]:
         return normalized
 
     marker = CHAT_HISTORY_TRUNCATION_MARKER
-    marker_tokens = _estimated_chat_context_tokens(marker)
-    content_char_budget = max(1, char_limit - len(marker))
-    content_token_budget = max(1, token_limit - marker_tokens)
+    summary = _summarize_omitted_history(normalized)
+    prefix = [
+        {"role": "assistant", "content": marker},
+        {"role": "assistant", "content": summary},
+    ]
+    prefix_chars = sum(len(message["content"]) for message in prefix)
+    prefix_tokens = sum(_estimated_chat_context_tokens(message["content"]) for message in prefix)
+    content_char_budget = max(1, char_limit - prefix_chars)
+    content_token_budget = max(1, token_limit - prefix_tokens)
     selected_reversed: list[dict] = []
     used_chars = 0
     used_tokens = 0
     for message in reversed(normalized):
-        if len(selected_reversed) >= max(1, MAX_HISTORY_MESSAGES - 1):
+        if len(selected_reversed) >= max(1, MAX_HISTORY_MESSAGES - len(prefix)):
             break
         remaining_chars = content_char_budget - used_chars
         remaining_tokens = content_token_budget - used_tokens
@@ -232,7 +438,7 @@ def _pack_chat_history(history: list[dict]) -> list[dict]:
         used_chars += len(content)
         used_tokens += _estimated_chat_context_tokens(content)
 
-    packed = [{"role": "assistant", "content": marker}]
+    packed = prefix
     packed.extend(reversed(selected_reversed))
     logger.debug(
         "chat history packed messages=%d->%d chars=%d->%d estimated_tokens=%d->%d",
@@ -772,7 +978,7 @@ def _run_recent_incidents(args: dict, cluster=None) -> str:
         raise ChatToolError("hours phải từ 1 đến 720")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
         raise ChatToolError("limit phải từ 1 đến 20")
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = utc_now() - timedelta(hours=hours)
     with db.SessionLocal() as session:
         rows = session.query(Incident).filter(
             Incident.cluster_id == _cluster_id(cluster), Incident.detected_at >= cutoff,
@@ -959,6 +1165,21 @@ def _validate_proposal(args: dict, cluster=None, context_messages: list | None =
         if action_id == "bluestore_omap_quick_fix":
             _validate_bluestore_osd_host(params["osd_id"], target_nodes[0], context_messages or [], cluster)
 
+    try:
+        validate_action_preview(
+            action_id=action_id,
+            registered_action_ids=CHAT_ACTION_IDS,
+            cluster_id=str(getattr(cluster, "id", "") or "unbound"),
+            requested_cluster_id=args.get("cluster_id"),
+            target_nodes=target_nodes,
+            allowed_nodes=allowed_hosts,
+            params=params or {},
+            rationale=rationale,
+            command_preview=resolve_command_preview(action_id, target_nodes, params),
+        )
+    except ActionPlanningError as exc:
+        raise ChatToolError(str(exc)) from exc
+
     return {
         "action_id": action_id,
         "target_nodes": target_nodes,
@@ -1104,14 +1325,28 @@ async def run_chat_turn(
     """
     refresh_chat_provider_flags()
     query_plan = None
+    natural_language_intent = None
+    natural_language_rollout_allowed = _natural_language_rollout_allowed(actor, cluster)
+    natural_language_response_context = None
+    natural_language_intent_latency_ms = None
+    natural_language_query_latency_ms = None
+    natural_language_report = None
     snapshot_evidence_context = None
+    rca_report_context = None
+    runbook_context = None
     # Phase 1: classify for observability only.  The existing provider/tool
     # loop remains authoritative until a later phase adds an explicit query
     # planner.  In particular, this must not create a tool call or proposal.
     try:
-        natural_language_intent = route_natural_language(
-            user_text,
-            cluster_id=(str(getattr(cluster, "id", "")) or None),
+        classification_started = asyncio.get_running_loop().time()
+        natural_language_intent, _conversation_state = await asyncio.wait_for(
+            asyncio.to_thread(
+                resolve_natural_language_turn,
+                user_text,
+                history,
+                cluster_id=(str(getattr(cluster, "id", "")) or None),
+            ),
+            timeout=float(getattr(settings, "ai_natural_language_intent_timeout_seconds", 2.0)),
         )
     except Exception:  # pragma: no cover - defensive boundary for chat availability
         # Language classification is an additive observability feature in this
@@ -1119,6 +1354,18 @@ async def run_chat_turn(
         # unavailable.
         logger.exception("natural_language.classification_failed")
     else:
+        record_natural_language_metric(
+            "intent_classified", intent=natural_language_intent.intent,
+        )
+        if natural_language_intent.needs_clarification:
+            record_natural_language_metric(
+                "clarification_required", intent=natural_language_intent.intent,
+            )
+        elapsed_ms = (asyncio.get_running_loop().time() - classification_started) * 1000
+        natural_language_intent_latency_ms = round(elapsed_ms, 3)
+        record_natural_language_metric(
+            "intent_latency", status="lt_100ms" if elapsed_ms < 100 else "gte_100ms",
+        )
         logger.info(
             "natural_language.intent intent=%s language=%s confidence=%.2f "
             "clarification=%s resource_type=%s cluster_id=%s",
@@ -1129,7 +1376,7 @@ async def run_chat_turn(
             natural_language_intent.resource_type or "-",
             getattr(cluster, "id", None),
         )
-        if settings.ai_natural_language_query_planner_enabled:
+        if settings.ai_natural_language_query_planner_enabled and natural_language_rollout_allowed:
             query_plan = plan_query(natural_language_intent)
             logger.info(
                 "natural_language.query_plan status=%s intent=%s tools=%s "
@@ -1139,19 +1386,33 @@ async def run_chat_turn(
                 ",".join(call.tool_name for call in query_plan.calls) or "-",
                 query_plan.cluster_id or "-",
             )
+        natural_language_response_context = {
+            "schema_version": "nl-context-v1",
+            "intent": natural_language_intent.intent,
+            "language": natural_language_intent.language,
+            "cluster_id": str(getattr(cluster, "id", "") or "") or None,
+            "parser_version": natural_language_intent.parser_version,
+            "rollout": _natural_language_rollout_evidence(
+                actor, cluster, allowed=natural_language_rollout_allowed
+            ),
+            "telemetry": {
+                "intent_latency_ms": natural_language_intent_latency_ms,
+            },
+        }
     ceph_restricted = auth.is_ceph_chat_restricted(actor)
     ai_name = auth.chat_ai_name(actor)
     female_address = auth.chat_female_address(actor)
     if ceph_restricted and not allow_unrestricted and not is_ceph_scoped(user_text, history):
-        return {
+        return _attach_natural_language_context({
             "reply_text": with_romantic_address(OUT_OF_SCOPE_MESSAGE, ai_name, female_address),
             "proposal": None,
             "tools_used": [],
-        }
+        }, natural_language_response_context)
 
     if (
         query_plan is not None
         and settings.ai_natural_language_snapshot_runner_enabled
+        and natural_language_rollout_allowed
         and query_plan.executable
     ):
         allowed = set(allowed_tools) if allowed_tools is not None else None
@@ -1163,14 +1424,95 @@ async def run_chat_turn(
             )
         else:
             try:
+                query_started = asyncio.get_running_loop().time()
                 snapshot_result = await execute_query_plan(
                     query_plan,
                     SnapshotQueryRunner(),
                     max_concurrency=settings.ceph_max_concurrency,
                 )
+                query_elapsed_ms = (asyncio.get_running_loop().time() - query_started) * 1000
+                natural_language_query_latency_ms = round(query_elapsed_ms, 3)
+                record_natural_language_metric(
+                    "query_plan_completed", status=snapshot_result.status,
+                )
+                record_natural_language_metric(
+                    "tool_latency", status="lt_1s" if query_elapsed_ms < 1000 else "gte_1s",
+                )
+                if (
+                    snapshot_result.stale
+                    and settings.ai_natural_language_snapshot_refresh_enabled
+                    and natural_language_rollout_allowed
+                ):
+                    if await _enqueue_natural_language_snapshot_refresh(cluster):
+                        snapshot_result = replace(snapshot_result, refreshing=True)
                 snapshot_evidence_context = redact_text(
                     json.dumps(snapshot_result.to_dict(), ensure_ascii=False, default=str)
                 )
+                retrieval = None
+                if settings.ai_natural_language_rag_enabled:
+                    try:
+                        retrieval = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                _retrieve_natural_language_runbook,
+                                natural_language_intent,
+                                user_text,
+                            ),
+                            timeout=float(getattr(
+                                settings,
+                                "ai_natural_language_retrieval_timeout_seconds",
+                                2.0,
+                            )),
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("natural_language.runbook_retrieval_timeout")
+                        retrieval = None
+                    if retrieval is not None:
+                        record_natural_language_metric(
+                            "rag_result", status="hit" if retrieval.hits else "miss",
+                        )
+                        runbook_context = redact_text(
+                            json.dumps(retrieval.to_dict(), ensure_ascii=False, default=str)
+                        )
+                rca_report = build_read_only_rca(
+                    natural_language_intent,
+                    snapshot_result,
+                    retrieval=retrieval,
+                    citation_ids=(
+                        tuple(hit.source_id for hit in retrieval.hits)
+                        if retrieval is not None else ()
+                    ),
+                )
+                natural_language_report = rca_report
+                natural_language_response_context.update({
+                    "cluster_id": snapshot_result.cluster_id,
+                    "evidence_refs": list(rca_report.evidence_refs),
+                    "freshness": dict(rca_report.freshness),
+                    "citations": list(rca_report.citations),
+                    "telemetry": {
+                        "intent_latency_ms": natural_language_intent_latency_ms,
+                        "query_latency_ms": natural_language_query_latency_ms,
+                        "query_status": snapshot_result.status,
+                        "snapshot_stale": bool(snapshot_result.stale),
+                    },
+                })
+                rca_report_context = redact_text(
+                    json.dumps(rca_report.to_dict(), ensure_ascii=False, default=str)
+                )
+                if (
+                    settings.ai_natural_language_fast_path_enabled
+                    and rca_report.status in {"ok", "partial", "failed"}
+                    and not rca_report.validation_errors
+                ):
+                    return {
+                        "reply_text": with_romantic_address(
+                            render_read_only_rca(rca_report), ai_name, female_address
+                        ),
+                        "proposal": None,
+                        "tools_used": [
+                            item["tool_name"] for item in rca_report.evidence_refs
+                            if item.get("tool_name")
+                        ],
+                    }
                 logger.info(
                     "natural_language.snapshot_plan status=%s stale=%s partial=%s "
                     "refreshing=%s cluster_id=%s",
@@ -1190,6 +1532,17 @@ async def run_chat_turn(
         ai_name=ai_name, female_address=female_address,
         cluster_name=getattr(cluster, "name", None),
     )
+    if natural_language_intent is not None:
+        if natural_language_intent.language == "en":
+            actor_system_prompt += (
+                "\n\nLANGUAGE: The operator asked in English. Reply in English while "
+                "preserving Ceph terms such as OSD, MON, MGR, PG, pool, RGW and CRUSH."
+            )
+        elif natural_language_intent.language == "vi":
+            actor_system_prompt += (
+                "\n\nNGÔN NGỮ: Operator hỏi bằng tiếng Việt. Mặc định trả lời tiếng Việt; "
+                "giữ nguyên thuật ngữ Ceph như OSD, MON, MGR, PG, pool, RGW và CRUSH."
+            )
     outbound_history = [
         {**message, "content": redact_text(str(message.get("content") or ""))}
         for message in history
@@ -1204,6 +1557,29 @@ async def run_chat_turn(
             + snapshot_evidence_context
             + "\nChỉ kết luận theo evidence này; nếu thiếu dữ liệu, nói rõ thiếu evidence."
         )
+    if rca_report_context:
+        actor_system_prompt += (
+            "\n\nBÁO CÁO RCA DETERMINISTIC (chỉ observed facts, không tự suy diễn):\n"
+            + rca_report_context
+            + "\nTách observed khỏi inference; không tạo recommendation/action ngoài evidence."
+        )
+    if (
+        natural_language_report is not None
+        and settings.ai_natural_language_structured_output_enabled
+    ):
+        actor_system_prompt += (
+            "\n\nOUTPUT SCHEMA: Return only JSON matching answer-v1 with fields "
+            "schema_version, language, cluster_id, conclusion, observed, "
+            "evidence_refs, inferences (text/confidence), next_checks, "
+            "recommendations, citations and freshness. Use only facts and "
+            "identifiers from the deterministic RCA report."
+        )
+    if runbook_context:
+        actor_system_prompt += (
+            "\n\nTÀI LIỆU RUNBOOK HỖ TRỢ (không phải live evidence, có citation):\n"
+            + runbook_context
+            + "\nChỉ dùng runbook để giải thích/đề xuất kiểm tra; không dùng nó để khẳng định trạng thái hiện tại."
+        )
     outbound_user_text = redact_text(user_text)
     tool_cache: dict = {}
     routing_request_id = uuid.uuid4().hex
@@ -1215,6 +1591,27 @@ async def run_chat_turn(
         ),
     )
     routing_input_chars = len(outbound_user_text) + sum(len(item["content"]) for item in outbound_history)
+
+    def natural_language_model(provider: str, configured_model: str) -> str:
+        """Choose a configured workload tier without cross-provider routing."""
+        intent_name = natural_language_intent.intent if natural_language_intent else ""
+        if intent_name in {"explain_incident", "recommend_action"} or _BLUESTORE_HISTORY_RE.search(
+            outbound_user_text
+        ):
+            setting_name = "ai_natural_language_strong_model"
+            role = "strong"
+        elif natural_language_intent and natural_language_intent.needs_clarification:
+            setting_name = "ai_natural_language_small_model"
+            role = "small"
+        else:
+            setting_name = "ai_natural_language_fast_model"
+            role = "fast"
+        selected = str(getattr(settings, setting_name, "") or "").strip()
+        logger.info(
+            "natural_language.model_role role=%s provider=%s model_configured=%s",
+            role, provider, bool(selected),
+        )
+        return selected or (configured_model or "default")
 
     def routed_model(provider: str, configured_model: str) -> str | None:
         decision = choose_model(
@@ -1229,7 +1626,14 @@ async def run_chat_turn(
                 decision["recommended_model"], decision["selected_model"], decision["reason"],
             )
         selected = decision.get("selected_model")
-        return selected if selected and selected != (configured_model or "default") else None
+        if not selected:
+            return None
+        # Passing the role model explicitly is required when a workload tier
+        # overrides the provider's normal setting. Keep the old None behavior
+        # only for an implicit provider default.
+        if selected == "default" and (configured_model or "default") == "default":
+            return None
+        return selected
 
     provider_errors: list[str] = []
     claude_attempted = False
@@ -1239,7 +1643,9 @@ async def run_chat_turn(
     if preferred_provider == "claude" and settings.claude_chat_enabled:
         claude_attempted = True
         try:
-            claude_model = routed_model("claude", settings.claude_chat_model or "default")
+            claude_model = routed_model(
+                "claude", natural_language_model("claude", settings.claude_chat_model or "default")
+            )
             result = await _run_claude_chat_turn(
                 outbound_history, outbound_user_text, actor_system_prompt, actor, cluster,
                 allowed_tools, max_tool_iterations=max_tool_iterations,
@@ -1252,11 +1658,16 @@ async def run_chat_turn(
             provider_errors.append(f"Claude call failed: {exc}")
             logger.warning("%s; trying configured fallback", provider_errors[-1])
         else:
+            _apply_structured_natural_language_output(
+                result,
+                natural_language_report,
+                enabled=settings.ai_natural_language_structured_output_enabled,
+            )
             result["reply_text"] = with_romantic_address(
                 _append_citation_footer(result["reply_text"], result.pop("citations", [])),
                 ai_name, female_address,
             )
-            return result
+            return _attach_natural_language_context(result, natural_language_response_context)
 
     if settings.codex_chat_enabled:
         delegated_codex_server = (
@@ -1268,7 +1679,9 @@ async def run_chat_turn(
             codex_kwargs = {}
             if delegated_codex_server is not codex_app_server:
                 codex_kwargs["app_server"] = delegated_codex_server
-            codex_model = routed_model("codex", settings.codex_chat_model or "default")
+            codex_model = routed_model(
+                "codex", natural_language_model("codex", settings.codex_chat_model or "default")
+            )
             if codex_model is not None:
                 codex_kwargs["model"] = codex_model
             result = await _run_codex_chat_turn(
@@ -1285,17 +1698,24 @@ async def run_chat_turn(
             provider_errors.append(f"Codex call failed: {exc}")
             logger.warning("%s; trying configured fallback", provider_errors[-1])
         else:
+            _apply_structured_natural_language_output(
+                result,
+                natural_language_report,
+                enabled=settings.ai_natural_language_structured_output_enabled,
+            )
             result["reply_text"] = with_romantic_address(
                 _append_citation_footer(result["reply_text"], result.pop("citations", [])),
                 ai_name, female_address,
             )
-            return result
+            return _attach_natural_language_context(result, natural_language_response_context)
         finally:
             if delegated_codex_server is not codex_app_server:
                 await delegated_codex_server.close()
     if settings.claude_chat_enabled and not claude_attempted:
         try:
-            claude_model = routed_model("claude", settings.claude_chat_model or "default")
+            claude_model = routed_model(
+                "claude", natural_language_model("claude", settings.claude_chat_model or "default")
+            )
             result = await _run_claude_chat_turn(
                 outbound_history, outbound_user_text, actor_system_prompt, actor, cluster,
                 allowed_tools, max_tool_iterations=max_tool_iterations,
@@ -1308,11 +1728,16 @@ async def run_chat_turn(
             provider_errors.append(f"Claude call failed: {exc}")
             logger.warning("%s; trying configured fallback", provider_errors[-1])
         else:
+            _apply_structured_natural_language_output(
+                result,
+                natural_language_report,
+                enabled=settings.ai_natural_language_structured_output_enabled,
+            )
             result["reply_text"] = with_romantic_address(
                 _append_citation_footer(result["reply_text"], result.pop("citations", [])),
                 ai_name, female_address,
             )
-            return result
+            return _attach_natural_language_context(result, natural_language_response_context)
 
     router_ready = bool(
         settings.router_enabled
@@ -1330,7 +1755,9 @@ async def run_chat_turn(
     except RouterNotConfiguredError as exc:
         raise ChatTurnError(str(exc)) from exc
 
-    router_model = routed_model("9router", settings.router_model)
+    router_model = routed_model(
+        "9router", natural_language_model("9router", settings.router_model)
+    )
     selected_router_model = router_model or settings.router_model
     messages = [{"role": "system", "content": actor_system_prompt}]
     for m in outbound_history[-MAX_HISTORY_MESSAGES:]:
@@ -1475,13 +1902,23 @@ async def run_chat_turn(
     if not reply_text:
         reply_text = "Đã ghi nhận đề xuất hành động bên dưới." if proposal is not None else "(không có phản hồi)"
 
-    return {
-        "reply_text": with_romantic_address(
-            _append_citation_footer(reply_text, citations), ai_name, female_address
-        ),
+    response = {
+        "reply_text": reply_text,
         "proposal": proposal,
         "tools_used": tools_used,
+        "citations": citations,
     }
+    _apply_structured_natural_language_output(
+        response,
+        natural_language_report,
+        enabled=settings.ai_natural_language_structured_output_enabled,
+    )
+    response["reply_text"] = with_romantic_address(
+        _append_citation_footer(response["reply_text"], response.pop("citations", [])),
+        ai_name,
+        female_address,
+    )
+    return _attach_natural_language_context(response, natural_language_response_context)
 
 
 async def _run_codex_chat_turn(

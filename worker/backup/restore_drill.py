@@ -25,6 +25,7 @@ import shlex
 import tempfile
 import time
 from datetime import datetime
+from shared.time import utc_now
 
 import paramiko
 
@@ -197,9 +198,9 @@ def _record_result(
                 status="SUCCESS" if success else "FAILED",
                 error_message=error_message,
                 size_bytes=size_bytes,
-                duration_seconds=(datetime.utcnow() - started_at).total_seconds(),
+                duration_seconds=(utc_now() - started_at).total_seconds(),
                 created_at=started_at,
-                finished_at=datetime.utcnow(),
+                finished_at=utc_now(),
             )
         )
         session.commit()
@@ -218,7 +219,7 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
         logger.error("restore_drill.run: source and scratch image must differ")
         return False
 
-    started_at = datetime.utcnow()
+    started_at = utc_now()
     progress = [{"step": "restore_drill", "status": "running", "started_at": started_at.isoformat()}]
     write_progress(action_pk, progress)
 
@@ -265,7 +266,7 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
                 raise RestoreDrillError(result.error_message or "full + incremental restore chain failed")
             _record_result(pool, image, True, started_at, None, result.size_bytes)
             progress[0]["status"] = "done"
-            progress[0]["finished_at"] = datetime.utcnow().isoformat()
+            progress[0]["finished_at"] = utc_now().isoformat()
             progress[0]["full_job_id"] = result.full_job_id
             progress[0]["applied_diff_job_ids"] = result.applied_diff_job_ids
             write_progress(action_pk, progress)
@@ -313,7 +314,7 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
 
         _record_result(pool, image, True, started_at, None, backup_job.size_bytes or 0)
         progress[0]["status"] = "done"
-        progress[0]["finished_at"] = datetime.utcnow().isoformat()
+        progress[0]["finished_at"] = utc_now().isoformat()
         write_progress(action_pk, progress)
         return True
     except Exception as exc:

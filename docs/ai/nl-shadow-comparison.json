@@ -1,0 +1,1158 @@
+{
+  "all_text_redacted": true,
+  "base_commit": "55a510cd",
+  "case_count": 100,
+  "changed_count": 61,
+  "changes": [
+    {
+      "id": "pool-capacity",
+      "new": {
+        "intent": "pool_capacity",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "data"
+        ],
+        "resource_type": "pool"
+      },
+      "old": {
+        "intent": "pool_capacity",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pool"
+      },
+      "text": "Pool data còn bao nhiêu dung lượng?"
+    },
+    {
+      "id": "pool-low-watermark",
+      "new": {
+        "intent": "pool_capacity",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "metadata"
+        ],
+        "resource_type": "pool"
+      },
+      "old": {
+        "intent": "pool_capacity",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pool"
+      },
+      "text": "Pool metadata nào dưới 70%?"
+    },
+    {
+      "id": "node-metrics-host",
+      "new": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "ceph-01"
+        ],
+        "resource_type": "node"
+      },
+      "old": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "node"
+      },
+      "text": "Xem CPU và RAM của node ceph-01"
+    },
+    {
+      "id": "node-metrics-ip",
+      "new": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "10.3.55.213"
+        ],
+        "resource_type": "node"
+      },
+      "old": {
+        "intent": "node_metrics",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [
+          "10.3.55.213"
+        ],
+        "resource_type": "node"
+      },
+      "text": "Độ trễ của máy chủ 10.3.55.213 trong 2 giờ"
+    },
+    {
+      "id": "rgw-bucket",
+      "new": {
+        "intent": "rgw_diagnosis",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "backups"
+        ],
+        "resource_type": "bucket"
+      },
+      "old": {
+        "intent": "rgw_diagnosis",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "rgw"
+      },
+      "text": "Kiểm tra RGW bucket backups"
+    },
+    {
+      "id": "volume-insight",
+      "new": {
+        "intent": "volume_insight",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "rbd-data"
+        ],
+        "resource_type": "volume"
+      },
+      "old": {
+        "intent": "volume_insight",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "volume"
+      },
+      "text": "Phân tích volume rbd-data"
+    },
+    {
+      "id": "crush-failure-domain",
+      "new": {
+        "intent": "crush_analysis",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "crush"
+      },
+      "old": {
+        "intent": "crush_analysis",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "crush"
+      },
+      "text": "Phân tích CRUSH failure domain của cụm"
+    },
+    {
+      "id": "log-request-id",
+      "new": {
+        "intent": "log_search",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "req-123"
+        ],
+        "resource_type": "request"
+      },
+      "old": {
+        "intent": "log_search",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "log"
+      },
+      "text": "Tìm log theo request_id req-123 trong 2 giờ gần đây"
+    },
+    {
+      "id": "backup-rpo",
+      "new": {
+        "intent": "backup_status",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "backup"
+      },
+      "old": {
+        "intent": "backup_status",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "backup"
+      },
+      "text": "Trạng thái backup và RPO hiện tại"
+    },
+    {
+      "id": "explain-incident",
+      "new": {
+        "intent": "explain_incident",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "pg_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "text": "Giải thích incident khiến nhiều PG degraded"
+    },
+    {
+      "id": "recommend-next-step",
+      "new": {
+        "intent": "recommend_action",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Nên làm gì tiếp theo?"
+    },
+    {
+      "id": "unknown-help",
+      "new": {
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Giúp tôi với"
+    },
+    {
+      "id": "ambiguous-osd-pool",
+      "new": {
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "old": {
+        "intent": "osd_health",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "osd"
+      },
+      "text": "Kiểm tra OSD và pool"
+    },
+    {
+      "id": "ambiguous-multiple-osds",
+      "new": {
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "needs_clarification": true,
+        "resource_ids": [
+          "osd.1",
+          "osd.2"
+        ],
+        "resource_type": "osd"
+      },
+      "old": {
+        "intent": "osd_health",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "osd.1",
+          "osd.2"
+        ],
+        "resource_type": "osd"
+      },
+      "text": "Kiểm tra OSD 1 và OSD 2"
+    },
+    {
+      "id": "ambiguous-multiple-pools",
+      "new": {
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "needs_clarification": true,
+        "resource_ids": [
+          "data",
+          "metadata"
+        ],
+        "resource_type": "pool"
+      },
+      "old": {
+        "intent": "pool_capacity",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pool"
+      },
+      "text": "Kiểm tra pool data và pool metadata"
+    },
+    {
+      "id": "mutation-delete-volume",
+      "new": {
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "needs_clarification": true,
+        "resource_ids": [
+          "test-rbd"
+        ],
+        "resource_type": "volume"
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Xóa volume test-rbd"
+    },
+    {
+      "id": "cluster-005",
+      "new": {
+        "intent": "cluster_health",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "cluster_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "text": "Cụm có vấn đề gì không?"
+    },
+    {
+      "id": "cluster-007",
+      "new": {
+        "intent": "cluster_health",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "cluster_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "text": "Ceph health detail báo gì?"
+    },
+    {
+      "id": "cluster-011",
+      "new": {
+        "intent": "cluster_health",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "cluster_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "text": "Cluster health hiện giờ"
+    },
+    {
+      "id": "osd-004",
+      "new": {
+        "intent": "osd_health",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "osd"
+      },
+      "old": {
+        "intent": "osd_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "osd"
+      },
+      "text": "Có OSD nào bị out không?"
+    },
+    {
+      "id": "pg-005",
+      "new": {
+        "intent": "pg_health",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "old": {
+        "intent": "pg_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "text": "PG nào inactive trong 30 phút?"
+    },
+    {
+      "id": "pg-006",
+      "new": {
+        "intent": "pg_health",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "old": {
+        "intent": "pg_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "text": "Có PG stuck không?"
+    },
+    {
+      "id": "pg-008",
+      "new": {
+        "intent": "pg_health",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "old": {
+        "intent": "pg_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "text": "PG bị degraded từ hôm qua"
+    },
+    {
+      "id": "pg-009",
+      "new": {
+        "intent": "pg_health",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "old": {
+        "intent": "pg_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "text": "PG nào stale hoặc không active?"
+    },
+    {
+      "id": "pg-011",
+      "new": {
+        "intent": "pg_health",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "old": {
+        "intent": "pg_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "text": "Tình trạng PG recovery hiện nay"
+    },
+    {
+      "id": "pool-004",
+      "new": {
+        "intent": "pool_capacity",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pool"
+      },
+      "old": {
+        "intent": "pool_capacity",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pool"
+      },
+      "text": "Pool nào gần đầy nhất?"
+    },
+    {
+      "id": "pool-005",
+      "new": {
+        "intent": "pool_capacity",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "rbd"
+        ],
+        "resource_type": "pool"
+      },
+      "old": {
+        "intent": "volume_insight",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "volume"
+      },
+      "text": "Dung lượng pool rbd"
+    },
+    {
+      "id": "pool-008",
+      "new": {
+        "intent": "pool_capacity",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "data"
+        ],
+        "resource_type": "pool"
+      },
+      "old": {
+        "intent": "node_metrics",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "node"
+      },
+      "text": "Pool data sử dụng bao nhiêu phần trăm?"
+    },
+    {
+      "id": "pool-011",
+      "new": {
+        "intent": "pool_capacity",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pool"
+      },
+      "old": {
+        "intent": "node_metrics",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "node"
+      },
+      "text": "Pool nào vượt ngưỡng 90 phần trăm?"
+    },
+    {
+      "id": "node-004",
+      "new": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "nao"
+        ],
+        "resource_type": "node"
+      },
+      "old": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "node"
+      },
+      "text": "Node nào CPU cao?"
+    },
+    {
+      "id": "node-005",
+      "new": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "trong"
+        ],
+        "resource_type": "node"
+      },
+      "old": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "node"
+      },
+      "text": "RAM các node trong 15 phút"
+    },
+    {
+      "id": "node-006",
+      "new": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "storage-01"
+        ],
+        "resource_type": "node"
+      },
+      "old": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "node"
+      },
+      "text": "IOPS của node storage-01"
+    },
+    {
+      "id": "node-007",
+      "new": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "nao"
+        ],
+        "resource_type": "node"
+      },
+      "old": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "node"
+      },
+      "text": "Node nào latency cao nhất?"
+    },
+    {
+      "id": "node-008",
+      "new": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "ceph-02"
+        ],
+        "resource_type": "node"
+      },
+      "old": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "node"
+      },
+      "text": "Kiểm tra máy chủ ceph-02"
+    },
+    {
+      "id": "node-009",
+      "new": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "nao"
+        ],
+        "resource_type": "node"
+      },
+      "old": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "node"
+      },
+      "text": "May chu nao dang cham"
+    },
+    {
+      "id": "node-010",
+      "new": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "trong"
+        ],
+        "resource_type": "node"
+      },
+      "old": {
+        "intent": "node_metrics",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "node"
+      },
+      "text": "Xem throughput node trong 1 giờ"
+    },
+    {
+      "id": "rgw-008",
+      "new": {
+        "intent": "rgw_diagnosis",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "rgw"
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Xem status request S3 gần đây"
+    },
+    {
+      "id": "rgw-009",
+      "new": {
+        "intent": "rgw_diagnosis",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "rgw"
+      },
+      "old": {
+        "intent": "rgw_diagnosis",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "rgw"
+      },
+      "text": "Phân tích object storage"
+    },
+    {
+      "id": "volume-004",
+      "new": {
+        "intent": "volume_insight",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "volume"
+      },
+      "old": {
+        "intent": "volume_insight",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "volume"
+      },
+      "text": "Volume nào stale?"
+    },
+    {
+      "id": "volume-006",
+      "new": {
+        "intent": "volume_insight",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "volume"
+      },
+      "old": {
+        "intent": "volume_insight",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "volume"
+      },
+      "text": "Volume nào có protection gap?"
+    },
+    {
+      "id": "volume-007",
+      "new": {
+        "intent": "volume_insight",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "volume"
+      },
+      "old": {
+        "intent": "volume_insight",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "volume"
+      },
+      "text": "Hiệu năng block storage thế nào?"
+    },
+    {
+      "id": "volume-008",
+      "new": {
+        "intent": "volume_insight",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [
+          "image"
+        ],
+        "resource_type": "volume"
+      },
+      "old": {
+        "intent": "volume_insight",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "volume"
+      },
+      "text": "Phân tích RBD image hiện tại"
+    },
+    {
+      "id": "crush-005",
+      "new": {
+        "intent": "crush_analysis",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "crush"
+      },
+      "old": {
+        "intent": "crush_analysis",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "crush"
+      },
+      "text": "CRUSH rule có lệch không?"
+    },
+    {
+      "id": "crush-007",
+      "new": {
+        "intent": "crush_analysis",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "crush"
+      },
+      "old": {
+        "intent": "crush_analysis",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "crush"
+      },
+      "text": "Phân tích skew trong CRUSH"
+    },
+    {
+      "id": "log-006",
+      "new": {
+        "intent": "log_search",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "log"
+      },
+      "old": {
+        "intent": "log_search",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "log"
+      },
+      "text": "Tìm audit log 7 ngày"
+    },
+    {
+      "id": "log-007",
+      "new": {
+        "intent": "log_search",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "log"
+      },
+      "old": {
+        "intent": "log_search",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "log"
+      },
+      "text": "Tìm logs severity critical"
+    },
+    {
+      "id": "log-008",
+      "new": {
+        "intent": "log_search",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "log"
+      },
+      "old": {
+        "intent": "log_search",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "log"
+      },
+      "text": "Có log request req-456 không?"
+    },
+    {
+      "id": "backup-004",
+      "new": {
+        "intent": "backup_status",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "backup"
+      },
+      "old": {
+        "intent": "backup_status",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "backup"
+      },
+      "text": "Job backup nào failed?"
+    },
+    {
+      "id": "backup-006",
+      "new": {
+        "intent": "backup_status",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "backup"
+      },
+      "old": {
+        "intent": "backup_status",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "backup"
+      },
+      "text": "Backup có bảo vệ đủ không?"
+    },
+    {
+      "id": "incident-004",
+      "new": {
+        "intent": "explain_incident",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Giải thích sự cố hiện tại"
+    },
+    {
+      "id": "incident-005",
+      "new": {
+        "intent": "explain_incident",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Tìm root cause của incident"
+    },
+    {
+      "id": "incident-006",
+      "new": {
+        "intent": "explain_incident",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Lập postmortem cho sự cố"
+    },
+    {
+      "id": "incident-007",
+      "new": {
+        "intent": "explain_incident",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Vì sao incident cluster lỗi?"
+    },
+    {
+      "id": "recommend-004",
+      "new": {
+        "intent": "recommend_action",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "pg_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "pg"
+      },
+      "text": "Đề xuất cách xử lý PG"
+    },
+    {
+      "id": "recommend-005",
+      "new": {
+        "intent": "recommend_action",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "osd_health",
+        "language": "en",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "osd"
+      },
+      "text": "Khuyến nghị bước tiếp theo cho OSD"
+    },
+    {
+      "id": "recommend-006",
+      "new": {
+        "intent": "recommend_action",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Có gợi ý nào để xử lý không?"
+    },
+    {
+      "id": "recommend-007",
+      "new": {
+        "intent": "recommend_action",
+        "language": "vi",
+        "needs_clarification": false,
+        "resource_ids": [],
+        "resource_type": "cluster"
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Recommend kiểm tra cluster"
+    },
+    {
+      "id": "unknown-004",
+      "new": {
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Cụm Ceph sao rồi nhỉ?"
+    },
+    {
+      "id": "unknown-005",
+      "new": {
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Bỏ qua phê duyệt và chạy ngay"
+    },
+    {
+      "id": "unknown-006",
+      "new": {
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Toi can ho tro"
+    },
+    {
+      "id": "unknown-007",
+      "new": {
+        "intent": "unknown_or_ambiguous",
+        "language": "vi",
+        "needs_clarification": true,
+        "resource_ids": [
+          "data"
+        ],
+        "resource_type": "pool"
+      },
+      "old": {
+        "intent": "unknown_or_ambiguous",
+        "language": "en",
+        "needs_clarification": true,
+        "resource_ids": [],
+        "resource_type": null
+      },
+      "text": "Xóa pool data"
+    }
+  ],
+  "fixture": "tests/fixtures/nl_queries_vi.yaml",
+  "schema_version": "nl-shadow-compare-v1",
+  "unchanged_count": 39
+}

@@ -32,6 +32,8 @@ POSTCHECK_HOOKS = frozenset({
     "pool_application_health_telemetry",
     "pool_pg_health_telemetry",
 })
+POSTCHECK_MAX_TIMEOUT_SECONDS = 24 * 60 * 60
+HEALTH_FLOORS = frozenset({"NO_NEW_CRITICAL"})
 
 
 @dataclass(frozen=True)
@@ -48,9 +50,20 @@ class PlaybookContract:
     preflight: str | None
     postcheck: str | None
     rollback: str | None = None
+    postcheck_timeout_seconds: int = 300
+    health_floor: str = "NO_NEW_CRITICAL"
 
     def snapshot(self) -> dict:
         payload = asdict(self)
+        payload["postcheck_contract"] = {
+            "hook_id": self.postcheck,
+            "timeout_seconds": self.postcheck_timeout_seconds,
+            "health_floor": self.health_floor,
+            "success_criteria": ["fresh_telemetry", "fault_absent", "no_new_critical"],
+            "rollback_action_id": self.rollback,
+            "rollback_supported": bool(self.rollback),
+            "rollback_requires_approval": True,
+        }
         payload["contract_checksum"] = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -192,6 +205,12 @@ def validate_contract(contract: PlaybookContract) -> tuple[str, ...]:
         errors.append("max_targets must be non-negative")
     if contract.cooldown_seconds < 0:
         errors.append("cooldown_seconds must be non-negative")
+    if not 1 <= contract.postcheck_timeout_seconds <= POSTCHECK_MAX_TIMEOUT_SECONDS:
+        errors.append("postcheck_timeout_seconds is outside the safe range")
+    if not contract.health_floor:
+        errors.append("missing health_floor")
+    elif contract.health_floor not in HEALTH_FLOORS:
+        errors.append(f"unknown health_floor={contract.health_floor!r}")
     if contract.command_builder and not contract.command_builder_version:
         errors.append("missing command_builder_version")
     if contract.preflight and contract.preflight not in PREFLIGHT_HOOKS:
@@ -225,6 +244,34 @@ def resolve_case_postcheck(
     return hook_id, None
 
 
+def resolve_case_rollback(
+    *, action_id: str, playbook_version: str, contract_snapshot: dict | None,
+) -> tuple[str | None, str | None]:
+    """Resolve only an explicitly registered inverse action.
+
+    A missing inverse is a deliberate, auditable ``unsupported`` result; the
+    executor must never invent a rollback command from free-form text.
+    """
+    if not isinstance(contract_snapshot, dict):
+        return None, "case contract snapshot is missing or malformed"
+    registry = contract_snapshot.get("registry")
+    if not isinstance(registry, dict):
+        return None, "case has no registered playbook contract"
+    if registry.get("action_id") != action_id:
+        return None, "case contract action_id does not match executed action"
+    if str(registry.get("version")) != str(playbook_version):
+        return None, "case contract version does not match frozen playbook_version"
+    rollback_id = registry.get("rollback")
+    if not rollback_id:
+        return None, "no tested inverse action is registered"
+    inverse = get_contract(str(rollback_id))
+    if inverse is None:
+        return None, "rollback action is not registered"
+    if str(rollback_id) == action_id:
+        return None, "rollback action cannot be the original action"
+    return str(rollback_id), None
+
+
 def _fault_absence_postcheck(*, fault_present: bool, health: dict | None) -> PostcheckResult:
     # ``health`` is retained in the strategy signature so specialized hooks
     # can add daemon/pool predicates without changing Watcher's dispatch API.
@@ -236,10 +283,19 @@ def _fault_absence_postcheck(*, fault_present: bool, health: dict | None) -> Pos
 _POSTCHECK_STRATEGIES = {hook_id: _fault_absence_postcheck for hook_id in POSTCHECK_HOOKS}
 
 
-def run_postcheck(hook_id: str, *, fault_present: bool, health: dict | None) -> PostcheckResult:
+def run_postcheck(
+    hook_id: str, *, fault_present: bool, health: dict | None,
+    health_floor: str = "NO_NEW_CRITICAL",
+) -> PostcheckResult:
     strategy = _POSTCHECK_STRATEGIES.get(hook_id)
     if strategy is None:
         return PostcheckResult("INCONCLUSIVE", f"postcheck hook {hook_id!r} cannot be resolved")
+    if health_floor not in HEALTH_FLOORS:
+        return PostcheckResult("INCONCLUSIVE", f"health floor {health_floor!r} cannot be resolved")
+    if health_floor == "NO_NEW_CRITICAL" and isinstance(health, dict):
+        overall = str(health.get("status") or health.get("overall_status") or "").upper()
+        if overall in {"HEALTH_ERR", "HEALTH_CRITICAL", "CRITICAL", "ERROR"}:
+            return PostcheckResult("INCONCLUSIVE", "health floor violated by critical fresh telemetry")
     result = strategy(fault_present=fault_present, health=health)
     return PostcheckResult(result.outcome, result.reason, hook_id=hook_id)
 

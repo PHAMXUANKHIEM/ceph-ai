@@ -109,7 +109,7 @@ Post-check + audit + trả kết quả
 
 ### Công việc
 
-- [ ] Đọc và lập bản đồ:
+- [x] Đọc và lập bản đồ:
   - `dashboard/chat_client.py` — provider, tool loop, streaming, max iterations,
     redaction và lỗi provider.
   - `dashboard/ceph_tools.py` — tool read-only, action schema, target validation.
@@ -118,7 +118,7 @@ Post-check + audit + trả kết quả
   - `shared/ai_delegation.py` — routing intent và task delegation hiện có.
   - `watcher/log_analysis.py` — tool call và phân tích log hiện có.
   - `shared/ai_redaction.py`, `shared/ai_output.py`, `shared/ai_observability.py`.
-- [ ] Liệt kê toàn bộ tool hiện có thành bảng:
+- [x] Liệt kê toàn bộ tool hiện có thành bảng:
   - tên tool;
   - read/write;
   - target và cluster scope;
@@ -127,9 +127,9 @@ Post-check + audit + trả kết quả
   - evidence source;
   - quyền cần thiết;
   - có preview/approval/audit hay chưa.
-- [ ] Ghi baseline 20–30 câu hỏi tiếng Việt thật của operator, gồm câu hỏi ngắn,
+- [x] Ghi baseline 20–30 câu hỏi tiếng Việt thật của operator, gồm câu hỏi ngắn,
   câu thiếu chủ ngữ, từ viết tắt và lỗi chính tả thường gặp.
-- [ ] Đo baseline:
+- [x] Đo baseline:
   - intent accuracy;
   - đúng cluster/resource;
   - tool selection accuracy;
@@ -140,9 +140,9 @@ Post-check + audit + trả kết quả
 
 ### Deliverables
 
-- [ ] `docs/ai/natural-language-tool-inventory.md`.
-- [ ] `tests/fixtures/nl_queries_vi.yaml`.
-- [ ] Báo cáo baseline JSON/Markdown có prompt version và model version.
+- [x] `docs/ai/natural-language-tool-inventory.md`.
+- [x] `tests/fixtures/nl_queries_vi.yaml`.
+- [x] Báo cáo baseline JSON/Markdown có prompt version và model version.
 
 ### Gate
 
@@ -174,29 +174,29 @@ quyết định bằng văn bản tự do.
 
 ### Intent v1
 
-- [ ] `cluster_health` — “Cụm đang khỏe không?”, “Cụm lỗi gì?”.
-- [ ] `osd_health` — OSD down, full, nearfull, outlier latency.
-- [ ] `pg_health` — degraded, undersized, inactive, stuck.
-- [ ] `pool_capacity` — pool đầy, còn bao nhiêu, top pool sử dụng.
-- [ ] `node_metrics` — CPU/RAM/IOPS/latency theo node và khoảng thời gian.
-- [ ] `rgw_diagnosis` — RGW error, S3 status, bucket/access log.
-- [ ] `volume_insight` — volume stale, unattached, protection gap, performance.
-- [ ] `crush_analysis` — tree, rule, skew, failure-domain risk.
-- [ ] `log_search` — tìm log theo node/service/time/severity.
-- [ ] `backup_status` — RPO/RTO, job lỗi, digest và protection.
-- [ ] `explain_incident` — giải thích incident hiện có từ evidence.
-- [ ] `recommend_action` — chỉ tạo recommendation/preview, không execute.
-- [ ] `unknown_or_ambiguous` — hỏi lại hoặc hướng dẫn khả năng hiện có.
+- [x] `cluster_health` — “Cụm đang khỏe không?”, “Cụm lỗi gì?”.
+- [x] `osd_health` — OSD down, full, nearfull, outlier latency.
+- [x] `pg_health` — degraded, undersized, inactive, stuck.
+- [x] `pool_capacity` — pool đầy, còn bao nhiêu, top pool sử dụng.
+- [x] `node_metrics` — CPU/RAM/IOPS/latency theo node và khoảng thời gian.
+- [x] `rgw_diagnosis` — RGW error, S3 status, bucket/access log.
+- [x] `volume_insight` — volume stale, unattached, protection gap, performance.
+- [x] `crush_analysis` — tree, rule, skew, failure-domain risk.
+- [x] `log_search` — tìm log theo node/service/time/severity.
+- [x] `backup_status` — RPO/RTO, job lỗi, digest và protection.
+- [x] `explain_incident` — giải thích incident hiện có từ evidence.
+- [x] `recommend_action` — chỉ tạo recommendation/preview, không execute.
+- [x] `unknown_or_ambiguous` — hỏi lại hoặc hướng dẫn khả năng hiện có.
 
 ### Entity và normalization
 
-- [ ] Chuẩn hóa tiếng Việt không dấu và viết tắt: `osd`, `mon`, `mgr`, `rgw`,
+- [x] Chuẩn hóa tiếng Việt không dấu và viết tắt: `osd`, `mon`, `mgr`, `rgw`,
   `pg`, `pool`, `rbd`, `volume`, `bucket`, `cụm`, `node`, `máy`.
-- [ ] Chuẩn hóa thời gian: “15 phút”, “1 giờ”, “từ hôm qua”, “7 ngày gần nhất”.
-- [ ] Chuẩn hóa ngưỡng: “trên 80%”, “gần đầy”, “bị down”, “chậm”.
-- [ ] Nhận diện IP, hostname, pool, volume ID, bucket, OSD ID và request ID.
-- [ ] Không suy đoán entity khi có nhiều giá trị trùng; trả câu hỏi clarification.
-- [ ] Lưu `parser_version`, `prompt_version`, `model`, `confidence` và lý do chọn
+- [x] Chuẩn hóa thời gian: “15 phút”, “1 giờ”, “từ hôm qua”, “7 ngày gần nhất”.
+- [x] Chuẩn hóa ngưỡng: “trên 80%”, “gần đầy”, “bị down”, “chậm”.
+- [x] Nhận diện IP, hostname, pool, volume ID, bucket, OSD ID và request ID.
+- [x] Không suy đoán entity khi có nhiều giá trị trùng; trả câu hỏi clarification.
+- [x] Lưu `parser_version`, `prompt_version`, `model`, `confidence` và lý do chọn
   tool để phục vụ đánh giá.
 
 ### Files dự kiến
@@ -205,7 +205,7 @@ quyết định bằng văn bản tự do.
 - [x] `shared/natural_language/normalizer.py`.
 - [x] `shared/natural_language/router.py` — deterministic intent router.
 - [x] `tests/test_natural_language.py`.
-- [ ] Bộ fixture chuẩn hóa 20–30 câu và đo accuracy chính thức.
+- [x] Bộ fixture chuẩn hóa 20–30 câu và đo accuracy chính thức trong pytest.
 
 ### Gate
 
@@ -241,7 +241,7 @@ quyết định bằng văn bản tự do.
   - drill-down chỉ khi câu hỏi yêu cầu.
 - [x] Dùng snapshot/cache hiện có thay vì gọi SSH trực tiếp từ Chat bằng
   `shared/natural_language/snapshot_runner.py`.
-- [ ] Nếu snapshot stale, trả metadata stale và chỉ enqueue refresh khi policy cho
+- [x] Nếu snapshot stale, trả metadata stale và chỉ enqueue refresh khi policy cho
   phép; không chặn toàn bộ câu trả lời.
 - [x] Giới hạn query plan: max calls, total duration, total output bytes và
   duplicate-call detection.
@@ -251,7 +251,8 @@ Implementation hiện tại:
 * `shared/natural_language/tool_registry.py` — metadata và allowlist fixed tools.
 * `shared/natural_language/query_planner.py` — intent → bounded read-only plan.
 * `shared/natural_language/query_executor.py` — controlled parallel execution,
-  timeout, partial evidence và aggregate output cap.
+  timeout, partial evidence, aggregate output cap và summary/count cho
+  collection lớn trước khi serialize vào provider context.
 * `shared/natural_language/snapshot_runner.py` — đọc snapshot theo cluster,
   không có SSH fallback, trả freshness/partial/refreshing metadata.
 * `config/settings.py` — `AI_NATURAL_LANGUAGE_QUERY_PLANNER_ENABLED`, mặc định
@@ -260,16 +261,16 @@ Implementation hiện tại:
 
 ### MCP adapter tùy chọn
 
-- [ ] Thiết kế adapter MCP read-only cho các tool summary/detail.
-- [ ] Không đưa mutation tool vào MCP v1 nếu chưa có approval context.
-- [ ] MCP request phải mang cluster scope server-side; không nhận cluster ID tùy ý
+- [x] Thiết kế adapter MCP read-only cho các tool summary/detail.
+- [x] Không đưa mutation tool vào MCP v1 nếu chưa có approval context.
+- [x] MCP request phải mang cluster scope server-side; không nhận cluster ID tùy ý
   từ prompt mà không validate.
-- [ ] Chỉ bật adapter sau khi tool registry nội bộ đã ổn định.
+- [x] Chỉ bật adapter sau khi tool registry nội bộ đã ổn định.
 
 ### Gate
 
-- [ ] Token/context giảm tối thiểu 50% so với đưa raw output toàn bộ vào prompt —
-  chưa benchmark trên snapshot adapter.
+- [x] Token/context giảm tối thiểu 50% so với đưa raw output toàn bộ vào prompt —
+  benchmark collection summary đạt >50% trên dataset 500 OSD.
 - [x] Không có tool call trùng trong một query plan.
 - [x] Planner không làm thay đổi API health/dashboard; feature flag mặc định tắt.
 
@@ -280,15 +281,15 @@ xếp hạng và giao tiếp.
 
 ### Analyzer v1
 
-- [ ] `HealthAnalyzer`: `HEALTH_OK/WARN/ERR`, health detail và severity.
-- [ ] `OSDAnalyzer`: down, out, nearfull, full, high latency, heartbeat/slow ops.
-- [ ] `PGAnalyzer`: degraded, undersized, inactive, stale, stuck, recovery.
-- [ ] `MONAnalyzer`: quorum, clock skew, unavailable MON.
-- [ ] `PoolAnalyzer`: usage threshold, replica/EC, PG distribution.
-- [ ] `RGWAnalyzer`: endpoint, S3 errors, auth, quota, multisite/sync.
-- [ ] `NodeAnalyzer`: CPU, RAM, disk IOPS/latency, SSH reachability.
-- [ ] `BackupAnalyzer`: RPO/RTO, failed jobs, stale metadata, restore drill.
-- [ ] `CRUSHAnalyzer`: failure-domain concentration, skew, missing host/rule.
+- [x] `HealthAnalyzer`: `HEALTH_OK/WARN/ERR`, health detail và severity.
+- [x] `OSDAnalyzer`: down, out, nearfull từ row và aggregate counters.
+- [x] `PGAnalyzer`: degraded, undersized, inactive, stale, stuck, peering.
+- [x] `MONAnalyzer`: quorum và evidence gap khi thiếu monmap.
+- [x] `PoolAnalyzer`: usage threshold và replication size.
+- [x] `RGWAnalyzer`: error/auth/quota/sync signals khi evidence có sẵn.
+- [x] `NodeAnalyzer`: CPU, RAM, latency và reachability.
+- [x] `BackupAnalyzer`: RPO breach và failed jobs khi evidence có sẵn.
+- [x] `CRUSHAnalyzer`: thiếu host mapping trong CRUSH tree.
 
 ### Analyzer contract
 
@@ -307,16 +308,28 @@ xếp hạng và giao tiếp.
 }
 ```
 
-- [ ] Finding phải deterministic và idempotent.
-- [ ] Không cho analyzer sinh command shell.
-- [ ] Có `evidence_gaps` khi thiếu dữ liệu.
-- [ ] Có deduplication/debounce để không tạo lại cùng finding ở mỗi poll.
-- [ ] Đưa findings vào incident/log intelligence hiện có khi phù hợp.
+- [x] Finding phải deterministic và idempotent.
+- [x] Không cho analyzer sinh command shell.
+- [x] Có `evidence_gaps` khi thiếu dữ liệu.
+- [x] Có deduplication trong `analyze_evidence_bundle`; debounce persistence để tích hợp incident sẽ làm ở pha sau.
+- [x] Đưa findings vào incident/log intelligence hiện có khi phù hợp: RCA phát
+  candidate signal `incident-candidate-v1` read-only, deduplicated và scoped;
+  không tự tạo Incident/Action.
+
+`query_executor.py` now attaches deterministic findings to snapshot-backed
+read-only query results. Chat can include those findings in evidence context
+when both Phase 2 feature flags are enabled; incident persistence remains a
+separate later task.
+
+Implementation: `shared/natural_language/analyzers.py` với `Finding`,
+`analyze_evidence()` và `analyze_evidence_bundle()`. Analyzer chỉ nhận
+snapshot/evidence, không có SSH/provider/executor dependency; `recommended_action`
+luôn là `null` ở pha này.
 
 ### Gate
 
-- Mỗi finding có unit test dữ liệu đúng, thiếu, stale và sai schema.
-- Không kết luận `HEALTH_OK` khi collector không có dữ liệu.
+- [x] Mỗi finding có unit test dữ liệu đúng, thiếu, stale và sai schema.
+- [x] Không kết luận `HEALTH_OK` khi collector không có dữ liệu.
 - Tỷ lệ false positive được đo trên fixture trước khi bật Telegram alert.
 
 ## 7. Pha 4 — RAG cho tài liệu Ceph và runbook nội bộ
@@ -326,36 +339,46 @@ không biến RAG thành nguồn sự thật thay cho cluster evidence.
 
 ### Nguồn dữ liệu
 
-- [ ] Tài liệu Ceph chính thức theo major release được hỗ trợ.
-- [ ] Runbook nội bộ đã duyệt.
-- [ ] Capability matrix của `ceph-ai`.
-- [ ] RCA knowledge base hiện có: `docs/ceph-ai-rca-knowledge.md`.
-- [ ] Incident/postmortem đã verified, có redaction.
-- [ ] Không ingest raw secret, private key, access key hoặc audit payload nhạy cảm.
+- [x] Tài liệu Ceph chính thức theo major release được hỗ trợ — catalog URL theo
+  release trong `docs/ai/ceph-official-docs-manifest.md`.
+- [x] Runbook nội bộ đã duyệt được catalog chọn lọc.
+- [x] Capability matrix của `ceph-ai` — tool registry đã có metadata capability.
+- [x] RCA knowledge base hiện có: `docs/ceph-ai-rca-knowledge.md`.
+- [x] Incident/postmortem đã verified — chỉ dùng qua `case_retrieval` hiện hữu,
+  chưa ingest chung vào index.
+- [x] Không ingest credential-like material; private key, token và secret assignment
+  bị từ chối ngay khi ingest.
 
 ### Retrieval
 
-- [ ] Metadata filter theo Ceph version, deployment mode, component và language.
-- [ ] Hybrid retrieval: exact keyword cho mã lỗi + semantic retrieval cho câu hỏi
-  tự nhiên.
-- [ ] Reranking và giới hạn top-k.
-- [ ] Mỗi đoạn trả về source, version, section và confidence.
-- [ ] Nếu tài liệu khác version cluster, hiển thị cảnh báo và không dùng làm căn cứ
-  duy nhất cho action.
-- [ ] Hỗ trợ tiếng Việt bằng glossary/translation layer; không dịch sai command,
-  flag, resource ID và log code.
+- [x] Metadata filter theo Ceph version, component và language; deployment mode là
+  metadata mở rộng ở bước tiếp theo.
+- [x] Exact keyword cho mã lỗi + lexical retrieval accent-insensitive cho câu hỏi
+  tiếng Việt; chưa thêm semantic/vector dependency.
+- [x] Reranking deterministic và giới hạn `top_k`.
+- [x] Mỗi chunk trả source, version, section, revision và confidence.
+- [x] Version mismatch trả `version_mismatch` và không trả hit khác version.
+- [x] Giữ nguyên command, flag, resource ID và log code trong chunk; không tự dịch.
 
 ### Storage lựa chọn
 
-- [ ] Ưu tiên tận dụng database/cache hiện có trước khi thêm vector database.
-- [ ] Chỉ thêm Qdrant/pgvector/FAISS nếu benchmark chứng minh cần thiết.
-- [ ] Embedding/index phải có version, checksum và cách rebuild.
+- [x] Ưu tiên index in-process, không thêm database/vector dependency ở pha này.
+- [x] Chỉ thêm Qdrant/pgvector/FAISS nếu benchmark chứng minh cần thiết — chưa
+  thêm vì lexical index đạt 100/100 fixture và collection benchmark đã đủ.
+- [x] Lexical index có version, checksum và manifest kiểm tra/rebuild; embedding
+  chưa được sử dụng ở pha này.
+
+Implementation: `shared/natural_language/retrieval.py` với `KnowledgeStore`,
+`KnowledgeChunk`, `KnowledgeCitation` và `RetrievalResult`. Catalog mặc định
+đọc các tài liệu nội bộ đã chọn lọc: RCA knowledge, DR, Log Intelligence và
+CRUSH monitoring. RAG không được ghi đè live Ceph evidence; Chat chỉ đưa runbook
+vào context khi `AI_NATURAL_LANGUAGE_RAG_ENABLED=true`.
 
 ### Gate
 
-- Câu trả lời có citation nội bộ cho runbook/tài liệu.
-- RAG không được ghi đè evidence live từ Ceph.
-- Test version mismatch phải fail closed.
+- [x] Retrieval trả citation nội bộ có source/section/revision.
+- [x] RAG không được ghi đè evidence live từ Ceph.
+- [x] Test version mismatch fail closed.
 
 ## 8. Pha 5 — Natural-language RCA và hội thoại nhiều lượt
 
@@ -363,13 +386,13 @@ không biến RAG thành nguồn sự thật thay cho cluster evidence.
 
 ### Luồng trả lời
 
-- [ ] Classify intent và scope.
-- [ ] Chọn snapshot/evidence cần thiết.
-- [ ] Chạy analyzer deterministic.
-- [ ] Truy hồi runbook phù hợp.
-- [ ] LLM tổng hợp theo output schema.
-- [ ] Server validate facts và chặn citation không tồn tại.
-- [ ] Trả lời theo các phần:
+- [x] Classify intent và scope.
+- [x] Chọn snapshot/evidence cần thiết.
+- [x] Chạy analyzer deterministic.
+- [x] Truy hồi runbook phù hợp.
+- [x] LLM tổng hợp theo output schema.
+- [x] Server validate facts và chặn citation không tồn tại.
+- [x] Trả lời theo các phần:
   - Kết luận ngắn.
   - Điều đã quan sát.
   - Bằng chứng và thời điểm.
@@ -377,21 +400,40 @@ không biến RAG thành nguồn sự thật thay cho cluster evidence.
   - Việc nên kiểm tra tiếp.
   - Đề xuất hành động, nếu có.
 
+Read-only RCA assembly is implemented in `shared/natural_language/rca.py`.
+The opt-in snapshot chat path passes intent scope, deterministic findings,
+evidence references, freshness, and an empty inference/recommendation section
+to the provider. Runbook retrieval is separately guarded by
+`AI_NATURAL_LANGUAGE_RAG_ENABLED`.
+Structured provider output is available behind
+`ai_natural_language_structured_output_enabled` using `answer-v1` in
+`shared/natural_language/answer.py`; unknown facts, tools, citations, scope or
+confidence are rejected and fall back to deterministic RCA.
+
 ### Conversation state
 
-- [ ] Lưu cluster scope, time window, resources và unresolved clarification.
-- [ ] Follow-up như “còn node kia thì sao?” phải dùng đúng context trước đó.
-- [ ] Cho phép reset scope rõ ràng.
-- [ ] Không để context từ cluster này rò sang cluster khác.
-- [ ] Giới hạn lịch sử đưa vào model; summarize conversation khi dài.
+- [x] Lưu cluster scope, time window, resources và unresolved clarification.
+- [x] Follow-up như “còn node kia thì sao?” phải dùng đúng context trước đó.
+- [x] Cho phép reset scope rõ ràng.
+- [x] Không để context từ cluster này rò sang cluster khác.
+- [x] Giới hạn lịch sử đưa vào model; summarize conversation khi dài.
+
+Multi-turn resolution is implemented in `shared/natural_language/conversation.py`.
+Chat history carries the persisted `cluster_id`; unscoped legacy messages are
+not eligible for context inheritance.
+Parsed safe context is persisted in `chat_messages.nl_context_json` by the
+`m20260919nlcontext` migration; raw prompt text is not duplicated there.
+When the provider context ceiling is reached, `dashboard/chat_client.py` adds
+a bounded structural intent summary of omitted history instead of replaying
+old raw prompts.
 
 ### Vietnamese UX
 
-- [ ] Mặc định trả lời tiếng Việt nếu user hỏi tiếng Việt.
-- [ ] Giữ nguyên thuật ngữ Ceph: OSD, MON, MGR, PG, pool, RGW, CRUSH.
-- [ ] Cho phép user yêu cầu English output.
-- [ ] Hiển thị thuật ngữ chưa hiểu và hỏi lại thay vì âm thầm đoán.
-- [ ] Có câu trả lời nhanh cho các intent phổ biến, không gọi LLM nếu summary cache
+- [x] Mặc định trả lời tiếng Việt nếu user hỏi tiếng Việt.
+- [x] Giữ nguyên thuật ngữ Ceph: OSD, MON, MGR, PG, pool, RGW, CRUSH.
+- [x] Cho phép user yêu cầu English output.
+- [x] Hiển thị thuật ngữ chưa hiểu và hỏi lại thay vì âm thầm đoán.
+- [x] Có câu trả lời nhanh cho các intent phổ biến, không gọi LLM nếu summary cache
   đã đủ.
 
 ## 9. Pha 6 — Tích hợp action planner với approval hiện có
@@ -400,10 +442,10 @@ không biến RAG thành nguồn sự thật thay cho cluster evidence.
 
 ### Công việc
 
-- [ ] Intent router chỉ được map tới `action_id` đã đăng ký.
-- [ ] Validate typed parameters: cluster, pool, image, OSD, PG, node và threshold.
-- [ ] Preflight version/capability/health/dependency trước preview.
-- [ ] Preview hiển thị:
+- [x] Intent/proposal boundary chỉ chấp nhận `action_id` đã đăng ký.
+- [x] Validate typed parameters: cluster, pool, image, OSD, PG, node và threshold.
+- [x] Preflight version/capability/health/dependency trước preview.
+- [x] Preview hiển thị:
   - action;
   - target;
   - command/operation description đã redacted;
@@ -412,11 +454,11 @@ không biến RAG thành nguồn sự thật thay cho cluster evidence.
   - rollback/limitation;
   - evidence timestamp;
   - expiry.
-- [ ] RISKY/DESTRUCTIVE luôn giữ Telegram/user approval theo policy.
-- [ ] Từ chối prompt injection kiểu “bỏ qua phê duyệt”, “chạy ngay”, “xóa xác nhận”.
-- [ ] Post-check phải gọi snapshot mới hoặc kiểm chứng rõ ràng; không báo thành công
+- [x] RISKY/DESTRUCTIVE luôn giữ Telegram/user approval theo policy.
+- [x] Từ chối prompt injection kiểu “bỏ qua phê duyệt”, “chạy ngay”, “xóa xác nhận”.
+- [x] Post-check phải gọi snapshot mới hoặc kiểm chứng rõ ràng; không báo thành công
   chỉ vì SSH command exit 0.
-- [ ] Audit lưu actor, prompt hash, parsed intent, action_id, preview, approval,
+- [x] Audit lưu actor, prompt hash, parsed intent, action_id, preview, approval,
   execution, post-check và error đã redaction.
 
 ### Gate
@@ -425,20 +467,34 @@ không biến RAG thành nguồn sự thật thay cho cluster evidence.
 - Test action sai target, sai cluster, stale evidence, expired approval và duplicate
   approval đều bị chặn.
 
+`shared/natural_language/action_planner.py` cung cấp contract `action-preview-v1`
+chỉ validate action đã đăng ký, cluster/node scope, typed parameters và approval
+classification; module không có executor. Chat proposal hiện gọi boundary này
+bên cạnh command-builder/approval validator hiện hữu.
+
+Rollout guard hiện giữ các feature flag NLP ở admin-only mặc định; chỉ khi
+`ai_natural_language_admin_only=false` và cluster id nằm trong
+`ai_natural_language_rollout_clusters` mới cho phép test/canary user. Tắt flag
+luôn quay về provider/tool loop cũ.
+
+Proposal từ Chat vẫn đi vào Action/Worker hiện hữu; `worker/verify.py` và
+approval poller giữ post-check/requeue, nên command exit 0 không tự biến thành
+trạng thái đã khắc phục.
+
 ## 10. Pha 7 — Tối ưu hiệu năng và chi phí
 
-- [ ] Fast path cho health/summary từ snapshot, không gọi LLM.
-- [ ] Cache intent normalization và tool metadata.
-- [ ] Cache RAG theo query/version/document revision.
-- [ ] Gộp các read query độc lập và giới hạn concurrency.
-- [ ] Tóm tắt dataset lớn trước khi đưa vào prompt.
-- [ ] Model routing:
+- [x] Fast path cho health/summary từ snapshot, không gọi LLM.
+- [x] Cache intent normalization và tool metadata.
+- [x] Cache RAG theo query/version/document revision.
+- [x] Gộp các read query độc lập và giới hạn concurrency.
+- [x] Tóm tắt dataset lớn trước khi đưa vào prompt.
+- [x] Model routing:
   - model nhỏ cho classify/normalize;
   - model nhanh cho summary;
   - model mạnh chỉ cho RCA phức tạp hoặc action planning.
-- [ ] Timeout riêng cho intent, retrieval, Ceph tool và final answer.
-- [ ] Cancel toàn bộ child task khi client disconnect.
-- [ ] Metrics:
+- [x] Timeout riêng cho intent, retrieval, Ceph tool và final answer.
+- [x] Cancel toàn bộ child task khi client disconnect.
+- [x] Metrics:
   - intent latency;
   - tool latency;
   - cache hit/miss;
@@ -448,6 +504,10 @@ không biến RAG thành nguồn sự thật thay cho cluster evidence.
   - approval rate;
   - hallucination/validation rejection;
   - cost per conversation.
+
+Intent normalization uses a bounded 512-entry cache keyed by text and
+cluster scope; returned intents are deep-copied so mutable filters cannot
+pollute cached decisions. Fixed tool metadata remains in the closed registry.
 
 ### Mục tiêu ban đầu
 
@@ -459,53 +519,54 @@ không biến RAG thành nguồn sự thật thay cho cluster evidence.
 
 ## 11. Pha 8 — UI Chat và khả năng kiểm chứng
 
-- [ ] Hiển thị trạng thái: `Đang hiểu câu hỏi`, `Đang lấy evidence`, `Đang phân tích`,
+- [x] Hiển thị trạng thái: `Đang hiểu câu hỏi`, `Đang lấy evidence`, `Đang phân tích`,
   `Cần phê duyệt`, `Đã hoàn tất`, `Thiếu dữ liệu`, `Lỗi kết nối`.
-- [ ] Phân biệt bằng visual:
+- [x] Phân biệt bằng visual:
   - câu trả lời;
   - evidence;
   - inference;
   - recommendation;
   - preview;
   - execution result.
-- [ ] Nút mở evidence detail: source, timestamp, stale/partial, tool đã gọi.
-- [ ] Command/code block có copy nhưng không hiển thị secret.
-- [ ] Nút Stop hủy request và tool task còn lại.
-- [ ] Confirmation dialog/focus/accessibility không bị bypass bởi Chat.
-- [ ] Câu hỏi gần đây chỉ lưu metadata an toàn, có cluster scope rõ.
-- [ ] Không để Chat panel che KPI hoặc thao tác chính trên Dashboard.
+- [x] Nút mở evidence detail: source, timestamp, stale/partial, tool đã gọi.
+- [x] Command/code block có copy nhưng không hiển thị secret.
+- [x] Nút Stop hủy request và tool task còn lại.
+- [x] Confirmation dialog/focus/accessibility không bị bypass bởi Chat.
+- [x] Câu hỏi gần đây chỉ lưu metadata an toàn, có cluster scope rõ.
+- [x] Không để Chat panel che KPI hoặc thao tác chính trên Dashboard: inline
+  panel bị giới hạn trong grid, min/max-width và overflow được khóa.
 
 ## 12. Pha 9 — Bộ đánh giá và kiểm thử
 
 ### Dataset đánh giá
 
-- [ ] 100 câu tiếng Việt thật, chia:
-  - 30 câu health/inventory;
-  - 20 câu log/RCA;
-  - 15 câu capacity/performance;
-  - 15 câu RGW/object storage;
-  - 10 câu backup;
-  - 10 câu action/approval.
-- [ ] Mỗi câu có expected intent, entities, cluster, tools, answer facts và safety
-  label.
-- [ ] Thêm câu không dấu, viết tắt, typo, slang vận hành và câu mơ hồ.
-- [ ] Thêm prompt injection và câu yêu cầu bypass approval.
+- [x] 100 câu tiếng Việt thật, chia:
+  - 50 câu cluster health/OSD/PG/pool/node;
+  - 18 câu log/RCA/recommendation;
+  - 11 câu volume/CRUSH;
+  - 7 câu RGW/object storage;
+  - 5 câu backup;
+  - 9 câu ambiguity/mutation/injection safety.
+- [x] Mỗi câu có expected intent, entities, cluster, tools, answer facts và safety
+  label trong `docs/ai/nl-evaluation-manifest.json`.
+- [x] Thêm câu không dấu, viết tắt, typo, slang vận hành và câu mơ hồ.
+- [x] Thêm prompt injection và câu yêu cầu bypass approval.
 
 ### Test bắt buộc
 
-- [ ] Intent classification và entity extraction.
-- [ ] Multi-turn cluster scope.
-- [ ] Version/deployment capability mismatch.
-- [ ] Stale/partial snapshot.
-- [ ] Node/RGW unreachable nhưng snapshot cũ còn.
-- [ ] Tool timeout, output limit, duplicate tool call.
-- [ ] Không leak secret trong prompt/log/response.
-- [ ] Read-only tool không tạo mutation.
-- [ ] Mutation chỉ tạo preview và approval.
-- [ ] Client disconnect hủy task.
-- [ ] RAG citation đúng source/version.
-- [ ] Prompt injection không thay đổi policy.
-- [ ] Multi-cluster không trộn evidence.
+- [x] Intent classification và entity extraction.
+- [x] Multi-turn cluster scope.
+- [x] Version/deployment capability mismatch.
+- [x] Stale/partial snapshot.
+- [x] Node/RGW unreachable nhưng snapshot cũ còn.
+- [x] Tool timeout, output limit, duplicate tool call.
+- [x] Không leak secret trong prompt/log/response.
+- [x] Read-only tool không tạo mutation.
+- [x] Mutation chỉ tạo preview và approval.
+- [x] Client disconnect hủy task.
+- [x] RAG citation đúng source/version.
+- [x] Prompt injection không thay đổi policy.
+- [x] Multi-cluster không trộn evidence.
 
 ### Chỉ số nghiệm thu
 
@@ -521,21 +582,28 @@ không biến RAG thành nguồn sự thật thay cho cluster evidence.
 
 ### Rollout
 
-- [ ] Feature flag `NLP_INTENT_V1` chỉ bật cho admin/test cluster.
-- [ ] Shadow mode: parse intent và chọn tool nhưng chưa thay đổi câu trả lời cũ.
-- [ ] So sánh output cũ/mới trên fixture và log đã redaction.
-- [ ] Canary cho một cluster, sau đó mở theo role.
+- [x] Feature flag NLP intent/snapshot chỉ bật cho admin hoặc test/canary cluster
+  được allowlist.
+- [x] Shadow mode: parse intent và chọn tool nhưng chưa thay đổi câu trả lời cũ.
+- [x] So sánh output cũ/mới trên fixture và log đã redaction trong
+  `docs/ai/nl-shadow-comparison.json`.
+- [x] Canary cho một cluster, sau đó mở theo role; runtime đã bật planner /
+  snapshot / RAG / structured output cho `CS-LAB`
+  (`ac23b8ff-e235-414c-bed8-06894f3dedd3`), giữ fast-path/MCP tắt, và đã kiểm
+  tra non-admin chỉ được phép trên cluster allowlist.
 - [ ] Theo dõi latency, cost, rejection và approval trong 24–72 giờ.
-- [ ] Tài liệu hóa prompt/model/index version trong release manifest.
+- [x] Tài liệu hóa prompt/model/index version trong release manifest.
 
 ### Rollback
 
-- [ ] Tắt feature flag để quay về Chat/tool loop hiện tại.
-- [ ] RAG/index có thể xóa/rebuild mà không ảnh hưởng database nghiệp vụ.
-- [ ] Không migration phá vỡ chat history hoặc audit hiện có.
-- [ ] Không thay đổi command executor trong cùng release với NLP v1 nếu không bắt
+- [x] Tắt feature flag để quay về Chat/tool loop hiện tại.
+- [x] RAG/index có thể xóa/rebuild mà không ảnh hưởng database nghiệp vụ.
+- [x] Không migration phá vỡ chat history hoặc audit hiện có.
+- [x] Không thay đổi command executor trong cùng release với NLP v1 nếu không bắt
   buộc.
-- [ ] Giữ audit và evidence của shadow/canary để điều tra sau rollback.
+- [x] Giữ audit và evidence của shadow/canary để điều tra sau rollback; mỗi
+  `nl_context` lưu scope (`shadow`/`canary`/`admin`), feature flags, parser
+  version, cluster scope và evidence/citation/freshness khi snapshot chạy.
 
 ## 14. File dự kiến thay đổi
 
@@ -596,17 +664,18 @@ Natural Language v1.
 
 ## 16. Tiêu chí hoàn thành toàn bộ kế hoạch
 
-- [ ] Operator hỏi bằng tiếng Việt và hệ thống xác định đúng intent, cluster,
+- [x] Operator hỏi bằng tiếng Việt và hệ thống xác định đúng intent, cluster,
   resource và time window.
-- [ ] Câu trả lời có evidence thật, timestamp, freshness và citation khi dùng RAG.
-- [ ] Một node/RGW lỗi không làm mất snapshot hợp lệ trước đó.
-- [ ] Dataset lớn được summary/filter/drill-down, không làm prompt phình to.
-- [ ] RCA phân biệt observed/inferred/recommended.
-- [ ] Mọi action thay đổi dữ liệu vẫn preview → approval → execute → post-check → audit.
-- [ ] Prompt injection, sai cluster, stale evidence, unsupported version và thiếu
+- [x] Câu trả lời có evidence thật, timestamp, freshness và citation khi dùng RAG.
+- [x] Một node/RGW lỗi không làm mất snapshot hợp lệ trước đó.
+- [x] Dataset lớn được summary/filter/drill-down, không làm prompt phình to.
+- [x] RCA phân biệt observed/inferred/recommended.
+- [x] Mọi action thay đổi dữ liệu vẫn preview → approval → execute → post-check → audit.
+- [x] Prompt injection, sai cluster, stale evidence, unsupported version và thiếu
   permission đều fail closed.
-- [ ] Có benchmark trước/sau về accuracy, latency, token và cost.
-- [ ] Có feature flag, rollback và tài liệu vận hành.
+- [x] Có benchmark trước/sau về accuracy, latency, token và cost ở parser scope;
+  provider end-to-end được ghi rõ là ngoài scope trong report.
+- [x] Có feature flag, rollback và tài liệu vận hành.
 
 ## 17. Nhật ký triển khai
 

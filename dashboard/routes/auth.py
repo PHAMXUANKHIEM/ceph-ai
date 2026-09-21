@@ -1,6 +1,7 @@
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 import bcrypt
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -46,7 +47,7 @@ def _client_key(request: Request) -> str:
 
 
 def _is_locked_out(key: str) -> bool:
-    now = datetime.utcnow()
+    now = utc_now()
     try:
         with db.SessionLocal() as session:
             row = session.get(AuthLoginRateLimit, key, with_for_update=True)
@@ -99,7 +100,7 @@ def _get_locked_rate_limit_row(session, key: str, now: datetime):
 
 
 def _record_failure(key: str) -> None:
-    now = datetime.utcnow()
+    now = utc_now()
     try:
         with db.SessionLocal() as session:
             row = _get_locked_rate_limit_row(session, key, now)

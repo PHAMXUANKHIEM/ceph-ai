@@ -331,9 +331,11 @@
   var lastPayload = null;
   var pollTimer = null;
   var requestInFlight = false;
+  var realtimeConnected = false;
 
   function schedulePoll() {
     window.clearTimeout(pollTimer);
+    if (realtimeConnected) return;
     pollTimer = window.setTimeout(poll, POLL_INTERVAL_MS);
   }
 
@@ -381,11 +383,28 @@
     lastPayload = null;
     poll();
   });
+  var unsubscribe = window.CephClusterState && window.CephClusterState.subscribe(clusterId, function (event) {
+    if (!event.sections || event.sections.indexOf("crush") !== -1) {
+      lastPayload = null;
+      poll();
+    }
+  });
+  var onConnection = function (event) {
+    if (!event.detail || event.detail.clusterId !== clusterId) return;
+    realtimeConnected = event.detail.connected === true;
+    if (realtimeConnected) window.clearTimeout(pollTimer); else schedulePoll();
+  };
+  window.addEventListener("ceph-cluster-state-connection", onConnection);
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && !requestInFlight) {
       window.clearTimeout(pollTimer);
       poll();
     }
+  });
+  window.addEventListener("pagehide", function () {
+    if (unsubscribe) unsubscribe();
+    window.removeEventListener("ceph-cluster-state-connection", onConnection);
+    window.clearTimeout(pollTimer);
   });
   poll();
 })();

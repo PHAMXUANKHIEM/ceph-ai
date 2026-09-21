@@ -8,6 +8,7 @@ remediation. The selected Dashboard cluster is merely the report scope.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from shared.time import utc_now
 from statistics import mean
 
 from config.settings import settings
@@ -74,7 +75,7 @@ def _node_scope_metrics(
             lead_times.append(
                 (matching.target_at - transition.changed_at).total_seconds() / 3600
             )
-        elif transition.changed_at + timedelta(hours=168) >= datetime.utcnow():
+        elif transition.changed_at + timedelta(hours=168) >= utc_now():
             pending_outcome += 1
 
     feedback_rows = session.query(NodeResourceForecastFeedback).join(
@@ -162,7 +163,7 @@ def build_canary_report(
 ) -> dict:
     """Build an acceptance report for shadow candidates in one cluster."""
 
-    since = since or datetime.utcnow() - timedelta(days=7)
+    since = since or utc_now() - timedelta(days=7)
     policy = default_promotion_policy()
     rows = session.query(ForecastModelRegistry).filter(
         ((ForecastModelRegistry.scope_type == "NODE_RESOURCE")

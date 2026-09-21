@@ -94,6 +94,26 @@ def test_executor_keeps_partial_result_when_one_tool_fails():
     assert result.errors[0]["tool"] == "get_health_detail"
 
 
+def test_executor_adds_deterministic_findings_to_snapshot_evidence():
+    plan = plan_query(route_natural_language("Cụm đang HEALTH_WARN", cluster_id="prod"))
+
+    def runner(tool_name, _args, _cluster_id):
+        if tool_name == "get_cluster_status":
+            return {
+                "data": {"health": {"status": "HEALTH_WARN", "checks": {"OSD_DOWN": {}}}},
+                "meta": {"available": True, "stale": False, "partial": False},
+            }
+        return {
+            "data": {},
+            "meta": {"available": False, "stale": False, "partial": True},
+        }
+
+    result = asyncio.run(execute_query_plan(plan, runner))
+
+    assert any(item["code"] == "HEALTH_WARN" for item in result.findings)
+    assert result.to_dict()["findings"]
+
+
 def test_executor_marks_per_tool_timeout_without_cancelling_sibling():
     plan = plan_query(route_natural_language("Kiểm tra OSD", cluster_id="prod"))
     timed_call = replace(
@@ -129,3 +149,20 @@ def test_executor_bounds_aggregate_evidence_output():
     assert result.status == "ok"
     assert any(item.truncated for item in result.evidence)
     assert result.evidence[1].result["preview"] == ""
+
+
+def test_executor_summarizes_large_collections_before_serialization():
+    plan = plan_query(
+        route_natural_language("Kiểm tra OSD", cluster_id="prod"),
+        max_output_bytes=4000,
+    )
+
+    def runner(_tool_name, _args, cluster_id):
+        assert cluster_id == "prod"
+        return {"osds": [{"status": "up", "host": "node-a"} for _ in range(50)]}
+
+    result = asyncio.run(execute_query_plan(plan, runner))
+
+    summarized = [item for item in result.evidence if item.status == "ok" and item.truncated]
+    assert summarized
+    assert summarized[0].result["osds"]["summary"]["count"] == 50

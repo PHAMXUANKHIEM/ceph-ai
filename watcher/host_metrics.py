@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from shared.time import utc_now
 from threading import Lock
 
 from config.settings import settings
@@ -107,7 +108,7 @@ def _prune_due(cluster_id: str, now: datetime) -> bool:
 
 def collect_and_store(cluster_id: str, cluster=None, *, now: datetime | None = None) -> int:
     """Collect one sample per configured node; failed hosts are skipped."""
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     hosts = _telemetry_hosts(cluster)
     if not hosts:
         return 0

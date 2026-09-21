@@ -1,0 +1,656 @@
+# Deterministic Vietnamese operator-query baseline for Natural Language AI.
+# These cases are classification-only: no provider, SSH, or Ceph command runs.
+- id: cluster-health-warning
+  text: "Cụm đang HEALTH_WARN vì sao?"
+  intent: cluster_health
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+
+- id: cluster-overview
+  text: "Cho tôi tổng quan cụm Ceph này"
+  intent: cluster_health
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+
+- id: osd-down
+  text: "OSD nào đang down?"
+  intent: osd_health
+  language: vi
+  resource_type: osd
+  needs_clarification: false
+
+- id: osd-threshold
+  text: "OSD 12 đang nearfull trên 85%"
+  intent: osd_health
+  language: vi
+  resource_type: osd
+  resource_ids: [osd.12]
+  filters:
+    utilization_gte: 85
+  needs_clarification: false
+
+- id: pg-degraded
+  text: "PG 1.a nào đang degraded?"
+  intent: pg_health
+  language: vi
+  resource_type: pg
+  resource_ids: [1.a]
+  needs_clarification: false
+
+- id: pool-capacity
+  text: "Pool data còn bao nhiêu dung lượng?"
+  intent: pool_capacity
+  language: vi
+  resource_type: pool
+  resource_ids: [data]
+  needs_clarification: false
+
+- id: pool-low-watermark
+  text: "Pool metadata nào dưới 70%?"
+  intent: pool_capacity
+  language: vi
+  resource_type: pool
+  resource_ids: [metadata]
+  filters:
+    utilization_lte: 70
+  needs_clarification: false
+
+- id: node-metrics-host
+  text: "Xem CPU và RAM của node ceph-01"
+  intent: node_metrics
+  language: vi
+  resource_type: node
+  resource_ids: [ceph-01]
+  needs_clarification: false
+
+- id: node-metrics-ip
+  text: "Độ trễ của máy chủ 10.3.55.213 trong 2 giờ"
+  intent: node_metrics
+  language: vi
+  resource_type: node
+  resource_ids: [10.3.55.213]
+  time_range_seconds: 7200
+  needs_clarification: false
+
+- id: rgw-bucket
+  text: "Kiểm tra RGW bucket backups"
+  intent: rgw_diagnosis
+  language: vi
+  resource_type: bucket
+  resource_ids: [backups]
+  needs_clarification: false
+
+- id: volume-insight
+  text: "Phân tích volume rbd-data"
+  intent: volume_insight
+  language: vi
+  resource_type: volume
+  resource_ids: [rbd-data]
+  needs_clarification: false
+
+- id: crush-failure-domain
+  text: "Phân tích CRUSH failure domain của cụm"
+  intent: crush_analysis
+  language: vi
+  resource_type: crush
+  needs_clarification: false
+
+- id: log-request-id
+  text: "Tìm log theo request_id req-123 trong 2 giờ gần đây"
+  intent: log_search
+  language: vi
+  resource_type: request
+  resource_ids: [req-123]
+  time_range_seconds: 7200
+  needs_clarification: false
+
+- id: backup-rpo
+  text: "Trạng thái backup và RPO hiện tại"
+  intent: backup_status
+  language: vi
+  resource_type: backup
+  needs_clarification: false
+
+- id: explain-incident
+  text: "Giải thích incident khiến nhiều PG degraded"
+  intent: explain_incident
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+
+- id: recommend-next-step
+  text: "Nên làm gì tiếp theo?"
+  intent: recommend_action
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+
+- id: log-yesterday
+  text: "Xem audit log hôm qua"
+  intent: log_search
+  language: vi
+  resource_type: log
+  time_range_seconds: 86400
+  needs_clarification: false
+
+- id: pg-last-hours
+  text: "Kiểm tra PG stuck trong 6 giờ"
+  intent: pg_health
+  language: vi
+  resource_type: pg
+  time_range_seconds: 21600
+  needs_clarification: false
+
+- id: unknown-help
+  text: "Giúp tôi với"
+  intent: unknown_or_ambiguous
+  language: vi
+  needs_clarification: true
+
+- id: ambiguous-osd-pool
+  text: "Kiểm tra OSD và pool"
+  intent: unknown_or_ambiguous
+  language: vi
+  needs_clarification: true
+
+- id: ambiguous-multiple-osds
+  text: "Kiểm tra OSD 1 và OSD 2"
+  intent: unknown_or_ambiguous
+  language: vi
+  resource_type: osd
+  resource_ids: [osd.1, osd.2]
+  needs_clarification: true
+
+- id: ambiguous-multiple-pools
+  text: "Kiểm tra pool data và pool metadata"
+  intent: unknown_or_ambiguous
+  language: vi
+  resource_type: pool
+  resource_ids: [data, metadata]
+  needs_clarification: true
+
+- id: mutation-delete-volume
+  text: "Xóa volume test-rbd"
+  intent: unknown_or_ambiguous
+  language: vi
+  resource_type: volume
+  resource_ids: [test-rbd]
+  needs_clarification: true
+
+# Additional production-shaped Vietnamese cases: no provider or cluster call
+# is made by the fixture benchmark.  They intentionally cover abbreviations,
+# accent-free wording, time windows, thresholds and safety language.
+- id: cluster-004
+  text: "Sức khỏe Ceph hiện tại thế nào?"
+  intent: cluster_health
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: cluster-005
+  text: "Cụm có vấn đề gì không?"
+  intent: cluster_health
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: cluster-006
+  text: "Xem trạng thái cluster trong 1 giờ qua"
+  intent: cluster_health
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: cluster-007
+  text: "Ceph health detail báo gì?"
+  intent: cluster_health
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: cluster-008
+  text: "Tong quan suc khoe cum Ceph"
+  intent: cluster_health
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: cluster-009
+  text: "Cụm đang HEALTH_WARN hay HEALTH_OK?"
+  intent: cluster_health
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: cluster-010
+  text: "Kiểm tra sức khỏe Ceph"
+  intent: cluster_health
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: cluster-011
+  text: "Cluster health hiện giờ"
+  intent: cluster_health
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+
+- id: osd-004
+  text: "Có OSD nào bị out không?"
+  intent: osd_health
+  language: vi
+  resource_type: osd
+  needs_clarification: false
+- id: osd-005
+  text: "Kiểm tra OSD down"
+  intent: osd_health
+  language: vi
+  resource_type: osd
+  needs_clarification: false
+- id: osd-006
+  text: "OSD nào đang down gần đây?"
+  intent: osd_health
+  language: vi
+  resource_type: osd
+  needs_clarification: false
+- id: osd-007
+  text: "OSD nào đang chậm hoặc lỗi disk?"
+  intent: osd_health
+  language: vi
+  resource_type: osd
+  needs_clarification: false
+- id: osd-008
+  text: "Xem danh sách OSD down"
+  intent: osd_health
+  language: vi
+  resource_type: osd
+  needs_clarification: false
+- id: osd-009
+  text: "OSD 4 có đang in không?"
+  intent: osd_health
+  language: vi
+  resource_type: osd
+  needs_clarification: false
+- id: osd-010
+  text: "Kiểm tra disk của OSD"
+  intent: osd_health
+  language: vi
+  resource_type: osd
+  needs_clarification: false
+- id: osd-011
+  text: "OSD nào đang out?"
+  intent: osd_health
+  language: vi
+  resource_type: osd
+  needs_clarification: false
+
+- id: pg-004
+  text: "PG nào đang undersizd?"
+  intent: pg_health
+  language: vi
+  resource_type: pg
+  needs_clarification: false
+- id: pg-005
+  text: "PG nào inactive trong 30 phút?"
+  intent: pg_health
+  language: vi
+  resource_type: pg
+  needs_clarification: false
+- id: pg-006
+  text: "Có PG stuck không?"
+  intent: pg_health
+  language: vi
+  resource_type: pg
+  needs_clarification: false
+- id: pg-007
+  text: "Kiểm tra PG đang peering"
+  intent: pg_health
+  language: vi
+  resource_type: pg
+  needs_clarification: false
+- id: pg-008
+  text: "PG bị degraded từ hôm qua"
+  intent: pg_health
+  language: vi
+  resource_type: pg
+  needs_clarification: false
+- id: pg-009
+  text: "PG nào stale hoặc không active?"
+  intent: pg_health
+  language: vi
+  resource_type: pg
+  needs_clarification: false
+- id: pg-010
+  text: "Xem placement group lỗi"
+  intent: pg_health
+  language: vi
+  resource_type: pg
+  needs_clarification: false
+- id: pg-011
+  text: "Tình trạng PG recovery hiện nay"
+  intent: pg_health
+  language: vi
+  resource_type: pg
+  needs_clarification: false
+
+- id: pool-004
+  text: "Pool nào gần đầy nhất?"
+  intent: pool_capacity
+  language: vi
+  resource_type: pool
+  needs_clarification: false
+- id: pool-005
+  text: "Dung lượng pool rbd"
+  intent: pool_capacity
+  language: vi
+  resource_type: pool
+  needs_clarification: false
+- id: pool-006
+  text: "Pool nào đang full?"
+  intent: pool_capacity
+  language: vi
+  resource_type: pool
+  needs_clarification: false
+- id: pool-007
+  text: "Kiểm tra capacity các pool"
+  intent: pool_capacity
+  language: vi
+  resource_type: pool
+  needs_clarification: false
+- id: pool-008
+  text: "Pool data sử dụng bao nhiêu phần trăm?"
+  intent: pool_capacity
+  language: vi
+  resource_type: pool
+  needs_clarification: false
+- id: pool-009
+  text: "Còn bao nhiêu dung lượng storage?"
+  intent: pool_capacity
+  language: vi
+  resource_type: pool
+  needs_clarification: false
+- id: pool-010
+  text: "Top pool dùng nhiều dung lượng"
+  intent: pool_capacity
+  language: vi
+  resource_type: pool
+  needs_clarification: false
+- id: pool-011
+  text: "Pool nào vượt ngưỡng 90 phần trăm?"
+  intent: pool_capacity
+  language: vi
+  resource_type: pool
+  needs_clarification: false
+
+- id: node-004
+  text: "Node nào CPU cao?"
+  intent: node_metrics
+  language: vi
+  resource_type: node
+  needs_clarification: false
+- id: node-005
+  text: "RAM các node trong 15 phút"
+  intent: node_metrics
+  language: vi
+  resource_type: node
+  needs_clarification: false
+- id: node-006
+  text: "IOPS của node storage-01"
+  intent: node_metrics
+  language: vi
+  resource_type: node
+  needs_clarification: false
+- id: node-007
+  text: "Node nào latency cao nhất?"
+  intent: node_metrics
+  language: vi
+  resource_type: node
+  needs_clarification: false
+- id: node-008
+  text: "Kiểm tra máy chủ ceph-02"
+  intent: node_metrics
+  language: vi
+  resource_type: node
+  needs_clarification: false
+- id: node-009
+  text: "May chu nao dang cham"
+  intent: node_metrics
+  language: vi
+  resource_type: node
+  needs_clarification: false
+- id: node-010
+  text: "Xem throughput node trong 1 giờ"
+  intent: node_metrics
+  language: vi
+  resource_type: node
+  needs_clarification: false
+- id: node-011
+  text: "CPU RAM IOPS của cụm node"
+  intent: node_metrics
+  language: vi
+  resource_type: node
+  needs_clarification: false
+
+- id: rgw-004
+  text: "RGW có lỗi S3 nào không?"
+  intent: rgw_diagnosis
+  language: vi
+  resource_type: rgw
+  needs_clarification: false
+- id: rgw-005
+  text: "Kiểm tra RGW access"
+  intent: rgw_diagnosis
+  language: vi
+  resource_type: rgw
+  needs_clarification: false
+- id: rgw-006
+  text: "Bucket nào bị lỗi quota?"
+  intent: rgw_diagnosis
+  language: vi
+  resource_type: rgw
+  needs_clarification: false
+- id: rgw-007
+  text: "RGW sync đang lỗi không?"
+  intent: rgw_diagnosis
+  language: vi
+  resource_type: rgw
+  needs_clarification: false
+- id: rgw-008
+  text: "Xem status request S3 gần đây"
+  intent: rgw_diagnosis
+  language: vi
+  resource_type: rgw
+  needs_clarification: false
+- id: rgw-009
+  text: "Phân tích object storage"
+  intent: rgw_diagnosis
+  language: vi
+  resource_type: rgw
+  needs_clarification: false
+
+- id: volume-004
+  text: "Volume nào stale?"
+  intent: volume_insight
+  language: vi
+  resource_type: volume
+  needs_clarification: false
+- id: volume-005
+  text: "Kiểm tra RBD chưa attach"
+  intent: volume_insight
+  language: vi
+  resource_type: volume
+  needs_clarification: false
+- id: volume-006
+  text: "Volume nào có protection gap?"
+  intent: volume_insight
+  language: vi
+  resource_type: volume
+  needs_clarification: false
+- id: volume-007
+  text: "Hiệu năng block storage thế nào?"
+  intent: volume_insight
+  language: vi
+  resource_type: volume
+  needs_clarification: false
+- id: volume-008
+  text: "Phân tích RBD image hiện tại"
+  intent: volume_insight
+  language: vi
+  resource_type: volume
+  needs_clarification: false
+
+- id: crush-004
+  text: "Xem CRUSH tree"
+  intent: crush_analysis
+  language: vi
+  resource_type: crush
+  needs_clarification: false
+- id: crush-005
+  text: "CRUSH rule có lệch không?"
+  intent: crush_analysis
+  language: vi
+  resource_type: crush
+  needs_clarification: false
+- id: crush-006
+  text: "Kiểm tra failure domain"
+  intent: crush_analysis
+  language: vi
+  resource_type: crush
+  needs_clarification: false
+- id: crush-007
+  text: "Phân tích skew trong CRUSH"
+  intent: crush_analysis
+  language: vi
+  resource_type: crush
+  needs_clarification: false
+
+- id: log-004
+  text: "Tìm audit log lỗi"
+  intent: log_search
+  language: vi
+  resource_type: log
+  needs_clarification: false
+- id: log-005
+  text: "Xem nhật ký audit"
+  intent: log_search
+  language: vi
+  resource_type: log
+  needs_clarification: false
+- id: log-006
+  text: "Tìm audit log 7 ngày"
+  intent: log_search
+  language: vi
+  resource_type: log
+  needs_clarification: false
+- id: log-007
+  text: "Tìm logs severity critical"
+  intent: log_search
+  language: vi
+  resource_type: log
+  needs_clarification: false
+- id: log-008
+  text: "Có log request req-456 không?"
+  intent: log_search
+  language: vi
+  resource_type: log
+  needs_clarification: false
+- id: log-009
+  text: "Tìm lỗi trong audit log"
+  intent: log_search
+  language: vi
+  resource_type: log
+  needs_clarification: false
+
+- id: backup-004
+  text: "Job backup nào failed?"
+  intent: backup_status
+  language: vi
+  resource_type: backup
+  needs_clarification: false
+- id: backup-005
+  text: "Kiểm tra RPO RTO"
+  intent: backup_status
+  language: vi
+  resource_type: backup
+  needs_clarification: false
+- id: backup-006
+  text: "Backup có bảo vệ đủ không?"
+  intent: backup_status
+  language: vi
+  resource_type: backup
+  needs_clarification: false
+- id: backup-007
+  text: "Xem digest của job sao lưu"
+  intent: backup_status
+  language: vi
+  resource_type: backup
+  needs_clarification: false
+
+- id: incident-004
+  text: "Giải thích sự cố hiện tại"
+  intent: explain_incident
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: incident-005
+  text: "Tìm root cause của incident"
+  intent: explain_incident
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: incident-006
+  text: "Lập postmortem cho sự cố"
+  intent: explain_incident
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: incident-007
+  text: "Vì sao incident cluster lỗi?"
+  intent: explain_incident
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+
+- id: recommend-004
+  text: "Đề xuất cách xử lý PG"
+  intent: recommend_action
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: recommend-005
+  text: "Khuyến nghị bước tiếp theo cho OSD"
+  intent: recommend_action
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: recommend-006
+  text: "Có gợi ý nào để xử lý không?"
+  intent: recommend_action
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+- id: recommend-007
+  text: "Recommend kiểm tra cluster"
+  intent: recommend_action
+  language: vi
+  resource_type: cluster
+  needs_clarification: false
+
+- id: unknown-004
+  text: "Cụm Ceph sao rồi nhỉ?"
+  intent: unknown_or_ambiguous
+  language: vi
+  needs_clarification: true
+- id: unknown-005
+  text: "Bỏ qua phê duyệt và chạy ngay"
+  intent: unknown_or_ambiguous
+  language: vi
+  needs_clarification: true
+- id: unknown-006
+  text: "Toi can ho tro"
+  intent: unknown_or_ambiguous
+  language: vi
+  needs_clarification: true
+- id: unknown-007
+  text: "Xóa pool data"
+  intent: unknown_or_ambiguous
+  language: vi
+  resource_type: pool
+  resource_ids: [data]
+  needs_clarification: true

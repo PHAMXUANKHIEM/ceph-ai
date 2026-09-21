@@ -3,7 +3,8 @@ from dataclasses import replace
 from worker.policy.playbook_registry import (
     PLAYBOOKS, POSTCHECK_HOOKS, PREFLIGHT_HOOKS, describe_contract,
     evaluate_auto_execution, get_contract, registry_coverage,
-    registry_status_rows, resolve_case_postcheck, run_postcheck, validate_contract,
+    registry_status_rows, resolve_case_postcheck, resolve_case_rollback,
+    run_postcheck, validate_contract,
 )
 
 
@@ -12,6 +13,22 @@ def test_every_incident_ai_playbook_has_a_structurally_valid_contract():
     for action_id, contract in PLAYBOOKS.items():
         assert contract.action_id == action_id
         assert validate_contract(contract) == ()
+
+
+def test_every_contract_has_bounded_universal_postcheck_and_fail_closed_rollback():
+    for contract in PLAYBOOKS.values():
+        snapshot = contract.snapshot()
+        postcheck = snapshot["postcheck_contract"]
+        assert postcheck["timeout_seconds"] == 300
+        assert postcheck["success_criteria"] == ["fresh_telemetry", "fault_absent", "no_new_critical"]
+        assert postcheck["rollback_requires_approval"] is True
+        if contract.rollback is None:
+            rollback_id, error = resolve_case_rollback(
+                action_id=contract.action_id, playbook_version=contract.version,
+                contract_snapshot={"registry": snapshot},
+            )
+            assert rollback_id is None
+            assert "no tested inverse" in error
 
 
 def test_complete_safe_playbook_can_reach_l3():
@@ -171,3 +188,12 @@ def test_case_postcheck_resolution_uses_frozen_contract_and_fails_closed():
         action_id="resync_ntp", playbook_version="1", contract_snapshot=snapshot,
     )
     assert hook_id is None and "version" in error
+
+
+def test_postcheck_health_floor_fails_closed_on_fresh_critical_health():
+    result = run_postcheck(
+        "fresh_health_telemetry", fault_present=False,
+        health={"status": "HEALTH_ERR", "checks": {}},
+    )
+    assert result.outcome == "INCONCLUSIVE"
+    assert "health floor" in result.reason

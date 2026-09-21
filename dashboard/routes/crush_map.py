@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -208,7 +209,7 @@ def _build_tree_response(latest: CrushStructureSnapshot, cluster_id: str, includ
     diff = json.loads(latest.diff_json) if latest.diff_json else None
     is_recent = (
         diff is not None
-        and datetime.utcnow() - latest.created_at <= timedelta(hours=RECENT_CHANGE_HOURS)
+        and utc_now() - latest.created_at <= timedelta(hours=RECENT_CHANGE_HOURS)
     )
     changes = _recent_change_map(diff, latest.created_at.isoformat()) if is_recent else {}
     distribution = _load_distribution_by_osd_id(cluster_id, include_legacy_null)
@@ -270,7 +271,7 @@ async def crush_map_tree_api(request: Request, user: str = Depends(require_login
                 "meta": _crush_response_meta(cluster.id),
             }
         collected_at = latest.created_at.isoformat() if latest.created_at else None
-        age_seconds = max(0.0, (datetime.utcnow() - latest.created_at).total_seconds()) if latest.created_at else None
+        age_seconds = max(0.0, (utc_now() - latest.created_at).total_seconds()) if latest.created_at else None
         response = _build_tree_response(latest, cluster.id, cluster.is_default)
         response["meta"] = _crush_response_meta(
             cluster.id, collected_at=collected_at, published_at=collected_at,

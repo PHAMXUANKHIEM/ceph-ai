@@ -943,6 +943,7 @@ def test_run_observed_cluster_loop_honors_stop_event_before_poll(monkeypatch):
 
 
 def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(monkeypatch):
+    monkeypatch.setattr(watcher_main.settings, "telegram_ai_humanize_enabled", True)
     with db_module.SessionLocal() as session:
         cluster = _make_observed_cluster(session)
         cluster_id = cluster.id

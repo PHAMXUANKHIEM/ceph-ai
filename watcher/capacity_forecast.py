@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+from shared.time import utc_now
 from math import sqrt
 from statistics import median
 import uuid
@@ -116,7 +117,7 @@ def _deliver_transition(
 
 def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: datetime | None = None) -> int:
     """Collect one coherent capacity tick. Failed queries write no partial tick."""
-    captured_at = now or datetime.utcnow()
+    captured_at = now or utc_now()
     df = _query(cluster, "ceph df detail")
     osd_df = _query(cluster, "ceph osd df")
     cluster_row = _cluster_stats(df)
@@ -330,7 +331,7 @@ def _forecast(rows: list[CephCapacitySample], now: datetime, *, include_backtest
 
 
 def forecasts(cluster_id: str, *, now: datetime | None = None) -> dict:
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     cutoff = now - timedelta(days=settings.capacity_forecast_history_days)
     with db.SessionLocal() as session:
         samples = session.query(CephCapacitySample).filter(
