@@ -40,7 +40,7 @@
     {% if inventory.refreshing %}<div class="bucket-load-state bucket-load-state-refreshing" role="status"><span class="bucket-refresh-indicator" aria-hidden="true"></span><span>Đang cập nhật danh sách bucket từ RGW…{% if inventory.stale %} Đang hiển thị snapshot cũ trong lúc làm mới.{% endif %}</span></div>{% elif inventory.refresh_error or error %}<div class="bucket-load-state bucket-load-state-error" role="alert"><span aria-hidden="true">⚠</span><span>{% if inventory.stale %}Đang hiển thị snapshot cũ; lần cập nhật RGW vừa thất bại. Kiểm tra kết nối và thử tải lại.{% else %}RGW không trả được dữ liệu bucket. Kiểm tra kết nối Ceph/RGW và thử tải lại.{% endif %}</span></div>{% elif inventory.stale %}<div class="bucket-load-state" role="status"><span aria-hidden="true">◷</span><span>Đang hiển thị snapshot bucket cũ.</span></div>{% endif %}
 
     <section id="rgw-observability" class="card rgw-observability-card" data-cluster="{{ selected_cluster.id }}" aria-labelledby="rgw-observability-title">
-      <div class="card-header"><div><p class="eyebrow">RGW OBSERVABILITY</p><h2 id="rgw-observability-title">Request metrics</h2><p class="hint">Cửa sổ audit hiện tại của RGW; số liệu chỉ đọc, scoped theo cụm đang chọn.</p></div><button type="button" class="btn btn-ghost btn-sm" id="rgw-observability-refresh">Làm mới</button></div>
+      <div class="card-header"><div><p class="eyebrow">RGW OBSERVABILITY</p><h2 id="rgw-observability-title">Request metrics</h2><p class="hint">Cửa sổ audit hiện tại của RGW; số liệu chỉ đọc, scoped theo cụm đang chọn.</p></div><div class="rgw-observability-actions"><a class="btn btn-ghost btn-sm" data-rgw-export="json">JSON</a><a class="btn btn-ghost btn-sm" data-rgw-export="csv">CSV</a><button type="button" class="btn btn-ghost btn-sm" id="rgw-observability-refresh">Làm mới</button></div></div>
       <div class="rgw-observability-body">
         <div class="rgw-metric-strip" aria-live="polite">
           <div class="rgw-metric-card"><span>Requests</span><strong id="rgw-metric-requests">—</strong></div>
@@ -53,6 +53,23 @@
           <section><h3>Top buckets</h3><div id="rgw-top-buckets" class="rgw-top-list"><span class="muted-value">—</span></div></section>
           <section><h3>Top requesters</h3><div id="rgw-top-requesters" class="rgw-top-list"><span class="muted-value">—</span></div></section>
         </div>
+      </div>
+    </section>
+
+    <section id="rgw-health" class="card rgw-health-card" data-cluster="{{ selected_cluster.id }}" aria-labelledby="rgw-health-title">
+      <div class="card-header"><div><p class="eyebrow">RGW HEALTH / MULTI-SITE</p><h2 id="rgw-health-title">Service and topology evidence</h2><p class="hint">Snapshot read-only từ RGW, Ceph MON/MGR và sync status; không tự thay đổi topology.</p></div><button type="button" class="btn btn-ghost btn-sm" id="rgw-health-refresh">Làm mới</button></div>
+      <div class="rgw-health-body">
+        <div class="rgw-health-grid">
+          <div class="rgw-health-item"><span>Daemons</span><strong id="rgw-health-daemons">—</strong></div>
+          <div class="rgw-health-item"><span>Endpoints</span><strong id="rgw-health-endpoints">—</strong></div>
+          <div class="rgw-health-item"><span>Frontend</span><strong id="rgw-health-frontend">—</strong></div>
+          <div class="rgw-health-item"><span>Sync</span><strong id="rgw-health-sync">—</strong></div>
+        </div>
+        <div class="rgw-topology-grid">
+          <section><h3>Topology</h3><dl><div><dt>Realm</dt><dd id="rgw-health-realm">—</dd></div><div><dt>Zonegroup</dt><dd id="rgw-health-zonegroup">—</dd></div><div><dt>Zone</dt><dd id="rgw-health-zone">—</dd></div><div><dt>Period</dt><dd id="rgw-health-period">—</dd></div></dl></section>
+          <section><h3>Diagnosis</h3><p id="rgw-health-diagnosis" class="hint">Đang tải…</p><p id="rgw-health-capacity" class="hint">Capacity dependency: —</p><ul id="rgw-health-findings" class="rgw-health-findings"><li>Đang tải evidence…</li></ul></section>
+        </div>
+        <p id="rgw-health-status" class="hint" role="status">Đang tải RGW health…</p>
       </div>
     </section>
 

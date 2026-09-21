@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import logging
 import re
@@ -18,7 +20,7 @@ from botocore.config import Config
 from config.settings import settings
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from dashboard.cluster_scope import cluster_selection, selected_cluster
 from dashboard.routes import auth
@@ -1825,13 +1827,9 @@ async def rgw_audit_intelligence_api(request: Request, user: str = Depends(requi
     return await asyncio.to_thread(_cached_rgw_audit_intelligence, selected_cluster(request))
 
 
-@router.get("/api/object-storage/rgw-metrics")
-async def rgw_metrics_api(request: Request, user: str = Depends(require_login)):
-    """Return bounded RGW request metrics without exposing raw audit rows."""
-    del user
-    intelligence = await asyncio.to_thread(
-        _cached_rgw_audit_intelligence, selected_cluster(request)
-    )
+def _rgw_metrics_payload(cluster) -> dict:
+    """Build one bounded, secret-free metrics payload for API and exports."""
+    intelligence = _cached_rgw_audit_intelligence(cluster)
     observed = ((intelligence.get("window") or {}).get("observed") or {})
     gaps = list(intelligence.get("evidence_gaps") or [])
     gaps.append("Quota/capacity metrics cần bucket stats riêng; audit-log không đủ để suy luận quota.")
@@ -1870,6 +1868,46 @@ async def rgw_metrics_api(request: Request, user: str = Depends(require_login)):
         "recommendation_mode": "EVIDENCE_ONLY",
         "action_id": None,
     }
+
+
+@router.get("/api/object-storage/rgw-metrics")
+async def rgw_metrics_api(request: Request, user: str = Depends(require_login)):
+    """Return bounded RGW request metrics without exposing raw audit rows."""
+    del user
+    return await asyncio.to_thread(_rgw_metrics_payload, selected_cluster(request))
+
+
+@router.get("/api/object-storage/rgw-metrics/export")
+async def rgw_metrics_export_api(
+    request: Request,
+    format: Literal["json", "csv"] = Query("json"),
+    user: str = Depends(require_login),
+):
+    """Export the same bounded metrics view as JSON or CSV; never export raw logs."""
+    del user
+    payload = await asyncio.to_thread(_rgw_metrics_payload, selected_cluster(request))
+    if format == "json":
+        return payload
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["section", "metric", "value"])
+    metrics = payload.get("metrics") or {}
+    for key, value in metrics.items():
+        if isinstance(value, dict):
+            for child_key, child_value in list(value.items())[:50]:
+                writer.writerow(["metrics." + key, child_key, child_value])
+        else:
+            writer.writerow(["metrics", key, value])
+    writer.writerow(["report", "cluster_id", payload.get("cluster_id")])
+    writer.writerow(["report", "captured_at", payload.get("captured_at")])
+    writer.writerow(["report", "source", payload.get("source")])
+    for gap in (payload.get("evidence_gaps") or [])[:20]:
+        writer.writerow(["evidence_gap", "message", gap])
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=rgw-metrics.csv"},
+    )
 
 
 @router.get("/api/object-storage/multisite-diagnosis")
