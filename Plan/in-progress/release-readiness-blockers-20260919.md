@@ -409,15 +409,17 @@ release image, and the final repository status is clean.
 - [x] Existing Block Storage regression coverage verifies that the Overview
   table links to
   `/volumes/{pool}/{image}`.
-- [ ] Add a regression test that volume detail marks Block Storage Overview as
+- [x] Add a regression test that volume detail marks Block Storage Overview as
   active without exposing a redundant Volumes sidebar item.
 - [ ] Run a browser smoke test after CSS/JS shell changes.
 
 ### 10.1 RR-08 verification result
 
-- `tests/test_dashboard_openstack.py`: `21 passed`.
-- The auth-user page now asserts `/block-storage` as the supported navigation
-  target and rejects the removed standalone `/volumes` link.
+- `tests/test_dashboard_openstack.py` plus the volume-detail navigation regression:
+  `22 passed`.
+- The auth-user page asserts `/block-storage` as the supported navigation
+  target and rejects the removed standalone `/volumes` link; volume detail keeps
+  Block Storage Overview active without restoring a redundant `/volumes` item.
 
 **Exit criteria:** OpenStack UI tests pass and the navigation tests reflect the
 current product decision.
