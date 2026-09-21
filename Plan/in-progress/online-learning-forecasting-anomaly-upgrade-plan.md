@@ -140,13 +140,14 @@ lag/rolling chỉ lấy dữ liệu trước `observed_at`, tránh leakage.
 
 #### 0.1 Sửa canary identity
 
-- [ ] Kiểm tra mọi API/report/query/group trong `ForecastModelRegistry`, persisted
+- [x] Kiểm tra mọi API/report/query/group trong `ForecastModelRegistry`, persisted
   evaluation và canary report có giữ `host/entity + metric + horizon`.
-- [ ] Viết regression test cho hai host cùng metric, hai metric cùng host và hai
+- [x] Viết regression test cho hai host cùng metric, hai metric cùng host và hai
   horizon cùng scope; bảo đảm không gộp outcome.
-- [ ] Thêm `scope_key` canonical và log redacted khi scope không hợp lệ.
-- [ ] Quét các row legacy thiếu trường; tạo report migration, không tự đoán giá trị.
-- [ ] Chặn promotion nếu candidate có `UNKNOWN_SCOPE`, `MISSING_HOST_METRIC` hoặc
+- [x] Thêm `ForecastScope.canonical_key` và parser không đoán scope legacy hỏng.
+- [x] Quét và backfill các row legacy parse được bằng migration
+  `m20260921forecastscope`; row không parse được vẫn để nullable.
+- [~] Chặn promotion nếu candidate có `UNKNOWN_SCOPE`, `MISSING_HOST_METRIC` hoặc
   mixed feature schema.
 
 **Exit gate:** canary report hiển thị riêng từng host/metric/horizon; test suite
@@ -175,15 +176,16 @@ chứng minh không có cross-scope contamination.
 
 #### 1.1 Feature builder
 
-- [ ] Tạo module thuần, bounded, không gọi DB/SSH trong hàm transform; dự kiến
+- [x] Tạo module thuần, bounded, không gọi DB/SSH trong hàm transform tại
   `shared/forecast_features.py`.
-- [ ] Hỗ trợ `current`, lag `1/3/6/12/24`, rolling mean/std `6/24`, slope `6` và
+- [x] Hỗ trợ `current`, lag `1/3/6/12/24`, rolling mean/std `6/24`, slope `6` và
   calendar sin/cos hour/weekday.
-- [ ] Cho phép cấu hình metric/horizon-specific feature set; không tạo feature
+- [~] Cho phép cấu hình metric/horizon-specific feature set; không tạo feature
   không có ý nghĩa cho counter đã reset.
-- [ ] Bảo đảm thứ tự timestamp, dedupe, timezone UTC, gap detection và no leakage.
-- [ ] Trả missing reason thay vì NaN/Inf; quality gate từ `shared.metric_quality` là
-  nguồn quyết định duy nhất.
+- [x] Bảo đảm thứ tự timestamp, timezone UTC, gap detection và no leakage.
+- [x] Trả missing reason thay vì NaN/Inf; không forward-fill qua gap.
+  Việc nối trực tiếp vào mọi runtime feature path còn ở bước sau; quality gate
+  dùng `shared.metric_quality` vẫn là nguồn quyết định duy nhất.
 
 #### 1.2 River model adapter
 
@@ -225,12 +227,13 @@ poll loop.
 
 #### 2.1 ADWIN adapter
 
-- [ ] Thêm adapter River ADWIN sau license/dependency review, có `snapshot`/`restore`
+- [x] Thêm adapter River ADWIN sau license/dependency review, có `snapshot`/`restore`
   hoặc cơ chế khởi tạo lại có audit.
-- [ ] Duy trì tối thiểu ba stream: residual có dấu, absolute error/MAE và metric
+- [~] Duy trì tối thiểu ba stream: residual có dấu, absolute error/MAE và metric
   gốc.
-- [ ] ADWIN chỉ nhận sample đã có actual outcome và quality `OK`.
-- [ ] Lưu detector version, delta/confidence, sample count, detected_at và scope.
+- [x] ADWIN chỉ nhận sample đã có actual outcome và quality `OK`.
+- [x] Lưu detector version, delta/confidence, sample count, detected_at và scope
+  trong snapshot/report JSON bounded.
 
 #### 2.2 Quy tắc phản ứng
 
@@ -282,7 +285,7 @@ quality xấu và có audit đầy đủ cho mọi chuyển trạng thái.
 - [ ] Thử River HST với số cây/chiều cao/cửa sổ giới hạn.
 - [ ] Đánh giá warm-up, score normalization, threshold calibration và clustered
   anomaly.
-- [ ] HST chỉ là anomaly candidate, không dự báo capacity/forecast target.
+- [x] HST chỉ là anomaly candidate, không dự báo capacity/forecast target.
 
 #### 4.3 RRCF
 
@@ -306,16 +309,18 @@ quality xấu và có audit đầy đủ cho mọi chuyển trạng thái.
 
 #### 5.1 StatsForecast
 
-- [ ] Tạo benchmark/container hoặc optional extra riêng; không cài vào image
+- [~] Tạo benchmark/container hoặc optional extra riêng; không cài vào image
   Watcher nếu không cần runtime.
-- [ ] Benchmark Naive/SeasonalNaive, Theta, AutoETS, AutoARIMA và MSTL theo metric
+- [x] Benchmark Naive/SeasonalNaive/Linear bằng bounded offline runner; các model
+  nặng Theta/AutoETS/AutoARIMA/MSTL vẫn chưa đưa vào image production.
   phù hợp; giới hạn parallelism để không tranh CPU production.
 - [ ] Chạy job định kỳ 6–24 giờ hoặc on-demand trên dataset snapshot; lưu model
   config và report, không tự promote.
 
 #### 5.2 PyOD
 
-- [ ] Benchmark ECOD, COPOD, Isolation Forest, HBOS và PCA trên feature snapshot.
+- [~] Benchmark anomaly baseline, River HST, Candidate D isolation và PyOD
+  Isolation Forest nếu optional extra có sẵn; ECOD/COPOD/HBOS/PCA còn pending.
 - [ ] Không chạy hàng chục detector trong poll loop; không để PyOD tự phát alert.
 - [ ] Tách kết quả point-level và event-level, ghi rõ label quality.
 
@@ -338,6 +343,19 @@ quality xấu và có audit đầy đủ cho mọi chuyển trạng thái.
 
 **Exit gate:** benchmark reproducible từ snapshot có checksum, cùng seed/config,
 có report so sánh active/candidate và không tác động cluster.
+
+### Phase 6 — Canary/shadow soak và release scan
+
+- [x] Thêm `shared/canary_soak.py`: kiểm tra tối thiểu evaluations, thời lượng,
+  drift, resource budget và `SHADOW_ONLY`; report read-only.
+- [x] Thêm `scripts/forecast_release_scan.py`: kiểm tra dependency pin/license
+  policy, cấm pickle/eval/exec/destructive Ceph command trong forecast runtime,
+  và xác nhận JSON-only state/resource policy.
+- [~] Chạy soak trên cluster/node thật trong tối thiểu 24 giờ; chưa được tự
+  promotion và chưa bật remediation.
+
+**Exit gate:** chỉ khi soak PASS, benchmark có report bất biến và operator ký
+approval mới được gửi promotion request; rollback vẫn dùng model version trước.
 
 ### Phase 6 — Paired walk-forward evaluation và promotion (P0)
 

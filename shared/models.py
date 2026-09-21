@@ -1836,11 +1836,25 @@ class ForecastModelRegistry(Base):
             name="uq_forecast_model_registry_identity",
         ),
         Index("ix_forecast_model_registry_scope_status", "scope_type", "scope_key", "status"),
+        Index(
+            "ix_forecast_model_registry_dimensions",
+            "cluster_id", "entity_type", "entity_id", "metric", "horizon_hours",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
     scope_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Explicit dimensions were added after the original pipe-delimited key.
+    # They remain nullable for legacy rows; promotion must reject rows that
+    # cannot be migrated without guessing.
+    scope_schema: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    cluster_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    entity_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    entity_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    metric: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    horizon_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     version: Mapped[str] = mapped_column(String(32), nullable=False)
     algorithm: Mapped[str] = mapped_column(String(32), nullable=False)
