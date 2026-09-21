@@ -65,6 +65,8 @@ def test_inventory_page_shows_empty_state_without_sample_buckets(dashboard_clien
     assert '<div class="app-body">' in response.text
     assert 'id="bucket-render-guard"' in response.text
     assert 'id="s3-setting-form"' in response.text
+    assert 'id="rgw-observability"' in response.text
+    assert 'id="rgw-metric-requests"' in response.text
     assert 'class="bucket-feature-panel"' not in response.text
 
 
@@ -1518,6 +1520,153 @@ def test_object_version_restore_copies_a_previous_version_as_new_current_version
         "CopySource": {"Bucket": "archive", "Key": "logs/a.txt", "VersionId": "v1"},
         "MetadataDirective": "COPY",
     }]
+
+
+def test_object_version_missing_target_returns_404_not_rgw_502(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "_detail", lambda *args, **kwargs: {
+        "owner": "alice", "object_lock_status": "disabled",
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: None)
+
+    class FakeS3:
+        def list_object_versions(self, **kwargs):
+            return {"Versions": [], "DeleteMarkers": []}
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    response = dashboard_client.post("/api/object-storage/buckets/archive/object-versions/preview", json={
+        "action": "delete_version", "owner": "alice", "endpoint": "https://rgw.example.test",
+        "key": "logs/missing.txt", "version_id": "does-not-exist",
+    })
+
+    assert response.status_code == 404
+    assert "Không tìm thấy object version" in response.json()["detail"]
+
+
+def test_object_version_delete_fails_closed_when_object_lock_is_unknown(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "_detail", lambda *args, **kwargs: {"owner": "alice"})
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: None)
+    deleted = []
+
+    class FakeS3:
+        def list_object_versions(self, **kwargs):
+            return {"Versions": [{"Key": "logs/a.txt", "VersionId": "v1", "Size": 4}],
+                    "DeleteMarkers": []}
+
+        def delete_object(self, **kwargs):
+            deleted.append(kwargs)
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    body = {"action": "delete_version", "owner": "alice", "endpoint": "https://rgw.example.test",
+            "key": "logs/a.txt", "version_id": "v1"}
+    preview = dashboard_client.post("/api/object-storage/buckets/archive/object-versions/preview", json=body)
+    executed = dashboard_client.post("/api/object-storage/buckets/archive/object-versions/execute", json={
+        **body, "confirmation": "DELETE_VERSION:archive:logs/a.txt:v1",
+    })
+
+    assert preview.status_code == 200
+    assert preview.json()["allowed"] is False
+    assert "fail-closed" in preview.json()["blocked_reason"]
+    assert executed.status_code == 409
+    assert deleted == []
+
+
+def test_object_version_preview_reports_rgw_unavailable(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "_rgw_hosts", lambda cluster: [])
+    monkeypatch.setattr(object_storage_route, "_detail", lambda *args, **kwargs: {
+        "owner": "alice", "object_lock_status": "disabled",
+    })
+    _login(dashboard_client)
+    response = dashboard_client.post("/api/object-storage/buckets/archive/object-versions/preview", json={
+        "action": "restore_version", "owner": "alice", "endpoint": "https://rgw.example.test",
+        "key": "logs/a.txt", "version_id": "v1",
+    })
+
+    assert response.status_code == 502
+    assert "Chưa cấu hình node RGW" in response.json()["detail"]
+
+
+def test_object_version_restore_keeps_secondary_cluster_scope(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster = Cluster(
+            name="cluster-version-scope", ceph_mon_nodes="10.99.2.10", ceph_rgw_nodes="10.99.2.90",
+            ceph_container_name="mon-version", ceph_rgw_container_name="rgw-version",
+            ssh_user="ceph-version", ssh_key_path="/keys/ceph-version", ceph_exec_mode="docker",
+            is_default=False, is_active=True,
+        )
+        session.add(cluster)
+        session.commit()
+        cluster_id = cluster.id
+    capability = {
+        "ceph_version": "18.2.4", "ceph_release": "reef",
+        "bucket_governance": {"versioning": True, "versioning_unavailable_reason": None},
+        "object_browser": {"retention_supported": False},
+    }
+    monkeypatch.setattr(object_storage_route, "_cached_capabilities", lambda current: capability)
+    monkeypatch.setattr(object_storage_route, "_capabilities", lambda current: capability)
+    monkeypatch.setattr(object_storage_route, "_rgw_hosts", lambda current: ["10.99.2.90"])
+    monkeypatch.setattr(object_storage_route, "resolve_ssh_creds",
+                        lambda current: ("ceph-version", "/keys/ceph-version", "docker", "mon-version"))
+    monkeypatch.setattr(object_storage_route, "_detail", lambda *args, **kwargs: {
+        "owner": "alice", "object_lock_status": "disabled",
+    })
+    calls = []
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info_with",
+                        lambda *args: calls.append(("owner", args)) or {"user_id": "alice"})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key_with",
+                        lambda *args: calls.append(("create", args)) or {
+                            "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+                        })
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key_with",
+                        lambda *args: calls.append(("revoke", args)))
+    copied = []
+
+    class FakeS3:
+        def list_object_versions(self, **kwargs):
+            return {"Versions": [{"Key": "logs/a.txt", "VersionId": "v1", "Size": 4}],
+                    "DeleteMarkers": []}
+
+        def copy_object(self, **kwargs):
+            copied.append(kwargs)
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    body = {"action": "restore_version", "owner": "alice", "endpoint": "https://rgw.example.test",
+            "key": "logs/a.txt", "version_id": "v1"}
+    response = dashboard_client.post(
+        f"/api/object-storage/buckets/archive/object-versions/execute?cluster={cluster_id}",
+        json={**body, "confirmation": "RESTORE_VERSION:archive:logs/a.txt:v1"},
+    )
+
+    assert response.status_code == 200
+    assert copied
+    assert all(entry[1][-1] in {"rgw-version", "docker"} or entry[0] == "owner" for entry in calls)
+    assert {entry[0] for entry in calls} == {"owner", "create", "revoke"}
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, response.json()["request_id"])
+        assert audit.cluster_id == cluster_id
+        assert audit.result == "succeeded"
 
 
 def test_presigned_upload_is_size_type_limited_audited_and_secret_free(dashboard_client, monkeypatch):

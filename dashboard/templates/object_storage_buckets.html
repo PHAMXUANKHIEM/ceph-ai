@@ -39,6 +39,23 @@
     {% if is_admin %}<div id="bucket-capability-banner" class="bucket-capability-banner" role="status"><span class="status-dot" aria-hidden="true"></span><p id="object-storage-capability-status">Đang kiểm tra capability theo phiên bản Ceph thực tế...</p><button type="button" class="bucket-capability-dismiss" aria-label="Ẩn thông tin phiên bản Ceph" title="Ẩn">×</button></div>{% endif %}
     {% if inventory.refreshing %}<div class="bucket-load-state bucket-load-state-refreshing" role="status"><span class="bucket-refresh-indicator" aria-hidden="true"></span><span>Đang cập nhật danh sách bucket từ RGW…{% if inventory.stale %} Đang hiển thị snapshot cũ trong lúc làm mới.{% endif %}</span></div>{% elif inventory.refresh_error or error %}<div class="bucket-load-state bucket-load-state-error" role="alert"><span aria-hidden="true">⚠</span><span>{% if inventory.stale %}Đang hiển thị snapshot cũ; lần cập nhật RGW vừa thất bại. Kiểm tra kết nối và thử tải lại.{% else %}RGW không trả được dữ liệu bucket. Kiểm tra kết nối Ceph/RGW và thử tải lại.{% endif %}</span></div>{% elif inventory.stale %}<div class="bucket-load-state" role="status"><span aria-hidden="true">◷</span><span>Đang hiển thị snapshot bucket cũ.</span></div>{% endif %}
 
+    <section id="rgw-observability" class="card rgw-observability-card" data-cluster="{{ selected_cluster.id }}" aria-labelledby="rgw-observability-title">
+      <div class="card-header"><div><p class="eyebrow">RGW OBSERVABILITY</p><h2 id="rgw-observability-title">Request metrics</h2><p class="hint">Cửa sổ audit hiện tại của RGW; số liệu chỉ đọc, scoped theo cụm đang chọn.</p></div><button type="button" class="btn btn-ghost btn-sm" id="rgw-observability-refresh">Làm mới</button></div>
+      <div class="rgw-observability-body">
+        <div class="rgw-metric-strip" aria-live="polite">
+          <div class="rgw-metric-card"><span>Requests</span><strong id="rgw-metric-requests">—</strong></div>
+          <div class="rgw-metric-card"><span>Dữ liệu</span><strong id="rgw-metric-bytes">—</strong></div>
+          <div class="rgw-metric-card"><span>Error rate</span><strong id="rgw-metric-errors">—</strong></div>
+          <div class="rgw-metric-card"><span>Latency p95</span><strong id="rgw-metric-latency">—</strong></div>
+        </div>
+        <p id="rgw-observability-status" class="hint" role="status">Đang tải metrics…</p>
+        <div class="rgw-top-consumers-grid">
+          <section><h3>Top buckets</h3><div id="rgw-top-buckets" class="rgw-top-list"><span class="muted-value">—</span></div></section>
+          <section><h3>Top requesters</h3><div id="rgw-top-requesters" class="rgw-top-list"><span class="muted-value">—</span></div></section>
+        </div>
+      </div>
+    </section>
+
     {% set filters = "&query=" ~ quote_query(inventory.query) ~ "&owner=" ~ quote_query(inventory.owner or '') ~ "&quota=" ~ inventory.quota ~ "&usage=" ~ inventory.usage %}
     {% if inventory.refreshing or inventory.refresh_error %}<style>.bucket-empty-state-card:not(.bucket-loading-placeholder) { display: none !important; }</style>{% endif %}
     <section id="bucket-overview-panel" class="card bucket-overview-card{% if inventory.refreshing and not inventory.stale %} bucket-inventory-loading{% endif %}">

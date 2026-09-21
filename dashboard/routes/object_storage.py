@@ -620,6 +620,8 @@ def _with_owner_s3(cluster, payload: dict, callback):
     except RgwLogError as cleanup_exc:
         raise ObjectStorageError("Không thu hồi được access key tạm; cần thu hồi key thủ công ngay.") from cleanup_exc
     if operation_error:
+        if isinstance(operation_error, HTTPException):
+            raise operation_error
         raise ObjectStorageError(f"Thao tác S3 thất bại: {_safe_error(operation_error)}") from operation_error
     return result
 
@@ -1561,7 +1563,7 @@ def _object_version_inspect(cluster, payload: dict, detail: dict, capability: di
             if item.get("Key") == payload["key"] and item.get("VersionId") == payload["version_id"]
         ]
         if not candidates:
-            raise ObjectStorageError("Không tìm thấy object version; cần preview lại với version ID hiện tại.")
+            raise HTTPException(status_code=404, detail="Không tìm thấy object version; cần preview lại với version ID hiện tại.")
         item, is_delete_marker = candidates[0]
         retention = None
         legal_hold = None

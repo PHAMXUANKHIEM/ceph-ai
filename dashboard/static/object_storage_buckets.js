@@ -608,3 +608,62 @@ function bucketHighlightJSON(value) {
   });
   refreshFields();
 })();
+
+(function () {
+  var panel = document.getElementById("rgw-observability");
+  if (!panel) return;
+  var status = document.getElementById("rgw-observability-status");
+  var refresh = document.getElementById("rgw-observability-refresh");
+
+  function formatBytes(value) {
+    var size = Number(value);
+    if (!Number.isFinite(size) || size < 0) return "—";
+    var units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    var index = 0;
+    while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
+    return (index === 0 ? Math.round(size) : size.toFixed(1)) + " " + units[index];
+  }
+
+  function renderTop(id, values) {
+    var target = document.getElementById(id);
+    target.replaceChildren();
+    var entries = Object.entries(values || {}).slice(0, 5);
+    if (!entries.length) {
+      var empty = document.createElement("span"); empty.className = "muted-value"; empty.textContent = "Chưa có dữ liệu";
+      target.appendChild(empty); return;
+    }
+    var maximum = Math.max.apply(null, entries.map(function (entry) { return Number(entry[1]) || 0; }));
+    entries.forEach(function (entry) {
+      var row = document.createElement("div"); row.className = "rgw-top-row";
+      var label = document.createElement("span"); label.textContent = entry[0] || "—";
+      var count = document.createElement("strong"); count.textContent = String(entry[1]);
+      var meter = document.createElement("i"); meter.style.width = Math.max(4, ((Number(entry[1]) || 0) / Math.max(1, maximum)) * 100) + "%";
+      row.append(label, count); row.appendChild(meter); target.appendChild(row);
+    });
+  }
+
+  function load() {
+    refresh.disabled = true;
+    status.textContent = "Đang tải RGW metrics…";
+    fetch("/api/object-storage/rgw-metrics?cluster=" + encodeURIComponent(panel.dataset.cluster), {cache: "no-store"})
+      .then(function (response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Không đọc được RGW metrics"); }); })
+      .then(function (body) {
+        var metrics = body.metrics || {};
+        document.getElementById("rgw-metric-requests").textContent = Number(metrics.request_count || 0).toLocaleString("vi-VN");
+        document.getElementById("rgw-metric-bytes").textContent = formatBytes(metrics.bytes_total);
+        document.getElementById("rgw-metric-errors").textContent = Number(metrics.error_rate_percent || 0).toFixed(2) + "%";
+        document.getElementById("rgw-metric-latency").textContent = metrics.latency_p95_ms == null ? "—" : Number(metrics.latency_p95_ms).toFixed(1) + " ms";
+        renderTop("rgw-top-buckets", metrics.top_buckets);
+        renderTop("rgw-top-requesters", metrics.top_requesters);
+        var collection = body.collection || {};
+        var windowText = metrics.time_start && metrics.time_end ? " · " + metrics.time_start + " → " + metrics.time_end : "";
+        status.textContent = "Nguồn " + (body.source || "RGW") + " · " + (collection.status || body.status || "unknown") + windowText;
+        if ((body.evidence_gaps || []).length) status.textContent += " · " + body.evidence_gaps[0];
+      })
+      .catch(function (error) { status.textContent = "Không tải được RGW metrics: " + error.message; })
+      .finally(function () { refresh.disabled = false; });
+  }
+
+  refresh.addEventListener("click", load);
+  load();
+})();

@@ -225,9 +225,11 @@ ra chỉ bằng một click hoặc qua request thiếu capability.
     credential owner tạm luôn được thu hồi sau mỗi lần preview/re-check/execute.
 - [~] **4.5 Test**: paging/token, prefix escaping, authorization, file-size
   limit, expired URL và destructive-action guard.
-  - Đã thêm regression cho RBAC direct-write, strong confirmation, audit,
-    retention block và restore copy; cần chạy release matrix/kiểm chứng RGW
-    thật trước khi đóng hoàn toàn mục 4.
+  - Đã thêm release-matrix regression cho RBAC direct-write, strong
+    confirmation, audit, retention block, Object Lock unknown, missing target
+    404, RGW unavailable, restore copy và secondary-cluster connection scope.
+    Kiểm chứng RGW thật vẫn là release acceptance gate, không chạy mutation tự
+    động trong test.
 
 **Hoàn thành khi:** object browser vận hành được trên bucket lớn mà không tải
 toàn bộ object list vào memory hoặc làm lộ credential S3.
@@ -239,8 +241,10 @@ toàn bộ object list vào memory hoặc làm lộ credential S3.
   tổng hợp requests, bytes, 4xx/5xx, latency, top bucket/requester/User-Agent
   và time range theo cluster; cache stale-if-error dùng chung audit collector.
   Quota/capacity usage, Prometheus source và retention lịch sử dài hạn còn thiếu.
-- [ ] **5.2 Dashboard trend/top consumers** theo bucket, user, endpoint và
-  thời gian; filter phải giữ cluster scope.
+- [~] **5.2 Dashboard trend/top consumers**: thêm panel read-only trên Bucket
+  Overview, hiển thị request count, bytes, error rate, latency p95, top bucket
+  và top requester theo cluster đang chọn. Hiện panel dùng cửa sổ audit hiện
+  tại; trend lịch sử dài hạn vẫn chờ retention store/Prometheus ở mục 5.1.
 - [ ] **5.3 Alert rules**: quota 80/90/95%, 5xx spike, access denied spike,
   hot bucket và access bất thường; deduplicate/resolve lifecycle qua Telegram.
 - [ ] **5.4 Export report CSV/JSON** có giới hạn quyền và không chứa secret.
@@ -324,6 +328,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | 4.2 | Hoàn thành | Thêm Object Detail read-only cho metadata, tags, version ID, retention và legal hold; owner/cluster validation, temporary-key cleanup và capability gate Octopus 15 cho Tagging/Object Lock. | Full Object Storage + migration regression: 120 tests passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 4.3 upload/download qua presigned URL. |
 | 2026-08-17 | 4.3 | Hoàn thành | Thêm preview/execute presigned upload/download, URL tối đa 15 phút, upload POST policy giới hạn type/size, version-aware download, admin RBAC, confirmation và secret-free audit. File đi trực tiếp client↔RGW, không proxy Dashboard. | Full Object Storage + migration regression: 122 tests passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 4.4 delete/restore object version. |
 | 2026-09-21 | 4.4 | Hoàn thành | Thêm Object Version Operations trên bucket detail: preview/execute xóa hoặc khôi phục version, confirmation token mạnh, re-check trước mutation, audit object-scoped, Object Lock/retention/legal-hold guard và UI action theo từng version. Restore version thường tạo current version mới; delete marker được xử lý riêng. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py`: 60 passed; `python3 -m py_compile`, `node --check dashboard/static/object_storage_browser.js`, `git diff --check` sạch. Test có cảnh báo RGW live timeout ở fallback capability nhưng không fail. | Commit `a23ae94`, đã push `main`; tiếp theo hoàn tất 4.5 release matrix và kiểm chứng RGW thật. |
+| 2026-09-21 | 4.5 / 5.2 | Đang làm | Hoàn thiện release-matrix tests cho Object Version và thêm RGW Observability panel trên Bucket Overview: requests, bytes, error rate, p95 latency, top buckets/requesters, refresh và evidence-gap status theo cluster. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py tests/test_rgw_audit_intelligence.py`: 70 passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo kiểm tra RGW service/multi-site health và giữ release acceptance live-read-only riêng. |
 
 ## Ghi chú bàn giao
 
