@@ -3,6 +3,7 @@ from shared.forecast_drift import (
     INSUFFICIENT_DATA,
     STABLE,
     RiverAdwinDetector,
+    RiverAdwinStreams,
     evaluate_drift,
 )
 
@@ -16,6 +17,17 @@ def test_adwin_snapshot_is_bounded_and_quality_fail_closed():
     restored = RiverAdwinDetector.from_snapshot(detector.snapshot())
     assert restored.sample_count == detector.sample_count
     assert restored.report().detector == "river_adwin"
+
+
+def test_adwin_streams_keep_residual_error_and_metric_independent():
+    bundle = RiverAdwinStreams(scope_key="cluster|node|cpu")
+    for index in range(20):
+        bundle.update(residual=float(index), absolute_error=float(index) / 10, metric=50 + index)
+    snapshot = bundle.snapshot()
+    restored = RiverAdwinStreams.from_snapshot(snapshot)
+    report = restored.report()
+    assert set(report.streams) == {"residual", "absolute_error", "metric"}
+    assert all(item.sample_count == 20 for item in report.streams.values())
 
 
 def test_drift_detector_fails_closed_when_windows_are_too_small():

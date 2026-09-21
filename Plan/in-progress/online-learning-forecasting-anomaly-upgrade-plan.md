@@ -180,8 +180,8 @@ chứng minh không có cross-scope contamination.
   `shared/forecast_features.py`.
 - [x] Hỗ trợ `current`, lag `1/3/6/12/24`, rolling mean/std `6/24`, slope `6` và
   calendar sin/cos hour/weekday.
-- [~] Cho phép cấu hình metric/horizon-specific feature set; feature builder đã
-  được gọi trong runtime shadow nhưng cấu hình theo metric/horizon còn pending.
+- [x] Cho phép cấu hình metric/horizon-specific feature set qua bounded profiles
+  trong `shared/forecast_features.py`; profile được ghi vào shadow evidence.
 - [x] Bảo đảm thứ tự timestamp, timezone UTC, gap detection và no leakage.
 - [x] Trả missing reason thay vì NaN/Inf; không forward-fill qua gap.
   Việc nối trực tiếp vào mọi runtime feature path còn ở bước sau; quality gate
@@ -229,8 +229,9 @@ poll loop.
 
 - [x] Thêm adapter River ADWIN sau license/dependency review, có `snapshot`/`restore`
   hoặc cơ chế khởi tạo lại có audit.
-- [~] Duy trì tối thiểu ba stream: residual có dấu đã nối vào runtime shadow;
-  absolute error/MAE và metric gốc còn cần stream riêng.
+- [x] Duy trì ba stream ADWIN độc lập: residual có dấu, absolute error/MAE và
+  metric gốc; mỗi stream có detector version, delta, sample count, scope và
+  `execution_mode=SHADOW_ONLY`.
 - [x] ADWIN chỉ nhận sample đã có actual outcome và quality `OK`.
 - [x] Lưu detector version, delta/confidence, sample count, detected_at và scope
   trong snapshot/report JSON bounded.
@@ -358,7 +359,7 @@ có report so sánh active/candidate và không tác động cluster.
 - [x] Đã deploy migration scope lên server `10.3.55.213`; registry hiện có 192/192
   row ở `forecast-scope-v2`, không còn row thiếu dimension. Watcher và dashboard
   đã recreate và đều `healthy`.
-- [x] Nối feature quality, Candidate D isolation và River ADWIN residual vào
+- [x] Nối feature quality, Candidate D isolation và ba River ADWIN streams vào
   `watcher/node_resource_forecast.py` dưới `SHADOW_ONLY`; Watcher healthy sau
   recreate.
 - [x] Dashboard model quality hiển thị paired outcomes, MAE/SMAPE/bias, drift và

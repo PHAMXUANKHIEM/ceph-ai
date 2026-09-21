@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from shared.forecast_anomaly import candidate_d_alerts, candidate_d_isolation_scores
-from shared.forecast_features import MetricPoint, build_features
+from shared.forecast_features import MetricPoint, build_features, feature_profile
 from shared.forecast_scope import ForecastScope, parse_legacy_scope, validate_scope_dimensions
 
 
@@ -46,3 +46,17 @@ def test_candidate_d_is_bounded_and_does_not_alert_during_warmup():
 def test_scope_rejects_pipe_in_dimension():
     with pytest.raises(ValueError):
         ForecastScope("cluster|bad", "node", "node-a", "cpu", 1, host="node-a")
+
+
+def test_feature_profile_changes_by_metric_and_horizon():
+    short = build_features(
+        [MetricPoint(datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(hours=i), float(i)) for i in range(30)],
+        metric="disk_latency", horizon_hours=1,
+    )
+    long = build_features(
+        [MetricPoint(datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(hours=i), float(i)) for i in range(30)],
+        metric="pool_used_percent", horizon_hours=24,
+    )
+    assert feature_profile("disk_latency", 1)["name"] == "disk_latency-h1"
+    assert "calendar_hour_sin" not in short.features
+    assert "lag_24" in long.features

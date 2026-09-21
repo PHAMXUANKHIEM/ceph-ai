@@ -49,6 +49,71 @@ class AdwinReport:
     reason: str
 
 
+@dataclass(frozen=True)
+class AdwinStreamsReport:
+    """Independent ADWIN evidence for residual, error and raw metric streams."""
+
+    status: str
+    streams: dict[str, AdwinReport]
+    drifted_streams: tuple[str, ...]
+    scope_key: str | None
+
+
+class RiverAdwinStreams:
+    """Keep the three required ADWIN streams isolated and bounded."""
+
+    STREAMS = ("residual", "absolute_error", "metric")
+
+    def __init__(self, *, delta: float = 0.002, scope_key: str | None = None):
+        self.scope_key = (scope_key or "").strip() or None
+        self._detectors = {
+            name: RiverAdwinDetector(delta=delta, scope_key=f"{self.scope_key}|{name}")
+            for name in self.STREAMS
+        }
+
+    def update(
+        self, *, residual: float, absolute_error: float, metric: float,
+        quality_status: str = "OK", observed_at: datetime | None = None,
+    ) -> AdwinStreamsReport:
+        values = {
+            "residual": residual,
+            "absolute_error": absolute_error,
+            "metric": metric,
+        }
+        for name, value in values.items():
+            self._detectors[name].update(value, quality_status=quality_status, observed_at=observed_at)
+        return self.report()
+
+    def report(self) -> AdwinStreamsReport:
+        reports = {name: detector.report() for name, detector in self._detectors.items()}
+        drifted = tuple(name for name, report in reports.items() if report.status == DRIFT)
+        statuses = {report.status for report in reports.values()}
+        status = DRIFT if drifted else (STABLE if statuses == {STABLE} else ADWIN_INSUFFICIENT_DATA)
+        return AdwinStreamsReport(status, reports, drifted, self.scope_key)
+
+    def snapshot(self) -> dict:
+        return {
+            "detector": "river_adwin_streams",
+            "detector_version": RiverAdwinDetector.detector_version,
+            "scope_key": self.scope_key,
+            "streams": {name: detector.snapshot() for name, detector in self._detectors.items()},
+        }
+
+    @classmethod
+    def from_snapshot(cls, snapshot: dict) -> "RiverAdwinStreams":
+        if snapshot.get("detector") != "river_adwin_streams":
+            raise ValueError("ADWIN streams snapshot detector mismatch")
+        raw_streams = snapshot.get("streams")
+        if not isinstance(raw_streams, dict) or set(raw_streams) != set(cls.STREAMS):
+            raise ValueError("ADWIN streams snapshot is incomplete")
+        first = RiverAdwinDetector.from_snapshot(raw_streams[cls.STREAMS[0]])
+        bundle = cls(delta=first.delta, scope_key=snapshot.get("scope_key"))
+        bundle._detectors[cls.STREAMS[0]] = first
+        for name in cls.STREAMS[1:]:
+            bundle._detectors[name] = RiverAdwinDetector.from_snapshot(raw_streams[name])
+        return bundle
+
+
 class RiverAdwinDetector:
     """Bounded River ADWIN adapter for shadow drift evidence.
 

@@ -27,7 +27,7 @@ from shared.predictive_alert_lifecycle import (
     next_lifecycle_state,
 )
 from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
-from shared.forecast_drift import DriftReport, RiverAdwinDetector, evaluate_drift
+from shared.forecast_drift import DriftReport, RiverAdwinStreams, evaluate_drift
 from shared.forecast_anomaly import candidate_d_alerts, candidate_d_isolation_scores
 from shared.forecast_features import MetricPoint, build_features
 from shared.forecast_metrics import update_rolling_metrics
@@ -616,25 +616,31 @@ def _shadow_evidence(
 
     feature_set = build_features([
         MetricPoint(observed_at=timestamp, value=value) for timestamp, value in points
-    ])
+    ], metric=metric, horizon_hours=settings.node_resource_learning_evaluation_hours)
     scores = candidate_d_isolation_scores(
         [{"cpu": cpu, "ram": ram} for _timestamp, cpu, ram in samples],
         history_size=24,
     )
     candidate_d_score = scores[-1] if scores else None
     candidate_d_alert = candidate_d_alerts(scores)[-1] if scores else False
-    detector = RiverAdwinDetector(scope_key=f"{cluster}|{host}|{metric}")
+    detector = RiverAdwinStreams(scope_key=f"{cluster}|{host}|{metric}")
     evaluated = session.query(NodeResourceForecastRun).filter_by(
         cluster_name=cluster, host=host, metric=metric, status="EVALUATED",
     ).order_by(NodeResourceForecastRun.evaluated_at).limit(512).all()
     for row in evaluated:
         if row.residual_percent is not None:
-            detector.update(float(row.residual_percent), quality_status="OK", observed_at=row.evaluated_at)
+            detector.update(
+                residual=float(row.residual_percent),
+                absolute_error=float(row.absolute_error or 0.0),
+                metric=float(row.actual_percent if row.actual_percent is not None else row.current_percent),
+                quality_status="OK", observed_at=row.evaluated_at,
+            )
     adwin = detector.report()
-    return [
+    evidence = [
         {
             "shadow_detector": "feature_builder",
             "feature_schema": feature_set.feature_schema,
+            "feature_profile": feature_set.feature_schema.rsplit(":", 1)[-1],
             "quality_status": feature_set.quality_status,
             "sample_count": feature_set.sample_count,
             "coverage_ratio": round(feature_set.coverage_ratio, 6),
@@ -648,17 +654,20 @@ def _shadow_evidence(
             "alert_candidate": bool(candidate_d_alert),
             "execution_mode": "SHADOW_ONLY",
         },
-        {
-            "shadow_detector": adwin.detector,
-            "detector_version": adwin.detector_version,
-            "status": adwin.status,
-            "score": adwin.score,
-            "sample_count": adwin.sample_count,
-            "delta": adwin.delta,
+    ]
+    for name, report in adwin.streams.items():
+        evidence.append({
+            "shadow_detector": "river_adwin",
+            "stream": name,
+            "detector_version": report.detector_version,
+            "status": report.status,
+            "score": report.score,
+            "sample_count": report.sample_count,
+            "delta": report.delta,
             "scope_key": adwin.scope_key,
             "execution_mode": "SHADOW_ONLY",
-        },
-    ]
+        })
+    return evidence
 
 
 def adaptive_forecast(

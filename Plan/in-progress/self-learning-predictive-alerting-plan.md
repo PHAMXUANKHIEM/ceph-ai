@@ -388,5 +388,4 @@ bật candidate thành active.
   resource scan.
 - Bằng chứng: `33 passed` cho migration + model registry + drift + scope/features
   + benchmark/soak; py_compile và `git diff --check` đạt; release scan trả `PASS`.
-- Còn lại: 3 ADWIN streams đầy đủ, cấu hình feature theo metric/horizon,
-  24-hour live soak và operator acceptance trên cluster Ceph thật.
+- Còn lại: 24-hour live soak và operator acceptance trên cluster Ceph thật.
