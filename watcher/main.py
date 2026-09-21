@@ -51,6 +51,7 @@ from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from watcher.performance_rca import PERFORMANCE_RCA_PREFIX
 from shared import alert_lifecycle, audit, db, heartbeat, service_health, telegram_alerts
+from shared.cluster_snapshot import read_priority_refresh
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
 from shared.logging_redaction import install_logging_redaction
@@ -938,6 +939,7 @@ def run(
     last_log_intel_scan_at: Optional[datetime] = None
     last_inventory_scan_at: Optional[datetime] = None
     last_status_snapshot_scan_at: Optional[datetime] = None
+    last_priority_refresh_marker: str | None = None
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
 
@@ -1060,10 +1062,14 @@ def run(
         # page requests never open SSH sessions of their own.
         if max_iterations is None and cluster_id is not None:
             status_now = utc_now()
+            priority = read_priority_refresh(cluster_id)
+            priority_marker = str(priority.get("requested_at", "")) if priority else ""
+            priority_due = bool(priority_marker and priority_marker != last_priority_refresh_marker)
             if (
                 last_status_snapshot_scan_at is None
                 or (status_now - last_status_snapshot_scan_at).total_seconds()
                 >= _DASHBOARD_STATUS_SNAPSHOT_INTERVAL_SECONDS
+                or priority_due
             ):
                 def scan_status() -> None:
                     try:
@@ -1086,6 +1092,7 @@ def run(
                 last_inventory_scan_at is None
                 or (inventory_now - last_inventory_scan_at).total_seconds()
                 >= settings.dashboard_inventory_poll_interval_seconds
+                or priority_due
             ):
                 def scan_inventory() -> None:
                     try:
@@ -1102,6 +1109,8 @@ def run(
                     f"inventory-{cluster_id}", scan_inventory, background=True,
                 )
                 last_inventory_scan_at = inventory_now
+            if priority_due:
+                last_priority_refresh_marker = priority_marker
 
         # 2026-07-28: Volume (RBD) performance/saturation check — its own
         # independent try/except, OUTSIDE the cluster-health try block
@@ -1704,6 +1713,7 @@ def run_observed_cluster_loop(
     last_log_intel_scan_at: Optional[datetime] = None
     last_inventory_scan_at: Optional[datetime] = None
     last_status_snapshot_scan_at: Optional[datetime] = None
+    last_priority_refresh_marker: str | None = None
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
 
@@ -1947,10 +1957,14 @@ def run_observed_cluster_loop(
 
         if max_iterations is None:
             status_now = utc_now()
+            priority = read_priority_refresh(cluster.id)
+            priority_marker = str(priority.get("requested_at", "")) if priority else ""
+            priority_due = bool(priority_marker and priority_marker != last_priority_refresh_marker)
             if (
                 last_status_snapshot_scan_at is None
                 or (status_now - last_status_snapshot_scan_at).total_seconds()
                 >= _DASHBOARD_STATUS_SNAPSHOT_INTERVAL_SECONDS
+                or priority_due
             ):
                 run_auxiliary_scan(
                     f"status-{cluster.id}",
@@ -1965,6 +1979,7 @@ def run_observed_cluster_loop(
                 last_inventory_scan_at is None
                 or (inventory_now - last_inventory_scan_at).total_seconds()
                 >= settings.dashboard_inventory_poll_interval_seconds
+                or priority_due
             ):
                 def scan_inventory(inventory_cluster=cluster) -> None:
                     try:
@@ -1977,6 +1992,8 @@ def run_observed_cluster_loop(
 
                 run_auxiliary_scan(f"inventory-{cluster.id}", scan_inventory)
                 last_inventory_scan_at = inventory_now
+            if priority_due:
+                last_priority_refresh_marker = priority_marker
 
         iterations += 1
         if stop_event is not None:

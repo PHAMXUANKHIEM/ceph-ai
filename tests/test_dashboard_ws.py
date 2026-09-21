@@ -5,7 +5,7 @@ import pytest
 import dashboard.ws as ws_module
 from shared import db as db_module
 from shared.cluster_snapshot import publish_snapshot
-from shared.models import Action, ActionClassification, Incident, WatcherHeartbeat
+from shared.models import Action, ActionClassification, ActionStatus, Incident, WatcherHeartbeat
 
 
 def test_unauthenticated_websocket_is_rejected(dashboard_client):
@@ -130,6 +130,91 @@ def test_action_state_event_is_published_after_database_commit(
     assert event["event"] == "action_state_changed"
     assert event["action_id"] == action_id
     assert event["action_status"] == "EXECUTING"
+    assert event["action_state"] == "running"
+
+
+def test_action_lifecycle_realtime_contract_reaches_postcheck_success(
+    dashboard_client, default_cluster_id
+):
+    from shared.cluster_events import read_latest_event
+
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id=default_cluster_id,
+            ceph_code="OSD_DOWN",
+            status="NEW",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id="restart_osd_daemon",
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.PENDING.value,
+        )
+        session.add(action)
+        session.commit()
+        action_id = action.id
+
+        assert read_latest_event(default_cluster_id)["action_state"] == "queued"
+
+        action.status = ActionStatus.EXECUTING.value
+        session.commit()
+        assert read_latest_event(default_cluster_id)["action_state"] == "running"
+
+        action.status = ActionStatus.AUTO_EXECUTED.value
+        incident.status = "VERIFYING"
+        session.commit()
+        verifying = read_latest_event(default_cluster_id)
+        assert verifying["event"] == "action_state_changed"
+        assert verifying["action_id"] == action_id
+        assert verifying["action_state"] == "verifying"
+
+        incident.status = "RESOLVED"
+        session.commit()
+
+    succeeded = read_latest_event(default_cluster_id)
+    assert succeeded["event"] == "snapshot_changed"
+    assert succeeded["action_id"] == action_id
+    assert succeeded["action_status"] == ActionStatus.AUTO_EXECUTED.value
+    assert succeeded["action_state"] == "succeeded"
+
+
+def test_failed_postcheck_publishes_error_without_claiming_snapshot_success(
+    dashboard_client, default_cluster_id
+):
+    from shared.cluster_events import read_latest_event
+
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id=default_cluster_id,
+            ceph_code="OSD_DOWN",
+            status="VERIFYING",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id="restart_osd_daemon",
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.AUTO_EXECUTED.value,
+        )
+        session.add(action)
+        session.commit()
+        action_id = action.id
+
+        session.refresh(incident)
+        incident.status = "FAILED"
+        session.commit()
+
+    event = read_latest_event(default_cluster_id)
+    assert event["event"] == "snapshot_refresh_failed"
+    assert event["action_id"] == action_id
+    assert event["action_status"] == ActionStatus.AUTO_EXECUTED.value
+    assert event["action_state"] == "failed"
+    assert event["sections"] == ["health", "status", "nodes"]
 
 
 def test_action_state_event_is_not_published_for_rolled_back_transition(
@@ -228,6 +313,7 @@ def test_postcheck_snapshot_event_carries_bounded_action_metadata(
     assert event["event"] == "snapshot_changed"
     assert event["action_id"] == action_pk
     assert event["action_status"] == "EXECUTED"
+    assert event["action_state"] == "succeeded"
     assert event["sections"] == ["health", "status", "crush"]
     assert "proposed_command" not in event
     assert "target_nodes" not in event

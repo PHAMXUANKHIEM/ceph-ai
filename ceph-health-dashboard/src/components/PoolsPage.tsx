@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Brush,
   Activity,
@@ -22,7 +22,7 @@ import {
 import { EmptyState } from "./EmptyState";
 import { ErrorState } from "./ErrorState";
 import { PageHeader } from "./PageHeader";
-import { useClusterSnapshotEvents } from "../useClusterSnapshotEvents";
+import { useClusterSnapshotEvents, type SnapshotEvent } from "../useClusterSnapshotEvents";
 import { getSnapshotState, SNAPSHOT_STATE_LABEL } from "../snapshotState";
 
 type PoolRow = {
@@ -83,7 +83,16 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   const [rows, setRows] = useState<PoolRow[]>(bootstrap.pools || []);
   const [snapshotMeta, setSnapshotMeta] = useState<SnapshotMeta>(bootstrap.snapshotMeta || {});
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
-  const eventVersion = useClusterSnapshotEvents(bootstrap.clusterId);
+  const [realtimeError, setRealtimeError] = useState<string | null>(null);
+  const handleRealtimeEvent = useCallback((event: SnapshotEvent) => {
+    if (!event.sections?.includes("pools")) return;
+    if (event.event === "snapshot_refresh_failed") {
+      setRealtimeError("Post-check thay đổi Pool thất bại; đang giữ snapshot Pool gần nhất.");
+    } else if (event.event === "snapshot_changed") {
+      setRealtimeError(null);
+    }
+  }, []);
+  const eventVersion = useClusterSnapshotEvents(bootstrap.clusterId, handleRealtimeEvent);
   const lastGeneration = useRef<number | null>(bootstrap.snapshotMeta?.generation ?? null);
   const initial = bootstrap.selectedPool || (bootstrap.pools.some((row) => row.name === "test") ? "test" : bootstrap.pools[0]?.name || "");
   const [selected, setSelected] = useState(initial);
@@ -97,7 +106,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   const [visible, setVisible] = useState<Record<string, boolean>>({ redundancy: true, pgs: true, used: true, objects: true, read_iops: true, write_iops: true });
   const selectedRow = useMemo(() => rows.find((row) => row.name === selected), [rows, selected]);
   const snapshotState = getSnapshotState(snapshotMeta, {
-    error: bootstrap.queryError || snapshotError,
+    error: bootstrap.queryError || snapshotError || realtimeError,
     hasData: rows.length > 0,
   });
   const filteredRows = useMemo(() => rows.filter((row) => `${row.name} ${row.redundancy} ${row.crush_rule}`.toLowerCase().includes(search.toLowerCase())), [rows, search]);
@@ -191,9 +200,9 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
           </nav>
         </div>
 
-        {(bootstrap.queryError || snapshotError || snapshotMeta.last_error) && (
+        {(bootstrap.queryError || snapshotError || realtimeError || snapshotMeta.last_error) && (
           <div className="mx-5 mt-4">
-            <ErrorState message={<>Không lấy được snapshot Pool: {bootstrap.queryError || snapshotError || snapshotMeta.last_error}</>} />
+            <ErrorState message={<>Không xác nhận được thay đổi Pool: {realtimeError || bootstrap.queryError || snapshotError || snapshotMeta.last_error}</>} />
           </div>
         )}
         <div className="px-5 pt-3 text-xs text-slate-500" role="status" aria-live="polite"><RefreshCw size={13} className="mr-1 inline" />{SNAPSHOT_STATE_LABEL[snapshotState]}{snapshotMeta.collected_at ? ` · generation ${snapshotMeta.generation ?? 0} · ${snapshotMeta.age_seconds == null ? "" : `${Math.round(snapshotMeta.age_seconds)}s ago`}` : ""}</div>

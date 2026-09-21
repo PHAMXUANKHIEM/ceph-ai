@@ -19,9 +19,11 @@ SNAPSHOT_NAMESPACE = "cluster-snapshot"
 SECTION_SNAPSHOT_NAMESPACE = "cluster-section-snapshot"
 REFRESH_STATE_NAMESPACE = "cluster-snapshot-refresh-state"
 REFRESH_CLAIM_NAMESPACE = "cluster-snapshot-refresh-claim"
+PRIORITY_REFRESH_NAMESPACE = "cluster-snapshot-priority-refresh"
 DEFAULT_STALE_AFTER_SECONDS = settings.ceph_snapshot_max_age
 DEFAULT_MAX_STALE_SECONDS = 900
 REFRESH_STATE_MAX_AGE_SECONDS = DEFAULT_MAX_STALE_SECONDS
+PRIORITY_REFRESH_MAX_AGE_SECONDS = DEFAULT_MAX_STALE_SECONDS
 
 
 def _key(cluster_id: str) -> str:
@@ -191,6 +193,44 @@ def is_refreshing(cluster_id: str) -> bool:
         return False
     value, _age_seconds = cached
     return isinstance(value, Mapping) and bool(value.get("refreshing"))
+
+
+def request_priority_refresh(
+    cluster_id: str,
+    sections: list[str] | tuple[str, ...] | None = None,
+) -> dict:
+    """Persist a bounded hint for Watcher to refresh after a confirmed mutation.
+
+    The marker is deliberately separate from the snapshot and contains no
+    command or credential. A running Watcher consumes it on its next loop;
+    a marker that outlives a restart expires through the read max-age.
+    """
+    normalized_id = _key(cluster_id)
+    allowed = {"health", "status", "pools", "pgs", "crush", "nodes"}
+    normalized_sections = []
+    for section in sections or ():
+        value = str(section or "").strip()
+        if value in allowed and value not in normalized_sections:
+            normalized_sections.append(value)
+    marker = {
+        "requested_at": _utc_now(),
+        "sections": normalized_sections,
+    }
+    ceph_query_cache.store(PRIORITY_REFRESH_NAMESPACE, normalized_id, marker)
+    return marker
+
+
+def read_priority_refresh(cluster_id: str) -> dict | None:
+    """Return the newest mutation refresh hint while it is still recent."""
+    cached = ceph_query_cache.get_cached(
+        PRIORITY_REFRESH_NAMESPACE,
+        _key(cluster_id),
+        max_age_seconds=PRIORITY_REFRESH_MAX_AGE_SECONDS,
+        prefer_disk=True,
+    )
+    if cached is None or not isinstance(cached[0], Mapping):
+        return None
+    return dict(cached[0])
 
 
 def invalidate_snapshot(cluster_id: str) -> None:

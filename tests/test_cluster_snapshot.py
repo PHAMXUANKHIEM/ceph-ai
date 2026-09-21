@@ -135,6 +135,21 @@ def test_refresh_claim_is_single_flight_and_cluster_scoped(monkeypatch, tmp_path
     assert cluster_snapshot.claim_refresh("cluster-a") is True
 
 
+def test_priority_refresh_marker_is_cluster_scoped_and_bounded(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+
+    marker = cluster_snapshot.request_priority_refresh(
+        "cluster-a", ["pools", "secret", "pools", "health"]
+    )
+
+    assert marker["sections"] == ["pools", "health"]
+    assert cluster_snapshot.read_priority_refresh("cluster-a")["requested_at"] == marker["requested_at"]
+    assert cluster_snapshot.read_priority_refresh("cluster-b") is None
+
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    assert cluster_snapshot.read_priority_refresh("cluster-a")["sections"] == ["pools", "health"]
+
+
 def test_persisted_snapshot_is_readable_after_process_restart(monkeypatch, tmp_path):
     _isolate_cache(monkeypatch, tmp_path)
     cluster_snapshot.publish_snapshot("cluster-a", {"health": "HEALTH_WARN"})

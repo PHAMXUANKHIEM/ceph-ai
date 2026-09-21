@@ -163,6 +163,7 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
                     "generation": current.get("generation"),
                     "collected_at": current.get("collected_at"),
                     **({"action_status": current["action_status"]} if current.get("action_status") else {}),
+                    **({"action_state": current["action_state"]} if current.get("action_state") else {}),
                     **({"action_id": current["action_id"]} if current.get("action_id") else {}),
                 }
             )

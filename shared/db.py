@@ -231,15 +231,31 @@ def _collect_cluster_state_events(session: Session, _flush_context) -> None:
         inspected = inspect(incident)
         if not inspected.attrs.status.history.has_changes():
             continue
-        if str(getattr(incident, "status", "")) not in {"RESOLVED", "IncidentStatus.RESOLVED"}:
+        current_status = str(getattr(incident, "status", ""))
+        previous_statuses = inspected.attrs.status.history.deleted
+        previous_status = str(previous_statuses[-1]) if previous_statuses else ""
+        if current_status in {"RESOLVED", "IncidentStatus.RESOLVED"}:
+            event_name = "snapshot_changed"
+            action_state = "succeeded"
+        elif current_status in {"FAILED", "IncidentStatus.FAILED"} and previous_status in {
+            "VERIFYING", "IncidentStatus.VERIFYING",
+        }:
+            # A command may have exited successfully while the post-check
+            # still proves that the fault remains. Notify the UI without
+            # invalidating/removing the last good snapshot.
+            event_name = "snapshot_refresh_failed"
+            action_state = "failed"
+        else:
             continue
         cluster_id = str(getattr(incident, "cluster_id", "") or "").strip()
         if cluster_id:
             action_id, action_status = _resolved_action_metadata(session, getattr(incident, "id", None))
             pending[cluster_id] = (
+                event_name,
                 _sections_for_resolved_incident(incident),
                 action_id,
                 action_status,
+                action_state if action_id else None,
             )
 
 
@@ -262,14 +278,21 @@ def _publish_cluster_state_events(session: Session) -> None:
     if not pending:
         return
     from shared.cluster_events import publish_event
-    for cluster_id, (sections, action_id, action_status) in pending.items():
+    from shared.cluster_snapshot import request_priority_refresh
+    for cluster_id, (event_name, sections, action_id, action_status, action_state) in pending.items():
+        if event_name == "snapshot_changed":
+            try:
+                request_priority_refresh(cluster_id, list(sections))
+            except Exception:
+                logger.exception("could not request priority snapshot refresh for %s", cluster_id)
         try:
             publish_event(
                 cluster_id,
-                "snapshot_changed",
+                event_name,
                 sections=sections,
                 action_id=action_id,
                 action_status=action_status,
+                action_state=action_state,
             )
         except Exception:
             logger.exception("could not publish post-check snapshot invalidation for %s", cluster_id)

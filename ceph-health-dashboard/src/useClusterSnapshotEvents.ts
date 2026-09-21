@@ -1,17 +1,25 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-type SnapshotEvent = {
+export type SnapshotEvent = {
   event?: string;
   cluster_id?: string;
   sections?: string[];
+  action_id?: string;
+  action_status?: string;
+  action_state?: "queued" | "running" | "verifying" | "succeeded" | "failed" | "rejected";
 };
 
 /**
  * Subscribe to cluster invalidation hints. HTTP remains the source of truth;
  * polling continues in the consumer as a fallback for proxies without WS.
  */
-export function useClusterSnapshotEvents(clusterId: string): number {
+export function useClusterSnapshotEvents(
+  clusterId: string,
+  onEvent?: (event: SnapshotEvent) => void,
+): number {
   const [eventVersion, setEventVersion] = useState(0);
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent;
 
   useEffect(() => {
     if (!clusterId) return;
@@ -31,6 +39,7 @@ export function useClusterSnapshotEvents(clusterId: string): number {
         try {
           const payload = JSON.parse(message.data) as SnapshotEvent;
           if (payload.event && (!payload.cluster_id || payload.cluster_id === clusterId)) {
+            onEventRef.current?.(payload);
             // A collector can publish several section changes in one refresh.
             // Coalesce them briefly so one commit does not trigger one HTTP
             // read per event/tab while preserving the latest invalidation.

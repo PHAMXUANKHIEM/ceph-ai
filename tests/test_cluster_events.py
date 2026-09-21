@@ -2,10 +2,28 @@ import pytest
 
 from shared import ceph_query_cache
 from shared.cluster_events import (
+    action_state_for_status,
     publish_action_state_event,
     publish_event,
     read_latest_event,
 )
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("PENDING", "queued"),
+        ("PENDING_APPROVAL", "queued"),
+        ("EXECUTING", "running"),
+        ("INCONCLUSIVE", "verifying"),
+        ("EXECUTED", "verifying"),
+        ("AUTO_EXECUTED", "verifying"),
+        ("FAILED", "failed"),
+        ("REJECTED", "rejected"),
+    ],
+)
+def test_action_status_is_normalized_for_realtime_consumers(status, expected):
+    assert action_state_for_status(status) == expected
 
 
 def _isolate_cache(monkeypatch, tmp_path):
@@ -45,4 +63,5 @@ def test_action_state_event_keeps_cluster_and_status_metadata(monkeypatch, tmp_p
     assert event["cluster_id"] == "cluster-a"
     assert event["action_id"] == "action-1"
     assert event["action_status"] == "EXECUTING"
+    assert event["action_state"] == "running"
     assert read_latest_event("cluster-a")["action_status"] == "EXECUTING"
