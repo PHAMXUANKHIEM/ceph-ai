@@ -60,14 +60,21 @@ def test_observe_records_hourly_candidates_for_each_volume_metric(db_session, mo
     db_session.commit()
 
     runs = db_session.query(VolumeForecastRun).order_by(
-        VolumeForecastRun.metric, VolumeForecastRun.window_hours
+        VolumeForecastRun.metric, VolumeForecastRun.horizon_hours, VolumeForecastRun.window_hours
     ).all()
-    assert {(run.metric, run.window_hours) for run in runs} == {
-        (metric, window) for metric in learning.METRICS for window in (24, 72)
+    assert {(run.metric, run.horizon_hours, run.window_hours) for run in runs} == {
+        (metric, horizon, window)
+        for metric in learning.METRICS for horizon in (1, 6, 24) for window in (24, 72)
     }
     assert all(run.status == "PENDING" for run in runs)
     assert all(run.training_samples >= 3 for run in runs)
     assert {run.seasonal_scope for run in runs} <= {"hour_of_day", "all_history"}
+    states = db_session.query(VolumeModelState).all()
+    assert {state.horizon_hours for state in states} == {1, 6, 24}
+    assert all(state.horizon_hours == run.horizon_hours
+               for state in states for run in runs
+               if state.metric == run.metric and state.window_hours == run.window_hours
+               and state.horizon_hours == run.horizon_hours)
 
 
 def test_observe_records_fail_closed_early_forecasts_for_all_horizons(db_session, monkeypatch):
@@ -233,7 +240,7 @@ def test_same_hour_is_idempotent(db_session, monkeypatch):
     learning.observe_sample(db_session, cluster.id, _sample(), NOW + timedelta(minutes=20))
     db_session.commit()
 
-    assert db_session.query(VolumeForecastRun).count() == 3
+    assert db_session.query(VolumeForecastRun).count() == 9
 
 
 def test_due_prediction_is_scored_and_updates_persistent_mae(db_session, monkeypatch):
@@ -254,15 +261,17 @@ def test_due_prediction_is_scored_and_updates_persistent_mae(db_session, monkeyp
     old_runs = db_session.query(VolumeForecastRun).filter(
         VolumeForecastRun.predicted_at == NOW
     ).all()
-    assert all(run.status == "EVALUATED" for run in old_runs)
+    assert all(run.status == "EVALUATED" for run in old_runs if run.horizon_hours == 1)
+    assert all(run.status == "PENDING" for run in old_runs if run.horizon_hours in {6, 24})
     states = db_session.query(VolumeModelState).all()
-    assert len(states) == 3
-    assert all(state.evaluated_count == 1 for state in states)
-    assert all(state.mean_absolute_error is not None for state in states)
-    assert all(state.rolling_sample_count == 1 for state in states)
-    assert all(state.rolling_rmse is not None for state in states)
-    assert all(state.rolling_smape is not None for state in states)
-    assert all(state.rolling_bias is not None for state in states)
+    assert len(states) == 9
+    assert all(state.evaluated_count == 1 for state in states if state.horizon_hours == 1)
+    assert all(state.evaluated_count == 0 for state in states if state.horizon_hours in {6, 24})
+    assert all(state.mean_absolute_error is not None for state in states if state.horizon_hours == 1)
+    assert all(state.rolling_sample_count == 1 for state in states if state.horizon_hours == 1)
+    assert all(state.rolling_rmse is not None for state in states if state.horizon_hours == 1)
+    assert all(state.rolling_smape is not None for state in states if state.horizon_hours == 1)
+    assert all(state.rolling_bias is not None for state in states if state.horizon_hours == 1)
 
 
 def test_lowest_mae_window_is_selected_after_minimum_outcomes(db_session, monkeypatch):

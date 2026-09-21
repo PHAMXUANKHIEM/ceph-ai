@@ -201,13 +201,19 @@ chứng minh không có cross-scope contamination.
 
 #### 1.3 Horizon-specific model
 
-- [ ] Node CPU/RAM tối thiểu hỗ trợ horizon `1h`, `6h`, `24h` theo cấu hình; volume
-  giữ danh sách horizon hiện có nhưng phải dùng cùng contract.
-- [ ] Mỗi horizon có state, target_at, evaluation và metrics riêng.
-- [ ] Không suy ra kết quả `24h` từ model `1h` nếu chưa được đánh giá như một model
-  riêng.
-- [ ] Chặn horizon không đủ history bằng `INSUFFICIENT_SAMPLES`, không fallback im
+- [x] Node CPU/RAM và volume dùng chung horizon contract `1h/6h/24h`; mỗi horizon
+  có state, target_at, evaluation run và metrics riêng.
+- [x] Không suy ra kết quả `24h` từ model `1h`: mỗi horizon tạo candidate trực tiếp,
+  idempotency key và evaluation target riêng.
+- [x] Chặn horizon không đủ history bằng `INSUFFICIENT_SAMPLES`, không fallback im
   lặng sang horizon khác.
+
+Đã tách `VolumeModelState`/`VolumeForecastRun` và
+`NodeResourceModelState`/`NodeResourceForecastRun` theo `horizon_hours`; selector,
+MAE, drift, metrics và evaluation đều lọc theo đúng horizon. Migration
+`m20260921forecasthorizons` backfill dữ liệu cũ về horizon mặc định rồi tạo unique
+identity/index riêng. Cấu hình horizon không hợp lệ fail-closed về contract mặc
+định; không có fallback ngầm từ 1h sang 24h.
 
 #### 1.4 Test và exit gate
 

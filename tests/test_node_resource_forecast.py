@@ -167,12 +167,28 @@ def test_adaptive_forecast_persists_candidates_and_selects_longest_during_warmup
 
     assert result["cpu"].training_window_hours == 72
     with factory() as session:
-        assert session.query(NodeResourceForecastRun).count() == 8
+        assert session.query(NodeResourceForecastRun).count() == 24
         assert {row.algorithm for row in session.query(NodeResourceForecastRun).all()} == {
             "linear", "rolling_quantile",
         }
+        assert {row.horizon_hours for row in session.query(NodeResourceForecastRun).all()} == {1, 6, 24}
+        assert {
+            (row.metric, row.horizon_hours, row.window_hours)
+            for row in session.query(NodeResourceForecastRun).all()
+        } == {
+            (metric, horizon, window)
+            for metric in ("cpu", "ram")
+            for horizon in (1, 6, 24)
+            for window in (24, 72)
+        }
         selected = session.query(NodeResourceModelState).filter_by(selected=True).all()
-        assert {(row.metric, row.window_hours) for row in selected} == {("cpu", 72), ("ram", 72)}
+        assert {
+            (row.metric, row.horizon_hours, row.window_hours) for row in selected
+        } == {
+            (metric, horizon, 72)
+            for metric in ("cpu", "ram")
+            for horizon in (1, 6, 24)
+        }
 
 
 def test_adaptive_forecast_records_consensus_metadata(monkeypatch):
@@ -220,7 +236,9 @@ def test_adaptive_forecast_evaluates_due_run_and_updates_mae(monkeypatch):
 
     with factory() as session:
         run = session.query(NodeResourceForecastRun).filter_by(idempotency_key="due").one()
-        state = session.query(NodeResourceModelState).filter_by(metric="cpu", window_hours=24).one()
+        state = session.query(NodeResourceModelState).filter_by(
+            metric="cpu", window_hours=24, horizon_hours=24,
+        ).one()
         assert run.status == "EVALUATED"
         assert run.actual_percent == samples[-2][1]
         assert state.evaluated_count == 1

@@ -14,6 +14,7 @@ from config.settings import settings
 from shared import db, telegram_alerts, telegram_outbox
 from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
 from shared.forecast_metrics import update_rolling_metrics
+from shared.forecast_horizons import parse_horizons
 from shared.learning_safety import RateLimiter
 from shared.metric_quality import MetricQuality, assess_metric_quality
 from shared.models import (
@@ -81,26 +82,21 @@ def _candidate_windows() -> list[int]:
 
 
 def _forecast_horizons() -> list[int]:
-    values = set()
-    for raw in settings.volume_forecast_horizons.split(","):
-        try:
-            value = int(raw.strip())
-        except ValueError:
-            continue
-        if value > 0:
-            values.add(value)
-    return sorted(values) or [1, 6, 24]
+    return list(parse_horizons(settings.volume_forecast_horizons))
 
 
-def _state_for(session, cluster_id: str, pool: str, image: str, metric: str, window: int):
+def _state_for(
+    session, cluster_id: str, pool: str, image: str, metric: str,
+    window: int, horizon_hours: int = 1,
+):
     state = session.query(VolumeModelState).filter_by(
         cluster_id=cluster_id, pool=pool, image=image, metric=metric,
-        algorithm=ALGORITHM, window_hours=window,
+        algorithm=ALGORITHM, window_hours=window, horizon_hours=horizon_hours,
     ).one_or_none()
     if state is None:
         state = VolumeModelState(
             cluster_id=cluster_id, pool=pool, image=image, metric=metric,
-            algorithm=ALGORITHM, window_hours=window,
+            algorithm=ALGORITHM, window_hours=window, horizon_hours=horizon_hours,
         )
         session.add(state)
         session.flush()
@@ -125,7 +121,8 @@ def _evaluate_due(
         run.status = "EVALUATED"
         run.evaluated_at = observed_at
         state = _state_for(
-            session, cluster_id, pool, image, run.metric, run.window_hours
+            session, cluster_id, pool, image, run.metric, run.window_hours,
+            run.horizon_hours,
         )
         old_count = state.evaluated_count
         old_mae = state.mean_absolute_error or 0.0
@@ -209,10 +206,12 @@ def _baseline(
     return prediction, round(stability * sample_factor, 6), seasonal_scope, len(values)
 
 
-def _select_models(session, cluster_id: str, pool: str, image: str, metric: str) -> None:
+def _select_models(
+    session, cluster_id: str, pool: str, image: str, metric: str, horizon_hours: int = 1,
+) -> None:
     states = session.query(VolumeModelState).filter_by(
         cluster_id=cluster_id, pool=pool, image=image, metric=metric,
-        algorithm=ALGORITHM,
+        algorithm=ALGORITHM, horizon_hours=horizon_hours,
     ).all()
     if not states:
         return
@@ -238,10 +237,12 @@ def _robust_hourly_slope(points: list[tuple[datetime, float]]) -> float:
     return float(statistics.median(slopes)) if slopes else 0.0
 
 
-def _selected_window(session, cluster_id: str, pool: str, image: str, metric: str) -> int:
+def _selected_window(
+    session, cluster_id: str, pool: str, image: str, metric: str, horizon_hours: int = 1,
+) -> int:
     state = session.query(VolumeModelState).filter_by(
         cluster_id=cluster_id, pool=pool, image=image, metric=metric,
-        algorithm=ALGORITHM, selected=True,
+        algorithm=ALGORITHM, horizon_hours=horizon_hours, selected=True,
     ).one_or_none()
     return state.window_hours if state else max(_candidate_windows())
 
@@ -318,7 +319,8 @@ def _record_early_forecasts(
                 continue
             target_at = observed_at + timedelta(hours=horizon)
             if not candidate_rows:
-                selected_window = _selected_window(session, cluster_id, pool, image, metric)
+                selected_window = _selected_window(session, cluster_id, pool, image, metric, horizon)
+                _state_for(session, cluster_id, pool, image, metric, selected_window, horizon)
                 selected_quality = next(
                     (quality for window, quality in quality_rows if window == selected_window),
                     quality_rows[-1][1] if quality_rows else assess_metric_quality(
@@ -364,7 +366,8 @@ def _record_early_forecasts(
                 continue
             consensus = _volume_consensus([row["predicted"] for row in candidates])
             model_votes = json.dumps(candidates, separators=(",", ":"), sort_keys=True)
-            preferred_window = _selected_window(session, cluster_id, pool, image, metric)
+            preferred_window = _selected_window(session, cluster_id, pool, image, metric, horizon)
+            _state_for(session, cluster_id, pool, image, metric, preferred_window, horizon)
             selected = next(
                 (row for row in candidates if row["window"] == preferred_window),
                 max(candidates, key=lambda row: row["confidence"]),
@@ -431,9 +434,10 @@ def observe_sample(
     bucket = observed_at.replace(minute=0, second=0, microsecond=0)
     _record_early_forecasts(session, cluster_id, pool, image, actual, observed_at)
     windows = _candidate_windows()
+    horizons = _forecast_horizons()
     keys = [
-        f"{cluster_id}|{pool}|{image}|{metric}|{ALGORITHM}|{window}|{bucket.isoformat()}"
-        for metric in METRICS for window in windows
+        f"{cluster_id}|{pool}|{image}|{metric}|{ALGORITHM}|{window}|{horizon}|{bucket.isoformat()}"
+        for metric in METRICS for window in windows for horizon in horizons
     ]
     existing = {
         row[0] for row in session.query(VolumeForecastRun.idempotency_key)
@@ -453,29 +457,30 @@ def observe_sample(
         session, cluster_id, pool, image,
         observed_at - timedelta(hours=max_history), observed_at,
     )
-    target_at = observed_at + timedelta(hours=max(1, settings.volume_learning_evaluation_hours))
     for metric in METRICS:
-        for window in windows:
-            key = f"{cluster_id}|{pool}|{image}|{metric}|{ALGORITHM}|{window}|{bucket.isoformat()}"
-            if key in existing:
-                continue
-            cutoff = observed_at - timedelta(hours=window)
-            points = [(timestamp, values[metric]) for timestamp, values in history if timestamp >= cutoff]
-            if not _quality_for_points(points, observed_at, window).usable:
-                continue
-            baseline = _baseline(points, target_at)
-            if baseline is None:
-                continue
-            prediction, confidence, seasonal_scope, training_samples = baseline
-            session.add(VolumeForecastRun(
-                cluster_id=cluster_id, pool=pool, image=image, metric=metric,
-                algorithm=ALGORITHM, window_hours=window, predicted_at=observed_at,
-                target_at=target_at, current_value=actual[metric],
-                predicted_value=prediction, confidence=confidence,
-                seasonal_scope=seasonal_scope, training_samples=training_samples,
-                status="PENDING", idempotency_key=key,
-            ))
-        _select_models(session, cluster_id, pool, image, metric)
+        for horizon in horizons:
+            target_at = observed_at + timedelta(hours=horizon)
+            for window in windows:
+                key = f"{cluster_id}|{pool}|{image}|{metric}|{ALGORITHM}|{window}|{horizon}|{bucket.isoformat()}"
+                if key in existing:
+                    continue
+                cutoff = observed_at - timedelta(hours=window)
+                points = [(timestamp, values[metric]) for timestamp, values in history if timestamp >= cutoff]
+                if not _quality_for_points(points, observed_at, window).usable:
+                    continue
+                baseline = _baseline(points, target_at)
+                if baseline is None:
+                    continue
+                prediction, confidence, seasonal_scope, training_samples = baseline
+                session.add(VolumeForecastRun(
+                    cluster_id=cluster_id, pool=pool, image=image, metric=metric,
+                    algorithm=ALGORITHM, window_hours=window, horizon_hours=horizon,
+                    predicted_at=observed_at, target_at=target_at, current_value=actual[metric],
+                    predicted_value=prediction, confidence=confidence,
+                    seasonal_scope=seasonal_scope, training_samples=training_samples,
+                    status="PENDING", idempotency_key=key,
+                ))
+            _select_models(session, cluster_id, pool, image, metric, horizon)
     return evaluated
 
 

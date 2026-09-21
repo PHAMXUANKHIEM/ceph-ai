@@ -776,6 +776,9 @@ class Settings(BaseSettings):
     node_resource_live_ingest_enabled: bool = False
     node_resource_forecast_history_days: int = 30
     node_resource_forecast_horizon_hours: int = 168
+    # Every persisted node-resource forecast is a direct model for one of
+    # these horizons; the legacy operational horizon remains separate.
+    node_resource_forecast_horizons: str = "1,6,24"
     node_resource_forecast_min_samples: int = 24
     node_resource_forecast_min_confidence: float = 0.5
     node_resource_forecast_trigger_threshold_percent: float = 90.0

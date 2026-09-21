@@ -1754,8 +1754,8 @@ class VolumeForecastRun(Base):
     __tablename__ = "volume_forecast_runs"
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_volume_forecast_idempotency"),
-        Index("ix_volume_forecast_due", "status", "target_at"),
-        Index("ix_volume_forecast_scope", "cluster_id", "pool", "image", "metric"),
+        Index("ix_volume_forecast_due", "status", "target_at", "horizon_hours"),
+        Index("ix_volume_forecast_scope", "cluster_id", "pool", "image", "metric", "horizon_hours"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -1763,6 +1763,9 @@ class VolumeForecastRun(Base):
     pool: Mapped[str] = mapped_column(String(64), nullable=False)
     image: Mapped[str] = mapped_column(String(128), nullable=False)
     metric: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Each horizon owns its target/evaluation stream; 24h must never reuse a
+    # 1h outcome or state.
+    horizon_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     algorithm: Mapped[str] = mapped_column(String(32), nullable=False, default="seasonal_median")
     window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
     predicted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
@@ -1787,10 +1790,10 @@ class VolumeModelState(Base):
     __tablename__ = "volume_model_states"
     __table_args__ = (
         UniqueConstraint(
-            "cluster_id", "pool", "image", "metric", "algorithm", "window_hours",
+            "cluster_id", "pool", "image", "metric", "algorithm", "window_hours", "horizon_hours",
             name="uq_volume_model_identity",
         ),
-        Index("ix_volume_model_scope", "cluster_id", "pool", "image", "metric"),
+        Index("ix_volume_model_scope", "cluster_id", "pool", "image", "metric", "horizon_hours"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -1800,6 +1803,7 @@ class VolumeModelState(Base):
     metric: Mapped[str] = mapped_column(String(32), nullable=False)
     algorithm: Mapped[str] = mapped_column(String(32), nullable=False, default="seasonal_median")
     window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    horizon_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     evaluated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     mean_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     mean_percentage_error: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -3082,7 +3086,11 @@ class NodeResourceForecastRun(Base):
     __tablename__ = "node_resource_forecast_runs"
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_node_resource_forecast_idempotency"),
-        Index("ix_node_resource_forecast_due", "status", "target_at"),
+        Index("ix_node_resource_forecast_due", "status", "target_at", "horizon_hours"),
+        Index(
+            "ix_node_resource_forecast_scope",
+            "cluster_name", "host", "metric", "horizon_hours",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -3091,6 +3099,7 @@ class NodeResourceForecastRun(Base):
     metric: Mapped[str] = mapped_column(String(8), nullable=False)
     algorithm: Mapped[str] = mapped_column(String(32), nullable=False, default="linear")
     window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    horizon_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24, server_default="24")
     predicted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     target_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     current_percent: Mapped[float] = mapped_column(Float, nullable=False)
@@ -3124,8 +3133,12 @@ class NodeResourceModelState(Base):
     __tablename__ = "node_resource_model_states"
     __table_args__ = (
         UniqueConstraint(
-            "cluster_name", "host", "metric", "algorithm", "window_hours",
+            "cluster_name", "host", "metric", "algorithm", "window_hours", "horizon_hours",
             name="uq_node_resource_model_identity",
+        ),
+        Index(
+            "ix_node_resource_model_scope",
+            "cluster_name", "host", "metric", "horizon_hours",
         ),
     )
 
@@ -3135,6 +3148,7 @@ class NodeResourceModelState(Base):
     metric: Mapped[str] = mapped_column(String(8), nullable=False)
     algorithm: Mapped[str] = mapped_column(String(32), nullable=False, default="linear")
     window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    horizon_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24, server_default="24")
     evaluated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     mean_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)

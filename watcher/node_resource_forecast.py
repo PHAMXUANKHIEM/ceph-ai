@@ -30,6 +30,7 @@ from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
 from shared.forecast_drift import DriftReport, RiverAdwinStreams, evaluate_drift
 from shared.forecast_anomaly import candidate_d_alerts, candidate_d_isolation_scores
 from shared.forecast_features import MetricPoint, build_features
+from shared.forecast_horizons import parse_horizons
 from shared.forecast_metrics import update_rolling_metrics
 from shared.learning_runtime import evaluate as evaluate_learning_runtime
 from shared.models import (
@@ -84,6 +85,7 @@ class ResourceForecast:
     drift_status: str = "INSUFFICIENT_DATA"
     drift_score: float = 0.0
     drift_reason: str = ""
+    horizon_hours: int = 24
 
 
 class NodeResourceLokiError(Exception):
@@ -100,13 +102,16 @@ def _resource_consensus(values: list[ResourceForecast]) -> ForecastConsensus:
     )
 
 
-def _drift_report(session, cluster: str, host: str, metric: str, now: datetime) -> DriftReport:
+def _drift_report(
+    session, cluster: str, host: str, metric: str, now: datetime, horizon_hours: int = 24,
+) -> DriftReport:
     """Compare recent forecast evidence with the preceding bounded window."""
 
     rows = list(session.query(NodeResourceForecastRun).filter(
         NodeResourceForecastRun.cluster_name == cluster,
         NodeResourceForecastRun.host == host,
         NodeResourceForecastRun.metric == metric,
+        NodeResourceForecastRun.horizon_hours == horizon_hours,
         NodeResourceForecastRun.predicted_at < now,
     ).order_by(NodeResourceForecastRun.predicted_at).all())
     rows = rows[-max(2, int(settings.forecast_drift_history_runs)):]
@@ -365,6 +370,7 @@ def _linear_forecast(
     return ResourceForecast(
         metric, ys[-1], slope, predicted, hours_to_90,
         confidence, len(points), window,
+        horizon_hours=horizon,
         training_window_hours=training_window_hours,
         coverage_ratio=coverage_ratio,
         max_gap_hours=max_gap_hours,
@@ -400,7 +406,9 @@ def _rolling_quantile_forecast(
     confidence = min(1.0, len(robust_values) / max(minimum, 24))
     confidence *= max(0.0, min(1.0, 1.0 - mad / max(abs(predicted), 1.0)))
     horizon = max(1, horizon_hours or settings.node_resource_forecast_horizon_hours)
-    del horizon  # the robust baseline is intentionally horizon-flat
+    # The robust baseline is horizon-flat mathematically, but the candidate
+    # still belongs to one explicit horizon stream and is never reused as a
+    # different horizon's prediction.
     low = max(0.0, min(100.0, _quantile(robust_values, 0.10)))
     high = max(0.0, min(100.0, _quantile(robust_values, 0.90)))
     return ResourceForecast(
@@ -413,6 +421,7 @@ def _rolling_quantile_forecast(
         samples=len(points),
         window_hours=window,
         algorithm="rolling_quantile",
+        horizon_hours=horizon,
         training_window_hours=training_window_hours,
         coverage_ratio=1.0,
         max_gap_hours=max(
@@ -438,6 +447,10 @@ def _candidate_windows() -> list[int]:
     return sorted(values) or [24, 72, 168, 720]
 
 
+def _forecast_horizons() -> list[int]:
+    return list(parse_horizons(settings.node_resource_forecast_horizons))
+
+
 def _window_points(
     points: list[tuple[datetime, float]], window_hours: int
 ) -> list[tuple[datetime, float]]:
@@ -449,16 +462,16 @@ def _window_points(
 
 def _state_for(
     session, cluster: str, host: str, metric: str, window_hours: int,
-    algorithm: str = "linear",
+    algorithm: str = "linear", horizon_hours: int = 24,
 ):
     state = session.query(NodeResourceModelState).filter_by(
         cluster_name=cluster, host=host, metric=metric,
-        algorithm=algorithm, window_hours=window_hours,
+        algorithm=algorithm, window_hours=window_hours, horizon_hours=horizon_hours,
     ).one_or_none()
     if state is None:
         state = NodeResourceModelState(
             cluster_name=cluster, host=host, metric=metric,
-            algorithm=algorithm, window_hours=window_hours,
+            algorithm=algorithm, window_hours=window_hours, horizon_hours=horizon_hours,
         )
         session.add(state)
         session.flush()
@@ -502,6 +515,7 @@ def _evaluate_due(
         run.evaluated_at = now_naive
         state = _state_for(
             session, cluster, host, metric, run.window_hours, run.algorithm,
+            run.horizon_hours,
         )
         old_count = state.evaluated_count
         old_mae = state.mean_absolute_error or 0.0
@@ -544,10 +558,13 @@ def evaluate_due_outcomes(
         return before
 
 
-def _selected_window(session, cluster: str, host: str, metric: str,
-                     available: list[int]) -> int:
+def _selected_window(
+    session, cluster: str, host: str, metric: str,
+    available: list[int], horizon_hours: int = 24,
+) -> int:
     states = session.query(NodeResourceModelState).filter_by(
-        cluster_name=cluster, host=host, metric=metric, algorithm="linear"
+        cluster_name=cluster, host=host, metric=metric,
+        algorithm="linear", horizon_hours=horizon_hours,
     ).all()
     eligible = [state for state in states
                 if state.window_hours in available
@@ -555,7 +572,7 @@ def _selected_window(session, cluster: str, host: str, metric: str,
                 and state.mean_absolute_error is not None]
     selected = min(eligible, key=lambda state: state.mean_absolute_error).window_hours if eligible else max(available)
     for window in available:
-        state = _state_for(session, cluster, host, metric, window)
+        state = _state_for(session, cluster, host, metric, window, horizon_hours=horizon_hours)
         state.selected = window == selected
     return selected
 
@@ -564,9 +581,9 @@ def _record_candidates(
     session, cluster: str, host: str, metric: str,
     candidates: list[ResourceForecast], now_naive: datetime,
     consensus: ForecastConsensus, drift: DriftReport | None = None,
+    horizon_hours: int = 24,
     shadow_evidence: list[dict] | None = None,
 ) -> None:
-    horizon = max(1, settings.node_resource_learning_evaluation_hours)
     bucket = now_naive.replace(minute=0, second=0, microsecond=0)
     votes_payload = [
         {
@@ -581,14 +598,14 @@ def _record_candidates(
     votes = json.dumps(votes_payload, separators=(",", ":"), sort_keys=True)
     for prediction in candidates:
         window = int(prediction.training_window_hours or prediction.window_hours)
-        key = f"{cluster}|{host}|{metric}|{prediction.algorithm}|{window}|{bucket.isoformat()}"
+        key = f"{cluster}|{host}|{metric}|{prediction.algorithm}|{window}|{horizon_hours}|{bucket.isoformat()}"
         exists = session.query(NodeResourceForecastRun.id).filter_by(idempotency_key=key).first()
         if exists:
             continue
         session.add(NodeResourceForecastRun(
             cluster_name=cluster, host=host, metric=metric, algorithm=prediction.algorithm,
-            window_hours=window, predicted_at=now_naive,
-            target_at=now_naive + timedelta(hours=horizon),
+            window_hours=window, horizon_hours=horizon_hours, predicted_at=now_naive,
+            target_at=now_naive + timedelta(hours=horizon_hours),
             current_percent=prediction.current_percent,
             predicted_percent=prediction.predicted_percent,
             confidence=prediction.confidence, status="PENDING", idempotency_key=key,
@@ -611,12 +628,13 @@ def _record_candidates(
 def _shadow_evidence(
     session, cluster: str, host: str, metric: str,
     points: list[tuple[datetime, float]], samples: list[tuple[datetime, float, float]],
+    horizon_hours: int = 24,
 ) -> list[dict]:
     """Build bounded evidence for new candidates without affecting alerts."""
 
     feature_set = build_features([
         MetricPoint(observed_at=timestamp, value=value) for timestamp, value in points
-    ], metric=metric, horizon_hours=settings.node_resource_learning_evaluation_hours)
+    ], metric=metric, horizon_hours=horizon_hours)
     scores = candidate_d_isolation_scores(
         [{"cpu": cpu, "ram": ram} for _timestamp, cpu, ram in samples],
         history_size=24,
@@ -686,86 +704,85 @@ def adaptive_forecast(
         observed_at = observed_at.replace(tzinfo=timezone.utc)
     now_naive = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
     result: dict[str, ResourceForecast] = {}
+    horizons = _forecast_horizons()
     with db.SessionLocal() as session:
         for index, metric in ((1, "cpu"), (2, "ram")):
             points = [(row[0], row[index]) for row in samples]
             _evaluate_due(session, cluster, host, metric, points[-1][1], now_naive, points)
-            linear_candidates: dict[int, ResourceForecast] = {}
-            for window in _candidate_windows():
-                windowed = _window_points(points, window)
-                prediction = _linear_forecast(
-                    windowed, metric,
-                    horizon_hours=settings.node_resource_learning_evaluation_hours,
-                    training_window_hours=window,
-                )
-                if prediction is not None:
-                    linear_candidates[window] = prediction
-            if not linear_candidates:
-                continue
-            selected = _selected_window(session, cluster, host, metric, list(linear_candidates))
-            operational_candidates: list[ResourceForecast] = []
-            operational_linear: ResourceForecast | None = None
-            for window, linear in linear_candidates.items():
-                if (
-                    linear.coverage_ratio < settings.node_resource_forecast_min_coverage
-                    or linear.max_gap_hours > settings.node_resource_forecast_max_gap_hours
-                ):
-                    continue
-                rolling = _rolling_quantile_forecast(
-                    _window_points(points, window), metric,
-                    horizon_hours=settings.node_resource_forecast_horizon_hours,
-                    training_window_hours=window,
-                )
-                operational_candidates.append(linear)
-                if rolling is not None:
-                    operational_candidates.append(rolling)
-                if window == selected:
-                    operational_linear = linear
-            if operational_linear is None:
-                # A selected model whose quality gate failed cannot be used as
-                # an operational fallback.  The remaining models may still
-                # form a consensus, but they must pass the same gate.
-                linear_candidates = {
-                    int(candidate.training_window_hours or candidate.window_hours): candidate
-                    for candidate in operational_candidates
-                    if candidate.algorithm == "linear"
-                }
+            for horizon in horizons:
+                linear_candidates: dict[int, ResourceForecast] = {}
+                for window in _candidate_windows():
+                    windowed = _window_points(points, window)
+                    prediction = _linear_forecast(
+                        windowed, metric, horizon_hours=horizon,
+                        training_window_hours=window,
+                    )
+                    if prediction is not None:
+                        linear_candidates[window] = prediction
                 if not linear_candidates:
                     continue
-                selected = max(linear_candidates)
-                operational_linear = linear_candidates[selected]
-            if operational_candidates:
-                consensus = _resource_consensus(operational_candidates)
-                drift = _drift_report(session, cluster, host, metric, now_naive)
-                river_candidate = _river_shadow_candidate(
-                    session, cluster, host, metric, operational_linear.current_percent,
+                selected = _selected_window(
+                    session, cluster, host, metric, list(linear_candidates), horizon,
                 )
-                recorded_candidates = operational_candidates + (
-                    [river_candidate] if river_candidate is not None else []
-                )
-                _record_candidates(
-                    session, cluster, host, metric, recorded_candidates,
-                    now_naive, consensus, drift,
-                    shadow_evidence=_shadow_evidence(session, cluster, host, metric, points, samples),
-                )
-                result[metric] = replace(
-                    operational_linear,
-                    confidence=max(
-                        0.0,
-                        min(1.0, operational_linear.confidence * drift.confidence_multiplier),
-                    ),
-                    predicted_percent=(
-                        consensus.value if consensus.candidate_count else operational_linear.predicted_percent
-                    ),
-                    consensus_ratio=consensus.ratio,
-                    consensus_candidate_count=consensus.candidate_count,
-                    consensus_status=consensus.status,
-                    predicted_low=consensus.lower if consensus.candidate_count else None,
-                    predicted_high=consensus.upper if consensus.candidate_count else None,
-                    drift_status=drift.status,
-                    drift_score=drift.score,
-                    drift_reason=drift.reason,
-                )
+                operational_candidates: list[ResourceForecast] = []
+                operational_linear: ResourceForecast | None = None
+                for window, linear in linear_candidates.items():
+                    if (
+                        linear.coverage_ratio < settings.node_resource_forecast_min_coverage
+                        or linear.max_gap_hours > settings.node_resource_forecast_max_gap_hours
+                    ):
+                        continue
+                    rolling = _rolling_quantile_forecast(
+                        _window_points(points, window), metric,
+                        horizon_hours=horizon, training_window_hours=window,
+                    )
+                    operational_candidates.append(linear)
+                    if rolling is not None:
+                        operational_candidates.append(rolling)
+                    if window == selected:
+                        operational_linear = linear
+                if operational_linear is None:
+                    # A selected model whose quality gate failed cannot be
+                    # used as an operational fallback for this horizon.
+                    linear_candidates = {
+                        int(candidate.training_window_hours or candidate.window_hours): candidate
+                        for candidate in operational_candidates
+                        if candidate.algorithm == "linear"
+                    }
+                    if not linear_candidates:
+                        continue
+                    selected = max(linear_candidates)
+                    operational_linear = linear_candidates[selected]
+                if operational_candidates:
+                    consensus = _resource_consensus(operational_candidates)
+                    drift = _drift_report(session, cluster, host, metric, now_naive, horizon)
+                    _record_candidates(
+                        session, cluster, host, metric, operational_candidates,
+                        now_naive, consensus, drift, horizon_hours=horizon,
+                        shadow_evidence=_shadow_evidence(
+                            session, cluster, host, metric, points, samples,
+                            horizon_hours=horizon,
+                        ),
+                    )
+                    result[metric] = replace(
+                        operational_linear,
+                        confidence=max(
+                            0.0,
+                            min(1.0, operational_linear.confidence * drift.confidence_multiplier),
+                        ),
+                        predicted_percent=(
+                            consensus.value if consensus.candidate_count
+                            else operational_linear.predicted_percent
+                        ),
+                        consensus_ratio=consensus.ratio,
+                        consensus_candidate_count=consensus.candidate_count,
+                        consensus_status=consensus.status,
+                        predicted_low=consensus.lower if consensus.candidate_count else None,
+                        predicted_high=consensus.upper if consensus.candidate_count else None,
+                        drift_status=drift.status,
+                        drift_score=drift.score,
+                        drift_reason=drift.reason,
+                    )
         try:
             session.commit()
         except IntegrityError:
