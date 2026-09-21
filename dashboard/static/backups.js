@@ -394,4 +394,50 @@
       restoreSubmit.textContent = "Kiểm tra & tạo đề xuất";
     }
   });
+
+  var policyForm = document.getElementById("backup-policy-form");
+  var policyStatus = document.getElementById("backup-policy-status");
+  if (policyForm) policyForm.addEventListener("submit", function (event) {
+    event.preventDefault();
+    var form = new FormData(policyForm);
+    var lines = String(form.get("tracked_images") || "").split(/\r?\n/).map(function (value) { return value.trim(); }).filter(Boolean);
+    var tracked = lines.map(function (value) {
+      var separator = value.indexOf("/");
+      return { pool: separator > 0 ? value.slice(0, separator).trim() : "", image: separator > 0 ? value.slice(separator + 1).trim() : "" };
+    });
+    if (tracked.some(function (item) { return !item.pool || !item.image; })) {
+      if (policyStatus) policyStatus.textContent = "Mỗi dòng phải có dạng pool/image.";
+      return;
+    }
+    if (policyStatus) policyStatus.textContent = "Đang kiểm tra và lưu…";
+    fetch("/api/backups/policy", { credentials: "same-origin" })
+      .then(function (response) { if (!response.ok) throw new Error("Không đọc được policy hiện tại"); return response.json(); })
+      .then(function (body) {
+        var policy = body.policy || {};
+        var previous = {};
+        (policy.tracked_images || []).forEach(function (item) { previous[item.pool + "/" + item.image] = item; });
+        tracked = tracked.map(function (item) { return Object.assign({}, previous[item.pool + "/" + item.image] || {}, item); });
+        policy.tracked_images = tracked;
+        policy.rpo_hours = Number(form.get("rpo_hours"));
+        policy.required_copy_count = Number(form.get("required_copy_count"));
+        policy.retention = Object.assign({}, policy.retention || {}, {
+          keep_full_count: Number(form.get("keep_full_count")),
+          keep_incremental_count: Number(form.get("keep_incremental_count"))
+        });
+        policy.backup_targets = (policy.backup_targets || []).map(function (target) {
+          return Object.assign({}, target, { immutable: form.has("target_" + target.slot + "_immutable") });
+        });
+        return fetch("/api/backups/policy", {
+          method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ policy: policy })
+        });
+      })
+      .then(function (response) {
+        return response.json().then(function (body) { if (!response.ok) throw new Error(body.detail || "Không thể lưu policy"); return body; });
+      })
+      .then(function (body) {
+        if (policyStatus) policyStatus.textContent = "Đã lưu revision " + String(body.revision_id || "").slice(0, 12) + ". Policy áp dụng ở chu kỳ backup kế tiếp.";
+      })
+      .catch(function (error) { if (policyStatus) policyStatus.textContent = error.message || "Không thể lưu policy"; });
+  });
 })();

@@ -49,7 +49,12 @@ from shared.models import (
     Incident,
     IncidentStatus,
 )
-from worker.backup.policy_config import load_backup_policy
+from worker.backup.policy_config import (
+    BackupPolicyValidationError,
+    list_policy_revisions,
+    load_backup_policy,
+    save_backup_policy,
+)
 from worker.backup.cluster_scope import parse_tracked_images
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
@@ -634,6 +639,14 @@ def _anomalies(cluster=None) -> list[dict]:
 @router.get("/backups", response_class=HTMLResponse)
 async def index(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
+    backup_policy = load_backup_policy() or {}
+    backup_policy.setdefault("backup_targets", [])
+    backup_policy.setdefault("tracked_images", [])
+    backup_policy.setdefault("required_copy_count", 1)
+    backup_policy.setdefault("rpo_hours", 24)
+    backup_policy.setdefault("retention", {})
+    backup_policy["retention"].setdefault("keep_full_count", 3)
+    backup_policy["retention"].setdefault("keep_incremental_count", 7)
     tracked = _tracked_images(cluster)
     protection = _protection_overview(tracked, cluster)
     latest_backup_at = max(
@@ -662,8 +675,40 @@ async def index(request: Request, user: str = Depends(require_login)):
             "clusters": clusters,
             "selected_cluster": cluster,
             "backup_summary": backup_summary,
+            "backup_policy": backup_policy,
+            "backup_policy_revisions": list_policy_revisions(),
         },
     )
+
+
+@router.get("/api/backups/policy")
+async def backup_policy_api(user: str = Depends(require_login)):
+    """Return the non-secret backup policy for the Policies workspace."""
+    policy = load_backup_policy()
+    return {"policy": policy, "revisions": list_policy_revisions()}
+
+
+@router.put("/api/backups/policy")
+async def update_backup_policy(request: Request, user: str = Depends(require_login)):
+    """Validate and atomically save the non-secret backup policy document."""
+    _require_admin_privilege(user)
+    try:
+        payload = await request.json()
+        policy = payload.get("policy", payload) if isinstance(payload, dict) else payload
+        saved = save_backup_policy(policy, actor=user)
+    except BackupPolicyValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (OSError, ValueError, TypeError) as exc:
+        logger.exception("backup policy update failed")
+        raise HTTPException(status_code=500, detail="Không thể lưu backup policy an toàn") from exc
+    logger.info("backup policy revision %s saved by %s; Worker will use it on the next backup cycle", saved["revision_id"], user)
+    return {
+        "ok": True,
+        "revision_id": saved["revision_id"],
+        "created_at": saved["created_at"],
+        "applies_on_next_backup_cycle": True,
+        "policy": saved["policy"],
+    }
 
 
 @router.post("/backups/restore/propose")

@@ -163,7 +163,7 @@ cross-restore và cluster inactive bị từ chối.
 
 ## 6. P1 — Hoàn thiện vận hành
 
-### 6.1 Backup Policy Editor `[ ]`
+### 6.1 Backup Policy Editor `[~]`
 
 - CRUD tracked image từ Dashboard.
 - Lịch backup theo image/cluster.
@@ -172,6 +172,10 @@ cross-restore và cluster inactive bị từ chối.
 - Chọn target, required copy count và immutable target.
 - Preview diff, validation, versioning, audit và rollback policy.
 - Reload Worker an toàn; không báo thành công giả nếu restart thất bại.
+
+Đã có vertical slice: tab Policies trên trang Backup, validation non-secret,
+atomic write, revision backup và API `GET/PUT /api/backups/policy`. Còn tiếp tục
+rollback revision, audit đầy đủ và reload Worker có xác nhận.
 
 ### 6.2 Test Backup Target `[ ]`
 
@@ -376,6 +380,7 @@ bảng khi một khái niệm không thể biểu diễn chính xác bằng sche
 | 2026-08-17 | Restore-as-new nền tảng | Đang triển khai | Thêm propose API, destination preflight cơ bản, action/approval, executor full+diff, `rbd info` post-check, cleanup khi lỗi và chuyển nút Restore sang mặc định an toàn. | 277 test liên quan passed; JS check, Python compile và diff check đều đạt; chưa kiểm chứng trên cụm Ceph thật. | Hoàn thiện post-verify sâu, Worker re-check, Recovery Point selector và Advanced Mode cho in-place restore. |
 | 2026-08-17 | Recovery Point selector nền tảng | Đang triển khai | Thêm API cluster-scoped, chain job IDs, UI chọn mốc và khóa exact recovery point vào action/Worker để không dịch chuyển trong approval gap. | Regression mở rộng 282 passed; JS, Python compile và diff check đạt. | Bổ sung SHA-256/verify metadata, gap detection, filter/pagination và UX modal thay prompt. |
 | 2026-08-17 | Restore preflight nền tảng | Đang triển khai | Lưu evidence nguồn/đích/chain/capacity vào action; chặn destination tồn tại, pool near-full/RBD-disabled, thiếu capacity và backup in-flight; Worker re-check ngay trước import. | Regression mở rộng 284 passed; JS, Python compile và diff check đạt (một lỗi fixture SQLite ngẫu nhiên biến mất khi chạy lại riêng). | Thêm artifact HEAD/SHA-256, feature compatibility, quota/logical size và RTO estimate. |
+| 2026-09-21 | 6.1 Policy Editor — vertical slice | Đang triển khai | Thêm Policies workspace, non-secret policy validation, atomic YAML save, revision backup và API GET/PUT; policy tối giản vẫn tương thích với Dashboard cũ. | `tests/test_backup_policy_config.py tests/test_dashboard_backups.py`: **46 passed**; Python compile, `node --check`, `git diff --check` đạt. | Thêm rollback revision, audit đầy đủ, reload Worker có xác nhận; sau đó làm 6.2 target connection test. |
 
 ## 14. Quy tắc cập nhật tài liệu
 
