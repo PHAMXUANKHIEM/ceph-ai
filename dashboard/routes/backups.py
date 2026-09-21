@@ -44,6 +44,7 @@ from shared.models import (
     ActionClassification,
     ActionStatus,
     BackupAnomaly,
+    BackupAlertState,
     BackupDigestLog,
     BackupJob,
     Cluster,
@@ -594,6 +595,46 @@ async def backup_capacity_api(request: Request, user: str = Depends(require_logi
     del user
     cluster = selected_cluster(request)
     return {"cluster_id": cluster.id, **backup_capacity.overview(cluster)}
+
+
+@router.get("/api/backups/alerts")
+async def backup_alerts_api(request: Request, user: str = Depends(require_login)):
+    del user
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(BackupAlertState)
+            .filter(_job_scope(BackupAlertState.cluster_id, cluster))
+            .order_by(BackupAlertState.last_seen_at.desc())
+            .limit(100)
+            .all()
+        )
+        return {"cluster_id": cluster.id, "alerts": [
+            {"id": row.id, "resource": row.resource, "kind": row.kind,
+             "severity": row.severity, "status": row.status, "message": row.message,
+             "backup_job_id": row.backup_job_id,
+             "first_seen_at": row.first_seen_at.isoformat(),
+             "last_seen_at": row.last_seen_at.isoformat(),
+             "acknowledged_by": row.acknowledged_by}
+            for row in rows
+        ]}
+
+
+@router.post("/api/backups/alerts/{alert_id}/acknowledge")
+async def acknowledge_backup_alert(request: Request, alert_id: str, user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        row = session.get(BackupAlertState, alert_id)
+        if row is None or not ((row.cluster_id == cluster.id) or (cluster.is_default and row.cluster_id is None)):
+            raise HTTPException(status_code=404, detail="Không tìm thấy backup alert.")
+        if row.status == "RESOLVED":
+            raise HTTPException(status_code=409, detail="Alert đã RESOLVED.")
+        row.status = "ACKNOWLEDGED"
+        row.acknowledged_at = utc_now()
+        row.acknowledged_by = user
+        session.commit()
+        return {"id": row.id, "status": row.status, "acknowledged_by": row.acknowledged_by}
 
 
 @router.get("/api/backups/inventory")

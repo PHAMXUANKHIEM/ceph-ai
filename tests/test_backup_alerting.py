@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 import worker.backup.alerting as alerting
 from shared import db as db_module, telegram_alerts
 from shared.db import Base
-from shared.models import BackupJob
+from shared.models import BackupAlertState, BackupJob
 
 
 @pytest.fixture()
@@ -453,3 +453,30 @@ def test_check_overdue_and_failed_backups_uses_additional_cluster_rpo(isolated_d
     alerting.check_overdue_and_failed_backups()
 
     assert alerts == []
+
+
+def test_lifecycle_alert_deduplicates_and_resolves(isolated_db, monkeypatch):
+    monkeypatch.setattr(alerting, "load_backup_policy", lambda: {
+        "alert_lifecycle": {"cooldown_minutes": 5, "reminder_hours": 1, "escalation_minutes": 60}
+    })
+    alerts = []
+    monkeypatch.setattr(
+        alerting, "send_alert",
+        lambda severity, message, backup_job_id=None, cluster=None: alerts.append((severity, message)),
+    )
+
+    alerting._emit_lifecycle_alert(
+        dedupe_key="backup:rbd/web", resource="rbd/web", kind="failed",
+        severity="warning", message="failed",
+    )
+    alerting._emit_lifecycle_alert(
+        dedupe_key="backup:rbd/web", resource="rbd/web", kind="failed",
+        severity="warning", message="failed again",
+    )
+    assert len(alerts) == 1
+
+    alerting._resolve_lifecycle_alert("backup:rbd/web")
+    with db_module.SessionLocal() as session:
+        state = session.query(BackupAlertState).one()
+        assert state.status == "RESOLVED"
+    assert alerts[-1][0] == "info"

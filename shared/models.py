@@ -2141,6 +2141,38 @@ class BackupJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class BackupAlertState(Base):
+    """Durable lifecycle state for deduplicated backup alerts."""
+
+    __tablename__ = "backup_alert_states"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('OPEN','ACKNOWLEDGED','RESOLVED')",
+            name="ck_backup_alert_states_status_valid",
+        ),
+        Index(
+            "uq_backup_alert_states_scope_key",
+            text("COALESCE(cluster_id, '')"), "dedupe_key", unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    resource: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="warning")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    backup_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class BackupAnomaly(Base):
     """A BackupJob that reported `SUCCESS` (exit code 0) but deviated from
     its own image's history by more than `anomaly_threshold_stddev`

@@ -28,7 +28,7 @@ import httpx
 from config.settings import settings
 from shared import db, telegram_outbox
 from shared.clusters import list_active_clusters
-from shared.models import BackupJob
+from shared.models import BackupAlertState, BackupJob
 from shared.notification_channels import enqueue_external_alert
 from worker.backup.cluster_scope import parse_tracked_images
 from worker.backup.policy_config import load_backup_policy
@@ -102,7 +102,7 @@ def send_alert(
     sending an alert must never block or fail the backup/drill that
     triggered it, and a failure on one channel must never skip the other."""
     logger.log(
-        logging.CRITICAL if severity == "critical" else logging.WARNING,
+        logging.CRITICAL if severity == "critical" else logging.INFO if severity == "info" else logging.WARNING,
         "backup alert [%s]: %s (backup_job_id=%s, cluster_id=%s)",
         severity,
         message,
@@ -131,6 +131,80 @@ def send_alert(
     _send_telegram_alert(severity, message, backup_job_id, cluster)
 
 
+_SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
+
+
+def _lifecycle_config() -> dict:
+    return load_backup_policy().get("alert_lifecycle") or {
+        "cooldown_minutes": 5, "reminder_hours": 1, "escalation_minutes": 60,
+    }
+
+
+def _emit_lifecycle_alert(
+    *, dedupe_key: str, resource: str, kind: str, severity: str, message: str,
+    backup_job_id: str | None = None, cluster: "Cluster | None" = None,
+    suppress_initial: bool = False,
+) -> None:
+    """Open/deduplicate an alert and send only on cooldown or escalation."""
+    now = utc_now()
+    config = _lifecycle_config()
+    cluster_id = cluster.id if cluster is not None else None
+    should_send = False
+    with db.SessionLocal() as session:
+        state = (
+            session.query(BackupAlertState)
+            .filter(BackupAlertState.cluster_id == cluster_id, BackupAlertState.dedupe_key == dedupe_key)
+            .first()
+        )
+        if state is None:
+            state = BackupAlertState(
+                cluster_id=cluster_id, dedupe_key=dedupe_key, resource=resource,
+                kind=kind, severity=severity, status="OPEN", message=message,
+                backup_job_id=backup_job_id, first_seen_at=now, last_seen_at=now,
+            )
+            session.add(state)
+            should_send = not suppress_initial
+        else:
+            previous_severity = state.severity
+            if state.status == "RESOLVED":
+                state.status = "OPEN"
+                state.resolved_at = None
+                should_send = True
+            elif _SEVERITY_RANK.get(severity, 1) > _SEVERITY_RANK.get(previous_severity, 1):
+                should_send = True
+            elif state.last_sent_at is None or now - state.last_sent_at >= timedelta(
+                minutes=int(config.get("reminder_hours", 1) * 60)
+            ):
+                should_send = True
+            state.severity = severity
+            state.kind = kind
+            state.message = message
+            state.backup_job_id = backup_job_id
+            state.last_seen_at = now
+        if should_send or suppress_initial:
+            state.last_sent_at = now
+        session.commit()
+    if should_send:
+        send_alert(severity, message, backup_job_id=backup_job_id, cluster=cluster)
+
+
+def _resolve_lifecycle_alert(dedupe_key: str, cluster: "Cluster | None" = None) -> None:
+    cluster_id = cluster.id if cluster is not None else None
+    with db.SessionLocal() as session:
+        state = (
+            session.query(BackupAlertState)
+            .filter(BackupAlertState.cluster_id == cluster_id, BackupAlertState.dedupe_key == dedupe_key)
+            .first()
+        )
+        if state is None or state.status == "RESOLVED":
+            return
+        state.status = "RESOLVED"
+        state.resolved_at = utc_now()
+        resource, job_id = state.resource, state.backup_job_id
+        session.commit()
+    send_alert("info", f"Backup đã phục hồi: {resource}", backup_job_id=job_id, cluster=cluster)
+
+
 def _check_target(
     pool: str | None, image: str | None, label: str, cutoff: datetime,
     cluster: "Cluster | None" = None, rpo_hours: int = RPO_HOURS,
@@ -152,21 +226,27 @@ def _check_target(
         latest = query.order_by(BackupJob.created_at.desc()).first()
 
     if latest is None:
-        send_alert("warning", f"Chưa từng có backup thành công nào cho {label}", cluster=cluster)
+        _emit_lifecycle_alert(
+            dedupe_key=f"backup:{label}", resource=label, kind="missing",
+            severity="warning", message=f"Chưa từng có backup thành công nào cho {label}", cluster=cluster,
+        )
         return
     if latest.status == "FAILED":
-        # The failure path calls ai_analysis.analyze_backup_job immediately
-        # after persisting the row and already sends one concise AI analysis.
-        # Do not periodically resend the raw traceback without its solution.
-        logger.info("backup alert: latest %s job %s is FAILED and was already analyzed", label, latest.id)
+        _emit_lifecycle_alert(
+            dedupe_key=f"backup:{label}", resource=label, kind="failed",
+            severity="warning", message=f"Backup thất bại cho {label}; cần kiểm tra job {latest.id}",
+            backup_job_id=latest.id, cluster=cluster, suppress_initial=True,
+        )
         return
     if latest.created_at < cutoff:
-        send_alert(
-            "warning",
-            f"{label} quá hạn RPO {rpo_hours}h — lần backup thành công gần nhất lúc {latest.created_at.isoformat()}",
-            backup_job_id=latest.id,
-            cluster=cluster,
+        _emit_lifecycle_alert(
+            dedupe_key=f"backup:{label}", resource=label, kind="overdue",
+            severity="warning",
+            message=f"{label} quá hạn RPO {rpo_hours}h — lần backup thành công gần nhất lúc {latest.created_at.isoformat()}",
+            backup_job_id=latest.id, cluster=cluster,
         )
+        return
+    _resolve_lifecycle_alert(f"backup:{label}", cluster=cluster)
 
 
 def check_overdue_and_failed_backups() -> None:

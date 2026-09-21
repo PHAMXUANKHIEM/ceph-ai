@@ -310,7 +310,7 @@ Overview. Có thêm test growth/forecast và preflight output. Còn thiếu ch�
 backup trực tiếp trước snapshot khi source/temp/target đã dưới ngưỡng và số liệu
 compression/dedup từ backend.
 
-### 7.4 Alert lifecycle `[ ]`
+### 7.4 Alert lifecycle `[~]`
 
 - Dedup và cooldown theo cluster/resource/kind.
 - Trạng thái `OPEN`, `ACKNOWLEDGED`, `RESOLVED`.
@@ -318,6 +318,13 @@ compression/dedup từ backend.
 - Recovery notification khi RPO/target/job trở lại bình thường.
 - Deep-link tới job/recovery point.
 - Escalation khi critical không được acknowledge trong thời gian cấu hình.
+
+Đã thêm `BackupAlertState` với dedup key theo cluster/resource, trạng thái
+`OPEN`, `ACKNOWLEDGED`, `RESOLVED`, cooldown/reminder và recovery notification.
+Failure do engine đã gửi được seed state nhưng không bị gửi lặp ngay; alert
+overdue/missing được gửi theo lifecycle, severity tăng được gửi ngay, và API
+cho phép xem/acknowledge với quyền admin. Còn thiếu escalation worker độc lập
+theo thời gian critical và deep-link UI hoàn chỉnh tới job/recovery point.
 
 ### 7.5 Credential và ransomware resilience `[ ]`
 

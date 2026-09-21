@@ -123,6 +123,20 @@ def validate_backup_policy(policy: dict) -> dict:
     normalized["restore_drill_rpo_hours"] = _bounded_int(
         normalized.get("restore_drill_rpo_hours", 192), "restore_drill_rpo_hours", 1, 8760
     )
+    lifecycle = normalized.get("alert_lifecycle") or {}
+    if not isinstance(lifecycle, dict):
+        raise BackupPolicyValidationError("alert_lifecycle phải là object")
+    normalized["alert_lifecycle"] = {
+        "cooldown_minutes": _bounded_int(
+            lifecycle.get("cooldown_minutes", 5), "alert_lifecycle.cooldown_minutes", 1, 1440
+        ),
+        "reminder_hours": _bounded_int(
+            lifecycle.get("reminder_hours", 1), "alert_lifecycle.reminder_hours", 1, 168
+        ),
+        "escalation_minutes": _bounded_int(
+            lifecycle.get("escalation_minutes", 60), "alert_lifecycle.escalation_minutes", 5, 10080
+        ),
+    }
     retention = normalized.get("retention") or {}
     if not isinstance(retention, dict):
         raise BackupPolicyValidationError("retention phải là object")

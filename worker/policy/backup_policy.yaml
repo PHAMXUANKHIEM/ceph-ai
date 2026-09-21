@@ -40,6 +40,13 @@ rpo_hours: 24
 metadata_rpo_hours: 12
 restore_drill_rpo_hours: 192
 
+# Backup alert state machine: repeat an active alert only after the reminder
+# interval; severity escalation bypasses the reminder window.
+alert_lifecycle:
+  cooldown_minutes: 5
+  reminder_hours: 1
+  escalation_minutes: 60
+
 # keep_full_count/keep_incremental_count are PER (pool, image, job_type) —
 # see worker/backup/engine.py::_sweep_retention_after_success for why full
 # and incremental are swept with separate counts, not a combined one.
