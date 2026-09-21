@@ -266,8 +266,8 @@ và cluster, không spam khi metric nguồn gián đoạn.
   Cần tiếp tục kiểm chứng topology thật và các trạng thái failover.
 - [~] **6.3 Read-only diagnostic**: evidence snapshot và multisite diagnosis
   đã được chuẩn hóa qua API/panel, hiển thị findings/evidence gaps và hướng
-  dẫn kiểm tra tiếp theo; không tự sửa topology. Cần bổ sung runbook chi tiết
-  cho từng finding trước khi đóng.
+  dẫn kiểm tra tiếp theo; không tự sửa topology. Runbook nền tảng đã có tại
+  `docs/runbook-rgw-object-storage.md`; vẫn cần kiểm chứng failover thật.
 - [ ] **6.4 Controlled remediation (chỉ sau khi có policy riêng)**: action đóng,
   preview, approval và audit; không mở shell tùy ý.
 - [ ] **6.5 Test**: topology missing, failover state, timeout và action guard.
@@ -281,8 +281,10 @@ thay đổi topology hay replication ngoài ý muốn.
   nếu route ghi chưa được framework bao phủ.
 - [ ] **7.2 Audit viewer**: actor, cluster, target, preview/diff, result,
   request id; có redaction và retention policy.
-- [ ] **7.3 Runbook**: cấu hình RGW, credential handling, khôi phục key,
-  lifecycle/policy rollback, incident response và giới hạn tương thích Ceph.
+- [~] **7.3 Runbook**: đã thêm `docs/runbook-rgw-object-storage.md` cho cấu
+  hình/evidence RGW, credential handling, Object Lock, multisite lag/conflict,
+  capacity dependency và release acceptance; còn cần bổ sung procedure
+  failover/rollback theo topology thật.
 - [ ] **7.4 Test matrix/release gate**: default cluster, secondary active,
   secondary inactive, RGW unavailable, empty cluster, operator và admin.
 - [ ] **7.5 Cập nhật navigation, API docs và tài liệu này** trước khi đóng từng
@@ -336,6 +338,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-09-21 | 4.5 / 5.2 | Đang làm | Hoàn thiện release-matrix tests cho Object Version và thêm RGW Observability panel trên Bucket Overview: requests, bytes, error rate, p95 latency, top buckets/requesters, refresh và evidence-gap status theo cluster. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py tests/test_rgw_audit_intelligence.py`: 70 passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo kiểm tra RGW service/multi-site health và giữ release acceptance live-read-only riêng. |
 | 2026-09-21 | 6.1 / 6.2 | Đang làm | Thêm panel RGW Health / Multi-site trên Bucket Overview, dùng evidence và diagnosis API read-only để hiển thị daemon, endpoint, frontend, sync, realm/zonegroup/zone/period, lag/findings và capacity dependency; không có remediation tự động. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py tests/test_rgw_audit_intelligence.py tests/test_rgw_evidence.py tests/test_rgw_multisite_diagnosis.py`: 77 passed; `node --check dashboard/static/object_storage_buckets.js`, Python syntax và `git diff --check` sạch. | Chưa commit; tiếp theo hardening release gate, kiểm chứng failover/live-read-only và legacy systemd adapter. |
 | 2026-09-21 | 6.3 | Đang làm | Bổ sung danh sách finding/evidence gap trên panel RGW Health, chỉ render text đã chuẩn hóa từ diagnosis API, không tạo action hoặc thay đổi topology. | `pytest -q --disable-warnings tests/test_dashboard_object_storage.py tests/test_rgw_evidence.py tests/test_rgw_multisite_diagnosis.py`: 71 passed; JS/Python syntax và `git diff --check` sạch. | Chưa commit; tiếp theo viết runbook finding và release gate failover/legacy adapter. |
+| 2026-09-21 | 6.3 / 7.3 | Đang làm | Thêm runbook `docs/runbook-rgw-object-storage.md`: kiểm tra read-only, finding daemon/endpoint/sync/shard/period/capacity, object version safety và release acceptance; cấm remediation topology trong smoke test. | Tài liệu không làm thay đổi runtime; regression trước đó 71 passed vẫn đạt. | Chưa commit; tiếp theo bổ sung failover/legacy adapter acceptance và hardening gate. |
 
 ## Ghi chú bàn giao
 
