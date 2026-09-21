@@ -465,9 +465,12 @@ force-unlock/delete pool chỉ từ một tín hiệu quan sát.
     nhận host tùy ý từ request; không reconnect/failover từ API. Không có
     compute/gateway node thì trả `unsupported`; còn thiếu live gateway
     acceptance và chứng minh mapping path → volume trên backend thật.
-- [ ] **7.4 API/CLI/IaC contract**
-  - API versioning, OpenAPI, idempotency, webhook/job status và ví dụ Terraform
-    hoặc SDK; không tạo một đường thực thi bỏ qua policy của Dashboard.
+- [~] **7.4 API/CLI/IaC contract**
+  - Đã có `GET /api/v1/block-storage/contract` công bố API version, cluster
+    scope, legacy compatibility, OpenAPI link, idempotency header, approval/
+    post-check, action polling và fail-closed error contract. Contract ghi rõ
+    Terraform provider/SDK và webhook riêng chưa có; không có đường bypass
+    policy của Dashboard.
 - [ ] **7.5 Test**: orphan mapping, deleted consumer, multi-attach, control-plane
   outage, tenant isolation và eventual consistency.
 
@@ -553,6 +556,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 
 | Ngày | Mục | Trạng thái | Thay đổi / bằng chứng | Kiểm thử | Commit / việc tiếp theo |
 |---|---:|---|---|---|---|
+| 2026-09-21 | BS-07.4 API contract | Một phần | Thêm `GET /api/v1/block-storage/contract`: versioned contract, cluster scope, OpenAPI/legacy compatibility, mutation/idempotency/approval/post-check, action polling, error schema và trạng thái Terraform/SDK/webhook chưa hỗ trợ. | `tests/test_block_storage_contract.py tests/test_volume_path_discovery.py tests/test_boot_dependencies_api.py`: `7 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn SDK/CLI/IaC provider, webhook/job callback và versioned aliases cho từng mutation route. |
 | 2026-09-21 | BS-07.3 Multipath/NVMe-oF/iSCSI | Một phần | Thêm `dashboard/volume_path_discovery.py` và API read-only `/api/volumes/{pool}/inventory/{image}/paths`; parser bounded cho multipath/NVMe-oF/iSCSI, query chỉ chạy trên compute node đã cấu hình, reconnect/failover bị khóa. Volume Detail hiển thị host/path/session summary và evidence gaps. | `tests/test_volume_path_discovery.py tests/test_cinder_discovery.py tests/test_boot_dependencies_api.py`: `20 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn live gateway acceptance và mapping path-to-volume thực tế; giữ `[~]`. |
 | 2026-09-21 | BS-07.2 Boot-from-volume và Image Service | Một phần | Thêm read-only Cinder/Nova/Glance discovery và API `/api/volumes/{pool}/inventory/{image}/boot-dependencies`; Volume Detail hiển thị boot source, VM attachment, Glance image, snapshot delete guard và evidence gaps. Không attach/detach, xóa snapshot hoặc thay đổi control plane từ endpoint này. | `tests/test_cinder_discovery.py tests/test_boot_dependencies_api.py tests/test_cinder_mapping_api.py`: `18 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn live Controller/Glance acceptance và xác minh snapshot đang được VM sử dụng; giữ `[~]`. |
 | 2026-09-20 | BS-07 Cinder mapping report | Một phần | Thêm helper mapping và API read-only `/api/volumes/{pool}/cinder-mapping`: bounded theo pool/page, đối soát RBD inventory với Cinder volume/project/attachment/instance, phân loại managed/orphan/unmanaged/insufficient evidence; không attach/detach hoặc xóa orphan. Còn live Controller acceptance và orphan đối soát hai chiều toàn site. | `tests/test_cinder_discovery.py tests/test_cinder_mapping_api.py` + volume route gate; compileall và `git diff --check` | Commit `12e2ec3c`; còn live Controller/site-wide acceptance |
