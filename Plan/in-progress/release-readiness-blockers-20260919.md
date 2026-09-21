@@ -426,8 +426,9 @@ current product decision.
 
 ## 11. Secondary hardening after P0 blockers
 
-- [ ] Replace remaining `datetime.utcnow()` calls with timezone-aware UTC
-  datetimes, migration by migration, without changing stored semantics.
+- [x] Replace remaining `datetime.utcnow()` calls with the shared UTC helper
+  backed by `datetime.now(timezone.utc)`, preserving the legacy naive-UTC database
+  representation without changing stored semantics.
 - [x] Verify RabbitMQ integration with a dedicated broker user and vhost.
 - [ ] Browser-test CSRF HTML buffering with large upload/form responses and
   streaming/error responses.
@@ -440,6 +441,10 @@ Integration evidence (2026-09-21): `pytest -q -m integration` passed all 3
 RabbitMQ tests using a temporary dedicated user/vhost; the user, vhost, and
 test database were removed by the test cleanup trap. The default `guest` account
 was not used because RabbitMQ correctly rejects it over the published interface.
+
+UTC warning cleanup evidence (2026-09-21): all remaining six `datetime.utcnow()`
+call sites were replaced with `shared.time.utc_now()`; the focused Vitastor, AI
+observability, and rollout-report regression set passed `45` tests.
 
 ## 12. Release test matrix
 

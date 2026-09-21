@@ -12,12 +12,13 @@ Usage (from ceph-aiops/, with the venv active):
 from datetime import datetime, timedelta
 
 from shared.db import Base, SessionLocal, engine
+from shared.time import utc_now
 from shared.models import Incident, IncidentStatus
 
 
 def seed() -> None:
     Base.metadata.create_all(engine)
-    now = datetime.utcnow()
+    now = utc_now()
     demo_incidents = [
         Incident(
             ceph_code="OSD_DOWN",

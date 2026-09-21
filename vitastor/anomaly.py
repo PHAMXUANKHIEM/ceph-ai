@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from config.settings import settings
 from shared import db
+from shared.time import utc_now
 from shared.models import VitastorAnomalyEvent, VitastorEntityMetricSample
 
 
@@ -75,7 +76,7 @@ def is_anomaly(metric: str, current: float, values: list[float]) -> tuple[bool, 
 
 def detect_and_record(cluster_id: str, entities: list[dict], now: datetime | None = None) -> dict:
     """Detect against prior samples, persist lifecycle, then append current samples."""
-    now = now or datetime.utcnow(); opened = []; resolved = []
+    now = now or utc_now(); opened = []; resolved = []
     with db.SessionLocal() as session:
         for entity in entities:
             rows = session.query(VitastorEntityMetricSample).filter_by(

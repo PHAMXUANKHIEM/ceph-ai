@@ -4,7 +4,9 @@ import argparse
 import json
 import math
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from shared.time import utc_now
 
 from shared import db
 from shared.models import AIInvocation
@@ -14,7 +16,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--hours", type=int, default=24)
     args = parser.parse_args()
-    cutoff = datetime.utcnow() - timedelta(hours=max(1, args.hours))
+    cutoff = utc_now() - timedelta(hours=max(1, args.hours))
     with db.SessionLocal() as session:
         rows = session.query(AIInvocation).filter(AIInvocation.created_at >= cutoff).all()
     groups = defaultdict(list)

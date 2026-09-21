@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config.settings import settings
 from shared import audit, db
+from shared.time import utc_now
 from shared.ai_cost import summary as ai_cost_summary
 from shared.models import AIInvocation, AuditEntry, ChatMessage
 
@@ -99,7 +100,7 @@ def build_report(
     state_path: str | Path = "/var/lib/ceph-ai/nl-rollout-monitoring-start.json",
 ) -> dict:
     hours = max(1, min(int(hours), 168))
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     cutoff = now - timedelta(hours=hours)
     with db.SessionLocal() as session:
         message_query = session.query(ChatMessage).filter(

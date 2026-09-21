@@ -28,6 +28,7 @@ import re
 from datetime import datetime
 
 from shared import db
+from shared.time import utc_now
 from shared.models import (
     VitastorActionClassification,
     VitastorActionStatus,
@@ -230,7 +231,7 @@ def _auto_execute(session, row: VitastorRemediationAction, cluster, allowed: set
         )
         row.status = VitastorActionStatus.AUTO_EXECUTED.value
         row.result_output = output
-        row.executed_at = datetime.utcnow()
+        row.executed_at = utc_now()
         record_audit(session, cluster.id, row.id, "AUTO_EXECUTED", "vitastor-monitor", output[-500:] or "(không có output)")
     except (VitastorRemediationError, VitastorOperationError) as exc:
         row.status = VitastorActionStatus.FAILED.value

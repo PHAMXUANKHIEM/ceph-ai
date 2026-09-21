@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from scripts.report_natural_language_rollout import _monitoring_window
+from shared.time import utc_now
 
 
 CHECKBOX = "- [ ] Theo dõi latency, cost, rejection và approval trong 24–72 giờ."
@@ -23,7 +24,7 @@ def close_plan_if_ready(
     state_path: str | Path,
     now: datetime | None = None,
 ) -> dict:
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     window = _monitoring_window(now=now, state_path=state_path)
     if not window["ready_for_close"]:
         return {"status": "waiting", "monitoring_window": window}
