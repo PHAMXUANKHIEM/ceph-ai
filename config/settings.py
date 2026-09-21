@@ -655,6 +655,10 @@ class Settings(BaseSettings):
     # on the same collection tick as ingestion (worker/rgw_access_audit.py::
     # collect_once), same reasoning as log_intel_*_retention_days above.
     rgw_access_audit_retention_days: int = 7
+    # Bounded aggregate history used by RGW trend/reporting. This is separate
+    # from raw audit retention: snapshots contain no request rows or secrets.
+    rgw_metric_snapshot_interval_seconds: int = 300
+    rgw_metric_snapshot_retention_days: int = 30
     # dashboard/telegram_approval_bot.py's own DB-scan cadence for newly
     # PENDING_APPROVAL Actions not yet broadcast to every configured
     # channel above — short by design (unlike device_health/node_health's

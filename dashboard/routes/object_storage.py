@@ -8,7 +8,7 @@ import io
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from shared.time import utc_now
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil
@@ -30,7 +30,7 @@ from dashboard.vntime import to_utc_iso
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared import db
 from shared.ceph_releases import codename_for_version
-from shared.models import BucketInventorySnapshot, ObjectStorageAuditEntry
+from shared.models import BucketInventorySnapshot, ObjectStorageAuditEntry, RgwMetricSnapshot
 from shared.object_storage_cache import (
     get_or_load,
     invalidate as invalidate_object_storage_cache,
@@ -1875,6 +1875,52 @@ async def rgw_metrics_api(request: Request, user: str = Depends(require_login)):
     """Return bounded RGW request metrics without exposing raw audit rows."""
     del user
     return await asyncio.to_thread(_rgw_metrics_payload, selected_cluster(request))
+
+
+@router.get("/api/object-storage/rgw-metrics/history")
+async def rgw_metrics_history_api(
+    request: Request,
+    hours: int = Query(24, ge=1, le=24 * 30),
+    user: str = Depends(require_login),
+):
+    """Return bounded aggregate RGW history; raw audit rows are never exposed."""
+    del user
+    cluster = selected_cluster(request)
+    cutoff = utc_now() - timedelta(hours=hours)
+    with db.SessionLocal() as session:
+        rows = session.query(RgwMetricSnapshot).filter(
+            RgwMetricSnapshot.cluster_id == cluster.id,
+            RgwMetricSnapshot.captured_at >= cutoff,
+        ).order_by(RgwMetricSnapshot.captured_at.asc()).limit(1000).all()
+        items = []
+        for row in rows:
+            try:
+                top_buckets = json.loads(row.top_buckets_json or "{}")
+                top_requesters = json.loads(row.top_requesters_json or "{}")
+                evidence_gaps = json.loads(row.evidence_gaps_json or "[]")
+            except (TypeError, ValueError):
+                top_buckets, top_requesters, evidence_gaps = {}, {}, ["Snapshot JSON không hợp lệ."]
+            items.append({
+                "captured_at": row.captured_at.isoformat(),
+                "available": bool(row.available),
+                "request_count": row.request_count,
+                "bytes_total": row.bytes_total,
+                "error_count": row.error_count,
+                "error_rate_percent": row.error_rate_percent,
+                "latency_p95_ms": row.latency_p95_ms,
+                "top_buckets": top_buckets if isinstance(top_buckets, dict) else {},
+                "top_requesters": top_requesters if isinstance(top_requesters, dict) else {},
+                "evidence_gaps": evidence_gaps if isinstance(evidence_gaps, list) else [],
+                "source": row.source,
+            })
+    return {
+        "cluster_id": cluster.id,
+        "hours": hours,
+        "retention_days": int(getattr(settings, "rgw_metric_snapshot_retention_days", 30)),
+        "items": items,
+        "read_only": True,
+        "action_id": None,
+    }
 
 
 @router.get("/api/object-storage/rgw-metrics/export")

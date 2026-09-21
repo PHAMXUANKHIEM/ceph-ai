@@ -240,26 +240,30 @@ toàn bộ object list vào memory hoặc làm lộ credential S3.
   `/api/object-storage/rgw-metrics` lấy bounded native RGW audit-log/fallback,
   tổng hợp requests, bytes, 4xx/5xx, latency, top bucket/requester/User-Agent
   và time range theo cluster; cache stale-if-error dùng chung audit collector.
-  Quota/capacity usage, Prometheus source và retention lịch sử dài hạn còn thiếu.
+  Đã thêm aggregate snapshot rgw_metric_snapshots với retention mặc định 30
+  ngày, không lưu raw row/secret, và bounded quota stats từ radosgw-admin.
+  Prometheus source và long-term history beyond local retention vẫn còn.
 - [~] **5.2 Dashboard trend/top consumers**: thêm panel read-only trên Bucket
   Overview, hiển thị request count, bytes, error rate, latency p95, top bucket
   và top requester theo cluster đang chọn. Hiện panel dùng cửa sổ audit hiện
-  tại; trend lịch sử dài hạn vẫn chờ retention store/Prometheus ở mục 5.1.
+  tại; đã thêm API history /api/object-storage/rgw-metrics/history theo
+  cluster và retention snapshot, còn cần nối biểu đồ trend trực tiếp vào UI.
 - [~] **5.3 Alert rules**: đã thêm `watcher/rgw_alerting.py` với rule
   deterministic cho quota 80/90/95% (khi có bucket stats), 5xx spike, access
   denied spike, hot bucket và access bất thường từ audit intelligence. Incident
   dedupe theo `cluster_id + ceph_code + dedupe_key`, tự resolve khi tín hiệu
   biến mất và gửi Telegram theo channel của đúng cluster. Worker Watcher đã
   chạy scan audit rows và bounded `radosgw-admin bucket stats` mỗi 5 phút;
-  Prometheus/retention dài hạn và link Dashboard trực tiếp tới bucket vẫn còn.
+  Link target bucket đã có trên Alert Center/Incident Timeline; Prometheus,
+  retention dài hạn và live RGW/Telegram acceptance vẫn còn.
 - [~] **5.4 Export report CSV/JSON**: đã thêm endpoint JSON/CSV dùng chung
   bounded RGW metrics payload, cluster scope, Content-Disposition và không xuất
   raw audit row/secret. Quyền export đang kế thừa read-only dashboard; cần
   hoàn thiện retention/role policy ở hardening gate.
 - [~] **5.5 Test**: đã bổ sung test threshold, fail-closed khi thiếu evidence,
   wiring audit intelligence, dedupe/resolve lifecycle và cross-cluster
-  isolation; còn thiếu timezone/retention dài hạn, quota collector thật và
-  live RGW acceptance.
+  isolation, snapshot retention/API history và migration; còn thiếu
+  timezone/Prometheus/live RGW acceptance.
 
 **Hoàn thành khi:** cảnh báo chỉ gửi khi transition thật, có link về đúng bucket
 và cluster, không spam khi metric nguồn gián đoạn.
@@ -350,6 +354,8 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-09-21 | 6.3 / 7.3 | Đang làm | Thêm runbook `docs/runbook-rgw-object-storage.md`: kiểm tra read-only, finding daemon/endpoint/sync/shard/period/capacity, object version safety và release acceptance; cấm remediation topology trong smoke test. | Tài liệu không làm thay đổi runtime; regression trước đó 71 passed vẫn đạt. | Chưa commit; tiếp theo bổ sung failover/legacy adapter acceptance và hardening gate. |
 | 2026-09-21 | 5.4 | Đang làm | Thêm export `GET /api/object-storage/rgw-metrics/export?format=json|csv`, dùng cùng payload với dashboard, giới hạn map/count và evidence gaps, không trả raw log hay secret. Thêm nút JSON/CSV trên panel Observability. | `pytest -q --disable-warnings tests/test_rgw_audit_intelligence.py tests/test_dashboard_object_storage.py`: 71 passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo review role/retention policy và alert lifecycle. |
 | 2026-09-21 | 5.3 / 5.5 | Đang làm | Thêm `watcher/rgw_alerting.py`: rule quota 80/90/95% từ bounded `radosgw-admin bucket stats`, 5xx/access-denied spike, hot bucket và abnormal access từ audit intelligence. Tạo/update/resolve Incident scoped theo cluster và dedupe key; scan audit rows + quota mỗi 5 phút, không tạo Action hay mutation RGW. | `pytest -q --disable-warnings tests/test_rgw_alerting.py tests/test_rgw_audit_intelligence.py tests/test_watcher_incident_flow.py`: 52 passed; `python3 -m py_compile watcher/rgw_alerting.py watcher/main.py`; `git diff --check` sạch. | Chưa commit; tiếp theo bổ sung link target bucket, retention/Prometheus và live RGW/Telegram acceptance. |
+
+| 2026-09-21 | 5.1 / 5.2 / 5.3 / 5.5 | Đang làm | Thêm RgwMetricSnapshot và Alembic migration m20260921rgwmetrics, retention aggregate 30 ngày, API history rgw-metrics/history, target bucket deep link trong Alert Center/Incident Timeline và bounded quota collector. Không lưu raw audit row/secret. | pytest tests/test_migrations.py tests/test_rgw_access_audit.py tests/test_dashboard_feed.py tests/test_rgw_alerting.py tests/test_rgw_audit_intelligence.py: 74 passed; py_compile, alembic heads và git diff --check đạt. alembic check chỉ báo database hiện tại chưa upgrade head. | Live acceptance bị giới hạn: 10.3.55.213 là rnd-khiempx-centos-patch.novalocal, không có ceph/radosgw-admin, ceph-radosgw.target inactive; cần chạy smoke test trên RGW node thật. |
 
 ## Ghi chú bàn giao
 
