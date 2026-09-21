@@ -968,3 +968,25 @@ def test_backup_operations_reject_non_admin(dashboard_client, monkeypatch):
     assert dashboard_client.post("/backups/metadata/run-now", json={}).status_code == 403
     assert dashboard_client.post("/backups/restore-drill/run-now", json={}).status_code == 403
     assert dashboard_client.post("/backups/restore/propose", json={}).status_code == 403
+
+
+def test_target_health_reports_each_slot_without_credentials(monkeypatch):
+    now = datetime.utcnow()
+    monkeypatch.setattr(backups_route, "load_backup_policy", lambda: {
+        "backup_targets": [{"slot": "a", "label": "Primary"}, {"slot": "b", "label": "Offsite"}],
+    })
+    with db_module.SessionLocal() as session:
+        session.add_all([
+            BackupJob(run_id="target-a", pool="vms", image="disk1", job_type="full",
+                      status="SUCCESS", backup_target_slot="a", created_at=now - timedelta(minutes=5)),
+            BackupJob(run_id="target-b", pool="vms", image="disk1", job_type="full",
+                      status="FAILED", backup_target_slot="b", error_message="network timeout",
+                      created_at=now - timedelta(minutes=2)),
+        ])
+        session.commit()
+
+    rows = backups_route._target_health(now=now)
+
+    assert [(row["slot"], row["status"]) for row in rows] == [("a", "healthy"), ("b", "failed")]
+    assert rows[1]["last_error"] == "Backup target trả về FAILED; xem History để xem chi tiết."
+    assert "secret" not in str(rows).lower()

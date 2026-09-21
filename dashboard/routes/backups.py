@@ -404,6 +404,45 @@ def _queue(tracked: list[dict], cluster=None) -> list[dict]:
     return entries
 
 
+def _target_health(cluster=None, now: datetime | None = None) -> list[dict]:
+    """Summarize the latest runtime result independently for each target slot."""
+    now = now or utc_now()
+    policy = load_backup_policy() or {}
+    configured = policy.get("backup_targets") or []
+    slots = [str(item.get("slot")) for item in configured if isinstance(item, dict) and item.get("slot")]
+    if cluster is None or cluster.is_default:
+        slots = slots or [slot for slot in ("a", "b") if getattr(settings, f"backup_target_{slot}_transport", "")]
+    else:
+        slots = ["cluster"]
+    rows = []
+    with db.SessionLocal() as session:
+        for slot in slots:
+            latest = (
+                session.query(BackupJob)
+                .filter(BackupJob.backup_target_slot == slot,
+                        BackupJob.job_type.in_(("full", "incremental")),
+                        _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True)
+                .order_by(BackupJob.created_at.desc()).first()
+            )
+            if latest is None:
+                status = "never"
+                age_hours = None
+            else:
+                status = {"SUCCESS": "healthy", "RUNNING": "running", "FAILED": "failed"}.get(latest.status, "unknown")
+                age_hours = max(0.0, (now - latest.created_at).total_seconds() / 3600)
+            if slot == "cluster":
+                label, transport = getattr(cluster, "name", "Cluster target"), getattr(cluster, "backup_transport", None)
+            else:
+                label = next((str(item.get("label") or f"Slot {slot.upper()}") for item in configured
+                              if isinstance(item, dict) and str(item.get("slot")) == slot), f"Slot {slot.upper()}")
+                transport = getattr(settings, f"backup_target_{slot}_transport", None) or None
+            rows.append({"slot": slot, "label": label, "transport": transport,
+                         "status": status, "age_hours": age_hours,
+                         "last_run_at": latest.created_at if latest else None,
+                         "last_error": "Backup target trả về FAILED; xem History để xem chi tiết." if latest and latest.status == "FAILED" else None})
+    return rows
+
+
 def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None = None) -> dict:
     now = now or utc_now()
     policy = load_backup_policy()
@@ -528,6 +567,7 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
     estimates = [row["estimated_rto_seconds"] for row in rows if row["estimated_rto_seconds"] is not None]
     return {"rows": rows, "counts": counts, "total": len(rows), "rpo_hours": rpo_hours,
             "copy_counts": copy_counts,
+            "target_health": _target_health(cluster, now),
             "estimated_rto_seconds": max(estimates) if estimates else None,
             "restore_bytes_per_second": restore_bytes_per_second,
             "metadata": _freshness(latest_metadata, metadata_rpo_hours),
@@ -537,6 +577,13 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
                 "status": latest_drill.status, "created_at": latest_drill.created_at,
                 "duration_seconds": latest_drill.duration_seconds,
                 "pool": latest_drill.pool, "image": latest_drill.image}}
+
+
+@router.get("/api/backups/target-health")
+async def backup_target_health_api(request: Request, user: str = Depends(require_login)):
+    del user
+    cluster = selected_cluster(request)
+    return {"cluster_id": cluster.id, "targets": _target_health(cluster)}
 
 
 def _history(tracked: list[dict], cluster=None) -> list[dict]:

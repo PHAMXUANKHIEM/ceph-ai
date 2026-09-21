@@ -76,6 +76,21 @@
           <div><dt>Ngưỡng metadata</dt><dd>{{ protection.metadata.threshold_hours }} giờ{% if protection.metadata.age_hours is not none %} · tuổi {{ "%.1f"|format(protection.metadata.age_hours) }} giờ{% endif %}</dd></div>
           <div><dt>Bản sao không đủ</dt><dd>{{ protection.copy_counts.degraded + protection.copy_counts.missing }}</dd></div>
         </dl></section>
+        <section class="backup-target-health" aria-label="Sức khỏe backup target">
+          <div class="backup-section-heading"><div><h3>Target health</h3><p class="hint">Kết quả runtime gần nhất theo từng slot, không lộ credential.</p></div></div>
+          {% if protection.target_health %}
+          <div class="table-wrap backup-table-scroll"><table>
+            <thead><tr><th>Target</th><th>Transport</th><th>Trạng thái</th><th>Lần chạy gần nhất</th><th>Chi tiết</th></tr></thead>
+            <tbody>{% for target in protection.target_health %}<tr>
+              <td><strong>{{ target.label }}</strong> <code>{{ target.slot|upper }}</code></td>
+              <td>{{ target.transport or "—" }}</td>
+              <td><span class="backup-target-health-status is-{{ target.status }}">{% if target.status == 'healthy' %}Healthy{% elif target.status == 'running' %}Đang chạy{% elif target.status == 'failed' %}Failed{% else %}Chưa có run{% endif %}</span></td>
+              <td>{% if target.last_run_at %}{{ target.last_run_at|vntime }}{% else %}—{% endif %}</td>
+              <td>{% if target.age_hours is not none %}{{ "%.1f"|format(target.age_hours) }} giờ trước{% endif %}{% if target.last_error %}<span class="hint">{{ target.last_error }}</span>{% endif %}</td>
+            </tr>{% endfor %}</tbody>
+          </table></div>
+          {% else %}<p class="hint">Chưa có backup target nào được cấu hình.</p>{% endif %}
+        </section>
         {% if protection.rows %}
         <div class="table-wrap backup-table-scroll"><table>
           <thead><tr><th>Pool/Image</th><th>Trạng thái</th><th class="num">RPO mục tiêu</th><th class="num">Bản sao</th><th class="num">Tuổi recovery point</th><th class="num">Còn lại trước RPO</th><th class="num">RTO dự kiến</th></tr></thead>

@@ -6912,3 +6912,12 @@ body:not(.dashboard-page-shell) .chat-fab,
 .backup-policy-actions { display: flex; align-items: center; gap: .75rem; justify-content: flex-end; }
 .backup-policy-revisions { margin: .75rem 0 0; padding-left: 1.2rem; color: var(--muted); font-size: .82rem; }
 @media (max-width: 900px) { .backup-policy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.backup-target-health { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid rgba(148, 163, 184, .14); }
+.backup-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .7rem; }
+.backup-section-heading h3 { margin: 0; color: var(--text); font-size: .98rem; }
+.backup-section-heading p { margin: .25rem 0 0; }
+.backup-target-health-status { display: inline-flex; padding: .2rem .45rem; border-radius: 999px; font-size: .72rem; font-weight: 700; }
+.backup-target-health-status.is-healthy { background: rgba(34, 197, 94, .14); color: #86efac; }
+.backup-target-health-status.is-running { background: rgba(14, 165, 233, .14); color: #7dd3fc; }
+.backup-target-health-status.is-failed { background: rgba(239, 68, 68, .14); color: #fca5a5; }
+.backup-target-health-status.is-never, .backup-target-health-status.is-unknown { background: rgba(148, 163, 184, .14); color: #cbd5e1; }
