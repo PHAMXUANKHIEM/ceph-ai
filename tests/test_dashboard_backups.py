@@ -990,3 +990,23 @@ def test_target_health_reports_each_slot_without_credentials(monkeypatch):
     assert [(row["slot"], row["status"]) for row in rows] == [("a", "healthy"), ("b", "failed")]
     assert rows[1]["last_error"] == "Backup target trả về FAILED; xem History để xem chi tiết."
     assert "secret" not in str(rows).lower()
+
+
+def test_admin_can_retry_failed_backup_with_idempotency_key(dashboard_client):
+    with db_module.SessionLocal() as session:
+        job = BackupJob(run_id="failed-run", pool="vms", image="disk1", job_type="full",
+                        status="FAILED", backup_target_slot="a", error_message="temporary target failure",
+                        created_at=datetime.utcnow())
+        session.add(job)
+        session.commit()
+        job_id = job.id
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/backups/jobs/{job_id}/retry", json={})
+
+    assert response.status_code == 201
+    body = response.json()
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, body["action_id"])
+        assert action.idempotency_key == f"backup-retry:{job_id}"
+        assert json.loads(action.action_params)["retry_of_job_id"] == job_id

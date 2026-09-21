@@ -194,10 +194,9 @@ download đối chiếu SHA-256 rồi cleanup. Response chỉ chứa step status
 an toàn và cảnh báo target trùng; secret, SSH key path và raw credential không
 được trả về. S3 Object Lock được kiểm tra ở mức bucket configuration; probe
 không tạo object compliance-lock dài ngày để tránh để lại rác không xoá được.
-Phần target health history/copy compliance và audit entry riêng sẽ tiếp tục ở
-6.3.
+Phần audit entry riêng cho probe sẽ tiếp tục ở 6.3.
 
-### 6.3 Target health và copy compliance `[ ]`
+### 6.3 Target health và copy compliance `[~]`
 
 - Trạng thái A/B riêng cho từng run.
 - Tổng hợp `2/2 healthy`, `1/2 degraded`, `0/2 failed`.
@@ -206,7 +205,13 @@ Phần target health history/copy compliance và audit entry riêng sẽ tiếp 
 - Action Repair Missing Copy không cần export lại nguồn nếu còn một bản verified.
 - Không đánh dấu run tổng thể SUCCESS khi chưa đạt required copy count.
 
-### 6.4 Retry, resume, cancel và reconciliation `[ ]`
+Đã bổ sung target health theo slot trong Overview và API
+`GET /api/backups/target-health`; trạng thái được suy ra từ run gần nhất trong
+đúng cluster, không trả raw error/credential. Bảng protection đã có copy
+compliance theo `run_id`, target và `required_copy_count`. Còn thiếu lưu lịch sử
+probe, immutable-until và action Repair Missing Copy.
+
+### 6.4 Retry, resume, cancel và reconciliation `[~]`
 
 - Retry job thất bại với cùng logical request/idempotency key.
 - Multipart/resumable upload khi backend hỗ trợ.
@@ -214,6 +219,12 @@ Phần target health history/copy compliance và audit entry riêng sẽ tiếp 
 - Dọn `.part`, file tạm, snapshot và scratch image trong `finally`.
 - Reconcile `RUNNING` sau crash/restart; không chỉ dựa vào timeout cứng.
 - Bổ sung trạng thái `CANCELLED`, `STALE`, `PARTIAL_SUCCESS`, `VERIFY_FAILED`.
+
+Đã thêm retry cho BackupJob FAILED qua `POST /backups/jobs/{job_id}/retry`, giữ
+`retry_key`/idempotency key theo logical job và không cho retry job khác cluster
+hoặc job chưa FAILED. History có nút Retry tương ứng. Cơ chế stale RUNNING
+hiện có của Worker tiếp tục được dùng; resume multipart, cancel an toàn, trạng
+thái mở rộng và reconciliation chi tiết sẽ làm tiếp.
 
 ### 6.5 Backup inventory độc lập policy `[ ]`
 

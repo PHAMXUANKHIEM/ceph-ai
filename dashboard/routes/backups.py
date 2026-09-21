@@ -607,6 +607,7 @@ def _history(tracked: list[dict], cluster=None) -> list[dict]:
             for row in rows:
                 rows_out.append(
                     {
+                        "job_id": row.id,
                         "pool": row.pool,
                         "image": row.image,
                         "job_type": row.job_type,
@@ -974,7 +975,8 @@ async def propose_restore_as_new(request: Request, user: str = Depends(require_l
     return JSONResponse({"action_id": action_pk, "preflight": preflight}, status_code=201)
 
 
-def _create_manual_backup_action(action_id: str, action_params: dict, user: str, cluster=None) -> str:
+def _create_manual_backup_action(action_id: str, action_params: dict, user: str, cluster=None,
+                                 idempotency_key: str | None = None) -> str:
     mon_nodes = [n["host"] for n in configured_nodes(None if cluster is None or cluster.is_default else cluster) if "MON" in n["roles"]]
     if not mon_nodes:
         raise HTTPException(status_code=400, detail="ceph_mon_nodes chưa được cấu hình")
@@ -1015,6 +1017,7 @@ def _create_manual_backup_action(action_id: str, action_params: dict, user: str,
             rationale=label,
             target_nodes=json.dumps([mon_nodes[0]]),
             action_params=json.dumps(action_params),
+            idempotency_key=idempotency_key,
         )
         session.add(action)
         session.flush()
@@ -1040,6 +1043,35 @@ async def run_backup_now(request: Request, user: str = Depends(require_login)):
         raise HTTPException(status_code=400, detail="Image không nằm trong tracked_images.")
     action_pk = _create_manual_backup_action("rbd_backup_run", {"pool": pool, "image": image}, user, cluster)
     return JSONResponse({"action_id": action_pk}, status_code=201)
+
+
+@router.post("/backups/jobs/{job_id}/retry")
+async def retry_backup_job(job_id: str, request: Request, user: str = Depends(require_login)):
+    """Retry a failed RBD job while preserving its logical retry identity."""
+    _require_admin_privilege(user)
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        job = session.query(BackupJob).filter(
+            BackupJob.id == job_id,
+            BackupJob.job_type.in_(("full", "incremental")),
+            _job_scope(BackupJob.cluster_id, cluster),
+        ).first()
+        if job is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy backup job trong cluster hiện tại.")
+        if job.status != "FAILED":
+            raise HTTPException(status_code=409, detail="Chỉ có thể retry backup job ở trạng thái FAILED.")
+        if not job.pool or not job.image or not _RBD_NAME_RE.fullmatch(job.pool) or not _RBD_NAME_RE.fullmatch(job.image):
+            raise HTTPException(status_code=422, detail="Backup job có pool/image không hợp lệ.")
+        retry_key = f"backup-retry:{job.id}"
+        pool, image, retry_of_job_id = job.pool, job.image, job.id
+    action_pk = _create_manual_backup_action(
+        "rbd_backup_run",
+        {"pool": pool, "image": image, "retry_of_job_id": retry_of_job_id, "retry_key": retry_key},
+        user,
+        cluster,
+        idempotency_key=retry_key,
+    )
+    return JSONResponse({"action_id": action_pk, "retry_of_job_id": retry_of_job_id}, status_code=201)
 
 
 @router.post("/backups/metadata/run-now")

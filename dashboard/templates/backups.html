@@ -178,6 +178,7 @@
                 <td>{% if h.duration_seconds %}{{ "%.1f"|format(h.duration_seconds) }}s{% else %}—{% endif %}</td>
                 <td>
                   <span class="backup-history-status">{{ h.status }}</span>
+                  {% if is_admin and h.status == 'FAILED' and h.job_type in ['full', 'incremental'] and h.job_id %}<button type="button" class="btn btn-ghost btn-sm btn-backup-retry" data-job-id="{{ h.job_id }}">Retry</button>{% endif %}
                   {% if h.error_message %}
                   <details class="backup-inline-details">
                     <summary>Xem log lỗi</summary>

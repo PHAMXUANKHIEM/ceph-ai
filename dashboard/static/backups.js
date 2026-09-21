@@ -168,6 +168,21 @@
     });
   });
 
+  Array.prototype.forEach.call(document.querySelectorAll(".btn-backup-retry"), function (btn) {
+    btn.addEventListener("click", function () {
+      var jobId = btn.getAttribute("data-job-id");
+      if (!jobId || !window.confirm("Retry backup job thất bại này?")) return;
+      btn.disabled = true;
+      fetch("/backups/jobs/" + encodeURIComponent(jobId) + "/retry", {
+        method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}
+      }).then(function (response) { return response.json().then(function (data) {
+        if (!response.ok) throw new Error(data.detail || "HTTP " + response.status);
+        return data;
+      }); }).then(function () { window.location.reload(); })
+        .catch(function (error) { btn.disabled = false; window.alert(error.message || "Không tạo được retry"); });
+    });
+  });
+
   var metadataBtn = document.getElementById("btn-backup-metadata-now");
   if (metadataBtn) {
     metadataBtn.addEventListener("click", function () {

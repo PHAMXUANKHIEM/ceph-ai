@@ -6921,3 +6921,4 @@ body:not(.dashboard-page-shell) .chat-fab,
 .backup-target-health-status.is-running { background: rgba(14, 165, 233, .14); color: #7dd3fc; }
 .backup-target-health-status.is-failed { background: rgba(239, 68, 68, .14); color: #fca5a5; }
 .backup-target-health-status.is-never, .backup-target-health-status.is-unknown { background: rgba(148, 163, 184, .14); color: #cbd5e1; }
+.btn-backup-retry { margin-left: .5rem; }
