@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -196,6 +197,14 @@ def test_adaptive_forecast_records_consensus_metadata(monkeypatch):
         assert all(row.consensus_status == "CONSENSUS" for row in rows)
         assert all(row.model_votes_json for row in rows)
         assert all(row.anomaly_score is not None for row in rows)
+        assert any(
+            item.get("shadow_detector") == "candidate_d_isolation"
+            for item in json.loads(rows[0].model_votes_json)
+        )
+        assert any(
+            item.get("shadow_detector") == "river_adwin"
+            for item in json.loads(rows[0].model_votes_json)
+        )
 
 
 def test_adaptive_forecast_evaluates_due_run_and_updates_mae(monkeypatch):

@@ -27,7 +27,9 @@ from shared.predictive_alert_lifecycle import (
     next_lifecycle_state,
 )
 from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
-from shared.forecast_drift import DriftReport, evaluate_drift
+from shared.forecast_drift import DriftReport, RiverAdwinDetector, evaluate_drift
+from shared.forecast_anomaly import candidate_d_alerts, candidate_d_isolation_scores
+from shared.forecast_features import MetricPoint, build_features
 from shared.forecast_metrics import update_rolling_metrics
 from shared.learning_runtime import evaluate as evaluate_learning_runtime
 from shared.models import (
@@ -562,10 +564,11 @@ def _record_candidates(
     session, cluster: str, host: str, metric: str,
     candidates: list[ResourceForecast], now_naive: datetime,
     consensus: ForecastConsensus, drift: DriftReport | None = None,
+    shadow_evidence: list[dict] | None = None,
 ) -> None:
     horizon = max(1, settings.node_resource_learning_evaluation_hours)
     bucket = now_naive.replace(minute=0, second=0, microsecond=0)
-    votes = json.dumps([
+    votes_payload = [
         {
             "algorithm": prediction.algorithm,
             "window_hours": prediction.training_window_hours,
@@ -573,7 +576,9 @@ def _record_candidates(
             "confidence": round(prediction.confidence, 6),
         }
         for prediction in candidates
-    ], separators=(",", ":"), sort_keys=True)
+    ]
+    votes_payload.extend(shadow_evidence or [])
+    votes = json.dumps(votes_payload, separators=(",", ":"), sort_keys=True)
     for prediction in candidates:
         window = int(prediction.training_window_hours or prediction.window_hours)
         key = f"{cluster}|{host}|{metric}|{prediction.algorithm}|{window}|{bucket.isoformat()}"
@@ -601,6 +606,59 @@ def _record_candidates(
             drift_reason=drift.reason if drift is not None else None,
             model_votes_json=votes,
         ))
+
+
+def _shadow_evidence(
+    session, cluster: str, host: str, metric: str,
+    points: list[tuple[datetime, float]], samples: list[tuple[datetime, float, float]],
+) -> list[dict]:
+    """Build bounded evidence for new candidates without affecting alerts."""
+
+    feature_set = build_features([
+        MetricPoint(observed_at=timestamp, value=value) for timestamp, value in points
+    ])
+    scores = candidate_d_isolation_scores(
+        [{"cpu": cpu, "ram": ram} for _timestamp, cpu, ram in samples],
+        history_size=24,
+    )
+    candidate_d_score = scores[-1] if scores else None
+    candidate_d_alert = candidate_d_alerts(scores)[-1] if scores else False
+    detector = RiverAdwinDetector(scope_key=f"{cluster}|{host}|{metric}")
+    evaluated = session.query(NodeResourceForecastRun).filter_by(
+        cluster_name=cluster, host=host, metric=metric, status="EVALUATED",
+    ).order_by(NodeResourceForecastRun.evaluated_at).limit(512).all()
+    for row in evaluated:
+        if row.residual_percent is not None:
+            detector.update(float(row.residual_percent), quality_status="OK", observed_at=row.evaluated_at)
+    adwin = detector.report()
+    return [
+        {
+            "shadow_detector": "feature_builder",
+            "feature_schema": feature_set.feature_schema,
+            "quality_status": feature_set.quality_status,
+            "sample_count": feature_set.sample_count,
+            "coverage_ratio": round(feature_set.coverage_ratio, 6),
+            "max_gap_seconds": round(feature_set.max_gap_seconds, 3),
+            "missing_features": list(feature_set.missing_features),
+        },
+        {
+            "shadow_detector": "candidate_d_isolation",
+            "score": round(float(candidate_d_score), 6) if candidate_d_score is not None else None,
+            "candidate": True,
+            "alert_candidate": bool(candidate_d_alert),
+            "execution_mode": "SHADOW_ONLY",
+        },
+        {
+            "shadow_detector": adwin.detector,
+            "detector_version": adwin.detector_version,
+            "status": adwin.status,
+            "score": adwin.score,
+            "sample_count": adwin.sample_count,
+            "delta": adwin.delta,
+            "scope_key": adwin.scope_key,
+            "execution_mode": "SHADOW_ONLY",
+        },
+    ]
 
 
 def adaptive_forecast(
@@ -679,6 +737,7 @@ def adaptive_forecast(
                 _record_candidates(
                     session, cluster, host, metric, recorded_candidates,
                     now_naive, consensus, drift,
+                    shadow_evidence=_shadow_evidence(session, cluster, host, metric, points, samples),
                 )
                 result[metric] = replace(
                     operational_linear,
