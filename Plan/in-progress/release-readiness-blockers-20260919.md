@@ -312,7 +312,7 @@ boundaries are visible in code review and tests.
 
 - `pyproject.toml` now sets `testpaths = ["tests"]` and excludes both
   `live` and external `integration` tests by default.
-- Latest collection result after the integration marker: `3921/3937 tests collected
+- Latest collection result after the integration marker: `3934/3950 tests collected
   (16 deselected)`.
 - `transfer/test_dashboard_pgs.py` is no longer collected and no collection
   error was reported.
@@ -322,6 +322,11 @@ boundaries are visible in code review and tests.
   in SQLite migration setup on ext4 journal fsync (jbd2_log_wait_commit,
   process state D). The test-only process was terminated; this is an I/O
   environment blocker, not a pytest assertion failure.
+- [x] The complete collected default node set was then executed in four
+  deterministic shards on tmpfs: `3934 passed`, zero failures/errors, and all
+  four shard processes exited with code 0. The single-process run remains a
+  performance/environment issue because it exceeds the practical timeout even
+  though the sharded run is green.
 - [x] Focused post-change regression groups pass 271 tests; Telegram dashboard,
   verification, recovery, and outbox route groups pass 89 tests.
 
