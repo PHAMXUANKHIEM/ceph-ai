@@ -4,7 +4,7 @@ import logging
 import math
 import threading
 from time import monotonic
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from datetime import datetime, timedelta
 from shared.time import utc_now
 
@@ -119,6 +119,28 @@ def _rca_evidence(raw: str | None) -> dict | None:
     }
 
 
+def _rgw_incident_target(incident: Incident | None) -> dict | None:
+    """Return a safe deep link for an RGW alert's bucket target."""
+    if incident is None or not str(incident.ceph_code or "").startswith("RGW_ALERT_"):
+        return None
+    try:
+        evidence = json.loads(incident.signal_evidence_json or "{}")
+    except (TypeError, ValueError):
+        return None
+    target = evidence.get("target") if isinstance(evidence, dict) else None
+    if not isinstance(target, dict) or target.get("type") != "bucket":
+        return None
+    bucket = str(target.get("id") or "").strip()
+    if not bucket or len(bucket) > 255:
+        return None
+    return {
+        "type": "bucket",
+        "id": bucket,
+        "label": f"Bucket {bucket}",
+        "url": f"/object-storage/buckets/{quote(bucket, safe='')}",
+    }
+
+
 def _alert_group_for_incident(session, incident_id: str, selected_cluster: Cluster) -> dict | None:
     cluster_filter = (
         or_(Incident.cluster_id == selected_cluster.id, Incident.cluster_id.is_(None))
@@ -226,6 +248,8 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
         logger.exception("alert_center: failed to query incidents from DB")
         raise HTTPException(status_code=503, detail="Không kết nối được database")
     groups = alert_center.build_alert_groups(incidents)
+    for group in groups:
+        group["target"] = _rgw_incident_target(group.get("representative"))
     if status_filter == "open":
         groups = [group for group in groups if group["is_active"]]
     elif status_filter == "closed":
@@ -383,6 +407,7 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
         "shadow_comparison": trust_engine.shadow_comparison,
         "grace_action_ids": grace_action_ids,
         "rca_evidence": rca_evidence,
+        "incident_target": _rgw_incident_target(incident),
     })
 
 

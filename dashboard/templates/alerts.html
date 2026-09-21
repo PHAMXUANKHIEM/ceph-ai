@@ -63,6 +63,7 @@
               <tr>
                 <td>
                   <a href="/incidents/{{ current.id }}/timeline"><code>{{ group.ceph_code }}</code></a>
+                  {% if group.target %}<div class="hint">Target: <a href="{{ group.target.url }}">{{ group.target.label }}</a></div>{% endif %}
                   {% if group.merged_count %}<div class="hint">Đã gom {{ group.merged_count }} lần lặp</div>{% endif %}
                   <details class="alert-history-details"><summary>Xem lịch sử nhóm</summary>
                     <div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Trạng thái</th><th></th></tr></thead><tbody>

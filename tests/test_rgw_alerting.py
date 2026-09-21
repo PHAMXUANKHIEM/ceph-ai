@@ -1,11 +1,14 @@
 from uuid import uuid4
 from types import SimpleNamespace
+from datetime import timedelta
 
 from shared import db
-from shared.models import Cluster, Incident, IncidentStatus
+from shared.models import Cluster, Incident, IncidentStatus, RgwMetricSnapshot
+from shared.time import utc_now
 from watcher.rgw_alerting import (
     collect_bucket_quota_stats,
     evaluate_rgw_alerts,
+    persist_rgw_metric_snapshot,
     snapshot_from_audit_rows,
     sync_rgw_alerts,
 )
@@ -121,6 +124,84 @@ def test_bucket_quota_collector_is_bounded_and_uses_secondary_cluster_credential
 
     assert [row["bucket"] for row in stats] == ["archive"]
     assert any("1/2" in gap for gap in gaps)
+
+
+def test_rgw_incident_target_is_rendered_as_a_safe_bucket_deep_link():
+    from dashboard.routes.incidents import _rgw_incident_target
+
+    incident = SimpleNamespace(
+        ceph_code="RGW_ALERT_BUCKET_QUOTA",
+        signal_evidence_json='{"target": {"type": "bucket", "id": "archive/test"}}',
+    )
+
+    target = _rgw_incident_target(incident)
+
+    assert target["label"] == "Bucket archive/test"
+    assert target["url"] == "/object-storage/buckets/archive%2Ftest"
+
+
+def test_metric_snapshot_persists_aggregates_and_prunes_old_rows(monkeypatch):
+    from watcher import rgw_alerting
+
+    cluster_id = f"rgw-metrics-{uuid4()}"
+    now = utc_now()
+    monkeypatch.setattr(rgw_alerting.settings, "rgw_metric_snapshot_retention_days", 1)
+    with db.SessionLocal() as session:
+        session.add(RgwMetricSnapshot(
+            cluster_id=cluster_id,
+            captured_at=now - timedelta(days=2),
+            request_count=999,
+        ))
+        session.commit()
+
+    snapshot = _snapshot(
+        request_count=12,
+        status_counts={"200": 10, "500": 2},
+        top_buckets={"archive": 12},
+    )
+    snapshot["metrics"].update({
+        "bytes_total": 4096,
+        "error_count": 2,
+        "error_rate_percent": 16.6667,
+        "latency_p95_ms": 22.5,
+        "top_requesters": {"operator": 12},
+    })
+    persist_rgw_metric_snapshot(cluster_id, snapshot, now=now)
+
+    with db.SessionLocal() as session:
+        rows = session.query(RgwMetricSnapshot).filter_by(cluster_id=cluster_id).all()
+        assert len(rows) == 1
+        assert rows[0].request_count == 12
+        assert rows[0].bytes_total == 4096
+        assert rows[0].top_buckets_json == '{"archive": 12}'
+
+
+def test_rgw_metrics_history_api_returns_bounded_aggregate_only(dashboard_client, default_cluster_id):
+    with db.SessionLocal() as session:
+        session.add(RgwMetricSnapshot(
+            cluster_id=default_cluster_id,
+            captured_at=utc_now(),
+            available=True,
+            request_count=12,
+            bytes_total=4096,
+            error_count=2,
+            error_rate_percent=16.67,
+            latency_p95_ms=22.5,
+            top_buckets_json='{"archive": 12}',
+            top_requesters_json='{"operator": 12}',
+            evidence_gaps_json='[]',
+        ))
+        session.commit()
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+
+    response = dashboard_client.get("/api/object-storage/rgw-metrics/history?hours=24")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cluster_id"] == default_cluster_id
+    assert body["items"][0]["request_count"] == 12
+    assert body["items"][0]["top_buckets"] == {"archive": 12}
+    assert body["read_only"] is True
 
 
 def test_rgw_alert_incident_lifecycle_deduplicates_and_resolves_per_cluster():

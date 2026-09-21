@@ -784,6 +784,33 @@ class RgwAccessAuditEvent(Base):
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class RgwMetricSnapshot(Base):
+    """Bounded RGW aggregate metrics retained for trend/reporting only.
+
+    This table deliberately stores counts, latency and bounded top-consumer
+    maps, never raw access-log rows or credentials.
+    """
+
+    __tablename__ = "rgw_metric_snapshots"
+    __table_args__ = (
+        Index("ix_rgw_metric_snapshot_cluster_time", "cluster_id", "captured_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bytes_total: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_rate_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    latency_p95_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    top_buckets_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    top_requesters_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    evidence_gaps_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="rgw_access_audit_events")
+
+
 class RgwErrorNotification(Base):
     """Durable immediate Telegram delivery for real RGW daemon errors."""
 

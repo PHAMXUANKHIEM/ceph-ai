@@ -17,7 +17,13 @@ from concurrent.futures import ThreadPoolExecutor
 from config.settings import settings
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared import alert_lifecycle, db, telegram_alerts
-from shared.models import Cluster, Incident, IncidentStatus, RgwAccessAuditEvent
+from shared.models import (
+    Cluster,
+    Incident,
+    IncidentStatus,
+    RgwAccessAuditEvent,
+    RgwMetricSnapshot,
+)
 from shared.time import utc_now
 from watcher.rgw_audit_intelligence import build_rgw_audit_intelligence
 from watcher.rgw_access_log import (
@@ -34,7 +40,9 @@ logger = logging.getLogger(__name__)
 # intentionally conservative for a small Ceph lab; operators can tune them in
 # code/config later without changing the Incident contract.
 RGW_ALERT_WINDOW_SECONDS = 5 * 60
-RGW_ALERT_SCAN_INTERVAL_SECONDS = 5 * 60
+RGW_ALERT_SCAN_INTERVAL_SECONDS = max(
+    60, int(getattr(settings, "rgw_metric_snapshot_interval_seconds", 5 * 60))
+)
 QUOTA_WARNING_RATIO = 0.80
 QUOTA_HIGH_RATIO = 0.90
 QUOTA_CRITICAL_RATIO = 0.95
@@ -288,13 +296,16 @@ def _excerpt(alert: dict) -> str:
 
 
 def _evidence_json(alert: dict, snapshot: dict) -> str:
+    observed = _mapping(alert.get("observed"))
+    bucket = str(observed.get("bucket") or "").strip()[:255]
     payload = {
         "rule": alert.get("code"),
         "severity": alert.get("severity"),
         "dedupe_key": alert.get("dedupe_key"),
-        "observed": alert.get("observed", {}),
+        "observed": observed,
         "evidence": alert.get("evidence", []),
         "window_seconds": snapshot.get("window_seconds", RGW_ALERT_WINDOW_SECONDS),
+        "target": {"type": "bucket", "id": bucket} if bucket else None,
         "read_only": True,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)[:12000]
@@ -432,6 +443,9 @@ def snapshot_from_audit_rows(rows: Iterable[RgwAccessAuditEvent | dict], *, now:
     bucket_counts: dict[str, int] = {}
     normalized = []
     intelligence_rows = []
+    requester_counts: dict[str, int] = {}
+    bytes_total = 0
+    latencies: list[float] = []
     for row in rows:
         if isinstance(row, dict):
             status = row.get("status", row.get("http_status"))
@@ -442,6 +456,8 @@ def snapshot_from_audit_rows(rows: Iterable[RgwAccessAuditEvent | dict], *, now:
             latency_ms = row.get("latency_ms")
             encryption = row.get("encryption")
             timestamp = row.get("timestamp") or row.get("event_at")
+            requester = row.get("requester")
+            bytes_sent = row.get("bytes_sent")
         else:
             status = row.http_status
             bucket = row.bucket
@@ -451,6 +467,8 @@ def snapshot_from_audit_rows(rows: Iterable[RgwAccessAuditEvent | dict], *, now:
             latency_ms = row.latency_ms
             encryption = row.encryption
             timestamp = row.event_at
+            requester = row.requester
+            bytes_sent = row.bytes_sent
         try:
             status_int = int(status)
         except (TypeError, ValueError):
@@ -460,6 +478,14 @@ def snapshot_from_audit_rows(rows: Iterable[RgwAccessAuditEvent | dict], *, now:
         if bucket:
             bucket_name = str(bucket)[:255]
             bucket_counts[bucket_name] = bucket_counts.get(bucket_name, 0) + 1
+        requester_name = str(requester or "-")[:255]
+        requester_counts[requester_name] = requester_counts.get(requester_name, 0) + 1
+        byte_count = _number(bytes_sent)
+        if byte_count is not None and byte_count >= 0:
+            bytes_total += int(byte_count)
+        latency = _number(latency_ms)
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
         normalized.append((status_int, bucket))
         intelligence_rows.append({
             "method": str(method or "GET")[:16],
@@ -472,12 +498,21 @@ def snapshot_from_audit_rows(rows: Iterable[RgwAccessAuditEvent | dict], *, now:
             "timestamp": str(timestamp or ""),
         })
     intelligence = build_rgw_audit_intelligence(intelligence_rows)
+    error_count = sum(count for status, count in status_counts.items() if int(status) >= 400)
+    ordered_latencies = sorted(latencies)
+    p95_index = min(len(ordered_latencies) - 1, int(len(ordered_latencies) * 0.95)) if ordered_latencies else 0
+    request_count = len(normalized)
     return {
         "captured_at": now.isoformat(timespec="seconds"),
         "metrics": {
-            "request_count": len(normalized),
+            "request_count": request_count,
+            "bytes_total": bytes_total,
+            "error_count": error_count,
+            "error_rate_percent": round(error_count * 100 / max(1, request_count), 4),
+            "latency_p95_ms": round(ordered_latencies[p95_index], 2) if ordered_latencies else None,
             "status_counts": status_counts,
             "top_buckets": dict(sorted(bucket_counts.items(), key=lambda item: (-item[1], item[0]))[:100]),
+            "top_requesters": dict(sorted(requester_counts.items(), key=lambda item: (-item[1], item[0]))[:100]),
             "source": "rgw_access_audit_events",
         },
         "audit_findings": intelligence.get("findings", []),
@@ -485,6 +520,43 @@ def snapshot_from_audit_rows(rows: Iterable[RgwAccessAuditEvent | dict], *, now:
         "read_only": True,
         "action_id": None,
     }
+
+
+def persist_rgw_metric_snapshot(
+    cluster_id: str,
+    snapshot: dict,
+    *,
+    now: datetime | None = None,
+) -> RgwMetricSnapshot:
+    """Persist one bounded aggregate snapshot and prune its cluster history."""
+    now = now or utc_now()
+    metrics = _mapping(snapshot.get("metrics"))
+    gaps = [str(item)[:240] for item in (snapshot.get("evidence_gaps") or [])[:MAX_EVIDENCE_ITEMS]]
+    row = RgwMetricSnapshot(
+        cluster_id=cluster_id,
+        captured_at=now,
+        available=bool(metrics.get("request_count") or snapshot.get("bucket_stats")),
+        request_count=int(_number(metrics.get("request_count")) or 0),
+        bytes_total=int(_number(metrics.get("bytes_total")) or 0),
+        error_count=int(_number(metrics.get("error_count")) or 0),
+        error_rate_percent=float(_number(metrics.get("error_rate_percent")) or 0),
+        latency_p95_ms=_number(metrics.get("latency_p95_ms")),
+        top_buckets_json=json.dumps(_mapping(metrics.get("top_buckets")), ensure_ascii=False, sort_keys=True),
+        top_requesters_json=json.dumps(_mapping(metrics.get("top_requesters")), ensure_ascii=False, sort_keys=True),
+        evidence_gaps_json=json.dumps(gaps, ensure_ascii=False),
+        source=str(metrics.get("source") or "rgw_access_audit_events")[:64],
+    )
+    cutoff = now - timedelta(days=max(1, int(getattr(settings, "rgw_metric_snapshot_retention_days", 30))))
+    with db.SessionLocal() as session:
+        session.add(row)
+        session.query(RgwMetricSnapshot).filter(
+            RgwMetricSnapshot.cluster_id == cluster_id,
+            RgwMetricSnapshot.captured_at < cutoff,
+        ).delete(synchronize_session=False)
+        session.commit()
+        session.refresh(row)
+        session.expunge(row)
+        return row
 
 
 def collect_bucket_quota_stats(cluster: Cluster, *, max_buckets: int = MAX_BUCKET_STATS) -> tuple[list[dict], list[str]]:
@@ -562,5 +634,6 @@ def scan_and_alert(cluster_id: str | None = None, *, now: datetime | None = None
     quota_stats, quota_gaps = collect_bucket_quota_stats(cluster)
     snapshot["bucket_stats"] = quota_stats
     snapshot["evidence_gaps"].extend(quota_gaps)
+    persist_rgw_metric_snapshot(cluster.id, snapshot, now=now)
     with db.SessionLocal() as session:
         return sync_rgw_alerts(session, cluster, snapshot, now=now)
