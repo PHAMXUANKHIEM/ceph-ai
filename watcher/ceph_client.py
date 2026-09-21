@@ -19,6 +19,7 @@ from paramiko.hostkeys import HostKeyEntry, InvalidHostKey
 from config.settings import settings
 from shared import ceph_releases
 from shared.ceph_runner import CephCommandRunner, CephConnectionPool, CephRunnerError, CephSSHConfig
+from shared.learning_safety import CircuitBreaker
 from shared.retry import RetryPolicy, retry_sync
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,39 @@ def build_exec_command(exec_mode: str, container: str, inner_command: str) -> st
 # by watcher/collector.py as a better fallback than "always the first
 # configured node" when a check's detail text names no specific mon.
 last_successful_mon_node: str | None = None
+_MON_CIRCUITS: dict[str, CircuitBreaker] = {}
+_MON_CIRCUITS_LOCK = threading.Lock()
+_MAX_MON_CIRCUITS = 256
+
+
+def _mon_circuit_key(host: str, container_name: str, ssh_user: str, ssh_key_path: str, exec_mode: str) -> str:
+    return "|".join((host, container_name, ssh_user, ssh_key_path, exec_mode))
+
+
+def _mon_circuit(host: str, container_name: str, ssh_user: str, ssh_key_path: str, exec_mode: str) -> CircuitBreaker:
+    key = _mon_circuit_key(host, container_name, ssh_user, ssh_key_path, exec_mode)
+    with _MON_CIRCUITS_LOCK:
+        circuit = _MON_CIRCUITS.get(key)
+        if circuit is None:
+            if len(_MON_CIRCUITS) >= _MAX_MON_CIRCUITS:
+                _MON_CIRCUITS.pop(next(iter(_MON_CIRCUITS)))
+            circuit = CircuitBreaker(
+                failure_threshold=settings.ceph_mon_circuit_failure_threshold,
+                cooldown_seconds=settings.ceph_mon_circuit_cooldown_seconds,
+            )
+            _MON_CIRCUITS[key] = circuit
+        return circuit
+
+
+def get_mon_circuit_metrics() -> dict[str, int]:
+    """Return bounded MON circuit state without exposing connection details."""
+    with _MON_CIRCUITS_LOCK:
+        circuits = list(_MON_CIRCUITS.values())
+    return {
+        "tracked": len(circuits),
+        "open": sum(1 for circuit in circuits if circuit.is_open),
+        "failures": sum(circuit.failures for circuit in circuits),
+    }
 
 
 def ordered_mon_nodes(mon_nodes: list[str]) -> list[str]:
@@ -2068,6 +2102,10 @@ def query_cluster_health_with(
     pool = _get_shared_health_pool(ssh_user, ssh_key_path)
     errors: list[str] = []
     for host in ordered_mon_nodes(mon_nodes):
+        circuit = _mon_circuit(host, container_name, ssh_user, ssh_key_path, exec_mode)
+        if not circuit.allow():
+            errors.append(f"{host}: circuit breaker open")
+            continue
         try:
             def attempt() -> str:
                 remaining = deadline - time.monotonic()
@@ -2097,9 +2135,11 @@ def query_cluster_health_with(
             )
             payload = _parse_health_payload(output)
         except Exception as exc:
+            circuit.record_failure()
             logger.warning("query_cluster_health_with: %s failed: %s", host, exc)
             errors.append(f"{host}: {exc}")
             continue
+        circuit.record_success()
         if update_sticky_fallback:
             last_successful_mon_node = host
         return payload

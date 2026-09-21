@@ -280,6 +280,29 @@ def test_query_cluster_health_with_retries_transport_failure_before_success(monk
     assert calls == ["10.9.9.1", "10.9.9.1"]
 
 
+def test_query_cluster_health_opens_mon_circuit_after_repeated_failures(monkeypatch):
+    calls = []
+
+    def always_fail(host, command, user, key, timeout=None, *, pool=None):
+        calls.append(host)
+        raise CephQueryError("MON unavailable")
+
+    monkeypatch.setattr(ceph_client, "_run_remote_command_with", always_fail)
+    monkeypatch.setattr(ceph_client, "_MON_CIRCUITS", {})
+    monkeypatch.setattr(ceph_client.settings, "ceph_max_retries", 0)
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_circuit_failure_threshold", 2)
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_circuit_cooldown_seconds", 60)
+    args = (["10.9.9.90"], "circuit-test", "root", "/root/.ssh/circuit-test")
+
+    for _ in range(2):
+        with pytest.raises(CephQueryError):
+            query_cluster_health_with(*args)
+    with pytest.raises(CephQueryError, match="circuit breaker open"):
+        query_cluster_health_with(*args)
+
+    assert calls == ["10.9.9.90", "10.9.9.90"]
+
+
 def test_query_cluster_health_with_raises_when_all_nodes_fail(fake_ssh):
     fake_ssh.behavior = {"10.9.9.1": "unreachable", "10.9.9.2": "unreachable"}
 
