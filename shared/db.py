@@ -236,7 +236,14 @@ def _collect_cluster_state_events(session: Session, _flush_context) -> None:
         previous_status = str(previous_statuses[-1]) if previous_statuses else ""
         if current_status in {"RESOLVED", "IncidentStatus.RESOLVED"}:
             event_name = "snapshot_changed"
-            action_state = "succeeded"
+            # A RESOLVED row is not necessarily the result of the remediation
+            # verifier (for example, an operator may close an old incident).
+            # Only VERIFYING -> RESOLVED is allowed to claim action success.
+            action_state = (
+                "succeeded"
+                if previous_status in {"VERIFYING", "IncidentStatus.VERIFYING"}
+                else None
+            )
         elif current_status in {"FAILED", "IncidentStatus.FAILED"} and previous_status in {
             "VERIFYING", "IncidentStatus.VERIFYING",
         }:
@@ -280,7 +287,7 @@ def _publish_cluster_state_events(session: Session) -> None:
     from shared.cluster_events import publish_event
     from shared.cluster_snapshot import request_priority_refresh
     for cluster_id, (event_name, sections, action_id, action_status, action_state) in pending.items():
-        if event_name == "snapshot_changed":
+        if event_name == "snapshot_changed" and action_state == "succeeded":
             try:
                 request_priority_refresh(cluster_id, list(sections))
             except Exception:

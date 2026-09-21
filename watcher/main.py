@@ -99,7 +99,7 @@ def _acquire_watcher_process_lock(lock_path: str | None = None):
         return None
 
 
-def _run_auxiliary_scan(name: str, callback: Callable[[], None], *, background: bool) -> None:
+def _run_auxiliary_scan(name: str, callback: Callable[[], None], *, background: bool) -> bool:
     """Keep slow auxiliary collectors from delaying the core health poll.
 
     Production uses one daemon thread and a non-overlap lock per collector;
@@ -107,12 +107,12 @@ def _run_auxiliary_scan(name: str, callback: Callable[[], None], *, background: 
     """
     if not background:
         callback()
-        return
+        return True
     with _BACKGROUND_SCAN_LOCKS_GUARD:
         lock = _BACKGROUND_SCAN_LOCKS.setdefault(name, threading.Lock())
     if not lock.acquire(blocking=False):
         logger.info("run: auxiliary scan %s is still running; skipping overlapping tick", name)
-        return
+        return False
 
     def run_and_release() -> None:
         try:
@@ -123,6 +123,7 @@ def _run_auxiliary_scan(name: str, callback: Callable[[], None], *, background: 
     threading.Thread(
         target=run_and_release, name=f"watcher-aux-{name}", daemon=True,
     ).start()
+    return True
 
 # Only these statuses represent a problem worth an Incident — a transition
 # back to HEALTH_OK is a recovery, not a new incident (Story 1.4 AC #4).
@@ -1093,7 +1094,7 @@ def run(
                     except Exception:
                         logger.exception("run: dashboard status snapshot collection failed")
 
-                _run_auxiliary_scan(
+                status_scan_started = _run_auxiliary_scan(
                     f"status-{cluster_id}", scan_status, background=True,
                 )
                 last_status_snapshot_scan_at = status_now
@@ -1116,11 +1117,11 @@ def run(
                     except Exception:
                         logger.exception("run: inventory snapshot collection failed")
 
-                _run_auxiliary_scan(
+                inventory_scan_started = _run_auxiliary_scan(
                     f"inventory-{cluster_id}", scan_inventory, background=True,
                 )
                 last_inventory_scan_at = inventory_now
-            if priority_due:
+            if priority_due and status_scan_started and inventory_scan_started:
                 last_priority_refresh_marker = priority_marker
 
         # 2026-07-28: Volume (RBD) performance/saturation check — its own
@@ -1728,7 +1729,7 @@ def run_observed_cluster_loop(
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
 
-    def run_auxiliary_scan(name: str, callback: Callable[[], None]) -> None:
+    def run_auxiliary_scan(name: str, callback: Callable[[], None]) -> bool:
         """Keep bounded/test loops free of orphan daemon scans.
 
         The production observed-cluster loop is unbounded and can safely
@@ -1737,7 +1738,9 @@ def run_observed_cluster_loop(
         leave a callback running after its database fixture has moved on.
         """
         if max_iterations is None:
-            _run_auxiliary_scan(name, callback, background=True)
+            return _run_auxiliary_scan(name, callback, background=True)
+        callback()
+        return True
 
     while max_iterations is None or iterations < max_iterations:
         if stop_event is not None and stop_event.is_set():
@@ -1985,7 +1988,7 @@ def run_observed_cluster_loop(
                 >= _DASHBOARD_STATUS_SNAPSHOT_INTERVAL_SECONDS
                 or priority_due
             ):
-                run_auxiliary_scan(
+                status_scan_started = run_auxiliary_scan(
                     f"status-{cluster.id}",
                     lambda status_cluster=cluster: cluster_snapshot_collector.collect_and_publish_status(
                         status_cluster
@@ -2009,9 +2012,9 @@ def run_observed_cluster_loop(
                             inventory_cluster.name,
                         )
 
-                run_auxiliary_scan(f"inventory-{cluster.id}", scan_inventory)
+                inventory_scan_started = run_auxiliary_scan(f"inventory-{cluster.id}", scan_inventory)
                 last_inventory_scan_at = inventory_now
-            if priority_due:
+            if priority_due and status_scan_started and inventory_scan_started:
                 last_priority_refresh_marker = priority_marker
 
         iterations += 1
