@@ -450,8 +450,14 @@ force-unlock/delete pool chỉ từ một tín hiệu quan sát.
     giữ OpenStack là source of truth và khóa mutation trên report. Còn live
     Controller acceptance, đối soát orphan hai chiều toàn site và eventual
     consistency.
-- [ ] **7.2 Boot-from-volume và image service**
-  - Hiển thị dependency Glance/Cinder/VM, bảo vệ volume boot và snapshot đang dùng.
+- [~] **7.2 Boot-from-volume và image service**
+  - Đã có read-only `/api/volumes/{pool}/inventory/{image}/boot-dependencies` và
+    Volume Detail card: đối soát Cinder bootable/image metadata, Nova VM
+    attachment/boot source, Glance image và Cinder snapshot dependency. Boot
+    volume/snapshot delete guard chỉ hiển thị posture, không có mutation bypass
+    Cinder; thiếu Controller, VM hoặc Glance evidence thì trả partial/
+    `insufficient_evidence`. Còn live Controller/Glance acceptance, snapshot
+    đang được VM dùng thực tế và test image service unavailable.
 - [ ] **7.3 Multipath/NVMe-oF/iSCSI** nếu sản phẩm hỗ trợ gateway
   - Inventory gateway/path/session, health và controlled reconnect/failover.
 - [ ] **7.4 API/CLI/IaC contract**
@@ -542,6 +548,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 
 | Ngày | Mục | Trạng thái | Thay đổi / bằng chứng | Kiểm thử | Commit / việc tiếp theo |
 |---|---:|---|---|---|---|
+| 2026-09-21 | BS-07.2 Boot-from-volume và Image Service | Một phần | Thêm read-only Cinder/Nova/Glance discovery và API `/api/volumes/{pool}/inventory/{image}/boot-dependencies`; Volume Detail hiển thị boot source, VM attachment, Glance image, snapshot delete guard và evidence gaps. Không attach/detach, xóa snapshot hoặc thay đổi control plane từ endpoint này. | `tests/test_cinder_discovery.py tests/test_boot_dependencies_api.py tests/test_cinder_mapping_api.py`: `18 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn live Controller/Glance acceptance và xác minh snapshot đang được VM sử dụng; giữ `[~]`. |
 | 2026-09-20 | BS-07 Cinder mapping report | Một phần | Thêm helper mapping và API read-only `/api/volumes/{pool}/cinder-mapping`: bounded theo pool/page, đối soát RBD inventory với Cinder volume/project/attachment/instance, phân loại managed/orphan/unmanaged/insufficient evidence; không attach/detach hoặc xóa orphan. Còn live Controller acceptance và orphan đối soát hai chiều toàn site. | `tests/test_cinder_discovery.py tests/test_cinder_mapping_api.py` + volume route gate; compileall và `git diff --check` | Commit `12e2ec3c`; còn live Controller/site-wide acceptance |
 | 2026-08-17 | Kế hoạch | Hoàn thành | Tạo roadmap Block Storage, ranh giới an toàn, kiến trúc, các pha, tiêu chí nghiệm thu và quy trình bàn giao. Hiện trạng code chỉ được ghi là cần audit, chưa công nhận hoàn thành. | Chưa chạy — tài liệu kế hoạch | Bắt đầu từ mục 0; lập inventory API/schema/test hiện có trước khi sửa mã. |
 | 2026-08-17 | 0.1–0.4 | Đang làm | Audit route, model, Watcher, Worker và policy hiện có. Xác nhận nền tảng volume performance, RBD trash, full/incremental backup, retention, checksum, restore và restore drill; ghi rõ các khoảng trống CRUD/snapshot/clone/QoS/DR và hai rủi ro multi-cluster metric + force purge. | Test tập trung: `239 passed, 1 error`; lỗi ở fixture lifespan/SQLite in-memory trước assertion đầu tiên. | Sửa/cô lập lỗi setup, chạy lại baseline; ưu tiên bỏ force purge trực tiếp và hoàn thiện inventory read-only. |

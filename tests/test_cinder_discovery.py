@@ -36,6 +36,8 @@ def test_discover_cinder_volume_maps_attachments_without_exposing_credentials(mo
             "id": VOLUME_ID, "name": "database", "status": "in-use",
             "project_id": "project-1", "size": 20, "type": "fast",
             "multiattach": False,
+            "bootable": True,
+            "volume_image_metadata": {"image_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "image_name": "ubuntu"},
             "attachments": [{"attachment_id": "attach-1", "server_id": "vm-1",
                              "host_name": "compute-1", "device": "/dev/vdb"}],
         })
@@ -46,6 +48,8 @@ def test_discover_cinder_volume_maps_attachments_without_exposing_credentials(mo
     assert result["verified"] is True
     assert result["project_id"] == "project-1"
     assert result["attachments"][0]["instance_id"] == "vm-1"
+    assert result["image_metadata"]["image_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert result["bootable"] is True
     assert calls[0][0] == "controller-1"
     assert "openstack volume show" in calls[0][1]
     assert "admin-openrc" in calls[0][1]
@@ -170,3 +174,55 @@ def test_attachment_remediation_never_authorizes_direct_lock_removal():
     assert result["direct_lock_removal_supported"] is False
     assert result["stale_age_available"] is False
     assert result["read_only"] is True
+
+
+def test_boot_dependency_report_protects_boot_volume_and_snapshot_delete():
+    result = cinder_discovery.build_boot_dependency_report(
+        {
+            "status": "managed", "verified": True, "volume_id": VOLUME_ID,
+            "bootable": True, "project_id": "project-1",
+            "image_metadata": {"image_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+            "attachments": [{"instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}],
+        },
+        {"status": "ok", "items": [{"snapshot_id": "snap-1", "name": "daily", "status": "available"}]},
+        [{
+            "status": "ok", "server_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "image": {"image_id": None}, "volumes_attached": [{"volume_id": VOLUME_ID}],
+        }],
+        {"status": "ok", "image_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "name": "ubuntu"},
+    )
+
+    assert result["status"] == "observed"
+    assert result["boot_volume"]["source"] == "boot_from_volume"
+    assert result["guards"]["protect_boot_volume"] is True
+    assert result["snapshots"][0]["delete_guard"] == "review_boot_dependency"
+    assert result["mutation_supported"] is False
+
+
+def test_discover_cinder_server_and_glance_image_are_id_checked(monkeypatch):
+    monkeypatch.setattr(
+        cinder_discovery,
+        "resolve_ssh_creds",
+        lambda cluster: ("root", "/tmp/id_ed25519", "none", ""),
+    )
+
+    def fake_execute(host, command, user=None, key_path=None):
+        if "server show" in command:
+            return json.dumps({
+                "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                "name": "vm-1", "status": "ACTIVE", "image": {},
+                "volumes_attached": [{"id": VOLUME_ID, "device": "/dev/vda"}],
+            })
+        return json.dumps({
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "name": "ubuntu", "status": "active", "visibility": "public", "size": 1024,
+        })
+
+    monkeypatch.setattr(cinder_discovery, "execute_command", fake_execute)
+    server = cinder_discovery.discover_cinder_server(_cluster(), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+    glance = cinder_discovery.discover_glance_image(_cluster(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+
+    assert server["status"] == "ok"
+    assert server["volumes_attached"][0]["volume_id"] == VOLUME_ID
+    assert glance["status"] == "ok"
+    assert glance["name"] == "ubuntu"

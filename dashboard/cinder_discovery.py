@@ -77,6 +77,18 @@ def _as_bool(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes"}
 
 
+def _normalize_image_metadata(value) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "image_id": _field(value, "image_id", "id"),
+        "name": _field(value, "image_name", "name"),
+        "status": _field(value, "status"),
+        "size_bytes": _field(value, "image_size", "size"),
+        "checksum": _field(value, "checksum"),
+    }
+
+
 def normalize_cinder_volume(payload: dict, expected_id: str) -> dict:
     volume_id = str(_field(payload, "id") or "")
     if volume_id.lower() != expected_id.lower():
@@ -94,6 +106,7 @@ def normalize_cinder_volume(payload: dict, expected_id: str) -> dict:
         "availability_zone": _field(payload, "availability_zone"),
         "backend_host": _field(payload, "os-vol-host-attr:host"),
         "bootable": _field(payload, "bootable"),
+        "image_metadata": _normalize_image_metadata(_field(payload, "volume_image_metadata", "image")),
         "multiattach": _as_bool(_field(payload, "multiattach")),
         "attachments": attachments,
     }
@@ -291,6 +304,179 @@ def discover_cinder_volume(cluster, image: str) -> dict:
         if _is_not_found_error(str(exc)):
             return {"status": "not_found", "verified": True, "volume_id": volume_id}
         return {"status": "error", "verified": False, "volume_id": volume_id, "error": str(exc)}
+
+
+def _controller_context(cluster) -> tuple[list[str], str]:
+    controllers = [item.strip() for item in (cluster.openstack_controller_nodes or "").split(",") if item.strip()]
+    return controllers, (cluster.openstack_openrc_path or "").strip()
+
+
+def _run_openstack_json(cluster, command: str) -> dict | list:
+    controllers, openrc_path = _controller_context(cluster)
+    if not controllers or not openrc_path:
+        raise ValueError("OpenStack Controller/openrc chưa được cấu hình")
+    wrapped = "sh -c " + shlex.quote(
+        f". {shlex.quote(openrc_path)} >/dev/null 2>&1 && {command}"
+    )
+    ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+    raw = _execute_controller_command(controllers[0], wrapped, user=ssh_user, key_path=ssh_key_path)
+    payload = json.loads(raw)
+    if not isinstance(payload, (dict, list)):
+        raise ValueError("OpenStack CLI không trả về JSON object/array")
+    return payload
+
+
+def _normalize_server_image(value) -> dict:
+    if isinstance(value, dict):
+        return {
+            "image_id": _field(value, "id", "image_id"),
+            "name": _field(value, "name", "image_name"),
+        }
+    text = str(value or "").strip()
+    return {"image_id": text or None, "name": None}
+
+
+def normalize_cinder_server(payload: dict, expected_id: str) -> dict:
+    server_id = str(_field(payload, "id") or "")
+    if server_id.lower() != expected_id.lower():
+        raise ValueError("Nova trả về server ID không khớp attachment")
+    image = _normalize_server_image(_field(payload, "image"))
+    attached = _field(payload, "volumes_attached", "volumes attached")
+    attachments = []
+    for row in attached if isinstance(attached, list) else []:
+        if isinstance(row, dict):
+            attachments.append({
+                "volume_id": _field(row, "id", "volume_id"),
+                "device": _field(row, "device"),
+            })
+    return {
+        "status": "ok",
+        "server_id": server_id,
+        "name": _field(payload, "name"),
+        "project_id": _field(payload, "project_id", "tenant_id"),
+        "server_status": _field(payload, "status"),
+        "image": image,
+        "volumes_attached": attachments[:32],
+    }
+
+
+def discover_cinder_server(cluster, server_id: str) -> dict:
+    """Read one Nova server for boot-source evidence; never mutates Nova."""
+    if not _OPENSTACK_UUID_RE.fullmatch(str(server_id or "")):
+        return {"status": "error", "verified": False, "error": "Nova server ID không hợp lệ"}
+    try:
+        payload = _run_openstack_json(
+            cluster, f"openstack server show {shlex.quote(server_id)} -f json"
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("Nova server show không trả về JSON object")
+        return normalize_cinder_server(payload, server_id)
+    except (ExecutorError, json.JSONDecodeError, ValueError) as exc:
+        if _is_not_found_error(str(exc)):
+            return {"status": "not_found", "verified": True, "server_id": server_id}
+        return {"status": "error", "verified": False, "server_id": server_id, "error": str(exc)}
+
+
+def discover_glance_image(cluster, image_id: str) -> dict:
+    """Read a Glance image referenced by Cinder metadata, if available."""
+    if not _OPENSTACK_UUID_RE.fullmatch(str(image_id or "")):
+        return {"status": "not_available", "verified": False}
+    try:
+        payload = _run_openstack_json(
+            cluster, f"openstack image show {shlex.quote(image_id)} -f json"
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("Glance image show không trả về JSON object")
+        returned_id = str(_field(payload, "id") or "")
+        if returned_id.lower() != image_id.lower():
+            raise ValueError("Glance trả về image ID không khớp")
+        return {
+            "status": "ok",
+            "verified": True,
+            "image_id": returned_id,
+            "name": _field(payload, "name"),
+            "status_value": _field(payload, "status"),
+            "visibility": _field(payload, "visibility"),
+            "size_bytes": _field(payload, "size"),
+        }
+    except (ExecutorError, json.JSONDecodeError, ValueError) as exc:
+        if _is_not_found_error(str(exc)):
+            return {"status": "not_found", "verified": True, "image_id": image_id}
+        return {"status": "error", "verified": False, "image_id": image_id, "error": str(exc)}
+
+
+def build_boot_dependency_report(
+    cinder: dict,
+    snapshots: dict,
+    servers: list[dict],
+    glance: dict | None,
+) -> dict:
+    """Build bounded boot-volume evidence and deletion guards."""
+    cinder = cinder if isinstance(cinder, dict) else {}
+    if cinder.get("status") != "managed" or not cinder.get("verified"):
+        return {
+            "status": "not_applicable" if cinder.get("status") == "not_cinder" else "insufficient_evidence",
+            "boot_volume": {"bootable": None, "volume_id": cinder.get("volume_id")},
+            "servers": [], "image_service": {"status": "not_available"}, "snapshots": [],
+            "guards": {"protect_boot_volume": False, "snapshot_delete_requires_review": True},
+            "evidence_gaps": ["Chưa xác minh được volume thuộc Cinder; không suy luận boot dependency."],
+            "read_only": True, "mutation_supported": False,
+        }
+    snapshots = snapshots if isinstance(snapshots, dict) else {}
+    server_rows = [row for row in servers if isinstance(row, dict)][:32]
+    bootable = _as_bool(cinder.get("bootable"))
+    image_metadata = cinder.get("image_metadata") if isinstance(cinder.get("image_metadata"), dict) else {}
+    image_id = image_metadata.get("image_id")
+    volume_id = str(cinder.get("volume_id") or "")
+    boot_from_volume_servers = [
+        row for row in server_rows
+        if row.get("status") == "ok" and not (row.get("image") or {}).get("image_id")
+        and any(str(item.get("volume_id") or "").lower() == volume_id.lower() for item in row.get("volumes_attached") or [])
+    ]
+    gaps = []
+    if not server_rows and cinder.get("attachments"):
+        gaps.append("Không đọc được Nova server cho attachment; boot source chưa được xác minh.")
+    if image_id and not glance:
+        gaps.append("Cinder có image metadata nhưng chưa đọc được Glance image.")
+    if snapshots.get("status") != "ok":
+        gaps.append("Chưa đọc được đầy đủ Cinder snapshots; không đánh dấu snapshot nào đang được dùng.")
+    snapshot_rows = []
+    for row in snapshots.get("items") or []:
+        if not isinstance(row, dict):
+            continue
+        snapshot_rows.append({
+            "snapshot_id": row.get("snapshot_id"),
+            "name": row.get("name"),
+            "status": row.get("status"),
+            "created_at": row.get("created_at"),
+            "delete_guard": "review_boot_dependency" if bootable or boot_from_volume_servers else "standard_dependency_check",
+        })
+    source = "boot_from_volume" if boot_from_volume_servers else "bootable_volume" if bootable else "not_observed"
+    if not bootable and not boot_from_volume_servers and image_id:
+        source = "image_metadata_only"
+    return {
+        "status": "observed" if not gaps else "partial",
+        "boot_volume": {
+            "volume_id": volume_id,
+            "bootable": bootable,
+            "source": source,
+            "project_id": cinder.get("project_id"),
+        },
+        "servers": server_rows,
+        "image_service": glance or {
+            "status": "not_available",
+            "image_id": image_id,
+        },
+        "snapshots": snapshot_rows[:100],
+        "guards": {
+            "protect_boot_volume": bool(bootable or boot_from_volume_servers),
+            "snapshot_delete_requires_review": True,
+            "direct_delete_supported": False,
+        },
+        "evidence_gaps": gaps,
+        "read_only": True,
+        "mutation_supported": False,
+    }
 
 
 def discover_cinder_snapshots(cluster, volume_id: str) -> dict:

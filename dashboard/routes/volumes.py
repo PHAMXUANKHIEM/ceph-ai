@@ -16,8 +16,11 @@ from sqlalchemy.exc import IntegrityError
 from config.settings import settings
 from dashboard import volume_perf_analysis
 from dashboard.cinder_discovery import (
+    build_boot_dependency_report,
     build_attachment_remediation,
     build_cinder_mapping_row,
+    discover_cinder_server,
+    discover_glance_image,
     discover_cinder_snapshots,
     discover_cinder_volume,
     reconcile_cinder_attachment,
@@ -2708,6 +2711,54 @@ async def volume_inventory_detail_api(
     detail["metric_summary"] = metric_summary
     detail["audit_summary"] = audit_summary
     return {"cluster_id": cluster.id, "collected_at": utc_now().isoformat() + "Z", **detail}
+
+
+@router.get("/api/volumes/{pool}/inventory/{image}/boot-dependencies")
+async def volume_boot_dependencies_api(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Return bounded read-only Cinder/Nova/Glance boot dependency evidence."""
+    del user
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if not image or len(image) > 128 or "\x00" in image or "/" in image:
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+
+    cinder = await asyncio.to_thread(discover_cinder_volume, cluster, image)
+    if cinder.get("status") not in {"managed", "not_cinder"}:
+        report = build_boot_dependency_report(cinder, {}, [], None)
+        return {"cluster_id": cluster.id, "pool": pool, "image": image,
+                "collected_at": utc_now().isoformat() + "Z", **report}
+    if cinder.get("status") == "not_cinder":
+        report = build_boot_dependency_report(cinder, {}, [], None)
+        return {"cluster_id": cluster.id, "pool": pool, "image": image,
+                "collected_at": utc_now().isoformat() + "Z", **report}
+
+    snapshots = await asyncio.to_thread(
+        discover_cinder_snapshots, cluster, str(cinder.get("volume_id") or "")
+    )
+    attachment_rows = cinder.get("attachments") if isinstance(cinder.get("attachments"), list) else []
+    server_ids = []
+    for attachment in attachment_rows[:32]:
+        server_id = str(attachment.get("instance_id") or "").strip()
+        if server_id and server_id not in server_ids:
+            server_ids.append(server_id)
+    servers = await asyncio.gather(*(
+        asyncio.to_thread(discover_cinder_server, cluster, server_id)
+        for server_id in server_ids
+    ))
+    metadata = cinder.get("image_metadata") if isinstance(cinder.get("image_metadata"), dict) else {}
+    image_id = str(metadata.get("image_id") or "").strip()
+    glance = await asyncio.to_thread(discover_glance_image, cluster, image_id) if image_id else None
+    report = await asyncio.to_thread(build_boot_dependency_report, cinder, snapshots, list(servers), glance)
+    report.update({
+        "cluster_id": cluster.id,
+        "pool": pool,
+        "image": image,
+        "collected_at": utc_now().isoformat() + "Z",
+    })
+    return report
 
 
 @router.get("/api/volumes/{pool}/inventory/{image}/integrity")
