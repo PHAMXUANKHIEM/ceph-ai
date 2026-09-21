@@ -392,8 +392,8 @@ tests, and the default suite excludes live tests deterministically.
   the owner confirms they are not recovery evidence.
 - The initial image build exposed ignored `*.bak-*` files under copied source
   directories; `.dockerignore` now excludes `*.bak`, `*.bak-*`, recursive backup/schema
-  paths, `.codex-stage`, and `transfer`. A clean rebuild (`ceph-ai:rr07-scan`, image
-  ID `aeae2e51fc40`) contains no backup/review artifacts and no high-signal secret
+  paths, `.codex-stage`, and `transfer`. A clean rebuild from the synchronized final commit (`ceph-ai:rr07-scan-final`, image
+  ID `577a12aac369`) contains no backup/review artifacts and no high-signal secret
   signature.
 
 **Exit criteria:** no backup/schema artifact is tracked or included in the
