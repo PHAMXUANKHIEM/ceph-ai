@@ -446,6 +446,11 @@ UTC warning cleanup evidence (2026-09-21): all remaining six `datetime.utcnow()`
 call sites were replaced with `shared.time.utc_now()`; the focused Vitastor, AI
 observability, and rollout-report regression set passed `45` tests.
 
+Proxy/CSRF contract evidence (2026-09-21): `tests/test_production_readiness.py`
+passed `19` tests, covering trusted-proxy CIDR checks, malformed/direct forwarded
+headers, HSTS, Secure cookies, and CSRF token behavior. A live browser/proxy
+smoke through the real TLS terminator remains a release-stage gate.
+
 ## 12. Release test matrix
 
 The release candidate is blocked until all applicable rows are green:
