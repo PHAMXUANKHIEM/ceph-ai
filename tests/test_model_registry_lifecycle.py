@@ -145,3 +145,23 @@ def test_promotion_blocks_registry_scope_missing_host_or_metric(db_session):
         event_type=model_registry.PROMOTION_BLOCKED,
     ).one()
     assert "missing dimensions" in audit.reason
+
+
+def test_volume_scope_keeps_cluster_pool_image_metric_and_horizon(db_session):
+    row = model_registry.register_candidate(
+        db_session,
+        scope_type="VOLUME",
+        scope_key="cluster-a|pool-a|image-a|used_bytes",
+        name="volume-forecast",
+        version="seasonal_median:24h",
+        algorithm="seasonal_median",
+        feature_schema="volume-v1",
+        training_window_hours=24,
+    )
+    assert row.scope_schema == SCOPE_SCHEMA
+    assert row.cluster_id == "cluster-a"
+    assert row.entity_type == "volume"
+    assert row.entity_id == "pool-a/image-a"
+    assert row.host is None
+    assert row.metric == "used_bytes"
+    assert row.horizon_hours == 24

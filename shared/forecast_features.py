@@ -64,8 +64,20 @@ def _utc(value: datetime) -> datetime:
 
 
 def _finite(points: Iterable[MetricPoint]) -> list[MetricPoint]:
-    ordered = sorted(points, key=lambda point: _utc(point.observed_at))
-    return [point for point in ordered if math.isfinite(float(point.value))]
+    # Normalize timezone before sorting and collapse duplicate timestamps.  A
+    # duplicate is an ingestion artifact, not an extra observation; keeping
+    # the last finite sample preserves the most recent value received for that
+    # timestamp without inventing a forward-filled value.
+    by_time: dict[datetime, MetricPoint] = {}
+    for point in points:
+        try:
+            observed_at = _utc(point.observed_at)
+            value = float(point.value)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            by_time[observed_at] = MetricPoint(observed_at=observed_at, value=value)
+    return [by_time[observed_at] for observed_at in sorted(by_time)]
 
 
 def _slope(values: Sequence[float]) -> float | None:

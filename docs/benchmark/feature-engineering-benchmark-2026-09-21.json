@@ -1,0 +1,43 @@
+{
+  "benchmark": "feature_engineering",
+  "code": "shared/forecast_features.py",
+  "execution": {
+    "command": ".venv/bin/python scripts/feature_engineering_benchmark.py --repeats 3",
+    "environment": "Ceph-AI server 10.3.55.213, Python 3.11.7",
+    "side_effects": false
+  },
+  "results": [
+    {
+      "sample_count": 100,
+      "repeats": 3,
+      "wall_ms": 1.247,
+      "cpu_ms": 1.236,
+      "peak_rss_delta_kib": 0,
+      "state_bytes": 462,
+      "feature_count": 12
+    },
+    {
+      "sample_count": 1000,
+      "repeats": 3,
+      "wall_ms": 9.355,
+      "cpu_ms": 9.2,
+      "peak_rss_delta_kib": 376,
+      "state_bytes": 464,
+      "feature_count": 12
+    },
+    {
+      "sample_count": 5000,
+      "repeats": 3,
+      "wall_ms": 42.99,
+      "cpu_ms": 42.549,
+      "peak_rss_delta_kib": 1036,
+      "state_bytes": 463,
+      "feature_count": 12
+    }
+  ],
+  "notes": [
+    "Feature state remains bounded because output size depends on the profile, not history length.",
+    "RSS is process-level peak delta and is a benchmark signal, not a hard production limit.",
+    "Hard-cap enforcement and BLOCKED transition still require production policy wiring."
+  ]
+}

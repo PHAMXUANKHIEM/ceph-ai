@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from shared.delayed_feedback_evaluator import (
     FeedbackStatus,
     classify_feedback,
+    compare_estimate_with_verified,
     estimate_performance,
 )
 
@@ -42,3 +43,16 @@ def test_delayed_feedback_ready_is_still_evidence_only_and_scope_isolated():
         "cluster-a|node-1|cpu", "cluster-a|node-2|cpu",
     ]
     assert all(item.status == "READY" and not item.promotion_allowed for item in result)
+
+
+def test_delayed_estimate_is_reconciled_when_verified_labels_arrive():
+    comparison = compare_estimate_with_verified(
+        {"cluster-a|node-1|cpu": 1.0},
+        [_row(1, actual=41.0), _row(2, actual=42.0)],
+        now=NOW,
+        tolerance=1.0,
+    )
+    assert comparison[0].verified_count == 2
+    assert comparison[0].verified_mae == 1.5
+    assert comparison[0].absolute_delta == 0.5
+    assert comparison[0].status == "MATCH"

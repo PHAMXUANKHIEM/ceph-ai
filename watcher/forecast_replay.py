@@ -7,8 +7,11 @@ model state, opens alerts, sends notifications, or executes remediation.
 from __future__ import annotations
 
 import math
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+from sqlalchemy import inspect
 
 from config.settings import settings
 from shared.forecast_consensus import aggregate_forecasts
@@ -16,6 +19,24 @@ from shared.models import (
     NodeResourceForecastRun, NodeResourceModelState,
     VolumeForecastRun, VolumeModelState,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _volume_replay_schema_ready(session) -> bool:
+    try:
+        columns = {column["name"] for column in inspect(session.bind).get_columns("volume_model_states")}
+    except Exception:
+        return False
+    return "horizon_hours" in columns
+
+
+def _model_state_schema_ready(session, table_name: str) -> bool:
+    try:
+        columns = {column["name"] for column in inspect(session.bind).get_columns(table_name)}
+    except Exception:
+        return False
+    return "horizon_hours" in columns
 from watcher.node_resource_forecast import (
     ResourceForecast,
     _linear_forecast,
@@ -289,6 +310,10 @@ def compare_persisted_forecast_runs(session, *, minimum_evaluated: int | None = 
     minimum = max(1, minimum_evaluated or settings.node_resource_learning_min_outcomes)
     results: list[ShadowComparison] = []
 
+    if not _model_state_schema_ready(session, "node_resource_model_states"):
+        logger.warning("skipping node replay: node_resource_model_states.horizon_hours is not available")
+        return results
+
     node_states = session.query(NodeResourceModelState).filter_by(selected=True).all()
     for state in node_states:
         active_rows = session.query(NodeResourceForecastRun).filter_by(
@@ -352,6 +377,13 @@ def compare_persisted_forecast_runs(session, *, minimum_evaluated: int | None = 
                     [float(getattr(row, "drift_score", 0.0) or 0.0) for row in candidate_rows] or [0.0]
                 ),
             ))
+
+    # Volume horizon migration is intentionally applied by deployment, never
+    # by this read-only replay. If a live database is one migration behind,
+    # preserve node evidence and skip only the incompatible volume branch.
+    if not _volume_replay_schema_ready(session):
+        logger.warning("skipping volume replay: volume_model_states.horizon_hours is not available")
+        return results
 
     volume_states = session.query(VolumeModelState).filter_by(selected=True).all()
     for state in volume_states:

@@ -64,6 +64,16 @@ class DelayedPerformance:
     promotion_allowed: bool
 
 
+@dataclass(frozen=True)
+class DelayedPerformanceComparison:
+    scope_key: str
+    estimated_mae: float | None
+    verified_mae: float | None
+    absolute_delta: float | None
+    verified_count: int
+    status: str
+
+
 def classify_feedback(
     row: Mapping[str, object], *, now: datetime, label_sla_hours: float = 6.0,
     tolerance: float = 5.0,
@@ -130,3 +140,34 @@ def estimate_performance(
             promotion_allowed=False,
         ))
     return tuple(output)
+
+
+def compare_estimate_with_verified(
+    estimated_mae_by_scope: Mapping[str, float | None],
+    rows: Iterable[Mapping[str, object]], *,
+    now: datetime | None = None, tolerance: float = 5.0,
+) -> tuple[DelayedPerformanceComparison, ...]:
+    """Reconcile a delayed estimator once verified labels become available."""
+
+    verified_by_scope: dict[str, list[float]] = {}
+    reference_now = now or datetime.now(timezone.utc)
+    for row in rows:
+        feedback = classify_feedback(row, now=reference_now, tolerance=tolerance)
+        if feedback.status in {FeedbackStatus.VERIFIED_SUCCESS, FeedbackStatus.VERIFIED_FAILURE}:
+            if feedback.absolute_error is not None:
+                verified_by_scope.setdefault(feedback.scope_key, []).append(feedback.absolute_error)
+    scopes = sorted(set(estimated_mae_by_scope) | set(verified_by_scope))
+    result = []
+    for scope in scopes:
+        estimated = estimated_mae_by_scope.get(scope)
+        verified_values = verified_by_scope.get(scope, [])
+        verified = sum(verified_values) / len(verified_values) if verified_values else None
+        delta = abs(verified - estimated) if verified is not None and estimated is not None else None
+        result.append(DelayedPerformanceComparison(
+            scope_key=scope, estimated_mae=estimated, verified_mae=verified,
+            absolute_delta=delta, verified_count=len(verified_values),
+            status="MATCH" if delta is not None and delta <= tolerance else (
+                "DIVERGED" if delta is not None else "INSUFFICIENT_DATA"
+            ),
+        ))
+    return tuple(result)

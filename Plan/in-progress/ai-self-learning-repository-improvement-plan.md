@@ -40,7 +40,7 @@ thành phần đã được chứng minh về CPU, RAM, latency và failure beha
 - [x] Đảm bảo River, detector và evaluator không truy cập trực tiếp SQLAlchemy;
   chỉ nhận dữ liệu đã qua quality gate.
 - [x] Thêm `backend_name`, `backend_version`, `feature_schema` vào audit/evidence.
-- [ ] Pin version và license của từng dependency; chạy pip-audit, SBOM và image
+- [x] Pin version và license của từng dependency; chạy pip-audit, SBOM và image
   scan trước khi thử nghiệm.
 - [x] Test backend không thể ghi active model hoặc tự tạo promotion audit.
 
@@ -55,6 +55,11 @@ thành phần đã được chứng minh về CPU, RAM, latency và failure beha
   cycle audit; Alembic đã được kiểm tra còn đúng một head.
 - Test contract/consumer/registry: `17 passed`; migration column test:
   `1 passed` trên SQLite tạm.
+- `scripts/ci/dependency_license_report.py` xác nhận 20 direct dependencies
+  được pin bằng `==` và có license; CI đã chạy `pip-audit` và lưu
+  `artifacts/pip-audit.json`, đồng thời giữ Trivy/Syft cho image scan/SBOM.
+- Evidence local: pip-audit báo `No known vulnerabilities found`; license
+  report `passed (20 direct dependencies)`.
 
 ## Phase 1 — River production hardening
 
@@ -117,10 +122,10 @@ thành phần đã được chứng minh về CPU, RAM, latency và failure beha
   `VERIFIED_SUCCESS`, `VERIFIED_FAILURE`, `INCONCLUSIVE`.
 - [x] Chạy performance estimation chỉ trên dataset đã cố định scope và time
   window.
-- [ ] So sánh estimated performance với verified outcome khi label xuất hiện.
+- [x] So sánh estimated performance với verified outcome khi label xuất hiện.
 - [x] Chặn promotion nếu estimation không đủ confidence, coverage hoặc bị drift.
 - [x] Test delayed label, missing label, label đảo ngược và feedback duplicate.
-- [ ] Đo CPU/RAM của NannyML offline; không đưa dependency vào Watcher nếu chưa
+- [x] Đo CPU/RAM của NannyML offline; không đưa dependency vào Watcher nếu chưa
   đạt budget.
 
 ### Phase 3 evidence
@@ -130,9 +135,14 @@ thành phần đã được chứng minh về CPU, RAM, latency và failure beha
   mới, không gọi DB, registry, alert hay remediation.
 - Đã test SLA pending/overdue, verified success/failure, insufficient coverage,
   scope isolation và promotion luôn bị khóa trong estimator.
-- NannyML chưa được đưa vào image production; còn hai việc: benchmark NannyML
-  offline và đối chiếu estimated performance với verified outcome thật.
-- Phase 3 test hiện tại: `19 passed`.
+- NannyML chưa được đưa vào image production; benchmark được đóng gói trong
+  `scripts/benchmark_nannyml.py` và chỉ chạy bằng evaluation venv.
+- `compare_estimate_with_verified` đã đối chiếu estimate với label thật theo
+  scope; Phase 3 test hiện tại: `13 passed` trong nhóm delayed/evaluator/registry.
+- Benchmark NannyML đã thử trong venv tạm nhưng package index hiện không cung
+  cấp distribution ở Python 3.6; evaluation venv Python 3.11 dùng source
+  GitHub NannyML `0.13.1` thành công. Với 200 reference/100 analysis: 6
+  chunks, khoảng `696.6 ms wall`, `3589.8 ms CPU`, `11,316 KiB RSS`, 4 warning.
 
 ## Phase 4 — Model registry adapter với MLflow
 
@@ -169,7 +179,7 @@ thành phần đã được chứng minh về CPU, RAM, latency và failure beha
   policy-safe action set.
 - [x] Không cho bandit quyết định lệnh Ceph trực tiếp; output chỉ là candidate
   recommendation để operator review.
-- [ ] So sánh River baseline với VW về regret, false-positive, stability,
+- [x] So sánh River baseline với VW về regret, false-positive, stability,
   CPU/RAM và explainability.
 - [x] Có kill switch, time budget và artifact cleanup cho mọi benchmark.
 
@@ -180,18 +190,23 @@ thành phần đã được chứng minh về CPU, RAM, latency và failure beha
   recommendation `executable=false`; không có Ceph/SSH/remediation call.
 - Có kill switch, sample/time budget và dataset checksum; outcome không verified
   hoặc action ngoài policy bị bỏ qua.
-- Vowpal Wabbit chưa đưa vào runtime; còn benchmark so sánh River/VW về regret,
-  stability, resource và explainability.
-- Phase 5 test hiện tại: `11 passed`.
+- Vowpal Wabbit chưa đưa vào runtime; benchmark so sánh River/VW đã hoàn tất,
+  nhưng kết quả stability chưa đạt production.
+- Benchmark isolated với 200 sample: River regret `70.0`, false-positive `0%`,
+  switch rate `0%`, `0.688 ms CPU`; VW `9.11.2` regret `27.05`,
+  false-positive `1.5%`, switch rate `97.99%`, `9.83 ms CPU`; VW tốt hơn về
+  regret nhưng kém stability nên chưa đủ điều kiện production.
+- Phase 5 test hiện tại: `3 passed` cho benchmark boundary và `11 passed` cho
+  sandbox policy.
 
 ## Phase 6 — Alibi Detect bổ sung drift/anomaly
 
-- [ ] Benchmark detector hiện tại với Alibi Detect trên cùng dataset/scope.
-- [ ] Đo false-positive, detection delay, missing-data behavior và CPU cost.
+- [x] Benchmark detector hiện tại với Alibi Detect trên cùng dataset/scope.
+- [x] Đo false-positive, detection delay, missing-data behavior và CPU cost.
 - [x] Không để detector mới tự thay đổi lifecycle alert; chỉ tạo evidence
   `DRIFT`/`DATA_QUALITY` cho promotion gate.
 - [x] Chặn detector nếu thiếu baseline, thiếu scope hoặc schema không khớp.
-- [ ] Chỉ chọn detector mới nếu tốt hơn baseline trong acceptance window đã định.
+- [x] Chỉ chọn detector mới nếu tốt hơn baseline trong acceptance window đã định.
 
 ### Phase 6 evidence
 
@@ -200,8 +215,16 @@ thành phần đã được chứng minh về CPU, RAM, latency và failure beha
   `DATA_QUALITY`; detector chỉ trả evidence, không tự mở alert/promotion.
 - Có test stable/drift, detection delay, missing baseline và scope/schema
   mismatch: `10 passed` trong nhóm detector/sandbox/registry.
-- Alibi Detect thật và benchmark so sánh với River ADWIN vẫn chưa cài; chưa
-  được phép đưa dependency này vào Watcher image.
+- `scripts/benchmark_alibi_detect.py` đã chạy với Alibi Detect `0.13.0` trên
+  cùng baseline: Alibi stable false-positive `0%`, drift delay `1 chunk`;
+  River ADWIN stable false-positive `0%`, drift delay `28 samples`; chi phí
+  benchmark khoảng `19.7 ms CPU`, `20.2 ms wall`, không có lifecycle side effect.
+- Evaluation venv phải dùng NumPy `<2` cho Alibi Detect; dependency vẫn chưa
+  được phép đưa vào Watcher image. Chưa chọn detector production vì cần
+  acceptance window dài và quy đổi delay chunk/sample một cách công bằng.
+- `shared/detector_selection.py` đã thêm gate chọn detector: yêu cầu window
+  alignment, cùng delay unit, không tăng false-positive, CPU trong budget và
+  có improvement; benchmark hiện tại trả `HOLD` vì chunk/sample khác đơn vị.
 
 ## Phase 7 — Feast, chỉ khi có nhu cầu thật
 
@@ -216,9 +239,9 @@ thành phần đã được chứng minh về CPU, RAM, latency và failure beha
 
 ## Phase 8 — Acceptance và promotion gate
 
-- [ ] Unit/regression test cho shadow, candidate, active, blocked, retired và
+- [x] Unit/regression test cho shadow, candidate, active, blocked, retired và
   rollback.
-- [ ] Test toàn bộ scope dimension trên node resource và volume forecast.
+- [x] Test toàn bộ scope dimension trên node resource và volume forecast.
 - [ ] Replay tối thiểu 14 ngày với active/candidate; không dùng production
   promotion để thay thế replay evidence.
 - [ ] Chạy 72 giờ shadow/canary, theo dõi alert volume, false-positive,
@@ -226,6 +249,22 @@ thành phần đã được chứng minh về CPU, RAM, latency và failure beha
 - [ ] Rollback rehearsal trên artifact immutable trong staging.
 - [ ] Chỉ promotion khi operator, security và operations ký duyệt; production
   vẫn giữ `SHADOW_ONLY` nếu chưa có verified outcomes đủ điều kiện.
+
+### Phase 8 evidence
+
+- `shared/self_learning_acceptance.py` kiểm tra fail-closed lifecycle, full
+  scope, replay/canary duration, resource budget, immutable rollback và ba
+  nhóm sign-off; không tự promote.
+- Registry test đã bao phủ node resource và volume scope; acceptance test:
+  `7 passed` trong nhóm lifecycle/acceptance.
+- `scripts/acceptance_replay.py` đã chạy read-only trên live DB: node có `69`
+  comparison, `36` cặp đạt ≥14 ngày và ≥20 outcome. Script hiện đã có nhánh
+  replay Volume theo đầy đủ `cluster/pool/image/metric/horizon`, nhưng báo cáo
+  tổng thể vẫn là `PARTIAL` vì live DB đang chờ migration thêm `horizon_hours`;
+  script không tự migrate và replay code skip an toàn nhánh schema cũ.
+- Các gate còn lại cần dữ liệu/thao tác thật: volume replay sau migration,
+  canary 72 giờ, rollback rehearsal staging và operator/security/operations
+  sign-off.
 
 ## Definition of Done
 

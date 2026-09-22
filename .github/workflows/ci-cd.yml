@@ -149,6 +149,15 @@ jobs:
           set -o pipefail
           python scripts/ci/quality_gate.py 2>&1 | tee artifacts/quality-gate.log
 
+      - name: Audit Python dependencies
+        run: |
+          pip-audit --format=json --output artifacts/pip-audit.json --progress-spinner off
+
+      - name: Verify pinned dependency licenses
+        run: |
+          python scripts/ci/dependency_license_report.py \
+            --output artifacts/dependency-licenses.json
+
       - name: Build immutable CI image
         env:
           IMAGE_TAG: ceph-ai:ci-${{ github.sha }}
