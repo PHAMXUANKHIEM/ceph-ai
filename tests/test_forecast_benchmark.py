@@ -22,6 +22,11 @@ def test_anonymized_dataset_is_nab_like_and_benchmark_is_read_only():
         assert 0 <= row["cpu_time_ms"]
         assert row["precision"] is None or 0 <= row["precision"] <= 1
         assert row["recall"] is None or 0 <= row["recall"] <= 1
+    forecast_models = {row["model"] for row in report["forecast_results"]}
+    assert {"naive", "seasonal_naive", "linear"} <= forecast_models
+    assert "statsforecast" in report["unavailable"] or {
+        "statsforecast_naive", "statsforecast_seasonal_naive",
+    } <= forecast_models
 
 
 def test_nab_label_windows_are_merged_with_point_labels(tmp_path):

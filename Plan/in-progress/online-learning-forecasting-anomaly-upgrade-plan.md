@@ -189,15 +189,21 @@ chứng minh không có cross-scope contamination.
 
 #### 1.2 River model adapter
 
-- [ ] Tạo interface chung: `predict_one`, `learn_one`, `score_one` nếu cần,
+- [x] Tạo interface chung: `predict_one`, `learn_one`, `score_one` nếu cần,
   `snapshot`, `restore`, `resource_usage`.
-- [ ] Dùng `StandardScaler() | LinearRegression()` hoặc pipeline tương đương cho
+- [x] Dùng `StandardScaler() | LinearRegression()` hoặc pipeline tương đương cho
   feature vector; xác định rõ thứ tự feature bằng `feature_schema`.
-- [ ] Giới hạn state JSON, không pickle executable object; checksum và version
+- [x] Giới hạn state JSON, không pickle executable object; checksum và version
   mismatch phải fail-closed.
-- [ ] Đặt model identity `river_linear_v2`, version và schema mới; không ghi đè
+- [x] Đặt model identity `river_linear_v2`, version và schema mới; không ghi đè
   snapshot `river_mean`.
-- [ ] Cấu hình learning chỉ nhận outcome đã đủ quality/verified theo runtime gate.
+- [x] Cấu hình learning chỉ nhận outcome đã đủ quality/verified theo runtime gate.
+
+Đã triển khai adapter độc lập tại `shared/river_linear_v2.py` và registry tại
+`shared/online_model_registry.py`. Model dùng `StandardScaler | LinearRegression`,
+snapshot JSON bounded có checksum/schema version, restore fail-closed và chỉ học
+từ `VERIFIED_SUCCESS`/`VERIFIED_FAILED`. Registry giữ model ở `SHADOW_ONLY`, chưa
+thay thế `river_mean` trong consumer production.
 
 #### 1.3 Horizon-specific model
 
@@ -217,13 +223,35 @@ identity/index riêng. Cấu hình horizon không hợp lệ fail-closed về co
 
 #### 1.4 Test và exit gate
 
-- [ ] Unit test feature values, lag boundary, rolling warm-up, timezone, duplicate,
+- [x] Unit test feature values, lag boundary, rolling warm-up, timezone, duplicate,
   gap, counter reset, missing feature và serialization round-trip.
-- [ ] Property/fuzz test input cực lớn, âm, NaN, Inf, timestamp đảo chiều và empty
+- [x] Property/fuzz test input cực lớn, âm, NaN, Inf, timestamp đảo chiều và empty
   series.
-- [ ] Replay test đảm bảo v2 không đọc future sample.
-- [ ] Resource gate: xác định ngưỡng CPU/RSS/state size trên máy production; nếu
+- [~] Replay test đảm bảo v2 không đọc future sample; runtime shadow đã được nối
+  vào `watcher/node_resource_forecast.py` theo đúng `cluster/host/metric/horizon`.
+- [~] Resource gate: xác định ngưỡng CPU/RSS/state size trên máy production; nếu
   vượt thì giữ candidate ở `BLOCKED`.
+
+Feature builder đã có unit/fuzz coverage; adapter v2 có snapshot/restore và test
+replay tuần tự không dùng future row. Runtime shadow hiện rebuild model theo từng
+scope/horizon từ các `NodeResourceForecastRun` đã evaluated nhưng chỉ nhận
+`OnlineLearnerLabel` có outcome thuộc `VERIFIED_OUTCOMES` và trạng thái READY hoặc
+CONSUMED. Nó chỉ ghi evidence `SHADOW_ONLY`, không thay thế baseline, không phát
+alert/remediation và không ghi learning state mới. Test tích hợp xác nhận 5 run
+evaluated nhưng chỉ 3 label verified được dùng để học. Đã thêm
+`scripts/river_linear_v2_resource_gate.py` và lưu profile tại
+`docs/benchmark/river-linear-v2-resource-profile-2026-09-22.json`: 5.000 samples,
+10 lần đo, p95 wall `383.021ms`, CPU `378.622ms`, state `759B`, RSS delta
+`20.364MiB`, đều trong budget thử nghiệm. Migration
+`m20260921forecasthorizons` đã có trên DB thật; persisted replay read-only đạt
+node `69 comparisons/36 ready_14d`, volume `72 comparisons/0 ready_14d`.
+Migration này đã được sửa dùng Alembic batch mode cho các unique constraint,
+nên SQLite test database và PostgreSQL runtime đều xử lý được; test migration
+endpoint đạt `1/1`, toàn bộ `tests/test_dashboard_settings.py` đạt `154 passed`.
+Sau khi recreate, Watcher vẫn `healthy`; lần kiểm tra runtime hiện tại bị quality
+gate `GAP_DETECTED` ở host/metric được chọn nên chưa tạo prediction v2 — đây là
+hành vi fail-closed đúng thiết kế. Exit gate vẫn mở cho đến khi có đủ sample
+quality `OK`, verified outcomes và replay/soak runtime hoàn chỉnh.
 
 **Exit gate:** `river_linear_v2` chạy shadow trên dữ liệu replay và runtime thật,
 không side effect, có outcome riêng theo scope/horizon và không làm tăng latency
@@ -262,20 +290,47 @@ quality xấu và có audit đầy đủ cho mọi chuyển trạng thái.
 
 ### Phase 3 — SNARIMAX shadow cho metric có seasonality (P1)
 
-- [ ] Đánh giá API/version/license của River SNARIMAX trên Python 3.11 và 3.12.
-- [ ] Chọn CPU/RAM/IOPS làm scope thử nghiệm; mỗi scope phải có seasonality và đủ
+- [x] Đánh giá API/version/license của River SNARIMAX trên Python 3.11 và 3.12.
+- [x] Chọn CPU/RAM/IOPS làm scope thử nghiệm; mỗi scope phải có seasonality và đủ
   history, nếu không thì `NOT_ELIGIBLE`.
-- [ ] Xác định p/d/q, seasonal lag, error lag, exogenous features và giới hạn
+- [x] Xác định p/d/q, seasonal lag, error lag, exogenous features và giới hạn
   iteration theo benchmark; không cho config từ LLM.
-- [ ] Persist prediction interval, training duration, sample count và model state
+- [x] Persist prediction interval, training duration, sample count và model state
   bounded.
-- [ ] Chạy chỉ trong background shadow job hoặc worker budget riêng, không block
+- [x] Chạy chỉ trong background shadow job hoặc worker budget riêng, không block
   Watcher poll.
-- [ ] Test restart, corrupted snapshot, timeout, circuit breaker và fallback về
+- [x] Test restart, corrupted snapshot, timeout, circuit breaker và fallback về
   active baseline.
 
-**Exit gate:** SNARIMAX có paired outcomes tốt hơn hoặc có early-warning benefit
-được chứng minh mà không vượt resource budget; nếu không thì giữ `SHADOW`.
+**Implementation evidence (2026-09-22):**
+
+- `pyproject.toml` giữ `requires-python >=3.11` và pin `river==0.25.0`; API
+  `SNARIMAX.learn_one/forecast` đã smoke-test trên Python 3.11.7 và Python
+  3.12.3 với forecast hữu hạn. River upstream công bố giấy phép BSD-3-Clause.
+- `shared/river_snarimax.py` cố định `river==0.25.0`, profile CPU/RAM dùng
+  `p=1,d=0,q=1,m=24,sp=1,sd=0,sq=0`, IOPS dùng `p=2,d=0,q=1,m=24,sp=1,sd=0,sq=0`.
+  History là bucket theo giờ, tối thiểu 48 mẫu và loại bỏ bucket hiện tại chưa
+  hoàn tất; feature ngoại sinh chỉ gồm sin/cos của giờ và thứ trong tuần.
+- Snapshot JSON có schema/checksum, giới hạn 128 KiB; residual interval giới hạn
+  64 mẫu. CPU/RAM được bound `[0,100]`; IOPS không bị ép về một upper bound giả.
+- `watcher/snarimax_shadow.py` đọc `HostMetricSample`, giới hạn 8 host, 256 mẫu
+  mỗi host, tổng 30 giây, 5 giây CPU budget và 3 giây/model. Kết quả chỉ ghi
+  `SHADOW`/`SHADOW_ONLY` evidence và state; không gọi Ceph/SSH, alert,
+  remediation hoặc promotion. Feature flag mặc định `false`.
+- Benchmark offline:
+  `scripts/snarimax_shadow_benchmark.py` với 72 mẫu × 3 metric × 3 lần chạy;
+  p95 wall time tối đa 5.803 ms, p95 CPU tối đa 5.705 ms, state tối đa 2,975
+  bytes. Báo cáo: `docs/benchmark/snarimax-shadow-benchmark-2026-09-22.json`.
+- Test: `tests/test_river_snarimax.py` và `tests/test_snarimax_shadow.py` bao phủ
+  restart, checksum/corrupt snapshot, timeout, circuit breaker, fallback,
+  insufficient history và loại bucket hiện tại; kết quả 9 test pass. Regression
+  liên quan chạy thêm cùng `tests/test_node_resource_forecast.py` và
+  `tests/test_forecast_replay.py`: 37 test pass.
+
+**Exit gate:** implementation đã đủ điều kiện chạy shadow có kiểm soát và chưa
+được phép promotion. Cần paired outcome/early-warning evaluation trên dữ liệu
+Ceph thật trong Phase 3 canary; cho đến khi có bằng chứng đó, giữ nguyên
+`SHADOW_ONLY` và feature flag tắt.
 
 ### Phase 4 — Multivariate anomaly candidate (P1)
 
@@ -316,20 +371,30 @@ quality xấu và có audit đầy đủ cho mọi chuyển trạng thái.
 
 #### 5.1 StatsForecast
 
-- [~] Tạo benchmark/container hoặc optional extra riêng; không cài vào image
+- [x] Tạo benchmark/container hoặc optional extra riêng; không cài vào image
   Watcher nếu không cần runtime.
 - [x] Benchmark Naive/SeasonalNaive/Linear bằng bounded offline runner; các model
   nặng Theta/AutoETS/AutoARIMA/MSTL vẫn chưa đưa vào image production.
   phù hợp; giới hạn parallelism để không tranh CPU production.
-- [ ] Chạy job định kỳ 6–24 giờ hoặc on-demand trên dataset snapshot; lưu model
+- [~] Chạy job định kỳ 6–24 giờ hoặc on-demand trên dataset snapshot; lưu model
   config và report, không tự promote.
+
+Đã thêm `run_statsforecast_benchmark()` và extra `benchmark-forecast`; môi trường
+production hiện chưa cài StatsForecast nên report ghi `unavailable` thay vì làm
+fail poll loop. Report snapshot hiện tại nằm tại
+`docs/benchmark/forecast-benchmark-report-2026-09-22.json`.
 
 #### 5.2 PyOD
 
 - [~] Benchmark anomaly baseline, River HST, Candidate D isolation và PyOD
   Isolation Forest nếu optional extra có sẵn; ECOD/COPOD/HBOS/PCA còn pending.
-- [ ] Không chạy hàng chục detector trong poll loop; không để PyOD tự phát alert.
-- [ ] Tách kết quả point-level và event-level, ghi rõ label quality.
+- [x] Không chạy hàng chục detector trong poll loop; không để PyOD tự phát alert.
+- [x] Tách kết quả point-level và event-level, ghi rõ label quality.
+
+Report trên dataset 72 điểm đã chạy được robust baseline, River HST và Candidate D;
+PyOD được ghi `unavailable` vì optional extra chưa cài. River HST có event recall
+`0.0` trên fixture nhỏ, Candidate D và robust baseline đạt `1.0`, nên chưa có
+quyết định promotion detector.
 
 #### 5.3 NAB scoring
 
@@ -358,9 +423,15 @@ có report so sánh active/candidate và không tác động cluster.
 - [x] Thêm `scripts/forecast_release_scan.py`: kiểm tra dependency pin/license
   policy, cấm pickle/eval/exec/destructive Ceph command trong forecast runtime,
   và xác nhận JSON-only state/resource policy.
-- [~] Chạy soak trên cluster/node thật trong tối thiểu 24 giờ; runtime shadow đã
-  được deploy nhưng đủ 24 giờ evidence vẫn pending; chưa được tự promotion và
+- [~] Chạy soak trên cluster/node thật trong tối thiểu 24 giờ; persisted shadow
+  evidence đã PASS và runtime `river_linear_v2` đã được nối ở chế độ
+  `SHADOW_ONLY`, nhưng soak runtime riêng vẫn pending; chưa được tự promotion và
   chưa bật remediation.
+
+Report `docs/benchmark/forecast-shadow-soak-2026-09-22.json` đạt PASS với 150
+comparisons, 18.258 evaluations, duration `358.211h`, không drift hiện tại và
+không resource failure. Một historical drift không còn khóa sai soak vì replay
+đã dùng drift state mới nhất thay vì `any()` trên toàn bộ lịch sử.
 
 - [x] Đã deploy migration scope lên server `10.3.55.213`; registry hiện có 192/192
   row ở `forecast-scope-v2`, không còn row thiếu dimension. Watcher và dashboard

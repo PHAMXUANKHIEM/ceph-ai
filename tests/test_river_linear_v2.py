@@ -68,3 +68,22 @@ def test_schema_and_input_validation_are_bounded():
         learner.predict_one({"current": 1.0})
     with pytest.raises(ValueError, match="finite"):
         learner.predict_one({"current": float("nan"), "lag_1": 1.0, "rolling_mean_6": 1.0})
+
+
+def test_sequential_replay_scores_before_learning_and_never_reads_future_rows():
+    learner = RiverLinearV2()
+    rows = [
+        ({"current": 10.0, "lag_1": 9.0, "rolling_mean_6": 8.0}, 11.0),
+        ({"current": 11.0, "lag_1": 10.0, "rolling_mean_6": 9.0}, 12.0),
+        ({"current": 12.0, "lag_1": 11.0, "rolling_mean_6": 10.0}, 13.0),
+    ]
+
+    predictions = []
+    for features, actual in rows:
+        predictions.append(learner.predict_one(features))
+        learner.learn_one(features, actual, outcome="VERIFIED_SUCCESS")
+
+    assert predictions[0] is None
+    assert predictions[1] is not None
+    assert predictions[2] is not None
+    assert learner.sample_count == len(rows)

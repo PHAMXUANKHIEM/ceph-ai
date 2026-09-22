@@ -1,0 +1,235 @@
+{
+  "algorithm": "river_snarimax",
+  "backend": "river",
+  "budgets": {
+    "max_cpu_ms": 3000.0,
+    "max_peak_rss_delta_kib": 65536,
+    "max_state_bytes": 131072,
+    "max_wall_ms": 3000.0,
+    "model_timeout_seconds": 3.0
+  },
+  "checks": {
+    "all_shadow_only": true,
+    "cpu_budget": true,
+    "rss_budget": true,
+    "snapshot_budget": true,
+    "wall_budget": true
+  },
+  "passed": true,
+  "repeats": 3,
+  "runs": [
+    {
+      "cpu_ms": 5.264,
+      "interval_samples": 48,
+      "metric": "cpu",
+      "peak_rss_delta_kib": 444,
+      "profile": {
+        "d": 0,
+        "horizon_steps": 1,
+        "m": 24,
+        "p": 1,
+        "q": 1,
+        "sd": 0,
+        "sp": 1,
+        "sq": 0
+      },
+      "samples": 72,
+      "state_bytes": 2856,
+      "status": "SHADOW_ONLY",
+      "training_duration_ms": 4.872,
+      "wall_ms": 5.335
+    },
+    {
+      "cpu_ms": 4.346,
+      "interval_samples": 48,
+      "metric": "ram",
+      "peak_rss_delta_kib": 0,
+      "profile": {
+        "d": 0,
+        "horizon_steps": 1,
+        "m": 24,
+        "p": 1,
+        "q": 1,
+        "sd": 0,
+        "sp": 1,
+        "sq": 0
+      },
+      "samples": 72,
+      "state_bytes": 2849,
+      "status": "SHADOW_ONLY",
+      "training_duration_ms": 4.015,
+      "wall_ms": 4.386
+    },
+    {
+      "cpu_ms": 4.56,
+      "interval_samples": 48,
+      "metric": "iops",
+      "peak_rss_delta_kib": 0,
+      "profile": {
+        "d": 0,
+        "horizon_steps": 1,
+        "m": 24,
+        "p": 2,
+        "q": 1,
+        "sd": 0,
+        "sp": 1,
+        "sq": 0
+      },
+      "samples": 72,
+      "state_bytes": 2975,
+      "status": "SHADOW_ONLY",
+      "training_duration_ms": 4.278,
+      "wall_ms": 4.602
+    },
+    {
+      "cpu_ms": 3.483,
+      "interval_samples": 48,
+      "metric": "cpu",
+      "peak_rss_delta_kib": 0,
+      "profile": {
+        "d": 0,
+        "horizon_steps": 1,
+        "m": 24,
+        "p": 1,
+        "q": 1,
+        "sd": 0,
+        "sp": 1,
+        "sq": 0
+      },
+      "samples": 72,
+      "state_bytes": 2856,
+      "status": "SHADOW_ONLY",
+      "training_duration_ms": 3.226,
+      "wall_ms": 3.501
+    },
+    {
+      "cpu_ms": 3.864,
+      "interval_samples": 48,
+      "metric": "ram",
+      "peak_rss_delta_kib": 0,
+      "profile": {
+        "d": 0,
+        "horizon_steps": 1,
+        "m": 24,
+        "p": 1,
+        "q": 1,
+        "sd": 0,
+        "sp": 1,
+        "sq": 0
+      },
+      "samples": 72,
+      "state_bytes": 2849,
+      "status": "SHADOW_ONLY",
+      "training_duration_ms": 3.662,
+      "wall_ms": 3.902
+    },
+    {
+      "cpu_ms": 3.555,
+      "interval_samples": 48,
+      "metric": "iops",
+      "peak_rss_delta_kib": 0,
+      "profile": {
+        "d": 0,
+        "horizon_steps": 1,
+        "m": 24,
+        "p": 2,
+        "q": 1,
+        "sd": 0,
+        "sp": 1,
+        "sq": 0
+      },
+      "samples": 72,
+      "state_bytes": 2975,
+      "status": "SHADOW_ONLY",
+      "training_duration_ms": 3.353,
+      "wall_ms": 3.58
+    },
+    {
+      "cpu_ms": 3.386,
+      "interval_samples": 48,
+      "metric": "cpu",
+      "peak_rss_delta_kib": 0,
+      "profile": {
+        "d": 0,
+        "horizon_steps": 1,
+        "m": 24,
+        "p": 1,
+        "q": 1,
+        "sd": 0,
+        "sp": 1,
+        "sq": 0
+      },
+      "samples": 72,
+      "state_bytes": 2856,
+      "status": "SHADOW_ONLY",
+      "training_duration_ms": 3.203,
+      "wall_ms": 3.408
+    },
+    {
+      "cpu_ms": 4.051,
+      "interval_samples": 48,
+      "metric": "ram",
+      "peak_rss_delta_kib": 0,
+      "profile": {
+        "d": 0,
+        "horizon_steps": 1,
+        "m": 24,
+        "p": 1,
+        "q": 1,
+        "sd": 0,
+        "sp": 1,
+        "sq": 0
+      },
+      "samples": 72,
+      "state_bytes": 2849,
+      "status": "SHADOW_ONLY",
+      "training_duration_ms": 3.838,
+      "wall_ms": 4.086
+    },
+    {
+      "cpu_ms": 5.007,
+      "interval_samples": 48,
+      "metric": "iops",
+      "peak_rss_delta_kib": 0,
+      "profile": {
+        "d": 0,
+        "horizon_steps": 1,
+        "m": 24,
+        "p": 2,
+        "q": 1,
+        "sd": 0,
+        "sp": 1,
+        "sq": 0
+      },
+      "samples": 72,
+      "state_bytes": 2975,
+      "status": "SHADOW_ONLY",
+      "training_duration_ms": 4.734,
+      "wall_ms": 5.052
+    }
+  ],
+  "samples": 72,
+  "summary": {
+    "cpu": {
+      "all_shadow_only": true,
+      "max_state_bytes": 2856,
+      "p95_cpu_ms": 5.264,
+      "p95_wall_ms": 5.335,
+      "peak_rss_delta_kib": 444
+    },
+    "iops": {
+      "all_shadow_only": true,
+      "max_state_bytes": 2975,
+      "p95_cpu_ms": 5.007,
+      "p95_wall_ms": 5.052,
+      "peak_rss_delta_kib": 0
+    },
+    "ram": {
+      "all_shadow_only": true,
+      "max_state_bytes": 2849,
+      "p95_cpu_ms": 4.346,
+      "p95_wall_ms": 4.386,
+      "peak_rss_delta_kib": 0
+    }
+  }
+}

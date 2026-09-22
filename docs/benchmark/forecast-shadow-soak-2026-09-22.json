@@ -1,0 +1,27 @@
+{
+  "comparison_count": 150,
+  "read_only": true,
+  "schema": "ceph-ai.forecast-shadow-soak.v1",
+  "soak": {
+    "checked_at": "2026-09-22T02:12:07.168320+00:00",
+    "checks": {
+      "minimum_duration": true,
+      "minimum_evaluations": true,
+      "no_drift": true,
+      "resource_budget": true,
+      "shadow_only": true
+    },
+    "comparison_count": 150,
+    "drifted_comparisons": 0,
+    "duration_hours": 358.211,
+    "evaluations": 18258,
+    "resource_budget_failures": 0,
+    "side_effects": "read-only; no promotion, notification, alert or remediation",
+    "status": "PASS",
+    "statuses": [
+      "HOLD",
+      "INSUFFICIENT_DATA",
+      "PROMISING"
+    ]
+  }
+}

@@ -36,6 +36,7 @@ from shared.forecast_metrics import update_rolling_metrics
 from shared.learning_runtime import evaluate as evaluate_learning_runtime
 from shared.models import (
     Cluster,
+    OnlineLearnerLabel,
     NodeResourceForecastAlert,
     NodeResourceForecastAlertEvent,
     NodeResourceForecastRun,
@@ -43,6 +44,8 @@ from shared.models import (
     NodeResourceModelState,
 )
 from shared.online_learning import MODEL_VERSION, load_or_reset_state
+from shared.online_model_registry import create_online_model
+from shared.river_linear_v2 import VERIFIED_OUTCOMES
 from shared.telegram_alerts import send_node_forecast_alert
 
 logger = logging.getLogger(__name__)
@@ -675,6 +678,10 @@ def _shadow_evidence(
             "enabled": candidate_enabled("candidate_d_isolation"),
         },
     ]
+    river_v2 = _river_linear_v2_shadow_evidence(
+        session, cluster, host, metric, points, horizon_hours=horizon_hours,
+    )
+    evidence.append(river_v2)
     for name, report in adwin.streams.items():
         evidence.append({
             "shadow_detector": "river_adwin",
@@ -688,6 +695,96 @@ def _shadow_evidence(
             "execution_mode": "SHADOW_ONLY",
         })
     return evidence
+
+
+def _river_linear_v2_shadow_evidence(
+    session, cluster: str, host: str, metric: str,
+    points: list[tuple[datetime, float]], *, horizon_hours: int,
+) -> dict:
+    """Replay verified labels into v2 without mutating runtime or DB state."""
+    current = build_features(
+        [MetricPoint(observed_at=timestamp, value=value) for timestamp, value in points],
+        metric=metric, horizon_hours=horizon_hours,
+    )
+    base = {
+        "shadow_detector": "river_linear_v2",
+        "algorithm": "river_linear_v2",
+        "model_version": "river-linear-v2",
+        "execution_mode": "SHADOW_ONLY",
+        "scope_key": f"{cluster}|{host}|{metric}|h{horizon_hours}",
+        "feature_schema": current.feature_schema,
+        "quality_status": current.quality_status,
+        "sample_count": 0,
+        "prediction": None,
+        "state_bytes": 0,
+    }
+    if current.quality_status != "OK":
+        base["reason"] = "current feature quality is not OK"
+        return base
+
+    model = create_online_model(
+        "river_linear_v2",
+        feature_names=tuple(current.features),
+        feature_schema=current.feature_schema,
+    )
+    try:
+        runs = session.query(NodeResourceForecastRun).filter(
+            NodeResourceForecastRun.cluster_name == cluster,
+            NodeResourceForecastRun.host == host,
+            NodeResourceForecastRun.metric == metric,
+            NodeResourceForecastRun.horizon_hours == horizon_hours,
+            NodeResourceForecastRun.algorithm == "linear",
+            NodeResourceForecastRun.status == "EVALUATED",
+            NodeResourceForecastRun.actual_percent.isnot(None),
+        ).order_by(NodeResourceForecastRun.target_at.desc()).limit(512).all()
+        run_ids = [run.id for run in runs]
+        labels = []
+        if run_ids:
+            labels = session.query(OnlineLearnerLabel).filter(
+                OnlineLearnerLabel.source_run_id.in_(run_ids),
+                OnlineLearnerLabel.outcome.in_(VERIFIED_OUTCOMES),
+                OnlineLearnerLabel.status.in_(("READY", "CONSUMED")),
+            ).all()
+    except Exception:
+        logger.warning(
+            "river_linear_v2 shadow evidence unavailable for %s/%s/%s/h%s",
+            cluster, host, metric, horizon_hours, exc_info=True,
+        )
+        base["reason"] = "verified outcome query unavailable"
+        return base
+    label_by_run = {label.source_run_id: label for label in labels}
+    for run in reversed(runs):
+        label = label_by_run.get(run.id)
+        if label is None:
+            continue
+        target_time = run.predicted_at
+        if target_time.tzinfo is None:
+            target_time = target_time.replace(tzinfo=timezone.utc)
+        historical = build_features(
+            [
+                MetricPoint(observed_at=timestamp, value=value)
+                for timestamp, value in points if timestamp <= target_time
+            ],
+            observed_at=target_time,
+            metric=metric,
+            horizon_hours=horizon_hours,
+        )
+        if historical.quality_status != "OK" or set(historical.features) != set(current.features):
+            continue
+        model.learn_one(
+            historical.features,
+            label.label_value,
+            outcome=label.outcome,
+        )
+    base["sample_count"] = model.sample_count
+    base["verified_outcomes"] = len(labels)
+    base["state_bytes"] = int(model.resource_usage()["state_bytes"])
+    if model.sample_count < max(1, int(settings.online_learning_min_verified_evidence)):
+        base["reason"] = "insufficient verified outcomes"
+        return base
+    base["prediction"] = model.predict_one(current.features)
+    base["reason"] = "verified shadow replay"
+    return base
 
 
 def adaptive_forecast(

@@ -38,6 +38,7 @@ from watcher import (
     learning_retention,
     performance_rca_monitor,
     rgw_alerting,
+    snarimax_shadow,
     volume_topology,
     vitastor_monitor,
 )
@@ -930,6 +931,7 @@ def run(
     # shorter cadence than the CRUSH/RCA scans. Keep it independent so a
     # five-minute CRUSH interval cannot leave the chart with only one point.
     last_host_metrics_scan_at: Optional[datetime] = initial_auxiliary_scan_at
+    last_snarimax_shadow_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_volume_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_volume_topology_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_capacity_forecast_scan_at: Optional[datetime] = None
@@ -1396,6 +1398,20 @@ def run(
             )
             last_host_metrics_scan_at = now
 
+        if settings.snarimax_shadow_enabled and (
+            last_snarimax_shadow_scan_at is None
+            or (now - last_snarimax_shadow_scan_at).total_seconds()
+            >= settings.snarimax_shadow_interval_seconds
+        ):
+            _run_auxiliary_scan(
+                f"snarimax-shadow-{cluster_id or 'default'}",
+                lambda: snarimax_shadow.run_cluster_shadow(
+                    cluster_id or "__default__", settings.cluster_name, now=now,
+                ),
+                background=True,
+            )
+            last_snarimax_shadow_scan_at = now
+
         if settings.capacity_forecast_enabled and cluster_id and (
             last_capacity_forecast_scan_at is None
             or (now - last_capacity_forecast_scan_at).total_seconds()
@@ -1741,6 +1757,7 @@ def run_observed_cluster_loop(
     last_checks: frozenset = frozenset()
     last_crush_scan_at: Optional[datetime] = None
     last_host_metrics_scan_at: Optional[datetime] = None
+    last_snarimax_shadow_scan_at: Optional[datetime] = None
     last_volume_scan_at: Optional[datetime] = None
     last_volume_topology_scan_at: Optional[datetime] = None
     last_trash_capacity_scan_at: Optional[datetime] = None
@@ -1955,6 +1972,19 @@ def run_observed_cluster_loop(
                     lambda: host_metrics.collect_and_store(cluster.id, cluster),
                 )
                 last_host_metrics_scan_at = now
+
+            if settings.snarimax_shadow_enabled and (
+                last_snarimax_shadow_scan_at is None
+                or (now - last_snarimax_shadow_scan_at).total_seconds()
+                >= settings.snarimax_shadow_interval_seconds
+            ):
+                run_auxiliary_scan(
+                    f"snarimax-shadow-{cluster.id}",
+                    lambda: snarimax_shadow.run_cluster_shadow(
+                        cluster.id, cluster.name, now=now,
+                    ),
+                )
+                last_snarimax_shadow_scan_at = now
 
             if settings.capacity_forecast_enabled and (
                 stop_event is None or not stop_event.is_set()

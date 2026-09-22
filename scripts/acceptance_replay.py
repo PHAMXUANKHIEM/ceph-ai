@@ -12,10 +12,21 @@ from sqlalchemy import inspect, text
 from shared.db import SessionLocal
 
 
+def _node_replay_schema_ready(session) -> bool:
+    try:
+        columns = {
+            column["name"]
+            for column in inspect(session.bind).get_columns("node_resource_model_states")
+        }
+    except Exception:
+        return False
+    return "horizon_hours" in columns
+
+
 def _node_evidence(session) -> dict[str, object]:
     total = ready = 0
     states = session.execute(text(
-        "SELECT cluster_name, host, metric, algorithm, window_hours "
+        "SELECT cluster_name, host, metric, algorithm, window_hours, horizon_hours "
         "FROM node_resource_model_states WHERE selected = true"
     )).mappings()
     for state in states:
@@ -24,19 +35,22 @@ def _node_evidence(session) -> dict[str, object]:
                 "SELECT target_at FROM node_resource_forecast_runs "
                 "WHERE cluster_name=:cluster AND host=:host AND metric=:metric "
                 "AND algorithm=:algorithm AND window_hours=:window "
+                "AND horizon_hours=:horizon "
                 "AND status='EVALUATED' AND actual_percent IS NOT NULL"
             ), {
                 "cluster": state["cluster_name"], "host": state["host"],
                 "metric": state["metric"], "algorithm": state["algorithm"],
-                "window": state["window_hours"],
+                "window": state["window_hours"], "horizon": state["horizon_hours"],
             }).mappings()
         }
         candidates = list(session.execute(text(
-            "SELECT algorithm, window_hours, target_at FROM node_resource_forecast_runs "
-            "WHERE cluster_name=:cluster AND host=:host AND metric=:metric "
+                "SELECT algorithm, window_hours, target_at FROM node_resource_forecast_runs "
+                "WHERE cluster_name=:cluster AND host=:host AND metric=:metric "
+                "AND horizon_hours=:horizon "
             "AND status='EVALUATED' AND actual_percent IS NOT NULL"
         ), {
             "cluster": state["cluster_name"], "host": state["host"], "metric": state["metric"],
+            "horizon": state["horizon_hours"],
         }).mappings())
         for algorithm, window in sorted({(row["algorithm"], row["window_hours"]) for row in candidates}):
             if (algorithm, window) == (state["algorithm"], state["window_hours"]):
@@ -107,10 +121,18 @@ def _volume_evidence(session) -> dict[str, object]:
 
 def build_report() -> dict[str, object]:
     with SessionLocal() as session:
-        try:
-            node = _node_evidence(session)
-        except Exception as exc:
-            node = {"comparisons": 0, "ready_14d": 0, "status": "BLOCKED_MIGRATION_PENDING", "reason": str(exc)[:240]}
+        if not _node_replay_schema_ready(session):
+            node = {
+                "comparisons": 0,
+                "ready_14d": 0,
+                "status": "BLOCKED_MIGRATION_PENDING",
+                "reason": "node forecast horizon_hours is missing",
+            }
+        else:
+            try:
+                node = {**_node_evidence(session), "status": "REPLAYED", "reason": None}
+            except Exception as exc:
+                node = {"comparisons": 0, "ready_14d": 0, "status": "BLOCKED_REPLAY_ERROR", "reason": str(exc)[:240]}
         volume_columns = {column["name"] for column in inspect(session.bind).get_columns("volume_model_states")}
         volume_run_columns = {column["name"] for column in inspect(session.bind).get_columns("volume_forecast_runs")}
         if "horizon_hours" not in volume_columns or "horizon_hours" not in volume_run_columns:

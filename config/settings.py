@@ -724,6 +724,19 @@ class Settings(BaseSettings):
     # trend.  Disabled by default so an existing SSH-only deployment does
     # not unexpectedly start writing to Loki.
     node_resource_forecast_enabled: bool = False
+    # SNARIMAX is an opt-in, read-only shadow candidate. It reads persisted
+    # HostMetricSample rows in a background scan and never feeds alerting or
+    # remediation. All model/profile limits are bounded here, not user/LLM
+    # configurable at request time.
+    snarimax_shadow_enabled: bool = False
+    snarimax_shadow_interval_seconds: int = Field(default=900, ge=60, le=86400)
+    snarimax_shadow_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    snarimax_shadow_model_timeout_seconds: float = Field(default=3.0, gt=0, le=60)
+    snarimax_shadow_cpu_budget_seconds: float = Field(default=5.0, gt=0, le=60)
+    snarimax_shadow_max_hosts: int = Field(default=8, ge=1, le=64)
+    snarimax_shadow_max_samples: int = Field(default=256, ge=48, le=2000)
+    snarimax_shadow_circuit_breaker_failures: int = Field(default=3, ge=1, le=20)
+    snarimax_shadow_circuit_breaker_cooldown_seconds: int = Field(default=300, ge=1, le=86400)
     # Phase 0.2: the future River/online learner has an independent safety
     # gate. Existing deterministic forecast collection remains controlled by
     # node_resource_forecast_enabled above; these flags only control online

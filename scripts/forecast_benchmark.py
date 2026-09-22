@@ -276,6 +276,54 @@ def run_forecast_benchmark(
     return results
 
 
+def run_statsforecast_benchmark(
+    points: list[Point], *, horizon: int = 1, season_length: int = 24,
+) -> list[ForecastBenchmarkResult]:
+    """Run optional StatsForecast models in an expanding, read-only replay."""
+    try:
+        import pandas as pd
+        from statsforecast import StatsForecast
+        from statsforecast.models import Naive, SeasonalNaive
+    except ImportError as exc:
+        raise RuntimeError(
+            "StatsForecast is optional; install the benchmark-forecast extra to run this detector"
+        ) from exc
+
+    horizon = max(1, int(horizon))
+    season_length = max(2, int(season_length))
+    models = [Naive(), SeasonalNaive(season_length=season_length)]
+    names = ["statsforecast_naive", "statsforecast_seasonal_naive"]
+    pairs: dict[str, list[tuple[float, float]]] = {name: [] for name in names}
+    skipped = {name: 0 for name in names}
+    started = time.process_time_ns()
+    for index in range(len(points) - horizon):
+        history = points[:index + 1]
+        if len(history) < (season_length if index else 1):
+            for name in names:
+                skipped[name] += 1
+            continue
+        frame = pd.DataFrame({
+            "unique_id": ["series"] * len(history),
+            "ds": [point.timestamp.replace(tzinfo=None) for point in history],
+            "y": [point.value for point in history],
+        })
+        forecast = StatsForecast(models=models, freq="h", n_jobs=1).forecast(
+            df=frame, h=horizon,
+        )
+        actual = points[index + horizon].value
+        for name, column in zip(names, ("Naive", "SeasonalNaive")):
+            value = forecast[column].iloc[-1] if column in forecast else None
+            if value is None or not math.isfinite(float(value)):
+                skipped[name] += 1
+            else:
+                pairs[name].append((float(value), actual))
+    cpu_ms = (time.process_time_ns() - started) / 1_000_000
+    return [
+        _forecast_score(name, pairs[name], skipped[name], cpu_ms)
+        for name in names
+    ]
+
+
 def run_benchmark(points: list[Point], *, history_size: int = 24, threshold: float = 3.5) -> dict[str, object]:
     if len(points) <= history_size:
         raise ValueError("dataset is shorter than the benchmark history window")
@@ -307,6 +355,11 @@ def run_benchmark(points: list[Point], *, history_size: int = 24, threshold: flo
     else:
         cpu_ms = (time.process_time_ns() - started) / 1_000_000
         results.append(_score_result("pyod_iforest", points, predicted, cpu_ms))
+    forecast_results = [asdict(result) for result in run_forecast_benchmark(points)]
+    try:
+        forecast_results.extend(asdict(result) for result in run_statsforecast_benchmark(points))
+    except RuntimeError as exc:
+        unavailable["statsforecast"] = str(exc)
     return {
         "format": "NAB-like",
         "dataset_points": len(points),
@@ -316,9 +369,7 @@ def run_benchmark(points: list[Point], *, history_size: int = 24, threshold: flo
         "threshold": threshold,
         "results": [asdict(result) for result in results],
         "unavailable": unavailable,
-        "forecast_results": [
-            asdict(result) for result in run_forecast_benchmark(points)
-        ],
+        "forecast_results": forecast_results,
         "side_effects": "read-only; no database, alert, notification, remediation, or model-state writes",
     }
 

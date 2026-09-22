@@ -28,11 +28,15 @@ def upgrade() -> None:
         "ix_node_resource_forecast_scope", "node_resource_forecast_runs",
         ["cluster_name", "host", "metric", "horizon_hours"], unique=False,
     )
-    op.drop_constraint("uq_node_resource_model_identity", "node_resource_model_states", type_="unique")
-    op.create_unique_constraint(
-        "uq_node_resource_model_identity", "node_resource_model_states",
-        ["cluster_name", "host", "metric", "algorithm", "window_hours", "horizon_hours"],
-    )
+    # SQLite cannot ALTER a table constraint directly.  Batch mode uses the
+    # copy-and-move strategy there while remaining a normal ALTER on engines
+    # that support constraint changes.
+    with op.batch_alter_table("node_resource_model_states") as batch_op:
+        batch_op.drop_constraint("uq_node_resource_model_identity", type_="unique")
+        batch_op.create_unique_constraint(
+            "uq_node_resource_model_identity",
+            ["cluster_name", "host", "metric", "algorithm", "window_hours", "horizon_hours"],
+        )
     op.create_index(
         "ix_node_resource_model_scope", "node_resource_model_states",
         ["cluster_name", "host", "metric", "horizon_hours"], unique=False,
@@ -55,12 +59,13 @@ def upgrade() -> None:
         "ix_volume_forecast_scope", "volume_forecast_runs",
         ["cluster_id", "pool", "image", "metric", "horizon_hours"], unique=False,
     )
-    op.drop_constraint("uq_volume_model_identity", "volume_model_states", type_="unique")
-    op.drop_index("ix_volume_model_scope", table_name="volume_model_states")
-    op.create_unique_constraint(
-        "uq_volume_model_identity", "volume_model_states",
-        ["cluster_id", "pool", "image", "metric", "algorithm", "window_hours", "horizon_hours"],
-    )
+    with op.batch_alter_table("volume_model_states") as batch_op:
+        batch_op.drop_constraint("uq_volume_model_identity", type_="unique")
+        batch_op.drop_index("ix_volume_model_scope")
+        batch_op.create_unique_constraint(
+            "uq_volume_model_identity",
+            ["cluster_id", "pool", "image", "metric", "algorithm", "window_hours", "horizon_hours"],
+        )
     op.create_index(
         "ix_volume_model_scope", "volume_model_states",
         ["cluster_id", "pool", "image", "metric", "horizon_hours"], unique=False,
@@ -69,11 +74,12 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_node_resource_model_scope", table_name="node_resource_model_states")
-    op.drop_constraint("uq_node_resource_model_identity", "node_resource_model_states", type_="unique")
-    op.create_unique_constraint(
-        "uq_node_resource_model_identity", "node_resource_model_states",
-        ["cluster_name", "host", "metric", "algorithm", "window_hours"],
-    )
+    with op.batch_alter_table("node_resource_model_states") as batch_op:
+        batch_op.drop_constraint("uq_node_resource_model_identity", type_="unique")
+        batch_op.create_unique_constraint(
+            "uq_node_resource_model_identity",
+            ["cluster_name", "host", "metric", "algorithm", "window_hours"],
+        )
     op.drop_index("ix_node_resource_forecast_scope", table_name="node_resource_forecast_runs")
     op.drop_index("ix_node_resource_forecast_due", table_name="node_resource_forecast_runs")
     op.create_index(
@@ -83,11 +89,12 @@ def downgrade() -> None:
     op.drop_column("node_resource_model_states", "horizon_hours")
     op.drop_column("node_resource_forecast_runs", "horizon_hours")
     op.drop_index("ix_volume_model_scope", table_name="volume_model_states")
-    op.drop_constraint("uq_volume_model_identity", "volume_model_states", type_="unique")
-    op.create_unique_constraint(
-        "uq_volume_model_identity", "volume_model_states",
-        ["cluster_id", "pool", "image", "metric", "algorithm", "window_hours"],
-    )
+    with op.batch_alter_table("volume_model_states") as batch_op:
+        batch_op.drop_constraint("uq_volume_model_identity", type_="unique")
+        batch_op.create_unique_constraint(
+            "uq_volume_model_identity",
+            ["cluster_id", "pool", "image", "metric", "algorithm", "window_hours"],
+        )
     op.create_index(
         "ix_volume_model_scope", "volume_model_states",
         ["cluster_id", "pool", "image", "metric"], unique=False,

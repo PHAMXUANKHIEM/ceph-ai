@@ -257,14 +257,16 @@ thành phần đã được chứng minh về CPU, RAM, latency và failure beha
   nhóm sign-off; không tự promote.
 - Registry test đã bao phủ node resource và volume scope; acceptance test:
   `7 passed` trong nhóm lifecycle/acceptance.
-- `scripts/acceptance_replay.py` đã chạy read-only trên live DB: node có `69`
-  comparison, `36` cặp đạt ≥14 ngày và ≥20 outcome. Script hiện đã có nhánh
-  replay Volume theo đầy đủ `cluster/pool/image/metric/horizon`, nhưng báo cáo
-  tổng thể vẫn là `PARTIAL` vì live DB đang chờ migration thêm `horizon_hours`;
-  script không tự migrate và replay code skip an toàn nhánh schema cũ.
-- Các gate còn lại cần dữ liệu/thao tác thật: volume replay sau migration,
-  canary 72 giờ, rollback rehearsal staging và operator/security/operations
-  sign-off.
+- Migration `m20260921forecasthorizons` đã được áp dụng trên live DB; revision
+  live và repository đều là một head, cả bốn bảng forecast đều có
+  `horizon_hours`.
+- `scripts/acceptance_replay.py` đã chạy read-only trên live DB với đầy đủ
+  scope `cluster/host/metric` và `cluster/pool/image/metric/horizon`: node có
+  `69` comparisons, `36` cặp đạt ≥14 ngày; volume có `72` comparisons nhưng
+  `0` cặp đạt ≥14 ngày. Tổng trạng thái vẫn `PARTIAL` do volume chưa đủ
+  lịch sử, không còn do thiếu migration/schema.
+- Các gate còn lại cần dữ liệu/thao tác thật: volume đủ 14 ngày, canary 72 giờ,
+  rollback rehearsal staging và operator/security/operations sign-off.
 
 ## Definition of Done
 

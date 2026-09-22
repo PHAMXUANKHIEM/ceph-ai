@@ -68,7 +68,9 @@ def get_storage_metrics(*, max_entries: int = 20_000) -> dict[str, int | bool]:
             if index >= max_entries:
                 truncated = True
                 break
-            if not entry.is_file() or entry.is_symlink() or entry.suffix != ".json":
+            # Storage metrics cover payloads and bounded lock/temp files.  The
+            # pruning path remains JSON-only so active locks are never removed.
+            if not entry.is_file() or entry.is_symlink():
                 continue
             try:
                 size = max(0, int(entry.stat().st_size))

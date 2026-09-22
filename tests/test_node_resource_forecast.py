@@ -7,7 +7,12 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from shared.db import Base
-from shared.models import NodeResourceForecastAlert, NodeResourceForecastRun, NodeResourceModelState
+from shared.models import (
+    NodeResourceForecastAlert,
+    NodeResourceForecastRun,
+    NodeResourceModelState,
+    OnlineLearnerLabel,
+)
 from watcher import node_resource_forecast as forecast
 
 
@@ -422,3 +427,49 @@ def test_direct_observation_evaluates_due_cpu_and_ram(monkeypatch):
         rows = session.query(NodeResourceForecastRun).order_by(NodeResourceForecastRun.metric).all()
         assert all(row.status == "EVALUATED" for row in rows)
         assert {row.metric: row.absolute_error for row in rows} == {"cpu": 2, "ram": 1}
+
+
+def test_river_linear_v2_shadow_learns_only_verified_labels(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    monkeypatch.setattr(forecast.settings, "online_learning_min_verified_evidence", 3)
+    origin = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    points = [
+        (origin + timedelta(minutes=5 * index), 20.0 + 0.1 * index)
+        for index in range(72)
+    ]
+    with factory() as session:
+        runs = []
+        for index in range(36, 41):
+            predicted_at = points[index][0].replace(tzinfo=None)
+            run = NodeResourceForecastRun(
+                cluster_name="CS-LAB", host="node-1", metric="cpu",
+                algorithm="linear", window_hours=24, horizon_hours=1,
+                predicted_at=predicted_at,
+                target_at=predicted_at + timedelta(hours=1),
+                current_percent=points[index][1], predicted_percent=points[index][1] + 1,
+                confidence=0.8, actual_percent=points[index + 1][1],
+                absolute_error=1.0, status="EVALUATED",
+                idempotency_key=f"shadow-{index}", evaluated_at=predicted_at,
+            )
+            session.add(run)
+            runs.append(run)
+        session.flush()
+        for index, run in enumerate(runs[:3]):
+            session.add(OnlineLearnerLabel(
+                cluster_key="cluster-1", host="node-1", metric="cpu",
+                sample_id=f"label-{index}", source_run_id=run.id,
+                observed_at=run.target_at, label_value=run.actual_percent,
+                outcome="VERIFIED_SUCCESS", evidence_count=1,
+                source_actor="test", status="READY", reason="verified test label",
+                verified_at=run.target_at,
+            ))
+        session.commit()
+
+        evidence = forecast._river_linear_v2_shadow_evidence(
+            session, "CS-LAB", "node-1", "cpu", points, horizon_hours=1,
+        )
+
+    assert evidence["execution_mode"] == "SHADOW_ONLY"
+    assert evidence["verified_outcomes"] == 3
+    assert evidence["sample_count"] == 3
+    assert evidence["prediction"] is not None

@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from config.settings import settings
-from watcher.forecast_replay import replay_resource_forecasts
+from watcher.forecast_replay import _latest_candidate_drift, replay_resource_forecasts
 import watcher.forecast_replay as replay_module
 
 
@@ -55,3 +56,22 @@ def test_replay_does_not_create_alerts_or_database_state(monkeypatch):
     result = replay_resource_forecasts(points, "ram", horizon_hours=1, window_hours=[6])
 
     assert result["consensus"].evaluated > 0
+
+
+def test_persisted_replay_keeps_node_and_volume_horizons_isolated():
+    source = (Path(__file__).resolve().parents[1] / "watcher" / "forecast_replay.py").read_text(encoding="utf-8")
+    assert "horizon_hours=state.horizon_hours" in source
+    assert "NodeResourceForecastRun.horizon_hours == state.horizon_hours" in source
+    assert "VolumeForecastRun.horizon_hours == state.horizon_hours" in source
+
+
+def test_soak_uses_latest_drift_instead_of_any_historical_drift():
+    class Row:
+        def __init__(self, target_at, status, score):
+            self.target_at = target_at
+            self.drift_status = status
+            self.drift_score = score
+
+    old = Row(datetime(2026, 1, 1, tzinfo=timezone.utc), "DRIFT", 1.0)
+    latest = Row(datetime(2026, 1, 2, tzinfo=timezone.utc), "STABLE", 0.0)
+    assert _latest_candidate_drift([old, latest]) == ("STABLE", 0.0)

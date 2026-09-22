@@ -34,3 +34,11 @@ Cài dependency tùy chọn trong môi trường benchmark riêng:
 pip install -e '.[benchmark]'
 python scripts/forecast_benchmark.py docs/benchmark/ceph-node-cpu-anonymized.csv
 ```
+
+StatsForecast được tách riêng khỏi extra PyOD và không được cài vào image
+Watcher/Worker:
+
+```bash
+pip install -e '.[benchmark-forecast]'
+python scripts/forecast_benchmark.py docs/benchmark/ceph-node-cpu-anonymized.csv
+```

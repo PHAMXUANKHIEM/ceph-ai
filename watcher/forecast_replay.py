@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy import inspect
 
@@ -18,6 +18,12 @@ from shared.forecast_consensus import aggregate_forecasts
 from shared.models import (
     NodeResourceForecastRun, NodeResourceModelState,
     VolumeForecastRun, VolumeModelState,
+)
+from watcher.node_resource_forecast import (
+    ResourceForecast,
+    _linear_forecast,
+    _rolling_quantile_forecast,
+    _window_points,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,12 +43,6 @@ def _model_state_schema_ready(session, table_name: str) -> bool:
     except Exception:
         return False
     return "horizon_hours" in columns
-from watcher.node_resource_forecast import (
-    ResourceForecast,
-    _linear_forecast,
-    _rolling_quantile_forecast,
-    _window_points,
-)
 
 
 @dataclass(frozen=True)
@@ -106,6 +106,16 @@ def _empty(algorithm: str, skipped: int = 0) -> ReplayMetrics:
         precision=None, false_positive_rate=None,
         true_positives=0, false_positives=0,
     )
+
+
+def _latest_candidate_drift(rows: list[object]) -> tuple[str, float]:
+    """Report current drift without letting an old historical row poison soak."""
+    latest = max(rows, key=lambda row: getattr(row, "target_at"), default=None)
+    if latest is None:
+        return "STABLE", 0.0
+    status = str(getattr(latest, "drift_status", None) or "STABLE")
+    score = float(getattr(latest, "drift_score", 0.0) or 0.0)
+    return status, score
 
 
 def _score(
@@ -230,7 +240,6 @@ def replay_resource_forecasts(
     skipped_linear = skipped_rolling = skipped_consensus = 0
 
     for index in range(minimum - 1, len(ordered) - horizon_hours):
-        training_end = ordered[index][0]
         target_index = index + horizon_hours
         target = ordered[target_index][1]
         history = ordered[:index + 1]
@@ -318,13 +327,15 @@ def compare_persisted_forecast_runs(session, *, minimum_evaluated: int | None = 
     for state in node_states:
         active_rows = session.query(NodeResourceForecastRun).filter_by(
             cluster_name=state.cluster_name, host=state.host, metric=state.metric,
-            algorithm=state.algorithm, window_hours=state.window_hours, status="EVALUATED",
+            algorithm=state.algorithm, window_hours=state.window_hours,
+            horizon_hours=state.horizon_hours, status="EVALUATED",
         ).filter(NodeResourceForecastRun.actual_percent.isnot(None)).all()
         active_by_target = {row.target_at: row for row in active_rows}
         candidates = session.query(NodeResourceForecastRun).filter(
             NodeResourceForecastRun.cluster_name == state.cluster_name,
             NodeResourceForecastRun.host == state.host,
             NodeResourceForecastRun.metric == state.metric,
+            NodeResourceForecastRun.horizon_hours == state.horizon_hours,
             NodeResourceForecastRun.status == "EVALUATED",
             NodeResourceForecastRun.actual_percent.isnot(None),
         ).all()
@@ -365,17 +376,15 @@ def compare_persisted_forecast_runs(session, *, minimum_evaluated: int | None = 
                 status=result.status, reason=result.reason,
                 latest_target_at=max((row.target_at for row in paired_rows), default=None),
                 scope_type="NODE_RESOURCE",
-                scope_key=f"{state.cluster_name}|{state.host}|{state.metric.lower()}",
+                scope_key=(
+                    f"{state.cluster_name}|{state.host}|{state.metric.lower()}"
+                    f"|h{state.horizon_hours}"
+                ),
                 active_window_hours=state.window_hours,
                 candidate_window_hours=window,
-                horizon_hours=max(1, int(round((paired_rows[0].target_at - paired_rows[0].predicted_at).total_seconds() / 3600))) if paired_rows else None,
-                candidate_drift_status=(
-                    "DRIFT" if any(getattr(row, "drift_status", None) == "DRIFT" for row in candidate_rows)
-                    else "STABLE"
-                ),
-                candidate_drift_score=max(
-                    [float(getattr(row, "drift_score", 0.0) or 0.0) for row in candidate_rows] or [0.0]
-                ),
+                horizon_hours=state.horizon_hours,
+                candidate_drift_status=_latest_candidate_drift(candidate_rows)[0],
+                candidate_drift_score=_latest_candidate_drift(candidate_rows)[1],
             ))
 
     # Volume horizon migration is intentionally applied by deployment, never
@@ -390,7 +399,8 @@ def compare_persisted_forecast_runs(session, *, minimum_evaluated: int | None = 
         active_rows = session.query(VolumeForecastRun).filter_by(
             cluster_id=state.cluster_id, pool=state.pool, image=state.image,
             metric=state.metric, algorithm=state.algorithm,
-            window_hours=state.window_hours, status="EVALUATED",
+            window_hours=state.window_hours, horizon_hours=state.horizon_hours,
+            status="EVALUATED",
         ).filter(VolumeForecastRun.actual_value.isnot(None)).all()
         active_by_target = {row.target_at: row for row in active_rows}
         candidates = session.query(VolumeForecastRun).filter(
@@ -398,6 +408,7 @@ def compare_persisted_forecast_runs(session, *, minimum_evaluated: int | None = 
             VolumeForecastRun.pool == state.pool,
             VolumeForecastRun.image == state.image,
             VolumeForecastRun.metric == state.metric,
+            VolumeForecastRun.horizon_hours == state.horizon_hours,
             VolumeForecastRun.status == "EVALUATED",
             VolumeForecastRun.actual_value.isnot(None),
         ).all()
@@ -438,9 +449,12 @@ def compare_persisted_forecast_runs(session, *, minimum_evaluated: int | None = 
                 status=result.status, reason=result.reason,
                 latest_target_at=max((row.target_at for row in paired_rows), default=None),
                 scope_type="VOLUME",
-                scope_key=f"{state.cluster_id}|{state.pool}|{state.image}|{state.metric.lower()}",
+                scope_key=(
+                    f"{state.cluster_id}|{state.pool}|{state.image}|{state.metric.lower()}"
+                    f"|h{state.horizon_hours}"
+                ),
                 active_window_hours=state.window_hours,
                 candidate_window_hours=window,
-                horizon_hours=max(1, int(round((paired_rows[0].target_at - paired_rows[0].predicted_at).total_seconds() / 3600))) if paired_rows else None,
+                horizon_hours=state.horizon_hours,
             ))
     return results
