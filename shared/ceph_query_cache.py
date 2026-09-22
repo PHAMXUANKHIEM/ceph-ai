@@ -58,7 +58,14 @@ def get_metrics() -> dict[str, int]:
 
 
 def get_storage_metrics(*, max_entries: int = 20_000) -> dict[str, int | bool]:
-    """Return bounded on-disk cache usage without reading cached payloads."""
+    """Return bounded on-disk cache usage without reading cached payloads.
+
+    The metric describes the actual cache directory footprint, not only JSON
+    payloads.  Per-key ``.lock`` files therefore count toward ``files`` and
+    ``bytes`` as well.  They are intentionally never removed by this
+    diagnostic; ``prune_disk_cache`` remains responsible for pruning JSON
+    payloads only.
+    """
     files = 0
     bytes_total = 0
     largest_file_bytes = 0
@@ -68,7 +75,7 @@ def get_storage_metrics(*, max_entries: int = 20_000) -> dict[str, int | bool]:
             if index >= max_entries:
                 truncated = True
                 break
-            if not entry.is_file() or entry.is_symlink() or entry.suffix != ".json":
+            if not entry.is_file() or entry.is_symlink():
                 continue
             try:
                 size = max(0, int(entry.stat().st_size))

@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from threading import Lock
+from time import time
 
 from shared import ceph_query_cache
 from shared.request_context import get_request_id
@@ -24,20 +25,53 @@ _METRICS_LOCK = Lock()
 _METRICS = {
     "publish_success_total": 0,
     "publish_failure_total": 0,
+    "publish_failure_window_15m": 0,
+    "last_failure_at": None,
+    "last_success_at": None,
+    "publish_recovery_state": "UNKNOWN",
     "action_state_changed_total": 0,
     "snapshot_changed_total": 0,
     "snapshot_refresh_failed_total": 0,
 }
+_PUBLISH_FAILURE_TIMESTAMPS: list[float] = []
 
 
 def _record_metric(name: str) -> None:
     with _METRICS_LOCK:
+        now = time()
+        cutoff = now - 15 * 60
+        _PUBLISH_FAILURE_TIMESTAMPS[:] = [stamp for stamp in _PUBLISH_FAILURE_TIMESTAMPS if stamp >= cutoff]
         _METRICS[name] += 1
+        if name == "publish_failure_total":
+            _PUBLISH_FAILURE_TIMESTAMPS.append(now)
+            _METRICS["last_failure_at"] = now
+        elif name == "publish_success_total":
+            _METRICS["last_success_at"] = now
+        _METRICS["publish_failure_window_15m"] = len(_PUBLISH_FAILURE_TIMESTAMPS)
+        _METRICS["publish_recovery_state"] = _recovery_state_locked()
 
 
-def get_metrics() -> dict[str, int]:
-    """Return bounded event-publish counters without event payloads."""
+def _recovery_state_locked() -> str:
+    """Return ACTIVE/RECOVERED/UNKNOWN; caller holds ``_METRICS_LOCK``."""
+    failures = int(_METRICS.get("publish_failure_total", 0) or 0)
+    if failures == 0:
+        return "UNKNOWN"
+    last_failure = float(_METRICS.get("last_failure_at") or 0)
+    last_success = float(_METRICS.get("last_success_at") or 0)
+    if last_success > last_failure:
+        return "RECOVERED"
+    if int(_METRICS.get("publish_failure_window_15m", 0) or 0) > 0:
+        return "ACTIVE"
+    return "UNKNOWN"
+
+
+def get_metrics() -> dict[str, object]:
+    """Return bounded event-publish counters and recovery timestamps."""
     with _METRICS_LOCK:
+        cutoff = time() - 15 * 60
+        _PUBLISH_FAILURE_TIMESTAMPS[:] = [stamp for stamp in _PUBLISH_FAILURE_TIMESTAMPS if stamp >= cutoff]
+        _METRICS["publish_failure_window_15m"] = len(_PUBLISH_FAILURE_TIMESTAMPS)
+        _METRICS["publish_recovery_state"] = _recovery_state_locked()
         return deepcopy(_METRICS)
 
 # Keep the persisted Action enum available for compatibility while exposing a

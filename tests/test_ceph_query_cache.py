@@ -38,16 +38,22 @@ def test_cache_metrics_distinguish_load_and_hit(monkeypatch, tmp_path):
 
 
 def test_storage_metrics_are_bounded_and_include_file_sizes(monkeypatch, tmp_path):
-    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
-    (tmp_path / "one.json").write_text("123", encoding="utf-8")
-    (tmp_path / "two.lock").write_text("12", encoding="utf-8")
+    cache_dir = tmp_path / "storage-metrics"
+    cache_dir.mkdir()
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", cache_dir)
+    (cache_dir / "one.json").write_text("123", encoding="utf-8")
+    (cache_dir / "two.lock").write_text("12", encoding="utf-8")
+    (cache_dir / "notes.txt").write_text("ignored by prune", encoding="utf-8")
+    (cache_dir / "nested").mkdir()
+    (cache_dir / "nested" / "payload").write_text("not counted", encoding="utf-8")
+    (cache_dir / "one-link").symlink_to(cache_dir / "one.json")
 
     metrics = ceph_query_cache.get_storage_metrics()
 
     assert metrics["available"] is True
-    assert metrics["files"] >= 2
-    assert metrics["bytes"] >= 5
-    assert metrics["largest_file_bytes"] >= 3
+    assert metrics["files"] == 3
+    assert metrics["bytes"] == len("123") + len("12") + len("ignored by prune")
+    assert metrics["largest_file_bytes"] == len("ignored by prune")
 
 
 def test_background_refresh_propagates_request_correlation(monkeypatch, tmp_path):

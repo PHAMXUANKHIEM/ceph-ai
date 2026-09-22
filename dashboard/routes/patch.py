@@ -1,7 +1,7 @@
 import json
 import logging
+import re
 from datetime import datetime
-from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -14,6 +14,7 @@ from dashboard.templating import make_templates
 from shared import audit, db
 from shared.cluster_nodes import configured_nodes, patch_build_node
 from shared.models import Action, ActionStatus, Incident, IncidentStatus, PatchDocument
+from shared.time import utc_now
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate

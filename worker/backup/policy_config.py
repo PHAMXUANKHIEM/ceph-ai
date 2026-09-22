@@ -110,8 +110,8 @@ def validate_backup_policy(policy: dict) -> dict:
         entry["consistency_mode"] = consistency.mode
         if consistency.mode == "application-consistent":
             entry["application_consistency"] = {
-                "pre_hook": list(consistency.pre_hook),
-                "post_hook": list(consistency.post_hook),
+                "pre_hook_id": consistency.pre_hook_id,
+                "post_hook_id": consistency.post_hook_id,
                 "timeout_seconds": consistency.timeout_seconds,
             }
         clean_tracked.append(entry)

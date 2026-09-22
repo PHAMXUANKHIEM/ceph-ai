@@ -34,15 +34,26 @@ def test_save_policy_is_atomic_and_preserves_revision(monkeypatch, tmp_path):
     assert revisions[0]["actor"] == "admin"
 
 
-def test_application_consistency_hooks_are_normalized():
+def test_application_consistency_hook_ids_are_normalized(monkeypatch):
     policy = _policy()
     policy["tracked_images"][0].update({
         "consistency_mode": "application-consistent",
-        "application_consistency": {"pre_hook": ["freeze"], "post_hook": ["thaw"], "timeout_seconds": 12},
+        "application_consistency": {
+            "pre_hook_id": "qemu_guest_agent",
+            "post_hook_id": "qemu_guest_agent",
+            "timeout_seconds": 12,
+        },
     })
+    monkeypatch.setattr(
+        policy_config.application_consistency,
+        "_load_hook_manifest",
+        lambda: {"qemu_guest_agent": {"pre": object(), "post": object()}},
+    )
     normalized = policy_config.validate_backup_policy(policy)
     entry = normalized["tracked_images"][0]
     assert entry["consistency_mode"] == "application-consistent"
+    assert entry["application_consistency"]["pre_hook_id"] == "qemu_guest_agent"
+    assert entry["application_consistency"]["post_hook_id"] == "qemu_guest_agent"
     assert entry["application_consistency"]["timeout_seconds"] == 12
 
 

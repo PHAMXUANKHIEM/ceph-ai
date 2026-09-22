@@ -752,6 +752,8 @@ def test_non_admin_cannot_call_any_bucket_write_api(dashboard_client):
         "/api/object-storage/buckets/policy-acl/execute",
         "/api/object-storage/buckets/delete/preview",
         "/api/object-storage/buckets/delete/execute",
+        "/api/object-storage/buckets/delete-all/preview",
+        "/api/object-storage/buckets/delete-all/execute",
         "/api/object-storage/buckets/delete-all",
         "/api/object-storage/buckets/archive/object-versions/preview",
         "/api/object-storage/buckets/archive/object-versions/execute",
@@ -764,16 +766,39 @@ def test_non_admin_cannot_call_any_bucket_write_api(dashboard_client):
     ]
 
 
-def test_admin_delete_all_buckets_purges_objects_without_approval(dashboard_client, monkeypatch):
+def test_legacy_delete_all_endpoint_is_retired(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/object-storage/buckets/delete-all")
+
+    assert response.status_code == 410
+    assert "one-click" in response.json()["detail"]
+
+
+def test_admin_delete_all_requires_preview_inventory_and_confirmation(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
-    monkeypatch.setattr(object_storage_route, "fetch_bucket_list",
-                        lambda host: ["archive", "images"])
+    monkeypatch.setattr(settings, "rgw_delete_all_enabled", True)
+    monkeypatch.setattr(object_storage_route, "_load_bucket_list_from_first_reachable_rgw",
+                        lambda cluster, hosts: ("10.20.1.90", ["archive", "images"]))
+    stats = {"archive": {"num_objects": 3, "size_bytes": 30},
+             "images": {"num_objects": 2, "size_bytes": 20}}
+    monkeypatch.setattr(object_storage_route, "_load_bucket_summary",
+                        lambda cluster, host, name: {"stats_available": True, **stats[name]})
     purged = []
     monkeypatch.setattr(object_storage_route, "purge_bucket",
                         lambda host, bucket: purged.append((host, bucket)))
     _login(dashboard_client)
 
-    response = dashboard_client.post("/api/object-storage/buckets/delete-all")
+    preview = dashboard_client.post("/api/object-storage/buckets/delete-all/preview")
+    assert preview.status_code == 200
+    assert preview.json()["bucket_count"] == 2
+    assert preview.json()["object_count"] == 5
+    assert preview.json()["size_bytes"] == 50
+
+    body = preview.json()
+    body["cluster_confirmation"] = body["cluster_name"]
+    body["confirmation"] = body["confirmation_required"]
+    response = dashboard_client.post("/api/object-storage/buckets/delete-all/execute", json=body)
 
     assert response.status_code == 200
     assert response.json()["deleted_count"] == 2
@@ -781,10 +806,36 @@ def test_admin_delete_all_buckets_purges_objects_without_approval(dashboard_clie
     assert purged == [("10.20.1.90", "archive"), ("10.20.1.90", "images")]
 
 
+def test_delete_all_rejects_changed_inventory(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(settings, "rgw_delete_all_enabled", True)
+    monkeypatch.setattr(object_storage_route, "_load_bucket_list_from_first_reachable_rgw",
+                        lambda cluster, hosts: ("10.20.1.90", ["a-bucket", "b-bucket"]))
+    calls = {"count": 0}
+    def summary(cluster, host, name):
+        calls["count"] += 1
+        return {"stats_available": True, "num_objects": 1 if calls["count"] <= 2 else 2,
+                "size_bytes": 10}
+    monkeypatch.setattr(object_storage_route, "_load_bucket_summary", summary)
+    _login(dashboard_client)
+
+    preview = dashboard_client.post("/api/object-storage/buckets/delete-all/preview")
+    body = preview.json()
+    body["cluster_confirmation"] = body["cluster_name"]
+    body["confirmation"] = body["confirmation_required"]
+    response = dashboard_client.post("/api/object-storage/buckets/delete-all/execute", json=body)
+
+    assert response.status_code == 409
+    assert "đã thay đổi" in response.json()["detail"]
+
+
 def test_delete_all_stops_and_reports_partial_failure(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
-    monkeypatch.setattr(object_storage_route, "fetch_bucket_list",
-                        lambda host: ["a-bucket", "b-bucket", "c-bucket"])
+    monkeypatch.setattr(settings, "rgw_delete_all_enabled", True)
+    monkeypatch.setattr(object_storage_route, "_load_bucket_list_from_first_reachable_rgw",
+                        lambda cluster, hosts: ("10.20.1.90", ["a-bucket", "b-bucket", "c-bucket"]))
+    monkeypatch.setattr(object_storage_route, "_load_bucket_summary",
+                        lambda cluster, host, name: {"stats_available": True, "num_objects": 1, "size_bytes": 10})
     purged = []
     def purge(host, bucket):
         purged.append(bucket)
@@ -793,7 +844,11 @@ def test_delete_all_stops_and_reports_partial_failure(dashboard_client, monkeypa
     monkeypatch.setattr(object_storage_route, "purge_bucket", purge)
     _login(dashboard_client)
 
-    response = dashboard_client.post("/api/object-storage/buckets/delete-all")
+    preview = dashboard_client.post("/api/object-storage/buckets/delete-all/preview")
+    body = preview.json()
+    body["cluster_confirmation"] = body["cluster_name"]
+    body["confirmation"] = body["confirmation_required"]
+    response = dashboard_client.post("/api/object-storage/buckets/delete-all/execute", json=body)
 
     assert response.status_code == 502
     assert "Đã xóa 1/3 bucket" in response.json()["detail"]

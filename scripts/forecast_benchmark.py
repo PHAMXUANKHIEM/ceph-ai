@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
 
-from shared.forecast_anomaly import candidate_d_alerts, candidate_d_isolation_scores
+from shared.forecast_anomaly import candidate_d_alerts, candidate_d_robust_scores
 
 
 @dataclass(frozen=True)
@@ -282,8 +282,8 @@ def run_benchmark(points: list[Point], *, history_size: int = 24, threshold: flo
     detectors = {
         "robust_baseline": lambda: _baseline(points, threshold=threshold, history_size=history_size),
         "river_half_space_trees": lambda: _river(points, threshold=0.8, history_size=history_size),
-        "candidate_d_isolation": lambda: candidate_d_alerts(
-            candidate_d_isolation_scores(
+        "candidate_d_robust": lambda: candidate_d_alerts(
+            candidate_d_robust_scores(
                 [{"value": point.value} for point in points], history_size=history_size,
             ), threshold=threshold,
         ),

@@ -155,6 +155,11 @@ class Settings(BaseSettings):
     ceph_rgw_s3_endpoint: str = ""
     ceph_rgw_s3_access_key: str = ""
     ceph_rgw_s3_secret_key: str = ""
+    # Destructive RGW bulk deletion is disabled by default. An operator must
+    # explicitly enable the reviewed preview/confirmation workflow per
+    # environment; the legacy one-click endpoint is never available.
+    rgw_delete_all_enabled: bool = False
+    rgw_delete_all_confirmation_ttl_seconds: int = Field(default=600, ge=60, le=3600)
 
     # 2026-07-28: RBD pools to poll for per-image performance (IOPS/latency)
     # and saturation detection (watcher/volume_monitor.py) — comma-separated

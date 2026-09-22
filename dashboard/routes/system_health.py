@@ -59,7 +59,7 @@ def _snapshot_freshness_metrics() -> dict[str, object]:
 def _operational_alerts(
     freshness: dict[str, object],
     services: dict[str, dict],
-    event_bus: dict[str, int],
+    event_bus: dict[str, object],
     cache_storage: dict[str, object],
 ) -> list[dict[str, object]]:
     """Build bounded operator alerts from the realtime data-path signals."""
@@ -99,12 +99,19 @@ def _operational_alerts(
             "severity": "critical",
             "message": "Watcher không còn heartbeat hợp lệ.",
         })
-    if int(event_bus.get("publish_failure_total", 0)) > 0:
+    recent_failures = int(event_bus.get("publish_failure_window_15m", 0) or 0)
+    last_failure = float(event_bus.get("last_failure_at") or 0)
+    last_success = float(event_bus.get("last_success_at") or 0)
+    if recent_failures > 0 and last_failure > last_success:
         alerts.append({
             "code": "event_bus_publish_failed",
             "severity": "warning",
-            "message": "Event bus đã có lần publish thất bại; realtime có thể chậm.",
-            "failure_total": int(event_bus["publish_failure_total"]),
+            "message": "Event bus có lỗi publish trong 15 phút gần đây; realtime có thể chậm.",
+            "failure_total": int(event_bus.get("publish_failure_total", 0) or 0),
+            "failure_window_15m": recent_failures,
+            "last_failure_at": last_failure,
+            "last_success_at": last_success or None,
+            "recovery_state": str(event_bus.get("publish_recovery_state") or "ACTIVE"),
         })
     if cache_storage.get("available") and int(cache_storage.get("bytes", 0)) > settings.ceph_snapshot_cache_max_bytes:
         alerts.append({

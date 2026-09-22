@@ -28,7 +28,7 @@ from shared.predictive_alert_lifecycle import (
 )
 from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
 from shared.forecast_drift import DriftReport, RiverAdwinStreams, evaluate_drift
-from shared.forecast_anomaly import candidate_d_alerts, candidate_d_isolation_scores
+from shared.forecast_anomaly import candidate_d_alerts, candidate_d_robust_scores
 from shared.forecast_features import MetricPoint, build_features
 from shared.forecast_metrics import update_rolling_metrics
 from shared.learning_runtime import evaluate as evaluate_learning_runtime
@@ -145,7 +145,7 @@ def _river_shadow_candidate(
         return None
     cluster_row = session.scalar(select(Cluster).where(Cluster.name == cluster))
     cluster_id = cluster_row.id if cluster_row is not None else None
-    runtime = evaluate_learning_runtime(session, cluster_id)
+    runtime = evaluate_learning_runtime(session, cluster_id, host=host, metric=metric)
     if not runtime.can_observe:
         return None
     learner, state = load_or_reset_state(
@@ -617,7 +617,7 @@ def _shadow_evidence(
     feature_set = build_features([
         MetricPoint(observed_at=timestamp, value=value) for timestamp, value in points
     ], metric=metric, horizon_hours=settings.node_resource_learning_evaluation_hours)
-    scores = candidate_d_isolation_scores(
+    scores = candidate_d_robust_scores(
         [{"cpu": cpu, "ram": ram} for _timestamp, cpu, ram in samples],
         history_size=24,
     )
@@ -626,8 +626,10 @@ def _shadow_evidence(
     detector = RiverAdwinStreams(scope_key=f"{cluster}|{host}|{metric}")
     evaluated = session.query(NodeResourceForecastRun).filter_by(
         cluster_name=cluster, host=host, metric=metric, status="EVALUATED",
-    ).order_by(NodeResourceForecastRun.evaluated_at).limit(512).all()
-    for row in evaluated:
+    ).order_by(NodeResourceForecastRun.evaluated_at.desc()).limit(512).all()
+    # The query is newest-first so the database can use an index efficiently;
+    # River must still see observations in chronological order.
+    for row in reversed(evaluated):
         if row.residual_percent is not None:
             detector.update(
                 residual=float(row.residual_percent),
@@ -648,7 +650,7 @@ def _shadow_evidence(
             "missing_features": list(feature_set.missing_features),
         },
         {
-            "shadow_detector": "candidate_d_isolation",
+            "shadow_detector": "candidate_d_robust_multivariate",
             "score": round(float(candidate_d_score), 6) if candidate_d_score is not None else None,
             "candidate": True,
             "alert_candidate": bool(candidate_d_alert),

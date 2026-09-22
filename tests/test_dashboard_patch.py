@@ -1,4 +1,5 @@
 import io
+import json
 from datetime import datetime
 
 import dashboard.routes.patch as patch_route
@@ -78,6 +79,32 @@ def _pending_patch_action(action_id: str, status: str) -> str:
         session.add(action)
         session.commit()
         return action.id
+
+
+def test_patch_history_extracts_actor_without_runtime_error():
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=patch_route.CLUSTER_PATCH_CEPH_CODE,
+            status=IncidentStatus.RESOLVED.value,
+            detected_at=datetime.utcnow(),
+            log_excerpt="Patch được đề xuất bởi release-operator",
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id=patch_route.PATCH_BUILD_ACTION_ID,
+            classification="RISKY",
+            status=ActionStatus.EXECUTED.value,
+            action_params=json.dumps({"patch_filename": "fix.patch"}),
+        )
+        session.add(action)
+        session.commit()
+
+        history = patch_route._patch_history(session)
+
+    assert history[0]["actor"] == "release-operator"
+    assert history[0]["filename"] == "fix.patch"
 
 
 # --- GET /patch --------------------------------------------------------

@@ -7,12 +7,13 @@ import statistics
 from collections.abc import Iterable, Mapping
 
 
-def candidate_d_isolation_scores(
+def candidate_d_robust_scores(
     rows: Iterable[Mapping[str, float]], *, history_size: int = 24, threshold: float = 3.5,
 ) -> list[float | None]:
-    """Return a lightweight, deterministic isolation score per feature row.
+    """Return a lightweight, deterministic robust score per feature row.
 
-    This is Candidate D: a robust multivariate isolation score.  It is bounded
+    This is Candidate D: a robust multivariate z-score, not Isolation Forest.
+    It is bounded
     O(n * history_size * dimensions), has no model-state side effect, and is
     intentionally evidence-only until a separate promotion decision approves
     it.  The score is the RMS robust z-score against the preceding window.
@@ -39,6 +40,18 @@ def candidate_d_isolation_scores(
             scores.append(abs(current - center) / scale)
         result.append(math.sqrt(sum(score * score for score in scores) / len(scores)) if scores else None)
     return result
+
+
+def candidate_d_isolation_scores(
+    rows: Iterable[Mapping[str, float]], *, history_size: int = 24, threshold: float = 3.5,
+) -> list[float | None]:
+    """Compatibility alias for the pre-2026 name.
+
+    The implementation is deliberately not called Isolation Forest; new code
+    should use :func:`candidate_d_robust_scores` to avoid overstating the
+    production capability.
+    """
+    return candidate_d_robust_scores(rows, history_size=history_size, threshold=threshold)
 
 
 def candidate_d_alerts(scores: Iterable[float | None], *, threshold: float = 3.5) -> list[bool]:

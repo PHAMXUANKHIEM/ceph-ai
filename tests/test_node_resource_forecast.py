@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -173,6 +174,72 @@ def test_adaptive_forecast_persists_candidates_and_selects_longest_during_warmup
         }
         selected = session.query(NodeResourceModelState).filter_by(selected=True).all()
         assert {(row.metric, row.window_hours) for row in selected} == {("cpu", 72), ("ram", 72)}
+
+
+def test_shadow_adwin_replays_newest_window_in_chronological_order(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    observed = []
+
+    class FakeAdwin:
+        def __init__(self, **_kwargs):
+            pass
+
+        def update(self, *, observed_at, **_kwargs):
+            observed.append(observed_at)
+
+        def report(self):
+            return SimpleNamespace(streams={})
+
+    monkeypatch.setattr(forecast, "RiverAdwinStreams", FakeAdwin)
+    origin = datetime(2026, 8, 1)
+    with factory() as session:
+        for index in range(513):
+            evaluated_at = origin + timedelta(minutes=index)
+            session.add(NodeResourceForecastRun(
+                cluster_name="CS-LAB", host="node-1", metric="cpu", algorithm="linear",
+                window_hours=24, predicted_at=evaluated_at, target_at=evaluated_at,
+                current_percent=40.0, predicted_percent=41.0, confidence=.8,
+                residual_percent=float(index), actual_percent=40.0 + index,
+                absolute_error=1.0, status="EVALUATED", idempotency_key=f"adwin-{index}",
+                evaluated_at=evaluated_at,
+            ))
+        session.commit()
+        forecast._shadow_evidence(
+            session, "CS-LAB", "node-1", "cpu",
+            [(origin, 40.0), (origin + timedelta(minutes=1), 41.0)],
+            [(origin, 40.0, 50.0), (origin + timedelta(minutes=1), 41.0, 51.0)],
+        )
+
+    assert len(observed) == 512
+    assert observed[0] == origin + timedelta(minutes=1)
+    assert observed[-1] == origin + timedelta(minutes=512)
+
+
+def test_river_shadow_runtime_gate_receives_full_scope(monkeypatch):
+    calls = []
+
+    class Learner:
+        sample_count = 1
+
+        @staticmethod
+        def predict_one(*, fallback):
+            return fallback
+
+    monkeypatch.setattr(forecast.settings, "online_learning_enabled", True)
+    monkeypatch.setattr(forecast.settings, "online_learning_min_verified_evidence", 1)
+    monkeypatch.setattr(
+        forecast,
+        "evaluate_learning_runtime",
+        lambda session, cluster_id, **kwargs: (calls.append((cluster_id, kwargs)) or
+                                               SimpleNamespace(can_observe=True)),
+    )
+    monkeypatch.setattr(forecast, "load_or_reset_state", lambda *args, **kwargs: (Learner(), None))
+    session = SimpleNamespace(scalar=lambda _query: SimpleNamespace(id="cluster-id"))
+
+    result = forecast._river_shadow_candidate(session, "CS-LAB", "node-1", "cpu", 42.0)
+
+    assert result is not None
+    assert calls == [("cluster-id", {"host": "node-1", "metric": "cpu"})]
 
 
 def test_adaptive_forecast_records_consensus_metadata(monkeypatch):

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
+import hashlib
+import hmac
 import io
 import json
 import logging
@@ -94,6 +97,7 @@ BUCKET_DETAIL_TTL_SECONDS = 30
 BUCKET_DETAIL_STALE_TTL_SECONDS = 300
 MAX_LIFECYCLE_SCAN = 1000
 MAX_PURGE_BATCHES = 10000
+DELETE_ALL_CONFIRMATION_TTL_SECONDS = 600
 MAX_OBJECT_BROWSER_SCAN = 2000
 MAX_OBJECT_VERSION_SCAN = 1000
 MAX_PRESIGNED_EXPIRY_SECONDS = 900
@@ -850,11 +854,13 @@ def _execute_delete_bucket(cluster, payload: dict) -> None:
     _with_owner_s3(cluster, payload, execute)
 
 
-def _delete_all_buckets(cluster) -> list[str]:
-    hosts = _rgw_hosts(cluster)
-    if not hosts:
-        raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
-    host, buckets = _list_from_first_reachable_rgw(cluster, hosts)
+def _delete_all_buckets(cluster, *, host: str | None = None, buckets: list[str] | None = None) -> list[str]:
+    if host is None or buckets is None:
+        hosts = _rgw_hosts(cluster)
+        if not hosts:
+            raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
+        host, buckets = _list_from_first_reachable_rgw(cluster, hosts)
+    buckets = list(buckets)
     for bucket in buckets:
         try:
             if cluster.is_default:
@@ -868,6 +874,84 @@ def _delete_all_buckets(cluster) -> list[str]:
                 f"Đã xóa {buckets.index(bucket)}/{len(buckets)} bucket; dừng tại {bucket}: {_safe_error(exc)}"
             ) from exc
     return buckets
+
+
+def _delete_all_inventory(cluster) -> tuple[str, list[dict]]:
+    """Return a complete, hashable inventory before a destructive purge.
+
+    A bulk delete must not rely on the paginated UI inventory or on a stale
+    cache. Missing per-bucket statistics fail closed because the operator
+    cannot otherwise review the blast radius.
+    """
+    hosts = _rgw_hosts(cluster)
+    if not hosts:
+        raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
+    host, names = _load_bucket_list_from_first_reachable_rgw(cluster, hosts)
+    inventory = []
+    for name in sorted(set(names), key=str.casefold):
+        summary = _load_bucket_summary(cluster, host, name)
+        if not summary.get("stats_available"):
+            reason = summary.get("stats_error") or "không đọc được bucket stats"
+            raise ObjectStorageError(f"Không thể xác nhận inventory của bucket {name}: {reason}")
+        inventory.append({
+            "name": name,
+            "object_count": max(0, int(summary.get("num_objects") or 0)),
+            "size_bytes": max(0, int(summary.get("size_bytes") or 0)),
+        })
+    return host, inventory
+
+
+def _delete_all_inventory_hash(cluster, host: str, inventory: list[dict]) -> str:
+    canonical = {
+        "cluster_id": str(cluster.id),
+        "host": host,
+        "buckets": inventory,
+    }
+    encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _delete_all_confirmation_phrase(cluster) -> str:
+    return f"DELETE ALL BUCKETS ON {cluster.name}"
+
+
+def _issue_delete_all_token(cluster, actor: str, inventory_hash: str) -> tuple[str, datetime]:
+    ttl = int(getattr(settings, "rgw_delete_all_confirmation_ttl_seconds", DELETE_ALL_CONFIRMATION_TTL_SECONDS))
+    expires_at = utc_now() + timedelta(seconds=ttl)
+    claims = {
+        "cluster_id": str(cluster.id),
+        "actor": actor,
+        "inventory_hash": inventory_hash,
+        "expires_at": int(expires_at.timestamp()),
+    }
+    body = base64.urlsafe_b64encode(
+        json.dumps(claims, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    signature = hmac.new(
+        str(settings.session_secret_key).encode("utf-8"), body.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    return f"{body}.{signature}", expires_at
+
+
+def _verify_delete_all_token(token: object, cluster, actor: str, inventory_hash: str) -> bool:
+    value = str(token or "")
+    try:
+        body, signature = value.split(".", 1)
+        expected = hmac.new(
+            str(settings.session_secret_key).encode("utf-8"), body.encode("ascii"), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return False
+        padding = "=" * (-len(body) % 4)
+        claims = json.loads(base64.urlsafe_b64decode((body + padding).encode("ascii")))
+        return (
+            claims.get("cluster_id") == str(cluster.id)
+            and claims.get("actor") == actor
+            and claims.get("inventory_hash") == inventory_hash
+            and int(claims.get("expires_at") or 0) >= int(utc_now().timestamp())
+        )
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeError):
+        return False
 
 
 def _format_bytes(value: object) -> str:
@@ -2371,23 +2455,85 @@ async def bucket_delete_execute(request: Request, user: str = Depends(require_lo
     return {"ok": True, "action": payload["action"], "bucket": payload["bucket"], "request_id": audit_id}
 
 
-@router.post("/api/object-storage/buckets/delete-all")
-async def bucket_delete_all(request: Request, user: str = Depends(require_login)):
-    """Immediately purge every bucket in the selected cluster; no approval flow."""
+@router.post("/api/object-storage/buckets/delete-all/preview")
+async def bucket_delete_all_preview(request: Request, user: str = Depends(require_login)):
     if not auth.is_admin_user(user):
         raise HTTPException(status_code=403, detail="Chỉ admin được xóa tất cả bucket")
     cluster = selected_cluster(request)
-    payload = {"action": "delete_all", "bucket": "*"}
     try:
-        audit_id = await asyncio.to_thread(
-            _start_governance_audit, cluster.id, user, payload,
-            "Purge toàn bộ object/version và xóa tất cả bucket trên cluster",
-        )
+        host, inventory = await asyncio.to_thread(_delete_all_inventory, cluster)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    inventory_hash = _delete_all_inventory_hash(cluster, host, inventory)
+    token, expires_at = _issue_delete_all_token(cluster, user, inventory_hash)
+    return {
+        "ok": True,
+        "action": "delete_all",
+        "cluster_id": cluster.id,
+        "cluster_name": cluster.name,
+        "enabled": bool(getattr(settings, "rgw_delete_all_enabled", False)),
+        "bucket_count": len(inventory),
+        "object_count": sum(item["object_count"] for item in inventory),
+        "size_bytes": sum(item["size_bytes"] for item in inventory),
+        "buckets": inventory,
+        "inventory_hash": inventory_hash,
+        "confirmation_required": _delete_all_confirmation_phrase(cluster),
+        "cluster_confirmation_required": cluster.name,
+        "confirmation_token": token,
+        "token_expires_at": expires_at.isoformat(),
+        "warning": "Thao tác purge toàn bộ object/version và xóa bucket là không thể hoàn tác.",
+    }
+
+
+@router.post("/api/object-storage/buckets/delete-all/execute")
+async def bucket_delete_all_execute(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xóa tất cả bucket")
+    if not bool(getattr(settings, "rgw_delete_all_enabled", False)):
+        raise HTTPException(status_code=409, detail="Bulk delete RGW đang bị vô hiệu hóa; cần bật rõ ràng trong cấu hình môi trường")
+    body = await request.json()
+    cluster = selected_cluster(request)
+    if str(body.get("cluster_confirmation") or "") != cluster.name:
+        raise HTTPException(status_code=400, detail=f"Nhập chính xác tên cluster {cluster.name} để xác nhận")
+    if str(body.get("confirmation") or "") != _delete_all_confirmation_phrase(cluster):
+        raise HTTPException(status_code=400, detail=f"Nhập chính xác {_delete_all_confirmation_phrase(cluster)} để xác nhận")
+    try:
+        expected_hash = str(body.get("inventory_hash") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+            raise HTTPException(status_code=400, detail="Inventory token không hợp lệ; hãy preview lại")
+        expected_bucket_count = int(body.get("bucket_count"))
+        expected_object_count = int(body.get("object_count"))
+        expected_size_bytes = int(body.get("size_bytes"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Số liệu inventory xác nhận không hợp lệ") from exc
+    if min(expected_bucket_count, expected_object_count, expected_size_bytes) < 0:
+        raise HTTPException(status_code=400, detail="Số liệu inventory không được âm")
+    if not _verify_delete_all_token(body.get("confirmation_token"), cluster, user, expected_hash):
+        raise HTTPException(status_code=409, detail="Preview đã hết hạn hoặc không khớp phiên đăng nhập; hãy preview lại")
+    try:
+        host, inventory = await asyncio.to_thread(_delete_all_inventory, cluster)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    actual_hash = _delete_all_inventory_hash(cluster, host, inventory)
+    actual_counts = (
+        len(inventory),
+        sum(item["object_count"] for item in inventory),
+        sum(item["size_bytes"] for item in inventory),
+    )
+    if actual_hash != expected_hash or actual_counts != (expected_bucket_count, expected_object_count, expected_size_bytes):
+        raise HTTPException(status_code=409, detail="Inventory RGW đã thay đổi; không xóa và cần tạo preview mới")
+    payload = {"action": "delete_all", "bucket": "*", "inventory_hash": actual_hash,
+               "bucket_count": actual_counts[0], "object_count": actual_counts[1], "size_bytes": actual_counts[2]}
+    preview = (f"Purge toàn bộ RGW buckets={actual_counts[0]} objects={actual_counts[1]} "
+               f"size_bytes={actual_counts[2]} inventory_hash={actual_hash}")
+    try:
+        audit_id = await asyncio.to_thread(_start_governance_audit, cluster.id, user, payload, preview)
     except Exception as exc:
         logger.exception("cannot persist delete-all bucket audit entry")
         raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
     try:
-        deleted = await asyncio.to_thread(_delete_all_buckets, cluster)
+        deleted = await asyncio.to_thread(_delete_all_buckets, cluster, host=host,
+                                           buckets=[item["name"] for item in inventory])
     except ObjectStorageError as exc:
         safe_error = _safe_error(exc)
         await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
@@ -2400,6 +2546,15 @@ async def bucket_delete_all(request: Request, user: str = Depends(require_login)
     await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
     return {"ok": True, "action": "delete_all", "deleted_count": len(deleted),
             "deleted_buckets": deleted, "request_id": audit_id}
+
+
+@router.post("/api/object-storage/buckets/delete-all")
+async def bucket_delete_all_legacy(request: Request, user: str = Depends(require_login)):
+    """The former one-click destructive endpoint is intentionally retired."""
+    del request
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xóa tất cả bucket")
+    raise HTTPException(status_code=410, detail="Luồng one-click delete-all đã bị vô hiệu hóa; dùng preview/execute với xác nhận đầy đủ")
 
 
 @router.get("/api/object-storage/buckets/{bucket}")

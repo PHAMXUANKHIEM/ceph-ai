@@ -1,4 +1,5 @@
 from shared.ceph_runner import get_metrics
+from dashboard.routes.system_health import _operational_alerts
 
 
 def test_ceph_latency_debug_requires_login(dashboard_client):
@@ -48,3 +49,35 @@ def test_runner_metrics_do_not_include_credentials():
     assert "private_key" not in serialized
     assert "password" not in serialized
     assert "secret" not in serialized
+
+
+def test_operational_event_bus_alert_recovers_after_success():
+    freshness = {"clusters": [], "cluster_count": 0}
+    services = {"watcher": {"healthy": True}, "worker": {"healthy": True}}
+    cache_storage = {"available": False}
+
+    active = _operational_alerts(
+        freshness,
+        services,
+        {
+            "publish_failure_total": 3,
+            "publish_failure_window_15m": 2,
+            "last_failure_at": 20.0,
+            "last_success_at": 10.0,
+        },
+        cache_storage,
+    )
+    recovered = _operational_alerts(
+        freshness,
+        services,
+        {
+            "publish_failure_total": 3,
+            "publish_failure_window_15m": 2,
+            "last_failure_at": 20.0,
+            "last_success_at": 30.0,
+        },
+        cache_storage,
+    )
+
+    assert any(alert["code"] == "event_bus_publish_failed" for alert in active)
+    assert not any(alert["code"] == "event_bus_publish_failed" for alert in recovered)

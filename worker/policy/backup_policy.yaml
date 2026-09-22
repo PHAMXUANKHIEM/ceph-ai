@@ -27,8 +27,9 @@ required_copy_count: 2
 # list starts empty until an operator adds real entries.
 # Each tracked image defaults to crash-consistent.  For a VM/database that
 # supports quiescing, set consistency_mode to application-consistent and
-# provide fixed argument-vector hooks; the worker runs pre_hook before the
-# RBD snapshot and post_hook in every success/failure path.
+# provide allowlisted pre_hook_id/post_hook_id values from the root-owned hook
+# manifest; the worker runs those fixed commands before the RBD snapshot and
+# in every success/failure path. Raw command arrays are rejected.
 tracked_images: []
 
 # Maximum acceptable age of the latest successful recovery point. Shared by

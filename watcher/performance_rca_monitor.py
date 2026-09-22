@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-from shared.time import utc_now
-from hashlib import sha1
 
 from config.settings import settings
 from shared import alert_lifecycle, db, telegram_alerts, telegram_outbox
 from shared.models import Cluster, Incident, IncidentStatus
+from shared.time import utc_now
 from watcher.performance_rca import PERFORMANCE_RCA_PREFIX, report
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,15 @@ _ALERT_HYPOTHESES = {
 
 def _code_for(analysis: dict) -> str:
     identity = f"{analysis.get('pool', '')}/{analysis.get('image', '')}"
-    return PERFORMANCE_RCA_PREFIX + sha1(identity.encode(), usedforsecurity=False).hexdigest()[:20]
+    return PERFORMANCE_RCA_PREFIX + "v2:" + hashlib.sha256(identity.encode()).hexdigest()[:20]
+
+
+def _legacy_code_for(analysis: dict) -> str:
+    """Return the pre-v2 identity only for one-time incident migration."""
+    identity = f"{analysis.get('pool', '')}/{analysis.get('image', '')}"
+    return PERFORMANCE_RCA_PREFIX + hashlib.sha1(  # used only for compatibility lookup
+        identity.encode(), usedforsecurity=False,
+    ).hexdigest()[:20]
 
 
 def _channel(cluster) -> tuple[str, str, bool, bool]:
@@ -111,8 +119,11 @@ def check_and_alert(cluster_id: str, cluster=None) -> int:
         for incident in incidents:
             latest_by_code.setdefault(incident.ceph_code, incident)
 
+        legacy_current_codes = {
+            _legacy_code_for(analysis) for analysis in candidates
+        }
         for code, incident in latest_by_code.items():
-            if code not in current:
+            if code not in current and code not in legacy_current_codes:
                 for duplicate in incidents:
                     if (
                         duplicate.ceph_code == code
@@ -122,6 +133,10 @@ def check_and_alert(cluster_id: str, cluster=None) -> int:
 
         for code, analysis in current.items():
             incident = latest_by_code.get(code)
+            if incident is None:
+                incident = latest_by_code.get(_legacy_code_for(analysis))
+                if incident is not None:
+                    incident.ceph_code = code
             if incident is None:
                 incident = Incident(
                     cluster_id=cluster_id,
@@ -171,7 +186,7 @@ def check_and_alert(cluster_id: str, cluster=None) -> int:
             session.commit()
         if muted:
             continue
-        fingerprint = sha1(
+        fingerprint = "v2:" + hashlib.sha256(
             json.dumps(analysis, ensure_ascii=False, sort_keys=True, default=str).encode(
                 "utf-8"
             )

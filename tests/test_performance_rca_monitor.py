@@ -60,6 +60,14 @@ def test_check_and_alert_is_deduplicated_and_resolves(monkeypatch):
         incident = session.query(Incident).one()
         assert incident.telegram_reminded_at is not None
         assert incident.status == IncidentStatus.NEW.value
+        incident.ceph_code = performance_rca_monitor._legacy_code_for(analysis)
+        session.commit()
+
+    # Existing SHA-1 identities are migrated in place, so changing the digest
+    # does not create a duplicate incident or resend the alert.
+    assert performance_rca_monitor.check_and_alert("c1", cluster) == 0
+    with factory() as session:
+        assert session.query(Incident).one().ceph_code == performance_rca_monitor._code_for(analysis)
 
     monkeypatch.setattr(performance_rca_monitor, "report", lambda _cluster, **_kwargs: {"analyses": []})
     assert performance_rca_monitor.check_and_alert("c1", cluster) == 0
