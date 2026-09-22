@@ -33,6 +33,7 @@ from shared.online_learning_gate import (
     OnlineLearningSample,
     evaluate_sample,
 )
+from shared.forecast_flags import candidate_enabled
 from shared.online_learning_labels import (
     enqueue_verified_outcomes,
     label_policy_paused,
@@ -91,6 +92,18 @@ def _consume_one(
     Labels are optional at the API boundary but required by the gate unless
     explicitly configured otherwise.
     """
+    if not candidate_enabled("river_mean"):
+        return ConsumedSample(
+            sample_id=sample_id,
+            metric=normalize_metric(metric),
+            quality=OnlineLearningGateDecision(
+                "FEATURE_DISABLED", False,
+                "river_mean candidate is disabled by forecast_candidate_flags",
+                sample_id, None,
+            ),
+            runtime_mode="FEATURE_DISABLED",
+            update_applied=False,
+        )
     observed = _utc(observed_at)
     metric = normalize_metric(metric)
     with db.SessionLocal() as session:

@@ -30,6 +30,7 @@ from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
 from shared.forecast_drift import DriftReport, RiverAdwinStreams, evaluate_drift
 from shared.forecast_anomaly import candidate_d_alerts, candidate_d_isolation_scores
 from shared.forecast_features import MetricPoint, build_features
+from shared.forecast_flags import candidate_enabled
 from shared.forecast_horizons import parse_horizons
 from shared.forecast_metrics import update_rolling_metrics
 from shared.learning_runtime import evaluate as evaluate_learning_runtime
@@ -638,7 +639,7 @@ def _shadow_evidence(
     scores = candidate_d_isolation_scores(
         [{"cpu": cpu, "ram": ram} for _timestamp, cpu, ram in samples],
         history_size=24,
-    )
+    ) if candidate_enabled("candidate_d_isolation") else []
     candidate_d_score = scores[-1] if scores else None
     candidate_d_alert = candidate_d_alerts(scores)[-1] if scores else False
     detector = RiverAdwinStreams(scope_key=f"{cluster}|{host}|{metric}")
@@ -668,9 +669,10 @@ def _shadow_evidence(
         {
             "shadow_detector": "candidate_d_isolation",
             "score": round(float(candidate_d_score), 6) if candidate_d_score is not None else None,
-            "candidate": True,
+            "candidate": candidate_enabled("candidate_d_isolation"),
             "alert_candidate": bool(candidate_d_alert),
             "execution_mode": "SHADOW_ONLY",
+            "enabled": candidate_enabled("candidate_d_isolation"),
         },
     ]
     for name, report in adwin.streams.items():
@@ -712,6 +714,8 @@ def adaptive_forecast(
             for horizon in horizons:
                 linear_candidates: dict[int, ResourceForecast] = {}
                 for window in _candidate_windows():
+                    if not candidate_enabled("linear"):
+                        break
                     windowed = _window_points(points, window)
                     prediction = _linear_forecast(
                         windowed, metric, horizon_hours=horizon,
@@ -732,9 +736,12 @@ def adaptive_forecast(
                         or linear.max_gap_hours > settings.node_resource_forecast_max_gap_hours
                     ):
                         continue
-                    rolling = _rolling_quantile_forecast(
-                        _window_points(points, window), metric,
-                        horizon_hours=horizon, training_window_hours=window,
+                    rolling = (
+                        _rolling_quantile_forecast(
+                            _window_points(points, window), metric,
+                            horizon_hours=horizon, training_window_hours=window,
+                        )
+                        if candidate_enabled("rolling_quantile") else None
                     )
                     operational_candidates.append(linear)
                     if rolling is not None:

@@ -757,6 +757,12 @@ class Settings(BaseSettings):
     forecast_drift_alert_rate_increase_threshold: float = Field(default=0.25, ge=0, le=1)
     forecast_drift_history_runs: int = Field(default=100, ge=20, le=10000)
     forecast_drift_confidence_multiplier: float = Field(default=0.5, ge=0, le=1)
+    # Per-candidate rollout flags. Unknown/invalid entries are ignored by the
+    # parser and a missing candidate is disabled fail-closed.
+    forecast_candidate_flags: str = (
+        "linear=true,rolling_quantile=true,seasonal_median=true,"
+        "candidate_d_isolation=true,river_mean=true,river_linear_v2=false"
+    )
     online_learning_sample_max_age_seconds: int = Field(default=120, ge=15, le=86400)
     online_learning_sample_max_gap_seconds: int = Field(default=900, ge=30, le=604800)
     learning_job_min_interval_seconds: int = Field(default=300, ge=0, le=86400)

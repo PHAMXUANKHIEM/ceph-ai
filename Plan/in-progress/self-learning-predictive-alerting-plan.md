@@ -10,11 +10,11 @@ Mục tiêu là giảm false positive, dự báo sớm hơn và chỉ cho phép 
 
 ## Quy tắc chung
 
-- [ ] Mọi model mới phải chạy shadow trước khi ảnh hưởng tới cảnh báo thật.
-- [ ] Mọi quyết định phải lưu input window, data quality, model/version, confidence, prediction, actual outcome và lý do chuyển trạng thái.
-- [ ] Dữ liệu stale, thiếu mẫu hoặc có gap lớn phải trả DATA_QUALITY, không được kết luận là hệ thống bình thường.
-- [ ] Không xóa dữ liệu learning/forecast cũ trước khi có báo cáo và backup.
-- [ ] Candidate model không được tự ý thay đổi policy RISKY/DESTRUCTIVE.
+- [x] Mọi model mới phải chạy shadow trước khi ảnh hưởng tới cảnh báo thật.
+- [x] Mọi quyết định phải lưu input window, data quality, model/version, confidence, prediction, actual outcome và lý do chuyển trạng thái.
+- [x] Dữ liệu stale, thiếu mẫu hoặc có gap lớn phải trả DATA_QUALITY, không được kết luận là hệ thống bình thường.
+- [x] Không xóa dữ liệu learning/forecast cũ trước khi có báo cáo và backup.
+- [x] Candidate model không được tự ý thay đổi policy RISKY/DESTRUCTIVE.
 
 ---
 
@@ -29,6 +29,18 @@ Mục tiêu là giảm false positive, dự báo sớm hơn và chỉ cho phép 
 - [x] Ghi remediation feedback: tổng case, labeled, scored, precision và coverage.
 - [x] Xuất baseline thành Markdown có timestamp: Plan/baseline-self-learning-2026-09-18.md.
 - [x] Ghi danh sách host/metric đang stale hoặc thiếu lịch sử; 6/6 host dưới ngưỡng stale 1,800 giây.
+- [x] Chụp baseline mới theo từng scope/horizon tại
+  `Plan/baseline-self-learning-2026-09-22.md`, gồm MAE/RMSE/SMAPE/bias,
+  false-positive, alert/Telegram volume, data quality, sample interval/history,
+  gap/missing rate, verified outcomes, wall/CPU/RSS và state size.
+- [x] Baseline report được tạo read-only bằng `O_EXCL`, có SHA-256 và không cho
+  phép overwrite.
+- [x] Candidate replay chỉ đọc: không tạo Incident/Action/Telegram/remediation.
+- [x] Snapshot/registry/evaluation persistence được kiểm tra sau khi đóng và mở
+  lại session/database.
+- [x] Promotion và rollback đều yêu cầu operator approval; chưa có auto-promotion.
+- [x] Có feature flag độc lập cho từng candidate qua
+  `forecast_candidate_flags`; candidate lạ hoặc flag lỗi bị tắt fail-closed.
 
 Tiêu chí hoàn thành:
 
@@ -36,6 +48,14 @@ Tiêu chí hoàn thành:
 - Chỉ đọc và thống kê, không thay đổi production logic.
 
 Bước tiếp theo: Bước 0.2 — Định nghĩa data contract.
+
+Evidence Phase 0 — 2026-09-22:
+
+- Script: `scripts/self_learning_baseline.py --output
+  Plan/baseline-self-learning-2026-09-22.md`.
+- Test: `tests/test_phase0_safety.py` và `tests/test_forecast_replay.py`.
+- Baseline là artifact bất biến; không dùng làm căn cứ promotion nếu thiếu
+  verified outcomes hoặc operator sign-off.
 
 ### Bước 0.2 — Định nghĩa data contract
 

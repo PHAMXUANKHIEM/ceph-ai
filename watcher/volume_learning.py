@@ -14,6 +14,7 @@ from config.settings import settings
 from shared import db, telegram_alerts, telegram_outbox
 from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
 from shared.forecast_metrics import update_rolling_metrics
+from shared.forecast_flags import candidate_enabled
 from shared.forecast_horizons import parse_horizons
 from shared.learning_safety import RateLimiter
 from shared.metric_quality import MetricQuality, assess_metric_quality
@@ -416,7 +417,7 @@ def observe_sample(
     session, cluster_id: str | None, sample: dict, observed_at: datetime,
 ) -> int:
     """Evaluate due outcomes and record this hour's candidate baselines."""
-    if not settings.volume_learning_enabled or not cluster_id:
+    if not settings.volume_learning_enabled or not cluster_id or not candidate_enabled(ALGORITHM):
         return 0
     pool, image = str(sample["pool"]), str(sample["image"])
     # Raw VolumeMetric persistence remains owned by volume_monitor. This gate
