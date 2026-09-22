@@ -275,36 +275,61 @@ quality xấu và có audit đầy đủ cho mọi chuyển trạng thái.
 
 #### 4.1 Feature vector
 
-- [ ] Chuẩn hóa vector CPU, RAM, read/write IOPS, read/write latency, OSD apply
-  latency và PG degraded ratio.
-- [ ] Đồng bộ timestamp và quality từng thành phần; missing component phải làm
-  giảm confidence hoặc bỏ sample, không zero-fill im lặng.
-- [ ] Có entity peer baseline cho OSD/device class nếu đủ dữ liệu.
+- [~] Chuẩn hóa vector CPU, RAM, read/write IOPS, read/write latency, OSD apply
+  latency và PG degraded ratio trong `shared/multivariate_anomaly.py`; hiện mới
+  có bounded offline/candidate path, chưa nối trực tiếp vào mọi collector.
+- [~] Đồng bộ timestamp và quality từng thành phần; missing component làm sample
+  `PARTIAL`/`INSUFFICIENT_COMPONENTS` và không zero-fill. Runtime collector
+  integration và real-data evidence vẫn còn mở.
+- [~] Có robust peer baseline theo `peer_class` cho OSD/device class trong
+  benchmark path; cần dữ liệu OSD/device class thật đã ẩn danh trước khi chốt
+  threshold production.
 
 #### 4.2 Half-Space Trees
 
-- [ ] Thử River HST với số cây/chiều cao/cửa sổ giới hạn.
-- [ ] Đánh giá warm-up, score normalization, threshold calibration và clustered
-  anomaly.
+- [~] Thử River HST với số cây/chiều cao/cửa sổ giới hạn trong benchmark runner;
+  fixture hiện chạy được nhưng recall chưa đạt yêu cầu.
+- [~] Có warm-up, score normalization, threshold calibration và clustered
+  anomaly candidate; chưa có calibration evidence đủ để promote detector.
 - [x] HST chỉ là anomaly candidate, không dự báo capacity/forecast target.
 
 #### 4.3 RRCF
 
-- [ ] Đưa RRCF vào benchmark environment tùy chọn, kiểm tra compatibility,
-  maintenance và license.
-- [ ] Giới hạn forest size, shingle/window, random seed, memory và eviction FIFO.
-- [ ] So sánh HST với RRCF trên cùng replay; chưa thêm dependency production nếu
-  không có owner bảo trì và security scan.
+- [~] Có adapter RRCF tùy chọn trong benchmark environment; đã chạy được trong
+  môi trường benchmark riêng, không đưa dependency vào production image.
+- [~] Adapter giới hạn tree size, random seed, window và FIFO eviction; vẫn cần
+  compatibility/license/security review trước khi dùng.
+- [~] Đã so sánh HST với RRCF trên cùng replay synthetic; chỉ đóng sau khi có
+  replay Ceph ẩn danh, environment reproducible và owner bảo trì.
 
 #### 4.4 Alert aggregation
 
-- [ ] Chuẩn hóa anomaly score về contract chung và lưu top contributing features.
-- [ ] Gom điểm theo incident window để tránh một event dài tạo hàng trăm alert.
-- [ ] Candidate anomaly không gọi remediation; chỉ tạo `ANOMALY_CANDIDATE`/shadow
-  evidence.
+- [x] Chuẩn hóa anomaly score về contract chung `[0, 1]` và lưu top contributing
+  features trong `shared/multivariate_anomaly.py`.
+- [x] Gom điểm theo incident window để tránh một event dài tạo hàng trăm
+  candidate evidence.
+- [x] Candidate anomaly không gọi remediation; chỉ tạo
+  `ANOMALY_CANDIDATE`/shadow evidence với `notification_allowed=false` và
+  `remediation_requested=false`.
 
 **Exit gate:** có event-level precision/recall/delay và resource profile; chọn tối
 đa một detector vào phase canary.
+
+#### Phase 4 implementation evidence — 2026-09-22
+
+- `shared/multivariate_anomaly.py` cung cấp feature alignment, quality gate,
+  robust peer baseline, River HST, optional RRCF, score normalization,
+  threshold calibration, top-feature attribution và incident-window grouping.
+- `scripts/multivariate_anomaly_benchmark.py` và fixture
+  `docs/benchmark/ceph-multivariate-anomaly.csv` chạy read-only; regression
+  `tests/test_multivariate_anomaly.py` đạt `5 passed`.
+- Benchmark report: `docs/benchmark/ceph-multivariate-anomaly-report.json`;
+  trên fixture synthetic 72 điểm, River HST đạt recall `0.0`, còn RRCF đạt
+  recall/event-recall `1.0/1.0` với `1` false positive. Đây là bằng chứng
+  detector chưa đủ điều kiện canary, không phải production acceptance.
+- Candidate path không tạo alert, notification, database write, executor task
+  hoặc remediation. Real collector wiring, anonymized Ceph replay, RRCF paired
+  comparison và threshold sign-off vẫn chưa hoàn tất.
 
 ### Phase 5 — Offline benchmark stack (P1)
 
