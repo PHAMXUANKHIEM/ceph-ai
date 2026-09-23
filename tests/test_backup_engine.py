@@ -274,6 +274,72 @@ def _deny_execution(incident_id):
     return True
 
 
+def test_repair_missing_copy_streams_verified_artifact_without_rbd_export(isolated_db, monkeypatch):
+    payload = b"verified-backup-artifact"
+    source_backend = FakeBackend()
+    destination_backend = FakeBackend()
+    remote_key = "full/vms/web01/backup-1.bin"
+    source_backend.uploaded[remote_key] = payload
+    with db_module.SessionLocal() as session:
+        source = BackupJob(
+            run_id="run-repair-1", pool="vms", image="web01", job_type="full", status="SUCCESS",
+            backup_target_slot="a", remote_key=remote_key, size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(), finished_at=datetime.utcnow(),
+        )
+        session.add(source)
+        session.commit()
+        source_id = source.id
+
+    monkeypatch.setattr(engine, "resolve_targets", lambda _cluster: [("a", source_backend), ("b", destination_backend)])
+    progress = []
+    result = engine._repair_missing_copy(
+        "action-repair", {"source_job_id": source_id, "destination_slot": "b"},
+        "incident-repair", None, lambda _action, value: progress.append(value),
+    )
+
+    assert result is True
+    assert destination_backend.uploaded[remote_key] == payload
+    assert progress[-1][0]["status"] == "done"
+    with db_module.SessionLocal() as session:
+        repaired = session.query(BackupJob).filter(
+            BackupJob.run_id == "run-repair-1", BackupJob.backup_target_slot == "b"
+        ).one()
+        assert repaired.status == "SUCCESS"
+        assert repaired.sha256 == hashlib.sha256(payload).hexdigest()
+
+
+def test_repair_missing_copy_rejects_corrupt_source(isolated_db, monkeypatch):
+    payload = b"real-artifact"
+    source_backend = FakeBackend()
+    destination_backend = FakeBackend()
+    remote_key = "full/vms/web01/backup-corrupt.bin"
+    source_backend.uploaded[remote_key] = b"corrupt-artifact"
+    with db_module.SessionLocal() as session:
+        source = BackupJob(
+            run_id="run-repair-2", pool="vms", image="web01", job_type="full", status="SUCCESS",
+            backup_target_slot="a", remote_key=remote_key, size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(), finished_at=datetime.utcnow(),
+        )
+        session.add(source)
+        session.commit()
+        source_id = source.id
+    monkeypatch.setattr(engine, "resolve_targets", lambda _cluster: [("a", source_backend), ("b", destination_backend)])
+
+    assert engine._repair_missing_copy(
+        "action-repair", {"source_job_id": source_id, "destination_slot": "b"},
+        "incident-repair", None, _write_progress,
+    ) is False
+    assert destination_backend.uploaded == {}
+
+
+def test_capacity_admission_rejects_known_full_target(monkeypatch):
+    backend = FakeBackend()
+    backend.probe_metadata = lambda: {"free_bytes": 10}
+    monkeypatch.setattr(engine.shutil, "disk_usage", lambda _path: SimpleNamespace(free=10))
+    with pytest.raises(engine.BackupEngineError, match="không đủ"):
+        engine._capacity_admission([("b", backend)], 1024)
+
+
 def test_first_backup_is_full_export(isolated_db):
     incident_id, action_pk = _make_incident_and_action()
 

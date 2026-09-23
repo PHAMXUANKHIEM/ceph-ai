@@ -365,6 +365,7 @@ RBD_VOLUME_CREATE_CEPH_CODE = "RBD_VOLUME_CREATE"
 RBD_VOLUME_RESIZE_CEPH_CODE = "RBD_VOLUME_RESIZE"
 RBD_VOLUME_RENAME_CEPH_CODE = "RBD_VOLUME_RENAME"
 RBD_VOLUME_CLONE_CEPH_CODE = "RBD_VOLUME_CLONE"
+RBD_VOLUME_COPY_CEPH_CODE = "RBD_VOLUME_COPY"
 RBD_VOLUME_FLATTEN_CEPH_CODE = "RBD_VOLUME_FLATTEN"
 RBD_VOLUME_TEMPLATE_CEPH_CODE = "RBD_VOLUME_TEMPLATE"
 RBD_VOLUME_QOS_CEPH_CODE = "RBD_VOLUME_QOS"
@@ -444,7 +445,7 @@ def _rbd_qos_unsupported(exc: Exception) -> bool:
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 _RBD_VOLUME_MUTATION_ACTION_IDS = (
-    "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume", "rbd_clone_volume", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
+    "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume", "rbd_clone_volume", "rbd_copy_volume", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
     "rbd_trash_move_volume", "rbd_trash_restore_volume",
     "cinder_attach_volume", "cinder_detach_volume",
     "cinder_create_snapshot", "cinder_delete_snapshot",
@@ -471,6 +472,8 @@ def _rbd_mutation_dedupe_key(
     if action_id == "rbd_clone_volume":
         names = sorted({image, str(params.get("dest_image") or "")})
         return f"rbd-volume:{pool}/{'/'.join(names)}"
+    if action_id == "rbd_copy_volume":
+        return f"rbd-copy:{pool}/{image}@{params.get('snapshot') or ''}->{params.get('dest_pool') or ''}/{params.get('dest_image') or ''}"
     if action_id == "rbd_template_mark":
         return f"rbd-template:{pool}/{image}@{params.get('snapshot') or ''}"
     if action_id == "rbd_qos_set":
@@ -1393,6 +1396,104 @@ async def volume_durability_policy_api(
     }
 
 
+def _parse_replication_timestamp(value, *, now: datetime) -> datetime | None:
+    """Parse only timestamps that can support a defensible lag estimate."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            parsed = datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+        return parsed if parsed <= now else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    parsed = parsed.astimezone(timezone.utc)
+    return parsed if parsed <= now else None
+
+
+def _replication_evidence(info: dict, status: dict, *, collected_at: datetime) -> dict:
+    """Normalize mirror evidence without guessing missing peer/RPO data.
+
+    Ceph releases expose peer status with slightly different nesting.  The
+    endpoint keeps the raw payload and only emits lag/RPO when a peer supplies
+    a parseable, non-future ``last_update`` timestamp.
+    """
+    peer_rows: list[dict] = []
+    observed_at = collected_at
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    else:
+        observed_at = observed_at.astimezone(timezone.utc)
+
+    def add_peer(row) -> None:
+        if not isinstance(row, dict):
+            return
+        identity = row.get("site_name") or row.get("site") or row.get("peer_uuid") or row.get("uuid")
+        state = row.get("state") or row.get("status")
+        last_update = row.get("last_update") or row.get("last_update_time") or row.get("last_synced")
+        if identity is None and state is None and last_update is None:
+            return
+        peer_rows.append({
+            "site": str(identity) if identity is not None else None,
+            "state": str(state) if state is not None else "unknown",
+            "last_update": last_update,
+        })
+
+    def walk(value, peer_context: bool = False) -> None:
+        if isinstance(value, dict):
+            context = peer_context or any(key in value for key in (
+                "peer_sites", "peers", "peer_site", "peer",
+            ))
+            for key, child in value.items():
+                if key in {"peer_sites", "peers", "peer_site", "peer"}:
+                    walk(child, True)
+                elif context and isinstance(child, dict):
+                    add_peer(child)
+                    walk(child, True)
+                elif isinstance(child, (dict, list)):
+                    walk(child, context)
+        elif isinstance(value, list):
+            for child in value:
+                if peer_context:
+                    add_peer(child)
+                walk(child, peer_context)
+
+    walk(status)
+    # De-duplicate the same peer when a release exposes both a summary and an
+    # image-level copy of it.
+    unique: dict[tuple[str | None, str, str], dict] = {}
+    for row in peer_rows:
+        key = (row["site"], row["state"], str(row["last_update"]))
+        unique[key] = row
+    peers = list(unique.values())
+    timestamps = [
+        parsed for row in peers
+        if (parsed := _parse_replication_timestamp(row.get("last_update"), now=observed_at)) is not None
+    ]
+    lag_seconds = None
+    if timestamps:
+        # Worst observed peer age is the conservative RPO estimate.  This is
+        # explicitly an estimate, not a recovery guarantee.
+        lag_seconds = max(0, int((observed_at - min(timestamps)).total_seconds()))
+    return {
+        "peer_count": len(peers),
+        "peers": peers,
+        "lag_seconds": lag_seconds,
+        "rpo_seconds": lag_seconds,
+        "rpo_evidence": "peer_last_update" if lag_seconds is not None else "insufficient_evidence",
+        "failover_supported": False,
+        "fencing_configured": False,
+        "mutation_supported": False,
+        "note": "Lag/RPO chỉ là ước tính từ last_update; chưa phải RPO được bảo đảm.",
+    }
+
+
 @router.get("/api/volumes/{pool}/replication")
 async def volume_replication_api(
     request: Request, pool: str, user: str = Depends(require_login)
@@ -1409,8 +1510,11 @@ async def volume_replication_api(
     except CephQueryError as exc:
         message = str(exc)
         if "mirroring not enabled" in message.lower():
+            collected_at = utc_now()
             return {"cluster_id": cluster.id, "pool": pool, "supported": True, "enabled": False,
-                    "mode": "disabled", "status": None, "collected_at": utc_now().isoformat() + "Z"}
+                    "mode": "disabled", "status": None,
+                    "evidence": _replication_evidence(info, {}, collected_at=collected_at),
+                    "collected_at": collected_at.isoformat().replace("+00:00", "Z")}
         raise HTTPException(status_code=502, detail=f"Không đọc được trạng thái mirroring: {exc}") from exc
     mode = str(info.get("mode") or "disabled").lower()
     enabled = mode not in {"disabled", "off", "none", ""}
@@ -1421,9 +1525,11 @@ async def volume_replication_api(
         except CephQueryError as exc:
             if "mirroring not enabled" not in str(exc).lower():
                 raise HTTPException(status_code=502, detail=f"Không đọc được mirror lag/status: {exc}") from exc
+    collected_at = utc_now()
     return {"cluster_id": cluster.id, "pool": pool, "supported": True, "enabled": enabled,
             "mode": mode, "info": info, "status": status,
-            "collected_at": utc_now().isoformat() + "Z"}
+            "evidence": _replication_evidence(info, status or {}, collected_at=collected_at),
+            "collected_at": collected_at.isoformat().replace("+00:00", "Z")}
 
 
 @router.get("/api/volumes/{pool}/inventory-insights")
@@ -1800,6 +1906,13 @@ def _propose_rbd_volume_mutation(
             }
             if existing_params.get("pool_name") == pool and conflict_names.intersection(existing_names):
                 raise HTTPException(status_code=409, detail="Volume này đã có một thay đổi đang chờ duyệt hoặc thực thi")
+            dest_pool = (extra_params or {}).get("dest_pool")
+            dest_image = (extra_params or {}).get("dest_image")
+            if dest_pool and dest_image and (
+                (existing_params.get("pool_name") == dest_pool and dest_image in existing_names)
+                or (existing_params.get("dest_pool") == dest_pool and existing_params.get("dest_image") == dest_image)
+            ):
+                raise HTTPException(status_code=409, detail="Volume đích đã có thay đổi đang chờ duyệt hoặc thực thi")
 
         incident = Incident(
             cluster_id=cluster.id,
@@ -2263,6 +2376,86 @@ async def propose_volume_clone(
     )
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL",
                          "estimated_size_bytes": source_size}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/copy")
+async def propose_volume_copy(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Copy an explicit RBD snapshot to another pool; never delete the source."""
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    body = await request.json()
+    snapshot = str(body.get("snapshot") or "").strip()
+    dest_pool = str(body.get("dest_pool") or "").strip()
+    dest_image = str(body.get("dest_image") or "").strip()
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool nguồn không nằm trong danh sách đã cấu hình")
+    if not _RBD_IMAGE_NAME_RE.fullmatch(image) or not _RBD_IMAGE_NAME_RE.fullmatch(snapshot):
+        raise HTTPException(status_code=400, detail="Tên Volume hoặc snapshot không hợp lệ")
+    if dest_pool not in allowed_pools or not _RBD_IMAGE_NAME_RE.fullmatch(dest_image):
+        raise HTTPException(status_code=400, detail="Pool/image đích không hợp lệ")
+    if dest_pool == pool:
+        raise HTTPException(status_code=409, detail="Copy này chỉ hỗ trợ pool đích khác pool nguồn")
+    # Cinder owns volume lifecycle and metadata. A direct RBD copy would
+    # silently create an unmanaged duplicate that OpenStack cannot track.
+    if image.startswith("volume-") or dest_image.startswith("volume-"):
+        raise HTTPException(status_code=409, detail="Volume do Cinder quản lý phải copy qua Cinder")
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id="rbd_copy_volume", user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image, "snapshot": snapshot,
+                "dest_pool": dest_pool, "dest_image": dest_image},
+    )
+    if replay:
+        return replay
+    try:
+        source = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+        inventory = (
+            ceph_client.query_rbd_inventory(dest_pool)
+            if cluster.is_default else ceph_client.query_rbd_inventory_with(dest_pool, *cluster_connection(cluster))
+        )
+        overview = (
+            ceph_client.query_rbd_pool_overview(dest_pool)
+            if cluster.is_default else ceph_client.query_rbd_pool_overview_with(dest_pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight copy Volume: {exc}") from exc
+    snapshots = source.get("snapshots") or []
+    snapshot_row = next((
+        row for row in snapshots if isinstance(row, dict)
+        and str(row.get("name") or row.get("snap_name") or "") == snapshot
+    ), None)
+    if snapshot_row is None:
+        raise HTTPException(status_code=409, detail="Snapshot nguồn không tồn tại hoặc chưa được xác minh")
+    if any(row.get("name") == dest_image for row in inventory):
+        raise HTTPException(status_code=409, detail="Volume đích đã tồn tại")
+    # The HEAD size may have changed after the selected snapshot was taken.
+    # Use that snapshot's own size for capacity and the Worker post-check.
+    try:
+        size_bytes = int(snapshot_row.get("size") or 0)
+        max_available = int(overview.get("max_available") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="Dung lượng snapshot hoặc pool đích không hợp lệ") from exc
+    if size_bytes <= 0 or max_available <= 0:
+        raise HTTPException(status_code=409, detail="Thiếu bằng chứng dung lượng nguồn hoặc pool đích")
+    if overview.get("rbd_enabled") is not True or overview.get("near_full"):
+        raise HTTPException(status_code=409, detail="Pool đích chưa sẵn sàng cho RBD copy")
+    if size_bytes > max_available:
+        raise HTTPException(status_code=409, detail="Không đủ dung lượng khả dụng trong pool đích")
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image,
+        extra_params={"snapshot": snapshot, "dest_pool": dest_pool,
+                      "dest_image": dest_image, "size_bytes": size_bytes},
+        conflicting_images={image}, action_id="rbd_copy_volume",
+        ceph_code=RBD_VOLUME_COPY_CEPH_CODE, user=user,
+        idempotency_key=idempotency_key,
+        rationale=f"Copy snapshot {pool}/{image}@{snapshot} sang {dest_pool}/{dest_image}; không xóa nguồn",
+    )
+    return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL",
+                         "estimated_size_bytes": size_bytes, "source_preserved": True}, status_code=201)
 
 
 @router.post("/api/volumes/{pool}/inventory/{image}/flatten")

@@ -180,3 +180,17 @@ def test_load_block_storage_persists_pool_metadata(monkeypatch):
 
     assert result is inventory
     assert stored["value"]["pools"] == ["empty-pool", "volumes"]
+
+
+def test_persistent_inventory_keeps_last_good_snapshot_after_ttl(monkeypatch):
+    cluster = SimpleNamespace(id="stale-cluster")
+    options = {}
+    monkeypatch.setattr(block_storage_route, "_uses_mocked_ceph_client", lambda: False)
+    monkeypatch.setattr(block_storage_route, "get_persisted_cache", lambda *args, **kwargs: (
+        options.update(kwargs) or ({"rows": [{"name": "disk", "pool": "volumes"}]}, 7200)
+    ))
+
+    inventory = block_storage_route._persistent_block_storage_fallback(cluster)
+
+    assert inventory[0]["name"] == "disk"
+    assert options["max_age_seconds"] is None

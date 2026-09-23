@@ -7,6 +7,11 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/root/ceph-ai
 NoNewPrivileges=yes
+# Repair may edit/test isolated worktrees, but an unscanned candidate must
+# never push, replace or promote the immutable production artifact.
+Environment=CODE_REPAIR_PUSH=false
+Environment=CODE_REPAIR_DEPLOY_STAGING=false
+Environment=CODE_REPAIR_PROMOTE_MAIN=false
 ExecStart=/root/ceph-ai/.venv/bin/python -m worker.code_repair_supervisor
 Restart=always
 RestartSec=3

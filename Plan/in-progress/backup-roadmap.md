@@ -154,9 +154,11 @@ Tiến độ audit:
   24h, Digest, RestoreDrill, target readiness và evidence gaps theo từng cluster;
   response không chứa secret hoặc raw error. Test chứng minh secondary cluster
   không lộ secret và được gắn gap `RESTORE_DRILL_NOT_CONFIGURED`.
-- [ ] Backup Digest và RestoreDrill vẫn chỉ chạy cho cluster mặc định vì lịch/
-  cấu hình hiện là singleton trong `backup_policy.yaml`; cần thiết kế policy
-  theo cluster trước khi bật hai tính năng này.
+- [~] Backup Digest có thể dùng lịch riêng tại
+  `clusters.<cluster_id>.schedule.digest_cron`; RestoreDrill của cluster phụ
+  chỉ được đăng ký khi có scratch policy và cron riêng, dùng đúng backup
+  target/SSH của cluster đó và lưu kết quả có `cluster_id`. Đã có test scheduler
+  và policy validation; còn live drill trên cụm cô lập trước khi đánh dấu `[x]`.
 
 - [~] API `GET /api/backups/multi-cluster-digests` đã trả metadata digest bounded
   theo từng cluster, bao gồm cluster inactive, không trả nội dung lỗi/secret.
@@ -179,8 +181,9 @@ cross-restore và cluster inactive bị từ chối.
 - Reload Worker an toàn; không báo thành công giả nếu restart thất bại.
 
 Đã có vertical slice: tab Policies trên trang Backup, validation non-secret,
-atomic write, revision backup và API `GET/PUT /api/backups/policy`. Còn tiếp tục
-rollback revision, audit đầy đủ và reload Worker có xác nhận.
+atomic write, revision backup và API `GET/PUT /api/backups/policy`. Đã thêm
+`POST /api/backups/policy/rollback/{revision_id}`; rollback vẫn validate policy
+và tạo revision mới để có thể undo. Còn audit đầy đủ và reload Worker có xác nhận.
 
 ### 6.2 Test Backup Target `[~]`
 
@@ -207,14 +210,18 @@ Phần audit entry riêng cho probe sẽ tiếp tục ở 6.3.
 - Tổng hợp `2/2 healthy`, `1/2 degraded`, `0/2 failed`.
 - Hiển thị immutable copy đã được lock tới ngày nào.
 - Required copy count theo policy.
-- Action Repair Missing Copy không cần export lại nguồn nếu còn một bản verified.
+- [x] Action Repair Missing Copy không cần export lại nguồn nếu còn một bản
+  verified; tải/verify artifact nguồn, upload/verify target đích và ghi job mới
+  chỉ sau khi checksum khớp.
 - Không đánh dấu run tổng thể SUCCESS khi chưa đạt required copy count.
 
 Đã bổ sung target health theo slot trong Overview và API
 `GET /api/backups/target-health`; trạng thái được suy ra từ run gần nhất trong
 đúng cluster, không trả raw error/credential. Bảng protection đã có copy
 compliance theo `run_id`, target và `required_copy_count`. Còn thiếu lưu lịch sử
-probe, immutable-until và action Repair Missing Copy.
+probe, immutable-until và live acceptance trên backend thật; Repair Missing Copy
+đã có action RISKY, endpoint `POST /backups/jobs/{job_id}/repair-copy`, checksum
+verify hai phía và test corrupt artifact.
 
 ### 6.4 Retry, resume, cancel và reconciliation `[~]`
 
@@ -228,8 +235,10 @@ probe, immutable-until và action Repair Missing Copy.
 Đã thêm retry cho BackupJob FAILED qua `POST /backups/jobs/{job_id}/retry`, giữ
 `retry_key`/idempotency key theo logical job và không cho retry job khác cluster
 hoặc job chưa FAILED. History có nút Retry tương ứng. Cơ chế stale RUNNING
-hiện có của Worker tiếp tục được dùng; resume multipart, cancel an toàn, trạng
-thái mở rộng và reconciliation chi tiết sẽ làm tiếp.
+hiện có của Worker tiếp tục được dùng. Đã thêm `POST /backups/jobs/{job_id}/cancel`:
+APPROVED bị reject trước execution; EXECUTING đặt cancellation marker để Worker
+kiểm tra trong export/upload và đi qua cleanup. Resume multipart, cancel khi
+đang restore, trạng thái mở rộng và reconciliation chi tiết vẫn còn.
 
 ### 6.5 Backup inventory độc lập policy `[~]`
 
@@ -311,9 +320,10 @@ database dựng sẵn và cảnh báo lifecycle riêng cho từng workload.
 recorded bytes, tăng trưởng quan sát trong cửa sổ 30 ngày, ước lượng full kế
 tiếp và số ngày còn lại theo free space. S3 không có capacity thì trả về
 `unknown`, không suy đoán; dashboard tải lazy summary để không làm chậm trang
-Overview. Có thêm test growth/forecast và preflight output. Còn thiếu chặn
-backup trực tiếp trước snapshot khi source/temp/target đã dưới ngưỡng và số liệu
-compression/dedup từ backend.
+Overview. Có thêm test growth/forecast và preflight output. Worker đã có
+admission guard trước snapshot/export, chặn temp staging hoặc target đã biết
+thiếu capacity với safety margin; source pool near-full và số liệu
+compression/dedup từ backend vẫn còn.
 
 ### 7.4 Alert lifecycle `[~]`
 
@@ -458,6 +468,9 @@ bảng khi một khái niệm không thể biểu diễn chính xác bằng sche
 | 2026-08-17 | Recovery Point selector nền tảng | Đang triển khai | Thêm API cluster-scoped, chain job IDs, UI chọn mốc và khóa exact recovery point vào action/Worker để không dịch chuyển trong approval gap. | Regression mở rộng 282 passed; JS, Python compile và diff check đạt. | Bổ sung SHA-256/verify metadata, gap detection, filter/pagination và UX modal thay prompt. |
 | 2026-08-17 | Restore preflight nền tảng | Đang triển khai | Lưu evidence nguồn/đích/chain/capacity vào action; chặn destination tồn tại, pool near-full/RBD-disabled, thiếu capacity và backup in-flight; Worker re-check ngay trước import. | Regression mở rộng 284 passed; JS, Python compile và diff check đạt (một lỗi fixture SQLite ngẫu nhiên biến mất khi chạy lại riêng). | Thêm artifact HEAD/SHA-256, feature compatibility, quota/logical size và RTO estimate. |
 | 2026-09-21 | 6.1 Policy Editor — vertical slice | Đang triển khai | Thêm Policies workspace, non-secret policy validation, atomic YAML save, revision backup và API GET/PUT; policy tối giản vẫn tương thích với Dashboard cũ. | `tests/test_backup_policy_config.py tests/test_dashboard_backups.py`: **46 passed**; Python compile, `node --check`, `git diff --check` đạt. | Thêm rollback revision, audit đầy đủ, reload Worker có xác nhận; sau đó làm 6.2 target connection test. |
+| 2026-09-23 | 5.5 per-cluster Digest/RestoreDrill | Đang triển khai | Thêm `clusters.<cluster_id>` cho lịch Digest và RestoreDrill; không kế thừa scratch destination mặc định, drill phụ dùng backend/SSH/chain của đúng cluster và Dashboard audit/manual trigger đọc cùng scope. | Backup policy/scheduler/restore drill/digest: **52 passed**; chưa chạy restore trên Ceph thật. | Live isolated-cluster acceptance; sau đó tiếp tục safe resume/cancel, policy rollback audit, escalation và capacity admission. |
+| 2026-09-23 | Repair Missing Copy + policy rollback | Đang triển khai | Repair lấy một SUCCESS artifact có checksum/size, download+verify từ source, upload+verify sang target thiếu, tạo BackupJob bổ sung sau commit; action RISKY cần approval. Policy rollback đọc revision hợp lệ, validate lại và lưu thành revision mới. | Regression server **95 passed**; test engine/policy sau khi tích hợp **29 passed**; Worker/Dashboard healthy sau restart. Chưa live-test target storage và chưa có audit event riêng cho rollback. | Bổ sung safe resume/cancel, admission capacity trước snapshot/upload, rollback audit và live target acceptance. |
+| 2026-09-23 | Safe cancel + capacity admission | Đang triển khai | Cancel job APPROVED/EXECUTING có marker bền vững; Worker dừng tại checkpoint export/upload và cleanup theo finally. Trước snapshot/export, Worker kiểm tra temp staging và target có capacity metadata; thiếu thì fail-closed. | Engine **24 passed**; regression trước đó **95 passed**; chưa live-test cancel trên transfer thật. | Resume multipart, cancel restore an toàn, source pool near-full, rollback audit và live target acceptance. |
 
 ## 14. Quy tắc cập nhật tài liệu
 

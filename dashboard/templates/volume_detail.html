@@ -130,6 +130,12 @@
           <div class="volume-action-row"><input id="volume-clone-dest-pool" maxlength="128" required placeholder="Pool đích"><input id="volume-clone-dest-image" maxlength="128" required placeholder="Volume mới"><button class="btn btn-primary btn-sm" type="submit">Clone</button></div>
           <small class="hint">Clone giữ parent dependency; snapshot sẽ được bảo vệ tự động trước khi clone.</small>
         </form>
+        <form class="volume-action" id="volume-copy-form">
+          <label for="volume-copy-snapshot">Copy snapshot sang pool khác</label>
+          <input id="volume-copy-snapshot" maxlength="128" required placeholder="Snapshot nguồn đã tạo">
+          <div class="volume-action-row"><input id="volume-copy-dest-pool" maxlength="128" required placeholder="Pool đích"><input id="volume-copy-dest-image" maxlength="128" required placeholder="Tên volume mới"><button class="btn btn-primary btn-sm" type="submit">Đề xuất copy</button></div>
+          <small class="hint">Tạo bản sao độc lập tại thời điểm snapshot; không xóa nguồn. Cần phê duyệt. Volume do Cinder quản lý không hỗ trợ đường này.</small>
+        </form>
         <form class="volume-action" id="volume-template-form">
           <label for="volume-template-snapshot">Đánh dấu snapshot thành template read-only</label>
           <div class="volume-action-row"><input id="volume-template-snapshot" maxlength="128" required placeholder="Tên snapshot"><input id="volume-template-name" maxlength="64" required placeholder="Tên template"><button class="btn btn-primary btn-sm" type="submit">Tạo template</button></div>

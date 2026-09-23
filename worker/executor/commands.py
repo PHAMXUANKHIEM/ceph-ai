@@ -506,6 +506,26 @@ def _rbd_clone_volume_command(params: dict) -> str:
     )
 
 
+def _rbd_copy_volume_command(params: dict) -> str:
+    """Copy one immutable snapshot across pools; never remove the source."""
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    snapshot = params.get("snapshot")
+    dest_pool = params.get("dest_pool")
+    dest_image = params.get("dest_image")
+    if not isinstance(snapshot, str) or not _RBD_SNAPSHOT_RE.fullmatch(snapshot):
+        raise ExecutorError("invalid or missing source RBD snapshot")
+    if not isinstance(dest_pool, str) or not _POOL_NAME_RE.fullmatch(dest_pool):
+        raise ExecutorError("invalid or missing destination pool")
+    if not isinstance(dest_image, str) or not _RBD_IMAGE_RE.fullmatch(dest_image):
+        raise ExecutorError("invalid or missing destination RBD image")
+    if pool == dest_pool:
+        raise ExecutorError("cross-pool copy requires a different destination pool")
+    source = shlex.quote(f"{pool}/{image}@{snapshot}")
+    destination = shlex.quote(f"{dest_pool}/{dest_image}")
+    return f"rbd cp --no-progress {source} {destination} && rbd info {destination} --format json"
+
+
 def _rbd_flatten_volume_command(params: dict) -> str:
     pool = _require_pool_name(params)
     image = _require_rbd_image(params)
@@ -715,6 +735,7 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "rbd_resize_volume": _rbd_resize_volume_command,
     "rbd_rename_volume": _rbd_rename_volume_command,
     "rbd_clone_volume": _rbd_clone_volume_command,
+    "rbd_copy_volume": _rbd_copy_volume_command,
     "rbd_flatten_volume": _rbd_flatten_volume_command,
     "rbd_template_mark": _rbd_template_mark_command,
     "rbd_qos_set": _rbd_qos_set_command,
@@ -752,6 +773,7 @@ _CEPH_RUNTIME_ACTION_IDS = frozenset({
     "rbd_resize_volume",
     "rbd_rename_volume",
     "rbd_clone_volume",
+    "rbd_copy_volume",
     "rbd_flatten_volume",
     "rbd_template_mark",
     "rbd_qos_set",

@@ -32,6 +32,17 @@ def test_reconcile_clone_and_flatten_require_expected_destination():
         reconcile("rbd_clone_volume", {"dest_image": "other"}, '{"name":"vm-copy"}')
 
 
+def test_reconcile_copy_requires_exact_destination_and_size():
+    params = {"pool_name": "vms", "image": "vm", "snapshot": "gold",
+              "dest_pool": "images", "dest_image": "vm-copy", "size_bytes": 1024}
+    reconcile("rbd_copy_volume", params, '{"name":"vm-copy","size":1024}')
+    assert reconciliation_command("rbd_copy_volume", params) == "rbd info images/vm-copy --format json"
+    with pytest.raises(ExecutorError, match="size mismatch"):
+        reconcile("rbd_copy_volume", params, '{"name":"vm-copy","size":512}')
+    with pytest.raises(ExecutorError, match="missing approved size"):
+        reconcile("rbd_copy_volume", {**params, "size_bytes": 0}, '{"name":"vm-copy","size":0}')
+
+
 def test_reconcile_template_requires_protected_snapshot():
     reconcile("rbd_template_mark", {"snapshot": "gold"},
               '[{"name":"gold","protected":true}]')

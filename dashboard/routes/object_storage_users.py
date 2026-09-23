@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import time
 from datetime import datetime
 from shared.time import utc_now
 from math import ceil
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
 
 from dashboard.cluster_scope import cluster_selection, selected_cluster
@@ -73,6 +74,16 @@ USER_SNAPSHOT_BATCH_SIZE = 50
 USER_PERSISTED_MAX_AGE_SECONDS = 86400
 USER_PERSISTED_NAMESPACE = "s3-user-snapshot"
 logger = logging.getLogger(__name__)
+_AUDIT_CREDENTIAL_ASSIGNMENT = re.compile(
+    r"(?i)\b(access[_ -]?key|secret(?:[_ -]?access)?[_ -]?key|session[_ -]?token)"
+    r"(\s*[:=]\s*)([^\s,;]+)"
+)
+
+
+def _redact_audit_text(value: str | None) -> str:
+    return _AUDIT_CREDENTIAL_ASSIGNMENT.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", value or ""
+    )
 USER_ACTIONS = {"create", "modify", "suspend", "enable", "delete"}
 _DEFAULT_FETCH_S3_USER_LIST = fetch_s3_user_list
 _DEFAULT_FETCH_S3_USER_LIST_WITH = fetch_s3_user_list_with
@@ -220,8 +231,8 @@ def _audit_rows(cluster_id: str, limit: int = AUDIT_MAX_ROWS) -> list[dict]:
         return [{
             "id": row.id, "actor": row.actor, "action": row.action,
             "target_type": row.target_type, "target_id": row.target_id,
-            "preview": row.preview, "result": row.result,
-            "error": row.error_message,
+            "preview": _redact_audit_text(row.preview), "result": row.result,
+            "error": _redact_audit_text(row.error_message) if row.error_message else None,
             "created_at": row.created_at.isoformat() + "Z",
             "completed_at": row.completed_at.isoformat() + "Z" if row.completed_at else None,
         } for row in rows]
@@ -705,8 +716,9 @@ async def purge_audit_api(request: Request, user: str = Depends(require_login)):
 
 
 @router.post("/api/object-storage/users/keys/preview")
-async def key_action_preview(request: Request, user: str = Depends(require_login)):
+async def key_action_preview(request: Request, response: Response, user: str = Depends(require_login)):
     _require_admin(user)
+    response.headers["Cache-Control"] = "no-store"
     body = await request.json()
     action = str(body.get("action") or "")
     if action not in {"create_key", "revoke_key"}:
@@ -716,7 +728,7 @@ async def key_action_preview(request: Request, user: str = Depends(require_login
     cluster = selected_cluster(request)
     preview = (
         f"Tạo access key mới cho S3 user {uid}; secret chỉ hiển thị một lần"
-        if action == "create_key" else f"Revoke access key {access_key} của S3 user {uid}"
+        if action == "create_key" else f"Revoke access key kết thúc bằng {access_key[-4:]} của S3 user {uid}"
     )
     return {
         "action": action, "uid": uid, "cluster_id": cluster.id, "cluster_name": cluster.name,
@@ -726,8 +738,9 @@ async def key_action_preview(request: Request, user: str = Depends(require_login
 
 
 @router.post("/api/object-storage/users/keys/execute")
-async def key_action_execute(request: Request, user: str = Depends(require_login)):
+async def key_action_execute(request: Request, response: Response, user: str = Depends(require_login)):
     _require_admin(user)
+    response.headers["Cache-Control"] = "no-store"
     body = await request.json()
     action = str(body.get("action") or "")
     if action not in {"create_key", "revoke_key"}:
@@ -740,7 +753,7 @@ async def key_action_execute(request: Request, user: str = Depends(require_login
     cluster = selected_cluster(request)
     preview = (
         f"create S3 access key for uid={uid} (secret redacted)"
-        if action == "create_key" else f"revoke S3 access key={access_key} for uid={uid}"
+        if action == "create_key" else f"revoke S3 access key ending={access_key[-4:]} for uid={uid}"
     )
     try:
         audit_id = await asyncio.to_thread(_start_audit, cluster.id, user, action, uid, preview)
@@ -748,11 +761,39 @@ async def key_action_execute(request: Request, user: str = Depends(require_login
         raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
     try:
         credential = await asyncio.to_thread(_key_action, cluster, action, uid, access_key)
-    except RgwLogError as exc:
-        safe_error = _safe_error(exc)
-        await asyncio.to_thread(_finish_audit, audit_id, "failed", safe_error)
+    except Exception as exc:
+        # Backend output can contain a JSON credential payload. Regex-only
+        # redaction is insufficient here; do not echo key-operation errors.
+        safe_error = "Thao tác S3 key thất bại; kiểm tra RGW log với quyền phù hợp"
+        try:
+            await asyncio.to_thread(_finish_audit, audit_id, "failed", safe_error)
+        except Exception as audit_exc:
+            logger.error("S3 key operation and audit finalization failed cluster=%s audit=%s", cluster.id, audit_id)
+            raise HTTPException(
+                status_code=503,
+                detail=f"Không xác định được trạng thái key sau lỗi audit {audit_id}; kiểm tra RGW trước khi thử lại",
+            ) from audit_exc
         raise HTTPException(status_code=502, detail=safe_error) from exc
-    await asyncio.to_thread(_finish_audit, audit_id, "succeeded")
+    try:
+        await asyncio.to_thread(_finish_audit, audit_id, "succeeded")
+    except Exception as exc:
+        # A newly created one-time secret must not be lost behind an HTTP 500.
+        # Best-effort revoke the exact key we just created; never retry create.
+        key_id = str(credential.get("access_key") or "") if isinstance(credential, dict) else ""
+        if action == "create_key" and key_id:
+            try:
+                await asyncio.to_thread(_key_action, cluster, "revoke_key", uid, key_id)
+            except Exception as rollback_exc:
+                logger.error("S3 key audit failed; rollback also failed cluster=%s audit=%s", cluster.id, audit_id)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Audit {audit_id} lỗi và key mới có thể còn hoạt động; kiểm tra RGW thủ công trước khi thử lại",
+                ) from rollback_exc
+            raise HTTPException(status_code=503, detail=f"Audit {audit_id} lỗi; key mới đã được thu hồi") from exc
+        raise HTTPException(
+            status_code=503,
+            detail=f"Audit {audit_id} lỗi sau thao tác RGW; kiểm tra trạng thái key trước khi thử lại",
+        ) from exc
     response = {"ok": True, "action": action, "uid": uid, "request_id": audit_id}
     if credential is not None:
         response["credential"] = credential

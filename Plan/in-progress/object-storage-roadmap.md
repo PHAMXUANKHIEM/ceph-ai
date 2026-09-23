@@ -120,6 +120,9 @@ cluster đang chọn, không có fallback sample hoặc cross-cluster leak.
   admin RBAC, confirmation, audit và form UI hai bước.
 - [~] **2.5 Test**: RBAC, secret redaction, action confirmation, cluster scope,
   rollback/error from RGW và audit trail.
+  - Regression mới kiểm tra key ID không lưu nguyên văn vào audit, response
+    `no-store`, lỗi audit sau khi tạo key và rollback/revoke best-effort.
+    Rollback thất bại được báo là trạng thái không chắc chắn, không trả secret.
 
 **Hoàn thành khi:** system admin quản lý user/key an toàn, còn operator không
 thể gọi API ghi dù cố gửi request trực tiếp.
@@ -230,6 +233,8 @@ ra chỉ bằng một click hoặc qua request thiếu capability.
     404, RGW unavailable, restore copy và secondary-cluster connection scope.
     Kiểm chứng RGW thật vẫn là release acceptance gate, không chạy mutation tự
     động trong test.
+  - Bounded filter scan rỗng nay vẫn trả `next_marker` để tìm tiếp; marker
+    không tiến bị từ chối, UI không kết luận nhầm rằng bucket rỗng.
 
 **Hoàn thành khi:** object browser vận hành được trên bucket lớn mà không tải
 toàn bộ object list vào memory hoặc làm lộ credential S3.
@@ -256,6 +261,10 @@ toàn bộ object list vào memory hoặc làm lộ credential S3.
   chạy scan audit rows và bounded `radosgw-admin bucket stats` mỗi 5 phút;
   Link target bucket đã có trên Alert Center/Incident Timeline; Prometheus,
   retention dài hạn và live RGW/Telegram acceptance vẫn còn.
+  - Incident không còn auto-resolve khi evidence thiếu/cũ hoặc bucket quota
+    chưa được quét lại; audit window vượt 5.000 dòng được đánh dấu partial và
+    không dùng để resolve. NaN/Inf bị loại khỏi rule/metric. Recovery trong
+    cửa sổ không traffic vẫn cần collector heartbeat để xác minh.
 - [~] **5.4 Export report CSV/JSON**: đã thêm endpoint JSON/CSV dùng chung
   bounded RGW metrics payload, cluster scope, Content-Disposition và không xuất
   raw audit row/secret. Quyền export đang kế thừa read-only dashboard; cần
@@ -276,7 +285,8 @@ và cluster, không spam khi metric nguồn gián đoạn.
   reachability chủ động còn là release acceptance.
 - [~] **6.2 Multi-site topology**: đã có snapshot realm/zonegroup/zone/period,
   sync status và diagnosis lag/shard/conflict/period-master ở chế độ read-only.
-  Cần tiếp tục kiểm chứng topology thật và các trạng thái failover.
+  Snapshot stale có trạng thái riêng, UI gắn nhãn finding cũ; parser giới hạn
+  depth/size và bỏ lag âm/NaN/Inf. Cần kiểm chứng topology thật và failover.
 - [~] **6.3 Read-only diagnostic**: evidence snapshot và multisite diagnosis
   đã được chuẩn hóa qua API/panel, hiển thị findings/evidence gaps và hướng
   dẫn kiểm tra tiếp theo; không tự sửa topology. Runbook nền tảng đã có tại
@@ -285,8 +295,11 @@ và cluster, không spam khi metric nguồn gián đoạn.
   per-bucket hiện có preview/execute, admin RBAC, strong confirmation, capability
   re-check và audit; endpoint global purge legacy đã fail-closed, còn thiếu
   Action/approval worker flow cho remediation RGW chuyên biệt.
-  preview, approval và audit; không mở shell tùy ý.
-- [ ] **6.5 Test**: topology missing, failover state, timeout và action guard.
+  Runbook yêu cầu change approval bên ngoài công cụ trước mọi topology/resync;
+  chưa có quyền tự động hóa hoặc shell tùy ý.
+- [~] **6.5 Test**: topology missing, failover state, timeout và action guard.
+  Đã có stale/partial/deep-payload parser test; live failover/timeout và
+  approval-enforced remediation vẫn chưa đạt release gate.
 
 **Hoàn thành khi:** trạng thái RGW/multi-site có thể quan sát được mà không làm
 thay đổi topology hay replication ngoài ý muốn.
@@ -296,9 +309,10 @@ thay đổi topology hay replication ngoài ý muốn.
 - [~] **7.1 RBAC/capability review** cho mọi API mới; các mutation bucket/user đã
   admin-only, capability-gated, confirmation/audit; còn review live toàn bộ
   route và rate-limit acceptance.
-  nếu route ghi chưa được framework bao phủ.
-- [x] **7.2 Audit viewer**: actor, cluster, target, preview/diff, result,
+- [~] **7.2 Audit viewer**: actor, cluster, target, preview/diff, result,
   request id; có redaction và retention policy.
+  Viewer metadata đã có; diff đầy đủ, retention/export policy và coverage
+  toàn bộ mutation chưa được kiểm chứng, nên chưa thể đánh dấu hoàn thành.
 - [~] **7.3 Runbook**: đã thêm `docs/runbook-rgw-object-storage.md` cho cấu
   hình/evidence RGW, credential handling, Object Lock, multisite lag/conflict,
   capacity dependency và release acceptance; còn cần bổ sung procedure
@@ -334,6 +348,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 
 | Ngày | Mục | Trạng thái | Thay đổi / bằng chứng | Kiểm thử | Commit / việc tiếp theo |
 |---|---:|---|---|---|---|
+| 2026-09-23 | 2.5 / 4.5 / 5.3 / 6.2 / 6.5 | Một phần | Hardening S3 key audit/rollback, Object Browser marker khi filter scan rỗng, RGW alert recovery chỉ khi nguồn được quan sát lại và audit window partial không đóng incident, multisite stale/depth/nonfinite guard và UI stale warning. Không tạo Action hay chạy lệnh quản trị. | Object Storage/RGW regression `190 passed`; compileall, hai `node --check` và `git diff --check` đạt. | Chưa commit/push/deploy; còn live RGW, independent approval, collector heartbeat và failover acceptance. |
 | 2026-09-20 | 5.1/5.5 | Một phần | Thêm API `GET /api/object-storage/rgw-metrics` dùng audit stream RGW bounded, trả request/bytes/status/error-rate/latency/top bucket/requester/User-Agent/time range và evidence gap quota rõ ràng. Không trả raw log/secret, không tạo Action; Prometheus/quota usage/retention dài hạn/alert lifecycle còn thiếu. | `tests/test_rgw_audit_intelligence.py` + Object Storage/dashboard gate: `233 passed`; AI/RGW gate: `401 passed`; compileall và `git diff --check` đạt | Commit `05807bb9`; còn live RGW/Prometheus acceptance |
 | 2026-08-16 | Kế hoạch | Hoàn thành | Tạo roadmap, tiêu chí an toàn, thứ tự triển khai và quy trình bàn giao. Baseline access-log đã được rà mã nguồn nhưng chưa audit test trong roadmap này. | Chưa chạy — tài liệu kế hoạch | Bắt đầu từ 0.4 và 1.1 |
 | 2026-08-16 | 1.1–1.4 | Đang làm | Thêm Object Storage Bucket Overview/Detail read-only, API scoped theo cluster, RGW bucket-list/stats adaptor an toàn, search tên, pagination, empty/error state, per-row stats degradation và điều hướng. Thêm regression suite. | `python3 -m py_compile` route/adaptor/test và `node --check dashboard/static/app.js` đạt; `git diff --check` sạch. `pytest` chưa chạy: Python thiếu pytest/FastAPI và ensurepip nên không tạo được venv tạm. | Chưa commit. Cài `python3-venv` hoặc cung cấp môi trường test rồi chạy `tests/test_dashboard_object_storage.py` + hồi quy RGW; hoàn tất filter/sort và detail enrichment. |

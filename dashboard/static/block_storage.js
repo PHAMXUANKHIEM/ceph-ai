@@ -15,6 +15,27 @@
   var closeCreate = document.getElementById("block-storage-create-close");
   var cancelCreate = document.getElementById("block-storage-create-cancel");
   if (!table) return;
+  var page = document.querySelector(".block-storage-page");
+  if (page && page.dataset.cacheLoading === "true") {
+    var checks = 0;
+    var pollSnapshot = function () {
+      if (document.hidden) { window.setTimeout(pollSnapshot, 5000); return; }
+      fetch(window.location.href, {cache: "no-store", credentials: "same-origin"})
+        .then(function (response) { return response.ok ? response.text() : ""; })
+        .then(function (html) {
+          var next = new DOMParser().parseFromString(html, "text/html").querySelector(".block-storage-page");
+          if (next && next.dataset.cacheLoading === "false") { window.location.reload(); return; }
+          if (++checks < 12) { window.setTimeout(pollSnapshot, 5000); return; }
+          var banner = document.querySelector(".block-storage-page .state-banner--loading span");
+          if (banner) banner.textContent = "Ceph phản hồi chậm; snapshot hiện có vẫn sử dụng được. Tải lại trang để thử tiếp.";
+        })
+        .catch(function () {
+          if (++checks < 12) window.setTimeout(pollSnapshot, 5000);
+        });
+    };
+    window.setTimeout(pollSnapshot, 5000);
+  }
+
 
   var rows = Array.prototype.slice.call(table.querySelectorAll(".block-storage-image-row"));
   function normalize(value) { return String(value || "").trim().toLocaleLowerCase("vi"); }

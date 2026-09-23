@@ -24,11 +24,13 @@ import json
 import hashlib
 import logging
 import re
-from datetime import datetime, timedelta
+import csv
+import io
+from datetime import date, datetime, time, timedelta
 from shared.time import utc_now
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from dashboard.routes import auth
 from dashboard.cluster_scope import cluster_connection, cluster_selection, selected_cluster
@@ -53,8 +55,10 @@ from shared.models import (
 )
 from worker.backup.policy_config import (
     BackupPolicyValidationError,
+    cluster_schedule_policy,
     list_policy_revisions,
     load_backup_policy,
+    rollback_backup_policy,
     save_backup_policy,
 )
 from worker.backup.cluster_scope import parse_tracked_images
@@ -82,6 +86,7 @@ BACKUP_PROGRESS_ACTION_IDS = (
     "restore_rbd_image_to_production",
     "restore_rbd_image_as_new",
     "retention_sweep_delete",
+    "backup_repair_missing_copy",
 )
 # Same constant, same values, as dashboard/routes/volumes.py|deploy_cluster.py|
 # patch.py|upgrade.py|delete_cluster.py|convert_cluster.py — no shared helper
@@ -566,7 +571,7 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
                 "created_at": None if job is None else job.created_at,
                 "age_hours": age, "threshold_hours": threshold_hours}
 
-    drill_config = policy.get("restore_drill") or {}
+    drill_config = cluster_schedule_policy(policy, None if cluster is None or cluster.is_default else cluster.id).get("restore_drill") or {}
     drill_configured = all(drill_config.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image"))
     estimates = [row["estimated_rto_seconds"] for row in rows if row["estimated_rto_seconds"] is not None]
     return {"rows": rows, "counts": counts, "total": len(rows), "rpo_hours": rpo_hours,
@@ -649,8 +654,93 @@ async def backup_inventory_api(request: Request, user: str = Depends(require_log
         raise HTTPException(status_code=400, detail="page/page_size không hợp lệ.") from exc
     return {"cluster_id": cluster.id, **_inventory(
         cluster, page=page, page_size=page_size,
-        filters={key: params.get(key, "") for key in ("search", "pool", "image", "job_type", "backup_target_slot", "status")},
+        filters=_inventory_request_filters(params),
     )}
+
+
+@router.get("/api/backups/inventory/export")
+async def backup_inventory_export_api(request: Request, user: str = Depends(require_login)):
+    del user
+    cluster = selected_cluster(request)
+    filters = _inventory_request_filters(request.query_params)
+    export_format = request.query_params.get("format", "csv").lower()
+    if export_format not in {"csv", "json"}:
+        raise HTTPException(status_code=400, detail="Định dạng export chỉ hỗ trợ csv hoặc json.")
+    first = _inventory(cluster, page=1, page_size=100, filters=filters)
+    items = list(first["items"])
+    for page in range(2, min(first["pages"], 10) + 1):
+        items.extend(_inventory(cluster, page=page, page_size=100, filters=filters)["items"])
+    truncated = first["total"] > len(items)
+    if export_format == "json":
+        return {"cluster_id": cluster.id, "items": items, "total": first["total"],
+                "exported": len(items), "truncated": truncated}
+
+    columns = ("job_id", "run_id", "pool", "image", "job_type", "status",
+               "consistency_mode", "backup_target_slot", "remote_key", "base_job_id",
+               "size_bytes", "sha256", "duration_seconds", "created_at", "finished_at")
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(columns)
+    for item in items:
+        writer.writerow([_csv_safe_cell(item.get(column)) for column in columns])
+    return Response(
+        content="\ufeff" + output.getvalue(), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="backup-inventory.csv"',
+                 "X-Export-Truncated": "true" if truncated else "false"},
+    )
+
+
+@router.get("/api/backups/jobs/{job_id}")
+async def backup_job_detail_api(request: Request, job_id: str, user: str = Depends(require_login)):
+    del user
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        job = session.query(BackupJob).filter(
+            BackupJob.id == job_id, _job_scope(BackupJob.cluster_id, cluster),
+        ).one_or_none()
+        if job is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy backup job trong cụm đang chọn.")
+
+        lineage = []
+        seen = set()
+        current = job
+        lineage_complete = True
+        while current is not None and len(lineage) < 100:
+            if current.id in seen:
+                lineage_complete = False
+                break
+            seen.add(current.id)
+            lineage.append({"job_id": current.id, "run_id": current.run_id,
+                            "job_type": current.job_type, "status": current.status,
+                            "created_at": current.created_at.isoformat() if current.created_at else None})
+            if not current.base_job_id:
+                break
+            parent = session.query(BackupJob).filter(
+                BackupJob.id == current.base_job_id,
+                _job_scope(BackupJob.cluster_id, cluster),
+                BackupJob.pool == job.pool,
+                BackupJob.image == job.image,
+                BackupJob.backup_target_slot == job.backup_target_slot,
+            ).one_or_none()
+            if parent is None:
+                lineage_complete = False
+            current = parent
+        else:
+            lineage_complete = False
+        lineage.reverse()
+        return {
+            "cluster_id": cluster.id, "job_id": job.id, "run_id": job.run_id,
+            "pool": job.pool, "image": job.image, "job_type": job.job_type,
+            "status": job.status, "consistency_mode": job.consistency_mode,
+            "backup_target_slot": job.backup_target_slot, "remote_key": job.remote_key,
+            "base_job_id": job.base_job_id, "size_bytes": job.size_bytes,
+            "sha256": job.sha256, "duration_seconds": job.duration_seconds,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+            "error_available": bool(job.error_message),
+            "lineage": lineage, "lineage_complete": lineage_complete,
+            "lineage_scope": "base_links_only",
+        }
 
 
 @router.post("/api/backups/retention/preview")
@@ -722,6 +812,35 @@ def _history(tracked: list[dict], cluster=None) -> list[dict]:
     return rows_out
 
 
+def _inventory_date(value: str) -> date | None:
+    if not value:
+        return None
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise HTTPException(status_code=400, detail="Ngày lọc inventory phải có dạng YYYY-MM-DD.")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Ngày lọc inventory không hợp lệ.") from exc
+    if parsed.year >= 9999:
+        raise HTTPException(status_code=400, detail="Ngày lọc inventory vượt giới hạn.")
+    return parsed
+
+
+def _inventory_request_filters(params) -> dict:
+    created_from = _inventory_date(params.get("created_from", ""))
+    created_to = _inventory_date(params.get("created_to", ""))
+    if created_from and created_to and created_from > created_to:
+        raise HTTPException(status_code=400, detail="Ngày bắt đầu phải trước hoặc bằng ngày kết thúc.")
+    return {**{key: params.get(key, "") for key in
+               ("search", "pool", "image", "job_type", "backup_target_slot", "status")},
+            "created_from": created_from, "created_to": created_to}
+
+
+def _csv_safe_cell(value) -> str:
+    text = "" if value is None else str(value)
+    return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
+
+
 def _inventory(cluster=None, *, page: int = 1, page_size: int = 25, filters: dict | None = None) -> dict:
     """Return a paginated inventory independent from the current policy."""
     filters = filters or {}
@@ -735,6 +854,10 @@ def _inventory(cluster=None, *, page: int = 1, page_size: int = 25, filters: dic
             value = str(filters.get(field) or "").strip()
             if value:
                 query = query.filter(getattr(BackupJob, field) == value)
+        if filters.get("created_from"):
+            query = query.filter(BackupJob.created_at >= datetime.combine(filters["created_from"], time.min))
+        if filters.get("created_to"):
+            query = query.filter(BackupJob.created_at < datetime.combine(filters["created_to"] + timedelta(days=1), time.min))
         search = str(filters.get("search") or "").strip()
         if search:
             needle = f"%{search}%"
@@ -928,6 +1051,27 @@ async def update_backup_policy(request: Request, user: str = Depends(require_log
     return {
         "ok": True,
         "revision_id": saved["revision_id"],
+        "created_at": saved["created_at"],
+        "applies_on_next_backup_cycle": True,
+        "policy": saved["policy"],
+    }
+
+
+@router.post("/api/backups/policy/rollback/{revision_id}")
+async def rollback_backup_policy_api(revision_id: str, user: str = Depends(require_login)):
+    """Rollback to a validated historical policy and create a new revision."""
+    _require_admin_privilege(user)
+    try:
+        saved = rollback_backup_policy(revision_id, actor=user)
+    except BackupPolicyValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (OSError, ValueError, TypeError) as exc:
+        logger.exception("backup policy rollback failed")
+        raise HTTPException(status_code=500, detail="Không thể rollback backup policy an toàn") from exc
+    return {
+        "ok": True,
+        "revision_id": saved["revision_id"],
+        "rolled_back_from": saved["rolled_back_from"],
         "created_at": saved["created_at"],
         "applies_on_next_backup_cycle": True,
         "policy": saved["policy"],
@@ -1160,7 +1304,8 @@ def _create_manual_backup_action(action_id: str, action_params: dict, user: str,
         existing = (
             _in_flight_action_query(
                 session,
-                ("rbd_backup_run", "backup_metadata_run", "restore_drill_execute", "retention_sweep_delete"),
+                ("rbd_backup_run", "backup_metadata_run", "restore_drill_execute", "retention_sweep_delete",
+                 "backup_repair_missing_copy"),
                 cluster,
             )
             .first()
@@ -1175,6 +1320,8 @@ def _create_manual_backup_action(action_id: str, action_params: dict, user: str,
             if action_id == "retention_sweep_delete"
             else "RestoreDrill thủ công vào scratch image được cấu hình"
             if action_id == "restore_drill_execute"
+            else f"Repair missing copy từ job {action_params.get('source_job_id')} sang target {action_params.get('destination_slot')}"
+            if action_id == "backup_repair_missing_copy"
             else "Backup metadata cụm thủ công"
         )
         incident = Incident(
@@ -1189,8 +1336,12 @@ def _create_manual_backup_action(action_id: str, action_params: dict, user: str,
         action = Action(
             incident_id=incident.id,
             action_id=action_id,
-            classification=ActionClassification.SAFE.value,
-            status=ActionStatus.APPROVED.value,
+            classification=(gate.classify_action(action_id).value
+                           if action_id == "backup_repair_missing_copy"
+                           else ActionClassification.SAFE.value),
+            status=(ActionStatus.PENDING_APPROVAL.value
+                    if action_id == "backup_repair_missing_copy"
+                    else ActionStatus.APPROVED.value),
             rationale=label,
             target_nodes=json.dumps([mon_nodes[0]]),
             action_params=json.dumps(action_params),
@@ -1251,6 +1402,119 @@ async def retry_backup_job(job_id: str, request: Request, user: str = Depends(re
     return JSONResponse({"action_id": action_pk, "retry_of_job_id": retry_of_job_id}, status_code=201)
 
 
+@router.post("/backups/jobs/{job_id}/repair-copy")
+async def repair_missing_copy(job_id: str, request: Request, user: str = Depends(require_login)):
+    """Propose rebuilding one missing default-cluster backup target.
+
+    The source job must be a verified SUCCESS copy.  The operation is RISKY
+    because it writes an artifact to another backup target and therefore
+    remains pending until an operator approves it.
+    """
+    _require_admin_privilege(user)
+    cluster = selected_cluster(request)
+    if cluster is not None and not cluster.is_default:
+        raise HTTPException(status_code=409, detail="Repair Missing Copy hiện chỉ hỗ trợ backup target a/b của cluster mặc định.")
+    body = await request.json()
+    destination_slot = str(body.get("destination_slot", "")).strip()
+    if destination_slot not in {"a", "b"}:
+        raise HTTPException(status_code=422, detail="destination_slot phải là a hoặc b.")
+    with db.SessionLocal() as session:
+        source = session.query(BackupJob).filter(
+            BackupJob.id == job_id,
+            BackupJob.cluster_id.is_(None),
+            BackupJob.job_type.in_(("full", "incremental")),
+            BackupJob.status == "SUCCESS",
+        ).first()
+        if source is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy bản backup thành công trong cluster mặc định.")
+        if source.backup_target_slot == destination_slot:
+            raise HTTPException(status_code=422, detail="Target đích phải khác target nguồn.")
+        if not source.remote_key or source.size_bytes is None or not _SHA256_RE.fullmatch(source.sha256 or ""):
+            raise HTTPException(status_code=409, detail="Artifact nguồn thiếu checksum/size để repair an toàn.")
+        duplicate = session.query(BackupJob).filter(
+            BackupJob.run_id == source.run_id,
+            BackupJob.cluster_id.is_(None),
+            BackupJob.pool == source.pool,
+            BackupJob.image == source.image,
+            BackupJob.job_type == source.job_type,
+            BackupJob.backup_target_slot == destination_slot,
+            BackupJob.status == "SUCCESS",
+        ).first()
+        if duplicate is not None:
+            raise HTTPException(status_code=409, detail="Copy đích đã tồn tại cho run này.")
+        source_job_id = source.id
+    repair_key = f"repair-copy:{source_job_id}:{destination_slot}"
+    action_pk = _create_manual_backup_action(
+        "backup_repair_missing_copy",
+        {"source_job_id": source_job_id, "destination_slot": destination_slot},
+        user,
+        cluster,
+        idempotency_key=repair_key,
+    )
+    return JSONResponse({"action_id": action_pk, "source_job_id": source_job_id,
+                         "destination_slot": destination_slot}, status_code=201)
+
+
+@router.post("/backups/jobs/{job_id}/cancel")
+async def cancel_backup_job(job_id: str, request: Request, user: str = Depends(require_login)):
+    """Cancel a queued/running backup at an engine-safe checkpoint.
+
+    APPROVED actions are rejected before execution. EXECUTING actions receive
+    a durable cancellation marker; the backup engine checks it while reading
+    export data and before/within target upload, then cleans snapshots and
+    partial artifacts through its existing finally path.
+    """
+    _require_admin_privilege(user)
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        job = session.query(BackupJob).filter(
+            BackupJob.id == job_id,
+            BackupJob.status == "RUNNING",
+            _job_scope(BackupJob.cluster_id, cluster),
+        ).first()
+        if job is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy backup job đang chạy trong cluster hiện tại.")
+        candidates = (
+            session.query(Action, Incident)
+            .join(Incident, Action.incident_id == Incident.id)
+            .filter(
+                Action.action_id.in_(BACKUP_PROGRESS_ACTION_IDS),
+                Action.status.in_((ActionStatus.APPROVED.value, ActionStatus.EXECUTING.value)),
+                _job_scope(Incident.cluster_id, cluster),
+            )
+            .order_by(Action.created_at.desc())
+            .all()
+        )
+        selected = None
+        for action, incident in candidates:
+            try:
+                params = json.loads(action.action_params or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if action.action_id == "backup_repair_missing_copy":
+                if params.get("source_job_id") == job.id:
+                    selected = (action, incident)
+                    break
+            elif params.get("pool") == job.pool and params.get("image") == job.image:
+                selected = (action, incident)
+                break
+        if selected is None:
+            raise HTTPException(status_code=409, detail="Không tìm thấy action đang điều khiển backup job này.")
+        action, incident = selected
+        action.cancelled_at = utc_now()
+        action.cancelled_by = user
+        if action.status == ActionStatus.APPROVED.value:
+            action.status = ActionStatus.REJECTED.value
+            incident.status = IncidentStatus.REJECTED.value
+        audit.record(
+            session, incident_id=incident.id, action_id=action.id,
+            event_type="backup_job_cancel_requested", actor=user,
+        )
+        session.commit()
+        return JSONResponse({"ok": True, "action_id": action.id, "job_id": job.id,
+                             "status": "CANCEL_REQUESTED" if action.status == ActionStatus.EXECUTING.value else "CANCELLED"})
+
+
 @router.post("/backups/metadata/run-now")
 async def run_metadata_backup_now(request: Request, user: str = Depends(require_login)):
     _require_admin_privilege(user)
@@ -1264,9 +1528,11 @@ async def run_restore_drill_now(request: Request, user: str = Depends(require_lo
     """Queue a manual, read-only RestoreDrill against its configured scratch target."""
     _require_admin_privilege(user)
     cluster = selected_cluster(request)
-    if cluster is not None and not cluster.is_default:
-        raise HTTPException(status_code=409, detail="RestoreDrill hiện chỉ chạy trên cluster mặc định.")
-    drill_config = load_backup_policy().get("restore_drill") or {}
+    if cluster is not None and not cluster.is_default and (not cluster.is_active or not cluster.backup_enabled):
+        raise HTTPException(status_code=409, detail="Backup của cluster chưa được bật.")
+    drill_config = cluster_schedule_policy(
+        load_backup_policy(), None if cluster is None or cluster.is_default else cluster.id
+    ).get("restore_drill") or {}
     if not all(drill_config.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image")):
         raise HTTPException(status_code=409, detail="RestoreDrill chưa được cấu hình đầy đủ trong backup policy.")
     body = await request.json()
@@ -1376,7 +1642,11 @@ async def multi_cluster_backup_audit(user: str = Depends(require_login)):
                 else:
                     target_ready = False
                 target_ready = bool(cluster.backup_enabled and cluster.backup_tracked_images and target_ready)
-                drill_configured = False
+                scoped = cluster_schedule_policy(policy, cluster.id)
+                configured = scoped.get("restore_drill") or {}
+                drill_configured = bool(target_ready and all(
+                    configured.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image")
+                ) and (scoped.get("schedule") or {}).get("restore_drill_cron"))
             if not target_ready:
                 gaps.append("BACKUP_TARGET_NOT_READY")
             if not drill_configured:

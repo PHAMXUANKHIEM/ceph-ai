@@ -155,10 +155,46 @@ def test_bad_source_value_is_rejected(dashboard_client, monkeypatch):
     _login(dashboard_client)
 
     response = dashboard_client.post(
-        "/settings/log-intel", data=_form(log_intel_source="elasticsearch")
+        "/settings/log-intel", data=_form(log_intel_source="unsupported")
     )
 
     assert "chỉ nhận" in response.text
+
+
+def test_elasticsearch_source_requires_url_and_safe_index(dashboard_client, monkeypatch):
+    _no_restart(monkeypatch)
+    _no_env_write(monkeypatch)
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/log-intel", data=_form(
+        log_intel_source="elasticsearch", log_intel_elasticsearch_url="",
+        log_intel_elasticsearch_index="ceph-logs-*"))
+    assert "Elasticsearch URL" in response.text
+    response = dashboard_client.post("/settings/log-intel", data=_form(
+        log_intel_source="elasticsearch", log_intel_elasticsearch_url="http://es:9200",
+        log_intel_elasticsearch_index="../../_all"))
+    assert "index pattern không hợp lệ" in response.text
+
+
+def test_save_elasticsearch_source(dashboard_client, monkeypatch):
+    _no_restart(monkeypatch)
+    _no_env_write(monkeypatch)
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/log-intel", data=_form(
+        log_intel_source="elasticsearch", log_intel_elasticsearch_url="http://es:9200",
+        log_intel_elasticsearch_index="ceph-logs-*"))
+    assert "Đã lưu cấu hình" in response.text
+    assert settings.log_intel_source == "elasticsearch"
+
+
+def test_elasticsearch_connectivity_probe_does_not_save(dashboard_client, monkeypatch):
+    import dashboard.routes.settings as routes
+    _login(dashboard_client)
+    before = settings.log_intel_elasticsearch_url
+    monkeypatch.setattr(routes.settings, "log_intel_elasticsearch_api_key", "dummy")
+    response = dashboard_client.post("/settings/log-intel/test-elasticsearch", data={
+        "log_intel_elasticsearch_url": "http://127.0.0.1:1", "log_intel_elasticsearch_index": "ceph-logs-*"})
+    assert response.json()["ok"] is False
+    assert settings.log_intel_elasticsearch_url == before
 
 
 def test_enabling_ai_warns_about_token_cost(dashboard_client, monkeypatch):

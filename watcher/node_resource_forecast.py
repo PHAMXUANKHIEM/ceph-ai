@@ -42,11 +42,13 @@ from shared.models import (
     NodeResourceForecastRun,
     NodeResourceForecastTransition,
     NodeResourceModelState,
+    HostMetricSample,
 )
 from shared.online_learning import MODEL_VERSION, load_or_reset_state
 from shared.online_model_registry import create_online_model
 from shared.river_linear_v2 import VERIFIED_OUTCOMES
 from shared.telegram_alerts import send_node_forecast_alert
+from watcher.multivariate_shadow import align_host_vectors
 
 logger = logging.getLogger(__name__)
 JOB = "ceph-ai-node-metrics"
@@ -632,7 +634,7 @@ def _record_candidates(
 def _shadow_evidence(
     session, cluster: str, host: str, metric: str,
     points: list[tuple[datetime, float]], samples: list[tuple[datetime, float, float]],
-    horizon_hours: int = 24,
+    horizon_hours: int = 24, multivariate_evidence: dict | None = None,
 ) -> list[dict]:
     """Build bounded evidence for new candidates without affecting alerts."""
 
@@ -695,7 +697,41 @@ def _shadow_evidence(
             "execution_mode": "SHADOW_ONLY",
         })
     evidence.append(shadow_drift_reaction(adwin))
+    if multivariate_evidence is not None:
+        evidence.append(multivariate_evidence)
     return evidence
+
+
+def _multivariate_shadow_evidence(session, cluster: str, host: str,
+                                  samples: list[tuple[datetime, float, float]]) -> dict:
+    """Read bounded host telemetry once per forecast run, never in an HTTP request."""
+    result = {"shadow_detector": "multivariate_host_vector_v1", "execution_mode": "SHADOW_ONLY",
+              "scope_key": f"{cluster}|{host}", "score": None, "alert_candidate": False}
+    if not samples:
+        return {**result, "quality_status": "INSUFFICIENT_EVIDENCE", "reason": "no Loki samples"}
+    cluster_rows = session.query(Cluster.id).filter(Cluster.name == cluster).limit(2).all()
+    if len(cluster_rows) != 1:
+        return {**result, "quality_status": "INSUFFICIENT_EVIDENCE", "reason": "cluster scope unavailable"}
+    cutoff = samples[-128][0].replace(tzinfo=None) if len(samples) >= 128 else samples[0][0].replace(tzinfo=None)
+    host_rows = session.query(HostMetricSample).filter(
+        HostMetricSample.cluster_id == cluster_rows[0][0], HostMetricSample.host == host,
+        HostMetricSample.collected_at >= cutoff - timedelta(minutes=5),
+        HostMetricSample.collected_at <= samples[-1][0].replace(tzinfo=None),
+    ).order_by(HostMetricSample.collected_at.desc()).limit(128).all()
+    aligned = align_host_vectors(samples, reversed(host_rows))
+    result.update({
+        "quality_status": aligned.quality_status, "aligned_samples": aligned.aligned_samples,
+        "rejected_samples": aligned.rejected_samples, "max_skew_seconds": aligned.max_skew_seconds,
+        "missing_features": list(aligned.missing_features),
+        "feature_schema": "host-cpu-ram-disk-v1",
+        "unavailable_features": ["osd_apply_latency_ms", "pg_degraded_ratio"],
+    })
+    if aligned.quality_status == "OK" and candidate_enabled("candidate_d_isolation"):
+        scores = candidate_d_isolation_scores(aligned.rows, history_size=24)
+        if scores and scores[-1] is not None:
+            result["score"] = round(float(scores[-1]), 6)
+            result["alert_candidate"] = bool(candidate_d_alerts(scores)[-1])
+    return result
 
 
 def _river_linear_v2_shadow_evidence(
@@ -806,6 +842,16 @@ def adaptive_forecast(
     result: dict[str, ResourceForecast] = {}
     horizons = _forecast_horizons()
     with db.SessionLocal() as session:
+        try:
+            multivariate_evidence = _multivariate_shadow_evidence(session, cluster, host, samples)
+        except Exception:
+            logger.warning("multivariate shadow evidence unavailable for %s/%s", cluster, host, exc_info=True)
+            session.rollback()
+            multivariate_evidence = {
+                "shadow_detector": "multivariate_host_vector_v1", "execution_mode": "SHADOW_ONLY",
+                "scope_key": f"{cluster}|{host}", "quality_status": "INSUFFICIENT_EVIDENCE",
+                "reason": "host telemetry unavailable", "score": None, "alert_candidate": False,
+            }
         for index, metric in ((1, "cpu"), (2, "ram")):
             points = [(row[0], row[index]) for row in samples]
             _evaluate_due(session, cluster, host, metric, points[-1][1], now_naive, points)
@@ -866,7 +912,7 @@ def adaptive_forecast(
                         now_naive, consensus, drift, horizon_hours=horizon,
                         shadow_evidence=_shadow_evidence(
                             session, cluster, host, metric, points, samples,
-                            horizon_hours=horizon,
+                            horizon_hours=horizon, multivariate_evidence=multivariate_evidence,
                         ),
                     )
                     result[metric] = replace(

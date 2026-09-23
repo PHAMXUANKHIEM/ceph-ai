@@ -436,6 +436,8 @@ LOG_INTEL_ENV_NAMES = {
     "log_intel_max_lines_per_daemon": "LOG_INTEL_MAX_LINES_PER_DAEMON",
     "log_intel_loki_url": "LOG_INTEL_LOKI_URL",
     "log_intel_loki_tenant": "LOG_INTEL_LOKI_TENANT",
+    "log_intel_elasticsearch_url": "LOG_INTEL_ELASTICSEARCH_URL",
+    "log_intel_elasticsearch_index": "LOG_INTEL_ELASTICSEARCH_INDEX",
     # Ngưỡng triage để riêng khỏi form này -- chúng chỉ cần chỉnh khi đã
     # chạy thật và thấy nhiễu, không phải lúc cấu hình ban đầu; runbook mục
     # 4 hướng dẫn ưu tiên gắn nhãn BENIGN trên trang /log-intelligence
@@ -3686,6 +3688,8 @@ async def log_intel_settings_submit(
     log_intel_max_lines_per_daemon: str = Form("5000"),
     log_intel_loki_url: str = Form(""),
     log_intel_loki_tenant: str = Form(""),
+    log_intel_elasticsearch_url: str = Form(""),
+    log_intel_elasticsearch_index: str = Form("ceph-logs-*"),
     save_action: str = Form("save-restart"),
 ):
     """Cấu hình Log Intelligence (Plan/log-intelligence-rca-plan.md).
@@ -3712,6 +3716,8 @@ async def log_intel_settings_submit(
         "log_intel_max_lines_per_daemon": log_intel_max_lines_per_daemon.strip(),
         "log_intel_loki_url": log_intel_loki_url.strip().rstrip("/"),
         "log_intel_loki_tenant": log_intel_loki_tenant.strip(),
+        "log_intel_elasticsearch_url": log_intel_elasticsearch_url.strip().rstrip("/"),
+        "log_intel_elasticsearch_index": log_intel_elasticsearch_index.strip(),
     }
 
     def _fail(message: str):
@@ -3720,14 +3726,23 @@ async def log_intel_settings_submit(
             _settings_context(user, log_intel_error=message, log_intel_values=submitted),
         )
 
-    if submitted["log_intel_source"] not in ("ssh", "loki"):
-        return _fail("Nguồn log chỉ nhận 'ssh' hoặc 'loki'.")
+    if submitted["log_intel_source"] not in ("ssh", "loki", "elasticsearch"):
+        return _fail("Nguồn log chỉ nhận 'ssh', 'loki' hoặc 'elasticsearch'.")
     if submitted["log_intel_source"] == "loki" and not submitted["log_intel_loki_url"]:
         return _fail("Chọn nguồn Loki thì bắt buộc phải điền Loki URL.")
     if submitted["log_intel_loki_url"] and not submitted["log_intel_loki_url"].startswith(
         ("http://", "https://")
     ):
         return _fail("Loki URL phải bắt đầu bằng http:// hoặc https://")
+    if submitted["log_intel_source"] == "elasticsearch":
+        from watcher.log_source.elasticsearch import _INDEX_RE
+
+        url = submitted["log_intel_elasticsearch_url"]
+        index = submitted["log_intel_elasticsearch_index"]
+        if not url.startswith(("http://", "https://")):
+            return _fail("Elasticsearch URL phải bắt đầu bằng http:// hoặc https://")
+        if not _INDEX_RE.fullmatch(index) or ".." in index:
+            return _fail("Elasticsearch index pattern không hợp lệ.")
 
     numeric = {}
     for field, label, minimum in (
@@ -3785,6 +3800,43 @@ async def log_intel_settings_submit(
             log_intel_success=f"Đã lưu cấu hình —{action_message}{note}",
         ),
     )
+
+
+@router.post("/settings/log-intel/test-elasticsearch")
+async def log_intel_test_elasticsearch(
+    user: str = Depends(require_login),
+    log_intel_elasticsearch_url: str = Form(""),
+    log_intel_elasticsearch_index: str = Form("ceph-logs-*"),
+):
+    """Read-only connectivity and index-permission check; never saves config."""
+    _require_admin_privilege(user)
+    from watcher.log_source.elasticsearch import _INDEX_RE
+
+    url = log_intel_elasticsearch_url.strip().rstrip("/")
+    index = log_intel_elasticsearch_index.strip()
+    if not url.startswith(("http://", "https://")) or not _INDEX_RE.fullmatch(index) or ".." in index:
+        return {"ok": False, "message": "Elasticsearch URL hoặc index pattern không hợp lệ."}
+
+    def _probe() -> tuple[bool, str]:
+        import httpx
+        from urllib.parse import quote
+
+        headers = {}
+        if settings.log_intel_elasticsearch_api_key:
+            headers["Authorization"] = f"ApiKey {settings.log_intel_elasticsearch_api_key}"
+        try:
+            response = httpx.post(
+                f"{url}/{quote(index, safe='*,-')}/_search",
+                json={"size": 0, "query": {"match_none": {}}}, headers=headers, timeout=10,
+            )
+        except Exception as exc:
+            return False, f"Không kết nối được Elasticsearch ({type(exc).__name__})."
+        if response.status_code == 200:
+            return True, "Elasticsearch truy vấn index thành công."
+        return False, f"Elasticsearch trả HTTP {response.status_code}; kiểm tra index và quyền đọc."
+
+    ok, message = await asyncio.to_thread(_probe)
+    return {"ok": ok, "message": message}
 
 
 @router.post("/settings/log-intel/test-loki")

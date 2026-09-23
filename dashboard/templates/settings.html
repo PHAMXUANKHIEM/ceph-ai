@@ -281,12 +281,26 @@
               <label for="log-intel-source-trigger">Nguồn log</label>
               <div class="log-intel-custom-select" data-log-intel-select>
                 <input type="hidden" name="log_intel_source" value="{{ log_intel_values.log_intel_source }}">
-                <button type="button" class="log-intel-select-trigger" id="log-intel-source-trigger" aria-haspopup="listbox" aria-expanded="false"><span data-log-intel-select-label>{% if log_intel_values.log_intel_source == 'loki' %}loki — đọc từ kho log tập trung{% else %}ssh — đọc trực tiếp trên node, không cần hạ tầng thêm{% endif %}</span><span aria-hidden="true">⌄</span></button>
+                <button type="button" class="log-intel-select-trigger" id="log-intel-source-trigger" aria-haspopup="listbox" aria-expanded="false"><span data-log-intel-select-label>{% if log_intel_values.log_intel_source == 'loki' %}loki — đọc từ kho log tập trung{% elif log_intel_values.log_intel_source == 'elasticsearch' %}elasticsearch — đọc từ index tập trung{% else %}ssh — đọc trực tiếp trên node, không cần hạ tầng thêm{% endif %}</span><span aria-hidden="true">⌄</span></button>
                 <div class="log-intel-select-menu" role="listbox" hidden>
                   <button type="button" role="option" data-log-intel-option="ssh">ssh — đọc trực tiếp trên node, không cần hạ tầng thêm</button>
                   <button type="button" role="option" data-log-intel-option="loki">loki — đọc từ kho log tập trung</button>
+                  <button type="button" role="option" data-log-intel-option="elasticsearch">elasticsearch — đọc từ index tập trung</button>
                 </div>
               </div>
+            </div>
+
+            <div class="log-intel-loki-config">
+              <div class="log-intel-url-row">
+                <label>Elasticsearch URL (chỉ dùng khi chọn nguồn Elasticsearch)
+                  <input type="text" name="log_intel_elasticsearch_url" id="log-intel-elasticsearch-url" value="{{ log_intel_values.log_intel_elasticsearch_url }}" placeholder="https://elastic.example:9200">
+                </label>
+                <div class="log-intel-test-action"><button type="button" class="log-intel-test-button" id="log-intel-test-elasticsearch">Kiểm tra Elasticsearch</button><span id="log-intel-test-elasticsearch-result" class="muted"></span></div>
+              </div>
+              <label>Index pattern
+                <input type="text" name="log_intel_elasticsearch_index" id="log-intel-elasticsearch-index" value="{{ log_intel_values.log_intel_elasticsearch_index }}" placeholder="ceph-logs-*">
+              </label>
+              <small>API key chỉ cấu hình qua biến môi trường <code>LOG_INTEL_ELASTICSEARCH_API_KEY</code>; không nhập khóa vào URL. Bên vận hành kho log chịu trách nhiệm ship log với các field <code>@timestamp, cluster, host, daemon_type, message</code>.</small>
             </div>
 
             <div class="log-intel-loki-config">

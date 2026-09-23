@@ -146,6 +146,29 @@ def validate_backup_policy(policy: dict) -> dict:
             retention.get("keep_incremental_count", 7), "keep_incremental_count", 1, 1000
         ),
     }
+    clusters = normalized.get("clusters") or {}
+    if not isinstance(clusters, dict) or len(clusters) > 100:
+        raise BackupPolicyValidationError("clusters phải là object tối đa 100 cụm")
+    for cluster_id, scoped in clusters.items():
+        try:
+            from uuid import UUID
+            UUID(str(cluster_id))
+        except (TypeError, ValueError) as exc:
+            raise BackupPolicyValidationError("clusters phải dùng Cluster.id UUID") from exc
+        if not isinstance(scoped, dict) or not isinstance(scoped.get("schedule") or {}, dict):
+            raise BackupPolicyValidationError("clusters.<id>.schedule phải là object")
+        schedule = scoped.get("schedule") or {}
+        for key in ("cron", "metadata_cron", "digest_cron", "restore_drill_cron"):
+            if key in schedule and schedule[key] is not False and not isinstance(schedule[key], dict):
+                raise BackupPolicyValidationError(f"clusters.<id>.schedule.{key} không hợp lệ")
+        drill = scoped.get("restore_drill") or {}
+        if not isinstance(drill, dict):
+            raise BackupPolicyValidationError("clusters.<id>.restore_drill phải là object")
+        if drill and not all(_NAME_RE.fullmatch(str(drill.get(name) or "")) for name in
+                             ("pool", "image", "scratch_pool", "scratch_image")):
+            raise BackupPolicyValidationError("clusters.<id>.restore_drill thiếu pool/image/scratch")
+        if drill and drill["pool"] == drill["scratch_pool"] and drill["image"] == drill["scratch_image"]:
+            raise BackupPolicyValidationError("RestoreDrill scratch phải khác image nguồn")
     return normalized
 
 
@@ -214,8 +237,45 @@ def list_policy_revisions(limit: int = 20) -> list[dict]:
     return rows
 
 
+def rollback_backup_policy(revision_id: str, *, actor: str = "system") -> dict:
+    """Restore one previously persisted policy revision atomically.
+
+    Rollback is itself saved as a new revision, so the operator can undo an
+    accidental rollback without editing YAML on disk.  The selected revision
+    is validated before the live policy is replaced and the operation never
+    accepts a path supplied by the caller.
+    """
+    if not _REVISION_RE.fullmatch(str(revision_id)):
+        raise BackupPolicyValidationError("revision_id không hợp lệ")
+    revision_path = Path(POLICY_REVISION_DIR) / f"{revision_id}.yaml"
+    with _POLICY_LOCK:
+        try:
+            envelope = yaml.safe_load(revision_path.read_text(encoding="utf-8")) or {}
+        except FileNotFoundError as exc:
+            raise BackupPolicyValidationError("Không tìm thấy policy revision") from exc
+        except (OSError, yaml.YAMLError) as exc:
+            raise BackupPolicyValidationError("Không đọc được policy revision") from exc
+        if envelope.get("revision_id") != revision_id:
+            raise BackupPolicyValidationError("Policy revision không hợp lệ")
+        restored = validate_backup_policy(envelope.get("policy"))
+        saved = save_backup_policy(
+            restored,
+            actor=f"{str(actor)[:48]}:rollback:{revision_id[:8]}",
+        )
+        saved["rolled_back_from"] = revision_id
+        return saved
+
+
 def backup_targets_from_policy() -> list[dict]:
     """Shared by `engine.py` (RBD backup/retention) and `metadata.py`
     (Story 9.3) — lives here rather than in either module so neither has
     to import the other just for this."""
     return load_backup_policy().get("backup_targets") or []
+
+
+def cluster_schedule_policy(policy: dict, cluster_id: str | None) -> dict:
+    """A secondary cluster never inherits the default drill destination."""
+    if cluster_id is None:
+        return policy
+    scoped = (policy.get("clusters") or {}).get(cluster_id)
+    return scoped if isinstance(scoped, dict) else {}

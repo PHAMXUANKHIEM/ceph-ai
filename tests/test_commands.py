@@ -824,6 +824,18 @@ def test_rbd_clone_and_flatten_commands_are_closed_schema_and_post_checked():
         )
 
 
+def test_rbd_copy_command_requires_snapshot_and_other_pool():
+    params = {"pool_name": "vms", "image": "vm-old", "snapshot": "gold",
+              "dest_pool": "images", "dest_image": "vm-copy"}
+    command = commands_module.get_command("rbd_copy_volume", params=params)
+    assert command == "rbd cp --no-progress vms/vm-old@gold images/vm-copy && rbd info images/vm-copy --format json"
+    assert " rm " not in command and "migration commit" not in command
+    with pytest.raises(ExecutorError):
+        commands_module.get_command("rbd_copy_volume", params={**params, "snapshot": "--bad"})
+    with pytest.raises(ExecutorError):
+        commands_module.get_command("rbd_copy_volume", params={**params, "dest_pool": "vms"})
+
+
 def test_rbd_template_command_protects_snapshot_and_records_metadata():
     command = commands_module.get_command(
         "rbd_template_mark",

@@ -60,6 +60,29 @@ def test_multisite_diagnosis_fails_closed_when_period_and_sync_are_missing():
     assert result["evidence_gaps"]
 
 
+def test_multisite_stale_snapshot_is_not_presented_as_current_diagnosis():
+    evidence = _evidence({"sync_status": "syncing", "lag_seconds": 420})
+    evidence["cache"] = {"stale": True, "age_seconds": 1800}
+    result = build_multisite_diagnosis(evidence)
+    assert result["status"] == "stale_evidence"
+    assert result["stale"] is True and result["evidence_current"] is False
+    assert any("đã cũ" in gap for gap in result["evidence_gaps"])
+    assert result["read_only"] is True and result["action_id"] is None
+
+
+def test_multisite_rejects_nonfinite_or_negative_lag_and_bounds_nested_input():
+    nested = {"child": {}}
+    current = nested["child"]
+    for _ in range(1500):
+        child = {}
+        current["child"] = child
+        current = child
+    evidence = _evidence({"lag_seconds": float("inf"), "lag_minutes": -3, "nested": nested})
+    result = build_multisite_diagnosis(evidence)
+    assert result["observed"]["lag"]["status"] == "not_observed"
+    assert result["read_only"] is True
+
+
 def test_multisite_diagnosis_api_is_authenticated_and_cluster_scoped(dashboard_client, monkeypatch):
     monkeypatch.setattr(
         object_storage_route,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
@@ -61,6 +62,8 @@ def _walk_params(value: Any, *, depth: int = 0) -> None:
     elif isinstance(value, list):
         for item in value:
             _walk_params(item, depth=depth + 1)
+    elif isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("action params không được chứa NaN hoặc Infinity")
     elif not isinstance(value, (str, int, float, bool)) and value is not None:
         raise ValueError("action params phải là JSON primitive/object/array")
 
@@ -111,7 +114,7 @@ class TypedActionRequest(BaseModel):
     @classmethod
     def validate_params(cls, value: dict[str, Any]) -> dict[str, Any]:
         _walk_params(value)
-        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
         if len(encoded) > _MAX_PARAMS_JSON_CHARS:
             raise ValueError("action params vượt giới hạn kích thước")
         return value
@@ -157,12 +160,17 @@ class TypedActionGateway:
         target_scope: TargetScope,
         approval_required: frozenset[str] | set[str] = frozenset(),
         capability_check: Callable[[TypedActionRequest], bool] | None = None,
+        capabilities_by_action: Mapping[str, frozenset[str] | set[str]] | None = None,
     ) -> None:
         self.allowed_action_ids = frozenset(allowed_action_ids)
         self.allowed_capabilities = frozenset(allowed_capabilities)
         self.target_scope = target_scope
         self.approval_required = frozenset(approval_required)
         self.capability_check = capability_check
+        self.capabilities_by_action = (
+            {action: frozenset(capabilities) for action, capabilities in capabilities_by_action.items()}
+            if capabilities_by_action is not None else None
+        )
 
     def authorize(
         self,
@@ -172,7 +180,10 @@ class TypedActionGateway:
         now: datetime | None = None,
     ) -> TypedActionRequest:
         try:
-            contract = request if isinstance(request, TypedActionRequest) else TypedActionRequest.model_validate(request)
+            # Pydantic's model_copy(update=...) does not validate the update.
+            # Revalidate instances as well as mappings at this trust boundary.
+            payload = request.model_dump(mode="python") if isinstance(request, TypedActionRequest) else request
+            contract = TypedActionRequest.model_validate(payload)
         except Exception as exc:
             raise ActionContractError(f"typed action không hợp lệ: {exc}") from exc
 
@@ -180,6 +191,11 @@ class TypedActionGateway:
             raise ActionContractError("action_id không nằm trong allowlist")
         if contract.capability not in self.allowed_capabilities:
             raise ActionContractError("capability không được cấp")
+        if self.capabilities_by_action is None:
+            if len(self.allowed_action_ids) != 1 or len(self.allowed_capabilities) != 1:
+                raise ActionContractError("gateway đa action cần mapping action-capability")
+        elif contract.capability not in self.capabilities_by_action.get(contract.action_id, frozenset()):
+            raise ActionContractError("capability không khớp action_id")
         if contract.cluster_id != self.target_scope.cluster_id:
             raise ActionContractError("cluster_id không khớp target scope")
         if contract.target_id not in _target_values(self.target_scope, contract.target_type):
@@ -193,7 +209,7 @@ class TypedActionGateway:
                 capability_allowed = self.capability_check(contract)
             except Exception as exc:
                 raise ActionContractError("capability matrix không khả dụng") from exc
-            if not capability_allowed:
+            if capability_allowed is not True:
                 raise ActionContractError("capability matrix từ chối action")
 
         if contract.action_id in self.approval_required:

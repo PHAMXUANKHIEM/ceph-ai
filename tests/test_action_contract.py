@@ -64,6 +64,45 @@ def test_gateway_rejects_free_form_command_params():
         TypedActionRequest.model_validate(_request(params={"command": "rm -rf /"}))
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_gateway_rejects_nonfinite_numbers_at_any_depth(value):
+    with pytest.raises(ValueError, match="NaN hoặc Infinity"):
+        TypedActionRequest.model_validate(_request(params={"limits": [{"iops": value}]}))
+
+
+def test_gateway_accepts_finite_number():
+    request = TypedActionRequest.model_validate(_request(params={"iops": 100.5}))
+    assert request.params["iops"] == 100.5
+
+
+def test_multi_action_gateway_requires_action_capability_binding():
+    options = dict(
+        allowed_action_ids={"rbd_trash_move_volume", "rbd_resize_volume"},
+        allowed_capabilities={"rbd.trash.move", "rbd.resize"},
+        target_scope=TargetScope(cluster_id="cluster-1", volumes={"vol-1"}),
+    )
+    with pytest.raises(ActionContractError, match="mapping action-capability"):
+        TypedActionGateway(**options).authorize(_request(), now=NOW)
+
+    gateway = TypedActionGateway(
+        **options,
+        capabilities_by_action={
+            "rbd_trash_move_volume": {"rbd.trash.move"},
+            "rbd_resize_volume": {"rbd.resize"},
+        },
+    )
+    with pytest.raises(ActionContractError, match="không khớp action_id"):
+        gateway.authorize(_request(capability="rbd.resize"), now=NOW)
+    assert gateway.authorize(_request(), now=NOW).action_id == "rbd_trash_move_volume"
+
+
+def test_gateway_revalidates_preconstructed_model_instances():
+    valid = TypedActionRequest.model_validate(_request())
+    forged = valid.model_copy(update={"params": {"nested": {"command": "arbitrary shell"}}})
+    with pytest.raises(ActionContractError, match="free-form command"):
+        _gateway().authorize(forged, now=NOW)
+
+
 def test_approval_requires_server_owned_matching_fingerprint():
     request = TypedActionRequest.model_validate(_request())
     fingerprint = execution_fingerprint(request)
@@ -83,6 +122,17 @@ def test_capability_matrix_callback_is_fail_closed():
         allowed_capabilities={"rbd.trash.move"},
         target_scope=TargetScope(cluster_id="cluster-1", volumes={"vol-1"}),
         capability_check=lambda _request: False,
+    )
+    with pytest.raises(ActionContractError, match="capability matrix"):
+        gateway.authorize(_request(), now=NOW)
+
+
+def test_capability_matrix_rejects_truthy_non_boolean_result():
+    gateway = TypedActionGateway(
+        allowed_action_ids={"rbd_trash_move_volume"},
+        allowed_capabilities={"rbd.trash.move"},
+        target_scope=TargetScope(cluster_id="cluster-1", volumes={"vol-1"}),
+        capability_check=lambda _request: "UNKNOWN",
     )
     with pytest.raises(ActionContractError, match="capability matrix"):
         gateway.authorize(_request(), now=NOW)

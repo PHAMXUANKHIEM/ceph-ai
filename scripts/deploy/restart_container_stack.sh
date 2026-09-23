@@ -8,9 +8,10 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEPLOY_REF="${DEPLOY_REF:-origin/main}"
-SERVICES=(dashboard-web full-executor watcher worker code-repair telegram-ai)
+SERVICES=(dashboard-web full-executor watcher worker telegram-ai)
 DEPLOY_IMAGE="${CEPH_AI_IMAGE:-}"
-EXPECTED_IMAGE_DIGEST="${CEPH_AI_EXPECTED_IMAGE_DIGEST:-}"
+IMAGE_REF_FILE=/var/lib/ceph-ai/release-artifacts/current-image-ref
+PREVIOUS_IMAGE_REF_FILE=/var/lib/ceph-ai/release-artifacts/previous-image-ref
 
 cd "$REPO_DIR"
 # A self-hosted runner may share the canonical checkout with an operator who
@@ -85,6 +86,7 @@ git reset --hard "$DEPLOY_REF"
 # to the web container.
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-container-restart.service" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-container-restart.socket" /etc/systemd/system/
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-code-repair-supervisor.service" /etc/systemd/system/
 install -m 0755 "$REPO_DIR/scripts/deploy/container_restart_helper.py" /usr/local/libexec/ceph-ai-container-restart
 install -d -m 0750 /run/ceph-ai
 for heartbeat in worker watcher; do
@@ -103,40 +105,45 @@ systemctl daemon-reload
 systemctl reset-failed ceph-ai-container-restart.service || true
 systemctl enable --now ceph-ai-container-restart.socket
 
-# Dependencies are baked into the application image. A production release may
-# provide the exact image digest already scanned by CI. In that mode, refuse
-# to build locally: rebuilding here would break the CI-image-to-runtime
-# identity guarantee. The empty-image path preserves the lab/local workflow.
+# Pull the registry manifest that passed CI. The immutable reference is the
+# release identity; a local image ID is used only for running-container checks.
+export CEPH_AI_IMAGE="$DEPLOY_IMAGE"
 if [ -n "$DEPLOY_IMAGE" ]; then
-  if [ -z "$EXPECTED_IMAGE_DIGEST" ] && [ "${CEPH_AI_ALLOW_UNVERIFIED_IMAGE:-false}" != "true" ]; then
-    echo "ERROR: CEPH_AI_EXPECTED_IMAGE_DIGEST is required when deploying a pre-built image" >&2
-    echo "Set CEPH_AI_ALLOW_UNVERIFIED_IMAGE=true only for an explicitly non-production lab run" >&2
+  if [[ ! "$DEPLOY_IMAGE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]; then
+    echo "ERROR: CEPH_AI_IMAGE must be an immutable ghcr.io manifest digest" >&2
     exit 4
   fi
-  if ! podman image exists "$DEPLOY_IMAGE"; then
-    echo "ERROR: deployment image is not present locally: $DEPLOY_IMAGE" >&2
-    exit 4
-  fi
-  actual_image_digest="$(podman image inspect "$DEPLOY_IMAGE" --format '{{.Id}}')"
-  if [ -n "$EXPECTED_IMAGE_DIGEST" ] && [ "$actual_image_digest" != "$EXPECTED_IMAGE_DIGEST" ]; then
-    echo "ERROR: deployment image digest mismatch: expected $EXPECTED_IMAGE_DIGEST, got $actual_image_digest" >&2
+  podman pull "$DEPLOY_IMAGE"
+  approved_image_id="$(podman image inspect "$DEPLOY_IMAGE" --format '{{.Id}}')"
+  artifact_commit="$(podman image inspect "$DEPLOY_IMAGE" --format '{{ index .Labels "org.opencontainers.image.revision" }}')"
+  if [ "$artifact_commit" != "$(git rev-parse HEAD)" ]; then
+    echo "ERROR: approved image revision does not match deployment checkout" >&2
     exit 4
   fi
 else
-  # Dependencies are baked into the application image. Build before restart so
-  # a changed pyproject.toml cannot leave newly-started processes importing an
-  # older dependency set.
-  podman-compose build
+  echo "ERROR: deployment requires CEPH_AI_IMAGE=ghcr.io/...@sha256:<digest>" >&2
+  exit 4
 fi
 
-# Only migrate after the exact artifact has been verified or built. ``heads``
-# safely applies all pending migration branches, but a failed artifact check
-# must never be followed by a database schema change.
-"$REPO_DIR/.venv/bin/alembic" upgrade heads
+# Only migrate after the exact artifact has been verified or built. The
+# canonical migration entrypoint creates a backup first and records revision,
+# checksum, artifact and commit metadata. A failed backup must stop rollout.
+"$REPO_DIR/scripts/deploy/run_migrations.sh"
+
+# Persist the approved reference before systemd restarts the stack. A reboot
+# must reuse it. Preserve the previous digest for explicit, schema-compatible
+# container rollback rather than rebuilding the old checkout.
+install -d -m 0750 "$(dirname "$IMAGE_REF_FILE")"
+if [ -s "$IMAGE_REF_FILE" ]; then
+  cp -a "$IMAGE_REF_FILE" "$PREVIOUS_IMAGE_REF_FILE"
+fi
+image_ref_tmp="$(mktemp "${IMAGE_REF_FILE}.XXXXXX")"
+printf '%s\n' "$DEPLOY_IMAGE" > "$image_ref_tmp"
+chmod 0640 "$image_ref_tmp"
+mv -f "$image_ref_tmp" "$IMAGE_REF_FILE"
 
 # The container service's launcher disables conflicting legacy service units
-# and force-recreates the Python processes that import mounted application
-# source.
+# and force-recreates the Python processes from the immutable image.
 systemctl restart ceph-ai-containers.service
 
 for _attempt in $(seq 1 24); do
@@ -162,16 +169,19 @@ if [ "$all_healthy" != true ] || [ "${consumer_count:-0}" -lt 1 ]; then
   exit 1
 fi
 
-if [ -n "$EXPECTED_IMAGE_DIGEST" ]; then
-  for service in "${SERVICES[@]}"; do
-    running_image_digest="$(podman inspect "ceph-ai_${service}_1" --format '{{.Image}}')"
-    if [ "$running_image_digest" != "$EXPECTED_IMAGE_DIGEST" ]; then
-      echo "ERROR: running container $service is not using the approved image digest" >&2
-      echo "expected=$EXPECTED_IMAGE_DIGEST actual=$running_image_digest" >&2
-      exit 5
-    fi
-  done
-fi
+for service in "${SERVICES[@]}"; do
+  running_image_id="$(podman inspect "ceph-ai_${service}_1" --format '{{.Image}}')"
+  if [ "$running_image_id" != "$approved_image_id" ]; then
+    echo "ERROR: running container $service is not using the approved registry artifact" >&2
+    echo "expected=$approved_image_id actual=$running_image_id" >&2
+    exit 5
+  fi
+done
 
 curl -fsS --max-time 10 http://127.0.0.1:8000/login >/dev/null
+# Code Repair continues as a separate host-owned process, without container
+# source mounts. Its unit explicitly disables auto-push/deploy/promotion until
+# candidates have their own scanned-artifact pipeline.
+systemctl daemon-reload
+systemctl enable --now ceph-ai-code-repair-supervisor.service
 echo "Deploy complete: $(git rev-parse HEAD); incident consumers=${consumer_count}"

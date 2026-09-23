@@ -2289,6 +2289,36 @@ def test_volume_replication_api_returns_status_when_enabled(dashboard_client, mo
     assert response.json()["status"]["site_status"] == "up_to_date"
 
 
+def test_volume_replication_api_normalizes_peer_lag_without_enabling_failover(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    # Production's utc_now() is intentionally naive UTC for legacy DB columns.
+    fixed_now = datetime(2026, 9, 23, 12, 0)
+    monkeypatch.setattr(volumes_route, "utc_now", lambda: fixed_now)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_mirror_pool_info", lambda pool: {"mode": "journal"})
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_mirror_pool_status",
+        lambda pool: {"peer_sites": [{
+            "site_name": "secondary",
+            "state": "up+replaying",
+            "last_update": "2026-09-23T11:45:00Z",
+        }]},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/replication")
+
+    assert response.status_code == 200
+    evidence = response.json()["evidence"]
+    assert evidence["peer_count"] == 1
+    assert evidence["lag_seconds"] == 900
+    assert evidence["rpo_seconds"] == 900
+    assert evidence["rpo_evidence"] == "peer_last_update"
+    assert evidence["failover_supported"] is False
+    assert evidence["fencing_configured"] is False
+    assert evidence["mutation_supported"] is False
+
+
 def test_volume_qos_api_reads_values_and_proposes_approval_gated_change(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     current = {
@@ -2592,6 +2622,63 @@ def test_propose_clone_volume_rejects_missing_snapshot(dashboard_client, monkeyp
     })
 
     assert response.status_code == 409
+
+
+def test_propose_cross_pool_copy_requires_approval_and_preserves_source(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_image_detail", lambda *_: {
+        "size": 3 * 1024 ** 3, "snapshots": [{"name": "gold", "size": 2 * 1024 ** 3}],
+    })
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda *_: [])
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda *_: {
+        "max_available": 8 * 1024 ** 3, "rbd_enabled": True, "near_full": False,
+    })
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/copy",
+        json={"snapshot": "gold", "dest_pool": "backups", "dest_image": "vm-copy"},
+        headers={"Idempotency-Key": "copy-vm-01-gold-2026"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["source_preserved"] is True
+    assert response.json()["estimated_size_bytes"] == 2 * 1024 ** 3
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.status == "PENDING_APPROVAL"
+        assert action.classification == "RISKY"
+        assert action.action_id == "rbd_copy_volume"
+        assert "rbd cp --no-progress vms/vm-01@gold backups/vm-copy" in action.proposed_command
+    replay = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/copy",
+        json={"snapshot": "gold", "dest_pool": "backups", "dest_image": "vm-copy"},
+        headers={"Idempotency-Key": "copy-vm-01-gold-2026"},
+    )
+    assert replay.status_code == 200
+    assert replay.json()["action_id"] == response.json()["action_id"]
+
+
+def test_cross_pool_copy_fails_closed_on_missing_snapshot_capacity_or_cinder(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_image_detail", lambda *_: {
+        "size": 2 * 1024 ** 3, "snapshots": [],
+    })
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda *_: [])
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda *_: {
+        "max_available": 8 * 1024 ** 3, "rbd_enabled": True,
+    })
+    _login(dashboard_client)
+    body = {"snapshot": "gold", "dest_pool": "backups", "dest_image": "vm-copy"}
+    missing = dashboard_client.post("/api/volumes/vms/inventory/vm-01/copy", json=body)
+    cinder = dashboard_client.post("/api/volumes/vms/inventory/volume-123/copy", json=body)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_image_detail", lambda *_: {
+        "size": 2 * 1024 ** 3, "snapshots": [{"name": "gold", "size": 2 * 1024 ** 3}],
+    })
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda *_: {
+        "max_available": 0, "rbd_enabled": True,
+    })
+    unknown_capacity = dashboard_client.post("/api/volumes/vms/inventory/vm-01/copy", json=body)
+    assert missing.status_code == cinder.status_code == unknown_capacity.status_code == 409
 
 
 def test_propose_template_requires_snapshot_and_creates_risky_action(dashboard_client, monkeypatch):

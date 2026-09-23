@@ -24,6 +24,14 @@ FULL_EXECUTOR_SSH_ROOT = Path("/var/lib/ceph-ai/full-executor-ssh")
 FULL_EXECUTOR_SECRET_ROOT = Path("/var/lib/ceph-ai/full-executor-secrets")
 RUNTIME_UID = "10001"
 RUNTIME_ROOT = Path("/var/lib/ceph-ai")
+TELEGRAM_STATE_ROOT = RUNTIME_ROOT / "telegram-state"
+TELEGRAM_STATE_FILES = (
+    "telegram-chat-clusters.json",
+    "telegram-chat-modes.json",
+    "telegram-single-full-confirmations.json",
+    "telegram-single-full-runs.json",
+    "telegram-update-offsets.json",
+)
 RUNTIME_DIR = Path("/run/ceph-ai")
 RUNTIME_STATE_FILES = frozenset(
     {
@@ -226,6 +234,15 @@ def _grant_runtime_service_access() -> None:
     subprocess.run(["setfacl", "-m", f"u:{RUNTIME_UID}:rwx", str(config_dir)], check=True)
     if TARGET.exists():
         subprocess.run(["setfacl", "-m", f"u:{RUNTIME_UID}:rw", str(TARGET)], check=True)
+    TELEGRAM_STATE_ROOT.mkdir(mode=0o750, parents=True, exist_ok=True)
+    subprocess.run(
+        ["setfacl", "-m", f"u:{RUNTIME_UID}:rwx,m::rwx", str(TELEGRAM_STATE_ROOT)],
+        check=True,
+    )
+    for name in TELEGRAM_STATE_FILES:
+        path = TELEGRAM_STATE_ROOT / name
+        if path.exists():
+            subprocess.run(["setfacl", "-m", f"u:{RUNTIME_UID}:rw,m::rw", str(path)], check=True)
     for path in RUNTIME_ROOT.iterdir():
         if path.is_file() and path.name in RUNTIME_STATE_FILES:
             subprocess.run(["setfacl", "-m", f"u:{RUNTIME_UID}:rw,m::rw", str(path)], check=True)
@@ -239,6 +256,15 @@ def _grant_runtime_service_access() -> None:
 
 def main() -> None:
     TARGET.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    TELEGRAM_STATE_ROOT.mkdir(mode=0o750, parents=True, exist_ok=True)
+    # Migrate the legacy root-owned files once. The old names remain as a
+    # rollback copy; all live writers use the UID-scoped directory above.
+    for name in TELEGRAM_STATE_FILES:
+        legacy = RUNTIME_ROOT / name
+        target = TELEGRAM_STATE_ROOT / name
+        if legacy.is_file() and not target.exists():
+            shutil.copyfile(legacy, target)
+            os.chmod(target, 0o600)
     if not TARGET.exists():
         TARGET.write_text(SOURCE.read_text())
         TARGET.chmod(0o600)

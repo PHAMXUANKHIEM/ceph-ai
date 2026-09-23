@@ -38,6 +38,7 @@
     </section>
     {% if is_admin %}<div id="bucket-capability-banner" class="bucket-capability-banner" role="status"><span class="status-dot" aria-hidden="true"></span><p id="object-storage-capability-status">Đang kiểm tra capability theo phiên bản Ceph thực tế...</p><button type="button" class="bucket-capability-dismiss" aria-label="Ẩn thông tin phiên bản Ceph" title="Ẩn">×</button></div>{% endif %}
     {% if inventory.refreshing %}<div class="bucket-load-state bucket-load-state-refreshing" role="status"><span class="bucket-refresh-indicator" aria-hidden="true"></span><span>Đang cập nhật danh sách bucket từ RGW…{% if inventory.stale %} Đang hiển thị snapshot cũ trong lúc làm mới.{% endif %}</span></div>{% elif inventory.refresh_error or error %}<div class="bucket-load-state bucket-load-state-error" role="alert"><span aria-hidden="true">⚠</span><span>{% if inventory.stale %}Đang hiển thị snapshot cũ; lần cập nhật RGW vừa thất bại. Kiểm tra kết nối và thử tải lại.{% else %}RGW không trả được dữ liệu bucket. Kiểm tra kết nối Ceph/RGW và thử tải lại.{% endif %}</span></div>{% elif inventory.stale %}<div class="bucket-load-state" role="status"><span aria-hidden="true">◷</span><span>Đang hiển thị snapshot bucket cũ.</span></div>{% endif %}
+    {% if inventory["items"]|selectattr("stats_stale")|list %}<div class="bucket-load-state" role="status"><span aria-hidden="true">◷</span><span>Metadata bucket đang hiển thị từ snapshot gần nhất; RGW đang được kiểm tra lại.</span></div>{% endif %}
 
     <section id="rgw-observability" class="card rgw-observability-card" data-cluster="{{ selected_cluster.id }}" aria-labelledby="rgw-observability-title">
       <div class="card-header"><div><p class="eyebrow">RGW OBSERVABILITY</p><h2 id="rgw-observability-title">Request metrics</h2><p class="hint">Cửa sổ audit hiện tại của RGW; số liệu chỉ đọc, scoped theo cụm đang chọn.</p></div><div class="rgw-observability-actions"><a class="btn btn-ghost btn-sm" data-rgw-export="json">JSON</a><a class="btn btn-ghost btn-sm" data-rgw-export="csv">CSV</a><button type="button" class="btn btn-ghost btn-sm" id="rgw-observability-refresh">Làm mới</button></div></div>
@@ -49,11 +50,21 @@
           <div class="rgw-metric-card"><span>Latency p95</span><strong id="rgw-metric-latency">—</strong></div>
         </div>
         <p id="rgw-observability-status" class="hint" role="status">Đang tải metrics…</p>
+        <section class="rgw-trend" aria-labelledby="rgw-trend-title">
+          <div class="rgw-trend-header"><div><h3 id="rgw-trend-title">Lịch sử request RGW</h3><p class="hint">Mỗi cột là một snapshot của cửa sổ audit; không cộng dồn các cửa sổ trùng nhau.</p></div><label for="rgw-trend-hours">Khoảng thời gian <select id="rgw-trend-hours"><option value="24">24 giờ</option><option value="168">7 ngày</option><option value="720">30 ngày</option></select></label></div>
+          <div id="rgw-trend-chart" class="rgw-trend-chart" role="img" aria-label="Chưa có lịch sử request RGW"></div>
+          <p id="rgw-trend-status" class="hint" role="status">Đang tải lịch sử…</p>
+        </section>
         <div class="rgw-top-consumers-grid">
           <section><h3>Top buckets</h3><div id="rgw-top-buckets" class="rgw-top-list"><span class="muted-value">—</span></div></section>
           <section><h3>Top requesters</h3><div id="rgw-top-requesters" class="rgw-top-list"><span class="muted-value">—</span></div></section>
         </div>
       </div>
+    </section>
+
+    <section id="rgw-remediation" class="card rgw-remediation-card" data-cluster="{{ selected_cluster.id }}" aria-labelledby="rgw-remediation-title">
+      <div class="card-header"><div><p class="eyebrow">RGW REMEDIATION</p><h2 id="rgw-remediation-title">Hành động có kiểm soát</h2><p class="hint">Lỗi Vault SSE-S3 được Watcher xác minh mới có thể tạo đề xuất. Action RISKY phải được duyệt trước khi Worker thực thi.</p></div></div>
+      <div class="rgw-remediation-body"><p id="rgw-remediation-status" class="hint" role="status">Đang tải trạng thái Action…</p><div id="rgw-remediation-list" class="rgw-remediation-list"></div></div>
     </section>
 
     <section id="rgw-health" class="card rgw-health-card" data-cluster="{{ selected_cluster.id }}" aria-labelledby="rgw-health-title">

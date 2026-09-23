@@ -80,6 +80,11 @@ def _image_digest(artifacts: Path) -> str:
     configured = os.environ.get("CEPH_AI_IMAGE_DIGEST", "").strip()
     if configured:
         return configured
+    registry_refs = sorted(artifacts.rglob("registry-image-ref.txt"))
+    if registry_refs:
+        reference = registry_refs[0].read_text(encoding="utf-8").strip()
+        if "@sha256:" in reference:
+            return reference.rsplit("@", 1)[-1]
     candidates = sorted(artifacts.rglob("image-digest.txt"))
     if not candidates:
         return ""
@@ -100,6 +105,10 @@ def _release_evidence(artifacts: Path) -> dict[str, Any]:
 def build_manifest(environment: str, artifacts: Path) -> dict[str, Any]:
     commit = _git_value("rev-parse", "HEAD")
     image_digest = _image_digest(artifacts)
+    registry_refs = sorted(artifacts.rglob("registry-image-ref.txt"))
+    registry_reference = (
+        registry_refs[0].read_text(encoding="utf-8").strip() if registry_refs else ""
+    )
     migration = migration_heads()
     release_evidence = _release_evidence(artifacts)
     release_status = release_evidence.get("status", {})
@@ -121,7 +130,7 @@ def build_manifest(environment: str, artifacts: Path) -> dict[str, Any]:
             "python": sys.version.split()[0],
         },
         "image": {
-            "reference": os.environ.get("CEPH_AI_IMAGE", "").strip() or None,
+            "reference": registry_reference or os.environ.get("CEPH_AI_IMAGE", "").strip() or None,
             "digest": image_digest or None,
             "identity_status": "complete" if image_digest and commit else "incomplete",
         },

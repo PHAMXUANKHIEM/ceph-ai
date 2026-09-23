@@ -20,7 +20,7 @@ from shared import db
 from shared.models import BackupAnomaly, BackupDigestLog, BackupJob
 from worker.backup import ai_analysis, alerting
 from worker.backup.cluster_scope import get_cluster
-from worker.backup.policy_config import load_backup_policy
+from worker.backup.policy_config import cluster_schedule_policy, load_backup_policy
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ def run_digest(cluster_id: str | None = None) -> None:
     """The APScheduler job callable — plain sync (APScheduler runs it in
     its own thread-pool executor automatically, same as
     `alerting.check_overdue_and_failed_backups`)."""
-    policy = load_backup_policy()
+    policy = cluster_schedule_policy(load_backup_policy(), cluster_id)
     digest_config = (policy.get("schedule") or {}).get("digest") or {}
     period_hours = digest_config.get("period_hours", DEFAULT_PERIOD_HOURS)
     period_end = utc_now()

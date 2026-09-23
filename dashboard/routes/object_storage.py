@@ -30,7 +30,7 @@ from dashboard.vntime import to_utc_iso
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared import db
 from shared.ceph_releases import codename_for_version
-from shared.models import BucketInventorySnapshot, ObjectStorageAuditEntry, RgwMetricSnapshot
+from shared.models import Action, BucketInventorySnapshot, Incident, ObjectStorageAuditEntry, RgwMetricSnapshot
 from shared.object_storage_cache import (
     get_or_load,
     invalidate as invalidate_object_storage_cache,
@@ -1483,7 +1483,10 @@ def _object_browser(cluster, bucket: str, marker: str, prefix: str, query: str,
         if not chunk:
             break
         scanned += len(chunk)
-        cursor = str(chunk[-1]["name"])
+        next_cursor = str(chunk[-1].get("name") or "")
+        if not next_cursor or next_cursor == cursor:
+            raise ObjectStorageError("RGW trả về marker object không tiến; dừng phân trang để tránh lặp dữ liệu.")
+        cursor = next_cursor
         for raw in chunk:
             name = str(raw.get("name") or "")
             continuation_marker = name
@@ -1512,7 +1515,10 @@ def _object_browser(cluster, bucket: str, marker: str, prefix: str, query: str,
                  "size": lambda row: row["size_bytes"],
                  "modified": lambda row: row["last_modified"]}
     visible.sort(key=sort_keys[sort], reverse=order == "desc")
-    next_marker = continuation_marker if truncated and visible else None
+    # A bounded filtered scan may find no match in its first 2,000 entries.
+    # Keep the last scanned marker so the operator can continue searching;
+    # otherwise the UI incorrectly presents a partial scan as an empty bucket.
+    next_marker = continuation_marker if truncated and continuation_marker != marker else None
     return {"bucket": bucket, "items": visible, "prefix": prefix, "query": query,
             "marker": marker or None, "next_marker": next_marker, "truncated": truncated,
             "scanned": scanned, "page_size": page_size, "sort": sort, "order": order,
@@ -1947,7 +1953,7 @@ async def rgw_metrics_history_api(
             except (TypeError, ValueError):
                 top_buckets, top_requesters, evidence_gaps = {}, {}, ["Snapshot JSON không hợp lệ."]
             items.append({
-                "captured_at": row.captured_at.isoformat(),
+                "captured_at": to_utc_iso(row.captured_at),
                 "available": bool(row.available),
                 "request_count": row.request_count,
                 "bytes_total": row.bytes_total,
@@ -1967,6 +1973,34 @@ async def rgw_metrics_history_api(
         "read_only": True,
         "action_id": None,
     }
+
+
+@router.get("/api/object-storage/rgw-remediation")
+async def rgw_remediation_status_api(request: Request, user: str = Depends(require_login)):
+    """Read the existing approval-gated RGW playbook queue; never execute here."""
+    del user
+    cluster = selected_cluster(request)
+
+    def read_actions():
+        with db.SessionLocal() as session:
+            rows = (
+                session.query(Action, Incident)
+                .join(Incident, Action.incident_id == Incident.id)
+                .filter(Incident.cluster_id == cluster.id)
+                .filter(Action.action_id == "remove_invalid_rgw_default_key")
+                .order_by(Action.created_at.desc())
+                .limit(5)
+                .all()
+            )
+            return [{
+                "id": action.id,
+                "incident_id": incident.id,
+                "status": action.status,
+                "classification": action.classification,
+                "created_at": to_utc_iso(action.created_at) if action.created_at else None,
+            } for action, incident in rows]
+
+    return {"cluster_id": cluster.id, "playbook": "remove_invalid_rgw_default_key", "items": await asyncio.to_thread(read_actions)}
 
 
 @router.get("/api/object-storage/rgw-metrics/export")

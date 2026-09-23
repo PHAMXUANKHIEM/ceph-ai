@@ -21,3 +21,20 @@ Biến Compose/deploy script thành quy trình có thể tái lập, quan sát v
 - Không có dependency ngầm hoặc đường dẫn hard-coded chưa được preflight.
 - Logs không thể lấp đầy disk; secrets không nằm trong image/log.
 - Có smoke test, health test và rollback test sau deploy.
+
+## Cập nhật 2026-09-23 — P0 packaging slice, chưa nghiệm thu production
+
+- Runtime Compose đã bỏ bind mount source và không còn service Code Repair;
+  Code Repair chạy host supervisor riêng với auto push/deploy/promotion tắt.
+- Dockerfile pin base digest và direct apt package versions; Python transitive
+  dependencies có lock/hash. Image chứa code, frontend, migration và các runbook
+  dùng lúc chạy. CI chỉ push GHCR sau scan/SBOM, deploy nhận registry digest.
+- Migration production chạy từ approved image sau backup; rollback chỉ đổi về
+  previous approved image và yêu cầu xác nhận schema tương thích, không tự
+  downgrade database.
+- Đã build image và kiểm tra import smoke offline; chưa chứng minh GitHub Actions
+  clean runner, push/pull GHCR, PostgreSQL staging rehearsal hoặc rollback có
+  người chứng kiến. OS transitive dependencies/apt repository còn cần snapshot.
+- Verification 2026-09-23: final pinned image build succeeded; runtime
+  import/document smoke and `alembic heads` passed; packaging/release regression
+  tests passed 12/12.

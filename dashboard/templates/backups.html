@@ -203,9 +203,21 @@
     <section class="card backup-tab-panel" id="backup-panel-inventory" data-backup-panel="inventory" role="tabpanel" hidden>
       <div class="card-header backup-panel-header"><div><div class="backup-panel-kicker">Independent inventory</div><h2>Backup Inventory</h2></div><span class="backup-panel-meta" id="backup-inventory-total">{{ inventory.total }} artifacts</span></div>
       <div class="card-body">
-        <div class="backup-inventory-toolbar"><input id="backup-inventory-search" type="search" placeholder="Tìm pool, image, run ID hoặc artifact…"><select id="backup-inventory-page-size"><option value="10">10 / trang</option><option value="25" selected>25 / trang</option><option value="50">50 / trang</option></select><select id="backup-inventory-status"><option value="">Tất cả status</option><option value="SUCCESS">SUCCESS</option><option value="FAILED">FAILED</option><option value="RUNNING">RUNNING</option></select></div>
+        <div class="backup-inventory-toolbar">
+          <input id="backup-inventory-search" type="search" placeholder="Tìm run ID hoặc artifact…" aria-label="Tìm backup">
+          <input id="backup-inventory-pool" type="search" placeholder="Pool" aria-label="Lọc theo pool">
+          <input id="backup-inventory-image" type="search" placeholder="Image" aria-label="Lọc theo image">
+          <select id="backup-inventory-type" aria-label="Lọc theo loại backup"><option value="">Mọi loại</option><option value="full">Full</option><option value="incremental">Incremental</option><option value="metadata">Metadata</option><option value="restore_drill">Restore drill</option></select>
+          <select id="backup-inventory-target" aria-label="Lọc theo target"><option value="">Mọi target</option><option value="a">A</option><option value="b">B</option><option value="cluster">Cluster</option></select>
+          <select id="backup-inventory-status" aria-label="Lọc theo trạng thái"><option value="">Tất cả status</option><option value="SUCCESS">SUCCESS</option><option value="FAILED">FAILED</option><option value="RUNNING">RUNNING</option></select>
+          <label>Từ ngày <input id="backup-inventory-from" type="date"></label>
+          <label>Đến ngày <input id="backup-inventory-to" type="date"></label>
+          <select id="backup-inventory-page-size" aria-label="Số bản ghi mỗi trang"><option value="10">10 / trang</option><option value="25" selected>25 / trang</option><option value="50">50 / trang</option></select>
+          <button id="backup-inventory-export" type="button" class="btn btn-ghost btn-sm">Xuất CSV (tối đa 1.000)</button>
+        </div>
         <div class="table-wrap backup-table-scroll"><table><thead><tr><th>Pool/Image</th><th>Type</th><th>Consistency</th><th>Target</th><th>Status</th><th>Run ID / Artifact</th><th>Size</th><th>Checksum</th><th>Created</th></tr></thead><tbody id="backup-inventory-body">{% for item in inventory["items"] %}<tr><td><code>{{ item.pool or '—' }}/{{ item.image or '—' }}</code></td><td>{{ item.job_type }}</td><td>{{ item.consistency_mode or 'crash-consistent' }}</td><td>{{ item.backup_target_slot or '—' }}</td><td>{{ item.status }}</td><td><code>{{ item.run_id }}</code>{% if item.remote_key %}<br><span class="hint">{{ item.remote_key }}</span>{% endif %}</td><td>{{ item.size_bytes or 0 }}</td><td><code>{{ item.sha256 or '—' }}</code></td><td>{{ item.created_at or '—' }}</td></tr>{% else %}<tr><td colspan="9" class="hint">Chưa có backup artifact.</td></tr>{% endfor %}</tbody></table></div>
         <div class="backup-inventory-pagination"><button type="button" class="btn btn-ghost btn-sm" id="backup-inventory-prev">←</button><span id="backup-inventory-page">Trang 1/1</span><button type="button" class="btn btn-ghost btn-sm" id="backup-inventory-next">→</button></div>
+        <div id="backup-inventory-detail" class="backup-inventory-detail" role="status" aria-live="polite" hidden></div>
       </div>
     </section>
 

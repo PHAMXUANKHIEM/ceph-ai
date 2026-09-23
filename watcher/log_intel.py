@@ -406,9 +406,10 @@ def _scan_and_store_unlocked(
         # from Ceph AIOps configuration.  Treat that host as missing evidence
         # even when another node supplied enough lines to make the aggregate
         # non-empty.
-        if settings.log_intel_source == "loki" and host_record_count == 0 and not host_had_error:
+        if settings.log_intel_source in ("loki", "elasticsearch") and host_record_count == 0 and not host_had_error:
+            source_label = "Loki" if settings.log_intel_source == "loki" else "Elasticsearch"
             errors.append(
-                f"{host}: Loki trả 0 dòng cho mọi daemon; kiểm tra shipper và label host"
+                f"{host}: {source_label} trả 0 dòng cho mọi daemon; kiểm tra shipper và label host"
             )
             host_had_error = True
         hosts_scanned += 1
@@ -426,9 +427,10 @@ def _scan_and_store_unlocked(
     # healthy.  In production this masked both a wrong label selector and a
     # stopped shipper for more than 100 scans.  Keep the run (useful
     # provenance), but mark it incomplete and explain what to verify.
-    if settings.log_intel_source == "loki" and not records:
+    if settings.log_intel_source in ("loki", "elasticsearch") and not records:
+        source_label = "Loki" if settings.log_intel_source == "loki" else "Elasticsearch"
         errors.append(
-            "Loki trả 0 dòng log; kiểm tra label cluster/host/daemon_type và trạng thái log shipper"
+            f"{source_label} trả 0 dòng log; kiểm tra label cluster/host/daemon_type và trạng thái log shipper"
         )
 
     cluster_id, seen, new = _persist_patterns(records, cluster_id, window_end)

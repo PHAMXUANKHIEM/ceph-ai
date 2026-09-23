@@ -34,6 +34,24 @@ def test_save_policy_is_atomic_and_preserves_revision(monkeypatch, tmp_path):
     assert revisions[0]["actor"] == "admin"
 
 
+def test_rollback_policy_restores_revision_and_creates_a_new_revision(monkeypatch, tmp_path):
+    policy_path = tmp_path / "backup_policy.yaml"
+    revision_dir = tmp_path / "revisions"
+    policy_path.write_text(yaml.safe_dump(_policy()), encoding="utf-8")
+    monkeypatch.setattr(policy_config, "POLICY_PATH", str(policy_path))
+    monkeypatch.setattr(policy_config, "POLICY_REVISION_DIR", str(revision_dir))
+
+    updated = _policy()
+    updated["rpo_hours"] = 48
+    saved = policy_config.save_backup_policy(updated, actor="admin")
+    rolled = policy_config.rollback_backup_policy(saved["revision_id"], actor="admin")
+
+    assert rolled["rolled_back_from"] == saved["revision_id"]
+    assert rolled["revision_id"] != saved["revision_id"]
+    assert policy_config.load_backup_policy()["rpo_hours"] == 24
+    assert len(policy_config.list_policy_revisions()) == 2
+
+
 def test_application_consistency_hooks_are_normalized():
     policy = _policy()
     policy["tracked_images"][0].update({

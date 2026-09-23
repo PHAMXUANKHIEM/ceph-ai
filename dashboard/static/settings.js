@@ -1640,6 +1640,36 @@
   });
 })();
 
+// --- Log Intelligence: kiểm tra Elasticsearch, không lưu cấu hình ---------
+(function () {
+  var button = document.getElementById("log-intel-test-elasticsearch");
+  if (!button) return;
+  var url = document.getElementById("log-intel-elasticsearch-url");
+  var index = document.getElementById("log-intel-elasticsearch-index");
+  var result = document.getElementById("log-intel-test-elasticsearch-result");
+  button.addEventListener("click", function () {
+    if (!url.value.trim() || !index.value.trim()) {
+      result.textContent = "Điền Elasticsearch URL và index pattern.";
+      result.className = "error";
+      return;
+    }
+    button.disabled = true;
+    result.textContent = "Đang kiểm tra…";
+    result.className = "muted";
+    var body = new URLSearchParams();
+    body.set("log_intel_elasticsearch_url", url.value.trim());
+    body.set("log_intel_elasticsearch_index", index.value.trim());
+    fetch("/settings/log-intel/test-elasticsearch", { method: "POST", credentials: "same-origin", body: body })
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        result.textContent = data.message;
+        result.className = data.ok ? "success" : "error";
+      })
+      .catch(function () { result.textContent = "Không kiểm tra được kết nối."; result.className = "error"; })
+      .finally(function () { button.disabled = false; });
+  });
+})();
+
 // --- Log Intelligence: kiểm tra kết nối Loki trước khi lưu ----------------
 // Cùng khuôn "test kết nối" mà form Database/OpenStack đã dùng: gọi thẳng
 // endpoint test, không lưu gì.

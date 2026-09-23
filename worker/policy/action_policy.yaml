@@ -67,6 +67,7 @@ management_action_ids:
   - rbd_resize_volume
   - rbd_rename_volume
   - rbd_clone_volume
+  - rbd_copy_volume
   - rbd_flatten_volume
   - rbd_template_mark
   - rbd_qos_set
@@ -214,6 +215,7 @@ backup_action_ids:
   - restore_rbd_image_as_new
   - backup_delete_manual
   - backup_metadata_run
+  - backup_repair_missing_copy
 
 # 2026-08-01 (Story C, DeviceHealth-driven evacuation): a NINTH family, same
 # reasoning as every other family above — watcher/device_health_monitor.py
@@ -305,6 +307,9 @@ safe:
   - crash_archive_all
 
 risky:
+  # Rebuilds a missing copy from an already verified artifact; it never reads
+  # or mutates the live Ceph image, but writes to a backup target.
+  - backup_repair_missing_copy
   - enable_pool_pg_autoscaler
   - reshard_rgw_bucket
   - deep_scrub_omap_pg
@@ -350,6 +355,7 @@ risky:
   - rbd_resize_volume
   - rbd_rename_volume
   - rbd_clone_volume
+  - rbd_copy_volume
   - rbd_template_mark
   - rbd_qos_set
   - rbd_trash_move_volume

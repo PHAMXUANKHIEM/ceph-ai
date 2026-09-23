@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from shared.time import utc_now
 from math import sqrt
 from statistics import median
+import os
 import uuid
 
 from sqlalchemy import and_, func
@@ -137,7 +138,8 @@ def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: d
     osd_df = _query(cluster, "ceph osd df")
     cluster_row = _cluster_stats(df)
     rows = [("cluster", "cluster", cluster_row)]
-    for row in _pool_stats(df, limit=None):
+    pool_rows = _pool_stats(df, limit=None)
+    for row in pool_rows:
         total = row["used_bytes"] + row["max_available_bytes"]
         rows.append(("pool", row["pool"], {**row, "total_bytes": total}))
     for row in _osd_stats(osd_df, limit=None):
@@ -171,6 +173,17 @@ def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: d
         ) for kind, name, row in valid])
         session.commit()
         cluster_name = cluster.name if cluster is not None else session.query(Cluster.name).filter_by(id=cluster_id).scalar()
+
+    # RBD usage can be expensive on large pools. Operators explicitly enable
+    # this hourly, bounded evidence source; a failure never drops the physical
+    # capacity tick or turns unknown logical usage into zero.
+    if os.environ.get("CEPH_AI_CAPACITY_RBD_ENRICHMENT_ENABLED", "").lower() in {"1", "true", "yes"}:
+        try:
+            from watcher import capacity_rbd
+            capacity_rbd.collect_and_store(cluster_id, cluster, pool_rows, now=captured_at)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("RBD capacity evidence collection failed for cluster %s", cluster_id)
 
     for kind, name, row in valid:
         _deliver_transition(
@@ -356,10 +369,44 @@ def forecasts(cluster_id: str, *, now: datetime | None = None) -> dict:
     for row in samples:
         grouped.setdefault((row.entity_type, row.entity_name), []).append(row)
     ready = [value for rows in grouped.values() if (value := _forecast(rows, now)) is not None]
+    from watcher.capacity_rbd import evidence as rbd_evidence
     return {
         "status": "ready" if ready else "insufficient_history",
         "minimum_history_days": settings.capacity_forecast_min_history_days,
         "minimum_samples": settings.capacity_forecast_min_samples,
         "series_seen": len(grouped),
         "forecasts": [asdict(value) for value in ready],
+        "rbd_capacity": rbd_evidence(cluster_id, now=now),
+        "alert_lifecycle": capacity_alert_lifecycle(cluster_id),
     }
+
+
+def capacity_alert_lifecycle(cluster_id: str) -> list[dict]:
+    """Return bounded, read-only lifecycle state for capacity alert streams.
+
+    Threshold delivery is durable already; this projection makes the state
+    available to operators without exposing Telegram/outbox internals.  A
+    recovered stream is RESOLVED even while its recovery notification is
+    retrying, and ``delivery_pending`` makes that distinction explicit.
+    """
+    with db.SessionLocal() as session:
+        rows = session.query(CapacityAlertState).filter_by(
+            cluster_id=cluster_id,
+        ).order_by(CapacityAlertState.entity_type, CapacityAlertState.entity_name).limit(500).all()
+        return [
+            {
+                "entity_type": row.entity_type,
+                "entity_name": row.entity_name,
+                "status": (
+                    "OPEN" if row.current_threshold > 0
+                    else "RESOLVED" if row.notified_threshold > 0
+                    else "NORMAL"
+                ),
+                "current_threshold": row.current_threshold,
+                "notified_threshold": row.notified_threshold,
+                "delivery_pending": row.current_threshold != row.notified_threshold,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                "last_attempt_at": row.last_attempt_at.isoformat() if row.last_attempt_at else None,
+            }
+            for row in rows
+        ]

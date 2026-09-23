@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import re
+import math
 from collections.abc import Iterable
 
 
 LAG_WARNING_SECONDS = 300
 LAG_CRITICAL_SECONDS = 3600
 MAX_EVIDENCE_ITEMS = 20
+MAX_WALK_ITEMS = 1000
+MAX_WALK_DEPTH = 12
 
 
 def _finding(code: str, severity: str, summary: str, evidence: list[str], next_check: str) -> dict:
@@ -34,25 +37,36 @@ def _details(section: dict | None) -> dict | list:
 
 
 def _walk(value, path: tuple[str, ...] = ()) -> Iterable[tuple[tuple[str, ...], object]]:
-    yield path, value
-    if isinstance(value, dict):
-        for key, child in list(value.items())[:100]:
-            yield from _walk(child, path + (str(key).casefold(),))
-    elif isinstance(value, list):
-        for index, child in enumerate(value[:100]):
-            yield from _walk(child, path + (str(index),))
+    stack = [(path, value, 0)]
+    visited = 0
+    while stack and visited < MAX_WALK_ITEMS:
+        current_path, current, depth = stack.pop()
+        visited += 1
+        yield current_path, current
+        if depth >= MAX_WALK_DEPTH:
+            continue
+        if isinstance(current, dict):
+            children = [(current_path + (str(key).casefold(),), child, depth + 1)
+                        for key, child in list(current.items())[:100]]
+        elif isinstance(current, list):
+            children = [(current_path + (str(index),), child, depth + 1)
+                        for index, child in enumerate(current[:100])]
+        else:
+            children = []
+        stack.extend(reversed(children))
 
 
 def _number(value) -> float | int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return value
+        return value if math.isfinite(value) else None
     if isinstance(value, str):
         match = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*", value)
         if match:
             number = float(match.group(1))
-            return int(number) if number.is_integer() else number
+            if math.isfinite(number):
+                return int(number) if number.is_integer() else number
     return None
 
 
@@ -61,7 +75,7 @@ def _first_number(value, keys: set[str]) -> tuple[str, float | int] | None:
         if not path or path[-1] not in keys:
             continue
         number = _number(child)
-        if number is not None:
+        if number is not None and number >= 0:
             return path[-1], number
     return None
 
@@ -88,7 +102,8 @@ def _sync_lag(sync: dict | None) -> dict:
         value = float(match.group(1))
         unit = match.group(2).casefold()
         multiplier = 3600 if unit.startswith("hour") or unit.startswith("hr") else 60 if unit.startswith("min") else 1
-        candidates.append({"source": "sync_info", "seconds": value * multiplier})
+        if math.isfinite(value * multiplier):
+            candidates.append({"source": "sync_info", "seconds": value * multiplier})
     if not candidates:
         return {"status": "not_observed", "seconds": None, "observations": []}
     selected = max(candidates, key=lambda item: item["seconds"])
@@ -163,6 +178,7 @@ def _conflict_evidence(sync: dict | None, sync_errors: dict | None) -> list[str]
 def build_multisite_diagnosis(rgw_evidence: dict | None) -> dict:
     """Analyze RGW multisite state without inferring from missing evidence."""
     evidence = _mapping(rgw_evidence)
+    stale = bool(_mapping(evidence.get("cache")).get("stale") or evidence.get("stale"))
     topology = _mapping(evidence.get("topology"))
     realm = _mapping(topology.get("realm"))
     zonegroup = _mapping(topology.get("zonegroup"))
@@ -171,6 +187,8 @@ def build_multisite_diagnosis(rgw_evidence: dict | None) -> dict:
     sync = _mapping(evidence.get("sync"))
     sync_errors = _mapping(evidence.get("sync_errors"))
     gaps = list(evidence.get("evidence_gaps") or [])
+    if stale:
+        gaps.append("RGW multisite snapshot đã cũ; findings chỉ phản ánh lần thu thập trước, không phải trạng thái hiện tại.")
     findings = []
     lag = _sync_lag(sync)
     states = _sync_states(sync)
@@ -270,7 +288,10 @@ def build_multisite_diagnosis(rgw_evidence: dict | None) -> dict:
             "Đối chiếu realm, zonegroup và period trên cluster; không tự thay đổi master zone.",
         ))
 
-    if not findings:
+    if stale:
+        status = "stale_evidence"
+        summary = "Dữ liệu multisite đã cũ; cần thu thập lại trước khi kết luận hoặc xử lý sự cố."
+    elif not findings:
         status = "insufficient_evidence" if gaps else "no_anomaly"
         summary = "Chưa thấy bất thường multisite đủ mạnh trong evidence hiện có." if status == "no_anomaly" else "Chưa đủ evidence để kết luận trạng thái RGW multisite."
     else:
@@ -278,6 +299,8 @@ def build_multisite_diagnosis(rgw_evidence: dict | None) -> dict:
         summary = "; ".join(finding["summary"] for finding in findings)
     return {
         "status": status,
+        "stale": stale,
+        "evidence_current": not stale,
         "summary": summary,
         "findings": findings,
         "observed": {

@@ -2477,6 +2477,26 @@ class CephCapacitySample(Base):
     captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
+class RbdCapacitySample(Base):
+    """Append-only, pool-scoped RBD logical and snapshot capacity evidence."""
+
+    __tablename__ = "rbd_capacity_samples"
+    __table_args__ = (
+        Index("ix_rbd_capacity_series", "cluster_id", "pool", "captured_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    pool: Mapped[str] = mapped_column(String(128), nullable=False)
+    image_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    provisioned_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    head_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    snapshot_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    physical_pool_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
 class TelegramChannelConfigChange(Base):
     """Append-only audit trail of Bot Token/Chat ID saves on the
     "Alert Telegram" page (`dashboard/routes/telegram_alerts.py::

@@ -244,7 +244,14 @@ mật** (`tests/test_log_analysis.py`, `tests/test_log_intelligence_e2e.py`).
 
 ---
 
-## 9. Khi Loki lên (L5, chưa làm)
+## 9. Nguồn log tập trung (L5)
+
+Loki đã có adapter và đã chạy production. Elasticsearch là phương án thay thế
+cho môi trường đã có ELK; không cần triển khai đồng thời cả hai. Ceph AI là
+**bên đọc**: không đẩy log từ node vào kho và không cài log shipper. Đội vận
+hành/RCA sở hữu agent (Alloy/Vector/Filebeat hoặc tương đương), kho log,
+retention, backup, quyền truy cập và cảnh báo khi shipper trễ/ngừng. Operator
+phải chỉ định nhóm/người trực cụ thể trong bàn giao môi trường.
 
 Trên form **Cài đặt → Log Intelligence**: đổi *Nguồn log* sang `loki`, điền
 *Loki URL* (và *tenant* nếu Loki chạy multi-tenant), bấm **Kiểm tra kết nối
@@ -263,6 +270,29 @@ khác trong codebase biết về nhãn.
 > vòng: Ceph sập thì mất luôn log cần để chẩn đoán tại sao Ceph sập.
 
 Tầng phân tích không đổi gì khi chuyển nguồn.
+
+### Elasticsearch
+
+Trên **Cài đặt → Log Intelligence**, chọn `elasticsearch`, điền URL và index
+pattern (ví dụ `ceph-logs-*`), bấm **Kiểm tra Elasticsearch**, rồi Lưu. Nếu
+cần API key, đặt `LOG_INTEL_ELASTICSEARCH_API_KEY` trong môi trường của Watcher
+và Dashboard; đây là giá trị `encoded` của Elasticsearch API key, **không nhập
+vào URL hay form**. Tài khoản chỉ cần quyền đọc/search trên index đó.
+
+Mỗi document phải có các field phẳng: `@timestamp` (date ISO-8601 có timezone
+UTC), `cluster`, `host`, `daemon_type`, `message`. Ba field nhận diện phải có
+mapping `keyword` (query dùng `cluster.keyword`, `host.keyword`,
+`daemon_type.keyword`), với giá trị **khớp tuyệt đối** tên cụm/host/daemon trong
+Ceph AI. Ví dụ `host=10.3.55.214`, `daemon_type=osd`. Shipper chịu trách nhiệm
+chuyển log và gắn field; adapter chỉ truy vấn `_search` trong cửa sổ thời gian,
+giới hạn tối đa 5000 dòng/daemon/lần quét và không ghi document.
+
+Trước khi chuyển production: kiểm tra query đọc thành công, đối chiếu số dòng
+với SSH trên từng host/daemon trong 24 giờ, kiểm tra `log_ingest_runs` không có
+`PARTIAL/FAILED` hoặc lỗi zero-line, và kiểm tra index không nằm trên chính cụm
+Ceph được giám sát. Chưa có kho/index thật thì **giữ nguồn Loki hoặc SSH**; kết
+nối thành công chỉ chứng minh endpoint/quyền, chưa chứng minh shipper đang gửi
+đúng log. Việc nghiệm thu ES production vẫn còn mở.
 
 ---
 

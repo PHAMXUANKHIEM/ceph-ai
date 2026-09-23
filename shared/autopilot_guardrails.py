@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import json
 
 
 class AutopilotMode(str, Enum):
@@ -40,6 +41,32 @@ def _mode(value: AutopilotMode | str) -> AutopilotMode:
     return value if isinstance(value, AutopilotMode) else AutopilotMode(str(value).upper())
 
 
+def cluster_configured_mode(*, cluster_id: str | None, raw_mapping: str | None,
+                            fallback_mode: str | None = None) -> str | None:
+    """Resolve one cluster's mode from a JSON environment mapping.
+
+    ``raw_mapping`` is intentionally an operational escape hatch until the
+    per-cluster settings migration is deployed.  Once it is present, an
+    omitted cluster is approval-only; this prevents a global LIMITED setting
+    from silently granting writes to a newly-added cluster.  Invalid JSON or
+    non-string values also fail closed by returning ``APPROVAL_REQUIRED``.
+    """
+    if not raw_mapping or not raw_mapping.strip():
+        return fallback_mode
+    try:
+        mapping = json.loads(raw_mapping)
+    except (TypeError, ValueError):
+        return AutopilotMode.APPROVAL_REQUIRED.value
+    if not isinstance(mapping, dict):
+        return AutopilotMode.APPROVAL_REQUIRED.value
+    if cluster_id is None:
+        return AutopilotMode.APPROVAL_REQUIRED.value
+    value = mapping.get(str(cluster_id))
+    if not isinstance(value, str) or not value.strip():
+        return AutopilotMode.APPROVAL_REQUIRED.value
+    return value.strip()
+
+
 def resolve_mode(*, global_enabled: bool, cluster_enabled: bool,
                  advisory_only: bool = False) -> AutopilotMode:
     """Derive the operator-visible mode without granting execution rights."""
@@ -48,6 +75,25 @@ def resolve_mode(*, global_enabled: bool, cluster_enabled: bool,
     if global_enabled and cluster_enabled:
         return AutopilotMode.LIMITED_AUTOPILOT
     return AutopilotMode.APPROVAL_REQUIRED
+
+
+def effective_runtime_mode(*, global_enabled: bool, cluster_enabled: bool,
+                           configured_mode: str | None = None) -> AutopilotMode:
+    """An explicit mode may reduce, but never grant, legacy execution rights.
+
+    An unknown setting fails closed. The two existing switches remain hard
+    kill switches until the persisted per-cluster mode migration is complete.
+    """
+    legacy = resolve_mode(global_enabled=global_enabled, cluster_enabled=cluster_enabled)
+    if not configured_mode:
+        return legacy
+    try:
+        requested = _mode(configured_mode.strip())
+    except ValueError:
+        return AutopilotMode.ADVISORY
+    if legacy != AutopilotMode.LIMITED_AUTOPILOT:
+        return legacy
+    return requested
 
 
 def evaluate_guardrails(context: GuardrailContext) -> GuardrailDecision:

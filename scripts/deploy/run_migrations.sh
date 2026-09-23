@@ -34,7 +34,28 @@ revision_before="$(revision)"
 head_revision="$(.venv/bin/python -m alembic heads | awk 'NF {print $1; exit}')"
 migration_checksum="$(find alembic/versions -maxdepth 1 -type f -name '*.py' -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
 
-.venv/bin/python -m alembic upgrade head
+if [ -n "${CEPH_AI_IMAGE:-}" ]; then
+  if [[ ! "$CEPH_AI_IMAGE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]; then
+    echo "Migration image must be the approved registry digest" >&2
+    exit 3
+  fi
+  image_head="$(podman run --rm --network host \
+    --env-file "$CEPH_AI_ENV_FILE" \
+    --volume "$CEPH_AI_ENV_FILE:$CEPH_AI_ENV_FILE:ro" \
+    --env "CEPH_AI_ENV_FILE=$CEPH_AI_ENV_FILE" \
+    "$CEPH_AI_IMAGE" python -m alembic heads | awk 'NF {print $1; exit}')"
+  if [ "$image_head" != "$head_revision" ]; then
+    echo "Migration head differs between checkout and approved image" >&2
+    exit 3
+  fi
+  podman run --rm --network host \
+    --env-file "$CEPH_AI_ENV_FILE" \
+    --volume "$CEPH_AI_ENV_FILE:$CEPH_AI_ENV_FILE:ro" \
+    --env "CEPH_AI_ENV_FILE=$CEPH_AI_ENV_FILE" \
+    "$CEPH_AI_IMAGE" python -m alembic upgrade head
+else
+  .venv/bin/python -m alembic upgrade head
+fi
 revision_after="$(revision)"
 
 MIGRATION_METADATA_PATH="${MIGRATION_METADATA_PATH:-/var/lib/ceph-ai/release-artifacts/migration-latest.json}" \

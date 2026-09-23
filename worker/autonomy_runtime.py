@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.exc import IntegrityError
 
 from shared import audit, incident_events, remediation_cases
+from shared.remediation_state_machine import recover_after_worker_restart
 from shared.models import Action, ActionStatus, AutopilotLease, Incident, IncidentStatus
 
 
@@ -80,7 +81,9 @@ def reconcile_expired_executions(session, *, now: datetime) -> int:
     changed = 0
     for action in rows:
         lease = session.query(AutopilotLease).filter_by(action_id=action.id).one_or_none()
-        if lease is not None and lease.expires_at > now:
+        active_lease = lease is not None and lease.expires_at > now
+        recovery = recover_after_worker_restart(action.status, lock_present=active_lease)
+        if not recovery.allowed:
             continue
         reason = "cluster execution lease expired" if lease is not None else "cluster execution lease is missing"
         if lease is not None:

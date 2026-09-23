@@ -11,6 +11,7 @@ RBD_RECONCILED_ACTION_IDS = frozenset({
     "rbd_resize_volume",
     "rbd_rename_volume",
     "rbd_clone_volume",
+    "rbd_copy_volume",
     "rbd_flatten_volume",
     "rbd_template_mark",
     "rbd_qos_set",
@@ -50,21 +51,23 @@ def reconcile(action_id: str, params: dict, output: str) -> None:
             )
         return
 
-    if action_id in {"rbd_rename_volume", "rbd_clone_volume", "rbd_flatten_volume", "rbd_trash_restore_volume"}:
+    if action_id in {"rbd_rename_volume", "rbd_clone_volume", "rbd_copy_volume", "rbd_flatten_volume", "rbd_trash_restore_volume"}:
         expected_name = (
             params.get("new_image") if action_id == "rbd_rename_volume"
-            else params.get("dest_image") if action_id == "rbd_clone_volume"
+            else params.get("dest_image") if action_id in {"rbd_clone_volume", "rbd_copy_volume"}
             else params.get("image")
         )
         if not isinstance(payload, dict) or payload.get("name") != expected_name:
             raise ExecutorError("RBD post-check did not find the expected destination image")
-        if action_id == "rbd_clone_volume" and params.get("size_bytes") is not None:
+        if action_id == "rbd_copy_volume" or (action_id == "rbd_clone_volume" and params.get("size_bytes") is not None):
+            if action_id == "rbd_copy_volume" and (not isinstance(params.get("size_bytes"), int) or params["size_bytes"] <= 0):
+                raise ExecutorError("RBD copy/clone post-check is missing approved size")
             try:
                 actual_size = int(payload.get("size"))
             except (TypeError, ValueError):
                 actual_size = -1
             if actual_size != int(params["size_bytes"]):
-                raise ExecutorError("RBD clone post-check size mismatch")
+                raise ExecutorError("RBD copy/clone post-check size mismatch")
         return
 
     if action_id == "rbd_template_mark":
@@ -136,7 +139,7 @@ def reconciliation_command(
     pool = shlex.quote(params["pool_name"])
     if action_id == "rbd_rename_volume":
         command = f"rbd info {pool}/{shlex.quote(params['new_image'])} --format json"
-    elif action_id == "rbd_clone_volume":
+    elif action_id in {"rbd_clone_volume", "rbd_copy_volume"}:
         command = f"rbd info {shlex.quote(params['dest_pool'])}/{shlex.quote(params['dest_image'])} --format json"
     elif action_id == "rbd_template_mark":
         command = f"rbd snap ls {pool}/{shlex.quote(params['image'])} --format json"

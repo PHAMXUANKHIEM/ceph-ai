@@ -4,11 +4,22 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$script_dir"
 
-# Image creation is an explicit deploy step (`podman-compose build`).  Do not
-# rebuild automatically on every systemd restart: the source tree is mounted
-# for the controlled Telegram code-edit workflow, while a boot must be fast
-# and deterministic.
+# Never build or load application source on a service restart. A production
+# reboot must start the same approved digest, not a mutable tag or checkout.
 python3 scripts/bootstrap_container_config.py
+image_ref_file=/var/lib/ceph-ai/release-artifacts/current-image-ref
+environment="$(python3 -c 'from dotenv import dotenv_values; print(dotenv_values("/var/lib/ceph-ai/config/.env").get("CEPH_AI_ENVIRONMENT", "development"))')"
+if [ -f "$image_ref_file" ]; then
+  IFS= read -r CEPH_AI_IMAGE < "$image_ref_file"
+  if [[ ! "$CEPH_AI_IMAGE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]; then
+    echo "Invalid approved image reference in $image_ref_file" >&2
+    exit 4
+  fi
+  export CEPH_AI_IMAGE
+elif [ "$environment" = production ]; then
+  echo "Production refuses to start without an approved registry digest" >&2
+  exit 4
+fi
 
 # This unit is the canonical owner for the compose services.  Leaving one of
 # the legacy bare-metal services enabled starts a second Worker/Watcher against
@@ -21,33 +32,19 @@ for legacy_service in ceph-ai-worker.service ceph-ai-watcher.service ceph-ai-das
   fi
 done
 
-# Code Repair has two supported owners: the host systemd supervisor on a
-# systemd deployment, or the compose service on a container-only deployment.
-# Never start both: each supervisor opens its own DB pool and can duplicate
-# repair work. The old combination also consumed enough PostgreSQL slots to
-# prevent Dashboard startup.
+# Code Repair is a separate host supervisor with an explicit writable
+# checkout. Never recreate it as part of the immutable runtime stack.
 services=("$@")
-if systemctl is-active --quiet ceph-ai-code-repair-supervisor.service 2>/dev/null; then
-  # If an old compose container exists, stop it before starting the host
-  # supervisor-owned stack. Excluding the service from up alone does not
-  # stop a previously running duplicate.
-  podman-compose stop code-repair >/dev/null 2>&1 || true
-  if [ "${#services[@]}" -eq 0 ]; then
-    services=(dashboard-web telegram-ai full-executor watcher worker)
-  else
-    filtered=()
-    for service in "${services[@]}"; do
-      [ "$service" = "code-repair" ] || filtered+=("$service")
-    done
-    services=("${filtered[@]}")
-    if [ "${#services[@]}" -eq 0 ]; then
-      echo "Code Repair is owned by ceph-ai-code-repair-supervisor.service; nothing to start in compose." >&2
-      exit 0
-    fi
-  fi
+if [ "${#services[@]}" -eq 0 ]; then
+  services=(dashboard-web telegram-ai full-executor watcher worker vault-monitor)
 fi
+for service in "${services[@]}"; do
+  if [ "$service" = "code-repair" ]; then
+    echo "Code Repair is not part of the production Compose runtime" >&2
+    exit 4
+  fi
+done
+podman stop ceph-ai_code-repair_1 >/dev/null 2>&1 || true
 
-# Application source is mounted into the containers.  Recreate processes on
-# every explicit stack start so an updated checkout cannot leave Python
-# modules from an older commit resident in a long-running container.
+# Recreate processes from the approved image reference.
 exec podman-compose up -d --force-recreate "${services[@]}"

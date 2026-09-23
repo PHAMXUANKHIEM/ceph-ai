@@ -5,7 +5,8 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import db
 from shared.models import Cluster
-from watcher.capacity_forecast import forecasts
+from watcher.capacity_forecast import capacity_alert_lifecycle, forecasts
+from watcher.rbd_logical_forecast import logical_forecasts
 from watcher.capacity_failure_simulation import simulate
 from watcher.capacity_planner import plan_capacity
 
@@ -37,6 +38,24 @@ async def capacity_forecast_api(cluster_id: str | None = None, _user: str = Depe
     cluster = _cluster(cluster_id)
     return {"cluster_id": cluster.id, "cluster_name": cluster.name,
             **forecasts(cluster.id), "failure_simulation": simulate(cluster.id)}
+
+
+@router.get("/api/capacity-forecast/rbd-logical")
+async def rbd_logical_forecast_api(cluster_id: str | None = None, _user: str = Depends(require_login)):
+    """Opt-in read-only logical forecast, separate from physical capacity alerts."""
+    cluster = _cluster(cluster_id)
+    return logical_forecasts(cluster.id)
+
+
+@router.get("/api/capacity-forecast/alerts")
+async def capacity_forecast_alerts_api(cluster_id: str | None = None, _user: str = Depends(require_login)):
+    """Read-only lifecycle projection for physical-capacity forecast alerts."""
+    cluster = _cluster(cluster_id)
+    return {
+        "cluster_id": cluster.id,
+        "cluster_name": cluster.name,
+        "alerts": capacity_alert_lifecycle(cluster.id),
+    }
 
 
 @router.get("/capacity-forecast", response_class=HTMLResponse)

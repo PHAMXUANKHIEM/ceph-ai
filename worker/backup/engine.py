@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import shlex
+import shutil
 import tempfile
 import time
 import uuid
@@ -39,7 +40,7 @@ from sqlalchemy.exc import IntegrityError
 from config.settings import settings
 from shared import audit, db
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
-from shared.models import BackupJob
+from shared.models import Action, BackupJob
 from worker.backup import ai_analysis, anomaly, application_consistency
 from worker.backup import metadata as backup_metadata
 from worker.backup import restore
@@ -81,6 +82,16 @@ class BackupEngineError(Exception):
     "don't retry a command unlikely to succeed on a bare retry" posture)."""
 
 
+class BackupCancelled(BackupEngineError):
+    """Raised after an operator requests cancellation at a safe checkpoint."""
+
+
+def _action_cancel_requested(action_pk: str) -> bool:
+    with db.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        return bool(action is not None and action.cancelled_at is not None)
+
+
 def _make_progress(total_bytes: int) -> list[dict]:
     return [
         {
@@ -116,9 +127,15 @@ class _ProgressTrackingReader:
         self._bytes_read = 0
         self._started_at = time.monotonic()
         self._last_write_at = 0.0
+        self._last_cancel_check_at = 0.0
         self.sha256 = hashlib.sha256()
 
     def read(self, size: int = -1) -> bytes:
+        now = time.monotonic()
+        if now - self._last_cancel_check_at >= 1.0:
+            self._last_cancel_check_at = now
+            if _action_cancel_requested(self._action_pk):
+                raise BackupCancelled("Backup đã được operator yêu cầu huỷ")
         chunk = read_chunk(self._source, size if size and size > 0 else CHUNK_SIZE, self._deadline)
         if chunk:
             self._bytes_read += len(chunk)
@@ -140,6 +157,23 @@ class _ProgressTrackingReader:
         step["speed_mbps"] = round(speed_mbps, 2)
         step["eta_seconds"] = eta_seconds
         self._write_progress(self._action_pk, self._progress)
+
+
+class _CancellationAwareFile:
+    """File wrapper that gives storage backends a cancellation checkpoint."""
+
+    def __init__(self, handle, action_pk: str):
+        self._handle = handle
+        self._action_pk = action_pk
+        self._last_cancel_check_at = 0.0
+
+    def read(self, size: int = -1) -> bytes:
+        now = time.monotonic()
+        if now - self._last_cancel_check_at >= 1.0:
+            self._last_cancel_check_at = now
+            if _action_cancel_requested(self._action_pk):
+                raise BackupCancelled("Backup đã được operator yêu cầu huỷ")
+        return self._handle.read(size)
 
 
 def _first_mon_node(cluster: "Cluster | None" = None) -> str:
@@ -266,6 +300,29 @@ def _mark_running_failed(running_job_id: str, error_message: str) -> None:
         session.commit()
 
 
+def _capacity_admission(target_bindings, estimated_bytes: int) -> None:
+    """Fail closed when local staging or a known target is too full."""
+    if estimated_bytes <= 0:
+        return
+    safety_margin = max(64 * 1024 * 1024, int(estimated_bytes * 0.02))
+    required = estimated_bytes + safety_margin
+    temp_free = shutil.disk_usage(tempfile.gettempdir()).free
+    if temp_free < required:
+        raise BackupEngineError(
+            f"temporary backup space không đủ: cần ít nhất {required} byte, còn {temp_free}"
+        )
+    for slot, backend in target_bindings:
+        probe = getattr(backend, "probe_metadata", None)
+        if not callable(probe):
+            continue
+        metadata = probe() or {}
+        free_bytes = metadata.get("free_bytes")
+        if free_bytes is not None and int(free_bytes) < required:
+            raise BackupEngineError(
+                f"backup target {slot} không đủ capacity: cần ít nhất {required} byte, còn {int(free_bytes)}"
+            )
+
+
 def run(
     action_pk: str,
     action_id: str,
@@ -297,8 +354,12 @@ def run(
         return backup_metadata.run(
             action_pk, action_params, incident_id, cluster_id, write_progress
         )
+    if action_id == "backup_repair_missing_copy":
+        return _repair_missing_copy(action_pk, action_params, incident_id, cluster_id, write_progress)
     if action_id == "restore_drill_execute":
-        return restore_drill.run(action_pk, action_params, incident_id, write_progress)
+        if cluster_id is None:
+            return restore_drill.run(action_pk, action_params, incident_id, write_progress)
+        return restore_drill.run(action_pk, action_params, incident_id, write_progress, cluster_id=cluster_id)
     if action_id in ("restore_rbd_image_to_production", "restore_rbd_image_as_new"):
         return _run_restore_to_production(
             action_pk, action_params, incident_id, cluster_id, write_progress
@@ -309,6 +370,127 @@ def run(
         action_id,
     )
     return False
+
+
+def _repair_missing_copy(
+    action_pk: str,
+    action_params: dict,
+    incident_id: str,
+    cluster_id: str | None,
+    write_progress,
+) -> bool:
+    """Rebuild one missing default-cluster target from a verified artifact.
+
+    The source object is downloaded and verified before it is uploaded to the
+    destination.  No live RBD read/export is performed, and the destination
+    BackupJob is committed only after upload verification succeeds.
+    """
+    source_job_id = str(action_params.get("source_job_id") or "").strip()
+    destination_slot = str(action_params.get("destination_slot") or "").strip()
+    if cluster_id is not None or not source_job_id or destination_slot not in {"a", "b"}:
+        logger.error("backup_engine._repair_missing_copy: invalid scope or parameters")
+        return False
+
+    with db.SessionLocal() as session:
+        source = session.query(BackupJob).filter(
+            BackupJob.id == source_job_id,
+            BackupJob.cluster_id.is_(None),
+            BackupJob.job_type.in_(("full", "incremental")),
+            BackupJob.status == "SUCCESS",
+        ).first()
+        if source is None or source.backup_target_slot not in {"a", "b"}:
+            logger.error("backup_engine._repair_missing_copy: source job is not a valid successful default-cluster copy")
+            return False
+        if source.backup_target_slot == destination_slot:
+            logger.error("backup_engine._repair_missing_copy: source and destination slots are identical")
+            return False
+        if not source.remote_key or not source.sha256 or source.size_bytes is None:
+            logger.error("backup_engine._repair_missing_copy: source job has no persisted checksum/size")
+            return False
+        existing = session.query(BackupJob).filter(
+            BackupJob.run_id == source.run_id,
+            BackupJob.cluster_id.is_(None),
+            BackupJob.pool == source.pool,
+            BackupJob.image == source.image,
+            BackupJob.job_type == source.job_type,
+            BackupJob.backup_target_slot == destination_slot,
+            BackupJob.status == "SUCCESS",
+        ).first()
+        if existing is not None:
+            logger.info("backup_engine._repair_missing_copy: destination already exists for run %s", source.run_id)
+            return True
+        source_data = {
+            "id": source.id,
+            "run_id": source.run_id,
+            "pool": source.pool,
+            "image": source.image,
+            "job_type": source.job_type,
+            "backup_target_slot": source.backup_target_slot,
+            "base_job_id": source.base_job_id,
+            "consistency_mode": source.consistency_mode,
+            "remote_key": source.remote_key,
+            "size_bytes": source.size_bytes,
+            "sha256": source.sha256,
+            "created_at": source.created_at,
+        }
+
+    write_progress(action_pk, [{"step": "repair_copy", "status": "running", "source_job_id": source_job_id,
+                                "destination_slot": destination_slot, "bytes_transferred": 0,
+                                "total_bytes": source_data["size_bytes"]}])
+    tmp_path = None
+    uploaded = False
+    destination_backend = None
+    try:
+        bindings = resolve_targets(None)
+        backends = {slot: backend for slot, backend in bindings}
+        source_backend = backends.get(source_data["backup_target_slot"])
+        destination_backend = backends.get(destination_slot)
+        if source_backend is None or destination_backend is None:
+            raise BackupEngineError("backup target source/destination chưa được cấu hình")
+        source_proxy = type("BackupJobSnapshot", (), source_data)()
+        tmp_path, size_bytes = restore._download_and_verify(source_backend, source_proxy)
+        with open(tmp_path, "rb") as stream:
+            result = destination_backend.upload(stream, source_data["remote_key"])
+        uploaded = True
+        if result.size != size_bytes or result.sha256 != source_data["sha256"]:
+            raise BackupEngineError("destination upload không khớp checksum/size nguồn")
+        if not destination_backend.verify(source_data["remote_key"], size_bytes, source_data["sha256"]):
+            raise BackupEngineError("destination verify() thất bại")
+        with db.SessionLocal() as session:
+            duplicate = session.query(BackupJob).filter(
+                BackupJob.run_id == source_data["run_id"],
+                BackupJob.cluster_id.is_(None),
+                BackupJob.backup_target_slot == destination_slot,
+                BackupJob.status == "SUCCESS",
+            ).first()
+            if duplicate is not None:
+                return True
+            session.add(BackupJob(
+                run_id=source_data["run_id"], cluster_id=None, pool=source_data["pool"],
+                image=source_data["image"], job_type=source_data["job_type"], status="SUCCESS",
+                base_job_id=source_data["base_job_id"], consistency_mode=source_data["consistency_mode"],
+                backup_target_slot=destination_slot, remote_key=source_data["remote_key"],
+                size_bytes=size_bytes, sha256=source_data["sha256"],
+                duration_seconds=0.0, finished_at=utc_now(),
+            ))
+            session.commit()
+        write_progress(action_pk, [{"step": "repair_copy", "status": "done", "source_job_id": source_job_id,
+                                    "destination_slot": destination_slot, "bytes_transferred": size_bytes,
+                                    "total_bytes": size_bytes}])
+        return True
+    except Exception as exc:
+        logger.exception("backup_engine._repair_missing_copy failed for %s", source_job_id)
+        if uploaded and destination_backend is not None:
+            try:
+                destination_backend.delete(source_data["remote_key"])
+            except Exception:
+                logger.warning("backup_engine._repair_missing_copy: failed to clean destination artifact", exc_info=True)
+        write_progress(action_pk, [{"step": "repair_copy", "status": "failed", "message": str(exc),
+                                    "source_job_id": source_job_id, "destination_slot": destination_slot}])
+        return False
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def _run_rbd_backup(
@@ -429,11 +611,26 @@ def _run_rbd_backup(
             image,
         )
         return True
+    if _action_cancel_requested(action_pk):
+        _mark_running_failed(running_job_id, "Backup bị huỷ trước khi tạo snapshot")
+        return False
     snap_name = f"backup-{utc_now().strftime('%Y%m%dT%H%M%SZ')}"
 
     progress = _make_progress(total_bytes=0)
     progress[0]["consistency_mode"] = consistency_policy.mode
     write_progress(action_pk, progress)
+
+    try:
+        total_bytes = _rbd_image_size_bytes(mon_ip, pool, image)
+        _capacity_admission(target_bindings, total_bytes)
+    except Exception as exc:
+        logger.error("backup_engine._run_rbd_backup: capacity admission failed for %s/%s: %s", pool, image, exc)
+        progress[0]["status"] = "failed"
+        progress[0]["message"] = str(exc)
+        write_progress(action_pk, progress)
+        _mark_running_failed(running_job_id, str(exc))
+        return False
+    progress[0]["total_bytes"] = total_bytes
 
     try:
         consistency_session = application_consistency.begin(consistency_policy, pool, image)
@@ -462,12 +659,6 @@ def _run_rbd_backup(
         write_progress(action_pk, progress)
         return False
 
-    try:
-        total_bytes = _rbd_image_size_bytes(mon_ip, pool, image)
-    except Exception:
-        logger.exception("backup_engine._run_rbd_backup: rbd info failed for %s/%s", pool, image)
-        total_bytes = 0
-    progress[0]["total_bytes"] = total_bytes
     write_progress(action_pk, progress)
 
     if job_type == "full":
@@ -530,9 +721,11 @@ def _run_rbd_backup(
         size_bytes = tracked_stream._bytes_read
 
         for slot, backend in target_bindings:
+            if _action_cancel_requested(action_pk):
+                raise BackupCancelled("Backup đã được operator yêu cầu huỷ")
             remote_key = f"{job_type}/{pool}/{image}/{snap_name}.bin"
             with open(tmp_path, "rb") as f:
-                result = backend.upload(f, remote_key)
+                result = backend.upload(_CancellationAwareFile(f, action_pk), remote_key)
             # Record the target immediately: a later verify, upload, or DB
             # failure must clean up this object as well, even though this
             # slot has not received its BackupJob row yet.

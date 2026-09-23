@@ -195,7 +195,9 @@
       });
       status.textContent = body.items.length ?
         "Hiển thị " + body.items.length + " object · Ceph " + body.ceph_version + " · đã quét " + body.scanned + " index entry" :
-        "Không có object phù hợp trong phạm vi quét hiện tại.";
+        (body.truncated && body.next_marker ?
+          "Chưa có object khớp trong " + body.scanned + " mục vừa quét; chọn Trang sau để tiếp tục tìm." :
+          "Không có object phù hợp trong phạm vi quét hiện tại.");
       marker = body.next_marker || "";
       next.hidden = !body.truncated || !marker;
     } catch (error) {

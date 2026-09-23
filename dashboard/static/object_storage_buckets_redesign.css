@@ -149,6 +149,22 @@
 .rgw-metric-card span { color: var(--text-muted); font-size: .7rem; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
 .rgw-metric-card strong { color: #e2e8f0; font: 700 1.05rem/1.2 var(--font-mono); }
 .rgw-observability-body > .hint { margin: 0; }
+.rgw-trend { display: grid; gap: 10px; min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; }
+.rgw-trend-header { display: flex; justify-content: space-between; align-items: start; gap: 12px; flex-wrap: wrap; }
+.rgw-trend-header h3 { margin: 0 0 3px; font-size: .85rem; color: var(--text); }
+.rgw-trend-header .hint { margin: 0; }
+.rgw-trend-header label { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: .75rem; white-space: nowrap; }
+.rgw-trend-header select { padding: 5px 8px; color: var(--text); background: #0f172a; border: 1px solid var(--border); border-radius: 6px; }
+.rgw-trend-chart { display: flex; align-items: end; gap: 2px; width: 100%; height: 104px; overflow: hidden; border-bottom: 1px solid var(--border); }
+.rgw-trend-bar { display: flex; align-items: end; flex: 1 1 0; min-width: 2px; height: 100%; cursor: help; }
+.rgw-trend-value { position: relative; display: block; width: 100%; min-height: 1px; background: #38bdf8; border-radius: 2px 2px 0 0; }
+.rgw-trend-errors { position: absolute; bottom: 0; left: 0; width: 100%; background: #f59e0b; }
+.rgw-trend > .hint { margin: 0; }
+.rgw-remediation-body { display: grid; gap: 8px; padding: 14px 20px 18px; }
+.rgw-remediation-body .hint { margin: 0; }
+.rgw-remediation-list { display: grid; gap: 6px; }
+.rgw-remediation-item { display: block; padding: 8px 10px; color: #7dd3fc; border: 1px solid var(--border); border-radius: 6px; text-decoration: none; }
+.rgw-remediation-item:hover, .rgw-remediation-item:focus-visible { border-color: #38bdf8; background: #1e293b; }
 .rgw-top-consumers-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .rgw-top-consumers-grid section { min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,.012); }
 .rgw-top-consumers-grid h3 { margin: 0 0 9px; color: var(--text-muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }

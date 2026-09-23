@@ -645,6 +645,52 @@ function bucketHighlightJSON(value) {
     });
   }
 
+  var trendRequest = null;
+  function loadTrend() {
+    var chart = document.getElementById("rgw-trend-chart");
+    var trendStatus = document.getElementById("rgw-trend-status");
+    var hours = document.getElementById("rgw-trend-hours").value;
+    if (trendRequest) trendRequest.abort();
+    trendRequest = new AbortController();
+    var signal = trendRequest.signal;
+    trendStatus.textContent = "Đang tải lịch sử…";
+    fetch("/api/object-storage/rgw-metrics/history?cluster=" + encodeURIComponent(panel.dataset.cluster) + "&hours=" + hours, {cache: "no-store", signal: signal})
+      .then(function (response) { return response.ok ? response.json() : Promise.reject(new Error("Không đọc được lịch sử RGW (HTTP " + response.status + ")")); })
+      .then(function (body) {
+        if (String(body.cluster_id) !== String(panel.dataset.cluster)) throw new Error("Snapshot không thuộc cụm đang chọn");
+        var rows = (body.items || []).filter(function (row) {
+          return row.available && Number.isFinite(Date.parse(row.captured_at)) && Number.isFinite(Number(row.request_count)) && Number(row.request_count) >= 0;
+        });
+        chart.replaceChildren();
+        if (!rows.length) {
+          chart.setAttribute("aria-label", "Chưa có lịch sử request RGW khả dụng");
+          trendStatus.textContent = "Chưa có snapshot hợp lệ trong khoảng thời gian này; không vẽ xu hướng giả.";
+          return;
+        }
+        var step = Math.max(1, Math.ceil(rows.length / 96));
+        var sampled = rows.filter(function (_, index) { return index % step === 0 || index === rows.length - 1; });
+        var maximum = Math.max.apply(null, sampled.map(function (row) { return Number(row.request_count); }).concat([1]));
+        sampled.forEach(function (row) {
+          var count = Number(row.request_count);
+          var errors = Math.max(0, Math.min(count, Number(row.error_count) || 0));
+          var bar = document.createElement("div"); bar.className = "rgw-trend-bar";
+          var inner = document.createElement("span"); inner.className = "rgw-trend-value";
+          inner.style.height = Math.max(count ? 3 : 1, count / maximum * 100) + "%";
+          if (errors) {
+            var errorPart = document.createElement("i"); errorPart.className = "rgw-trend-errors";
+            errorPart.style.height = (errors / Math.max(1, count) * 100) + "%";
+            inner.appendChild(errorPart);
+          }
+          var time = new Date(row.captured_at).toLocaleString("vi-VN");
+          bar.title = time + " · " + count.toLocaleString("vi-VN") + " requests · " + errors.toLocaleString("vi-VN") + " lỗi";
+          bar.appendChild(inner); chart.appendChild(bar);
+        });
+        chart.setAttribute("aria-label", "Lịch sử " + rows.length + " snapshot RGW, hiển thị " + sampled.length + " điểm; cột xanh là requests và phần cam là lỗi");
+        trendStatus.textContent = "Hiển thị " + sampled.length + "/" + rows.length + " snapshot · Xanh: requests · Cam: lỗi · Mới nhất: " + new Date(rows[rows.length - 1].captured_at).toLocaleString("vi-VN");
+      })
+      .catch(function (error) { if (error.name !== "AbortError") trendStatus.textContent = "Không tải được lịch sử RGW: " + error.message; });
+  }
+
   function load() {
     refresh.disabled = true;
     status.textContent = "Đang tải RGW metrics…";
@@ -668,7 +714,34 @@ function bucketHighlightJSON(value) {
   }
 
   refresh.addEventListener("click", load);
+  refresh.addEventListener("click", loadTrend);
+  document.getElementById("rgw-trend-hours").addEventListener("change", loadTrend);
   load();
+  loadTrend();
+})();
+
+(function () {
+  var panel = document.getElementById("rgw-remediation");
+  if (!panel) return;
+  var status = document.getElementById("rgw-remediation-status");
+  var list = document.getElementById("rgw-remediation-list");
+  fetch("/api/object-storage/rgw-remediation?cluster=" + encodeURIComponent(panel.dataset.cluster), {cache: "no-store"})
+    .then(function (response) { return response.ok ? response.json() : Promise.reject(new Error("HTTP " + response.status)); })
+    .then(function (body) {
+      if (String(body.cluster_id) !== String(panel.dataset.cluster)) throw new Error("Sai phạm vi cụm");
+      list.replaceChildren();
+      var items = body.items || [];
+      status.textContent = items.length ? "Đề xuất RGW gần đây; chỉ Action đã duyệt mới được Worker thực thi." : "Chưa có đề xuất remediation RGW đã xác minh cho cụm này.";
+      var labels = {PENDING_APPROVAL: "Chờ duyệt", APPROVED: "Đã duyệt", EXECUTING: "Đang thực thi", EXECUTED: "Đã hoàn tất", FAILED: "Thất bại", INCONCLUSIVE: "Chưa xác định", REJECTED: "Đã từ chối"};
+      items.forEach(function (item) {
+        var link = document.createElement("a");
+        link.className = "rgw-remediation-item";
+        link.href = "/incidents/" + encodeURIComponent(item.incident_id) + "/timeline?cluster=" + encodeURIComponent(panel.dataset.cluster);
+        link.textContent = "Vault SSE-S3 · " + (labels[item.status] || item.status) + " · " + (item.created_at ? new Date(item.created_at).toLocaleString("vi-VN") : "—") + " → Xem Action";
+        list.appendChild(link);
+      });
+    })
+    .catch(function (error) { status.textContent = "Không tải được trạng thái Action RGW: " + error.message; });
 })();
 
 (function () {
@@ -710,18 +783,19 @@ function bucketHighlightJSON(value) {
       text("rgw-health-period", identity(evidence.period));
       var lag = diagnosis.observed && diagnosis.observed.lag ? diagnosis.observed.lag.seconds : null;
       var findings = (diagnosis.findings || []).length;
-      text("rgw-health-diagnosis", (diagnosis.status || "—") + " · " + findings + " finding(s)" + (lag == null ? "" : " · lag " + lag + "s"));
+      var stale = diagnosis.stale || (evidence.cache && evidence.cache.stale);
+      text("rgw-health-diagnosis", (stale ? "Snapshot cũ · " : "") + (diagnosis.status || "—") + " · " + findings + " finding(s)" + (lag == null ? "" : " · lag " + lag + "s" + (stale ? " (lần trước)" : "")));
       var capacity = evidence.capacity || {};
       text("rgw-health-capacity", "Capacity dependency: " + ((capacity.items || []).length ? (capacity.items || []).length + " placement pool(s) mapped" : (capacity.status || "not available")));
       var gaps = (evidence.evidence_gaps || []).concat(diagnosis.evidence_gaps || []);
       var findingsList = document.getElementById("rgw-health-findings");
       findingsList.replaceChildren();
       var messages = (diagnosis.findings || []).slice(0, 5).map(function (item) {
-        return (item.severity || "info").toUpperCase() + ": " + (item.summary || item.code || "Finding");
+        return (stale ? "DỮ LIỆU CŨ · " : "") + (item.severity || "info").toUpperCase() + ": " + (item.summary || item.code || "Finding");
       }).concat(gaps.slice(0, 3).map(function (gap) { return "GAP: " + gap; }));
       if (!messages.length) messages.push("Không có finding hoặc evidence gap trong snapshot hiện tại.");
       messages.forEach(function (message) { var li = document.createElement("li"); li.textContent = message; findingsList.appendChild(li); });
-      status.textContent = "Evidence " + (evidence.status || "unknown") + " · diagnosis " + (diagnosis.status || "unknown") + (gaps.length ? " · " + gaps[0] : "");
+      status.textContent = (stale ? "Cảnh báo: RGW snapshot đã cũ; chưa xác minh trạng thái hiện tại. · " : "") + "Evidence " + (evidence.status || "unknown") + " · diagnosis " + (diagnosis.status || "unknown") + (gaps.length ? " · " + gaps[0] : "");
     }).catch(function (error) { status.textContent = "Không tải được RGW health: " + error.message; })
       .finally(function () { refresh.disabled = false; });
   }

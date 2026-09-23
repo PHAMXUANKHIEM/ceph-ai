@@ -313,6 +313,20 @@ def test_empty_loki_result_is_partial_not_false_ok(isolated_db, enabled, monkeyp
         assert "Loki trả 0 dòng" in run.error_message
 
 
+def test_empty_elasticsearch_result_is_not_false_ok(isolated_db, enabled, monkeypatch):
+    monkeypatch.setattr(settings, "log_intel_source", "elasticsearch")
+    _one_node(monkeypatch)
+    _fake_source(monkeypatch, {})
+
+    log_intel.scan_and_store()
+
+    with db_module.SessionLocal() as session:
+        run = session.query(LogIngestRun).one()
+        assert run.status == LogIngestStatus.FAILED.value
+        assert run.lines_scanned == 0
+        assert "Elasticsearch trả 0 dòng" in run.error_message
+
+
 def test_loki_host_with_no_stream_makes_mixed_scan_partial(isolated_db, enabled, monkeypatch):
     monkeypatch.setattr(settings, "log_intel_source", "loki")
     monkeypatch.setattr(log_intel, "configured_nodes", lambda cluster=None: [

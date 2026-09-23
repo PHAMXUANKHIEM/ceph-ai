@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import Iterable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 from config.settings import settings
@@ -54,6 +55,7 @@ MIN_HOT_BUCKET_REQUESTS = 50
 HOT_BUCKET_SHARE = 0.50
 MAX_EVIDENCE_ITEMS = 20
 MAX_BUCKET_STATS = 100
+MAX_AUDIT_ALERT_ROWS = 5000
 
 RGW_ALERT_PREFIX = "RGW_ALERT_"
 _OPEN_STATUSES = (
@@ -71,8 +73,9 @@ def _number(value: object) -> float | None:
     if isinstance(value, bool):
         return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -88,7 +91,7 @@ def _status_counts(snapshot: dict) -> dict[int, int]:
         try:
             status = int(key)
             count = int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if 100 <= status <= 599 and count >= 0:
             result[status] = count
@@ -324,6 +327,50 @@ def _threshold_band(alert: dict) -> str:
     return str(alert.get("severity") or "HEALTH_WARN")
 
 
+def _can_resolve_alert(code: str, dedupe_key: str, snapshot: dict, now: datetime) -> bool:
+    """An absent finding is not recovery unless its source was observed again."""
+    captured_at = snapshot.get("captured_at")
+    if captured_at:
+        try:
+            captured = datetime.fromisoformat(str(captured_at).replace("Z", "+00:00"))
+            if captured.tzinfo is not None:
+                captured = captured.astimezone(timezone.utc).replace(tzinfo=None)
+            current = now.astimezone(timezone.utc).replace(tzinfo=None) if now.tzinfo else now
+            age = (current - captured).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if age < 0 or age > 2 * RGW_ALERT_WINDOW_SECONDS:
+            return False
+    if code == "RGW_ALERT_BUCKET_QUOTA":
+        bucket = dedupe_key.removeprefix("bucket:")
+        for raw in snapshot.get("bucket_stats") or ():
+            row = _mapping(raw)
+            if str(row.get("bucket") or row.get("name") or "").strip() != bucket:
+                continue
+            if not row.get("quota_enabled"):
+                return True
+            for used_key, limit_key in (("size_bytes", "quota_max_size_bytes"),
+                                        ("num_objects", "quota_max_objects")):
+                used = _number(row.get(used_key))
+                limit = _number(row.get(limit_key))
+                if used is not None and used >= 0 and limit is not None and limit > 0:
+                    return True
+            return False
+        return False
+    if snapshot.get("audit_complete") is False:
+        return False
+    counts = _status_counts(snapshot)
+    requests = _request_count(snapshot, counts)
+    if not counts or requests <= 0 or sum(counts.values()) > requests:
+        return False
+    if code == "RGW_ALERT_HOT_BUCKET":
+        return bool(_bucket_counts(snapshot))
+    if code in {"RGW_ALERT_ANONYMOUS_SUCCESSFUL_WRITE", "RGW_ALERT_AUTHORIZATION_FAILURE_BURST",
+                "RGW_ALERT_REQUEST_BURST_OUTLIER"}:
+        return isinstance(snapshot.get("audit_findings"), list)
+    return code in {"RGW_ALERT_5XX_SPIKE", "RGW_ALERT_ACCESS_DENIED_SPIKE"}
+
+
 def sync_rgw_alerts(
     session,
     cluster: Cluster,
@@ -334,6 +381,7 @@ def sync_rgw_alerts(
 ) -> dict:
     """Create/update/resolve RGW alert Incidents for one cluster only."""
     now = now or utc_now()
+    snapshot = _mapping(snapshot)
     evaluation = evaluate_rgw_alerts(snapshot)
     current_keys = {(alert["code"], alert["dedupe_key"]) for alert in evaluation["alerts"]}
     query = session.query(Incident).filter(
@@ -344,7 +392,7 @@ def sync_rgw_alerts(
     active = {(row.ceph_code, row.dedupe_key): row for row in query.all()}
     resolved = 0
     for key, incident in active.items():
-        if key not in current_keys:
+        if key not in current_keys and _can_resolve_alert(key[0], key[1], snapshot, now):
             incident.status = IncidentStatus.RESOLVED.value
             incident.updated_at = now
             resolved += 1
@@ -446,7 +494,11 @@ def snapshot_from_audit_rows(rows: Iterable[RgwAccessAuditEvent | dict], *, now:
     requester_counts: dict[str, int] = {}
     bytes_total = 0
     latencies: list[float] = []
-    for row in rows:
+    truncated = False
+    for index, row in enumerate(rows):
+        if index >= MAX_AUDIT_ALERT_ROWS:
+            truncated = True
+            break
         if isinstance(row, dict):
             status = row.get("status", row.get("http_status"))
             bucket = row.get("bucket")
@@ -471,7 +523,7 @@ def snapshot_from_audit_rows(rows: Iterable[RgwAccessAuditEvent | dict], *, now:
             bytes_sent = row.bytes_sent
         try:
             status_int = int(status)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         status_key = str(status_int)
         status_counts[status_key] = status_counts.get(status_key, 0) + 1
@@ -504,6 +556,7 @@ def snapshot_from_audit_rows(rows: Iterable[RgwAccessAuditEvent | dict], *, now:
     request_count = len(normalized)
     return {
         "captured_at": now.isoformat(timespec="seconds"),
+        "audit_complete": not truncated,
         "metrics": {
             "request_count": request_count,
             "bytes_total": bytes_total,
@@ -516,7 +569,10 @@ def snapshot_from_audit_rows(rows: Iterable[RgwAccessAuditEvent | dict], *, now:
             "source": "rgw_access_audit_events",
         },
         "audit_findings": intelligence.get("findings", []),
-        "evidence_gaps": intelligence.get("evidence_gaps", []),
+        "evidence_gaps": (
+            list(intelligence.get("evidence_gaps", []))
+            + ([f"RGW audit window truncated at {MAX_AUDIT_ALERT_ROWS} rows; absence is not recovery."] if truncated else [])
+        ),
         "read_only": True,
         "action_id": None,
     }
@@ -628,7 +684,7 @@ def scan_and_alert(cluster_id: str | None = None, *, now: datetime | None = None
         rows = session.query(RgwAccessAuditEvent).filter(
             RgwAccessAuditEvent.cluster_id == cluster.id,
             RgwAccessAuditEvent.event_at >= cutoff,
-        ).order_by(RgwAccessAuditEvent.event_at.desc()).limit(5000).all()
+        ).order_by(RgwAccessAuditEvent.event_at.desc()).limit(MAX_AUDIT_ALERT_ROWS + 1).all()
         snapshot = snapshot_from_audit_rows(rows, now=now)
 
     quota_stats, quota_gaps = collect_bucket_quota_stats(cluster)

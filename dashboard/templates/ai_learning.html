@@ -34,6 +34,15 @@
     </div>
   </section>
 
+  <section class="card" id="model-quality-report">
+    <div class="card-header"><div><h2>Chất lượng model theo scope</h2><p class="hint">Chỉ đọc evaluation đã lưu; không train, promote hoặc chạy remediation khi mở trang.</p></div></div>
+    <div class="card-body">
+      <label>Cửa sổ <select id="model-quality-hours"><option value="6">6 giờ</option><option value="24" selected>24 giờ</option></select></label>
+      <p id="model-quality-status" class="hint" role="status">Đang tải báo cáo…</p>
+      <div class="table-wrap"><table><thead><tr><th>Scope</th><th>Model</th><th>Outcome</th><th>MAE active / candidate</th><th>SMAPE active / candidate</th><th>Đánh giá gần nhất</th></tr></thead><tbody id="model-quality-body"></tbody></table></div>
+    </div>
+  </section>
+
   <section class="card">
     <div class="card-header"><div><h2>Operator controls</h2><p class="hint">Chỉ admin mới dùng được. Các thao tác này không promote model và không chạy remediation.</p></div></div>
     <div class="card-body learner-controls">
@@ -374,4 +383,5 @@ if (canaryButton) {
   loadCanaryReport();
 }
 </script>
+<script src="/static/model_quality_report.js?v={{ static_version }}"></script>
 </body></html>

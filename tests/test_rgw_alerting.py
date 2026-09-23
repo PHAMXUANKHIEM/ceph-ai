@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from datetime import timedelta
 
 from shared import db
-from shared.models import Cluster, Incident, IncidentStatus, RgwMetricSnapshot
+from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, RgwMetricSnapshot
 from shared.time import utc_now
 from watcher.rgw_alerting import (
     collect_bucket_quota_stats,
@@ -71,6 +71,28 @@ def test_snapshot_from_audit_rows_is_bounded_and_secret_free():
     assert snapshot["metrics"]["status_counts"] == {"403": 1, "200": 1}
     assert snapshot["metrics"]["top_buckets"] == {"archive": 2}
     assert "secret_key" not in str(snapshot)
+
+
+def test_truncated_audit_window_cannot_resolve_existing_alert(monkeypatch):
+    from watcher import rgw_alerting
+
+    monkeypatch.setattr(rgw_alerting, "MAX_AUDIT_ALERT_ROWS", 3)
+    rows = [{"http_status": 200, "bucket": "archive"} for _ in range(4)]
+    partial = snapshot_from_audit_rows(rows)
+    assert partial["metrics"]["request_count"] == 3
+    assert partial["audit_complete"] is False
+    assert any("truncated" in gap for gap in partial["evidence_gaps"])
+
+    with db.SessionLocal() as session:
+        cluster = Cluster(
+            name=f"rgw-truncated-{uuid4()}", ceph_mon_nodes="", ssh_user="tester",
+            ssh_key_path="/tmp/test-key", is_default=False, is_active=True,
+        )
+        session.add(cluster)
+        session.commit()
+        bad = _snapshot(request_count=100, status_counts={"200": 80, "500": 20})
+        assert sync_rgw_alerts(session, cluster, bad, send_notifications=False)["created"] == 1
+        assert sync_rgw_alerts(session, cluster, partial, send_notifications=False)["resolved"] == 0
 
 
 def test_snapshot_wires_audit_intelligence_into_abnormal_access_alerts():
@@ -200,8 +222,46 @@ def test_rgw_metrics_history_api_returns_bounded_aggregate_only(dashboard_client
     body = response.json()
     assert body["cluster_id"] == default_cluster_id
     assert body["items"][0]["request_count"] == 12
+    assert body["items"][0]["captured_at"].endswith("Z")
     assert body["items"][0]["top_buckets"] == {"archive": 12}
     assert body["read_only"] is True
+
+
+def test_rgw_remediation_status_is_cluster_scoped_and_read_only(dashboard_client, default_cluster_id):
+    with db.SessionLocal() as session:
+        other = Cluster(
+            name=f"rgw-other-{uuid4()}", ceph_mon_nodes="", ssh_user="tester",
+            ssh_key_path="/tmp/test-key", is_default=False, is_active=True,
+        )
+        session.add(other)
+        session.flush()
+        other_cluster_id = other.id
+        for cluster_id in (default_cluster_id, other.id):
+            incident = Incident(
+                cluster_id=cluster_id, ceph_code=f"RGW_DEFAULT_KEY_{uuid4()}",
+                status=IncidentStatus.PENDING_APPROVAL.value, detected_at=utc_now(),
+            )
+            session.add(incident)
+            session.flush()
+            session.add(Action(
+                incident_id=incident.id, action_id="remove_invalid_rgw_default_key",
+                classification="RISKY", status=ActionStatus.PENDING_APPROVAL.value,
+            ))
+        session.commit()
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+
+    response = dashboard_client.get(f"/api/object-storage/rgw-remediation?cluster={default_cluster_id}")
+
+    assert response.status_code == 200
+    assert response.json()["cluster_id"] == default_cluster_id
+    assert len(response.json()["items"]) == 1
+    assert response.json()["items"][0]["classification"] == "RISKY"
+    assert response.json()["items"][0]["status"] == "PENDING_APPROVAL"
+    other_response = dashboard_client.get(f"/api/object-storage/rgw-remediation?cluster={other_cluster_id}")
+    assert other_response.status_code == 200
+    assert other_response.json()["cluster_id"] == other_cluster_id
+    assert len(other_response.json()["items"]) == 1
+    assert other_response.json()["items"][0]["incident_id"] != response.json()["items"][0]["incident_id"]
 
 
 def test_rgw_alert_incident_lifecycle_deduplicates_and_resolves_per_cluster():
@@ -259,6 +319,57 @@ def test_rgw_alert_incidents_are_cluster_scoped():
             send_notifications=False,
         )
         assert untouched["resolved"] == 0
+
+
+def test_missing_or_stale_rgw_evidence_never_auto_resolves_an_open_incident():
+    with db.SessionLocal() as session:
+        cluster = Cluster(
+            name=f"rgw-partial-{uuid4()}", ceph_mon_nodes="", ssh_user="tester",
+            ssh_key_path="/tmp/test-key", is_default=False, is_active=True,
+        )
+        session.add(cluster)
+        session.commit()
+        bad = _snapshot(request_count=100, status_counts={"200": 80, "500": 20})
+        assert sync_rgw_alerts(session, cluster, bad, send_notifications=False)["created"] == 1
+        assert sync_rgw_alerts(session, cluster, {}, send_notifications=False)["resolved"] == 0
+        stale_clean = _snapshot(request_count=100, status_counts={"200": 100})
+        stale_clean["captured_at"] = (utc_now() - timedelta(hours=1)).isoformat()
+        assert sync_rgw_alerts(session, cluster, stale_clean, send_notifications=False)["resolved"] == 0
+        fresh_clean = _snapshot(request_count=100, status_counts={"200": 100})
+        fresh_clean["captured_at"] = utc_now().isoformat()
+        assert sync_rgw_alerts(session, cluster, fresh_clean, send_notifications=False)["resolved"] == 1
+
+
+def test_partial_quota_scan_preserves_incident_until_same_bucket_is_observed():
+    with db.SessionLocal() as session:
+        cluster = Cluster(
+            name=f"rgw-quota-partial-{uuid4()}", ceph_mon_nodes="", ssh_user="tester",
+            ssh_key_path="/tmp/test-key", is_default=False, is_active=True,
+        )
+        session.add(cluster)
+        session.commit()
+        high = _snapshot(bucket_stats=[{
+            "bucket": "archive", "quota_enabled": True,
+            "size_bytes": 95, "quota_max_size_bytes": 100,
+        }])
+        assert sync_rgw_alerts(session, cluster, high, send_notifications=False)["created"] == 1
+        assert sync_rgw_alerts(session, cluster, _snapshot(bucket_stats=[]), send_notifications=False)["resolved"] == 0
+        healthy = _snapshot(bucket_stats=[{
+            "bucket": "archive", "quota_enabled": True,
+            "size_bytes": 40, "quota_max_size_bytes": 100,
+        }])
+        assert sync_rgw_alerts(session, cluster, healthy, send_notifications=False)["resolved"] == 1
+
+
+def test_nonfinite_rgw_numbers_do_not_create_false_alerts():
+    result = evaluate_rgw_alerts(_snapshot(
+        request_count=float("inf"),
+        status_counts={"500": 10},
+        bucket_stats=[{"bucket": "archive", "quota_enabled": True,
+                       "size_bytes": float("nan"), "quota_max_size_bytes": 100}],
+    ))
+    assert not any(alert["code"] == "RGW_ALERT_BUCKET_QUOTA" for alert in result["alerts"])
+    assert result["metrics"]["request_count"] == 10
 
 
 def test_quota_alerts_notify_on_80_90_95_band_transitions(monkeypatch):

@@ -34,7 +34,7 @@ from shared.models import Action, ActionClassification, ActionStatus, Cluster, I
 from worker.backup import alerting, digest
 from worker import ai_ops_digest
 from worker.backup.cluster_scope import first_mon_node, get_cluster, parse_tracked_images
-from worker.backup.policy_config import load_backup_policy
+from worker.backup.policy_config import cluster_schedule_policy, load_backup_policy
 from worker import volume_snapshot_scheduler
 from shared.volume_snapshot_policy import validate_snapshot_policy
 
@@ -196,13 +196,13 @@ async def trigger_metadata_backup(cluster_id: str | None = None) -> None:
     await _dispatch(action_pk, f"scheduled cluster metadata backup (cluster_id={cluster_id})")
 
 
-async def trigger_restore_drill() -> None:
+async def trigger_restore_drill(cluster_id: str | None = None) -> None:
     """The APScheduler job callable for the periodic RestoreDrill
     (Story 9.4, PRD FR-10) — `worker/backup/restore_drill.py` itself reads
     which (pool, image)/scratch target to use from `backup_policy.yaml`'s
     `restore_drill:` section, so no params are needed here."""
     action_pk = _create_scheduled_action(
-        "restore_drill_execute", {}, "RestoreDrill theo lịch"
+        "restore_drill_execute", {}, "RestoreDrill theo lịch", cluster_id=cluster_id
     )
     await _dispatch(action_pk, "scheduled RestoreDrill")
 
@@ -213,6 +213,7 @@ def _register_cluster_backup_jobs(
     metadata_cron: dict,
     digest_cron: dict,
     desired_job_ids: set[str],
+    policy: dict | None = None,
 ) -> None:
     """Multi-tenant remediation Phase 3 — registers `trigger_backup`/
     `trigger_metadata_backup` jobs for every ADDITIONAL cluster that has
@@ -228,37 +229,51 @@ def _register_cluster_backup_jobs(
         session.expunge_all()
 
     for cluster in clusters:
+        scoped = cluster_schedule_policy(policy or {}, cluster.id)
+        scoped_schedule = scoped.get("schedule") or {}
+        cluster_cron = scoped_schedule.get("cron") or cron
+        cluster_metadata_cron = scoped_schedule.get("metadata_cron", metadata_cron)
         for pool, image in parse_tracked_images(cluster.backup_tracked_images):
             job_id = f"rbd_backup_{cluster.id}_{pool}_{image}"
             scheduler.add_job(
                 trigger_backup,
-                trigger=CronTrigger(hour=cron.get("hour", 2), minute=cron.get("minute", 0)),
+                trigger=CronTrigger(hour=cluster_cron.get("hour", 2), minute=cluster_cron.get("minute", 0)),
                 args=[pool, image, cluster.id],
                 id=job_id,
                 replace_existing=True,
             )
             desired_job_ids.add(job_id)
-        if metadata_cron:
+        if cluster_metadata_cron:
             metadata_job_id = f"backup_metadata_run_{cluster.id}"
             scheduler.add_job(
                 trigger_metadata_backup,
                 trigger=CronTrigger(
-                    hour=metadata_cron.get("hour", "*/6"), minute=metadata_cron.get("minute", 0)
+                    hour=cluster_metadata_cron.get("hour", "*/6"), minute=cluster_metadata_cron.get("minute", 0)
                 ),
                 args=[cluster.id],
                 id=metadata_job_id,
                 replace_existing=True,
             )
             desired_job_ids.add(metadata_job_id)
-        digest_job_id = f"backup_digest_run_{cluster.id}"
-        scheduler.add_job(
-            digest.run_digest,
-            trigger=CronTrigger(hour=digest_cron.get("hour", 7), minute=digest_cron.get("minute", 0)),
-            args=[cluster.id],
-            id=digest_job_id,
-            replace_existing=True,
-        )
-        desired_job_ids.add(digest_job_id)
+        cluster_digest_cron = scoped_schedule.get("digest_cron", digest_cron)
+        if cluster_digest_cron is not False:
+            digest_job_id = f"backup_digest_run_{cluster.id}"
+            scheduler.add_job(
+                digest.run_digest,
+                trigger=CronTrigger(hour=cluster_digest_cron.get("hour", 7), minute=cluster_digest_cron.get("minute", 0)),
+                args=[cluster.id], id=digest_job_id, replace_existing=True,
+            )
+            desired_job_ids.add(digest_job_id)
+        drill = scoped.get("restore_drill") or {}
+        drill_cron = scoped_schedule.get("restore_drill_cron") or {}
+        if all(drill.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image")) and drill_cron:
+            job_id = f"restore_drill_execute_{cluster.id}"
+            scheduler.add_job(
+                trigger_restore_drill,
+                trigger=CronTrigger(day_of_week=drill_cron.get("day_of_week", "mon"), hour=drill_cron.get("hour", 3), minute=drill_cron.get("minute", 0)),
+                args=[cluster.id], id=job_id, replace_existing=True,
+            )
+            desired_job_ids.add(job_id)
 
 
 def _register_volume_snapshot_jobs(
@@ -306,6 +321,8 @@ def _reconcile_backup_jobs(scheduler: AsyncIOScheduler, desired_job_ids: set[str
         return (
             job_id.startswith("rbd_backup_")
             or job_id.startswith("backup_metadata_run")
+            or job_id.startswith("backup_digest_run_")
+            or job_id.startswith("restore_drill_execute_")
             or job_id in {
                 "restore_drill_execute",
                 "backup_alert_check",
@@ -360,7 +377,7 @@ def build_scheduler() -> AsyncIOScheduler:
     # on this SAME shared cron/metadata_cron, registered alongside (never
     # replacing) the default cluster's jobs above.
     digest_cron = schedule.get("digest_cron") or {}
-    _register_cluster_backup_jobs(scheduler, cron, metadata_cron, digest_cron, desired_job_ids)
+    _register_cluster_backup_jobs(scheduler, cron, metadata_cron, digest_cron, desired_job_ids, policy)
 
     # Story 9.4 (AC #3): only register if restore_drill is actually
     # configured (pool/image + scratch_pool/scratch_image) — same "blank

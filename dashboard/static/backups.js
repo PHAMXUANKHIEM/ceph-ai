@@ -26,20 +26,33 @@
 
   var inventoryBody = document.getElementById("backup-inventory-body");
   var inventorySearch = document.getElementById("backup-inventory-search");
+  var inventoryPool = document.getElementById("backup-inventory-pool");
+  var inventoryImage = document.getElementById("backup-inventory-image");
+  var inventoryType = document.getElementById("backup-inventory-type");
+  var inventoryTarget = document.getElementById("backup-inventory-target");
+  var inventoryFrom = document.getElementById("backup-inventory-from");
+  var inventoryTo = document.getElementById("backup-inventory-to");
   var inventorySize = document.getElementById("backup-inventory-page-size");
   var inventoryStatus = document.getElementById("backup-inventory-status");
   var inventoryPageEl = document.getElementById("backup-inventory-page");
   var inventoryTotalEl = document.getElementById("backup-inventory-total");
+  var inventoryDetail = document.getElementById("backup-inventory-detail");
   var inventoryPage = 1;
   function escapeHtml(value) {
     return String(value == null ? "" : value).replace(/[&<>\"']/g, function (char) {
       return {"&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;"}[char];
     });
   }
+  function inventoryParams() {
+    return new URLSearchParams({page: String(inventoryPage), page_size: inventorySize ? inventorySize.value : "25",
+      search: inventorySearch ? inventorySearch.value : "", pool: inventoryPool ? inventoryPool.value : "",
+      image: inventoryImage ? inventoryImage.value : "", job_type: inventoryType ? inventoryType.value : "",
+      backup_target_slot: inventoryTarget ? inventoryTarget.value : "", status: inventoryStatus ? inventoryStatus.value : "",
+      created_from: inventoryFrom ? inventoryFrom.value : "", created_to: inventoryTo ? inventoryTo.value : ""});
+  }
   function loadInventory() {
     if (!inventoryBody) return;
-    var params = new URLSearchParams({page: String(inventoryPage), page_size: inventorySize ? inventorySize.value : "25",
-      search: inventorySearch ? inventorySearch.value : "", status: inventoryStatus ? inventoryStatus.value : ""});
+    var params = inventoryParams();
     fetch("/api/backups/inventory?" + params.toString(), {credentials: "same-origin"})
       .then(function (response) { return response.json().then(function (data) {
         if (!response.ok) throw new Error(data.detail || "HTTP " + response.status); return data;
@@ -47,7 +60,7 @@
       .then(function (data) {
         var items = data.items || [];
         inventoryBody.innerHTML = items.length ? items.map(function (item) {
-          return "<tr><td><code>" + escapeHtml((item.pool || "—") + "/" + (item.image || "—")) + "</code></td><td>" + escapeHtml(item.job_type) + "</td><td>" + escapeHtml(item.consistency_mode || "crash-consistent") + "</td><td>" + escapeHtml(item.backup_target_slot || "—") + "</td><td>" + escapeHtml(item.status) + "</td><td><code>" + escapeHtml(item.run_id) + "</code>" + (item.remote_key ? "<br><span class='hint'>" + escapeHtml(item.remote_key) + "</span>" : "") + "</td><td>" + escapeHtml(item.size_bytes || 0) + "</td><td><code>" + escapeHtml(item.sha256 || "—") + "</code></td><td>" + escapeHtml(item.created_at || "—") + "</td></tr>";
+          return "<tr><td><code>" + escapeHtml((item.pool || "—") + "/" + (item.image || "—")) + "</code></td><td>" + escapeHtml(item.job_type) + "</td><td>" + escapeHtml(item.consistency_mode || "crash-consistent") + "</td><td>" + escapeHtml(item.backup_target_slot || "—") + "</td><td>" + escapeHtml(item.status) + "</td><td><button type='button' class='btn btn-ghost btn-sm' data-backup-job-id='" + escapeHtml(item.job_id) + "'>" + escapeHtml(item.run_id) + "</button>" + (item.remote_key ? "<br><span class='hint'>" + escapeHtml(item.remote_key) + "</span>" : "") + "</td><td>" + escapeHtml(item.size_bytes || 0) + "</td><td><code>" + escapeHtml(item.sha256 || "—") + "</code></td><td>" + escapeHtml(item.created_at || "—") + "</td></tr>";
         }).join("") : "<tr><td colspan='9' class='hint'>Không tìm thấy artifact.</td></tr>";
         if (inventoryPageEl) inventoryPageEl.textContent = "Trang " + data.page + "/" + data.pages;
         if (inventoryTotalEl) inventoryTotalEl.textContent = data.total + " artifacts";
@@ -56,8 +69,39 @@
       }).catch(function () { inventoryBody.innerHTML = "<tr><td colspan='9' class='hint'>Không tải được inventory.</td></tr>"; });
   }
   if (inventoryBody) {
-    [inventorySearch, inventorySize, inventoryStatus].forEach(function (element) {
-      if (element) element.addEventListener(element === inventorySearch ? "input" : "change", function () { inventoryPage = 1; loadInventory(); });
+    var inventoryExport = document.getElementById("backup-inventory-export");
+    if (inventoryExport) inventoryExport.addEventListener("click", function () {
+      var params = inventoryParams();
+      params.set("format", "csv");
+      window.location.href = "/api/backups/inventory/export?" + params.toString();
+    });
+    inventoryBody.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-backup-job-id]");
+      if (!button || !inventoryDetail) return;
+      inventoryDetail.hidden = false;
+      inventoryDetail.textContent = "Đang tải chi tiết job…";
+      fetch("/api/backups/jobs/" + encodeURIComponent(button.getAttribute("data-backup-job-id")),
+        {credentials: "same-origin"})
+        .then(function (response) { return response.json().then(function (data) {
+          if (!response.ok) throw new Error(data.detail || "HTTP " + response.status); return data;
+        }); })
+        .then(function (data) {
+          var chain = (data.lineage || []).map(function (item) {
+            return escapeHtml(item.job_type + " · " + item.status + " · " + item.run_id);
+          }).join(" → ");
+          inventoryDetail.innerHTML = "<strong>Job " + escapeHtml(data.run_id) + "</strong> · " +
+            escapeHtml((data.pool || "—") + "/" + (data.image || "—")) +
+            "<br>Trạng thái: " + escapeHtml(data.status) + " · Target: " + escapeHtml(data.backup_target_slot || "—") +
+            " · Dung lượng: " + escapeHtml(data.size_bytes == null ? "—" : data.size_bytes) + " bytes" +
+            "<br>Checksum: " + escapeHtml(data.sha256 || "—") +
+            "<br>Thời gian: " + escapeHtml(data.duration_seconds == null ? "—" : data.duration_seconds + "s") +
+            "<br>Liên kết base: " + (chain || "—") + (data.lineage_complete ? "" : " · <em>Thiếu mắt xích</em>");
+        })
+        .catch(function () { inventoryDetail.textContent = "Không tải được chi tiết job."; });
+    });
+    [inventorySearch, inventoryPool, inventoryImage, inventoryType, inventoryTarget, inventoryFrom,
+      inventoryTo, inventorySize, inventoryStatus].forEach(function (element) {
+      if (element) element.addEventListener([inventorySearch, inventoryPool, inventoryImage].indexOf(element) >= 0 ? "input" : "change", function () { inventoryPage = 1; loadInventory(); });
     });
     document.getElementById("backup-inventory-prev").addEventListener("click", function () { if (inventoryPage > 1) { inventoryPage--; loadInventory(); } });
     document.getElementById("backup-inventory-next").addEventListener("click", function () { inventoryPage++; loadInventory(); });

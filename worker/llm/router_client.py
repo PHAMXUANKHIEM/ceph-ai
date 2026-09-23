@@ -16,6 +16,11 @@ from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from shared import alert_lifecycle, audit, change_risk, db, incident_events, log_learning, remediation_cases, trust_engine
+from shared.autopilot_guardrails import (
+    AutopilotMode,
+    cluster_configured_mode,
+    effective_runtime_mode,
+)
 from shared.synthetic_incidents import is_synthetic_evidence
 from shared.case_retrieval import find_verified_cases
 from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
@@ -1634,6 +1639,25 @@ def _maybe_execute_safe_action(
         _route_safe_to_approval(
             incident_id, action_pk, action_id,
             event_type=audit.EVENT_AUTOPILOT_CLUSTER_GATE_BLOCKED,
+        )
+        return
+    runtime_mode = effective_runtime_mode(
+        global_enabled=settings.autopilot_enabled,
+        cluster_enabled=cluster_gate_allowed,
+        configured_mode=cluster_configured_mode(
+            cluster_id=gate_cluster.id if gate_cluster is not None else None,
+            raw_mapping=os.environ.get("CEPH_AI_AUTOPILOT_CLUSTER_MODES"),
+            fallback_mode=os.environ.get("CEPH_AI_AUTOPILOT_MODE"),
+        ),
+    )
+    if runtime_mode != AutopilotMode.LIMITED_AUTOPILOT:
+        logger.info(
+            "_maybe_execute_safe_action: mode %s requires operator approval for %s",
+            runtime_mode.value, incident_id,
+        )
+        _route_safe_to_approval(
+            incident_id, action_pk, action_id,
+            event_type=audit.EVENT_AUTOPILOT_RUNTIME_GUARD_BLOCKED,
         )
         return
     # Existing installations can bootstrap their first verified cases, but

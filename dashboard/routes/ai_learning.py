@@ -21,6 +21,7 @@ from shared import (
     db,
     forecast_feedback,
     learning_runtime,
+    model_quality_report,
     model_registry,
     online_learning_controls,
     remediation_feedback,
@@ -36,7 +37,6 @@ from shared.models import (
     LogLearningSample,
     NodeResourceForecastRun,
     NodeResourceForecastAlert,
-    NodeResourceForecastFeedback,
     NodeResourceForecastTransition,
     NodeResourceModelState,
     ForecastModelPromotionAudit,
@@ -948,6 +948,17 @@ def _require_model_scope(session, model_id: str, cluster) -> ForecastModelRegist
 async def ai_learning_api(request: Request, _user: str = Depends(require_login)):
     _clusters, cluster = cluster_selection(request)
     return {"cluster_id": cluster.id, "cluster_name": cluster.name, **learning_status(cluster.id, cluster.name), "large_omap_readiness": large_omap_readiness(cluster.id)}
+
+
+@router.get("/api/ai-learning/model-quality-report")
+async def model_quality_report_api(request: Request, hours: int = 24,
+                                   _user: str = Depends(require_login)):
+    """Summarize persisted evaluations; never train or promote during HTTP reads."""
+    _clusters, cluster = cluster_selection(request)
+    try:
+        return model_quality_report.quality_report(cluster.id, hours=hours)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/ai-learning/canary")

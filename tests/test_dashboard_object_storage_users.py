@@ -422,7 +422,9 @@ def test_create_access_key_returns_secret_once_but_never_persists_it(dashboard_c
 
     assert preview.status_code == 200
     assert "ONE-TIME-SECRET" not in preview.text
+    assert preview.headers["cache-control"] == "no-store"
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
     assert response.json()["credential"]["secret_key"] == "ONE-TIME-SECRET"
     assert response.json()["secret_shown_once"] is True
     with db.SessionLocal() as session:
@@ -448,6 +450,66 @@ def test_revoke_access_key_requires_exact_key_confirmation(dashboard_client, mon
     assert bad.status_code == 400
     assert good.status_code == 200
     assert calls == [("10.20.1.90", "alice", "OLDKEY")]
+
+
+def test_revoke_key_identifier_is_masked_in_preview_and_persistent_audit(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "revoke_s3_access_key", lambda *_args: None)
+    _login(dashboard_client)
+    key_id = "AKIA-VERY-LONG-SENSITIVE-1234"
+    payload = {"action": "revoke_key", "uid": "alice", "access_key": key_id}
+    preview = dashboard_client.post("/api/object-storage/users/keys/preview", json=payload)
+    assert preview.status_code == 200
+    assert key_id not in preview.json()["preview"]
+    assert preview.json()["confirmation_required"] == key_id
+    response = dashboard_client.post(
+        "/api/object-storage/users/keys/execute", json={**payload, "confirmation": key_id}
+    )
+    assert response.status_code == 200
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, response.json()["request_id"])
+        assert key_id not in audit.preview
+        # Older rows may still contain a full identifier; the viewer redacts it.
+        audit.preview = f"revoke S3 access key={key_id} for uid=alice"
+        session.commit()
+    viewer = dashboard_client.get("/api/object-storage/audit")
+    assert viewer.status_code == 200
+    assert key_id not in viewer.text
+    assert "[REDACTED]" in viewer.text
+
+
+def test_created_key_is_revoked_if_audit_finalization_fails(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    revoked = []
+    monkeypatch.setattr(route, "create_s3_access_key", lambda *_args: {
+        "access_key": "NEW-KEY-1234", "secret_key": "NEVER-RETURN-THIS",
+    })
+    monkeypatch.setattr(route, "revoke_s3_access_key", lambda *args: revoked.append(args))
+    monkeypatch.setattr(route, "_finish_audit", lambda *_args: (_ for _ in ()).throw(RuntimeError("database unavailable")))
+    _login(dashboard_client)
+    response = dashboard_client.post("/api/object-storage/users/keys/execute", json={
+        "action": "create_key", "uid": "alice", "confirmation": "alice",
+    })
+    assert response.status_code == 503
+    assert revoked == [("10.20.1.90", "alice", "NEW-KEY-1234")]
+    assert "NEVER-RETURN-THIS" not in response.text
+    assert "đã được thu hồi" in response.text
+
+
+def test_failed_key_rollback_reports_uncertain_state_without_disclosing_secret(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "create_s3_access_key", lambda *_args: {
+        "access_key": "NEW-KEY-1234", "secret_key": "NEVER-RETURN-THIS",
+    })
+    monkeypatch.setattr(route, "revoke_s3_access_key", lambda *_args: (_ for _ in ()).throw(route.RgwLogError("RGW down")))
+    monkeypatch.setattr(route, "_finish_audit", lambda *_args: (_ for _ in ()).throw(RuntimeError("database unavailable")))
+    _login(dashboard_client)
+    response = dashboard_client.post("/api/object-storage/users/keys/execute", json={
+        "action": "create_key", "uid": "alice", "confirmation": "alice",
+    })
+    assert response.status_code == 503
+    assert "có thể còn hoạt động" in response.text
+    assert "NEVER-RETURN-THIS" not in response.text
 
 
 def test_quota_preview_explains_effect_and_execute_is_audited(dashboard_client, monkeypatch):
@@ -536,10 +598,10 @@ def test_failed_key_action_redacts_secret_from_http_and_audit(dashboard_client, 
     })
     assert response.status_code == 502
     assert "LEAK-ME" not in response.text
-    assert "[REDACTED]" in response.text
+    assert "Thao tác S3 key thất bại" in response.text
     with db.SessionLocal() as session:
         audit = session.query(ObjectStorageAuditEntry).filter_by(action="create_key").one()
-        assert audit.error_message == "secret_access_key=[REDACTED]"
+        assert audit.error_message == "Thao tác S3 key thất bại; kiểm tra RGW log với quyền phù hợp"
 
 
 def test_secondary_cluster_creates_key_with_scoped_credentials(dashboard_client, monkeypatch):

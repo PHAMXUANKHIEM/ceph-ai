@@ -256,7 +256,11 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
 - [~] **2.4 Rename/move/copy theo capability**
   - Preview downtime, dung lượng và dependency; copy/move là async job có tiến độ.
   - Đã có rename cùng pool qua Worker, chặn watcher/tên đích tồn tại và dedup
-    chéo create/resize/rename; move/copy khác pool chưa triển khai.
+    chéo create/resize/rename. Đã thêm copy khác pool từ snapshot RBD rõ ràng:
+    API/Volume Detail tạo Action RISKY chờ duyệt, Worker chạy `rbd cp`, hậu kiểm
+    tên và dung lượng snapshot, chặn pool đích thiếu capacity/RBD hoặc tên đích
+    trùng; nguồn luôn được giữ nguyên. Chưa có move (xóa/chuyển nguồn), progress
+    bền vững, checksum byte-level, cleanup bản copy dở hoặc live acceptance.
 - [x] **2.5 Delete và recycle policy**
   - Mặc định soft-delete/trash với thời hạn khôi phục; hard-delete yêu cầu xác
     nhận nâng cao và chặn khi còn attachment/snapshot/clone/backup dependency.
@@ -341,8 +345,13 @@ restore luôn tạo bằng chứng recovery point đã sử dụng.
 - [~] **4.4 Replication liên cluster/site**
   - Có read-only API/UI đọc `rbd mirror pool info/status`, hiển thị mode và
     posture theo cluster/pool; pool chưa bật mirroring hiển thị rõ `disabled`.
-    Chưa triển khai peer setup, lag/RPO normalization, planned failover,
-    failback hoặc fencing; không có action tự promote/failover.
+    Đã chuẩn hóa peer count/state và ước tính lag/RPO từ `last_update` khi
+    Ceph trả timestamp hợp lệ; thiếu timestamp được trả là
+    `insufficient_evidence`, không suy diễn thành 0 giây. API công khai rõ
+    `mutation_supported=false`, `failover_supported=false` và
+    `fencing_configured=false`.
+    Chưa triển khai peer setup, planned failover, failback hoặc fencing; không
+    có action tự promote/failover.
 - [~] **4.5 DR drill không ảnh hưởng production**
   - RestoreDrill chạy vào scratch pool/image riêng, kiểm tra checksum byte-level,
     ghi BackupJob/RPO/RTO và cleanup sau chạy. Đã thêm preflight từ chối scratch
@@ -621,6 +630,8 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-09-19 | BS-06.3 Watcher/lock remediation posture | Đang làm | Bổ sung `build_attachment_remediation()` vào Cinder/Ceph reconciliation; Volume Detail hiển thị posture `REVIEW_BEFORE_DETACH`, `ORPHAN_REVIEW`, `RECONCILE_CONTROL_PLANE` hoặc `INSUFFICIENT_EVIDENCE`. Explicitly giữ `automatic_remediation=false`, `direct_lock_removal_supported=false` và công bố stale age unavailable. | `tests/test_cinder_discovery.py` + Volume Detail route: `14 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn remediation workflow có fencing/approval và live stale-lock acceptance; không triển khai force unlock tự động. |
 | 2026-09-19 | BS-06.4 Data integrity evidence | Đang làm | Thêm `build_integrity_evidence()` và API `/api/volumes/{pool}/inventory/{image}/integrity`; evidence được giới hạn theo volume/cluster, có health finding, PG scrub/deep-scrub freshness, checksum artifact, incident link và evidence gaps. Volume Detail có card integrity; repair luôn read-only và fail-closed khi thiếu dữ liệu. | `tests/test_block_storage_integrity.py` + dashboard/Ceph/Cinder focused suite: `278 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn live degraded/inconsistent PG acceptance, kiểm tra checksum artifact trên backend thật và runbook/approval cho repair; không tự repair production. |
 | 2026-09-19 | BS-06.5 Pool lifecycle inventory | Đang làm | Thêm `build_pool_lifecycle_inventory()` và API `/api/volumes/{pool}/pool-lifecycle`; mở rộng pool overview với application metadata, quota, PG autoscaler và target size. UI hiển thị capability, dependency count và guard: pool non-empty không được xóa trực tiếp, mutation vẫn disabled/read-only. | `tests/test_block_storage_pool_lifecycle.py` + dashboard/Ceph/Block Storage focused suite: `289 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn preflight và Worker/approval cho create/configure/delete, release capability detection, live pool lifecycle acceptance; chưa có thao tác ghi. |
+| 2026-09-23 | BS-02.4 Cross-pool snapshot copy | Đang làm | Thêm API/UI đề xuất copy snapshot RBD sang pool khác; preflight snapshot tồn tại, pool RBD/capacity, tên đích và Cinder guard. Action `rbd_copy_volume` luôn RISKY/PENDING_APPROVAL; Worker chạy `rbd cp` và hậu kiểm tên/dung lượng; nguồn luôn được giữ nguyên, chưa gọi là move. | `tests/test_dashboard_volumes.py tests/test_commands.py tests/test_rbd_reconciliation.py`: `295 passed, 1 warning`; `py_compile`, `node --check`, `git diff --check`; Dashboard/Worker container healthy sau reload. | Còn move có xác minh rồi mới xóa nguồn, progress/resume/cleanup/checksum byte-level và live acceptance; không tự xóa nguồn. |
+| 2026-09-23 | BS-04.4 Replication evidence | Đang làm | Mở rộng endpoint/UI replication read-only để chuẩn hóa peer count/state và lag/RPO ước tính từ `last_update`; thiếu timestamp trả `insufficient_evidence`. API công khai `mutation_supported=false`, `failover_supported=false`, `fencing_configured=false`; không có peer setup/promote/failover từ Dashboard. | Regression replication `3 passed`; full nhóm Volume/commands/reconciliation `295 passed, 1 warning`; test đã bao phủ UTC naive của hệ thống và timestamp có timezone từ Ceph. | Còn peer bootstrap, RPO policy/target, planned failover/failback, fencing và multi-site acceptance; cần runbook/operator approval trước mọi promote. |
 
 | 2026-09-18 | 0.4 Regression baseline | Hoàn thành phần test | Cập nhật test contract từ query `image=...` cũ sang deep-link `/volumes/{pool}/{image}` đang được UI sử dụng; không thay đổi hành vi production. | `.venv/bin/pytest -q tests/test_dashboard_block_storage.py tests/test_dashboard_volumes.py tests/test_rbd_reconciliation.py tests/test_volume_monitor.py tests/test_volume_perf.py tests/test_volume_perf_analysis.py tests/test_volume_snapshot_policy.py tests/test_volume_snapshot_scheduler.py tests/test_cinder_discovery.py tests/test_cinder_reconciliation.py`: `216 passed, 1 warning`. | Còn live Ceph audit và full repository/Alembic regression trước khi đóng toàn bộ mục 0.4. |
 ## Ghi chú bàn giao

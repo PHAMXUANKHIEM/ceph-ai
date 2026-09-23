@@ -13,6 +13,8 @@ finding đơn lẻ.
 - Với object version, luôn dùng preview rồi xác nhận đúng mã target; Object Lock,
   retention và Legal Hold không được bypass.
 - Một finding là evidence cần xác minh, không phải lệnh sửa tự động.
+- Nếu audit/metric/quota snapshot thiếu hoặc stale, giữ incident đang mở; chỉ
+  đánh dấu đã phục hồi sau khi cùng nguồn được thu thập lại và xác minh.
 
 ## 2. Kiểm tra nhanh
 
@@ -72,6 +74,8 @@ tương đương trong bước chẩn đoán.
   với snapshot stale.
 - Kiểm tra network và pool dependency trước khi cân nhắc resync; resync cần
   change/approval riêng.
+- Nếu panel ghi `stale_evidence`, lag và finding là dữ liệu lần trước, không
+  được dùng làm trạng thái hiện tại hoặc bằng chứng để failover.
 
 ### Shard error hoặc conflict
 
@@ -105,7 +109,27 @@ Delete bị từ chối khi Object Lock không xác định, retention còn hi�
 Legal Hold bật. Restore version thường tạo version mới; restore delete marker
 chỉ xóa marker đã chọn và không gỡ lock của version khác.
 
-## 6. Release acceptance
+## 6. Quy trình xử lý sự cố có kiểm soát
+
+1. Ghi incident ID, cluster ID, bucket/UID, thời điểm evidence và các gap.
+2. Kiểm tra lại cùng nguồn read-only, đối chiếu realm/zone/period và trạng thái
+   Object Lock trước khi chọn phương án. Không coi một lần timeout là recovery.
+3. Lập change ticket và lấy phê duyệt độc lập ngoài công cụ cho resync,
+   failover, thay topology, purge hoặc key rotation ảnh hưởng production.
+4. Với thao tác bucket/object đã được hỗ trợ, admin dùng preview, xác nhận
+   đúng target, thực thi và đối chiếu request ID trong Object Storage Audit.
+   Với multisite topology/resync, **chưa có Action/approval worker flow**:
+   không thực thi từ Dashboard; dùng runbook riêng được phê duyệt trên target
+   cô lập trước khi áp dụng production.
+5. Hậu kiểm đúng cluster/target, kiểm tra sync/lag, 4xx/5xx và khả năng đọc.
+   Nếu audit ghi lỗi sau tạo S3 key, endpoint cố thu hồi key mới; khi rollback
+   thất bại, coi key có thể còn hoạt động và kiểm tra RGW thủ công trước retry.
+
+Không tự đóng incident chỉ vì alert rule không còn thấy dữ liệu. Nguồn audit
+không có traffic cần heartbeat/collector health để xác nhận phục hồi; phần này
+vẫn là release gate chưa hoàn thành.
+
+## 7. Release acceptance
 
 Trước khi đóng incident hoặc release:
 

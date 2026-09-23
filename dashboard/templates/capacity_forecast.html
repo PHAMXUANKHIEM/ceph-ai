@@ -1,5 +1,5 @@
 <!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Capacity Forecast — Ceph AIOps</title><link rel="stylesheet" href="/static/style.css?v={{ static_version }}"></head><body>
+<title>Capacity Forecast — Ceph AIOps</title><link rel="stylesheet" href="/static/style.css?v={{ static_version }}"><link rel="stylesheet" href="/static/rbd_logical_forecast.css?v={{ static_version }}"></head><body>
 {% include "_nav.html" %}
 <main class="page"><section class="card"><div class="card-header"><h2>Dự báo dung lượng Ceph</h2><span class="hint">Evidence-based · read-only</span></div><div class="card-body">
 <form method="get"><label>Cụm <select name="cluster_id" onchange="this.form.submit()">{% for c in clusters %}<option value="{{ c.id }}" {% if c.id == cluster.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></label></form>
@@ -7,10 +7,25 @@
 {% else %}<div class="table-wrap"><table><thead><tr><th>Đối tượng</th><th>Hiện tại</th><th>Tăng/ngày</th><th>80%</th><th>90%</th><th>95%</th><th>Confidence</th><th>Dự báo cuối horizon</th><th>Backtest</th><th>Giải thích</th></tr></thead><tbody>
 {% for f in forecasts %}<tr><td><strong>{{ f.entity_type }}: {{ f.entity_name }}</strong><br><small class="muted">{{ f.forecast_method }}</small></td><td>{{ f.current_percent }}%</td><td>{{ f.growth_percent_per_day }}%</td><td>{{ f.thresholds['80'] or '—' }}</td><td>{{ f.thresholds['90'] or '—' }}</td><td>{{ f.thresholds['95'] or '—' }}</td><td>{{ (f.confidence * 100)|round(1) }}%<br><small class="muted">{{ f.confidence_interval['low'] }}–{{ f.confidence_interval['high'] }}%</small></td><td>{{ f.predicted_percent_at_horizon if f.predicted_percent_at_horizon is not none else '—' }}%</td><td>{% if f.backtest.get('status') == 'ready' %}MAE {{ f.backtest['mae'] }}<br>MAPE {{ f.backtest['mape'] or '—' }}%{% else %}Chưa đủ mẫu{% endif %}</td><td><details><summary>Xem</summary><ul>{% for line in f.risk_explanation %}<li>{{ line }}</li>{% endfor %}</ul><p>Thêm khoảng {{ (f.additional_bytes_at_95 / 1073741824)|round(1) }} GiB để giữ mục tiêu 80% tại mốc 95% raw.</p></details></td></tr>{% endfor %}
 </tbody></table></div>{% endif %}</div></section>
+<section class="card"><div class="card-header"><h2>RBD volume &amp; snapshot evidence</h2><span class="hint">Read-only · configured pools · hourly</span></div><div class="card-body">
+{% if not rbd_capacity.pools %}<p class="muted">Chưa có mẫu RBD. Bật <code>CEPH_AI_CAPACITY_RBD_ENRICHMENT_ENABLED=true</code> sau khi xác nhận chi phí quét <code>rbd du</code> của các pool đã cấu hình.</p>
+{% else %}<div class="table-wrap"><table><thead><tr><th>Pool</th><th>Volumes</th><th>Snapshots</th><th>Logical provisioned</th><th>RBD head used</th><th>Snapshot used</th><th>Growth/ngày</th><th>Evidence</th></tr></thead><tbody>
+{% for row in rbd_capacity.pools %}<tr><td>{{ row.pool }}</td><td>{{ row.image_count }}</td><td>{{ row.snapshot_count }}</td><td>{{ ((row.provisioned_bytes / 1073741824)|round(2)) }} GiB</td><td>{% if row.head_used_bytes is not none %}{{ (row.head_used_bytes / 1073741824)|round(2) }} GiB{% else %}Unknown{% endif %}</td><td>{% if row.snapshot_used_bytes is not none %}{{ (row.snapshot_used_bytes / 1073741824)|round(2) }} GiB{% else %}Unknown{% endif %}</td><td>{% if row.observed_growth %}{{ (row.observed_growth.provisioned_bytes_per_day / 1073741824)|round(2) }} GiB{% else %}—{% endif %}</td><td>{{ 'Stale' if row.stale else 'Fresh' }} · {{ row.captured_at }}</td></tr>{% endfor %}
+</tbody></table></div><p class="hint">Logical provisioned, RBD used và Ceph pool physical used là ba đại lượng khác nhau. Chỉ hiển thị growth quan sát được; không cộng trực tiếp với raw capacity.</p>{% endif %}
+</div></section>
+<section class="card" id="rbd-logical-chart" data-cluster-id="{{ cluster.id }}">
+  <div class="card-header"><h2>Xu hướng dung lượng RBD logic</h2><span class="hint">Tư vấn · không thay đổi cảnh báo physical/raw</span></div>
+  <div class="card-body">
+    <label>Pool / metric <select id="rbd-logical-series" aria-label="Chọn chuỗi RBD logic"></select></label>
+    <p id="rbd-logical-status" class="hint" role="status">Đang tải lịch sử RBD…</p>
+    <svg id="rbd-logical-svg" viewBox="0 0 640 220" role="img" aria-label="Biểu đồ lịch sử và dự báo RBD logic" hidden></svg>
+    <p class="hint">Đường liền: số liệu đã đo · đường đứt: dự báo 7 ngày · vùng mờ: khoảng dự báo. Không dùng biểu đồ này để suy ra dung lượng raw còn lại.</p>
+  </div>
+</section>
 <section class="card"><div class="card-header"><h2>Mô phỏng mất OSD / failure domain</h2><span class="hint">Read-only · không thay đổi CRUSH</span></div><div class="card-body">
 {% if failure_simulation.status != 'ready' %}<p class="muted">Chưa đủ CRUSH topology hoặc OSD distribution để mô phỏng.</p>{% else %}
 <p class="muted">Giả định: replica raw trên phần bị mất được rebuild sang OSD còn sống theo free space. Đây là mô phỏng capacity, không khẳng định pool <code>size/min_size</code> hay PG acting set vẫn bảo đảm data availability.</p>
 <div class="table-wrap"><table><thead><tr><th>Kịch bản</th><th>OSD mất</th><th>Cụm sau lỗi</th><th>OSD cao nhất</th><th>Ngưỡng</th><th>Cần thêm để về 80%</th><th>Pool nguy cơ</th></tr></thead><tbody>
 {% for s in failure_simulation.scenarios %}<tr><td><strong>{{ s.domain_type }}: {{ s.domain_name }}</strong></td><td>{{ s.lost_osd_ids|join(', ') }}</td><td>{{ s.cluster_projected_percent }}%</td><td>{{ s.max_osd_projected_percent }}%</td><td>{{ (s.highest_threshold|string + '%') if s.highest_threshold else 'An toàn' }}</td><td>{{ (s.additional_bytes_for_80_percent / 1073741824)|round(1) }} GiB</td><td>{% if s.pools_at_risk %}{{ s.pools_at_risk|map(attribute='pool')|join(', ') }}{% else %}—{% endif %}</td></tr>{% endfor %}
 </tbody></table></div><p class="hint">Nguồn: {{ failure_simulation['_citations'][0].source_id }} · {{ failure_simulation.captured_at }}; {{ failure_simulation['_citations'][1].source_id }} · {{ failure_simulation.distribution_at }}</p>{% endif %}
-</div></section></main><script src="/static/app.js?v={{ static_version }}"></script></body></html>
+</div></section></main><script src="/static/app.js?v={{ static_version }}"></script><script src="/static/rbd_logical_forecast.js?v={{ static_version }}"></script></body></html>

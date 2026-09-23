@@ -12,6 +12,49 @@ def _rows(count=31, slope=1.0):
     ) for i in range(count)]
 
 
+def test_capacity_alert_lifecycle_exposes_recovery_and_pending_delivery(monkeypatch):
+    class Query:
+        def filter_by(self, **_kwargs):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, _count):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(
+                    entity_type="pool", entity_name="images", current_threshold=0,
+                    notified_threshold=90, updated_at=datetime(2026, 1, 2),
+                    last_attempt_at=datetime(2026, 1, 2, 0, 1),
+                ),
+                SimpleNamespace(
+                    entity_type="cluster", entity_name="cluster", current_threshold=95,
+                    notified_threshold=90, updated_at=datetime(2026, 1, 3),
+                    last_attempt_at=None,
+                ),
+            ]
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def query(self, *_args):
+            return Query()
+
+    monkeypatch.setattr(subject.db, "SessionLocal", lambda: Session())
+    result = subject.capacity_alert_lifecycle("cluster-1")
+    assert result[0]["status"] == "RESOLVED"
+    assert result[0]["delivery_pending"] is True
+    assert result[1]["status"] == "OPEN"
+    assert result[1]["delivery_pending"] is True
+
+
 def test_forecast_requires_minimum_history(monkeypatch):
     monkeypatch.setattr(subject.settings, "capacity_forecast_min_samples", 30)
     monkeypatch.setattr(subject.settings, "capacity_forecast_min_history_days", 30)

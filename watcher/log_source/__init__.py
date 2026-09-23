@@ -36,6 +36,10 @@ def get_log_source(name: str):
         from watcher.log_source import loki
 
         return loki
+    if name == "elasticsearch":
+        from watcher.log_source import elasticsearch
+
+        return elasticsearch
     raise LogSourceError(
-        f"Nguồn log không hợp lệ: {name!r} (chỉ hỗ trợ 'ssh' hoặc 'loki')"
+        f"Nguồn log không hợp lệ: {name!r} (chỉ hỗ trợ 'ssh', 'loki' hoặc 'elasticsearch')"
     )

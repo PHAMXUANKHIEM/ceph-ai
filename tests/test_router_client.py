@@ -3739,6 +3739,33 @@ def test_diagnose_incident_allows_same_action_after_first_terminates(isolated_db
         assert session.query(Action).filter_by(incident_id="incident-seq-2").count() == 1
 
 
+def test_advisory_mode_blocks_safe_action_at_final_dispatch_boundary(isolated_db, monkeypatch):
+    monkeypatch.setenv("CEPH_AI_AUTOPILOT_MODE", "ADVISORY")
+    monkeypatch.setattr(settings, "autopilot_enabled", True)
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda *_args, **_kwargs: pytest.fail("advisory mode must block SSH execution"),
+    )
+    _create_incident("incident-advisory-dispatch")
+    with db_module.SessionLocal() as session:
+        action = Action(
+            incident_id="incident-advisory-dispatch", action_id="resync_ntp",
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.PENDING.value,
+        )
+        session.add(action)
+        session.commit()
+        action_pk = action.id
+
+    router_client._maybe_execute_safe_action(
+        "incident-advisory-dispatch", action_pk, "resync_ntp",
+        dict(ENVELOPE, incident_id="incident-advisory-dispatch"),
+    )
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, action_pk).status == ActionStatus.PENDING_APPROVAL.value
+        assert session.get(Incident, "incident-advisory-dispatch").status == IncidentStatus.PENDING_APPROVAL.value
+
+
 def test_maybe_execute_safe_action_refuses_destructive_hard_guard(isolated_db, monkeypatch):
     # Defense-in-depth: even if _maybe_execute_safe_action were somehow
     # called with a DESTRUCTIVE action_id, it must refuse to execute

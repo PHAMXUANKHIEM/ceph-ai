@@ -735,7 +735,7 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
             logger.exception("telegram_approval_bot: failed to edit message %s after decision", message_id)
 
 
-_UPDATE_OFFSET_FILE = Path("/var/lib/ceph-ai/telegram-update-offsets.json")
+_UPDATE_OFFSET_FILE = Path("/var/lib/ceph-ai/telegram-state/telegram-update-offsets.json")
 _update_offset_lock = threading.Lock()
 
 

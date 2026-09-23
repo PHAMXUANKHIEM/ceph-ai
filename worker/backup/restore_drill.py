@@ -31,10 +31,10 @@ from shared import db
 from shared.models import BackupJob
 from worker.backup import alerting
 from worker.backup import restore as restore_chain
-from worker.backup.cluster_scope import is_valid_rbd_name
-from worker.backup.policy_config import load_backup_policy
+from worker.backup.cluster_scope import first_mon_node, get_cluster, is_valid_rbd_name
+from worker.backup.policy_config import cluster_schedule_policy, load_backup_policy
 from worker.backup.ssh_io import read_all, read_chunk, wait_exit_status, write_chunk
-from worker.backup.storage.factory import get_backend
+from worker.backup.storage.factory import get_backend, get_backend_for_cluster
 from worker.executor.ssh_executor import ExecutorError, KNOWN_HOSTS_PATH, execute_command
 
 logger = logging.getLogger(__name__)
@@ -196,11 +196,13 @@ def _record_result(
     pool: str, image: str, success: bool, started_at: datetime, error_message: str | None,
     size_bytes: int = 0, backup_target_slot: str | None = None,
     recovery_point_job_id: str | None = None,
+    cluster_id: str | None = None,
 ) -> None:
     with db.SessionLocal() as session:
         session.add(
             BackupJob(
                 run_id=f"drill-{started_at.strftime('%Y%m%dT%H%M%SZ')}-{backup_target_slot or 'auto'}",
+                cluster_id=cluster_id,
                 pool=pool,
                 image=image,
                 job_type="restore_drill",
@@ -216,8 +218,57 @@ def _record_result(
         session.commit()
 
 
-def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *_unused) -> bool:
-    drill_config = load_backup_policy().get("restore_drill") or {}
+def _run_secondary_drill(action_pk: str, cluster_id: str, drill_config: dict, write_progress) -> bool:
+    """Restore only the selected cluster's backup to its own scratch image."""
+    cluster = get_cluster(cluster_id)
+    if cluster is None or not cluster.is_active or not cluster.backup_enabled:
+        logger.error("restore_drill: secondary cluster is missing or backup disabled")
+        return False
+    pool, image = drill_config["pool"], drill_config["image"]
+    scratch_pool, scratch_image = drill_config["scratch_pool"], drill_config["scratch_image"]
+    started_at = utc_now()
+    full, diffs = restore_chain._backup_chain(pool, image, cluster_id=cluster_id)
+    if full is None or full.backup_target_slot != "cluster":
+        _record_result(pool, image, False, started_at, "Missing verified cluster full backup",
+                       backup_target_slot="cluster", cluster_id=cluster_id)
+        return False
+    mon_ip = first_mon_node(cluster)
+    spec = f"{shlex.quote(scratch_pool)}/{shlex.quote(scratch_image)}"
+    try:
+        restore_chain._run_rbd_command(mon_ip, f"rbd info {spec} --format json", cluster)
+    except restore_chain.RestoreError as exc:
+        if not any(marker in str(exc).lower() for marker in ("exited 2", "not found", "no such")):
+            logger.error("restore_drill: cannot prove scratch absent: %s", exc)
+            return False
+    else:
+        logger.error("restore_drill: scratch %s already exists", spec)
+        return False
+    result = None
+    try:
+        backend = get_backend_for_cluster(cluster)
+        result = restore_chain.restore_image(
+            pool, image, backend, scratch_pool, scratch_image,
+            cluster_id=cluster_id, cleanup_new_destination_on_failure=True,
+        )
+        if not result.success:
+            raise RestoreDrillError(result.error_message or "restore chain failed")
+        restore_chain._run_rbd_command(mon_ip, f"rbd rm {spec}", cluster)
+        _record_result(pool, image, True, started_at, None, result.size_bytes,
+                       backup_target_slot="cluster", cluster_id=cluster_id)
+        write_progress(action_pk, [{"step": "restore_drill", "status": "done", "full_job_id": full.id,
+                                    "applied_diff_job_ids": result.applied_diff_job_ids}])
+        return True
+    except Exception as exc:
+        logger.exception("restore_drill: secondary cluster drill failed")
+        _record_result(pool, image, False, started_at, str(exc), result.size_bytes if result else 0,
+                       backup_target_slot="cluster", cluster_id=cluster_id)
+        alerting.send_alert("critical", f"RestoreDrill thất bại cho {pool}/{image}: {exc}", cluster=cluster)
+        return False
+
+
+def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *_unused,
+        cluster_id: str | None = None) -> bool:
+    drill_config = cluster_schedule_policy(load_backup_policy(), cluster_id).get("restore_drill") or {}
     pool = drill_config.get("pool")
     image = drill_config.get("image")
     scratch_pool = drill_config.get("scratch_pool")
@@ -228,6 +279,8 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
     if pool == scratch_pool and image == scratch_image:
         logger.error("restore_drill.run: source and scratch image must differ")
         return False
+    if cluster_id is not None:
+        return _run_secondary_drill(action_pk, cluster_id, drill_config, write_progress)
 
     started_at = utc_now()
     progress = [{"step": "restore_drill", "status": "running", "started_at": started_at.isoformat()}]

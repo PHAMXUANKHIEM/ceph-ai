@@ -1,0 +1,6 @@
+#rbd-logical-chart .card-body { display: grid; gap: 12px; }
+#rbd-logical-chart label { display: flex; align-items: center; gap: 10px; color: #94a3b8; }
+#rbd-logical-chart select { max-width: min(100%, 360px); background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 8px 12px; }
+#rbd-logical-svg { display: block; width: 100%; max-height: 300px; border: 1px solid #334155; border-radius: 8px; background: #0f172a; }
+#rbd-logical-svg[hidden] { display: none; }
+@media (max-width: 640px) { #rbd-logical-chart label { align-items: stretch; flex-direction: column; } }

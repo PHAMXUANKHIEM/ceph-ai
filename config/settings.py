@@ -1095,6 +1095,12 @@ class Settings(BaseSettings):
     # Optional multi-tenancy header (X-Scope-OrgID). Empty = single-tenant.
     log_intel_loki_tenant: str = ""
     log_intel_loki_timeout_seconds: int = 30
+    # Read-only Elasticsearch alternative. API key is configured through
+    # LOG_INTEL_ELASTICSEARCH_API_KEY in the environment, never in the UI.
+    log_intel_elasticsearch_url: str = ""
+    log_intel_elasticsearch_index: str = "ceph-logs-*"
+    log_intel_elasticsearch_api_key: str = ""
+    log_intel_elasticsearch_timeout_seconds: int = 30
 
 
 def refresh_cluster_settings_from_env() -> dict[str, str]:

@@ -281,21 +281,22 @@ malformed, missing field, scanner error. Expected result phải được assert 
 
 ### 3.5 F07 — Immutable artifact và deployment identity
 
-- [~] CI build/scan/SBOM và ghi digest đã có; push registry và bằng chứng cùng một
-  image vẫn pending.
-- [~] Deploy script nhận `CEPH_AI_IMAGE` + `CEPH_AI_EXPECTED_IMAGE_DIGEST`, từ chối
-  thiếu/mismatch image và kiểm tra digest các container sau rollout; production
-  registry execution và staging witness còn pending.
-- [ ] Bỏ source checkout bind mount khỏi production; frontend/backend phải bake
-  trong artifact.
-- [ ] Pin dependency transitives bằng lock/hashes và pin base image theo digest;
-  ghi toolchain version.
-- [ ] Thứ tự deploy: preflight → build/verify artifact → backup/rehearsal →
-  migration compatibility check → rollout → health/smoke; không nâng DB trước khi
-  biết artifact sẽ chạy được.
-- [ ] Có rollback theo app SHA, image digest, migration revision/config version;
-  migration downgrade chỉ dùng khi đã rehearsal, nếu không thì forward-compatible
-  recovery migration.
+- [~] CI build/scan/SBOM và push cùng image lên GHCR bằng tag SHA, lưu registry
+  manifest digest làm artifact; chưa chạy clean GitHub Actions với registry thật.
+- [~] Deploy script pull `CEPH_AI_IMAGE=ghcr.io/...@sha256:...`, kiểm tra label SHA
+  và image ID của container; chưa rehearsal staging/production.
+- [~] Bỏ source checkout bind mount khỏi runtime Compose, bake frontend/backend,
+  migration và runbook cần thiết vào image; Code Repair chuyển host supervisor
+  riêng, tắt auto push/deploy/promotion chờ pipeline artifact cho candidate.
+- [~] Có `requirements-prod.lock` với wheel hashes và pin base image theo digest;
+  direct apt package versions đã pin. Transitive OS packages vẫn phụ thuộc apt
+  repository hiện hành, cần snapshot repository và toolchain evidence.
+- [~] Thứ tự deploy: approved digest pull/label check → backup → migration
+  compatibility check chạy từ image → rollout → health/smoke; staging rehearsal
+  và PostgreSQL witness còn thiếu.
+- [~] Có rollback container-only về previous registry digest, bắt buộc operator
+  xác nhận schema compatible. Chưa có tự động đối chiếu migration/config version
+  và chưa có PostgreSQL restore/rollback rehearsal; tuyệt đối không auto-downgrade.
 
 **Acceptance:** digest CI bằng digest đang chạy; thay đổi checkout host không đổi
 runtime; rehearsal build failure/migration failure/rollback trên PostgreSQL staging
@@ -422,7 +423,7 @@ vì loss thấp hoặc unit test xanh.
 | 2026-09-23 | F04 reconciler | Worker periodically scans stale `NEW` incidents and pending/processing outbox rows; test `5 passed` | `shared/incident_outbox.py::reconcile_stale`, `worker/main.py`, `tests/test_incident_outbox.py` | Operator alert routing and RabbitMQ/DB chaos evidence remain pending |
 | 2026-09-23 | F05 integration gate | MQ integration job now runs on push/PR/workflow dispatch and is required by deploy; RabbitMQ URL is explicit | `.github/workflows/ci-cd.yml` | Clean GitHub Actions run and PostgreSQL integration evidence remain pending |
 | 2026-09-23 | F08 documentation slice | Added separate development and production deployment quickstarts; README now labels legacy SQLite guidance as lab-only | `docs/deployment/development.md`, `docs/deployment/production.md`, `README.md` | Release manifest generation, LICENSE/COPYING and operator sign-off remain pending |
-| 2026-09-23 | F07 deployment identity slice | Compose accepts `CEPH_AI_IMAGE`; deploy requires `CEPH_AI_EXPECTED_IMAGE_DIGEST` for pre-built images, validates it before migration and verifies every application container after rollout; local build path remains available for lab | `compose.yaml`, `scripts/deploy/restart_container_stack.sh`, `docs/deployment/production.md` | Registry pull/push, source-mount removal, dependency/base-image pinning and staging witness remain pending |
+| 2026-09-23 | F07 immutable production packaging slice | Removed application source bind mounts from runtime Compose; removed Code Repair from Compose and kept it in a host supervisor with push/deploy/promotion disabled. Added hashed Python lock, digest-pinned Python/apt inputs, runtime docs/migrations in image, GHCR push artifact, digest/commit checks, image-based migration, boot-time approved reference and explicit container rollback. Final local image build/import smoke passed; packaging/release tests 12/12. | `Dockerfile`, `requirements-prod.lock`, `compose.yaml`, `container-up`, `scripts/deploy/restart_container_stack.sh`, `scripts/deploy/run_migrations.sh`, `scripts/deploy/rollback_container_stack.sh`, `docs/immutable-production-release.md` | GHCR authentication/push-pull, clean GitHub Actions run, PostgreSQL staging rehearsal and witnessed rollback remain pending |
 | 2026-09-23 | F08 release manifest slice | Secret-free manifest binds commit, branch/clean state, one migration head, dependency hashes, image digest, test/JUnit, quality, pip-audit, scan, SBOM, config/rollback references and residual risk | `scripts/ci/release_manifest.py`, `tests/test_release_manifest.py`, `.github/workflows/ci-cd.yml`; focused release/security batch `63 passed` | GitHub Actions artifact and operator approval evidence remain pending |
 
 ## 9. Quy tắc cập nhật trạng thái

@@ -77,10 +77,11 @@ _DIRECT_DATA_DESTRUCTION_RE = re.compile(
     r"|(?:x[oó]a|xoá)\s+(?:pool|osd|volume|database|dữ\s+liệu|ổ\s+đĩa)\b"
     r")"
 )
-_FULL_RUN_STATE_PATH = Path("/var/lib/ceph-ai/telegram-single-full-runs.json")
-_MODE_STATE_PATH = Path("/var/lib/ceph-ai/telegram-chat-modes.json")
-_CLUSTER_STATE_PATH = Path("/var/lib/ceph-ai/telegram-chat-clusters.json")
-_CONFIRM_STATE_PATH = Path("/var/lib/ceph-ai/telegram-single-full-confirmations.json")
+_TELEGRAM_STATE_DIR = Path("/var/lib/ceph-ai/telegram-state")
+_FULL_RUN_STATE_PATH = _TELEGRAM_STATE_DIR / "telegram-single-full-runs.json"
+_MODE_STATE_PATH = _TELEGRAM_STATE_DIR / "telegram-chat-modes.json"
+_CLUSTER_STATE_PATH = _TELEGRAM_STATE_DIR / "telegram-chat-clusters.json"
+_CONFIRM_STATE_PATH = _TELEGRAM_STATE_DIR / "telegram-single-full-confirmations.json"
 _HELP_TEXT = (
     "Chatbox AI Telegram đã sẵn sàng.\n\n"
     "/model — Chọn 1 AI hoặc 2 AI\n"

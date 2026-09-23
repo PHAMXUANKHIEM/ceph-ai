@@ -10,7 +10,6 @@ __pycache__
 *.db
 *.log
 .deploy-backups
-docs
 Plan
 .codex-stage
 transfer

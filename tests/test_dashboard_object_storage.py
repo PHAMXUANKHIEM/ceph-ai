@@ -2,6 +2,7 @@ import dashboard.routes.object_storage as object_storage_route
 from datetime import datetime, timezone
 import json
 import bcrypt
+import pytest
 from types import SimpleNamespace
 from config.settings import settings
 from shared import db
@@ -1228,6 +1229,36 @@ def test_object_browser_default_page_fetches_only_one_probe_entry(monkeypatch):
     assert calls == [("10.0.0.1", "archive", "", 11)]
     assert len(result["items"]) == 10
     assert result["truncated"] is True
+
+
+def test_object_browser_can_continue_after_empty_bounded_filter_window(monkeypatch):
+    cluster = SimpleNamespace(id="browser-empty-window", is_default=True)
+    monkeypatch.setattr(object_storage_route, "_detail", lambda *_args: {"host": "rgw-test"})
+    monkeypatch.setattr(object_storage_route, "MAX_OBJECT_BROWSER_SCAN", 3)
+    calls = []
+
+    def objects(_host, _bucket, marker, _limit):
+        calls.append(marker)
+        if not marker:
+            return [{"name": f"other-{number}", "meta": {"size": 1}} for number in range(1, 4)]
+        return [{"name": "target-4", "meta": {"size": 2}}]
+
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_objects", objects)
+    first = object_storage_route._object_browser(cluster, "archive", "", "target", "", 10, "key", "asc")
+    assert first["items"] == []
+    assert first["truncated"] is True
+    assert first["next_marker"] == "other-3"
+    second = object_storage_route._object_browser(cluster, "archive", first["next_marker"], "target", "", 10, "key", "asc")
+    assert [item["key"] for item in second["items"]] == ["target-4"]
+    assert calls == ["", "other-3"]
+
+
+def test_object_browser_rejects_nonadvancing_rgW_marker(monkeypatch):
+    cluster = SimpleNamespace(id="browser-marker-loop", is_default=True)
+    monkeypatch.setattr(object_storage_route, "_detail", lambda *_args: {"host": "rgw-test"})
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_objects", lambda *_args: [{"name": "same"}])
+    with pytest.raises(object_storage_route.ObjectStorageError, match="marker object không tiến"):
+        object_storage_route._object_browser(cluster, "archive", "same", "", "", 10, "key", "asc")
 
 
 def test_object_browser_lists_bounded_metadata_and_continuation_marker(dashboard_client, monkeypatch):

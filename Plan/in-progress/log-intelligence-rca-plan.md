@@ -5,7 +5,7 @@
 > không phải một roadmap song song. Mọi nguyên tắc ở mục 3 của roadmap gốc
 > (evidence, version-aware, an toàn thực thi) áp dụng nguyên vẹn ở đây.
 
-Ngày lập: 2026-08-18. Trạng thái: **L0–L4 + L6 đã triển khai (19/08); còn L5 (adapter Loki chạy thật) chờ hạ tầng đội RCA.**
+Ngày lập: 2026-08-18. Cập nhật 2026-09-23: **L0–L6 đã có trong mã nguồn**; Loki đã chạy production theo runbook. Elasticsearch là nguồn đọc thay thế, chỉ kích hoạt nếu đội vận hành đã có ELK. Cần kiểm chứng tích hợp trên index thật trước khi chuyển nguồn.
 
 Runbook vận hành: `docs/runbook-log-intelligence.md`.
 
@@ -331,7 +331,7 @@ Mỗi bước tự nó có giá trị, dừng ở đâu cũng không để lại
 | ✅ **L2** | T4 phân tích AI: schema đóng, redaction, server validate | Có `root_cause_hypothesis` thật sự | **Xong 18/08** |
 | ✅ **L3** | T5 cảnh báo Telegram + vòng đời OPEN/RESOLVED | Vận hành biết sớm, không phải ngồi canh | **Xong 19/08** |
 | ✅ **L4** | Dashboard `/log-intelligence` + tạo Incident/Action advisory | Khép vòng vào pipeline duyệt đang có | **Xong 19/08** |
-| **L5** | Adapter `loki`/`elasticsearch` (khi RCA chốt hạ tầng) | Tương quan đa node/đa thời gian thật sự | 2–3 ngày |
+| ✅ **L5 (code)** | Adapter `loki` (đã chạy production) và `elasticsearch` (read-only, chờ index thật); hợp đồng shipper và quyền sở hữu ở mục 11 | Tương quan đa node/đa thời gian | Cần nghiệm thu ES trên hạ tầng thật trước khi chọn |
 | ✅ **L6** | Kiểm thử đầy đủ theo mục 9 + tài liệu vận hành | Đủ điều kiện đánh `[x]` trong roadmap | **Xong 19/08** |
 
 **Khuyến nghị**: làm L0→L1 trước và demo cho sếp/đội RCA. Hai bước này **không
@@ -439,14 +439,19 @@ thuật ở trên. Tầng T2–T5 không đổi trong cả hai trường hợp (
 > tại sao Ceph sập. Dùng đĩa local của node Loki, hoặc một kho object tách biệt
 > hẳn khỏi cụm Ceph production.
 
-### 11.2 Câu hỏi còn lại
+### 11.2 Phân vai vận hành và điều kiện nghiệm thu
 
-Ba câu hỏi phải hỏi đội RCA/lãnh đạo, **trả lời xong mới làm L5**:
+Quyết định kỹ thuật cho đường ingest:
+
+- **Đội vận hành/RCA sở hữu shipper và kho log**: triển khai agent trên node Ceph, cấu hình nhãn/field, index hoặc Loki stream, retention, backup và giám sát độ trễ shipper. Không để kho log phụ thuộc vào cụm Ceph đang giám sát.
+- **Ceph AI sở hữu adapter đọc và T2–T5**: truy vấn read-only có giới hạn, kiểm tra nhãn cụm/node/daemon, hiển thị `PARTIAL/FAILED` khi thiếu dữ liệu, fingerprint, triage và cảnh báo. Không cài agent và không ghi log thô vào database ứng dụng.
+- **Operator chọn nguồn** `ssh` (fallback), `loki` (ưu tiên) hoặc `elasticsearch` (khi ELK đã tồn tại); chỉ một nguồn được dùng mỗi lần quét. Chuyển nguồn cần kiểm tra index/stream, độ trễ, quyền đọc, và so sánh số dòng với SSH trong 24 giờ trước khi bật AI.
+
+Những điểm cần xác nhận với người quản lý hệ thống trước nghiệm thu production:
 
 1. ~~**Kho log dùng gì?**~~ → đã chốt Loki, xem 11.1. Vẫn cần xác nhận đội RCA
    không đang chạy sẵn ELK cho hệ thống khác (điều kiện lật ngược ở trên).
-2. **Ai sở hữu việc ship log?** ceph-aiops chỉ **đọc** (khuyến nghị), hay phải
-   tự cài agent lên node Ceph? Nếu RCA đã có agent thì ceph-aiops không đụng vào.
+2. **Tên nhóm/người trực cụ thể** chịu trách nhiệm shipper và kho log tại môi trường triển khai; phân vai trên là hợp đồng kỹ thuật, không tự gán quyền vận hành cho cá nhân.
 3. **Kết quả phân tích chảy về đâu?** Quay lại làm input cho AI chẩn đoán sự cố
    (tăng chất lượng remediation), hay chỉ là báo cáo độc lập cho RCA?
 
