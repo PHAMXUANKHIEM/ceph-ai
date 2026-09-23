@@ -36,6 +36,7 @@ from shared.object_storage_cache import (
     invalidate as invalidate_object_storage_cache,
     state as cache_state,
 )
+from shared.ceph_query_cache import get_cached as get_persisted_bucket, store as store_persisted_bucket, invalidate as invalidate_persisted_bucket
 from dashboard.cluster_scope import cluster_connection
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
@@ -90,6 +91,7 @@ RGW_AUDIT_TTL_SECONDS = 60
 RGW_AUDIT_STALE_TTL_SECONDS = 300
 BUCKET_ACTIVITY_TTL_SECONDS = 30
 BUCKET_ACTIVITY_STALE_TTL_SECONDS = 300
+BUCKET_METADATA_SNAPSHOT_MAX_AGE_SECONDS = 86400
 BUCKET_DETAIL_TTL_SECONDS = 30
 BUCKET_DETAIL_STALE_TTL_SECONDS = 300
 MAX_LIFECYCLE_SCAN = 1000
@@ -315,12 +317,33 @@ def _bucket_audit_start(cluster_id: str, actor: str, payload: dict) -> str:
         return row.id
 
 
+def _bucket_metadata_key(cluster_id: str, name: str) -> str:
+    return f"{cluster_id}:{name}"
+
+
+def _persisted_bucket_summary(cluster, name: str) -> dict | None:
+    if not name or _uses_mocked_rgw_client():
+        return None
+    try:
+        cached = get_persisted_bucket(
+            "bucket-metadata", _bucket_metadata_key(cluster.id, name),
+            max_age_seconds=BUCKET_METADATA_SNAPSHOT_MAX_AGE_SECONDS,
+        )
+        if cached is not None and isinstance(cached[0], dict) and cached[0].get("stats_available"):
+            return {**cached[0], "stats_stale": True}
+    except Exception:
+        logger.exception("Bucket metadata snapshot read failed for cluster %s", cluster.id)
+    return None
+
+
 def _bucket_audit_finish(audit_id: str, result: str, error: str | None = None) -> None:
     cluster_id = None
+    target_name = None
     with db.SessionLocal() as session:
         row = session.get(ObjectStorageAuditEntry, audit_id)
         if row:
             cluster_id = row.cluster_id
+            target_name = row.target_id if row.target_type == "bucket" else None
             row.result = result
             row.error_message = error
             row.completed_at = utc_now()
@@ -331,6 +354,11 @@ def _bucket_audit_finish(audit_id: str, result: str, error: str | None = None) -
         invalidate_object_storage_cache(cluster_id, "bucket-list")
         invalidate_object_storage_cache(cluster_id, "bucket-activity")
         invalidate_object_storage_cache(cluster_id, "bucket-detail")
+        if target_name:
+            try:
+                invalidate_persisted_bucket("bucket-metadata", _bucket_metadata_key(cluster_id, target_name))
+            except Exception:
+                logger.exception("Bucket metadata snapshot invalidation failed for cluster %s", cluster_id)
 
 
 def _start_governance_audit(
@@ -1057,6 +1085,13 @@ def _load_bucket_summary(cluster, host: str, name: str) -> dict:
         result["creation_time"] = to_utc_iso(created_at) if created_at else None
         result["size"] = _format_bytes(result.get("size_bytes"))
         result["quota_size"] = _format_bytes(result.get("quota_max_size_bytes"))
+        if not _uses_mocked_rgw_client():
+            try:
+                store_persisted_bucket(
+                    "bucket-metadata", _bucket_metadata_key(cluster.id, name), {**result, "host": host},
+                )
+            except Exception:
+                logger.exception("Bucket metadata snapshot write failed for cluster %s", cluster.id)
         return result
     except RgwLogError as exc:
         # A bucket may be removed just after the list query, or one stats call
@@ -1337,6 +1372,15 @@ def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: Qu
     )
     if isinstance(result, dict):
         result = dict(result)
+        if not _uses_mocked_rgw_client():
+            result["items"] = [
+                ({**row, **snapshot, "stats_pending": False} if snapshot is not None else row)
+                for row in result.get("items", [])
+                for snapshot in [
+                    _persisted_bucket_summary(cluster, row.get("name", ""))
+                    if row.get("stats_pending") else None
+                ]
+            ]
         snapshot_available = bool(result.get("snapshot_available"))
         if not result.get("rgw_endpoints"):
             result["rgw_endpoints"] = [
@@ -1407,8 +1451,10 @@ def _cached_detail(cluster, name: str) -> dict:
         ttl_seconds=BUCKET_DETAIL_TTL_SECONDS,
         stale_ttl_seconds=BUCKET_DETAIL_STALE_TTL_SECONDS,
         background_on_miss=True,
-        fallback={"loading": True, "name": bucket_name},
+        fallback=_persisted_bucket_summary(cluster, bucket_name) or {"loading": True, "name": bucket_name},
     )
+    if result.get("load_error"):
+        return _persisted_bucket_summary(cluster, bucket_name) or dict(result)
     return dict(result)
 
 
