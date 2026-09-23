@@ -23,9 +23,13 @@ Lộ trình để AI học từ các remediation đã xác minh và tăng dần 
 nằm tại
 [`docs/ceph-autonomous-operations-roadmap.md`](docs/ceph-autonomous-operations-roadmap.md).
 
-Tài liệu này hướng dẫn chạy toàn bộ hệ thống trên **một máy mới** (không
-phải máy đang chạy sẵn) — ví dụ khi chuyển sang server khác hoặc set up
-môi trường dev.
+Tài liệu cũ bên dưới là hướng dẫn **development/lab** trên một máy mới. Nó
+không phải mô hình production. Production phải dùng PostgreSQL, RabbitMQ,
+backup trước migration, image đã kiểm tra và các gate trong
+[`docs/deployment/production.md`](docs/deployment/production.md).
+
+Quickstart development riêng được mô tả tại
+[`docs/deployment/development.md`](docs/deployment/development.md).
 
 ## Kiến trúc tổng quan
 

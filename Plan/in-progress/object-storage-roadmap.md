@@ -268,7 +268,7 @@ toàn bộ object list vào memory hoặc làm lộ credential S3.
 **Hoàn thành khi:** cảnh báo chỉ gửi khi transition thật, có link về đúng bucket
 và cluster, không spam khi metric nguồn gián đoạn.
 
-### 6. RGW và Multi-site Health — ưu tiên P2
+### 6. RGW và Multi-site Health — ưu tiên P2 `[~]`
 
 - [~] **6.1 RGW service overview**: đã có evidence collector và panel Bucket
   Overview hiển thị daemon count/status, endpoint, frontend config, sync state
@@ -281,26 +281,35 @@ và cluster, không spam khi metric nguồn gián đoạn.
   đã được chuẩn hóa qua API/panel, hiển thị findings/evidence gaps và hướng
   dẫn kiểm tra tiếp theo; không tự sửa topology. Runbook nền tảng đã có tại
   `docs/runbook-rgw-object-storage.md`; vẫn cần kiểm chứng failover thật.
-- [ ] **6.4 Controlled remediation (chỉ sau khi có policy riêng)**: action đóng,
+- [~] **6.4 Controlled remediation (chỉ sau khi có policy riêng)**: các luồng
+  per-bucket hiện có preview/execute, admin RBAC, strong confirmation, capability
+  re-check và audit; endpoint global purge legacy đã fail-closed, còn thiếu
+  Action/approval worker flow cho remediation RGW chuyên biệt.
   preview, approval và audit; không mở shell tùy ý.
 - [ ] **6.5 Test**: topology missing, failover state, timeout và action guard.
 
 **Hoàn thành khi:** trạng thái RGW/multi-site có thể quan sát được mà không làm
 thay đổi topology hay replication ngoài ý muốn.
 
-### 7. Hardening, Documentation và phát hành — ưu tiên P0 cho từng pha
+### 7. Hardening, Documentation và phát hành — ưu tiên P0 cho từng pha `[~]`
 
-- [ ] **7.1 RBAC/capability review** cho mọi API mới; thêm CSRF và rate limit
+- [~] **7.1 RBAC/capability review** cho mọi API mới; các mutation bucket/user đã
+  admin-only, capability-gated, confirmation/audit; còn review live toàn bộ
+  route và rate-limit acceptance.
   nếu route ghi chưa được framework bao phủ.
-- [ ] **7.2 Audit viewer**: actor, cluster, target, preview/diff, result,
+- [x] **7.2 Audit viewer**: actor, cluster, target, preview/diff, result,
   request id; có redaction và retention policy.
 - [~] **7.3 Runbook**: đã thêm `docs/runbook-rgw-object-storage.md` cho cấu
   hình/evidence RGW, credential handling, Object Lock, multisite lag/conflict,
   capacity dependency và release acceptance; còn cần bổ sung procedure
   failover/rollback theo topology thật.
-- [ ] **7.4 Test matrix/release gate**: default cluster, secondary active,
+- [~] **7.4 Test matrix/release gate**: đã có regression default/secondary và
+  mixed-version capability fail-closed; inactive/RGW unavailable live gate còn
+  chờ fixture/cluster acceptance.
   secondary inactive, RGW unavailable, empty cluster, operator và admin.
-- [ ] **7.5 Cập nhật navigation, API docs và tài liệu này** trước khi đóng từng
+- [~] **7.5 Cập nhật navigation, API docs và tài liệu này**: thêm Audit Viewer
+  vào navigation và runbook `docs/runbook-storage-phase5.md`; OpenAPI tự phản ánh
+  các route mới, còn cần review release manifest.
   pha.
 
 ## Thứ tự thực hiện được khuyến nghị

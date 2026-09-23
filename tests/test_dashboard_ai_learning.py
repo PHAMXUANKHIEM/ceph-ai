@@ -22,6 +22,14 @@ from shared.models import (
 
 
 NOW = datetime(2026, 8, 25, 3, 0)
+def test_interval_chart_normalizes_current_prediction_and_bounds():
+    chart = ai_learning_route._interval_chart(20.0, 30.0, 25.0, 35.0)
+
+    assert chart is not None
+    assert 0 <= chart["low"] < chart["high"] <= 100
+    assert abs(chart["width"] - (chart["high"] - chart["low"])) < 0.001
+    assert chart["current"] < chart["predicted"]
+    assert ai_learning_route._interval_chart(20.0, 30.0, None, 35.0) is None
 
 
 def _login(client):

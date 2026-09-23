@@ -29,6 +29,31 @@ from shared.models import (
 def _average(values: list[float | None]) -> float | None:
     usable = [float(value) for value in values if value is not None]
     return round(sum(usable) / len(usable), 6) if usable else None
+def _forecast_freshness(
+    session,
+    *,
+    cluster_name: str,
+    host: str,
+    metric: str,
+    now: datetime | None = None,
+) -> dict:
+    latest = session.query(NodeResourceForecastRun).filter(
+        NodeResourceForecastRun.cluster_name == cluster_name,
+        NodeResourceForecastRun.host == host,
+        NodeResourceForecastRun.metric == metric,
+    ).order_by(NodeResourceForecastRun.predicted_at.desc()).first()
+    if latest is None:
+        return {"status": "NO_DATA", "age_seconds": None, "max_age_seconds": None, "observed_at": None}
+    reference = now or utc_now()
+    age_seconds = max(0.0, (reference - latest.predicted_at).total_seconds())
+    max_age_seconds = max(300, int(settings.node_health_scan_interval_seconds) * 2)
+    return {
+        "status": "FRESH" if age_seconds <= max_age_seconds else "STALE",
+        "age_seconds": round(age_seconds, 1),
+
+        "max_age_seconds": max_age_seconds,
+        "observed_at": latest.predicted_at.isoformat() if latest.predicted_at else None,
+    }
 
 
 def _node_scope_metrics(
@@ -42,6 +67,7 @@ def _node_scope_metrics(
         NodeResourceForecastRun.created_at >= since,
     ).all()
     quality_rows = [row for row in runs if row.status in {"DATA_QUALITY", "UNMEASURABLE"}]
+    freshness = _forecast_freshness(session, cluster_name=cluster_name, host=host, metric=metric)
     transitions = session.query(NodeResourceForecastTransition).join(
         NodeResourceForecastAlert,
         NodeResourceForecastAlert.id == NodeResourceForecastTransition.alert_id,
@@ -98,6 +124,7 @@ def _node_scope_metrics(
     return {
         "scope_type": "NODE_RESOURCE",
         "scope_key": scope_key,
+        "freshness": freshness,
         "raw_forecast_runs": len(runs),
         "data_quality_rate": round(len(quality_rows) / len(runs), 6) if runs else None,
         "alert_volume": len(signal_transitions),
@@ -226,16 +253,36 @@ def build_canary_report(
             "operational_metrics": metrics,
         })
 
+    configured_host = str(settings.online_learning_canary_host or "").strip()
+    configured_metric = str(settings.online_learning_canary_metrics or "cpu").split(",")[0].strip().lower()
+    configured_freshness = _forecast_freshness(
+        session, cluster_name=cluster_name, host=configured_host, metric=configured_metric,
+    ) if configured_host else {"status": "NO_DATA", "age_seconds": None, "max_age_seconds": None, "observed_at": None}
+    configured_scope_matches = str(settings.online_learning_canary_cluster_id or "").strip() == str(cluster_id) and configured_host != ""
+    candidate_evidence_ready = any(
+        scope["candidate_model"]["status"] in {"CANDIDATE", "SHADOW"}
+        and scope["comparison"]["evaluation_count"] >= policy.minimum_outcomes
+        for scope in scopes
+    )
     runtime = evaluate_learning_runtime(
         session,
         cluster_id,
         host=(settings.online_learning_canary_host or None),
         metric=(settings.online_learning_canary_metrics or "cpu").split(",")[0].strip(),
     ).as_dict()
+    ready_for_operator_acceptance = bool(
+        configured_scope_matches
+        and settings.online_learning_canary_enabled
+        and configured_freshness["status"] == "FRESH"
+        and candidate_evidence_ready
+    )
     return {
         "read_only": True,
         "cluster_id": cluster_id,
         "cluster_name": cluster_name,
+        "canary_scope": {"cluster_id": settings.online_learning_canary_cluster_id, "host": configured_host, "metric": configured_metric},
+        "canary_freshness": configured_freshness,
+        "ready_for_operator_acceptance": ready_for_operator_acceptance,
         "since": since,
         "scopes": scopes,
         "candidate_count": len(scopes),

@@ -154,3 +154,21 @@ def test_dashboard_health_api_maps_flat_watcher_health_status(dashboard_client):
 
     assert body["health"] == "WARN"
     assert body["health_available"] is True
+
+
+def test_new_critical_health_overrides_old_status_section(dashboard_client):
+    from shared.cluster_snapshot import publish_section_snapshot
+
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    cluster_id = _default_cluster_id()
+    publish_section_snapshot(
+        cluster_id,
+        "status",
+        {"health": {"status": "HEALTH_WARN"}, "osdmap": {"num_osds": 3, "num_up_osds": 3}},
+    )
+    publish_snapshot(cluster_id, {"health": {"status": "HEALTH_ERR", "checks": {}}})
+
+    body = dashboard_client.get(f"/api/dashboard/health?cluster={cluster_id}").json()
+
+    assert body["health"] == "ERR"
+    assert body["osds"] == {"up": 3, "total": 3}

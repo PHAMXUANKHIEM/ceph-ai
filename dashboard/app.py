@@ -1,4 +1,5 @@
 import asyncio
+import bcrypt
 import html
 import ipaddress
 import json
@@ -37,6 +38,7 @@ from dashboard.routes import (
     bucket_access_log,
     object_storage,
     object_storage_users,
+    storage_audit,
     capability_matrix as capability_matrix_routes,
     capacity_forecast as capacity_forecast_routes,
     disk_risk as disk_risk_routes,
@@ -89,6 +91,9 @@ _CSRF_COOKIE_NAME = "ceph_ai_csrf"
 _UNSAFE_METHODS = frozenset(("POST", "PUT", "PATCH", "DELETE"))
 _SESSION_COOKIE_MAX_AGE = 14 * 24 * 60 * 60
 _SESSION_COOKIE_SAMESITE = "lax"
+_VALID_ENVIRONMENTS = {"development", "test", "staging", "production", "lab"}
+_MIN_SESSION_SECRET_BYTES = 32
+_BCRYPT_HASH_RE = re.compile(r"\$(?:2a|2b|2y)\$(?:0[4-9]|[12][0-9]|3[01])\$[./A-Za-z0-9]{53}\Z")
 install_logging_redaction()
 
 
@@ -109,12 +114,11 @@ class _CachedStaticFiles(StaticFiles):
 
 
 def _warn_if_using_dev_defaults() -> None:
-    if settings.ceph_ai_environment == "production":
-        errors = []
-        if settings.dashboard_password_hash == DEFAULT_DASHBOARD_PASSWORD_HASH:
-            errors.append("DASHBOARD_PASSWORD_HASH is still the dev default")
-        if settings.session_secret_key == DEFAULT_SESSION_SECRET_KEY:
-            errors.append("SESSION_SECRET_KEY is still the dev default")
+    environment = settings.ceph_ai_environment
+    if environment not in _VALID_ENVIRONMENTS:
+        raise RuntimeError("Unsupported CEPH_AI_ENVIRONMENT; choose a supported deployment profile")
+    if environment == "production":
+        errors = _production_security_errors()
         if not _configured_values(settings.dashboard_trusted_hosts):
             errors.append("DASHBOARD_TRUSTED_HOSTS is not configured")
         if not _configured_values(settings.dashboard_allowed_origins):
@@ -138,6 +142,42 @@ def _warn_if_using_dev_defaults() -> None:
             "Dashboard is using the DEFAULT dev-only SESSION_SECRET_KEY. "
             "Set a real random value before exposing this beyond localhost."
         )
+
+
+def _is_valid_bcrypt_hash(raw: object) -> bool:
+    """Validate bcrypt structure without knowing or logging the password."""
+    value = str(raw or "").strip()
+    if not _BCRYPT_HASH_RE.fullmatch(value):
+        return False
+    try:
+        # bcrypt parses the complete salt/hash and returns False for a wrong
+        # password. A non-exception therefore means the hash structure is
+        # valid; the password result is intentionally irrelevant here.
+        bcrypt.checkpw(b"", value.encode("ascii"))
+        return True
+    except (UnicodeEncodeError, TypeError, ValueError):
+        return False
+
+
+def _production_security_errors() -> list[str]:
+    """Return safe, non-secret production configuration errors."""
+    errors: list[str] = []
+    password_hash = str(settings.dashboard_password_hash or "").strip()
+    session_secret = str(settings.session_secret_key or "")
+    username = str(settings.dashboard_username or "").strip()
+    if not username:
+        errors.append("DASHBOARD_USERNAME is empty")
+    if not password_hash or password_hash == DEFAULT_DASHBOARD_PASSWORD_HASH:
+        errors.append("DASHBOARD_PASSWORD_HASH is empty or still the dev default")
+    elif not _is_valid_bcrypt_hash(password_hash):
+        errors.append("DASHBOARD_PASSWORD_HASH is not a valid bcrypt hash")
+    if not session_secret.strip() or session_secret == DEFAULT_SESSION_SECRET_KEY:
+        errors.append("SESSION_SECRET_KEY is empty or still the dev default")
+    elif len(session_secret.encode("utf-8")) < _MIN_SESSION_SECRET_BYTES:
+        errors.append(
+            f"SESSION_SECRET_KEY must contain at least {_MIN_SESSION_SECRET_BYTES} bytes"
+        )
+    return errors
 
 
 def _configured_values(raw: str) -> tuple[str, ...]:
@@ -582,6 +622,7 @@ def create_app() -> FastAPI:
     application.include_router(bucket_access_log.router)
     application.include_router(object_storage.router)
     application.include_router(object_storage_users.router)
+    application.include_router(storage_audit.router)
     application.include_router(telegram_alerts.router)
     application.include_router(crush_map.router)
     application.include_router(capability_matrix_routes.router)

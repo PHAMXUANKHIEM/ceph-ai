@@ -11,7 +11,7 @@ from dashboard.cluster_scope import cluster_connection, cluster_selection
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from shared.object_storage_cache import get_or_load, is_refreshing as cache_is_refreshing
+from shared.object_storage_cache import get_or_load, state as cache_state
 from shared.ceph_query_cache import get_cached as get_persisted_cache, store as store_persisted_cache
 from watcher.ceph_client import (
     CephQueryError,
@@ -94,7 +94,7 @@ def _persistent_block_storage_fallback(cluster) -> BlockStorageInventory:
         cached = get_persisted_cache(
             "block-storage",
             _block_storage_cache_key(cluster),
-            max_age_seconds=BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS,
+            max_age_seconds=None,
         )
     except Exception:
         logger.exception("Block Storage persistent cache read failed for cluster %s", cluster.id)
@@ -391,6 +391,7 @@ async def block_storage_page(
         )
         cache_key = f"{cache_key}:mock:{marker}"
     cache_loading = False
+    cache_error = False
     inventory_summary = _inventory_summary([])
     try:
         images = await asyncio.to_thread(
@@ -403,7 +404,9 @@ async def block_storage_page(
             background_on_miss=not _uses_mocked_ceph_client(),
             fallback=_persistent_block_storage_fallback(cluster),
         )
-        cache_loading = cache_is_refreshing("block-storage", cache_key)
+        cache_status = cache_state("block-storage", cache_key)
+        cache_loading = bool(cache_status["refreshing"])
+        cache_error = bool(cache_status["error"])
         total_images = len(images)
         inventory_summary = _inventory_summary(list(images))
         create_pools = list(getattr(images, "pools", ())) or sorted({
@@ -428,6 +431,7 @@ async def block_storage_page(
         "total_pages": total_pages,
         "create_pools": create_pools,
         "error": error,
+        "cache_error": cache_error,
         "cache_loading": cache_loading,
         "inventory_summary": inventory_summary,
     })

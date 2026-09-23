@@ -13,7 +13,7 @@ import { useClusterSnapshotEvents, type SnapshotEvent } from "../useClusterSnaps
 import { getSnapshotState, SNAPSHOT_STATE_LABEL } from "../snapshotState";
 
 type StatusDatum = { title: string; value: string; subtitle: string; icon: LucideIcon; meter?: number | null };
-type DashboardHealth = {
+export type DashboardHealth = {
   health: string;
   osds: { up: number | null; total: number | null };
   mons: { up: number | null; total: number | null };
@@ -73,16 +73,21 @@ const formatErrorValue = (value: unknown) => {
   return "Lỗi thu thập dữ liệu";
 };
 
-export function CephDashboard() {
-  const [health, setHealth] = useState<DashboardHealth>(emptyHealth);
+export function CephDashboard({ initialHealth }: { initialHealth?: DashboardHealth }) {
+  const [health, setHealth] = useState<DashboardHealth>(initialHealth ?? emptyHealth);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [refreshPending, setRefreshPending] = useState(false);
   const [dismissedIssue, setDismissedIssue] = useState<string | null>(null);
   const [realtimeError, setRealtimeError] = useState<string | null>(null);
   const [actionState, setActionState] = useState<string | null>(null);
-  const selectedCluster = new URLSearchParams(window.location.search).get("cluster") || "";
-  const clusterName = document.getElementById("ceph-dashboard-root")?.getAttribute("data-cluster-name") || selectedCluster || "Cluster";
+  const dashboardRoot = document.getElementById("ceph-dashboard-root");
+  // The server-rendered page already resolved the selected cluster. Reuse it
+  // for the default-cluster case as well; relying only on ?cluster= disabled
+  // the WebSocket whenever the operator was viewing the default cluster.
+  const selectedCluster = new URLSearchParams(window.location.search).get("cluster")
+    || dashboardRoot?.getAttribute("data-cluster-id") || "";
+  const clusterName = dashboardRoot?.getAttribute("data-cluster-name") || selectedCluster || "Cluster";
   const handleRealtimeEvent = useCallback((event: SnapshotEvent) => {
     if (event.event === "snapshot_refresh_failed") {
       const action = event.action_id ? ` (action ${event.action_id})` : "";

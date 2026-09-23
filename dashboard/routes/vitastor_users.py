@@ -85,6 +85,7 @@ async def toggle_active(request: Request, user_id: str, user: str = Depends(requ
             error = "Không thể tự vô hiệu hoá tài khoản đang đăng nhập."
         else:
             target.is_active = not target.is_active
+            target.session_version += 1
             session.commit()
     return templates.TemplateResponse(request, "vitastor/users.html", _context(user, error=error))
 

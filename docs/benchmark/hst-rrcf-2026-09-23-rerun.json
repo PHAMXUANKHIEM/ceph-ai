@@ -1,0 +1,48 @@
+{
+  "config": {
+    "height": 8,
+    "seed": 42,
+    "tree_size": 64,
+    "trees": 10,
+    "window": 128
+  },
+  "dataset_points": 72,
+  "features": [
+    "value",
+    "delta"
+  ],
+  "production_dependency": false,
+  "results": [
+    {
+      "bounded": true,
+      "cpu_time_ms": 2941.229,
+      "detector": "river_hst",
+      "evaluated": 72,
+      "event_recall": 1.0,
+      "false_positive_rate": 0.4782608695652174,
+      "mean_detection_delay_seconds": 0.0,
+      "peak_rss_delta_kib": 89008,
+      "precision": 0.08333333333333333,
+      "predicted_alerts": 36,
+      "recall": 1.0,
+      "threshold": 0.0
+    },
+    {
+      "bounded": true,
+      "cpu_time_ms": 178.825,
+      "detector": "rrcf",
+      "evaluated": 72,
+      "event_recall": 1.0,
+      "false_positive_rate": 0.043478260869565216,
+      "mean_detection_delay_seconds": 0.0,
+      "peak_rss_delta_kib": 5776,
+      "precision": 0.5,
+      "predicted_alerts": 6,
+      "recall": 1.0,
+      "threshold": 4.270476190476191
+    }
+  ],
+  "schema": "ceph-ai.hst-rrcf-benchmark.v1",
+  "side_effects": "read-only; no database, alert, notification, remediation or model-state writes",
+  "unavailable": {}
+}

@@ -105,3 +105,27 @@ def test_scope_that_is_not_current_in_database_is_rejected(monkeypatch):
         assert error.value.status_code == 403
 
     asyncio.run(scenario())
+
+
+def test_authorized_single_full_remains_available_in_production(monkeypatch):
+    monkeypatch.setattr(full_executor, "executor_token", lambda: "test-token")
+    monkeypatch.setattr(full_executor, "_scope_matches_database", lambda _scope: True)
+
+    async def completed(_prompt, _history, **kwargs):
+        assert kwargs["cluster_context"]["name"] == "CS-LAB"
+        return {"content": "operator full access preserved"}
+
+    monkeypatch.setattr(full_executor, "run_single_full_access_chat", completed)
+    request = full_executor.FullRunRequest(
+        prompt="status",
+        cluster_context=CLUSTER_CONTEXT,
+        scope_signature=sign_scope(CLUSTER_CONTEXT, "test-token"),
+    )
+
+    async def scenario():
+        result = await full_executor.run_full(
+            "production-authorized", request, "Bearer test-token",
+        )
+        assert result["event"]["content"] == "operator full access preserved"
+
+    asyncio.run(scenario())

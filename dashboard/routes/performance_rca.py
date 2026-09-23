@@ -1,15 +1,49 @@
-from fastapi import APIRouter, Body, Depends, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from starlette.concurrency import run_in_threadpool
 
 from dashboard.cluster_scope import cluster_selection
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from watcher.performance_rca import report
+from shared import db
+from watcher.block_storage_diagnosis import build_diagnosis
+from watcher.performance_rca import build_report, report
 from watcher.performance_simulation import simulate_scenario
 
 router = APIRouter()
 templates = make_templates()
+
+
+@router.get("/api/performance-rca/diagnosis")
+async def performance_diagnosis_api(
+    request: Request,
+    pool: str = Query(min_length=1, max_length=64),
+    image: str = Query(min_length=1, max_length=128),
+    window_hours: int = Query(default=1, ge=1, le=6),
+    _user: str = Depends(require_login),
+):
+    """Fast, scoped diagnosis from persisted samples only; never queries Ceph.
+
+    The report engine deliberately receives an unavailable live-signal marker
+    so no HTTP request opens SSH. A missing or old sample fails closed.
+    """
+    requested_cluster = (
+        request.query_params.get("cluster_id", "").strip()
+        or request.query_params.get("cluster", "").strip()
+    )
+    _clusters, cluster = cluster_selection(request)
+    if requested_cluster and cluster.id != requested_cluster:
+        raise HTTPException(status_code=404, detail="Cluster không tồn tại hoặc đã bị vô hiệu hóa")
+
+    def load():
+        with db.SessionLocal() as session:
+            result = build_report(
+                session, cluster.id, pool=pool, image=image,
+                window_hours=window_hours, live_signals={"status": "unavailable"},
+            )
+        return build_diagnosis(result, pool=pool, image=image)
+
+    return await run_in_threadpool(load)
 
 
 @router.get("/api/performance-rca")

@@ -27,7 +27,7 @@ from shared.predictive_alert_lifecycle import (
     next_lifecycle_state,
 )
 from shared.forecast_consensus import ForecastConsensus, aggregate_forecasts
-from shared.forecast_drift import DriftReport, RiverAdwinStreams, evaluate_drift
+from shared.forecast_drift import DriftReport, RiverAdwinStreams, evaluate_drift, shadow_drift_reaction
 from shared.forecast_anomaly import candidate_d_alerts, candidate_d_isolation_scores
 from shared.forecast_features import MetricPoint, build_features
 from shared.forecast_flags import candidate_enabled
@@ -694,6 +694,7 @@ def _shadow_evidence(
             "scope_key": adwin.scope_key,
             "execution_mode": "SHADOW_ONLY",
         })
+    evidence.append(shadow_drift_reaction(adwin))
     return evidence
 
 

@@ -1,0 +1,120 @@
+{
+  "anomaly_events": 3,
+  "anomaly_points": 3,
+  "dataset_points": 72,
+  "forecast_results": [
+    {
+      "bias": -0.005633802816901389,
+      "cpu_time_ms": 0.846,
+      "evaluated": 71,
+      "mae": 1.633802816901405,
+      "model": "naive",
+      "rmse": 7.513237144824206,
+      "skipped": 0,
+      "smape": 2.7308289151955494
+    },
+    {
+      "bias": -0.012500000000000918,
+      "cpu_time_ms": 0.947,
+      "evaluated": 48,
+      "mae": 5.841666666666664,
+      "model": "seasonal_naive",
+      "rmse": 16.202687534274475,
+      "skipped": 23,
+      "smape": 9.067975965225207
+    },
+    {
+      "bias": 0.7653667359567352,
+      "cpu_time_ms": 0.971,
+      "evaluated": 70,
+      "mae": 4.4299501589391035,
+      "model": "linear",
+      "rmse": 9.676066412959283,
+      "skipped": 1,
+      "smape": 8.442087925611533
+    },
+    {
+      "bias": -0.00816326530612242,
+      "cpu_time_ms": 236.895,
+      "evaluated": 49,
+      "mae": 2.220408163265301,
+      "model": "statsforecast_naive",
+      "rmse": 9.040882203657349,
+      "skipped": 22,
+      "smape": 3.6089229155362466
+    },
+    {
+      "bias": -0.012500000000000918,
+      "cpu_time_ms": 236.895,
+      "evaluated": 48,
+      "mae": 5.841666666666664,
+      "model": "statsforecast_seasonal_naive",
+      "rmse": 16.202687534274475,
+      "skipped": 23,
+      "smape": 9.067975965225207
+    }
+  ],
+  "format": "NAB-like",
+  "history_size": 24,
+  "results": [
+    {
+      "cpu_time_ms": 0.274,
+      "detector": "robust_baseline",
+      "evaluated": 72,
+      "event_recall": 1.0,
+      "false_negatives": 0,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "mean_detection_delay_seconds": 0.0,
+      "precision": 1.0,
+      "predicted_alerts": 3,
+      "recall": 1.0,
+      "true_positives": 3
+    },
+    {
+      "cpu_time_ms": 2799.565,
+      "detector": "river_half_space_trees",
+      "evaluated": 72,
+      "event_recall": 0.0,
+      "false_negatives": 3,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "mean_detection_delay_seconds": null,
+      "precision": null,
+      "predicted_alerts": 0,
+      "recall": 0.0,
+      "true_positives": 0
+    },
+    {
+      "cpu_time_ms": 0.978,
+      "detector": "candidate_d_isolation",
+      "evaluated": 72,
+      "event_recall": 1.0,
+      "false_negatives": 0,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "mean_detection_delay_seconds": 0.0,
+      "precision": 1.0,
+      "predicted_alerts": 3,
+      "recall": 1.0,
+      "true_positives": 3
+    },
+    {
+      "cpu_time_ms": 6438.356,
+      "detector": "pyod_iforest",
+      "evaluated": 72,
+      "event_recall": 0.6666666666666666,
+      "false_negatives": 1,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "mean_detection_delay_seconds": 0.0,
+      "precision": 1.0,
+      "predicted_alerts": 2,
+      "recall": 0.6666666666666666,
+      "true_positives": 2
+    }
+  ],
+  "side_effects": "read-only; no database, alert, notification, remediation, or model-state writes",
+  "threshold": 3.5,
+  "unavailable": {}
+}

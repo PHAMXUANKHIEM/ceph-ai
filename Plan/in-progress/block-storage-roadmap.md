@@ -483,40 +483,52 @@ force-unlock/delete pool chỉ từ một tín hiệu quan sát.
 **Hoàn thành khi:** thao tác đối với volume được quản lý bởi control plane ngoài
 luôn đi qua source of truth tương ứng và không làm lệch metadata.
 
-### 8. AI Diagnosis và Automation an toàn — ưu tiên P2
+### 8. AI Diagnosis và Automation an toàn — ưu tiên P2 `[~] Evidence slice đang hoàn thiện`
 
-- [ ] **8.1 AI inventory insight**: stale/unattached volume, snapshot quá hạn,
+- [~] **8.1 AI inventory insight**: stale/unattached volume, snapshot quá hạn,
   clone chain sâu, backup trễ và capacity waste với evidence cụ thể.
-- [ ] **8.2 Chẩn đoán hiệu năng**: tương quan volume/pool/OSD/host, phân biệt
+- [~] **8.2 Chẩn đoán hiệu năng**: tương quan volume/pool/OSD/host, phân biệt
   contention, capacity pressure và lỗi consumer; hiển thị confidence.
-- [ ] **8.3 Recommendation có mô phỏng** cho resize, QoS, flatten, retention và
+  - Đã thêm `/api/performance-rca/diagnosis?pool=...&image=...` cho một volume:
+    chỉ đọc `VolumeMetric`/evidence đã lưu, không SSH trong HTTP request, trả
+    `candidate` hoặc `insufficient_evidence`, age/stale, citation, confidence
+    giới hạn và next checks read-only. Đây là rule-based evidence contract,
+    **chưa phải AI/LLM diagnosis**; chưa suy đoán consumer/OSD khi thiếu dữ liệu.
+- [~] **8.3 Recommendation có mô phỏng** cho resize, QoS, flatten, retention và
   placement; không tự thực thi từ nội dung chat.
 - [ ] **8.4 Closed-loop action** chỉ cho action id allowlist, policy SAFE/RISKY,
   approval, timeout, post-check, rollback và audit.
-- [ ] **8.5 Test**: prompt injection từ metadata, credential redaction, JSON xấu,
+- [~] **8.5 Test**: prompt injection từ metadata, credential redaction, JSON xấu,
   hallucinated target/command, stale evidence và post-check failure.
+
+**Tiến độ:** các API insight/protection/snapshot-clone, Performance RCA và
+diagnosis rule-based hiện là evidence slice read-only; chưa đóng P2 vì chưa có
+paired live acceptance, AI/LLM diagnosis được kiểm chứng và post-check mutation
+end-to-end.
 
 **Hoàn thành khi:** mọi kết luận AI dẫn về evidence thật và mọi thay đổi vẫn đi
 qua cùng RBAC/policy/executor như thao tác thủ công.
 
-### 9. Hardening, vận hành và phát hành — gate bắt buộc cho từng pha
+### 9. Hardening, vận hành và phát hành — gate bắt buộc cho từng pha `[~]`
 
 - [ ] **9.1 Security review**: RBAC/capability, CSRF, rate limit, input validation,
   secret redaction, encryption at rest/in transit và KMS/key rotation.
-- [ ] **9.2 Audit viewer**: actor, cluster, pool/volume, preview/diff, approval,
+- [~] **9.2 Audit viewer**: actor, cluster, pool/volume, preview/diff, approval,
   kết quả, request id và retention/export policy.
+  - Đã có viewer metadata bounded; preview/diff, retention/export policy và
+    coverage của tất cả workflow còn thiếu, không được coi là release gate đạt.
 - [ ] **9.3 SLO và observability nội bộ**: API/job latency, queue depth, failure
   rate, stuck job, backend timeout, scheduler health và alert ownership.
 - [ ] **9.4 Runbook**: create/resize/attach, busy image, snapshot dependency,
   backup chain, restore, failover/failback, capacity incident và credential loss.
-- [ ] **9.5 Test matrix/release gate**
+- [~] **9.5 Test matrix/release gate**
   - Default cluster, secondary active/inactive, Ceph unavailable/degraded, pool
     full, empty inventory, viewer/operator/admin và backend version supported/
     unsupported.
 - [ ] **9.6 Upgrade/rollback và migration**
   - Một Alembic head, backward-compatible deployment, worker restart recovery,
     feature flag và rollback plan cho từng pha.
-- [ ] **9.7 Tài liệu và UX**
+- [~] **9.7 Tài liệu và UX**
   - Navigation, API docs, terminology, timezone/unit, accessibility, empty/error/
     loading state và cập nhật roadmap trước release.
 
@@ -559,6 +571,8 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
    tiếp tục code để người sau không phải suy đoán.
 
 ## Nhật ký triển khai
+
+| 2026-09-23 | Phase 5 storage hardening slice | Một phần | Thêm Audit Viewer cluster-scoped (`/audit`, `/api/audit/storage`), chặn global bucket purge legacy, thêm multi-cluster digest metadata API và runbook storage/backup. | `pytest tests/test_storage_audit_viewer.py tests/test_dashboard_backups.py tests/test_dashboard_object_storage.py` — 111 passed | Còn isolated live restore/replication, AI diagnosis contract và mixed-version live acceptance. |
 
 | Ngày | Mục | Trạng thái | Thay đổi / bằng chứng | Kiểm thử | Commit / việc tiếp theo |
 |---|---:|---|---|---|---|

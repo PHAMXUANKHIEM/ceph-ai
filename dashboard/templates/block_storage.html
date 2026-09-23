@@ -3,13 +3,12 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Block Storage — Ceph AIOps</title>
-  {% if cache_loading %}<meta http-equiv="refresh" content="3">{% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
   <link rel="stylesheet" href="/static/block_storage_overview.css?v={{ static_version }}">
 </head>
 <body>
   {% include "_nav.html" %}
-  <main class="page block-storage-page">
+  <main class="page block-storage-page" data-cache-loading="{{ 'true' if cache_loading and not cache_error else 'false' }}">
     <header class="block-storage-page-header">
       <div>
         <div class="block-storage-eyebrow">Storage / RBD</div>
@@ -22,7 +21,8 @@
     </header>
 
     {% if error %}<div class="state-banner state-banner--error"><span>Không tải được Block Storage: {{ error }}</span></div>{% endif %}
-    {% if cache_loading %}<div class="state-banner state-banner--loading"><span>Đang đồng bộ inventory Block Storage từ cụm…</span></div>{% endif %}
+    {% if cache_loading and not cache_error %}<div class="state-banner state-banner--loading"><span>Đang cập nhật inventory; dữ liệu snapshot hiện có vẫn sử dụng được.</span></div>{% endif %}
+    {% if cache_error %}<div class="state-banner state-banner--warning"><span>Không cập nhật được từ Ceph; đang hiển thị snapshot gần nhất. Vui lòng thử lại sau.</span></div>{% endif %}
 
     <section class="block-storage-summary" aria-label="Tổng quan Block Storage">
       <article class="block-storage-summary-card">

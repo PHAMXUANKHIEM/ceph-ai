@@ -1,4 +1,30 @@
-from shared.forecast_drift import DRIFT, INSUFFICIENT_DATA, STABLE, evaluate_drift
+from shared.forecast_drift import AdwinStreamsReport, DRIFT, INSUFFICIENT_DATA, STABLE, evaluate_drift, shadow_drift_reaction
+
+
+def test_shadow_drift_reaction_separates_model_and_workload_changes():
+    def reaction(*streams):
+        report = AdwinStreamsReport(
+            status=DRIFT if streams else STABLE,
+            streams={},
+            drifted_streams=streams,
+            scope_key="lab|host|cpu",
+        )
+        return shadow_drift_reaction(report)
+
+    residual = reaction("residual")
+    assert residual["candidate_status"] == DRIFT
+    assert residual["confidence_multiplier"] == 0.5
+    assert residual["promotion_blocked"]
+
+    mae = reaction("absolute_error")
+    assert mae["promotion_blocked"]
+    assert mae["evaluation_window_multiplier"] == 2
+
+    workload = reaction("metric")
+    assert workload["candidate_status"] == STABLE
+    assert workload["workload_changed"]
+    assert not workload["promotion_blocked"]
+    assert not workload["reset_model"]
 
 
 def test_drift_detector_fails_closed_when_windows_are_too_small():

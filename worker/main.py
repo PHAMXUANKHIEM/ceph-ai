@@ -1,13 +1,14 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Awaitable, Callable, Optional
 
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
 
 from config.settings import settings
-from shared import db, service_health, telegram_outbox
+from shared import db, incident_outbox, service_health, telegram_outbox
 from shared.mq import QUEUE_NAME, declare_topology, get_connection
 from shared.models import Cluster, Incident, IncidentStatus
 from shared.logging_redaction import install_logging_redaction
@@ -137,6 +138,7 @@ async def _handle_message_without_context(
     channel: Any,
     process_incident: ProcessIncident,
     max_retries: int,
+    event_id: str | None = None,
 ) -> None:
     """Consume one Incident message: mark DIAGNOSING, run `process_incident`,
     and on failure either retry (fresh message, incremented header) or —
@@ -158,6 +160,24 @@ async def _handle_message_without_context(
         logger.exception("_handle_message: unparseable message body — dead-lettering without retry")
         await message.reject(requeue=False)
         return
+
+    consumer_claim_token = None
+    if event_id:
+        claim_state, consumer_claim_token = incident_outbox.claim_consumer(event_id)
+        if claim_state == incident_outbox.CONSUMER_DONE:
+            logger.info("_handle_message: duplicate completed event=%s — acking", event_id)
+            await message.ack()
+            return
+        if claim_state == "BUSY":
+            # Another worker owns the same event. Requeue after a short delay
+            # so a duplicate cannot spin at full broker speed.
+            await asyncio.sleep(0.2)
+            await message.reject(requeue=True)
+            return
+        if claim_state == "MISSING" or consumer_claim_token is None:
+            logger.error("_handle_message: event outbox row missing for event=%s — dead-lettering", event_id)
+            await message.reject(requeue=False)
+            return
 
     # 2026-08-10 (multi-tenant remediation Phase 1): the "default cluster
     # only" guard that used to sit here is GONE — Worker's SSH credentials/
@@ -182,6 +202,8 @@ async def _handle_message_without_context(
             incident = session.get(Incident, incident_id)
             if incident is None:
                 logger.warning("_handle_message: no Incident row for id=%s — acking, discarding", incident_id)
+                if event_id and consumer_claim_token:
+                    incident_outbox.mark_consumer_done(event_id, consumer_claim_token)
                 await message.ack()
                 return
             if incident.status in _NON_PROCESSABLE_INCIDENT_STATUSES:
@@ -190,6 +212,8 @@ async def _handle_message_without_context(
                     incident_id,
                     incident.status,
                 )
+                if event_id and consumer_claim_token:
+                    incident_outbox.mark_consumer_done(event_id, consumer_claim_token)
                 await message.ack()
                 return
             try:
@@ -213,6 +237,8 @@ async def _handle_message_without_context(
         logger.exception(
             "_handle_message: failed to set DIAGNOSING for incident %s — dead-lettering", incident_id
         )
+        if event_id and consumer_claim_token:
+            incident_outbox.release_consumer(event_id, consumer_claim_token)
         await message.reject(requeue=False)
         return
 
@@ -225,6 +251,8 @@ async def _handle_message_without_context(
             retry_count + 1,
         )
         try:
+            if event_id and consumer_claim_token:
+                incident_outbox.release_consumer(event_id, consumer_claim_token)
             if retry_count + 1 >= max_retries:
                 await _set_incident_status(incident_id, IncidentStatus.FAILED)
                 _notify_ai_diagnosis_failed(incident_id)
@@ -259,6 +287,9 @@ async def _handle_message_without_context(
                 )
         return
 
+    if event_id and consumer_claim_token:
+        incident_outbox.mark_consumer_done(event_id, consumer_claim_token)
+
     # Deliberately outside the try/except above: if ack() itself raises
     # (e.g. channel closed) it must not be misread as a process_incident
     # failure — that would republish a duplicate for work already done.
@@ -277,7 +308,11 @@ async def _handle_message(
     """Restore the producer correlation ID while processing one message."""
     token = set_request_id(request_id_from_headers(message.headers))
     try:
-        await _handle_message_without_context(message, channel, process_incident, max_retries)
+        raw_event_id = (message.headers or {}).get("x-incident-event-id")
+        event_id = raw_event_id if isinstance(raw_event_id, str) and raw_event_id else None
+        await _handle_message_without_context(
+            message, channel, process_incident, max_retries, event_id=event_id,
+        )
     finally:
         reset_request_id(token)
 
@@ -359,7 +394,7 @@ async def _main() -> None:
     from worker.backup import scheduler as backup_scheduler
     from worker import bucket_logging, rgw_access_audit, delegated_tasks
     from worker.llm.router_client import diagnose_incident, poll_approved_actions
-    from shared import telegram_outbox
+    from shared import incident_outbox, telegram_outbox
 
     # Story 4.3: the approved-RISKY-action poller runs alongside the
     # RabbitMQ consumer in the same process/event loop — only the Worker
@@ -384,6 +419,19 @@ async def _main() -> None:
             )
             await asyncio.sleep(2 if processed else 10)
 
+    async def incident_outbox_loop() -> None:
+        last_reconcile = 0.0
+        while True:
+            processed = await asyncio.to_thread(
+                incident_outbox.dispatch_due,
+                limit=20,
+            )
+            now = time.monotonic()
+            if now - last_reconcile >= 60:
+                await asyncio.to_thread(incident_outbox.reconcile_stale)
+                last_reconcile = now
+            await asyncio.sleep(2 if processed else 10)
+
     await asyncio.gather(
         _supervise("incident-consumer", lambda: run(process_incident=diagnose_incident)),
         _supervise("delegated-ai-consumer", delegated_tasks.run),
@@ -392,6 +440,7 @@ async def _main() -> None:
         _supervise("bucket-logging", bucket_logging.run),
         _supervise("rgw-access-audit", rgw_access_audit.run),
         _supervise("telegram-outbox", telegram_outbox_loop),
+        _supervise("incident-outbox", incident_outbox_loop),
         _supervise("heartbeat", service_heartbeat),
     )
 

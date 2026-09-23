@@ -59,6 +59,29 @@ class AdwinStreamsReport:
     scope_key: str | None
 
 
+def shadow_drift_reaction(report: AdwinStreamsReport) -> dict:
+    """Translate independent ADWIN signals into auditable shadow-only policy.
+
+    Raw-metric drift alone indicates a workload change, not model failure.
+    This function has no side effects and cannot promote or reset a model.
+    """
+    drifted = set(report.drifted_streams)
+    model_drift = bool(drifted & {"residual", "absolute_error"})
+    return {
+        "shadow_detector": "adwin_reaction",
+        "execution_mode": "SHADOW_ONLY",
+        "candidate_status": DRIFT if model_drift else (STABLE if drifted else report.status),
+        "confidence_multiplier": 0.5 if "residual" in drifted else 1.0,
+        "promotion_blocked": model_drift,
+        "evaluation_window_multiplier": 2 if "absolute_error" in drifted else 1,
+        "workload_changed": "metric" in drifted,
+        "requires_operator_approval": bool(drifted),
+        "reset_model": False,
+        "drifted_streams": sorted(drifted),
+        "scope_key": report.scope_key,
+    }
+
+
 class RiverAdwinStreams:
     """Keep the three required ADWIN streams isolated and bounded."""
 

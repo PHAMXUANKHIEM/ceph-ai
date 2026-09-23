@@ -1,4 +1,6 @@
 import logging
+import hashlib
+import hmac
 from collections import defaultdict
 from datetime import datetime, timedelta
 from shared.time import utc_now
@@ -232,9 +234,72 @@ def chat_female_address(username: str) -> str:
         return "Mình yêu ơi, em là"
 
 
+def _root_session_fingerprint(product: str) -> str:
+    """Bind the env-backed root session to the current credential material."""
+    material = "\0".join((product, settings.dashboard_username, settings.dashboard_password_hash))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _session_claims_for_login(username: str, product: str) -> dict | None:
+    """Build server-owned claims; never trust identity claims from the client."""
+    if username == settings.dashboard_username:
+        return {
+            "user": username,
+            "product": product,
+            "auth_subject": "root",
+            "root_session_fingerprint": _root_session_fingerprint(product),
+        }
+    model = VitastorUser if product == "vitastor" else User
+    with db.SessionLocal() as session:
+        account = session.query(model).filter(
+            model.username == username,
+            model.is_active.is_(True),
+        ).first()
+        if account is None:
+            return None
+        return {
+            "user": account.username,
+            "product": product,
+            "auth_subject": "database",
+            "user_id": account.id,
+            "session_version": int(account.session_version),
+        }
+
+
+def _session_is_valid(session_data: dict) -> bool:
+    """Validate active account state on every HTTP/WebSocket authentication."""
+    username = session_data.get("user")
+    product = session_data.get("product")
+    subject = session_data.get("auth_subject")
+    if not isinstance(username, str) or product not in VALID_PRODUCTS:
+        return False
+    if subject == "root":
+        expected = _root_session_fingerprint(product)
+        supplied = session_data.get("root_session_fingerprint")
+        return isinstance(supplied, str) and hmac.compare_digest(supplied, expected)
+    if subject != "database" or not isinstance(session_data.get("user_id"), str):
+        return False
+    try:
+        expected_version = int(session_data.get("session_version", -1))
+    except (TypeError, ValueError):
+        return False
+    model = VitastorUser if product == "vitastor" else User
+    with db.SessionLocal() as session:
+        account = session.get(model, session_data["user_id"])
+        return bool(
+            account is not None
+            and account.is_active
+            and account.username == username
+            and int(account.session_version) == expected_version
+        )
+
+
 async def require_login(request: Request) -> str:
     user = request.session.get("user")
-    if not user:
+    if not user or not _session_is_valid(request.session):
+        # Clear revoked claims before redirecting so the browser cannot keep
+        # presenting a stale identity on the next request.
+        request.session.clear()
         # 303 + Location header is honored as a redirect by browsers and by
         # httpx/starlette's TestClient regardless of it being raised via
         # HTTPException rather than returned as a RedirectResponse.
@@ -297,10 +362,18 @@ async def login_submit(
             status_code=401,
         )
 
+    claims = _session_claims_for_login(username, product)
+    if claims is None:
+        _record_failure(client_key)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            _login_context(product, "Tài khoản không còn hoạt động"),
+            status_code=401,
+        )
     _clear_failures(client_key)
     request.session.clear()
-    request.session["user"] = username
-    request.session["product"] = product
+    request.session.update(claims)
     return RedirectResponse(_product_home(product), status_code=303)
 
 

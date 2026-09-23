@@ -17,6 +17,8 @@ def test_canary_report_is_read_only_and_fail_closed(db_session):
     )
 
     assert report["read_only"] is True
+    assert report["ready_for_operator_acceptance"] is False
+    assert report["canary_freshness"]["status"] == "NO_DATA"
     assert report["candidate_count"] == 0
     assert report["operator_approval_required"] is True
     assert report["auto_promotion"] is False

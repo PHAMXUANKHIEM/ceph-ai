@@ -30,7 +30,10 @@
 
   <div class="app-body">
   <main class="page">
-    <div id="ceph-dashboard-root" data-cluster-name="{{ selected_cluster.name if selected_cluster else '' }}"></div>
+    <div id="ceph-dashboard-root"
+         data-cluster-id="{{ selected_cluster.id if selected_cluster else '' }}"
+         data-cluster-name="{{ selected_cluster.name if selected_cluster else '' }}"></div>
+    <script id="dashboard-bootstrap-data" type="application/json">{{ initial_health|tojson }}</script>
     <div hidden>
     <section class="connection-status {% if heartbeat_stale %}connection-lost{% else %}connection-ok{% endif %}">
       {% if heartbeat_stale %}

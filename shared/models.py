@@ -282,6 +282,59 @@ def _stamp_incident_failure(
         incident.failed_at = utc_now()
 
 
+class IncidentOutboxStatus(str, enum.Enum):
+    """Producer-side delivery state for RabbitMQ incident envelopes."""
+
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    SENT = "SENT"
+    DEAD = "DEAD"
+
+
+class IncidentOutbox(Base):
+    """Durable outbox for publishing an Incident to RabbitMQ."""
+
+    __tablename__ = "incident_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PENDING','PROCESSING','SENT','DEAD')",
+            name="ck_incident_outbox_status_valid",
+        ),
+        UniqueConstraint("event_id", name="uq_incident_outbox_event_id"),
+        Index("ix_incident_outbox_due", "status", "next_attempt_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    event_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    incident_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False,
+    )
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=IncidentOutboxStatus.PENDING.value,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    publish_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now,
+    )
+    # Consumer-side idempotency is separate from producer delivery state:
+    # RabbitMQ can redeliver an envelope after the broker accepted it.
+    consumer_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="PENDING", server_default="'PENDING'",
+    )
+    consumer_claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consumer_claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    consumer_finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class TelegramOutboxStatus(str, enum.Enum):
     """Durable delivery states for notifications sent after DB commit."""
 
@@ -1155,6 +1208,9 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(72), nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Incremented on disable/delete/password/privilege changes so existing
+    # signed sessions cannot remain valid after account state changes.
+    session_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     ceph_chat_restricted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
@@ -1221,6 +1277,7 @@ class VitastorUser(Base):
     password_hash: Mapped[str] = mapped_column(String(72), nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    session_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 

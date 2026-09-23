@@ -245,6 +245,39 @@ def _volume_quality(mape: float | None, outcomes: int) -> tuple[str, str, float 
     if accuracy >= 80:
         return "PROMISING", "Kết quả ban đầu tốt nhưng số outcome còn ít.", accuracy
     return "NEEDS_IMPROVEMENT", "MAPE còn lớn hơn 20%.", accuracy
+def _interval_chart(
+    current: float | None,
+    predicted: float | None,
+    predicted_low: float | None,
+    predicted_high: float | None,
+) -> dict[str, float] | None:
+    """Return normalized positions for a bounded forecast interval visual."""
+
+    if predicted_low is None or predicted_high is None:
+        return None
+    values = [current, predicted, predicted_low, predicted_high]
+    if any(value is None for value in values):
+        return None
+    low = min(float(predicted_low), float(predicted_high))
+    high = max(float(predicted_low), float(predicted_high))
+    span = max(high - low, 0.0)
+    padding = max(span * 0.08, 1e-9)
+    lower = low - padding
+    upper = high + padding
+    scale = max(upper - lower, 1e-9)
+
+    def position(value: float) -> float:
+        return round(max(0.0, min(100.0, (float(value) - lower) / scale * 100.0)), 3)
+
+    interval_low = position(low)
+    interval_high = position(high)
+    return {
+        "low": interval_low,
+        "high": interval_high,
+        "width": round(max(0.0, interval_high - interval_low), 3),
+        "current": position(float(current)),
+        "predicted": position(float(predicted)),
+    }
 
 
 def _model_quality_summary(evaluations: list[ForecastModelEvaluation]) -> dict:
@@ -497,6 +530,12 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "latest_actual": round(latest.actual_percent, 2) if latest and latest.actual_percent is not None else None,
                 "predicted_low": round(latest.predicted_low, 2) if latest and latest.predicted_low is not None else None,
                 "predicted_high": round(latest.predicted_high, 2) if latest and latest.predicted_high is not None else None,
+                "interval_chart": _interval_chart(
+                    latest.current_percent if latest else None,
+                    latest.predicted_percent if latest else None,
+                    latest.predicted_low if latest else None,
+                    latest.predicted_high if latest else None,
+                ),
                 "consensus_status": latest.consensus_status if latest else None,
                 "consensus_ratio": round(latest.consensus_ratio, 3) if latest and latest.consensus_ratio is not None else None,
                 "consensus_candidate_count": latest.consensus_candidate_count if latest else None,
@@ -628,6 +667,12 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
             "status": row.status, "reason": row.reason,
             "generated_at": row.generated_at, "target_at": row.target_at,
             "source_latest_at": row.source_latest_at,
+            "interval_chart": _interval_chart(
+                row.current_value,
+                row.predicted_value,
+                row.predicted_low,
+                row.predicted_high,
+            ),
         } for row in latest_forecasts]
 
         sample_query = session.query(LogLearningSample).filter(

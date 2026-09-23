@@ -147,7 +147,7 @@ Bằng chứng kiểm thử bước đã hoàn thành:
 
 - [x] Bổ sung `predicted_low` và `predicted_high` cho node/volume forecast và node alert persistence.
 - [x] Cảnh báo khi upper bound vượt ngưỡng trong thời gian yêu cầu; khi không có thời điểm crossing cụ thể, dùng horizon làm cận trên bảo thủ.
-- [ ] Hiển thị vùng dự báo trên biểu đồ CPU/RAM/volume.
+- [x] Hiển thị vùng dự báo trên biểu đồ CPU/RAM/volume; dashboard render khoảng predicted_low–predicted_high cùng marker current/predicted, chuẩn hóa theo từng series và không thay đổi forecast state.
 
 Tiêu chí hoàn thành Phase 2:
 
@@ -329,7 +329,7 @@ Bước tiếp theo: Phase 7 — Canary production và nghiệm thu.
 
 #### Operator acceptance vẫn còn phải thực hiện
 
-- [ ] Chọn một cluster/nhóm node cụ thể làm canary và chạy đủ một chu kỳ forecast.
+- [~] Canary CS-LAB / 10.20.1.153 / cpu: 119 shadow candidates, SHADOW_ONLY. Ngày 2026-09-23 Loki đã nhận mẫu mới, nhưng 24h history có gap 13h09m37s (2026-09-22 12:36:47–2026-09-23 01:46:24 UTC), vượt quality gate 6h. Forecast cuối 2026-09-22 12:22:05 UTC; không hạ ngưỡng hoặc promote. Cần theo dõi samples liên tục, đánh giá lại sau khi gap rời cửa sổ 24h (sớm nhất khoảng 2026-09-23 12:36:47 UTC) và đủ evaluation/approval.
 - [x] Restart cả Watcher/Worker rồi xác nhận registry/evaluation state không mất (`96` registry rows và `180` evaluation rows giữ nguyên; cả hai container healthy).
 - [x] Tạo và xác minh PostgreSQL custom backup trước migration: `/var/backups/ceph-ai/ceph-ai-20260918T095529Z.dump` (`0600`, khoảng 66 MB, `589` entries đọc được bằng `pg_restore --list`). Đã cài PostgreSQL client 18 để khớp server 18.4.
 - [x] Restore drill và migration downgrade/upgrade đã chạy thành công trên PostgreSQL 18 ephemeral container: restore `95` bảng từ backup, `c1d2e3f4a5b7` → `b5c6d7e8f9a0` → `e4f5a6b7c8d9`. Extension `pgaudit` được loại riêng khỏi danh sách restore test vì image kiểm thử không cài extension này; production dump vẫn giữ nguyên entry.
@@ -387,6 +387,7 @@ Không nên bắt đầu bằng deep-learning model mới. Với dữ liệu hi�
 - [x] Bước 6.1 — Dashboard forecast detail: actual/predicted/interval/model/consensus/data quality và MAE/SMAPE đã hiển thị cho CPU/RAM và RBD volume; dashboard test đạt `10 passed`.
 - [x] Bước 6.2 — Alert explanation: lý do mở, consensus, freshness/coverage/gap và lịch sử lifecycle transition đã hiển thị; regression suite đạt `48 passed` trước khi bổ sung test transition.
 - [x] Bước 6.3 — Replay/backtest UI và read-only API đã hoàn thành; dashboard/replay test đạt `14 passed`, toàn bộ affected suite không tạo side effect.
+- [x] Bước 6.4b — Hiển thị prediction interval bằng visual band trên dashboard CPU/RAM và RBD volume; helper chuẩn hóa marker/band, không thêm side effect.
 
 ### Bước tiếp theo sẽ làm
 

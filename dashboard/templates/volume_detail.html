@@ -90,6 +90,16 @@
           <div class="volume-detail-card-heading"><h2>Telemetry gần nhất</h2><span id="detail-metric-status" class="volume-badge-muted">—</span></div>
           <div id="detail-metric-summary" class="volume-info-grid"></div>
         </section>
+        <section class="volume-detail-card volume-detail-summary-card" aria-labelledby="detail-diagnosis-heading">
+          <div class="volume-detail-card-heading">
+            <h2 id="detail-diagnosis-heading">Chẩn đoán hiệu năng</h2>
+            <button class="btn btn-sm" type="button" id="detail-diagnosis-load">Phân tích dữ liệu đã lưu</button>
+          </div>
+          <p class="hint">Chỉ là tương quan dựa trên mẫu đã lưu, không phải kết luận AI hay hành động tự động.</p>
+          <p id="detail-diagnosis-status" class="hint" role="status" aria-live="polite">Chưa chạy phân tích.</p>
+          <div id="detail-diagnosis-summary" class="volume-info-grid"></div>
+          <div id="detail-diagnosis-gaps" class="volume-integrity-gaps"></div>
+        </section>
         <section class="volume-detail-card volume-detail-summary-card">
           <div class="volume-detail-card-heading"><h2>Audit gần đây</h2><span id="detail-audit-count" class="volume-badge-muted">0 sự kiện</span></div>
           <div id="detail-audit-summary"></div>

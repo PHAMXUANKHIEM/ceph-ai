@@ -8,6 +8,7 @@ from threading import Lock
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, or_
 
+from dashboard.routes.auth import _session_is_valid
 from shared import db
 from shared.cluster_events import read_latest_event
 from shared.cluster_snapshot import section_snapshot_fingerprint, snapshot_fingerprint
@@ -82,7 +83,7 @@ async def incidents_ws(websocket: WebSocket) -> None:
     # cookie used by the HTTP routes (Starlette applies session middleware
     # to the "websocket" scope too) — same require_login check as / , just
     # not expressible as a FastAPI Depends on a websocket route.
-    if not websocket.session.get("user") or websocket.session.get("product") == "vitastor":
+    if not _session_is_valid(websocket.session) or websocket.session.get("product") == "vitastor":
         _record_metric("cluster_state_policy_rejections_total")
         await websocket.close(code=WS_POLICY_VIOLATION)
         return
@@ -134,7 +135,7 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
     missed event safe. The legacy incidents socket remains available for older
     dashboard clients.
     """
-    if not websocket.session.get("user") or websocket.session.get("product") == "vitastor":
+    if not _session_is_valid(websocket.session) or websocket.session.get("product") == "vitastor":
         await websocket.accept()
         await websocket.close(code=WS_POLICY_VIOLATION)
         return

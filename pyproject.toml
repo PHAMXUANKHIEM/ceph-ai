@@ -32,9 +32,13 @@ dev = [
 ]
 benchmark = [
     "pyod==2.0.5",
+    "scikit-learn==1.5.2",
 ]
 benchmark-forecast = [
     "statsforecast==2.1.1",
+]
+benchmark-anomaly = [
+    "rrcf==0.4.4",
 ]
 
 [build-system]

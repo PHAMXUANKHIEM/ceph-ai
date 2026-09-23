@@ -71,6 +71,7 @@
       </div>
       <div class="sidebar-section-title">Administration & Integrations</div>
       <a href="/settings" data-initial="S" class="nav-link{{ ' active' if nav_path in ('/settings', '/ai-cost') else '' }}">Settings</a>
+      <a href="/audit" data-initial="AU" class="nav-link{{ ' active' if nav_path == '/audit' else '' }}">Audit Viewer</a>
       {% if is_admin %}<a href="/telegram-alerts" data-initial="AT" class="nav-link{{ ' active' if nav_path.startswith('/telegram-alerts') else '' }}">Alert Telegram</a>{% endif %}
       {% if is_admin %}<a href="/users" data-initial="U" class="nav-link{{ ' active' if nav_path == '/users' else '' }}">Users</a>{% endif %}
       {% if is_admin %}<a href="/clusters" data-initial="CL" class="nav-link{{ ' active' if nav_path == '/clusters' else '' }}">Clusters</a>{% endif %}

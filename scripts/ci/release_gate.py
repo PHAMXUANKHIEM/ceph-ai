@@ -106,17 +106,42 @@ def pip_audit_status(artifacts: Path) -> dict[str, Any]:
     reports = sorted(artifacts.rglob("pip-audit.json"))
     if not reports:
         return {"status": "missing", "path": None}
+    path = reports[0]
     try:
-        payload = json.loads(reports[0].read_text(encoding="utf-8"))
-        vulnerabilities = payload if isinstance(payload, list) else payload.get("vulnerabilities", [])
-        count = len(vulnerabilities or [])
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        # Pin the gate to pip-audit's object schema.  Treat an unknown schema
+        # as invalid instead of silently converting it to an empty report.
+        if not isinstance(payload, dict) or not isinstance(payload.get("dependencies"), list):
+            raise ValueError("expected an object with a dependencies[] array")
+        count = 0
+        for dependency in payload["dependencies"]:
+            if not isinstance(dependency, dict):
+                raise ValueError("dependency entry must be an object")
+            if not isinstance(dependency.get("name"), str) or not dependency["name"]:
+                raise ValueError("dependency.name must be a non-empty string")
+            if not isinstance(dependency.get("version"), str) or not dependency["version"]:
+                raise ValueError("dependency.version must be a non-empty string")
+            vulnerabilities = dependency.get("vulns")
+            if not isinstance(vulnerabilities, list):
+                raise ValueError("dependency.vulns must be an array")
+            for vulnerability in vulnerabilities:
+                if not isinstance(vulnerability, dict) or not isinstance(vulnerability.get("id"), str):
+                    raise ValueError("each vulnerability must contain a string id")
+            count += len(vulnerabilities)
         return {
             "status": "passed" if count == 0 else "failed",
-            "path": str(reports[0].relative_to(ROOT)),
+            "path": str(path.relative_to(ROOT)),
             "vulnerabilities": count,
+            "schema": "pip-audit-json-v1",
+            "report_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "scanner_version": tool_version("pip-audit"),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "environment": os.environ.get("CEPH_AI_ENVIRONMENT", "").strip() or "ci",
+            "commit_sha": git_value("rev-parse", "HEAD"),
+            "python": sys.version.split()[0],
         }
-    except (OSError, json.JSONDecodeError, AttributeError) as exc:
-        return {"status": "invalid", "path": str(reports[0].relative_to(ROOT)), "error": str(exc)}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        return {"status": "invalid", "path": str(path.relative_to(ROOT)), "error": str(exc)}
 
 
 def image_scan_status(artifacts: Path) -> dict[str, Any]:

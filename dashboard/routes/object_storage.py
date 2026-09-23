@@ -2373,33 +2373,23 @@ async def bucket_delete_execute(request: Request, user: str = Depends(require_lo
 
 @router.post("/api/object-storage/buckets/delete-all")
 async def bucket_delete_all(request: Request, user: str = Depends(require_login)):
-    """Immediately purge every bucket in the selected cluster; no approval flow."""
+    """Fail closed for the legacy global purge endpoint.
+
+    A cluster-wide bucket purge cannot be safely represented by one stale
+    confirmation token. Operators must use the per-bucket preview/execute
+    flow, which rechecks object/version counts, Object Lock and capability
+    evidence immediately before execution and writes an audit row.
+    """
     if not auth.is_admin_user(user):
         raise HTTPException(status_code=403, detail="Chỉ admin được xóa tất cả bucket")
-    cluster = selected_cluster(request)
-    payload = {"action": "delete_all", "bucket": "*"}
-    try:
-        audit_id = await asyncio.to_thread(
-            _start_governance_audit, cluster.id, user, payload,
-            "Purge toàn bộ object/version và xóa tất cả bucket trên cluster",
-        )
-    except Exception as exc:
-        logger.exception("cannot persist delete-all bucket audit entry")
-        raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
-    try:
-        deleted = await asyncio.to_thread(_delete_all_buckets, cluster)
-    except ObjectStorageError as exc:
-        safe_error = _safe_error(exc)
-        await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
-        invalidate_object_storage_cache(cluster.id, "buckets")
-        invalidate_object_storage_cache(cluster.id, "bucket-stats")
-        invalidate_object_storage_cache(cluster.id, "bucket-list")
-        invalidate_object_storage_cache(cluster.id, "bucket-activity")
-        invalidate_object_storage_cache(cluster.id, "bucket-detail")
-        raise HTTPException(status_code=502, detail=safe_error) from exc
-    await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
-    return {"ok": True, "action": "delete_all", "deleted_count": len(deleted),
-            "deleted_buckets": deleted, "request_id": audit_id}
+    del request
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "Purge toàn bộ bucket đã bị khóa. Hãy dùng preview/execute cho từng "
+            "bucket để giữ approval, re-check Object Lock và audit đầy đủ."
+        ),
+    )
 
 
 @router.get("/api/object-storage/buckets/{bucket}")

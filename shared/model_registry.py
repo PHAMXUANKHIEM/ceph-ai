@@ -8,6 +8,7 @@ promotion workflow in a later phase.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from shared.time import utc_now
@@ -42,6 +43,9 @@ class PromotionPolicy:
     minimum_smape_improvement: float = 0.0
     max_poll_latency_ms: float = 5000.0
     max_drift_score: float = 0.0
+    minimum_interval_coverage: float = 0.8
+    max_alert_volume_increase: int = 0
+    max_data_quality_failure_rate: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,9 @@ def default_promotion_policy() -> PromotionPolicy:
         minimum_smape_improvement=max(0.0, float(settings.forecast_promotion_min_smape_improvement)),
         max_poll_latency_ms=max(1.0, float(settings.forecast_promotion_max_poll_latency_ms)),
         max_drift_score=max(0.0, float(settings.forecast_promotion_max_drift_score)),
+        minimum_interval_coverage=min(1.0, max(0.0, float(settings.forecast_promotion_min_interval_coverage))),
+        max_alert_volume_increase=max(0, int(settings.forecast_promotion_max_alert_volume_increase)),
+        max_data_quality_failure_rate=min(1.0, max(0.0, float(settings.forecast_promotion_max_data_quality_failure_rate))),
     )
 
 
@@ -100,6 +107,36 @@ def _drift_guard_ok(payload: dict, policy: PromotionPolicy) -> bool:
         return False
 
 
+def _optional_metric_guard(
+    payload: dict, *, candidate_key: str, active_key: str,
+    minimum: float | None = None, maximum: float | None = None,
+    increase: float | int | None = None,
+) -> bool:
+    """Validate a new evidence field when the producer supplies it.
+
+    Older evaluation artifacts remain valid when neither side has the field;
+    a partially supplied pair fails closed so scopes cannot hide regressions.
+    """
+    candidate_present = candidate_key in payload
+    active_present = active_key in payload
+    if not candidate_present and not active_present:
+        return True
+    if not candidate_present or not active_present:
+        return False
+    try:
+        candidate = float(payload[candidate_key])
+        active = float(payload[active_key])
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(candidate) or not math.isfinite(active):
+        return False
+    if minimum is not None and candidate < minimum:
+        return False
+    if maximum is not None and candidate > maximum:
+        return False
+    if increase is not None and candidate > active + increase:
+        return False
+    return True
 def evaluate_guarded_promotion(
     evaluations: list, *, policy: PromotionPolicy | None = None,
 ) -> PromotionDecision:
@@ -120,6 +157,9 @@ def evaluate_guarded_promotion(
         "false_positive_rate_guard": False,
         "resource_budget_guard": False,
         "drift_guard": False,
+        "interval_coverage_guard": False,
+        "alert_volume_guard": False,
+        "data_quality_guard": False,
     }
     if not checks["consecutive_evaluations"]:
         return PromotionDecision(
@@ -162,6 +202,34 @@ def evaluate_guarded_promotion(
     )
     checks["drift_guard"] = all(
         _drift_guard_ok(payload, policy)
+        for payload in evidence
+    )
+    checks["interval_coverage_guard"] = all(
+        _optional_metric_guard(
+            payload,
+            candidate_key="candidate_interval_coverage",
+            active_key="active_interval_coverage",
+            minimum=policy.minimum_interval_coverage,
+            increase=0.0,
+        )
+        for payload in evidence
+    )
+    checks["alert_volume_guard"] = all(
+        _optional_metric_guard(
+            payload,
+            candidate_key="candidate_alert_volume",
+            active_key="active_alert_volume",
+            increase=policy.max_alert_volume_increase,
+        )
+        for payload in evidence
+    )
+    checks["data_quality_guard"] = all(
+        _optional_metric_guard(
+            payload,
+            candidate_key="candidate_data_quality_failure_rate",
+            active_key="active_data_quality_failure_rate",
+            maximum=policy.max_data_quality_failure_rate,
+        )
         for payload in evidence
     )
     failed = [name for name, passed in checks.items() if not passed]

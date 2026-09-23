@@ -165,3 +165,34 @@ def test_volume_scope_keeps_cluster_pool_image_metric_and_horizon(db_session):
     assert row.host is None
     assert row.metric == "used_bytes"
     assert row.horizon_hours == 24
+
+
+def test_promotion_blocks_interval_alert_and_quality_regressions():
+    rows = []
+    for index in range(3):
+        row = _evaluation("candidate", "active", datetime(2026, 9, 21) + timedelta(hours=index))
+        row.evidence_json = json.dumps({
+            "candidate_interval_coverage": 0.75,
+            "active_interval_coverage": 0.90,
+            "candidate_alert_volume": 11,
+            "active_alert_volume": 10,
+            "candidate_data_quality_failure_rate": 0.10,
+            "active_data_quality_failure_rate": 0.05,
+            "resource_budget_ok": True,
+            "candidate_drift_status": "STABLE",
+            "candidate_drift_score": 0.0,
+        })
+        rows.append(row)
+    decision = model_registry.evaluate_guarded_promotion(
+        rows,
+        policy=model_registry.PromotionPolicy(
+            minimum_outcomes=20, required_consecutive_evaluations=3,
+            minimum_interval_coverage=0.8,
+            max_alert_volume_increase=0,
+            max_data_quality_failure_rate=0.0,
+        ),
+    )
+    assert decision.allowed is False
+    assert decision.checks["interval_coverage_guard"] is False
+    assert decision.checks["alert_volume_guard"] is False
+    assert decision.checks["data_quality_guard"] is False

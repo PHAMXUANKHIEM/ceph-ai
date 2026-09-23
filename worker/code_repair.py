@@ -27,6 +27,10 @@ from config.settings import settings as app_settings
 from shared.ai_budget import AIBudgetError, check as check_ai_budget
 from shared.ai_observability import record_ai_attempt
 from shared import telegram_alerts, telegram_outbox
+from shared.single_full_policy import (
+    CodeRepairFullAccessDisabledError,
+    ensure_code_repair_full_access_allowed,
+)
 
 
 def send_code_repair_alert(text: str) -> bool:
@@ -570,6 +574,11 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int |
                       model: str = "", mode: str = "implement") -> tuple[str, list[str]]:
     if mode not in {"implement", "review", "full-access"}:
         raise RepairError(f"unsupported AI role mode: {mode!r}")
+    if mode == "full-access":
+        try:
+            ensure_code_repair_full_access_allowed()
+        except CodeRepairFullAccessDisabledError as exc:
+            raise RepairError(str(exc)) from exc
     codex = shutil.which("codex")
     if not codex:
         candidate = Path.home() / ".local" / "bin" / "codex"

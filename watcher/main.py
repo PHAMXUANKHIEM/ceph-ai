@@ -52,7 +52,7 @@ from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from watcher.performance_rca import PERFORMANCE_RCA_PREFIX
-from shared import alert_lifecycle, audit, db, heartbeat, service_health, telegram_alerts, telegram_outbox
+from shared import alert_lifecycle, audit, db, heartbeat, incident_outbox, service_health, telegram_alerts, telegram_outbox
 from shared.cluster_snapshot import read_priority_refresh
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
@@ -341,11 +341,23 @@ def default_on_transition(previous_status: Optional[str], current: dict) -> None
     )
 
 
-async def _publish_all(envelopes: list[dict]) -> None:
+async def _publish_delivery(event_id: str, envelope: dict) -> None:
+    try:
+        await publisher.publish_incident(envelope, event_id=event_id)
+    except TypeError as exc:
+        # Preserve compatibility with deterministic tests/injected legacy
+        # publishers that still accept only the envelope argument.
+        if "unexpected keyword argument 'event_id'" not in str(exc):
+            raise
+        await publisher.publish_incident(envelope)
+
+
+async def _publish_all(deliveries: list[tuple[str, dict]]) -> None:
     """Publish every envelope over a single AMQP connection/event loop,
     instead of a full connect+declare per incident."""
-    for envelope in envelopes:
-        await publisher.publish_incident(envelope)
+    for event_id, envelope in deliveries:
+        await _publish_delivery(event_id, envelope)
+        incident_outbox.mark_published(event_id=event_id)
 
 
 def _ceph_check_is_muted(check_detail: dict | None) -> bool:
@@ -793,6 +805,23 @@ def build_and_publish_incident(
                     notification_event_id = telegram_outbox.enqueue_incident_alert(
                         session, incident,
                     )
+                envelope = publisher.build_envelope(
+                    incident_id=incident_id,
+                    ceph_code=ceph_code,
+                    detected_at=detected_at.isoformat(),
+                    nodes=nodes,
+                    log_excerpt=log_excerpt,
+                    cluster_snapshot=health,
+                    cluster_id=cluster_id,
+                    ssh_user=settings.ssh_user,
+                    ssh_key_path=settings.ssh_key_path,
+                    ceph_exec_mode=settings.ceph_exec_mode,
+                    ceph_container_name=settings.ceph_container_name,
+                    osd_hosts=osd_host_map,
+                )
+                event_id = incident_outbox.enqueue(
+                    session, incident_id=incident_id, payload=envelope,
+                )
                 session.commit()
             except IntegrityError as exc:
                 # The DB partial unique index is the authoritative dedupe
@@ -829,22 +858,7 @@ def build_and_publish_incident(
                 limit=1,
                 event_ids=[notification_event_id],
             )
-        envelopes.append(
-            publisher.build_envelope(
-                incident_id=incident_id,
-                ceph_code=ceph_code,
-                detected_at=detected_at.isoformat(),
-                nodes=nodes,
-                log_excerpt=log_excerpt,
-                cluster_snapshot=health,
-                cluster_id=cluster_id,
-                ssh_user=settings.ssh_user,
-                ssh_key_path=settings.ssh_key_path,
-                ceph_exec_mode=settings.ceph_exec_mode,
-                ceph_container_name=settings.ceph_container_name,
-                osd_hosts=osd_host_map,
-            )
-        )
+        envelopes.append((event_id, envelope))
 
     if not envelopes:
         return
@@ -1586,6 +1600,23 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
                     notification_event_id = telegram_outbox.enqueue_incident_alert(
                         session, incident,
                     )
+                envelope = publisher.build_envelope(
+                    incident_id=incident_id,
+                    ceph_code=ceph_code,
+                    detected_at=detected_at.isoformat(),
+                    nodes=nodes,
+                    log_excerpt=log_excerpt,
+                    cluster_snapshot=health,
+                    cluster_id=cluster.id,
+                    ssh_user=cluster.ssh_user,
+                    ssh_key_path=cluster.ssh_key_path,
+                    ceph_exec_mode=cluster.ceph_exec_mode,
+                    ceph_container_name=cluster.ceph_container_name,
+                    osd_hosts=osd_host_map,
+                )
+                event_id = incident_outbox.enqueue(
+                    session, incident_id=incident_id, payload=envelope,
+                )
                 session.commit()
             except IntegrityError as exc:
                 session.rollback()
@@ -1616,22 +1647,7 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
                 limit=1,
                 event_ids=[notification_event_id],
             )
-        envelopes.append(
-            publisher.build_envelope(
-                incident_id=incident_id,
-                ceph_code=ceph_code,
-                detected_at=detected_at.isoformat(),
-                nodes=nodes,
-                log_excerpt=log_excerpt,
-                cluster_snapshot=health,
-                cluster_id=cluster.id,
-                ssh_user=cluster.ssh_user,
-                ssh_key_path=cluster.ssh_key_path,
-                ceph_exec_mode=cluster.ceph_exec_mode,
-                ceph_container_name=cluster.ceph_container_name,
-                osd_hosts=osd_host_map,
-            )
-        )
+        envelopes.append((event_id, envelope))
 
     if not envelopes:
         return

@@ -1,8 +1,10 @@
 import bcrypt
 import asyncio
+import pytest
 from starlette.requests import Request
 
-from dashboard.routes.auth import is_admin_user, login_submit
+from dashboard.routes.auth import is_admin_user, login_submit, require_login
+from fastapi import HTTPException
 from shared import db as db_module
 from shared.models import AuthLoginRateLimit, User
 
@@ -135,7 +137,10 @@ def test_successful_login_replaces_preexisting_session_state(dashboard_client):
     response = asyncio.run(login_submit(request, "admin", "admin", "ceph"))
 
     assert response.status_code == 303
-    assert request.session == {"user": "admin", "product": "ceph"}
+    assert request.session["user"] == "admin"
+    assert request.session["product"] == "ceph"
+    assert request.session["auth_subject"] == "root"
+    assert request.session["root_session_fingerprint"]
 
 
 def test_already_logged_in_get_login_redirects_to_index(dashboard_client):
@@ -156,6 +161,50 @@ def test_overly_long_password_is_rejected_cleanly(dashboard_client):
         follow_redirects=False,
     )
     assert response.status_code == 401
+
+
+def test_disabled_database_user_session_is_rejected_immediately(dashboard_client):
+    _add_user("revoked-user", "operator-password")
+    from dashboard.routes import auth as auth_module
+
+    claims = auth_module._session_claims_for_login("revoked-user", "ceph")
+    assert claims is not None
+    request = Request({
+        "type": "http", "method": "GET", "path": "/", "headers": [],
+        "client": ("testclient", 12345), "session": claims,
+    })
+    assert asyncio.run(require_login(request)) == "revoked-user"
+
+    with db_module.SessionLocal() as session:
+        user = session.query(User).filter_by(username="revoked-user").one()
+        user.is_active = False
+        user.session_version += 1
+        session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(require_login(request))
+    assert exc_info.value.status_code == 303
+    assert request.session == {}
+
+
+def test_database_user_session_version_change_is_rejected(dashboard_client):
+    _add_user("versioned-user", "operator-password")
+    from dashboard.routes import auth as auth_module
+
+    claims = auth_module._session_claims_for_login("versioned-user", "ceph")
+    assert claims is not None
+    request = Request({
+        "type": "http", "method": "GET", "path": "/", "headers": [],
+        "client": ("testclient", 12345), "session": claims,
+    })
+    with db_module.SessionLocal() as session:
+        user = session.query(User).filter_by(username="versioned-user").one()
+        user.is_admin = True
+        user.session_version += 1
+        session.commit()
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(require_login(request))
+    assert exc_info.value.status_code == 303
 
 
 def test_login_locks_out_after_repeated_failures(dashboard_client):

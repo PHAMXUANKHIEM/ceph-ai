@@ -1,0 +1,15 @@
+{
+  "issues": [],
+  "license_policy": {
+    "benchmark_only": true,
+    "pyod": "BSD-2-Clause",
+    "river": "BSD-3-Clause"
+  },
+  "resource_policy": {
+    "benchmark": "offline/background-only",
+    "model_state": "JSON-only",
+    "poll_loop": "bounded"
+  },
+  "side_effects": "read-only static scan",
+  "status": "PASS"
+}

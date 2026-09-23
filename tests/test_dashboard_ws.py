@@ -6,6 +6,7 @@ import dashboard.ws as ws_module
 from shared import db as db_module
 from shared.cluster_snapshot import publish_snapshot
 from shared.models import Action, ActionClassification, ActionStatus, Incident, WatcherHeartbeat
+from shared.models import User
 
 
 def test_unauthenticated_websocket_is_rejected(dashboard_client):
@@ -15,6 +16,35 @@ def test_unauthenticated_websocket_is_rejected(dashboard_client):
     except Exception:
         connected = False
     assert not connected, "unauthenticated client should not be able to use the incidents websocket"
+
+
+def test_revoked_database_user_websocket_is_rejected(dashboard_client):
+    import bcrypt
+
+    with db_module.SessionLocal() as session:
+        session.add(User(
+            username="ws-revoked",
+            password_hash=bcrypt.hashpw(b"operator-password", bcrypt.gensalt()).decode(),
+            is_admin=False,
+            is_active=True,
+            created_by="admin",
+        ))
+        session.commit()
+    login = dashboard_client.post(
+        "/login",
+        data={"username": "ws-revoked", "password": "operator-password", "product": "ceph"},
+        follow_redirects=False,
+    )
+    assert login.status_code == 303
+    with db_module.SessionLocal() as session:
+        user = session.query(User).filter_by(username="ws-revoked").one()
+        user.is_active = False
+        user.session_version += 1
+        session.commit()
+
+    with pytest.raises(Exception):
+        with dashboard_client.websocket_connect("/ws/incidents") as websocket:
+            websocket.receive_json()
 
 
 def test_authenticated_websocket_receives_change_notification(dashboard_client, monkeypatch):

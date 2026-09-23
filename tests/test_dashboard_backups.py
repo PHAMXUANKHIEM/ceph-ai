@@ -145,6 +145,36 @@ def test_multi_cluster_backup_audit_is_bounded_and_reports_restore_gap(dashboard
     assert "backup_s3_secret_key" not in response.text
 
 
+def test_multi_cluster_digests_include_inactive_cluster_without_digest_text(dashboard_client):
+    with db_module.SessionLocal() as session:
+        secondary = _create_additional_cluster(session, name="digest-secondary")
+        session.query(Cluster).filter(Cluster.id == secondary.id).update(
+            {Cluster.is_active: False}, synchronize_session=False,
+        )
+        session.add(BackupDigestLog(
+            cluster_id=secondary.id,
+            period_start=datetime.utcnow() - timedelta(hours=1),
+            period_end=datetime.utcnow(),
+            succeeded_count=2,
+            failed_count=1,
+            anomaly_count=0,
+            summary_text="backend secret and raw error must stay out of this feed",
+            created_at=datetime.utcnow(),
+        ))
+        session.commit()
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/api/backups/multi-cluster-digests?limit=5")
+
+    assert response.status_code == 200
+    body = response.json()
+    item = next(row for row in body["clusters"] if row["cluster_name"] == "digest-secondary")
+    assert item["is_active"] is False
+    assert item["digests"][0]["failed_count"] == 1
+    assert "backend secret" not in response.text
+    assert body["read_only"] is True
+
+
 def test_backups_page_lists_queue_and_history(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
     _login(dashboard_client)

@@ -54,7 +54,7 @@ from datetime import datetime, timedelta
 from shared.time import utc_now
 
 from config.settings import settings
-from shared import audit, db, remediation_cases, telegram_alerts, telegram_outbox
+from shared import audit, db, incident_outbox, remediation_cases, telegram_alerts, telegram_outbox
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, LogFinding, RemediationCase
 from watcher import publisher
 from watcher.ceph_code_families import is_monitor_owned
@@ -315,8 +315,7 @@ def verify_pending_incidents(
                 event_type=audit.EVENT_INCIDENT_FIX_NOT_EFFECTIVE,
                 actor=audit.ACTOR_SYSTEM,
             )
-            envelopes.append(
-                publisher.build_envelope(
+            envelope = publisher.build_envelope(
                     incident_id=incident.id,
                     ceph_code=incident.ceph_code,
                     detected_at=now.isoformat(),
@@ -332,7 +331,15 @@ def verify_pending_incidents(
                     ),
                     previous_attempts=_previous_attempts(session, incident.id),
                 )
+            event_id = incident_outbox.enqueue(
+                session,
+                incident_id=incident.id,
+                payload=envelope,
+                event_id=(
+                    f"incident:{incident.id}:diagnose:retry:{incident.verify_attempts}"
+                ),
             )
+            envelopes.append((event_id, envelope))
             counts["retried"] += 1
 
         session.commit()
@@ -373,6 +380,16 @@ def _nodes_from_last_action(session, incident_id: str) -> list[str]:
     return [n for n in nodes if isinstance(n, str)] if isinstance(nodes, list) else []
 
 
-async def _publish_all(envelopes: list[dict]) -> None:
-    for envelope in envelopes:
+async def _publish_delivery(event_id: str, envelope: dict) -> None:
+    try:
+        await publisher.publish_incident(envelope, event_id=event_id)
+    except TypeError as exc:
+        if "unexpected keyword argument 'event_id'" not in str(exc):
+            raise
         await publisher.publish_incident(envelope)
+
+
+async def _publish_all(deliveries: list[tuple[str, dict]]) -> None:
+    for event_id, envelope in deliveries:
+        await _publish_delivery(event_id, envelope)
+        incident_outbox.mark_published(event_id=event_id)

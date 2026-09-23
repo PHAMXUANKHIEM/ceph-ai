@@ -42,3 +42,13 @@ Watcher/Worker:
 pip install -e '.[benchmark-forecast]'
 python scripts/forecast_benchmark.py docs/benchmark/ceph-node-cpu-anonymized.csv
 ```
+
+Benchmark HST/RRCF cũng chạy ngoài runtime. RRCF được pin riêng, có giới hạn
+forest/tree/window và chỉ trả evidence; không được dùng để phát alert hoặc
+remediation:
+
+```bash
+pip install -e '.[benchmark-anomaly]'
+python scripts/benchmark_hst_rrcf.py \
+  docs/benchmark/ceph-node-cpu-anonymized.csv --output report.json
+```

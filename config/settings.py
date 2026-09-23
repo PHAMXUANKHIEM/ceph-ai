@@ -1,4 +1,5 @@
 import os
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,7 +16,9 @@ class Settings(BaseSettings):
 
     # Kept for compatibility with the production dashboard's startup guard;
     # the deployment environment may override it with CEPH_AI_ENVIRONMENT.
-    ceph_ai_environment: str = "development"
+    # Keep the deployment profile closed: an unknown value must not silently
+    # select development-like behavior for cookies, CSRF, or database policy.
+    ceph_ai_environment: Literal["development", "test", "staging", "production", "lab"] = "development"
     database_url: str = "sqlite:///./ceph_aiops.db"
     # The Watcher has several bounded auxiliary monitor threads. Keep the
     # PostgreSQL pool finite, but large enough that one slow collector cannot
@@ -833,6 +836,9 @@ class Settings(BaseSettings):
     forecast_promotion_min_smape_improvement: float = 0.0
     forecast_promotion_max_poll_latency_ms: float = Field(default=5000.0, ge=1, le=600000)
     forecast_promotion_max_drift_score: float = Field(default=0.0, ge=0, le=100)
+    forecast_promotion_min_interval_coverage: float = Field(default=0.8, ge=0, le=1)
+    forecast_promotion_max_alert_volume_increase: int = Field(default=0, ge=0, le=1000000)
+    forecast_promotion_max_data_quality_failure_rate: float = Field(default=0.0, ge=0, le=1)
 
     # LARGE_OMAP_OBJECTS auto-remediation is opt-in and bucket-scoped.
     # test-* remains the built-in lab-only path; production buckets must be

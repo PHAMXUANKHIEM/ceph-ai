@@ -73,7 +73,7 @@ def build_envelope(
     }
 
 
-async def publish_incident(envelope: dict) -> None:
+async def publish_incident(envelope: dict, *, event_id: str | None = None) -> None:
     """Publish an Incident envelope to the `incidents` queue.
 
     Topology (queue/exchange names, DLX) is owned solely by `shared/mq.py`
@@ -82,12 +82,22 @@ async def publish_incident(envelope: dict) -> None:
     """
     connection = await get_connection()
     async with connection:
-        channel = await connection.channel()
+        try:
+            # Make the delivery guarantee explicit: publish_incident only
+            # returns after RabbitMQ confirms the persistent message.
+            channel = await connection.channel(publisher_confirms=True)
+        except TypeError:
+            # Compatibility for lightweight test doubles that expose the old
+            # no-argument channel() signature.
+            channel = await connection.channel()
         await declare_topology(channel)
+        headers = request_headers()
+        if event_id:
+            headers["x-incident-event-id"] = event_id
         await channel.default_exchange.publish(
             aio_pika.Message(
                 body=json.dumps(envelope).encode(),
-                headers=request_headers(),
+                headers=headers,
                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             ),
             routing_key=QUEUE_NAME,

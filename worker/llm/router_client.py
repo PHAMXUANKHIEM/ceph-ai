@@ -54,6 +54,12 @@ from shared.telegram_alerts import (
 from worker.backup import engine as backup_engine
 from worker.executor import bounded_job, cinder_reconciliation, cluster_deploy, commands, rbd_reconciliation, vm_perf, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
+from worker.executor.action_contract import (
+    ActionContractError,
+    TargetScope,
+    TypedActionGateway,
+    TypedActionRequest,
+)
 from worker.policy import gate
 from worker.policy.playbook_registry import evaluate_auto_execution, get_contract
 from worker.preflight import run_preflight
@@ -65,6 +71,8 @@ from watcher.ceph_client import CephQueryError, query_rbd_trash, run_ceph_json_c
 from worker.redaction import default_redactor
 
 logger = logging.getLogger(__name__)
+
+_TYPED_CAPABILITY_PREFIX = "playbook."
 
 OPERATIONAL_TELEMETRY_ATTEMPTS = 5
 OPERATIONAL_TELEMETRY_RETRY_SECONDS = 3.0
@@ -1499,6 +1507,94 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             )
 
 
+def _typed_action_target_ids(
+    *, action_id: str, target_schema: str, cluster_id: str,
+    target_nodes: list[str], action_params: dict | None,
+) -> tuple[str, list[str]]:
+    """Resolve the registry target schema into concrete typed target IDs."""
+    if target_schema == "cluster":
+        return "cluster", [cluster_id]
+    if target_schema == "host":
+        return "host", list(dict.fromkeys(target_nodes))
+    if target_schema == "osd":
+        params = action_params if isinstance(action_params, dict) else {}
+        ids = params.get("cephadm_osd_ids")
+        if not isinstance(ids, list):
+            by_host = params.get("osd_ids_by_host")
+            ids = [value for values in by_host.values() if isinstance(values, list) for value in values] \
+                if isinstance(by_host, dict) else []
+        return "osd", [str(value) for value in ids]
+    if target_schema == "pg":
+        params = action_params if isinstance(action_params, dict) else {}
+        ids = params.get("pg_ids")
+        return "pg", [str(value) for value in ids] if isinstance(ids, list) else []
+    raise ActionContractError(
+        f"action_id={action_id!r} có target schema không thực thi được: {target_schema!r}"
+    )
+
+
+def _authorize_typed_action_before_lease(
+    *, cluster: Cluster, action: Action, action_id: str,
+    target_nodes: list[str], action_params: dict | None,
+    preflight_allowed: bool, remediation_case: RemediationCase | None,
+) -> None:
+    """Apply the typed boundary immediately before lease acquisition.
+
+    This adapter deliberately consumes the existing versioned playbook
+    registry and Action/RemediationCase rows; it does not create a second
+    action catalogue or infer targets from model text.
+    """
+    contract = get_contract(action_id)
+    if contract is None:
+        raise ActionContractError("playbook chưa đăng ký typed execution contract")
+    if remediation_case is None or not remediation_case.evidence_fingerprint:
+        raise ActionContractError("thiếu evidence fingerprint đã lưu trên RemediationCase")
+    if action.expires_at is None:
+        raise ActionContractError("action contract thiếu expiry")
+    # SQLAlchemy returns SQLite/PostgreSQL ``DateTime`` values without a
+    # tzinfo even though the application stores UTC.  Normalize that
+    # database representation at the boundary; do not weaken the contract's
+    # external timezone validation.
+    expires_at = action.expires_at
+    if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    target_type, target_ids = _typed_action_target_ids(
+        action_id=action_id,
+        target_schema=contract.target_schema,
+        cluster_id=cluster.id,
+        target_nodes=target_nodes,
+        action_params=action_params,
+    )
+    if not target_ids:
+        raise ActionContractError("action contract không có target id cụ thể")
+    scope = TargetScope(
+        cluster_id=cluster.id,
+        nodes={row["host"] for row in configured_nodes(cluster)},
+        osds=set(target_ids) if target_type == "osd" else set(),
+        pgs=set(target_ids) if target_type == "pg" else set(),
+    )
+    gateway = TypedActionGateway(
+        allowed_action_ids={action_id},
+        allowed_capabilities={f"{_TYPED_CAPABILITY_PREFIX}{action_id}"},
+        target_scope=scope,
+        capability_check=lambda _request: preflight_allowed,
+    )
+    for target_id in target_ids:
+        request = TypedActionRequest(
+            action_id=action_id,
+            cluster_id=cluster.id,
+            capability=f"{_TYPED_CAPABILITY_PREFIX}{action_id}",
+            target_type=target_type,
+            target_id=target_id,
+            params=action_params or {},
+            evidence_fingerprint=remediation_case.evidence_fingerprint,
+            expires_at=expires_at,
+            actor="system:autopilot",
+        )
+        gateway.authorize(request)
+
+
 def _maybe_execute_safe_action(
     incident_id: str, action_pk: str, action_id: str, envelope: dict,
     action_params: dict | None = None,
@@ -1654,36 +1750,39 @@ def _maybe_execute_safe_action(
                 event_type=audit.EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED,
             )
         return
-    if settings.ai_preflight_enforcement_enabled:
-        with db.SessionLocal() as session:
-            incident = session.get(Incident, incident_id)
-            result = run_preflight(
-                session,
-                cluster_id=incident.cluster_id if incident is not None else None,
-                action_id=action_id,
-            )
-            if not result.allowed:
-                action = session.get(Action, action_pk)
-                if action is not None:
-                    action.status = ActionStatus.PENDING_APPROVAL.value
-                if incident is not None:
-                    incident.status = IncidentStatus.PENDING_APPROVAL.value
-                    incident.diagnosis_text = (
-                        f"{incident.diagnosis_text or ''}\n\n"
-                        f"[Execution preflight] Bị chặn: {result.reason}"
-                    ).strip()
-                    audit.record(
-                        session, incident_id=incident_id,
-                        action_id=action_pk if action is not None else None,
-                        event_type=audit.EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT,
-                        actor=audit.ACTOR_SYSTEM,
-                    )
-                session.commit()
-                logger.warning(
-                    "_maybe_execute_safe_action: execution-time preflight blocked action_id=%s "
-                    "for incident %s: %s", action_id, incident_id, result.reason,
+    # Always evaluate capability evidence here. The legacy compatibility flag
+    # may allow proposal creation, but it must never make the final typed
+    # execution gateway assume capability is present.
+    with db.SessionLocal() as session:
+        incident = session.get(Incident, incident_id)
+        result = run_preflight(
+            session,
+            cluster_id=incident.cluster_id if incident is not None else None,
+            action_id=action_id,
+        )
+        preflight_allowed = result.allowed
+        if not result.allowed and settings.ai_preflight_enforcement_enabled:
+            action = session.get(Action, action_pk)
+            if action is not None:
+                action.status = ActionStatus.PENDING_APPROVAL.value
+            if incident is not None:
+                incident.status = IncidentStatus.PENDING_APPROVAL.value
+                incident.diagnosis_text = (
+                    f"{incident.diagnosis_text or ''}\n\n"
+                    f"[Execution preflight] Bị chặn: {result.reason}"
+                ).strip()
+                audit.record(
+                    session, incident_id=incident_id,
+                    action_id=action_pk if action is not None else None,
+                    event_type=audit.EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT,
+                    actor=audit.ACTOR_SYSTEM,
                 )
-                return
+            session.commit()
+            logger.warning(
+                "_maybe_execute_safe_action: execution-time preflight blocked action_id=%s "
+                "for incident %s: %s", action_id, incident_id, result.reason,
+            )
+            return
 
     # Read fresh telemetry directly from MON after every DB/capability check.
     # The Incident envelope may be minutes old by now and is evidence for
@@ -1741,6 +1840,63 @@ def _maybe_execute_safe_action(
                 )
             session.commit()
         return
+
+    # Preserve the destructive invariant before any lease or typed gateway
+    # work: a caller can never downgrade a DESTRUCTIVE action into this SAFE
+    # path by passing a misleading classification.
+    if gate.classify_action(action_id) == ActionClassification.DESTRUCTIVE:
+        logger.error(
+            "_maybe_execute_safe_action: refusing destructive action_id=%s for incident %s",
+            action_id, incident_id,
+        )
+        _record_execution_result(incident_id, action_pk, command=None, succeeded=False)
+        return
+
+    # Final typed boundary: no lease is acquired until the server has a
+    # registered playbook, concrete target IDs, fresh evidence fingerprint,
+    # unexpired action and a successful capability preflight. This uses only
+    # DB-owned Action/RemediationCase/Cluster values, never model text.
+    with db.SessionLocal() as session:
+        typed_action = session.get(Action, action_pk)
+        typed_incident = session.get(Incident, incident_id)
+        typed_cluster = None
+        if typed_incident is not None and typed_incident.cluster_id:
+            typed_cluster = session.get(Cluster, typed_incident.cluster_id)
+        if typed_cluster is None:
+            typed_cluster = session.query(Cluster).filter(Cluster.is_default.is_(True)).first()
+        typed_case = session.query(RemediationCase).filter_by(action_id=action_pk).one_or_none()
+        try:
+            persisted_nodes = json.loads(typed_action.target_nodes or "[]") if typed_action else []
+            persisted_params = json.loads(typed_action.action_params or "null") if typed_action else None
+            if not isinstance(persisted_nodes, list) or not all(
+                isinstance(node, str) and node.strip() for node in persisted_nodes
+            ):
+                raise ActionContractError("persisted target_nodes không hợp lệ")
+            if persisted_params is not None and not isinstance(persisted_params, dict):
+                raise ActionContractError("persisted action_params không hợp lệ")
+            if typed_action is None or typed_cluster is None:
+                raise ActionContractError("Action/Cluster không còn tồn tại")
+            _authorize_typed_action_before_lease(
+                cluster=typed_cluster,
+                action=typed_action,
+                action_id=action_id,
+                target_nodes=persisted_nodes,
+                action_params=persisted_params,
+                preflight_allowed=preflight_allowed,
+                remediation_case=typed_case,
+            )
+        except (ActionContractError, TypeError, ValueError) as exc:
+            logger.warning(
+                "_maybe_execute_safe_action: typed gateway blocked action_id=%s "
+                "for incident %s: %s", action_id, incident_id, exc,
+            )
+            session.commit()
+            _route_safe_to_approval(
+                incident_id, action_pk, action_id,
+                event_type=audit.EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED,
+            )
+            return
+
     now = utc_now()
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)

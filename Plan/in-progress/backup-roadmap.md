@@ -158,6 +158,11 @@ Tiến độ audit:
   cấu hình hiện là singleton trong `backup_policy.yaml`; cần thiết kế policy
   theo cluster trước khi bật hai tính năng này.
 
+- [~] API `GET /api/backups/multi-cluster-digests` đã trả metadata digest bounded
+  theo từng cluster, bao gồm cluster inactive, không trả nội dung lỗi/secret.
+  RestoreDrill secondary vẫn bị khóa cho tới khi có scratch policy riêng và
+  isolated-cluster acceptance.
+
 **Hoàn thành khi:** test hai cluster chứng minh không cross-read/cross-block/
 cross-restore và cluster inactive bị từ chối.
 

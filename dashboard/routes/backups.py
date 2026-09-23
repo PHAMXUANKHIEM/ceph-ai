@@ -27,7 +27,7 @@ import re
 from datetime import datetime, timedelta
 from shared.time import utc_now
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from dashboard.routes import auth
@@ -1415,6 +1415,45 @@ async def multi_cluster_backup_audit(user: str = Depends(require_login)):
                 "evidence_gaps": gaps,
             })
     return {"generated_at": now.isoformat(), "clusters": report}
+
+
+@router.get("/api/backups/multi-cluster-digests")
+async def multi_cluster_backup_digests(
+    user: str = Depends(require_login),
+    limit: int = Query(5, ge=1, le=20),
+):
+    """Return bounded digest history for active and inactive clusters.
+
+    This is read-only and intentionally omits the digest text: the digest may
+    contain backend error details. The per-cluster Backup page remains the
+    place where an operator with the selected scope reads the full summary.
+    """
+    _require_admin_privilege(user)
+    with db.SessionLocal() as session:
+        clusters = session.query(Cluster).order_by(
+            Cluster.is_default.desc(), Cluster.name,
+        ).all()
+        result = []
+        for cluster in clusters:
+            query = session.query(BackupDigestLog).filter(
+                _job_scope(BackupDigestLog.cluster_id, cluster),
+            ).order_by(BackupDigestLog.created_at.desc()).limit(limit)
+            result.append({
+                "cluster_id": cluster.id,
+                "cluster_name": cluster.name,
+                "is_default": bool(cluster.is_default),
+                "is_active": bool(cluster.is_active),
+                "digests": [{
+                    "id": row.id,
+                    "period_start": row.period_start.isoformat(),
+                    "period_end": row.period_end.isoformat(),
+                    "created_at": row.created_at.isoformat(),
+                    "succeeded_count": row.succeeded_count,
+                    "failed_count": row.failed_count,
+                    "anomaly_count": row.anomaly_count,
+                } for row in query.all()],
+            })
+    return {"generated_at": utc_now().isoformat(), "clusters": result, "read_only": True}
 
 
 @router.post("/backups/digests/delete-all")

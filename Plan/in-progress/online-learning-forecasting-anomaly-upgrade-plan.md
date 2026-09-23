@@ -155,22 +155,35 @@ chứng minh không có cross-scope contamination.
 
 #### 0.2 Chụp baseline
 
-- [ ] Ghi MAE/RMSE/SMAPE/bias, false-positive rate, alert volume và data-quality
+- [x] Ghi MAE/RMSE/SMAPE/bias, false-positive rate, alert volume và data-quality
   rate theo từng scope.
-- [ ] Ghi CPU time, wall time, peak RSS và kích thước state của active baseline.
-- [ ] Ghi sample interval, history length, missing/gap rate và số outcome đã label.
-- [ ] Lưu report bất biến trong `docs/benchmark/` hoặc artifact CI.
+- [x] Ghi CPU time, wall time, peak RSS và kích thước state của active baseline.
+- [x] Ghi sample interval, history length, missing/gap rate và số outcome đã label.
+- [x] Lưu report bất biến trong `docs/benchmark/` hoặc artifact CI.
+
+Evidence (2026-09-23): `scripts/forecast_baseline_report.py` chạy read-only
+trên runtime DB, tạo `docs/benchmark/forecast-baseline-2026-09-23-rerun.json`
+với 66 scope riêng (36 node, 30 volume), checksum SHA-256, metrics đầy đủ,
+sample interval/history/gap/label rate và resource profile của baseline. Artifact
+chỉ mở bằng chế độ tạo mới; không aggregate các scope lại để che quality failure.
 
 **Exit gate:** có baseline trước nâng cấp; mọi so sánh sau này là paired và không
 được dùng số liệu aggregate để che scope xấu.
 
 #### 0.3 Khóa side effect
 
-- [ ] Test candidate không tạo `Incident`, `Action`, Telegram, executor task hoặc
+- [x] Test candidate không tạo `Incident`, `Action`, Telegram, executor task hoặc
   remediation case.
-- [ ] Test restart Watcher/Worker không làm mất snapshot/registry/evaluation.
-- [ ] Kiểm tra promotion và rollback vẫn yêu cầu operator approval.
-- [ ] Đặt feature flag riêng cho từng candidate; mặc định `OFF` hoặc `SHADOW_ONLY`.
+- [x] Test restart Watcher/Worker không làm mất snapshot/registry/evaluation.
+- [x] Kiểm tra promotion và rollback vẫn yêu cầu operator approval.
+- [x] Đặt feature flag riêng cho từng candidate; mặc định `OFF` hoặc `SHADOW_ONLY`.
+
+Evidence: `tests/test_phase0_safety.py` kiểm tra candidate replay không tạo
+Incident/Action/TelegramOutbox/ForecastAlert/RemediationCase và snapshot,
+registry, evaluation tồn tại sau session reopen. `tests/test_model_registry_lifecycle.py`
+kiểm tra operator promotion, append-only audit và rollback. `shared/forecast_flags.py`
+parse candidate flags độc lập, unknown candidate fail-closed; mặc định
+`river_linear_v2=false`, còn SNARIMAX có flag riêng mặc định `false`.
 
 ### Phase 1 — Feature/state layer và `river_linear_v2` (P0)
 
@@ -229,7 +242,7 @@ identity/index riêng. Cấu hình horizon không hợp lệ fail-closed về co
   series.
 - [~] Replay test đảm bảo v2 không đọc future sample; runtime shadow đã được nối
   vào `watcher/node_resource_forecast.py` theo đúng `cluster/host/metric/horizon`.
-- [~] Resource gate: xác định ngưỡng CPU/RSS/state size trên máy production; nếu
+- [x] Resource gate: xác định ngưỡng CPU/RSS/state size trên máy production; nếu
   vượt thì giữ candidate ở `BLOCKED`.
 
 Feature builder đã có unit/fuzz coverage; adapter v2 có snapshot/restore và test
@@ -253,6 +266,14 @@ gate `GAP_DETECTED` ở host/metric được chọn nên chưa tạo prediction 
 hành vi fail-closed đúng thiết kế. Exit gate vẫn mở cho đến khi có đủ sample
 quality `OK`, verified outcomes và replay/soak runtime hoàn chỉnh.
 
+Resource evidence: `scripts/river_linear_v2_resource_gate.py` đã chạy 5.000
+samples × 10 lần, p95 wall `383.021ms`, CPU `378.622ms`, state `759B`, RSS
+delta `20.364MiB`, đều đạt budget thử nghiệm. Runtime replay read-only
+`scripts/river_linear_v2_runtime_replay.py` đã chạy trên dữ liệu thật với 36
+node scopes; hiện có `0` verified outcome/0 scored outcome trong
+`docs/benchmark/river-linear-v2-runtime-replay-2026-09-23.json`, vì vậy chưa
+được phép coi là bằng chứng promotion.
+
 **Exit gate:** `river_linear_v2` chạy shadow trên dữ liệu replay và runtime thật,
 không side effect, có outcome riêng theo scope/horizon và không làm tăng latency
 poll loop.
@@ -272,18 +293,30 @@ poll loop.
 
 #### 2.2 Quy tắc phản ứng
 
-- [ ] Drift residual: giảm confidence và đánh dấu candidate `DRIFT`.
-- [ ] Drift MAE: chặn promotion và kéo dài cửa sổ đánh giá.
-- [ ] Drift metric gốc: tạo evidence workload changed, không kết luận model hỏng.
-- [ ] Không reset model ngay; yêu cầu operator/audited policy và đủ warm-up window.
-- [ ] Sau drift, candidate chỉ trở lại `ELIGIBLE` khi có N outcome tốt liên tiếp,
+- [x] Drift residual: giảm confidence và đánh dấu candidate `DRIFT`.
+- [x] Drift MAE: chặn promotion và kéo dài cửa sổ đánh giá.
+- [x] Drift metric gốc: tạo evidence workload changed, không kết luận model hỏng.
+- [x] Không reset model ngay; yêu cầu operator/audited policy và đủ warm-up window.
+- [x] Sau drift, candidate chỉ trở lại `ELIGIBLE` khi có N outcome tốt liên tiếp,
   cấu hình được ghi trong registry.
+
+Evidence: `shared/forecast_drift_policy.py` là pure fail-closed policy; residual
+hoặc MAE drift giảm confidence, chuyển candidate `DRIFT`, chặn promotion và
+không cho reset; MAE drift kéo dài evaluation window. Metric drift chỉ ghi
+`workload_changed`; candidate chỉ thành `ELIGIBLE` sau đủ consecutive good
+outcomes. Tests policy/drift/registry: `11 passed`.
 
 #### 2.3 Tương thích drift hiện có
 
-- [ ] Chạy ADWIN song song với `shared.forecast_drift.evaluate_drift` trong shadow.
-- [ ] So sánh detection delay, false drift và alert suppression trên replay.
-- [ ] Chỉ thay detector hiện tại sau paired benchmark và operator sign-off.
+- [x] Chạy ADWIN song song với `shared.forecast_drift.evaluate_drift` trong shadow.
+- [x] So sánh detection delay, false drift và alert suppression trên replay.
+- [x] Chỉ thay detector hiện tại sau paired benchmark và operator sign-off.
+
+Evidence (2026-09-23): `scripts/benchmark_adwin_paired.py` chạy cùng 480 mẫu,
+cùng đơn vị sample và window 30. Detector hiện tại và River ADWIN đều có
+false-drift `0%`, detection delay `15 samples`; artifact
+`docs/benchmark/adwin-paired-2026-09-23.json` ghi resource, không có side effect
+và quyết định `evidence_only`. Chưa thay detector vì vẫn cần operator approval.
 
 **Exit gate:** drift không tự gây alert/remediation, không làm mất active alert khi
 quality xấu và có audit đầy đủ cho mọi chuyển trạng thái.
@@ -344,25 +377,36 @@ Ceph thật trong Phase 3 canary; cho đến khi có bằng chứng đó, giữ 
 
 #### 4.2 Half-Space Trees
 
-- [ ] Thử River HST với số cây/chiều cao/cửa sổ giới hạn.
-- [ ] Đánh giá warm-up, score normalization, threshold calibration và clustered
+- [x] Thử River HST với số cây/chiều cao/cửa sổ giới hạn.
+- [~] Đánh giá warm-up, score normalization, threshold calibration và clustered
   anomaly.
 - [x] HST chỉ là anomaly candidate, không dự báo capacity/forecast target.
 
 #### 4.3 RRCF
 
-- [ ] Đưa RRCF vào benchmark environment tùy chọn, kiểm tra compatibility,
+- [x] Đưa RRCF vào benchmark environment tùy chọn, kiểm tra compatibility,
   maintenance và license.
-- [ ] Giới hạn forest size, shingle/window, random seed, memory và eviction FIFO.
-- [ ] So sánh HST với RRCF trên cùng replay; chưa thêm dependency production nếu
+- [x] Giới hạn forest size, shingle/window, random seed, memory và eviction FIFO.
+- [x] So sánh HST với RRCF trên cùng replay; chưa thêm dependency production nếu
   không có owner bảo trì và security scan.
+
+Evidence (2026-09-23): `scripts/benchmark_hst_rrcf.py` chạy cùng fixture 72
+điểm với `trees=10`, HST `height=8/window=128`, RRCF `tree_size=64`, seed cố
+định. RRCF `0.4.4` chỉ nằm trong extra `benchmark-anomaly`, không vào image
+production; event recall cả hai là `1.0`, RRCF false-positive `4.35%`, HST
+`47.83%`. Artifact: `docs/benchmark/hst-rrcf-2026-09-23-rerun.json`.
 
 #### 4.4 Alert aggregation
 
-- [ ] Chuẩn hóa anomaly score về contract chung và lưu top contributing features.
-- [ ] Gom điểm theo incident window để tránh một event dài tạo hàng trăm alert.
-- [ ] Candidate anomaly không gọi remediation; chỉ tạo `ANOMALY_CANDIDATE`/shadow
+- [x] Chuẩn hóa anomaly score về contract chung và lưu top contributing features.
+- [x] Gom điểm theo incident window để tránh một event dài tạo hàng trăm alert.
+- [x] Candidate anomaly không gọi remediation; chỉ tạo `ANOMALY_CANDIDATE`/shadow
   evidence.
+
+Evidence: `shared/anomaly_aggregation.py` chuẩn hóa percentile score, giữ scope,
+gom candidate trong cửa sổ 300 giây, lưu top features và luôn trả
+`ANOMALY_CANDIDATE/SHADOW_ONLY`; test aggregation đạt `2 passed`, không có
+đường gọi alert/remediation.
 
 **Exit gate:** có event-level precision/recall/delay và resource profile; chọn tối
 đa một detector vào phase canary.
@@ -386,25 +430,34 @@ fail poll loop. Report snapshot hiện tại nằm tại
 
 #### 5.2 PyOD
 
-- [~] Benchmark anomaly baseline, River HST, Candidate D isolation và PyOD
+- [x] Benchmark anomaly baseline, River HST, Candidate D isolation và PyOD
   Isolation Forest nếu optional extra có sẵn; ECOD/COPOD/HBOS/PCA còn pending.
 - [x] Không chạy hàng chục detector trong poll loop; không để PyOD tự phát alert.
 - [x] Tách kết quả point-level và event-level, ghi rõ label quality.
 
-Report trên dataset 72 điểm đã chạy được robust baseline, River HST và Candidate D;
-PyOD được ghi `unavailable` vì optional extra chưa cài. River HST có event recall
-`0.0` trên fixture nhỏ, Candidate D và robust baseline đạt `1.0`, nên chưa có
-quyết định promotion detector.
+Report `docs/benchmark/forecast-benchmark-report-2026-09-23.json` trên dataset
+72 điểm đã chạy robust baseline, River HST, Candidate D, PyOD Isolation Forest
+và StatsForecast Naive/SeasonalNaive trong evaluation environment. PyOD dùng
+`scikit-learn==1.5.2` để tương thích với `pyod==2.0.5`; không dependency nào
+được đưa vào Watcher image. PyOD event recall `0.667`, false-positive `0%`,
+CPU khoảng `6438ms`; River HST event recall `0.0`, Candidate D và robust
+baseline `1.0`, nên chưa có quyết định promotion detector.
 
 #### 5.3 NAB scoring
 
-- [ ] Import/adapt NAB scoring với version pin và license review.
-- [ ] Mapping anomaly window cho CPU/RAM/IOPS/latency/capacity; không coi một điểm
+- [x] Import/adapt NAB scoring với version pin và license review.
+- [x] Mapping anomaly window cho CPU/RAM/IOPS/latency/capacity; không coi một điểm
   metric là một incident độc lập.
-- [ ] Báo cáo event recall, mean detection delay, time-to-detect, false alerts/day,
+- [x] Báo cáo event recall, mean detection delay, time-to-detect, false alerts/day,
   precision theo incident, CPU time và peak memory.
-- [ ] Giữ dataset hiện tại 72 điểm làm regression fixture nhưng không coi đó là
+- [x] Giữ dataset hiện tại 72 điểm làm regression fixture nhưng không coi đó là
   benchmark đủ; bổ sung synthetic + anonymized real series.
+
+Evidence: `scripts/nab_scoring.py` dùng scorer nội bộ version
+`ceph-ai-nab-adapted-v1`, không import code NAB bên thứ ba; artifact
+`docs/benchmark/nab-scoring-2026-09-23.json` ghi 3 incident windows, event
+recall, detection delay, time-to-detect, false-alerts/day và resource fields.
+Fixture 72 điểm chỉ là regression evidence, chưa đủ cho production promotion.
 
 #### 5.4 sktime/Evidently tùy chọn
 
@@ -428,10 +481,10 @@ có report so sánh active/candidate và không tác động cluster.
   `SHADOW_ONLY`, nhưng soak runtime riêng vẫn pending; chưa được tự promotion và
   chưa bật remediation.
 
-Report `docs/benchmark/forecast-shadow-soak-2026-09-22.json` đạt PASS với 150
-comparisons, 18.258 evaluations, duration `358.211h`, không drift hiện tại và
-không resource failure. Một historical drift không còn khóa sai soak vì replay
-đã dùng drift state mới nhất thay vì `any()` trên toàn bộ lịch sử.
+Report `docs/benchmark/forecast-shadow-soak-2026-09-23.json` có 324 comparisons,
+21.007 evaluations và duration `383.477h`; resource/shadow checks đạt nhưng
+trạng thái `HOLD` do 21 scope hiện có drift. Đây là evidence soak thật nhưng
+chưa đạt exit gate vì không được bỏ qua drift.
 
 - [x] Đã deploy migration scope lên server `10.3.55.213`; registry hiện có 192/192
   row ở `forecast-scope-v2`, không còn row thiếu dimension. Watcher và dashboard
@@ -447,15 +500,15 @@ approval mới được gửi promotion request; rollback vẫn dùng model vers
 
 ### Phase 6 — Paired walk-forward evaluation và promotion (P0)
 
-- [ ] Tất cả active/candidate dự báo cùng input window, target timestamp và quality
+- [x] Tất cả active/candidate dự báo cùng input window, target timestamp và quality
   decision.
 - [ ] Tính MAE, RMSE, SMAPE, bias, p95 absolute error, interval coverage, event
   recall, detection delay, false-positive rate và alert volume theo scope.
-- [ ] Không aggregate che mất regression của một host/metric/horizon; cần pass theo
+- [x] Không aggregate che mất regression của một host/metric/horizon; cần pass theo
   scope hoặc có policy ghi rõ ngoại lệ.
-- [ ] Minimum sample, minimum evaluation streak và maximum data-quality rate phải
+- [x] Minimum sample, minimum evaluation streak và maximum data-quality rate phải
   cấu hình được trong registry.
-- [ ] Promotion gate tối thiểu:
+- [~] Promotion gate tối thiểu:
   - candidate đủ outcome và đủ evaluation streak;
   - MAE/SMAPE không kém active quá tolerance;
   - false-positive và alert volume không tăng ngoài budget;
@@ -463,11 +516,20 @@ approval mới được gửi promotion request; rollback vẫn dùng model vers
   - không có drift `DRIFT`, `UNKNOWN_SCOPE` hoặc thiếu label bắt buộc;
   - CPU/RSS/state size nằm trong budget;
   - rollback artifact đã tồn tại.
-- [ ] Operator approval ghi scope, model/version, evidence report, expiry và người
+- [~] Operator approval ghi scope, model/version, evidence report, expiry và người
   duyệt.
-- [ ] Promotion tạo audit append-only và cập nhật đúng một `ACTIVE` cho scope.
-- [ ] Rollback dùng previous active version, kiểm tra health sau rollback và tạo
+- [x] Promotion tạo audit append-only và cập nhật đúng một `ACTIVE` cho scope.
+- [x] Rollback dùng previous active version, kiểm tra health sau rollback và tạo
   audit event; không xóa candidate/evaluation history.
+
+Evidence: `scripts/forecast_walk_forward_report.py` tạo report paired theo 66
+scope với 324 comparisons (`250 HOLD`, `74 PROMISING`), giữ scope/horizon và
+target alignment, không aggregate regression. `shared/model_registry.py` đã
+thêm gates interval coverage, alert volume và data-quality failure rate; missing
+pair hoặc invalid value fail-closed. Lifecycle tests bao phủ operator approval,
+append-only audit và rollback; audit đã ghi actor/scope/model/evidence nhưng
+trường expiry riêng vẫn pending. Promotion gate vẫn `~` vì soak drift và
+verified runtime outcomes chưa đủ để cho phép production promotion.
 
 **Exit gate:** promotion/rollback có thể diễn tập trên staging và không có đường
 code nào để worker tự promote hoặc candidate tự remediation.
@@ -485,8 +547,14 @@ code nào để worker tự promote hoặc candidate tự remediation.
   Watcher/Worker, rollback model, restore DB evidence.
 - [ ] Canary soak không tăng alert spam, không làm stale source thành NORMAL và
   không ảnh hưởng latency/health loop.
-- [ ] Security/license/dependency/image scan và operator sign-off hoàn tất trước
+- [~] Security/license/dependency/image scan và operator sign-off hoàn tất trước
   khi thêm dependency runtime.
+
+Evidence: `scripts/forecast_release_scan.py` đạt `PASS` ngày 2026-09-23 với
+River pin, benchmark-only dependency policy, JSON-only state và forbidden
+runtime pattern scan; artifact `docs/benchmark/forecast-release-scan-2026-09-23.json`.
+`pip-audit`, license report và Trivy/Syft CI gates đã được cấu hình trước đó.
+Image scan CI và operator sign-off vẫn pending nên gate chưa chuyển `[x]`.
 - [ ] Cập nhật release manifest, runbook và completed plan chỉ sau khi có evidence.
 
 ## 7. Dependency và packaging policy
@@ -586,16 +654,16 @@ runtime và promotion policy vào một commit lớn khó rollback.
 
 | Gate | Tiêu chí | Trạng thái ban đầu |
 |---|---|---|
-| Identity | Không mất host/entity, metric, horizon | `[ ]` |
-| Feature | Không leakage, quality fail-closed | `[ ]` |
-| River v2 | Shadow có outcome riêng, state bounded | `[ ]` |
-| Drift | ADWIN/old detector paired, không auto-reset | `[ ]` |
-| SNARIMAX | Chỉ shadow, có resource profile | `[ ]` |
-| Anomaly | HST/RRCF event benchmark và explainability | `[ ]` |
-| Offline benchmark | StatsForecast/PyOD/NAB reproducible | `[ ]` |
-| Monitoring | quality/drift/MAE/interval report | `[ ]` |
-| Promotion | operator approval, audit, rollback | `[ ]` |
-| Production | staging/soak/security/license/runtime sign-off | `[ ]` |
+| Identity | Không mất host/entity, metric, horizon | `[x]` |
+| Feature | Không leakage, quality fail-closed | `[x]` |
+| River v2 | Shadow có outcome riêng, state bounded | `[~]` |
+| Drift | ADWIN/old detector paired, không auto-reset | `[x]` |
+| SNARIMAX | Chỉ shadow, có resource profile | `[x]` |
+| Anomaly | HST/RRCF event benchmark và explainability | `[~]` |
+| Offline benchmark | StatsForecast/PyOD/NAB reproducible | `[x]` |
+| Monitoring | quality/drift/MAE/interval report | `[~]` |
+| Promotion | operator approval, audit, rollback | `[~]` |
+| Production | staging/soak/security/license/runtime sign-off | `[~]` |
 
 ## 13. Những việc làm ngay sau khi Plan được duyệt
 

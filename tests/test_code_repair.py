@@ -478,6 +478,8 @@ def test_codex_reviewer_is_read_only_and_accepts_model(monkeypatch, tmp_path):
 
 
 def test_full_access_provider_commands_bypass_the_cli_sandbox(monkeypatch, tmp_path):
+    monkeypatch.setattr(code_repair.app_settings, "ceph_ai_environment", "development")
+    monkeypatch.setattr(code_repair.app_settings, "code_repair_auto_enabled", True)
     monkeypatch.setattr(code_repair.shutil, "which", lambda name: f"/bin/{name}")
     _provider, codex_command = code_repair._provider_command(
         "codex", tmp_path, "do it", 30, mode="full-access",

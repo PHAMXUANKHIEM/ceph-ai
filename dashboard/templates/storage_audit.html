@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audit Viewer — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  {% include "_nav.html" %}
+  <main class="page">
+    <header class="page-header">
+      <div><p class="eyebrow">TRACEABILITY / STORAGE</p><h1>Audit Viewer</h1><p class="hint">Lịch sử read-only của Incident, Backup và Object Storage trong cụm đang chọn.</p></div>
+      <span class="badge badge-muted">{{ audit_page.total }} sự kiện</span>
+    </header>
+    <section class="card">
+      <form class="audit-filters" method="get" action="/audit">
+        <label>Loại sự kiện<select name="kind"><option value=""{% if not audit_page.kind %} selected{% endif %}>Tất cả</option><option value="incident"{% if audit_page.kind == 'incident' %} selected{% endif %}>Incident</option><option value="backup"{% if audit_page.kind == 'backup' %} selected{% endif %}>Backup</option><option value="object_storage"{% if audit_page.kind == 'object_storage' %} selected{% endif %}>Object Storage</option></select></label>
+        <label>Mỗi trang<select name="page_size"><option value="25"{% if audit_page.page_size == 25 %} selected{% endif %}>25</option><option value="50"{% if audit_page.page_size == 50 %} selected{% endif %}>50</option><option value="100"{% if audit_page.page_size == 100 %} selected{% endif %}>100</option></select></label>
+        <button class="btn btn-primary" type="submit">Lọc</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Thời gian</th><th>Loại</th><th>Actor</th><th>Sự kiện</th><th>Target</th><th>Kết quả</th><th>Request ID</th></tr></thead>
+          <tbody>
+          {% for row in audit_page["items"] %}
+            <tr><td><time datetime="{{ row.created_at }}" title="{{ row.created_at }}">{{ row.created_at }}</time></td><td>{{ row.kind }}</td><td>{{ row.actor }}</td><td><code>{{ row.event }}</code></td><td><code>{{ row.target }}</code></td><td>{{ row.result or '—' }}</td><td><code title="{{ row.request_id }}">{{ row.request_id[:12] }}{% if row.request_id|length > 12 %}…{% endif %}</code></td></tr>
+          {% else %}<tr><td colspan="7"><div class="empty-state">Chưa có audit trong phạm vi cụm này.</div></td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <footer class="dashboard-pagination"><span>Hiển thị {{ ((audit_page.page - 1) * audit_page.page_size + 1) if audit_page.total else 0 }}–{{ [audit_page.page * audit_page.page_size, audit_page.total]|min }} / {{ audit_page.total }}</span><span>Trang {{ audit_page.page }}/{{ audit_page.pages }}</span></footer>
+    </section>
+  </main>
+</body>
+</html>

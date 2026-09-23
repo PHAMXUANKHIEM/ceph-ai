@@ -4,7 +4,9 @@ x-app: &app
   build:
     context: .
     dockerfile: Dockerfile
-  image: ceph-ai:local
+  # Local development keeps the historical default. Production deployment
+  # passes CEPH_AI_IMAGE to select the exact scanned registry image.
+  image: "${CEPH_AI_IMAGE:-ceph-ai:local}"
   working_dir: /app
   env_file: /var/lib/ceph-ai/config/.env
   environment:

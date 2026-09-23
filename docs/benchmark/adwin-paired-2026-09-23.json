@@ -1,0 +1,26 @@
+{
+  "config": {
+    "same_sample_unit": true,
+    "shifted_samples": 240,
+    "stable_samples": 240,
+    "window_samples": 30
+  },
+  "detectors": {
+    "current_window_drift": {
+      "detection_delay_samples": 15,
+      "false_drift_rate": 0.0
+    },
+    "river_adwin": {
+      "detection_delay_samples": 15,
+      "false_drift_rate": 0.0
+    }
+  },
+  "resource": {
+    "cpu_ms": 2740.176,
+    "peak_rss_delta_kib": 99748,
+    "wall_ms": 1441.235
+  },
+  "schema": "ceph-ai.adwin-paired-benchmark.v1",
+  "selection": "evidence_only; operator approval required for detector changes",
+  "side_effects": "read-only; no alert, notification, remediation, promotion or database write"
+}

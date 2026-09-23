@@ -149,6 +149,7 @@ async def toggle_user_active(request: Request, user_id: str, user: str = Depends
                 _users_context(user, user_toggle_error="Không thể tự vô hiệu hoá chính tài khoản đang đăng nhập."),
             )
         target.is_active = not target.is_active
+        target.session_version += 1
         session.commit()
 
     return templates.TemplateResponse(request, "users.html", _users_context(user))
@@ -172,6 +173,7 @@ async def toggle_ceph_chat_scope(
                 _users_context(user, user_toggle_error="Tài khoản admin luôn được hỏi AI không giới hạn."),
             )
         target.ceph_chat_restricted = not target.ceph_chat_restricted
+        target.session_version += 1
         restricted = target.ceph_chat_restricted
         username = target.username
         session.commit()
@@ -213,9 +215,16 @@ async def edit_user(
         elif target.username == user and not is_admin_flag:
             error = "Không thể tự hạ quyền admin của tài khoản đang đăng nhập."
         else:
+            profile_changed = (
+                target.username != username
+                or target.is_admin != is_admin_flag
+                or target.ceph_chat_restricted != (False if is_admin_flag else not ai_enabled)
+            )
             target.username = username
             target.is_admin = is_admin_flag
             target.ceph_chat_restricted = False if is_admin_flag else not ai_enabled
+            if profile_changed:
+                target.session_version += 1
             session.commit()
 
     if error:
@@ -249,6 +258,7 @@ async def change_user_password(
         else:
             username = target.username
             target.password_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+            target.session_version += 1
             session.commit()
 
     if error:

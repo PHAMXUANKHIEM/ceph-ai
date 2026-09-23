@@ -43,6 +43,8 @@ ENVELOPE = {
 
 @pytest.fixture()
 def isolated_db(monkeypatch):
+    from worker.preflight import PreflightResult
+
     engine = create_engine(
         "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -59,7 +61,9 @@ def isolated_db(monkeypatch):
     with db_module.SessionLocal() as session:
         session.add(Cluster(
             id="test-default-cluster", name="test", is_default=True, is_active=True,
-            ceph_mon_nodes="mon-a", ceph_container_name="ceph-mon", ssh_user="root",
+            ceph_mon_nodes=(
+                "mon-a,10.20.1.249,10.20.1.253,10.20.1.83,10.30.1.20"
+            ), ceph_container_name="ceph-mon", ssh_user="root",
             ssh_key_path="/tmp/test-key", ceph_exec_mode="none",
             autonomy_environment="lab", autopilot_enabled=True,
         ))
@@ -68,6 +72,12 @@ def isolated_db(monkeypatch):
     # Opt them into the pre-Pha-0 posture explicitly; dedicated tests below
     # cover the new fail-closed defaults and kill-switch behavior.
     monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", False)
+    # The legacy execution tests intentionally bypass the real capability
+    # inventory. Dedicated preflight tests override this stub explicitly.
+    monkeypatch.setattr(
+        router_client, "run_preflight",
+        lambda *_args, **_kwargs: PreflightResult(True, capability_status="SUPPORTED"),
+    )
     monkeypatch.setattr(settings, "autopilot_enabled", True)
     monkeypatch.setattr(settings, "autopilot_grace_period_seconds", 0)
     # Legacy execution-path fixtures predate model confidence. Tests dedicated
@@ -1239,9 +1249,8 @@ def test_record_execution_result_missing_incident_row_does_not_crash_and_skips_a
 def test_diagnose_incident_recovers_pending_action_left_by_a_crashed_prior_attempt(
     isolated_db, monkeypatch
 ):
-    # Simulates: a prior diagnose_incident() call created the Action (status
-    # PENDING) and committed, then the process died before execution ran.
-    # A redelivery must retry execution, not strand it forever.
+    # A legacy row without typed evidence/expiry must not be retried blindly
+    # after a crash. The new gateway parks it for operator review.
     _create_incident("incident-5g")
     with db_module.SessionLocal() as session:
         session.add(
@@ -1263,14 +1272,13 @@ def test_diagnose_incident_recovers_pending_action_left_by_a_crashed_prior_attem
     envelope = dict(ENVELOPE, incident_id="incident-5g")
     asyncio.run(router_client.diagnose_incident("incident-5g", envelope))
 
-    assert execute_calls == ["10.20.1.249"]  # execution actually retried
+    assert execute_calls == []
     with db_module.SessionLocal() as session:
         actions = session.query(Action).filter_by(incident_id="incident-5g").all()
         assert len(actions) == 1  # no duplicate row created
-        assert actions[0].status == ActionStatus.AUTO_EXECUTED.value
+        assert actions[0].status == ActionStatus.PENDING_APPROVAL.value
         incident = session.get(Incident, "incident-5g")
-        assert incident.status == IncidentStatus.VERIFYING.value
-        assert incident.verify_after is not None
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
 
 
 # --- Story 4.2: RISKY -> PENDING_APPROVAL ----------------------------------
@@ -3048,6 +3056,7 @@ def test_msgr2_retry_reexecutes_instead_of_only_resetting_verify_timer(isolated_
             classification=ActionClassification.SAFE.value,
             status=ActionStatus.AUTO_EXECUTED.value,
             target_nodes='["mon-a"]',
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
         )
         session.add(action)
         session.flush()
@@ -3817,6 +3826,55 @@ def test_playbook_contract_ceiling_routes_safe_candidate_to_approval_with_audit(
         assert action.status == ActionStatus.PENDING_APPROVAL.value
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
         assert events == [(audit.EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED,)]
+
+
+def test_typed_gateway_blocks_target_outside_cluster_before_lease(isolated_db, monkeypatch):
+    from worker.preflight import PreflightResult
+
+    monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", True)
+    monkeypatch.setattr(settings, "autopilot_enabled", True)
+    monkeypatch.setattr(
+        router_client, "run_preflight",
+        lambda *_args, **_kwargs: PreflightResult(True, capability_status="SUPPORTED"),
+    )
+    monkeypatch.setattr(
+        router_client, "run_ceph_json_command_with",
+        lambda *_args, **_kwargs: ("mon-a", {"health": {"status": "HEALTH_OK"}}),
+    )
+    monkeypatch.setattr(
+        router_client, "acquire_lease",
+        lambda *_args, **_kwargs: pytest.fail("typed gateway must block before lease"),
+    )
+    _create_incident("incident-typed-target")
+    with db_module.SessionLocal() as session:
+        action = Action(
+            incident_id="incident-typed-target", action_id="resync_ntp",
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.PENDING.value, target_nodes='["not-in-cluster"]',
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+        session.add(action)
+        session.flush()
+        session.add(RemediationCase(
+            incident_id="incident-typed-target", action_id=action.id,
+            cluster_id="test-default-cluster", fault_family="MON_CLOCK_SKEW",
+            evidence_fingerprint="b" * 64, prompt_version="test",
+            classification=ActionClassification.SAFE.value,
+            autonomy_decision="AUTO_EXECUTE", playbook_version="3",
+        ))
+        session.commit()
+        action_pk = action.id
+
+    router_client._maybe_execute_safe_action(
+        "incident-typed-target", action_pk, "resync_ntp",
+        dict(ENVELOPE, incident_id="incident-typed-target", nodes=["not-in-cluster"]),
+    )
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        incident = session.get(Incident, "incident-typed-target")
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
 
 
 def test_action_target_guard_is_not_limited_to_container_deployments(monkeypatch):

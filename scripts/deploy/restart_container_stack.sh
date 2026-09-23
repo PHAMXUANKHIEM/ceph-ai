@@ -9,6 +9,8 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEPLOY_REF="${DEPLOY_REF:-origin/main}"
 SERVICES=(dashboard-web full-executor watcher worker code-repair telegram-ai)
+DEPLOY_IMAGE="${CEPH_AI_IMAGE:-}"
+EXPECTED_IMAGE_DIGEST="${CEPH_AI_EXPECTED_IMAGE_DIGEST:-}"
 
 cd "$REPO_DIR"
 # A self-hosted runner may share the canonical checkout with an operator who
@@ -101,14 +103,36 @@ systemctl daemon-reload
 systemctl reset-failed ceph-ai-container-restart.service || true
 systemctl enable --now ceph-ai-container-restart.socket
 
-# Migrate before a newly-built process can query a table/column introduced by
-# this revision. ``heads`` safely applies all pending migration branches.
-"$REPO_DIR/.venv/bin/alembic" upgrade heads
+# Dependencies are baked into the application image. A production release may
+# provide the exact image digest already scanned by CI. In that mode, refuse
+# to build locally: rebuilding here would break the CI-image-to-runtime
+# identity guarantee. The empty-image path preserves the lab/local workflow.
+if [ -n "$DEPLOY_IMAGE" ]; then
+  if [ -z "$EXPECTED_IMAGE_DIGEST" ] && [ "${CEPH_AI_ALLOW_UNVERIFIED_IMAGE:-false}" != "true" ]; then
+    echo "ERROR: CEPH_AI_EXPECTED_IMAGE_DIGEST is required when deploying a pre-built image" >&2
+    echo "Set CEPH_AI_ALLOW_UNVERIFIED_IMAGE=true only for an explicitly non-production lab run" >&2
+    exit 4
+  fi
+  if ! podman image exists "$DEPLOY_IMAGE"; then
+    echo "ERROR: deployment image is not present locally: $DEPLOY_IMAGE" >&2
+    exit 4
+  fi
+  actual_image_digest="$(podman image inspect "$DEPLOY_IMAGE" --format '{{.Id}}')"
+  if [ -n "$EXPECTED_IMAGE_DIGEST" ] && [ "$actual_image_digest" != "$EXPECTED_IMAGE_DIGEST" ]; then
+    echo "ERROR: deployment image digest mismatch: expected $EXPECTED_IMAGE_DIGEST, got $actual_image_digest" >&2
+    exit 4
+  fi
+else
+  # Dependencies are baked into the application image. Build before restart so
+  # a changed pyproject.toml cannot leave newly-started processes importing an
+  # older dependency set.
+  podman-compose build
+fi
 
-# Dependencies are baked into the application image. Build before restart so
-# a changed pyproject.toml cannot leave newly-started processes importing an
-# older dependency set.
-podman-compose build
+# Only migrate after the exact artifact has been verified or built. ``heads``
+# safely applies all pending migration branches, but a failed artifact check
+# must never be followed by a database schema change.
+"$REPO_DIR/.venv/bin/alembic" upgrade heads
 
 # The container service's launcher disables conflicting legacy service units
 # and force-recreates the Python processes that import mounted application
@@ -136,6 +160,17 @@ if [ "$all_healthy" != true ] || [ "${consumer_count:-0}" -lt 1 ]; then
   echo "ERROR: container health or Worker queue consumption did not recover" >&2
   podman ps --format '{{.Names}} {{.Status}}' >&2 || true
   exit 1
+fi
+
+if [ -n "$EXPECTED_IMAGE_DIGEST" ]; then
+  for service in "${SERVICES[@]}"; do
+    running_image_digest="$(podman inspect "ceph-ai_${service}_1" --format '{{.Image}}')"
+    if [ "$running_image_digest" != "$EXPECTED_IMAGE_DIGEST" ]; then
+      echo "ERROR: running container $service is not using the approved image digest" >&2
+      echo "expected=$EXPECTED_IMAGE_DIGEST actual=$running_image_digest" >&2
+      exit 5
+    fi
+  done
 fi
 
 curl -fsS --max-time 10 http://127.0.0.1:8000/login >/dev/null

@@ -1178,14 +1178,13 @@ def _dashboard_health_snapshot_response(
         cluster_nodes = None
     full_status = status_section.get("status") if isinstance(status_section, dict) else None
     if isinstance(full_status, dict) and isinstance(full_status.get("health"), dict):
-        # Use the full ceph -s read model for all dashboard cards. Merge in
-        # the richer health-detail checks when the two collectors completed
-        # at slightly different times.
+        # Use ceph -s for capacity/OSD/PG cards. The critical health collector
+        # runs more often, so its newest health result takes precedence.
         status = dict(full_status)
-        if isinstance(raw_health, dict) and isinstance(raw_health.get("checks"), dict):
+        critical_health = raw_health.get("health") if isinstance(raw_health, dict) and isinstance(raw_health.get("health"), dict) else raw_health
+        if isinstance(critical_health, dict):
             full_health = status.get("health")
-            if isinstance(full_health, dict):
-                status["health"] = {**full_health, "checks": raw_health["checks"]}
+            status["health"] = {**(full_health if isinstance(full_health, dict) else {}), **critical_health}
         payload = _dashboard_health_payload(
             status, selected_cluster, cluster_nodes=cluster_nodes,
         )
@@ -1285,6 +1284,16 @@ async def index(
         # cluster's docstring above).
         request.session["selected_cluster_id"] = selected_cluster.id
         cluster_names_by_id = {c.id: c.name for c in clusters}
+        # Bootstrap the React overview from the persisted snapshot. This is a
+        # read-only local/cache operation, so the first paint does not need to
+        # wait for a second HTTP round-trip before showing health cards. The
+        # background Watcher remains the only owner of Ceph collection.
+        initial_snapshot = read_snapshot(
+            selected_cluster.id,
+            stale_after_seconds=_DASHBOARD_HEALTH_STALE_SECONDS,
+            max_stale_seconds=_DASHBOARD_HEALTH_MAX_STALE_SECONDS,
+        )
+        initial_health = _dashboard_health_snapshot_response(initial_snapshot, selected_cluster)
         (
             incidents,
             latest_heartbeat,
@@ -1345,6 +1354,7 @@ async def index(
             "cluster_exec_mode": selected_cluster.ceph_exec_mode,
             "clusters": clusters,
             "selected_cluster": selected_cluster,
+            "initial_health": initial_health,
             "pending_actions": pending_actions_with_incident,
             "audit_entries": audit_entries,
             "filter_incident_id": incident_id,

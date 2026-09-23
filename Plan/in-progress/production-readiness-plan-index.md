@@ -17,6 +17,7 @@
 9. [09 — Time and warning hygiene](production-readiness-09-time-and-warnings.md)
 10. [10 — Load, chaos and rollback drills](production-readiness-10-chaos-and-release-readiness.md)
 11. [11 — Production reassessment and release-blocker closure](production-reassessment-plan.md)
+12. [Independent source review remediation — 2026-09-22](independent-source-review-remediation-plan-2026-09-22.md)
 
 ## Release policy
 
@@ -37,5 +38,11 @@
 - Production 03 — PostgreSQL/migration foundation: **đang triển khai**; database gate, pool bounds, backup và restore/downgrade drill đã có evidence.
 - Production 05 — Security baseline: **đang triển khai**; production credential/database startup gates, CSRF, login/API rate limit, security regression, trusted proxy boundary và mutation audit đã có; cluster scope/tenant isolation review còn mở.
 - Production 01/02/04/06/07/08/09/10: **chưa nghiệm thu**; không bật LIMITED_AUTOPILOT.
-- Production reassessment: **mới lập kế hoạch** theo báo cáo đánh giá `e71ba63`;
-  các gate PR-01 đến PR-08 chưa được coi là bằng chứng nghiệm thu cho HEAD mới.
+- Production reassessment: **đang mở**; các gate PR-01 đến PR-08 chưa được coi là
+  bằng chứng nghiệm thu cho HEAD mới. Báo cáo độc lập mới nhất được điều phối bởi
+  `independent-source-review-remediation-plan-2026-09-22.md` tại baseline
+  `e5a1df16`.
+- Independent source review 2026-09-22: **đã lập remediation plan** tại
+  `independent-source-review-remediation-plan-2026-09-22.md`; F01/F03 là P0,
+  F02/F04/F05/F06/F07 là P1, F08 là P2. Không bật autonomous remediation
+  trước khi các gate P0 pass.

@@ -1,5 +1,6 @@
 import asyncio
 
+import bcrypt
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -10,10 +11,17 @@ from starlette.responses import HTMLResponse
 from config.settings import (
     DEFAULT_DASHBOARD_PASSWORD_HASH,
     DEFAULT_SESSION_SECRET_KEY,
+    Settings,
     settings,
 )
 from dashboard import app as dashboard_app
 from shared import db
+
+
+_VALID_PRODUCTION_PASSWORD_HASH = bcrypt.hashpw(
+    b"test-production-password", bcrypt.gensalt()
+).decode()
+_VALID_PRODUCTION_SESSION_SECRET = "test-production-session-secret-" + ("x" * 40)
 
 
 def test_production_database_rejects_sqlite(monkeypatch):
@@ -43,10 +51,51 @@ def test_production_dashboard_rejects_dev_security_defaults(monkeypatch):
         dashboard_app._warn_if_using_dev_defaults()
 
 
+@pytest.mark.parametrize(
+    ("password_hash", "session_secret", "message"),
+    [
+        ("", _VALID_PRODUCTION_SESSION_SECRET, "DASHBOARD_PASSWORD_HASH"),
+        ("   ", _VALID_PRODUCTION_SESSION_SECRET, "DASHBOARD_PASSWORD_HASH"),
+        ("not-a-bcrypt-hash", _VALID_PRODUCTION_SESSION_SECRET, "DASHBOARD_PASSWORD_HASH"),
+        (_VALID_PRODUCTION_PASSWORD_HASH, "", "SESSION_SECRET_KEY"),
+        (_VALID_PRODUCTION_PASSWORD_HASH, "   ", "SESSION_SECRET_KEY"),
+        (_VALID_PRODUCTION_PASSWORD_HASH, "short-secret", "SESSION_SECRET_KEY"),
+    ],
+)
+def test_production_dashboard_rejects_empty_short_or_malformed_security_values(
+    monkeypatch, password_hash, session_secret, message,
+):
+    monkeypatch.setattr(settings, "ceph_ai_environment", "production")
+    monkeypatch.setattr(settings, "dashboard_password_hash", password_hash)
+    monkeypatch.setattr(settings, "session_secret_key", session_secret)
+    monkeypatch.setattr(settings, "dashboard_trusted_hosts", "admin.example")
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "https://admin.example")
+
+    with pytest.raises(RuntimeError, match=message):
+        dashboard_app._warn_if_using_dev_defaults()
+
+
+def test_settings_rejects_unknown_environment_profile():
+    with pytest.raises(ValueError, match="ceph_ai_environment"):
+        Settings(_env_file=None, ceph_ai_environment="Production")
+
+
+def test_production_dashboard_accepts_valid_bcrypt_and_long_secret(monkeypatch):
+    monkeypatch.setattr(settings, "ceph_ai_environment", "production")
+    monkeypatch.setattr(settings, "dashboard_username", "admin")
+    monkeypatch.setattr(settings, "dashboard_password_hash", _VALID_PRODUCTION_PASSWORD_HASH)
+    monkeypatch.setattr(settings, "session_secret_key", _VALID_PRODUCTION_SESSION_SECRET)
+    monkeypatch.setattr(settings, "dashboard_trusted_hosts", "admin.example")
+    monkeypatch.setattr(settings, "dashboard_allowed_origins", "https://admin.example")
+    monkeypatch.setattr(settings, "dashboard_trusted_proxy_ips", "")
+
+    dashboard_app._warn_if_using_dev_defaults()
+
+
 def test_production_dashboard_rejects_missing_host_and_origin_policy(monkeypatch):
     monkeypatch.setattr(settings, "ceph_ai_environment", "production")
-    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
-    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_password_hash", _VALID_PRODUCTION_PASSWORD_HASH)
+    monkeypatch.setattr(settings, "session_secret_key", _VALID_PRODUCTION_SESSION_SECRET)
     monkeypatch.setattr(settings, "dashboard_trusted_hosts", "")
     monkeypatch.setattr(settings, "dashboard_allowed_origins", "")
 
@@ -153,8 +202,8 @@ def test_production_html_response_gets_csrf_form_and_script():
 
 def test_production_api_rate_limit_is_shared_by_app_requests(monkeypatch, dashboard_client):
     monkeypatch.setattr(settings, "ceph_ai_environment", "production")
-    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
-    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_password_hash", _VALID_PRODUCTION_PASSWORD_HASH)
+    monkeypatch.setattr(settings, "session_secret_key", _VALID_PRODUCTION_SESSION_SECRET)
     monkeypatch.setattr(settings, "dashboard_trusted_hosts", "testserver")
     monkeypatch.setattr(settings, "dashboard_allowed_origins", "http://testserver")
     monkeypatch.setattr(settings, "dashboard_api_rate_limit", 2)
@@ -173,8 +222,8 @@ def test_production_api_rate_limit_is_shared_by_app_requests(monkeypatch, dashbo
 
 def test_production_trusted_host_rejects_unlisted_host(monkeypatch, dashboard_client):
     monkeypatch.setattr(settings, "ceph_ai_environment", "production")
-    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
-    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_password_hash", _VALID_PRODUCTION_PASSWORD_HASH)
+    monkeypatch.setattr(settings, "session_secret_key", _VALID_PRODUCTION_SESSION_SECRET)
     monkeypatch.setattr(settings, "dashboard_trusted_hosts", "testserver")
     monkeypatch.setattr(settings, "dashboard_allowed_origins", "http://testserver")
 
@@ -186,8 +235,8 @@ def test_production_trusted_host_rejects_unlisted_host(monkeypatch, dashboard_cl
 
 def test_production_response_has_security_headers(monkeypatch, dashboard_client):
     monkeypatch.setattr(settings, "ceph_ai_environment", "production")
-    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
-    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_password_hash", _VALID_PRODUCTION_PASSWORD_HASH)
+    monkeypatch.setattr(settings, "session_secret_key", _VALID_PRODUCTION_SESSION_SECRET)
     monkeypatch.setattr(settings, "dashboard_trusted_hosts", "testserver")
     monkeypatch.setattr(settings, "dashboard_allowed_origins", "http://testserver")
 
@@ -220,8 +269,8 @@ def test_session_cookie_policy_is_secure_only_for_staging_and_production(monkeyp
 
 def test_trusted_forwarded_https_sets_hsts_and_secure_csrf_cookie(monkeypatch, dashboard_client):
     monkeypatch.setattr(settings, "ceph_ai_environment", "production")
-    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
-    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_password_hash", _VALID_PRODUCTION_PASSWORD_HASH)
+    monkeypatch.setattr(settings, "session_secret_key", _VALID_PRODUCTION_SESSION_SECRET)
     monkeypatch.setattr(settings, "dashboard_trusted_hosts", "internal.example")
     monkeypatch.setattr(settings, "dashboard_allowed_origins", "https://admin.example")
     monkeypatch.setattr(settings, "dashboard_trusted_proxy_ips", "127.0.0.1")
@@ -277,8 +326,8 @@ def test_malformed_forwarded_scheme_is_rejected_even_from_trusted_proxy(monkeypa
 
 def test_forwarded_headers_from_direct_client_are_rejected(monkeypatch, dashboard_client):
     monkeypatch.setattr(settings, "ceph_ai_environment", "production")
-    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
-    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_password_hash", _VALID_PRODUCTION_PASSWORD_HASH)
+    monkeypatch.setattr(settings, "session_secret_key", _VALID_PRODUCTION_SESSION_SECRET)
     monkeypatch.setattr(settings, "dashboard_trusted_hosts", "testserver")
     monkeypatch.setattr(settings, "dashboard_allowed_origins", "http://testserver")
     monkeypatch.setattr(settings, "dashboard_trusted_proxy_ips", "")
@@ -294,8 +343,8 @@ def test_forwarded_headers_from_direct_client_are_rejected(monkeypatch, dashboar
 
 def test_forwarded_headers_are_used_only_from_configured_proxy(monkeypatch, dashboard_client):
     monkeypatch.setattr(settings, "ceph_ai_environment", "production")
-    monkeypatch.setattr(settings, "dashboard_password_hash", "real-hash")
-    monkeypatch.setattr(settings, "session_secret_key", "real-secret")
+    monkeypatch.setattr(settings, "dashboard_password_hash", _VALID_PRODUCTION_PASSWORD_HASH)
+    monkeypatch.setattr(settings, "session_secret_key", _VALID_PRODUCTION_SESSION_SECRET)
     monkeypatch.setattr(settings, "dashboard_trusted_hosts", "internal.example")
     monkeypatch.setattr(settings, "dashboard_allowed_origins", "https://admin.example")
     monkeypatch.setattr(settings, "dashboard_trusted_proxy_ips", "10.0.0.0/8")
