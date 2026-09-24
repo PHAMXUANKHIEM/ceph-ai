@@ -347,9 +347,12 @@ def _source_pool_capacity_admission(mon_ip: str, pool: str, estimated_bytes: int
     if not isinstance(stats, dict):
         return
     max_available = stats.get("max_avail")
+    percent_used = stats.get("percent_used")
+    if not isinstance(percent_used, (int, float, str)):
+        return
     try:
         max_available = int(max_available) if max_available is not None else None
-        used_ratio = float(stats.get("percent_used"))
+        used_ratio = float(percent_used)
     except (TypeError, ValueError):
         return
     safety_margin = max(64 * 1024 * 1024, int(estimated_bytes * 0.02))

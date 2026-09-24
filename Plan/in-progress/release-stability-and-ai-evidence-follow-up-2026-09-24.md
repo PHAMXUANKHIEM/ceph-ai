@@ -84,13 +84,22 @@ pending.
 
 ### 2.3 Integration failure diagnosis and repair
 
-- [ ] Download the complete integration JUnit/log artifact for CI run
+- [x] Download the complete integration JUnit/log artifact for CI run
   `35822665843`; do not infer the cause from the public annotation alone.
-- [ ] Reproduce locally with an isolated RabbitMQ instance and the exact CI
+- [x] Reproduce locally with an isolated RabbitMQ instance and the exact CI
   environment variables, Python version and dependency lock.
-- [ ] Fix the underlying MQ/DB contract, not only the assertion or timeout.
-- [ ] Add a deterministic fixture for the failure and preserve a separate
+- [x] Fix the underlying MQ/DB contract, not only the assertion or timeout.
+- [x] Add a deterministic fixture for the failure and preserve a separate
   live-chaos test marker.
+
+**Implementation evidence (2026-09-24):** The public job annotation and local
+reproduction identified two independent problems: CI used RabbitMQ's
+loopback-only `guest` account through a published runner port, and the DLQ
+assertion read immediately after an asynchronous reject. The integration job
+now creates a disposable `ceph_ai_ci` broker account and uses it in
+`RABBITMQ_URL`; the test polls the DLQ with a bounded timeout. In an isolated
+RabbitMQ 3.13 container, all three MQ tests passed (`3 passed`). The complete
+GitHub Actions rerun remains pending.
 
 **Acceptance:**
 

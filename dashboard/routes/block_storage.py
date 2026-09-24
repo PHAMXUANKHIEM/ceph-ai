@@ -232,7 +232,7 @@ def _query_block_storage(cluster) -> list[dict]:
     if _uses_mocked_ceph_client():
         _host, pool_payload = run_ceph_json_command_with(*connection, "ceph osd pool ls detail")
         pool_names = _rbd_pool_names(pool_payload)
-        images: list[dict] = BlockStorageInventory(pools=pool_names)
+        mocked_images: list[dict] = BlockStorageInventory(pools=pool_names)
         for pool in pool_names:
             quoted_pool = shlex.quote(pool)
             _host, namespace_payload = run_ceph_json_command_with(
@@ -246,9 +246,9 @@ def _query_block_storage(cluster) -> list[dict]:
                 _host, usage_payload = run_ceph_json_command_with(
                     *connection, f"rbd du --pool {quoted_pool}{namespace_arg}"
                 )
-                images.extend(_image_rows(image_payload, pool, namespace, _usage_by_image(usage_payload)))
+                mocked_images.extend(_image_rows(image_payload, pool, namespace, _usage_by_image(usage_payload)))
         return BlockStorageInventory(
-            sorted(images, key=lambda item: (item["pool"], item["namespace"], item["name"])),
+            sorted(mocked_images, key=lambda item: (item["pool"], item["namespace"], item["name"])),
             pools=pool_names,
         )
 

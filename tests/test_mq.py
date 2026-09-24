@@ -113,7 +113,15 @@ def test_rejected_message_lands_in_dead_letter_queue():
             incoming = await queue.get(timeout=15)
             await incoming.reject(requeue=False)
 
-            dlq_message = await dlq.get(timeout=15)
+            # Dead-letter routing is asynchronous in RabbitMQ. Poll the DLQ
+            # instead of assuming the reject has completed before the next
+            # AMQP operation; this keeps the test bounded without masking a
+            # genuinely missing dead-letter route.
+            async def _dead_letter_landed():
+                return await dlq.get(timeout=1, fail=False)
+
+            dlq_message = await _poll_until(_dead_letter_landed)
+            assert dlq_message is not None
             assert dlq_message.body == b"simulated failed incident"
             await dlq_message.ack()
 

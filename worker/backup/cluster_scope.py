@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
 
 from config.settings import settings
 from shared import db
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 _RBD_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
 
-def is_valid_rbd_name(value: object) -> bool:
+def is_valid_rbd_name(value: object) -> TypeGuard[str]:
     """Return whether a pool/image component is safe for RBD commands and
     backup object keys. Callers still quote command arguments as defense in
     depth."""

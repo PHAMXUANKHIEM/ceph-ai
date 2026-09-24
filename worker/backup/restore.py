@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from shared.time import utc_now
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, BinaryIO, Callable, cast
 
 import paramiko
 
@@ -73,11 +73,11 @@ def _check_cancel(cancel_check: Callable[[], bool] | None) -> None:
 
 
 class _CancellationAwareWriter:
-    def __init__(self, handle, cancel_check: Callable[[], bool] | None):
+    def __init__(self, handle: BinaryIO, cancel_check: Callable[[], bool] | None):
         self._handle = handle
         self._cancel_check = cancel_check
 
-    def write(self, data):
+    def write(self, data: bytes) -> int:
         _check_cancel(self._cancel_check)
         return self._handle.write(data)
 
@@ -226,7 +226,11 @@ def _download_and_verify(
         _check_cancel(cancel_check)
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = tmp.name
-            storage.download(job.remote_key, _CancellationAwareWriter(tmp, cancel_check))
+            destination = _CancellationAwareWriter(cast(BinaryIO, tmp), cancel_check)
+            # Backends only require the BinaryIO.write contract here. Keep
+            # the cancellation wrapper small instead of exposing the full
+            # tempfile implementation to the storage protocol.
+            storage.download(job.remote_key, cast(BinaryIO, destination))
 
         digest = hashlib.sha256()
         size = 0
