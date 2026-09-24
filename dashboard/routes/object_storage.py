@@ -878,11 +878,49 @@ def _execute_delete_bucket(cluster, payload: dict) -> None:
     _with_owner_s3(cluster, payload, execute)
 
 
-def _delete_all_buckets(cluster) -> list[str]:
+def _bulk_bucket_inventory(cluster) -> dict:
+    """Build a fail-closed inventory used by the bulk-delete preview.
+
+    Bucket names alone are not enough evidence for a destructive operation:
+    an object can be added, removed or replaced between preview and execute.
+    Include the current object count and logical size in a canonical hash, then
+    force execute to collect the same inventory again before it can purge.
+    """
     hosts = _rgw_hosts(cluster)
     if not hosts:
         raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
-    host, buckets = _list_from_first_reachable_rgw(cluster, hosts)
+    host, bucket_names = _list_from_first_reachable_rgw(cluster, hosts)
+    buckets = []
+    names = {item.strip() for item in bucket_names if isinstance(item, str) and item.strip()}
+    for name in sorted(names, key=str.casefold):
+        row = _bucket_summary(cluster, host, name)
+        if not row.get("stats_available"):
+            reason = row.get("stats_error") or "RGW không trả về metadata đầy đủ"
+            raise ObjectStorageError(f"Không thể xác minh metadata bucket {name}: {reason}")
+        try:
+            object_count = max(0, int(row.get("num_objects") or 0))
+            size_bytes = max(0, int(row.get("size_bytes") or 0))
+        except (TypeError, ValueError) as exc:
+            raise ObjectStorageError(f"Metadata bucket {name} có số liệu không hợp lệ") from exc
+        buckets.append({"name": name, "object_count": object_count, "size_bytes": size_bytes})
+    canonical = json.dumps(buckets, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "host": host,
+        "buckets": buckets,
+        "bucket_count": len(buckets),
+        "object_count": sum(item["object_count"] for item in buckets),
+        "size_bytes": sum(item["size_bytes"] for item in buckets),
+        "inventory_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+
+
+def _delete_all_buckets(cluster, *, host: str | None = None, buckets: list[str] | None = None) -> list[str]:
+    hosts = _rgw_hosts(cluster)
+    if not hosts:
+        raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
+    if host is None or buckets is None:
+        host, names = _list_from_first_reachable_rgw(cluster, hosts)
+        buckets = sorted({item.strip() for item in names if isinstance(item, str) and item.strip()}, key=str.casefold)
     for bucket in buckets:
         try:
             if cluster.is_default:
@@ -895,7 +933,7 @@ def _delete_all_buckets(cluster) -> list[str]:
             raise ObjectStorageError(
                 f"Đã xóa {buckets.index(bucket)}/{len(buckets)} bucket; dừng tại {bucket}: {_safe_error(exc)}"
             ) from exc
-    return buckets
+    return list(buckets)
 
 
 def _format_bytes(value: object) -> str:

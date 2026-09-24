@@ -572,16 +572,6 @@
       }
     });
 
-    // "Lưu & chuyển database" is a single blocking POST that runs all 5
-    // steps documented in settings_save_database (test connection ->
-    // migration -> write .env -> restart Worker/Watcher -> restart
-    // Dashboard itself) before the browser gets ANY response back, so
-    // there's no live per-step signal to poll from the server. This just
-    // gives the operator a sense of progress for the (multi-second) wait —
-    // it's a time-estimated animation, not a real backend-reported percent,
-    // and deliberately caps below 100% since only the server's actual
-    // response (a fresh settings.html on error, or restarting.html on
-    // success) means the operation is actually done.
     var dbForm = document.getElementById("database-form");
     var dbSaveBtn = document.getElementById("db-save-btn");
     var dbProgressEl = document.getElementById("db-migrate-progress");

@@ -23,7 +23,8 @@ def _quantile(values: list[float], fraction: float) -> float:
 def _scores_to_metrics(name: str, points: list[Point], scores: list[float], cpu_ms: float, rss_kib: int) -> dict[str, object]:
     warmup = max(16, min(len(scores) // 2, 64))
     threshold = _quantile(scores[:warmup], 0.95)
-    predicted = [index >= warmup and score >= threshold for index, score in enumerate(scores)]
+    finite = [math.isfinite(score) for score in scores]
+    predicted = [index >= warmup and finite[index] and score >= threshold for index, score in enumerate(scores)]
     labels = [point.anomaly for point in points]
     tp = sum(alert and label for alert, label in zip(predicted, labels))
     fp = sum(alert and not label for alert, label in zip(predicted, labels))
@@ -41,6 +42,18 @@ def _scores_to_metrics(name: str, points: list[Point], scores: list[float], cpu_
         "evaluated": len(points),
         "threshold": threshold,
         "predicted_alerts": sum(predicted),
+        "alert_rate_on_scored_points": (
+            sum(predicted) / max(1, len(scores) - warmup)
+        ),
+        "warmup_points": warmup,
+        "scored_points": max(0, len(scores) - warmup),
+        "abstention_points": warmup + sum(
+            not finite[index] for index in range(warmup, len(scores))
+        ),
+        "abstention_rate": (
+            (warmup + sum(not finite[index] for index in range(warmup, len(scores))))
+            / max(1, len(scores))
+        ),
         "precision": tp / sum(predicted) if sum(predicted) else None,
         "recall": tp / sum(labels) if sum(labels) else None,
         "false_positive_rate": fp / negatives if negatives else None,
@@ -89,7 +102,10 @@ def _rrcf(points: list[Point], *, trees: int, tree_size: int, seed: int) -> list
     return scores
 
 
-def run(points: list[Point], *, trees: int, height: int, window: int, tree_size: int, seed: int) -> dict[str, object]:
+def run(
+    points: list[Point], *, trees: int, height: int, window: int,
+    tree_size: int, seed: int, minimum_dataset_points: int = 240,
+) -> dict[str, object]:
     results: list[dict[str, object]] = []
     unavailable: dict[str, str] = {}
     for name, function in (
@@ -107,13 +123,34 @@ def run(points: list[Point], *, trees: int, height: int, window: int, tree_size:
             name, points, scores, (time.process_time() - started) * 1000,
             max(0, int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before)),
         ))
+    decision_reasons = []
+    if len(points) < minimum_dataset_points:
+        decision_reasons.append(
+            f"dataset has {len(points)} points; at least {minimum_dataset_points} are required"
+        )
+    hst = next((item for item in results if item["detector"] == "river_hst"), None)
+    if hst is not None and (hst["false_positive_rate"] or 0.0) > 0.10:
+        decision_reasons.append("River HST false-positive rate exceeds 10%")
+    if not results:
+        decision_reasons.append("no detector result is available")
     return {
         "schema": "ceph-ai.hst-rrcf-benchmark.v1",
         "dataset_points": len(points),
+        "dataset_split": {
+            "method": "temporal_warmup",
+            "description": "warm-up points calibrate the threshold and are abstentions; later points are scored",
+            "minimum_dataset_points": minimum_dataset_points,
+        },
         "features": ["value", "delta"],
         "config": {"trees": trees, "height": height, "window": window, "tree_size": tree_size, "seed": seed},
         "results": results,
         "unavailable": unavailable,
+        "decision": {
+            "status": "HOLD",
+            "promotion_allowed": False,
+            "reasons": decision_reasons or ["benchmark evidence is advisory only"],
+            "execution_mode": "SHADOW_ONLY",
+        },
         "side_effects": "read-only; no database, alert, notification, remediation or model-state writes",
         "production_dependency": False,
     }
@@ -128,10 +165,15 @@ def main() -> int:
     parser.add_argument("--window", type=int, default=128)
     parser.add_argument("--tree-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--minimum-dataset-points", type=int, default=240)
     args = parser.parse_args()
-    if min(args.trees, args.height, args.window, args.tree_size) < 1:
+    if min(args.trees, args.height, args.window, args.tree_size, args.minimum_dataset_points) < 1:
         parser.error("bounded HST/RRCF parameters must be positive")
-    report = run(load_series(args.input), trees=args.trees, height=args.height, window=args.window, tree_size=args.tree_size, seed=args.seed)
+    report = run(
+        load_series(args.input), trees=args.trees, height=args.height,
+        window=args.window, tree_size=args.tree_size, seed=args.seed,
+        minimum_dataset_points=args.minimum_dataset_points,
+    )
     with args.output.open("x", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2, sort_keys=True)
         handle.write("\n")

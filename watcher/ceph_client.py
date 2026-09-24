@@ -665,25 +665,55 @@ def _normalize_rbd_image_detail(
     }
 
 
+def _query_rbd_optional_sections(
+    query: Callable[[str], tuple[str, dict | list]],
+    sections: tuple[tuple[str, str], ...],
+) -> tuple[dict[str, dict | list], dict[str, str]]:
+    """Run independent image-detail queries concurrently.
+
+    ``rbd info`` remains the required first query. The remaining commands
+    are independent, and running them serially made one page load pay the
+    SSH/cephadm startup cost four times. Each optional section keeps its
+    existing fail-soft behaviour so one unsupported command does not hide
+    the other metadata.
+    """
+    values: dict[str, dict | list] = {}
+    errors: dict[str, str] = {}
+
+    def load(item: tuple[str, str]) -> tuple[str, dict | list, str | None]:
+        section, command = item
+        try:
+            return section, query(command)[1], None
+        except CephQueryError as exc:
+            return section, [], str(exc)
+
+    with ThreadPoolExecutor(
+        max_workers=min(4, max(1, len(sections))),
+        thread_name_prefix="rbd-detail",
+    ) as executor:
+        for section, value, error in executor.map(load, sections):
+            values[section] = value
+            if error:
+                errors[section] = error
+    return values, errors
+
+
 def query_rbd_image_detail(pool: str, image: str) -> dict:
     spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
     info = run_ceph_json_command(f"rbd info {spec}")[1]
-    errors: dict[str, str] = {}
-
-    def optional(section: str, command: str) -> dict | list:
-        try:
-            return run_ceph_json_command(command)[1]
-        except CephQueryError as exc:
-            errors[section] = str(exc)
-            return []
-
-    locks = optional("locks", f"rbd lock list {spec}")
+    sections, errors = _query_rbd_optional_sections(
+        run_ceph_json_command,
+        (
+            ("locks", f"rbd lock list {spec}"),
+            ("snapshots", f"rbd snap ls {spec}"),
+            ("watchers", f"rbd status {spec}"),
+            ("children", f"rbd children {spec}"),
+        ),
+    )
     return _normalize_rbd_image_detail(
         pool, image, info,
-        optional("snapshots", f"rbd snap ls {spec}"),
-        optional("watchers", f"rbd status {spec}"),
-        optional("children", f"rbd children {spec}"),
-        errors, locks,
+        sections["snapshots"], sections["watchers"], sections["children"],
+        errors, sections["locks"],
     )
 
 
@@ -694,22 +724,19 @@ def query_rbd_image_detail_with(
     spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
     connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
     info = run_ceph_json_command_with(*connection, f"rbd info {spec}")[1]
-    errors: dict[str, str] = {}
-
-    def optional(section: str, command: str) -> dict | list:
-        try:
-            return run_ceph_json_command_with(*connection, command)[1]
-        except CephQueryError as exc:
-            errors[section] = str(exc)
-            return []
-
-    locks = optional("locks", f"rbd lock list {spec}")
+    sections, errors = _query_rbd_optional_sections(
+        lambda command: run_ceph_json_command_with(*connection, command),
+        (
+            ("locks", f"rbd lock list {spec}"),
+            ("snapshots", f"rbd snap ls {spec}"),
+            ("watchers", f"rbd status {spec}"),
+            ("children", f"rbd children {spec}"),
+        ),
+    )
     return _normalize_rbd_image_detail(
         pool, image, info,
-        optional("snapshots", f"rbd snap ls {spec}"),
-        optional("watchers", f"rbd status {spec}"),
-        optional("children", f"rbd children {spec}"),
-        errors, locks,
+        sections["snapshots"], sections["watchers"], sections["children"],
+        errors, sections["locks"],
     )
 
 

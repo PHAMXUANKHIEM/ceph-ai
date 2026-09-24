@@ -127,12 +127,29 @@ without manual edits or host-local dependencies.
 
 ### 3.1 Make the zero-outcome state explicit
 
-- [ ] Add a report field distinguishing `NO_VERIFIED_OUTCOME` from
+- [x] Add a report field distinguishing `NO_VERIFIED_OUTCOME` from
   `INSUFFICIENT_SAMPLE`, `NO_DATA` and `MODEL_NOT_RUN`.
-- [ ] Show, per scope: verified outcome count, scored outcome count, latest
+- [x] Show, per scope: verified outcome count, scored outcome count, latest
   evidence time, active/shadow model, data-quality gaps and reason promotion is
   blocked.
-- [ ] Keep `river_linear_v2` shadow-only when verified outcome count is zero.
+- [x] Keep `river_linear_v2` shadow-only when verified outcome count is zero.
+
+**Initial implementation evidence (2026-09-24):** Runtime replay first reported
+`DATA_QUALITY_BLOCKED` separately from `NO_VERIFIED_OUTCOME` and includes a
+per-scope `quality_blockers` map. A read-only replay against the current CS-LAB
+database found 36 scopes blocked by `GAP_DETECTED` and/or
+`INSUFFICIENT_SAMPLES`; it performed no learning or database write. The
+existing verified labels were therefore not treated as usable replay evidence
+until the telemetry source and continuity handling were corrected.
+
+**Implementation evidence (2026-09-24, follow-up):** Replay now reads the
+actual CPU/RAM telemetry from Loki instead of using `current_percent` from
+forecast rows as synthetic history. It starts a new bounded history after a
+material telemetry outage and never trains across that boundary. A clean
+worktree replay against CS-LAB read 36 Loki-backed scopes, found 2 verified
+outcomes and 0 scored outcomes: 34 scopes remain `NO_VERIFIED_OUTCOME` and
+the 2 scopes with labels remain `INSUFFICIENT_SAMPLE`. The run was read-only;
+no label, model state, database row or promotion flag was changed.
 
 ### 3.2 Collect verified outcomes without label leakage
 
@@ -163,6 +180,14 @@ the operator/post-check categorical-outcome path have not been demonstrated.
 
 ### 3.3 Replay and baseline comparison
 
+Implementation note (2026-09-24): the read-only replay now reports the
+persisted linear forecast and a last-observed-value baseline on the same
+verified labels as River v2. The current CS-LAB run has 2 verified labels,
+with baseline MAE available for both CPU and RAM, but River v2 has 0 scored
+outcomes because each scope has only one usable label and the minimum
+verified-evidence gate is 3. Temporal holdout comparison and promotion remain
+blocked; the result is `HOLD` and `SHADOW_ONLY`.
+
 - [ ] Replay `river_linear_v2` on a temporal holdout separated by cluster and
   scope; compare it against the active baseline and a simple naive baseline.
 - [ ] Report MAE/RMSE or the approved metric, coverage, alert volume, abstention,
@@ -178,6 +203,16 @@ outcomes, temporal holdout boundaries, baseline comparison and a clear
 ## 4. Drift and anomaly candidates (P1)
 
 ### 4.1 Investigate the 21 drifted scopes
+
+Implementation evidence (2026-09-24): the current read-only soak report has
+14 drifted comparisons across 2 logical scopes, rather than the 21 rows in
+the earlier review artifact. The new `scripts/forecast_drift_scope_report.py`
+exports each candidate/window and classifies only from persisted evidence. All
+14 current rows are `WORKLOAD_OR_DISTRIBUTION_CHANGE_CANDIDATE`: coverage is
+adequate and the recorded reasons are baseline/residual shifts. No current
+row is classified as a collector gap. This is a hypothesis requiring operator
+review, not proof of root cause. Every row remains `HOLD`; no drift state,
+threshold or model was reset.
 
 - [ ] Export the 21 scope IDs and classify each cause: workload change,
   collector gap, timestamp issue, counter reset, true distribution change or

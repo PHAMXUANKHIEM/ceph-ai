@@ -10,3 +10,6 @@ def test_hst_rrcf_benchmark_is_optional_and_read_only():
     assert "add" not in calls
     assert "production_dependency" in source
     assert '"rrcf"' in source
+    assert "alert_rate_on_scored_points" in source
+    assert "abstention_rate" in source
+    assert "promotion_allowed" in source

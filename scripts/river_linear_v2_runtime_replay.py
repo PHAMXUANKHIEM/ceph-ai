@@ -8,22 +8,68 @@ import json
 import math
 import time
 from collections import defaultdict
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from config.settings import settings
 from shared.db import SessionLocal
 from shared.forecast_features import MetricPoint, build_features
 from shared.models import NodeResourceForecastRun, OnlineLearnerLabel
 from shared.river_linear_v2 import RiverLinearV2, VERIFIED_OUTCOMES
+from watcher.node_resource_forecast import fetch_samples
 
 
-def _replay_scope(runs: list[NodeResourceForecastRun], labels: dict[str, OnlineLearnerLabel]) -> dict[str, object]:
+def _continuous_history(
+    points: list[MetricPoint], cutoff: datetime, *, max_gap_seconds: float,
+) -> list[MetricPoint]:
+    """Return the latest contiguous telemetry segment before ``cutoff``.
+
+    A recovered collector must not make River learn across an outage.  The
+    previous implementation used forecast rows as observations, so a gap in
+    the forecast scheduler was incorrectly treated as a telemetry gap.  This
+    helper operates on the real Loki samples and starts a new history after
+    the latest material outage.
+    """
+    cutoff_utc = cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=timezone.utc)
+    ordered = sorted(
+        (point for point in points if point.observed_at <= cutoff_utc),
+        key=lambda point: point.observed_at,
+    )
+    if not ordered:
+        return []
+    boundary = 0
+    for index in range(len(ordered) - 1, 0, -1):
+        gap = (ordered[index].observed_at - ordered[index - 1].observed_at).total_seconds()
+        if gap > max_gap_seconds:
+            boundary = index
+            break
+    # Features only need a bounded recent history.  Keeping the bound here
+    # also prevents a 30-day Loki history from making replay quadratic.
+    return ordered[boundary:][-512:]
+
+
+def _replay_scope(
+    runs: list[NodeResourceForecastRun],
+    labels: dict[str, OnlineLearnerLabel],
+    observations: list[MetricPoint] | None = None,
+) -> dict[str, object]:
     # Keep replay bounded and representative of the current runtime window.
     runs = sorted(runs, key=lambda row: row.predicted_at)[-512:]
-    values = [MetricPoint(row.predicted_at, float(row.current_percent)) for row in runs]
+    using_runtime_telemetry = observations is not None
+    fallback_values = [MetricPoint(row.predicted_at, float(row.current_percent)) for row in runs]
+    values = observations if using_runtime_telemetry else fallback_values
+    expected_interval_seconds = max(60.0, float(settings.node_health_scan_interval_seconds))
+    max_gap_seconds = max(
+        expected_interval_seconds * 2,
+        float(settings.node_resource_forecast_max_gap_hours) * 3600.0,
+    )
     model: RiverLinearV2 | None = None
     scores: list[float] = []
+    baseline_scores: list[float] = []
+    naive_scores: list[float] = []
     skipped_quality = skipped_schema = verified = 0
+    quality_blockers: dict[str, int] = {}
     latest_evidence_at: datetime | None = None
     pending: list[tuple[datetime, dict[str, float], OnlineLearnerLabel]] = []
     started_wall = time.perf_counter()
@@ -36,13 +82,22 @@ def _replay_scope(runs: list[NodeResourceForecastRun], labels: dict[str, OnlineL
         for _verified_at, features, ready_label in due:
             if model is not None:
                 model.learn_one(features, ready_label.label_value, outcome=ready_label.outcome)
+        history = _continuous_history(
+            values, row.predicted_at, max_gap_seconds=max_gap_seconds,
+        ) if using_runtime_telemetry else values[:index + 1]
         feature_set = build_features(
-            values[:index + 1], observed_at=row.predicted_at,
-            expected_interval_seconds=3600.0, max_gap_seconds=7200.0,
+            history, observed_at=row.predicted_at,
+            expected_interval_seconds=expected_interval_seconds,
+            max_gap_seconds=max_gap_seconds,
             metric=row.metric, horizon_hours=row.horizon_hours,
         )
+        if using_runtime_telemetry and history and (
+            row.predicted_at.replace(tzinfo=timezone.utc) - history[-1].observed_at
+        ).total_seconds() > max_gap_seconds:
+            feature_set = replace(feature_set, quality_status="GAP_DETECTED")
         if feature_set.quality_status != "OK":
             skipped_quality += 1
+            quality_blockers[feature_set.quality_status] = quality_blockers.get(feature_set.quality_status, 0) + 1
             continue
         if model is None:
             model = RiverLinearV2(
@@ -66,12 +121,20 @@ def _replay_scope(runs: list[NodeResourceForecastRun], labels: dict[str, OnlineL
             continue
         verified += 1
         latest_evidence_at = max(latest_evidence_at, label.verified_at) if latest_evidence_at else label.verified_at
+        baseline_prediction = getattr(row, "predicted_percent", None)
+        if baseline_prediction is not None and math.isfinite(float(baseline_prediction)):
+            baseline_scores.append(float(baseline_prediction) - float(label.label_value))
+        naive_prediction = feature_set.features.get("current")
+        if naive_prediction is not None and math.isfinite(float(naive_prediction)):
+            naive_scores.append(float(naive_prediction) - float(label.label_value))
         if model.sample_count:
             prediction = model.predict_one(feature_set.features)
             if prediction is not None and math.isfinite(float(prediction)):
                 scores.append(float(prediction) - float(label.label_value))
         pending.append((label.verified_at, feature_set.features, label))
     status = (
+        "TELEMETRY_UNAVAILABLE" if using_runtime_telemetry and not values else
+        "DATA_QUALITY_BLOCKED" if skipped_quality and verified == 0 else
         "MODEL_NOT_RUN" if model is None else
         "NO_VERIFIED_OUTCOME" if verified == 0 else
         "INSUFFICIENT_SAMPLE" if not scores else "SCORED"
@@ -90,7 +153,17 @@ def _replay_scope(runs: list[NodeResourceForecastRun], labels: dict[str, OnlineL
         "quality_gap_count": skipped_quality + skipped_schema,
         "mae": round(sum(abs(value) for value in scores) / len(scores), 6) if scores else None,
         "rmse": round(math.sqrt(sum(value * value for value in scores) / len(scores)), 6) if scores else None,
+        "baseline_algorithm": "persisted_linear_forecast",
+        "baseline_scored_outcomes": len(baseline_scores),
+        "baseline_mae": round(sum(abs(value) for value in baseline_scores) / len(baseline_scores), 6) if baseline_scores else None,
+        "baseline_rmse": round(math.sqrt(sum(value * value for value in baseline_scores) / len(baseline_scores)), 6) if baseline_scores else None,
+        "naive_baseline": "last_observed_value",
+        "naive_scored_outcomes": len(naive_scores),
+        "naive_mae": round(sum(abs(value) for value in naive_scores) / len(naive_scores), 6) if naive_scores else None,
+        "naive_rmse": round(math.sqrt(sum(value * value for value in naive_scores) / len(naive_scores)), 6) if naive_scores else None,
         "skipped_quality": skipped_quality,
+        "quality_blockers": quality_blockers,
+        "telemetry_source": "loki" if using_runtime_telemetry else "forecast-fallback-for-tests",
         "skipped_schema": skipped_schema,
         "state_bytes": int(model.resource_usage()["state_bytes"]) if model else 0,
         "cpu_time_ms": round((time.process_time() - started_cpu) * 1000, 3),
@@ -118,10 +191,29 @@ def build_report() -> dict[str, object]:
     grouped: dict[tuple[str, str, str, int], list[NodeResourceForecastRun]] = defaultdict(list)
     for row in rows:
         grouped[(row.cluster_name, row.host, row.metric, row.horizon_hours)].append(row)
-    scopes = [_replay_scope(scope_rows, labels) for scope_rows in grouped.values()]
+    telemetry_cache: dict[tuple[str, str], list[tuple[datetime, float, float]]] = {}
+    scopes = []
+    for (cluster, host, metric, _horizon), scope_rows in grouped.items():
+        cache_key = (cluster, host)
+        if cache_key not in telemetry_cache:
+            try:
+                raw_samples = fetch_samples(cluster, host)
+                telemetry_cache[cache_key] = raw_samples
+            except Exception:
+                telemetry_cache[cache_key] = []
+        scopes.append(_replay_scope(
+            scope_rows,
+            labels,
+            [
+                MetricPoint(timestamp, cpu if metric == "cpu" else memory)
+                for timestamp, cpu, memory in telemetry_cache[cache_key]
+            ],
+        ))
     report_status = (
         "NO_DATA" if not scopes else
         "SCORED" if any(item["scored_outcomes"] for item in scopes) else
+        "TELEMETRY_UNAVAILABLE" if any(item["evidence_status"] == "TELEMETRY_UNAVAILABLE" for item in scopes) else
+        "DATA_QUALITY_BLOCKED" if any(item["quality_gap_count"] for item in scopes) else
         "NO_VERIFIED_OUTCOME" if all(item["verified_outcomes"] == 0 for item in scopes) else
         "INSUFFICIENT_SAMPLE"
     )
