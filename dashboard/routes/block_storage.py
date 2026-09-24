@@ -18,6 +18,7 @@ from watcher.ceph_client import (
     run_ceph_json_batch_command_with,
     run_ceph_json_command_with,
 )
+from worker.executor.action_contract import RBD_COPY_VOLUME_CONTRACT
 
 
 router = APIRouter()
@@ -342,6 +343,7 @@ async def block_storage_api_contract(request: Request, user: str = Depends(requi
             "replay_is_safe": True,
             "post_check_required": True,
         },
+        "action_contracts": {"rbd_copy_volume": RBD_COPY_VOLUME_CONTRACT},
         "job_status": {
             "action_id_returned": True,
             "polling_supported": True,

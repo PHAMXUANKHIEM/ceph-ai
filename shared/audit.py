@@ -69,6 +69,11 @@ EVENT_BACKUP_RETENTION_DELETE = "backup_retention_delete"
 # or metadata backup, separately from the Worker's eventual success/failure
 # event for the SAFE action.
 EVENT_BACKUP_MANUAL_REQUESTED = "backup_manual_requested"
+# Backup policy changes have no pre-existing Incident, so Dashboard creates a
+# short-lived synthetic policy incident and records this explicit event.  The
+# event is separate from backup execution history and contains revision IDs
+# only, never the policy document or credentials.
+EVENT_BACKUP_POLICY_ROLLBACK = "backup_policy_rollback"
 
 # AI roadmap Pha 0.3 (worker/preflight.py): fired instead of a normal
 # Action row whenever run_preflight() returns allowed=False AND

@@ -431,6 +431,10 @@ def test_direct_observation_evaluates_due_cpu_and_ram(monkeypatch):
 
 def test_river_linear_v2_shadow_learns_only_verified_labels(monkeypatch):
     factory = _learning_db(monkeypatch)
+    monkeypatch.setattr(
+        forecast.settings, "forecast_candidate_flags",
+        "linear=true,river_linear_v2=true",
+    )
     monkeypatch.setattr(forecast.settings, "online_learning_min_verified_evidence", 3)
     origin = datetime(2026, 8, 1, tzinfo=timezone.utc)
     points = [
@@ -460,7 +464,8 @@ def test_river_linear_v2_shadow_learns_only_verified_labels(monkeypatch):
                 sample_id=f"label-{index}", source_run_id=run.id,
                 observed_at=run.target_at, label_value=run.actual_percent,
                 outcome="VERIFIED_SUCCESS", evidence_count=1,
-                source_actor="test", status="READY", reason="verified test label",
+                source_actor="forecast-evaluator", status="READY", reason="verified test label",
+                evidence_fingerprint="a" * 64,
                 verified_at=run.target_at,
             ))
         session.commit()
@@ -473,3 +478,12 @@ def test_river_linear_v2_shadow_learns_only_verified_labels(monkeypatch):
     assert evidence["verified_outcomes"] == 3
     assert evidence["sample_count"] == 3
     assert evidence["prediction"] is not None
+
+
+def test_river_linear_v2_disabled_flag_skips_model_and_database():
+    result = forecast._river_linear_v2_shadow_evidence(
+        None, "CS-LAB", "node-1", "cpu", [], horizon_hours=24,
+    )
+    assert result["quality_status"] == "DISABLED"
+    assert result["prediction"] is None
+    assert result["execution_mode"] == "SHADOW_ONLY"

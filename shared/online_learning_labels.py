@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from shared.time import utc_now
 
@@ -41,6 +43,22 @@ def _utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _telemetry_fingerprint(run: NodeResourceForecastRun, audit: OnlineLearnerAudit) -> str:
+    """Bind a label to independent observed telemetry, not its prediction."""
+    evidence = {
+        "run_id": run.id,
+        "cluster": run.cluster_name,
+        "host": run.host,
+        "metric": normalize_metric(run.metric),
+        "horizon_hours": run.horizon_hours,
+        "target_at": _utc(run.target_at).isoformat(),
+        "sample_id": audit.sample_id,
+        "observed_at": _utc(audit.observed_at).isoformat(),
+        "observed_value": float(audit.value),
+    }
+    return hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _cluster_key(session, cluster_name: str) -> str:
@@ -89,6 +107,7 @@ def enqueue_verified_outcomes(
     metric: str | None = None,
     max_rows: int = 100,
     match_window_seconds: float | None = None,
+    source_run_ids: list[str] | None = None,
 ) -> int:
     """Create READY labels only from evaluated forecast ground truth.
 
@@ -101,29 +120,45 @@ def enqueue_verified_outcomes(
 
     if max_rows < 1:
         return 0
+    if source_run_ids is not None and not source_run_ids:
+        return 0
     tolerance = float(match_window_seconds or max(
         30.0, settings.node_resource_learning_max_outcome_gap_hours * 3600,
     ))
+    current_time = _utc(utc_now())
     query = select(NodeResourceForecastRun).where(
         NodeResourceForecastRun.status == "EVALUATED",
         NodeResourceForecastRun.actual_percent.is_not(None),
-    ).order_by(NodeResourceForecastRun.evaluated_at).limit(max_rows)
+        NodeResourceForecastRun.evaluated_at >= (current_time - timedelta(days=30)).replace(tzinfo=None),
+    ).order_by(NodeResourceForecastRun.evaluated_at.desc()).limit(max_rows)
     if cluster_name:
         query = query.where(NodeResourceForecastRun.cluster_name == cluster_name)
     if host:
         query = query.where(NodeResourceForecastRun.host == host)
     if metric:
         query = query.where(NodeResourceForecastRun.metric == normalize_metric(metric))
+    if source_run_ids is not None:
+        query = query.where(NodeResourceForecastRun.id.in_(source_run_ids[:max_rows]))
 
     created = 0
     minimum_evidence = max(1, int(settings.online_learning_min_verified_evidence))
     tolerance_percent = max(0.0, float(settings.online_learning_label_tolerance_percent))
     rate_limit = max(1, int(settings.online_learning_label_rate_limit))
     rate_window = timedelta(seconds=max(60, int(settings.online_learning_label_rate_window_seconds)))
-    rate_window_start = utc_now() - rate_window
+    rate_window_start = current_time - rate_window
     source_actor = "forecast-evaluator"
     for run in session.scalars(query):
         if run.actual_percent is None or not math.isfinite(float(run.actual_percent)):
+            continue
+        if not 0 <= float(run.actual_percent) <= 100:
+            continue
+        if run.evaluated_at is None or _utc(run.evaluated_at) < _utc(run.target_at):
+            continue
+        if _utc(run.evaluated_at) > current_time + timedelta(minutes=5):
+            continue
+        if _utc(run.target_at) < _utc(run.predicted_at):
+            continue
+        if current_time - _utc(run.evaluated_at) > timedelta(days=30):
             continue
         predicted = run.predicted_percent
         if predicted is None or not math.isfinite(float(predicted)):
@@ -163,14 +198,18 @@ def enqueue_verified_outcomes(
             break
         cluster_key = _cluster_key(session, run.cluster_name)
         normalized_metric = normalize_metric(run.metric)
+        target = _utc(run.target_at)
+        lower = (target - timedelta(seconds=tolerance)).replace(tzinfo=None)
+        upper = (target + timedelta(seconds=tolerance)).replace(tzinfo=None)
         audits = list(session.scalars(
             select(OnlineLearnerAudit).where(
                 OnlineLearnerAudit.cluster_key == cluster_key,
                 OnlineLearnerAudit.host == run.host,
                 OnlineLearnerAudit.metric == normalized_metric,
-            )
+                OnlineLearnerAudit.observed_at >= lower,
+                OnlineLearnerAudit.observed_at <= upper,
+            ).order_by(OnlineLearnerAudit.observed_at.desc()).limit(512)
         ))
-        target = _utc(run.target_at)
         candidate = min(
             audits,
             key=lambda item: abs((_utc(item.observed_at) - target).total_seconds()),
@@ -180,6 +219,23 @@ def enqueue_verified_outcomes(
             continue
         distance = abs((_utc(candidate.observed_at) - target).total_seconds())
         if distance > tolerance:
+            continue
+        # An evaluator row and a nearby audit timestamp are not sufficient:
+        # the independent observed value must agree with the outcome.  This
+        # rejects model-self-labels and synthetic/incorrectly paired samples.
+        if (
+            candidate.value is None
+            or not math.isfinite(float(candidate.value))
+            or not 0 <= float(candidate.value) <= 100
+            or abs(float(candidate.value) - float(run.actual_percent)) > 0.01
+            or candidate.label is not None
+            or candidate.update_applied
+        ):
+            _record_event_once(
+                session, action=EVENT_BLOCKED, actor="label-policy",
+                source_run_id=run.id,
+                reason="independent audit value missing, mismatched, or already model-labeled",
+            )
             continue
         if session.scalar(select(OnlineLearnerLabel.id).where(
             OnlineLearnerLabel.cluster_key == cluster_key,
@@ -224,6 +280,11 @@ def enqueue_verified_outcomes(
             evidence_count=int(evidence_count),
             source_actor="forecast-evaluator",
             verified_at=run.evaluated_at or utc_now(),
+            evidence_fingerprint=_telemetry_fingerprint(run, candidate),
+            source_model_version=(
+                f"{run.algorithm}:w{run.window_hours}:h{run.horizon_hours}"
+            ),
+            outcome_observed_at=candidate.observed_at,
         )
         session.add(label_row)
         session.flush()

@@ -23,3 +23,23 @@ def test_block_storage_contract_is_versioned_and_fail_closed(dashboard_client, m
     assert body["mutation"]["direct_execution"] is False
     assert body["mutation"]["required_header"] == "Idempotency-Key"
     assert body["iac"]["policy_bypass"] is False
+
+
+def test_rbd_copy_contract_is_dashboard_only_and_approval_gated(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        block_storage_route,
+        "cluster_selection",
+        lambda _request: ([], type("Cluster", (), {"id": "cluster-contract"})()),
+    )
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+
+    body = dashboard_client.get("/api/v1/block-storage/contract").json()
+    contract = body["action_contracts"]["rbd_copy_volume"]
+
+    assert contract["surface"] == "dashboard_worker_only"
+    assert contract["incident_autopilot"] is False
+    assert contract["classification"] == "RISKY"
+    assert contract["target_type"] == "volume"
+    assert contract["requires_approval"] is True
+    assert contract["typed_params"]["snapshot"] == "explicit source snapshot"
+    assert contract["source_preserved"] is True

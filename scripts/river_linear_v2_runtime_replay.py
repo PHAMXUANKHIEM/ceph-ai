@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import resource
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -25,9 +24,18 @@ def _replay_scope(runs: list[NodeResourceForecastRun], labels: dict[str, OnlineL
     model: RiverLinearV2 | None = None
     scores: list[float] = []
     skipped_quality = skipped_schema = verified = 0
+    latest_evidence_at: datetime | None = None
+    pending: list[tuple[datetime, dict[str, float], OnlineLearnerLabel]] = []
     started_wall = time.perf_counter()
     started_cpu = time.process_time()
     for index, row in enumerate(runs):
+        # Only labels verified BEFORE this prediction can update the model.
+        # A later outcome may score this prediction, but cannot train it.
+        due = [item for item in pending if item[0] <= row.predicted_at]
+        pending = [item for item in pending if item[0] > row.predicted_at]
+        for _verified_at, features, ready_label in due:
+            if model is not None:
+                model.learn_one(features, ready_label.label_value, outcome=ready_label.outcome)
         feature_set = build_features(
             values[:index + 1], observed_at=row.predicted_at,
             expected_interval_seconds=3600.0, max_gap_seconds=7200.0,
@@ -45,20 +53,41 @@ def _replay_scope(runs: list[NodeResourceForecastRun], labels: dict[str, OnlineL
             skipped_schema += 1
             continue
         label = labels.get(row.id)
-        if label is None or label.outcome not in VERIFIED_OUTCOMES:
+        if (
+            label is None or label.outcome not in VERIFIED_OUTCOMES
+            or label.source_actor != "forecast-evaluator"
+            or not label.evidence_fingerprint
+            or row.actual_percent is None
+            or not math.isfinite(float(label.label_value))
+            or abs(float(label.label_value) - float(row.actual_percent)) > 0.01
+            or label.verified_at is None
+            or label.verified_at < row.target_at
+        ):
             continue
         verified += 1
+        latest_evidence_at = max(latest_evidence_at, label.verified_at) if latest_evidence_at else label.verified_at
         if model.sample_count:
             prediction = model.predict_one(feature_set.features)
             if prediction is not None and math.isfinite(float(prediction)):
                 scores.append(float(prediction) - float(label.label_value))
-        model.learn_one(feature_set.features, label.label_value, outcome=label.outcome)
+        pending.append((label.verified_at, feature_set.features, label))
+    status = (
+        "MODEL_NOT_RUN" if model is None else
+        "NO_VERIFIED_OUTCOME" if verified == 0 else
+        "INSUFFICIENT_SAMPLE" if not scores else "SCORED"
+    )
     return {
         "scope": f"{runs[0].cluster_name}|{runs[0].host}|{runs[0].metric}|h{runs[0].horizon_hours}",
         "algorithm": "river_linear_v2",
         "feature_schema": model.feature_schema if model else None,
         "verified_outcomes": verified,
         "scored_outcomes": len(scores),
+        "evidence_status": status,
+        "promotion_blocked_reason": "River v2 remains SHADOW_ONLY; operator approval and holdout evidence are required",
+        "latest_evidence_at": latest_evidence_at.isoformat() if latest_evidence_at else None,
+        "active_model": "linear",
+        "shadow_model": "river_linear_v2",
+        "quality_gap_count": skipped_quality + skipped_schema,
         "mae": round(sum(abs(value) for value in scores) / len(scores), 6) if scores else None,
         "rmse": round(math.sqrt(sum(value * value for value in scores) / len(scores)), 6) if scores else None,
         "skipped_quality": skipped_quality,
@@ -82,18 +111,27 @@ def build_report() -> dict[str, object]:
             OnlineLearnerLabel.source_run_id.in_(run_ids),
             OnlineLearnerLabel.status.in_(("READY", "CONSUMED")),
             OnlineLearnerLabel.outcome.in_(VERIFIED_OUTCOMES),
+            OnlineLearnerLabel.source_actor == "forecast-evaluator",
+            OnlineLearnerLabel.evidence_fingerprint.isnot(None),
         ).all() if run_ids else []
     labels = {label.source_run_id: label for label in raw_labels}
     grouped: dict[tuple[str, str, str, int], list[NodeResourceForecastRun]] = defaultdict(list)
     for row in rows:
         grouped[(row.cluster_name, row.host, row.metric, row.horizon_hours)].append(row)
     scopes = [_replay_scope(scope_rows, labels) for scope_rows in grouped.values()]
+    report_status = (
+        "NO_DATA" if not scopes else
+        "SCORED" if any(item["scored_outcomes"] for item in scopes) else
+        "NO_VERIFIED_OUTCOME" if all(item["verified_outcomes"] == 0 for item in scopes) else
+        "INSUFFICIENT_SAMPLE"
+    )
     return {
         "schema": "ceph-ai.river-linear-v2-runtime-replay.v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "read_only": True,
         "execution_mode": "SHADOW_ONLY",
         "scope_count": len(scopes),
+        "evidence_status": report_status,
         "scopes": scopes,
         "side_effects": "read-only; no database writes, alerts, notifications, remediation, promotion or registry mutation",
     }

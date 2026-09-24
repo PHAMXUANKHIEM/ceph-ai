@@ -67,7 +67,9 @@ management_action_ids:
   - rbd_resize_volume
   - rbd_rename_volume
   - rbd_clone_volume
-  - rbd_copy_volume
+  # rbd_copy_volume is Dashboard-only: its snapshot/destination schema is not
+  # part of Chat/Incident's management enum until a typed gateway contract is
+  # wired into that path. It remains classified RISKY below for the Worker.
   - rbd_flatten_volume
   - rbd_template_mark
   - rbd_qos_set

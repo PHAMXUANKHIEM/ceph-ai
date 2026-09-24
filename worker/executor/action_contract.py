@@ -16,7 +16,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 _HEX64_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -37,10 +37,93 @@ _FORBIDDEN_PARAM_KEYS = frozenset({
 })
 _MAX_PARAMS_JSON_CHARS = 16_000
 _MAX_PARAM_DEPTH = 5
+_RBD_POOL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+
+# This is intentionally a Dashboard/Worker contract, not an Incident or
+# Autopilot action enum entry.  The API publishes the same shape so clients do
+# not have to infer it from a shell command or from the UI form.
+RBD_COPY_VOLUME_CONTRACT = {
+    "action_id": "rbd_copy_volume",
+    "surface": "dashboard_worker_only",
+    "incident_autopilot": False,
+    "classification": "RISKY",
+    "capability": "block_storage.rbd_copy_snapshot",
+    "target_type": "volume",
+    "typed_params": {
+        "pool_name": "source RBD pool",
+        "image": "source RBD image",
+        "snapshot": "explicit source snapshot",
+        "dest_pool": "different destination RBD pool",
+        "dest_image": "new destination RBD image",
+        "size_bytes": "positive integer approved by preflight",
+    },
+    "requires_approval": True,
+    "idempotency": "Idempotency-Key scoped to user/cluster/intent; replay returns the existing Action",
+    "expiry": "Not admitted to Incident/Autopilot typed lease; Dashboard proposal remains approval-gated",
+    "preflight": [
+        "source snapshot exists",
+        "destination pool is allowed, RBD-enabled and has capacity",
+        "destination image does not exist",
+        "Cinder-managed volume names are rejected",
+    ],
+    "post_check": [
+        "destination name matches approved dest_image",
+        "destination size matches approved size_bytes",
+    ],
+    "source_preserved": True,
+}
 
 
 class ActionContractError(ValueError):
     """The proposed action cannot cross the typed execution boundary."""
+
+
+class RbdCopyVolumeParams(BaseModel):
+    """Strict parameter schema for the approval-gated cross-pool copy."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    pool_name: str = Field(min_length=1, max_length=128)
+    image: str = Field(min_length=1, max_length=128)
+    snapshot: str = Field(min_length=1, max_length=128)
+    dest_pool: str = Field(min_length=1, max_length=128)
+    dest_image: str = Field(min_length=1, max_length=128)
+    size_bytes: int = Field(gt=0)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+    requested_by: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("pool_name", "dest_pool")
+    @classmethod
+    def validate_pool_name(cls, value: str) -> str:
+        if not _RBD_POOL_NAME_RE.fullmatch(value):
+            raise ValueError("RBD pool name không hợp lệ")
+        return value
+
+    @field_validator("image", "snapshot", "dest_image")
+    @classmethod
+    def validate_image_name(cls, value: str) -> str:
+        if not _RBD_IMAGE_NAME_RE.fullmatch(value):
+            raise ValueError("RBD image/snapshot name không hợp lệ")
+        return value
+
+    @model_validator(mode="after")
+    def validate_copy_boundary(self):
+        if self.pool_name == self.dest_pool:
+            raise ValueError("copy phải sang pool RBD khác")
+        if self.image.startswith("volume-") or self.dest_image.startswith("volume-"):
+            raise ValueError("Cinder-managed volume không được copy trực tiếp qua RBD")
+        return self
+
+
+def validate_typed_action_params(action_id: str, params: Mapping[str, Any]) -> None:
+    """Apply action-specific schemas after the generic JSON boundary."""
+    if action_id != "rbd_copy_volume":
+        return
+    try:
+        RbdCopyVolumeParams.model_validate(params)
+    except Exception as exc:
+        raise ActionContractError(f"params của {action_id} không hợp lệ: {exc}") from exc
 
 
 def _utc(value: datetime) -> datetime:
@@ -186,6 +269,7 @@ class TypedActionGateway:
             contract = TypedActionRequest.model_validate(payload)
         except Exception as exc:
             raise ActionContractError(f"typed action không hợp lệ: {exc}") from exc
+        validate_typed_action_params(contract.action_id, contract.params)
 
         if contract.action_id not in self.allowed_action_ids:
             raise ActionContractError("action_id không nằm trong allowlist")

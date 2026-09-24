@@ -38,7 +38,6 @@ SERVICE_CPU_BUDGETS = {
     "watcher": ResourceBudget(WATCHER_CPU_LIMIT, WATCHER_MEMORY_LIMIT_MIB),
     "vault-monitor": ResourceBudget(0.25, 256),
     "worker": ResourceBudget(WORKER_CPU_LIMIT, WORKER_MEMORY_LIMIT_MIB),
-    "code-repair": ResourceBudget(0.25, 1024),
 }
 
 

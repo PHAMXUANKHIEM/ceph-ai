@@ -185,7 +185,7 @@ def test_verified_forecast_outcome_releases_previous_no_label_audit(monkeypatch)
         ))
         session.add(OnlineLearnerAudit(
             cluster_key="cluster-a", host="node-1", metric="cpu", sample_id="s-verified",
-            observed_at=now.replace(tzinfo=None), value=42.0, label=None,
+            observed_at=now.replace(tzinfo=None), value=43.0, label=None,
             quality_status="NO_LABEL", quality_reason="verified label is required",
             runtime_mode="AUDIT_ONLY", runtime_reason="initial audit", update_applied=False,
             model_version="river-mean-v1",
@@ -201,7 +201,7 @@ def test_verified_forecast_outcome_releases_previous_no_label_audit(monkeypatch)
         session.commit()
 
     result = consume_sample(
-        cluster_id="cluster-a", host="node-1", metric="cpu", value=42.0,
+        cluster_id="cluster-a", host="node-1", metric="cpu", value=43.0,
         observed_at=now, sample_id="s-verified",
     )
     assert result is not None
@@ -215,6 +215,9 @@ def test_verified_forecast_outcome_releases_previous_no_label_audit(monkeypatch)
         assert label.status == "CONSUMED"
         assert label.outcome == "VERIFIED_SUCCESS"
         assert label.evidence_count == 1
+        assert len(label.evidence_fingerprint) == 64
+        assert label.source_model_version == "linear:w24:h24"
+        assert label.outcome_observed_at is not None
 
 
 def test_verified_outcome_waits_for_minimum_evidence(monkeypatch):
@@ -236,6 +239,63 @@ def test_verified_outcome_waits_for_minimum_evidence(monkeypatch):
             confidence=0.9, actual_percent=43.0, absolute_error=2.0, status="EVALUATED",
             idempotency_key="run-evidence-key", evaluated_at=now.replace(tzinfo=None),
         ))
+        session.commit()
+        assert enqueue_verified_outcomes(session, max_rows=10) == 0
+        assert session.query(OnlineLearnerLabel).count() == 0
+
+
+def test_verified_outcome_rejects_mismatch_self_label_and_duplicates(monkeypatch):
+    factory = _session(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_labels.settings.online_learning_min_verified_evidence", 1)
+    now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+    with factory() as session:
+        session.add(Cluster(id="cluster-a", name="CS-LAB", ceph_mon_nodes="", ssh_user="root", ssh_key_path="/tmp/key"))
+        for suffix, audit_value, old_label in (
+            ("ok", 43.0, None), ("mismatch", 44.0, None),
+            ("self", 43.0, 43.0),
+        ):
+            session.add(OnlineLearnerAudit(
+                cluster_key="cluster-a", host=f"node-{suffix}", metric="cpu",
+                sample_id=f"sample-{suffix}", observed_at=now,
+                value=audit_value, label=old_label, quality_status="NO_LABEL",
+                quality_reason="waiting", runtime_mode="AUDIT_ONLY",
+                runtime_reason="waiting", update_applied=False,
+                model_version="river-mean-v1",
+            ))
+            session.add(NodeResourceForecastRun(
+                id=f"run-{suffix}", cluster_name="CS-LAB", host=f"node-{suffix}",
+                metric="cpu", algorithm="linear", window_hours=24,
+                predicted_at=now, target_at=now, current_percent=42.0,
+                predicted_percent=45.0, confidence=0.9, actual_percent=43.0,
+                absolute_error=2.0, status="EVALUATED",
+                idempotency_key=f"run-{suffix}", evaluated_at=now,
+            ))
+        session.commit()
+        assert enqueue_verified_outcomes(session, max_rows=10, source_run_ids=[]) == 0
+        assert enqueue_verified_outcomes(session, max_rows=10, source_run_ids=["run-ok"]) == 1
+        session.commit()
+        assert enqueue_verified_outcomes(
+            session, max_rows=10, source_run_ids=["run-mismatch", "run-self", "run-ok"],
+        ) == 0
+        assert session.query(OnlineLearnerLabel).count() == 1
+        assert session.query(OnlineLearnerLabel).one().source_run_id == "run-ok"
+
+
+def test_verified_outcome_rejects_missing_audit_and_stale_run(monkeypatch):
+    factory = _session(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_labels.settings.online_learning_min_verified_evidence", 1)
+    now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+    with factory() as session:
+        session.add(Cluster(id="cluster-a", name="CS-LAB", ceph_mon_nodes="", ssh_user="root", ssh_key_path="/tmp/key"))
+        for suffix, target in (("missing", now), ("stale", now.replace(year=now.year - 1))):
+            session.add(NodeResourceForecastRun(
+                id=f"run-{suffix}", cluster_name="CS-LAB", host=f"node-{suffix}",
+                metric="cpu", algorithm="linear", window_hours=24,
+                predicted_at=target, target_at=target, current_percent=42.0,
+                predicted_percent=45.0, confidence=0.9, actual_percent=43.0,
+                absolute_error=2.0, status="EVALUATED",
+                idempotency_key=f"run-{suffix}", evaluated_at=target,
+            ))
         session.commit()
         assert enqueue_verified_outcomes(session, max_rows=10) == 0
         assert session.query(OnlineLearnerLabel).count() == 0

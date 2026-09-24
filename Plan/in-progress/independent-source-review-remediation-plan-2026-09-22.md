@@ -13,6 +13,10 @@ production-ready nếu chưa có test, runtime evidence và operator approval t�
 `production-readiness-05-security-baseline.md` và
 `production-readiness-06-reproducible-deployment.md`.
 
+**Follow-up review:** `release-stability-and-ai-evidence-follow-up-2026-09-24.md`.
+File này ghi riêng các lỗi CI của HEAD `7abd88ca`, bằng chứng self-learning còn
+thiếu, 21 scope drift, và thứ tự nghiệm thu release sau review mới nhất.
+
 ## 0. Quyết định an toàn ngay lập tức
 
 - [ ] Giữ hệ thống ở `ADVISORY` hoặc `APPROVAL_REQUIRED`; không bật
@@ -425,6 +429,7 @@ vì loss thấp hoặc unit test xanh.
 | 2026-09-23 | F08 documentation slice | Added separate development and production deployment quickstarts; README now labels legacy SQLite guidance as lab-only | `docs/deployment/development.md`, `docs/deployment/production.md`, `README.md` | Release manifest generation, LICENSE/COPYING and operator sign-off remain pending |
 | 2026-09-23 | F07 immutable production packaging slice | Removed application source bind mounts from runtime Compose; removed Code Repair from Compose and kept it in a host supervisor with push/deploy/promotion disabled. Added hashed Python lock, digest-pinned Python/apt inputs, runtime docs/migrations in image, GHCR push artifact, digest/commit checks, image-based migration, boot-time approved reference and explicit container rollback. Final local image build/import smoke passed; packaging/release tests 12/12. | `Dockerfile`, `requirements-prod.lock`, `compose.yaml`, `container-up`, `scripts/deploy/restart_container_stack.sh`, `scripts/deploy/run_migrations.sh`, `scripts/deploy/rollback_container_stack.sh`, `docs/immutable-production-release.md` | GHCR authentication/push-pull, clean GitHub Actions run, PostgreSQL staging rehearsal and witnessed rollback remain pending |
 | 2026-09-23 | F08 release manifest slice | Secret-free manifest binds commit, branch/clean state, one migration head, dependency hashes, image digest, test/JUnit, quality, pip-audit, scan, SBOM, config/rollback references and residual risk | `scripts/ci/release_manifest.py`, `tests/test_release_manifest.py`, `.github/workflows/ci-cd.yml`; focused release/security batch `63 passed` | GitHub Actions artifact and operator approval evidence remain pending |
+| 2026-09-24 | Follow-up review control plan | Ghi nhận HEAD `7abd88ca` chưa release-ready vì Python 3.11/3.12 và integration đỏ; mở các workstream sửa contract/test, thu verified River outcomes, phân loại 21 drift scopes, PostgreSQL/RabbitMQ/RBAC/credential rehearsal, GHCR witness và handoff/license | `Plan/in-progress/release-stability-and-ai-evidence-follow-up-2026-09-24.md`; CI run `35822665843` | Chưa sửa code trong bước lập Plan; giữ Advisory/Approval Required và Single Full nguyên trạng |
 
 ## 9. Quy tắc cập nhật trạng thái
 

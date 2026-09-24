@@ -28,7 +28,7 @@ import paramiko
 
 from config.settings import settings
 from shared import db
-from shared.models import BackupJob
+from shared.models import Action, BackupJob
 from worker.backup import alerting
 from worker.backup import restore as restore_chain
 from worker.backup.cluster_scope import first_mon_node, get_cluster, is_valid_rbd_name
@@ -45,6 +45,12 @@ CHUNK_SIZE = 4 * 1024 * 1024
 
 class RestoreDrillError(Exception):
     """Raised for any unrecoverable failure inside a drill run."""
+
+
+def _action_cancel_requested(action_pk: str) -> bool:
+    with db.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        return bool(action is not None and action.cancelled_at is not None)
 
 
 def _first_mon_node() -> str:
@@ -87,7 +93,8 @@ def _latest_successful_full_backup(pool: str, image: str) -> BackupJob | None:
     return _latest_successful_recovery_point(pool, image, target_slot=None)
 
 
-def _import_backup_to_scratch(mon_ip: str, local_path: str, scratch_pool: str, scratch_image: str) -> None:
+def _import_backup_to_scratch(mon_ip: str, local_path: str, scratch_pool: str, scratch_image: str,
+                              cancel_check=None) -> None:
     """Streams `local_path` into `rbd import - {scratch_pool}/{scratch_image}`
     over a raw SSH session — the inverse direction of engine.py's export
     streaming."""
@@ -111,6 +118,8 @@ def _import_backup_to_scratch(mon_ip: str, local_path: str, scratch_pool: str, s
         )
         with open(local_path, "rb") as f:
             while True:
+                if cancel_check is not None and cancel_check():
+                    raise RestoreDrillError("RestoreDrill đã được operator yêu cầu huỷ")
                 chunk = f.read(CHUNK_SIZE)
                 if not chunk:
                     break
@@ -124,7 +133,7 @@ def _import_backup_to_scratch(mon_ip: str, local_path: str, scratch_pool: str, s
         client.close()
 
 
-def _export_scratch_sha256(mon_ip: str, scratch_pool: str, scratch_image: str) -> str:
+def _export_scratch_sha256(mon_ip: str, scratch_pool: str, scratch_image: str, cancel_check=None) -> str:
     """Re-exports the just-imported scratch image and hashes it, to prove
     the restore is byte-identical to the backup — not just that `rbd
     import` exited 0."""
@@ -148,6 +157,8 @@ def _export_scratch_sha256(mon_ip: str, scratch_pool: str, scratch_image: str) -
         )
         digest = hashlib.sha256()
         while True:
+            if cancel_check is not None and cancel_check():
+                raise RestoreDrillError("RestoreDrill đã được operator yêu cầu huỷ")
             chunk = read_chunk(stdout, CHUNK_SIZE, deadline)
             if not chunk:
                 break
@@ -249,6 +260,7 @@ def _run_secondary_drill(action_pk: str, cluster_id: str, drill_config: dict, wr
         result = restore_chain.restore_image(
             pool, image, backend, scratch_pool, scratch_image,
             cluster_id=cluster_id, cleanup_new_destination_on_failure=True,
+            cancel_check=lambda: _action_cancel_requested(action_pk),
         )
         if not result.success:
             raise RestoreDrillError(result.error_message or "restore chain failed")
@@ -319,6 +331,8 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
     tmp_path = None
     scratch_created = False
     try:
+        if _action_cancel_requested(action_pk):
+            raise RestoreDrillError("RestoreDrill đã được operator yêu cầu huỷ")
         _assert_scratch_absent(mon_ip, scratch_pool, scratch_image)
         # Reuse the production restore engine when the selected full backup
         # has successful incrementals. This makes the drill exercise the same
@@ -340,6 +354,7 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
                 cluster_id=None,
                 cleanup_new_destination_on_failure=True,
                 recovery_point_job_id=backup_job.id,
+                cancel_check=lambda: _action_cancel_requested(action_pk),
             )
             if not result.success:
                 progress[0]["applied_diff_job_ids"] = result.applied_diff_job_ids
@@ -388,8 +403,14 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
         # Mark before import: a failed import can still leave a partial RBD
         # image that must be removed during the finally block.
         scratch_created = True
-        _import_backup_to_scratch(mon_ip, tmp_path, scratch_pool, scratch_image)
-        restored_sha256 = _export_scratch_sha256(mon_ip, scratch_pool, scratch_image)
+        _import_backup_to_scratch(
+            mon_ip, tmp_path, scratch_pool, scratch_image,
+            cancel_check=lambda: _action_cancel_requested(action_pk),
+        )
+        restored_sha256 = _export_scratch_sha256(
+            mon_ip, scratch_pool, scratch_image,
+            cancel_check=lambda: _action_cancel_requested(action_pk),
+        )
 
         if restored_sha256 != source_sha256:
             raise RestoreDrillError(

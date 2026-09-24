@@ -340,6 +340,18 @@ def test_capacity_admission_rejects_known_full_target(monkeypatch):
         engine._capacity_admission([("b", backend)], 1024)
 
 
+def test_source_pool_capacity_admission_rejects_near_full_pool(monkeypatch):
+    monkeypatch.setattr(
+        engine,
+        "execute_command",
+        lambda _host, _command: json.dumps({
+            "pools": [{"name": "vms", "stats": {"max_avail": 10, "percent_used": 0.96}}]
+        }),
+    )
+    with pytest.raises(engine.BackupEngineError, match="source pool"):
+        engine._source_pool_capacity_admission("10.20.1.112", "vms", 1024)
+
+
 def test_first_backup_is_full_export(isolated_db):
     incident_id, action_pk = _make_incident_and_action()
 

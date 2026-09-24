@@ -1068,12 +1068,43 @@ async def rollback_backup_policy_api(revision_id: str, user: str = Depends(requi
     except (OSError, ValueError, TypeError) as exc:
         logger.exception("backup policy rollback failed")
         raise HTTPException(status_code=500, detail="Không thể rollback backup policy an toàn") from exc
+    audit_recorded = True
+    try:
+        with db.SessionLocal() as session:
+            incident = Incident(
+                cluster_id=None,
+                ceph_code="BACKUP_POLICY_ROLLBACK",
+                status=IncidentStatus.RESOLVED.value,
+                log_excerpt=(
+                    f"Rollback backup policy revision {saved['rolled_back_from']} "
+                    f"thành {saved['revision_id']} bởi {user}"
+                ),
+                detected_at=utc_now(),
+            )
+            session.add(incident)
+            session.flush()
+            audit.record(
+                session,
+                incident_id=incident.id,
+                action_id=None,
+                event_type=audit.EVENT_BACKUP_POLICY_ROLLBACK,
+                actor=user,
+                evidence={
+                    "rolled_back_from": saved["rolled_back_from"],
+                    "revision_id": saved["revision_id"],
+                },
+            )
+            session.commit()
+    except Exception:
+        audit_recorded = False
+        logger.exception("backup policy rollback succeeded but audit persistence failed")
     return {
         "ok": True,
         "revision_id": saved["revision_id"],
         "rolled_back_from": saved["rolled_back_from"],
         "created_at": saved["created_at"],
         "applies_on_next_backup_cycle": True,
+        "audit_recorded": audit_recorded,
         "policy": saved["policy"],
     }
 
@@ -1512,6 +1543,37 @@ async def cancel_backup_job(job_id: str, request: Request, user: str = Depends(r
         )
         session.commit()
         return JSONResponse({"ok": True, "action_id": action.id, "job_id": job.id,
+                             "status": "CANCEL_REQUESTED" if action.status == ActionStatus.EXECUTING.value else "CANCELLED"})
+
+
+@router.post("/backups/actions/{action_id}/cancel")
+async def cancel_backup_action(action_id: str, request: Request, user: str = Depends(require_login)):
+    """Cancel a backup/restore action when no BackupJob row exists yet."""
+    _require_admin_privilege(user)
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        row = session.query(Action, Incident).join(
+            Incident, Action.incident_id == Incident.id
+        ).filter(
+            Action.id == action_id,
+            Action.action_id.in_(BACKUP_PROGRESS_ACTION_IDS),
+            Action.status.in_((ActionStatus.APPROVED.value, ActionStatus.EXECUTING.value)),
+            _job_scope(Incident.cluster_id, cluster),
+        ).first()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy backup/restore action đang chạy.")
+        action, incident = row
+        action.cancelled_at = utc_now()
+        action.cancelled_by = user
+        if action.status == ActionStatus.APPROVED.value:
+            action.status = ActionStatus.REJECTED.value
+            incident.status = IncidentStatus.REJECTED.value
+        audit.record(
+            session, incident_id=incident.id, action_id=action.id,
+            event_type="backup_action_cancel_requested", actor=user,
+        )
+        session.commit()
+        return JSONResponse({"ok": True, "action_id": action.id,
                              "status": "CANCEL_REQUESTED" if action.status == ActionStatus.EXECUTING.value else "CANCELLED"})
 
 

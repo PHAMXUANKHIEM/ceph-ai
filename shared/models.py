@@ -3663,6 +3663,13 @@ class OnlineLearnerLabel(Base):
     outcome: Mapped[str] = mapped_column(String(24), nullable=False, default="VERIFIED_SUCCESS")
     evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     source_actor: Mapped[str] = mapped_column(String(64), nullable=False, default="forecast-evaluator")
+    # Independent telemetry provenance.  A numeric CPU/RAM target never comes
+    # from a model prediction, an alert status, or an operator's free text.
+    evidence_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_model_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    source_incident_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_action_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="READY")
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     verified_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

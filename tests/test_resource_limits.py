@@ -19,7 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_compose_resource_caps_match_policy():
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
     services = compose["services"]
-    assert total_service_cpu_budget() == 6.0
+    # code-repair is a host-supervised tool, not a Compose service.  Keep it
+    # out of the container budget so this policy cannot drift from Compose.
+    assert "code-repair" not in services
+    assert "code-repair" not in SERVICE_CPU_BUDGETS
+    assert set(SERVICE_CPU_BUDGETS) <= set(services)
+    assert total_service_cpu_budget() == 5.75
     assert total_service_cpu_budget() + HOST_RESERVED_CPU <= 8
 
     for name, budget in SERVICE_CPU_BUDGETS.items():
@@ -36,7 +41,7 @@ def test_compose_resource_caps_match_policy():
 
 def test_budget_keeps_two_cpu_host_reserve():
     assert host_cpu_reserve_is_possible(8)
-    assert not host_cpu_reserve_is_possible(8, extra_cpu=0.1)
+    assert not host_cpu_reserve_is_possible(8, extra_cpu=0.3)
     assert not host_cpu_reserve_is_possible(7)
     assert not host_cpu_reserve_is_possible(3)
     assert REQUIRED_HOST_CPU == 8

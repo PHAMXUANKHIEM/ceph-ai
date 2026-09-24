@@ -183,7 +183,8 @@ cross-restore và cluster inactive bị từ chối.
 Đã có vertical slice: tab Policies trên trang Backup, validation non-secret,
 atomic write, revision backup và API `GET/PUT /api/backups/policy`. Đã thêm
 `POST /api/backups/policy/rollback/{revision_id}`; rollback vẫn validate policy
-và tạo revision mới để có thể undo. Còn audit đầy đủ và reload Worker có xác nhận.
+và tạo revision mới để có thể undo; rollback ghi audit event riêng chứa revision
+IDs, không chứa secret/policy document. Còn reload Worker có xác nhận.
 
 ### 6.2 Test Backup Target `[~]`
 
@@ -237,8 +238,10 @@ verify hai phía và test corrupt artifact.
 hoặc job chưa FAILED. History có nút Retry tương ứng. Cơ chế stale RUNNING
 hiện có của Worker tiếp tục được dùng. Đã thêm `POST /backups/jobs/{job_id}/cancel`:
 APPROVED bị reject trước execution; EXECUTING đặt cancellation marker để Worker
-kiểm tra trong export/upload và đi qua cleanup. Resume multipart, cancel khi
-đang restore, trạng thái mở rộng và reconciliation chi tiết vẫn còn.
+kiểm tra trong export/upload và đi qua cleanup. Restore action có thêm endpoint
+`POST /backups/actions/{action_id}/cancel`; download/import/post-verify và
+RestoreDrill đều nhận cancellation callback. Resume multipart, trạng thái mở rộng
+và reconciliation chi tiết vẫn còn.
 
 ### 6.5 Backup inventory độc lập policy `[~]`
 
@@ -321,9 +324,9 @@ recorded bytes, tăng trưởng quan sát trong cửa sổ 30 ngày, ước lư�
 tiếp và số ngày còn lại theo free space. S3 không có capacity thì trả về
 `unknown`, không suy đoán; dashboard tải lazy summary để không làm chậm trang
 Overview. Có thêm test growth/forecast và preflight output. Worker đã có
-admission guard trước snapshot/export, chặn temp staging hoặc target đã biết
-thiếu capacity với safety margin; source pool near-full và số liệu
-compression/dedup từ backend vẫn còn.
+admission guard trước snapshot/export, chặn temp staging, target đã biết thiếu
+capacity và source pool near-full với safety margin; số liệu compression/dedup
+từ backend vẫn còn.
 
 ### 7.4 Alert lifecycle `[~]`
 
@@ -469,8 +472,9 @@ bảng khi một khái niệm không thể biểu diễn chính xác bằng sche
 | 2026-08-17 | Restore preflight nền tảng | Đang triển khai | Lưu evidence nguồn/đích/chain/capacity vào action; chặn destination tồn tại, pool near-full/RBD-disabled, thiếu capacity và backup in-flight; Worker re-check ngay trước import. | Regression mở rộng 284 passed; JS, Python compile và diff check đạt (một lỗi fixture SQLite ngẫu nhiên biến mất khi chạy lại riêng). | Thêm artifact HEAD/SHA-256, feature compatibility, quota/logical size và RTO estimate. |
 | 2026-09-21 | 6.1 Policy Editor — vertical slice | Đang triển khai | Thêm Policies workspace, non-secret policy validation, atomic YAML save, revision backup và API GET/PUT; policy tối giản vẫn tương thích với Dashboard cũ. | `tests/test_backup_policy_config.py tests/test_dashboard_backups.py`: **46 passed**; Python compile, `node --check`, `git diff --check` đạt. | Thêm rollback revision, audit đầy đủ, reload Worker có xác nhận; sau đó làm 6.2 target connection test. |
 | 2026-09-23 | 5.5 per-cluster Digest/RestoreDrill | Đang triển khai | Thêm `clusters.<cluster_id>` cho lịch Digest và RestoreDrill; không kế thừa scratch destination mặc định, drill phụ dùng backend/SSH/chain của đúng cluster và Dashboard audit/manual trigger đọc cùng scope. | Backup policy/scheduler/restore drill/digest: **52 passed**; chưa chạy restore trên Ceph thật. | Live isolated-cluster acceptance; sau đó tiếp tục safe resume/cancel, policy rollback audit, escalation và capacity admission. |
-| 2026-09-23 | Repair Missing Copy + policy rollback | Đang triển khai | Repair lấy một SUCCESS artifact có checksum/size, download+verify từ source, upload+verify sang target thiếu, tạo BackupJob bổ sung sau commit; action RISKY cần approval. Policy rollback đọc revision hợp lệ, validate lại và lưu thành revision mới. | Regression server **95 passed**; test engine/policy sau khi tích hợp **29 passed**; Worker/Dashboard healthy sau restart. Chưa live-test target storage và chưa có audit event riêng cho rollback. | Bổ sung safe resume/cancel, admission capacity trước snapshot/upload, rollback audit và live target acceptance. |
-| 2026-09-23 | Safe cancel + capacity admission | Đang triển khai | Cancel job APPROVED/EXECUTING có marker bền vững; Worker dừng tại checkpoint export/upload và cleanup theo finally. Trước snapshot/export, Worker kiểm tra temp staging và target có capacity metadata; thiếu thì fail-closed. | Engine **24 passed**; regression trước đó **95 passed**; chưa live-test cancel trên transfer thật. | Resume multipart, cancel restore an toàn, source pool near-full, rollback audit và live target acceptance. |
+| 2026-09-23 | Repair Missing Copy + policy rollback | Đang triển khai | Repair lấy một SUCCESS artifact có checksum/size, download+verify từ source, upload+verify sang target thiếu, tạo BackupJob bổ sung sau commit; action RISKY cần approval. Policy rollback đọc revision hợp lệ, validate lại, lưu thành revision mới và ghi audit event riêng chỉ chứa revision IDs. | Regression server **95 passed**; test engine/policy sau khi tích hợp **29 passed**; Worker/Dashboard healthy sau restart. Chưa live-test target storage. | Bổ sung safe resume/cancel, admission capacity trước snapshot/upload, reload Worker có xác nhận và live target acceptance. |
+| 2026-09-23 | Safe cancel + capacity admission | Đang triển khai | Cancel job/action APPROVED/EXECUTING có marker bền vững; Worker dừng tại checkpoint export/upload/restore và cleanup theo finally. Trước snapshot/export, Worker kiểm tra temp staging, target capacity metadata và source pool `ceph df detail`; thiếu thì fail-closed khi có số liệu rõ ràng. | Engine/restore/drill **44 passed**; regression trước đó **95 passed**; chưa live-test cancel trên transfer thật. | Resume multipart, trạng thái mở rộng/reconciliation và live target acceptance. |
+| 2026-09-24 | Restore cancellation + source pool guard | Đang triển khai | Restore-as-new/in-place và RestoreDrill nhận cancellation callback trong download, `rbd import`, `import-diff`, post-verify; endpoint action-level cho phép hủy trước khi có BackupJob. Backup admission đọc `ceph df detail` của source pool và chặn pool gần đầy/thiếu `max_avail` khi dữ liệu hợp lệ. | Backup engine/restore/drill **44 passed**; Python compile và service health đạt; chưa chạy cancel trên transfer thật. | Multipart resume, trạng thái mở rộng/reconciliation, cleanup `.part` sau crash và live target acceptance. |
 
 ## 14. Quy tắc cập nhật tài liệu
 

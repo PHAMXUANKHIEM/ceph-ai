@@ -739,6 +739,19 @@ def _river_linear_v2_shadow_evidence(
     points: list[tuple[datetime, float]], *, horizon_hours: int,
 ) -> dict:
     """Replay verified labels into v2 without mutating runtime or DB state."""
+    if not candidate_enabled("river_linear_v2"):
+        return {
+            "shadow_detector": "river_linear_v2",
+            "algorithm": "river_linear_v2",
+            "model_version": "river-linear-v2",
+            "execution_mode": "SHADOW_ONLY",
+            "scope_key": f"{cluster}|{host}|{metric}|h{horizon_hours}",
+            "quality_status": "DISABLED",
+            "sample_count": 0,
+            "prediction": None,
+            "state_bytes": 0,
+            "reason": "candidate flag disabled",
+        }
     current = build_features(
         [MetricPoint(observed_at=timestamp, value=value) for timestamp, value in points],
         metric=metric, horizon_hours=horizon_hours,
@@ -781,6 +794,8 @@ def _river_linear_v2_shadow_evidence(
                 OnlineLearnerLabel.source_run_id.in_(run_ids),
                 OnlineLearnerLabel.outcome.in_(VERIFIED_OUTCOMES),
                 OnlineLearnerLabel.status.in_(("READY", "CONSUMED")),
+                OnlineLearnerLabel.source_actor == "forecast-evaluator",
+                OnlineLearnerLabel.evidence_fingerprint.isnot(None),
             ).all()
     except Exception:
         logger.warning(
@@ -792,7 +807,15 @@ def _river_linear_v2_shadow_evidence(
     label_by_run = {label.source_run_id: label for label in labels}
     for run in reversed(runs):
         label = label_by_run.get(run.id)
-        if label is None:
+        if (
+            label is None or label.label_value is None
+            or run.actual_percent is None
+            or not math.isfinite(float(label.label_value))
+            or abs(float(label.label_value) - float(run.actual_percent)) > 0.01
+            or label.verified_at is None
+            or label.verified_at < run.target_at
+            or label.verified_at > points[-1][0].replace(tzinfo=None)
+        ):
             continue
         target_time = run.predicted_at
         if target_time.tzinfo is None:

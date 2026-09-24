@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from shared.time import utc_now
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import paramiko
 
@@ -65,6 +65,21 @@ class RestoreError(Exception):
     """Raised for any unrecoverable failure inside `restore_image()` — a
     missing backup chain, a checksum mismatch on download, or an `rbd
     import`/`import-diff` command failure."""
+
+
+def _check_cancel(cancel_check: Callable[[], bool] | None) -> None:
+    if cancel_check is not None and cancel_check():
+        raise RestoreError("Restore đã được operator yêu cầu huỷ")
+
+
+class _CancellationAwareWriter:
+    def __init__(self, handle, cancel_check: Callable[[], bool] | None):
+        self._handle = handle
+        self._cancel_check = cancel_check
+
+    def write(self, data):
+        _check_cancel(self._cancel_check)
+        return self._handle.write(data)
 
 
 @dataclass
@@ -194,7 +209,11 @@ def _ssh_connect(mon_ip: str, cluster: "Cluster | None" = None) -> paramiko.SSHC
     return client
 
 
-def _download_and_verify(storage: BackupStorageBackend, job: BackupJob) -> tuple[str, int]:
+def _download_and_verify(
+    storage: BackupStorageBackend,
+    job: BackupJob,
+    cancel_check: Callable[[], bool] | None = None,
+) -> tuple[str, int]:
     """Downloads `job.remote_key` to a temp file, computing SHA256/size as
     it streams, then round-trips those values through `storage.verify()`
     — the SAME check `engine.py`'s upload path already does right after
@@ -204,9 +223,10 @@ def _download_and_verify(storage: BackupStorageBackend, job: BackupJob) -> tuple
     file path and its size — caller is responsible for deleting the file."""
     tmp_path = None
     try:
+        _check_cancel(cancel_check)
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = tmp.name
-            storage.download(job.remote_key, tmp)
+            storage.download(job.remote_key, _CancellationAwareWriter(tmp, cancel_check))
 
         digest = hashlib.sha256()
         size = 0
@@ -233,6 +253,7 @@ def _download_and_verify(storage: BackupStorageBackend, job: BackupJob) -> tuple
             )
         if not storage.verify(job.remote_key, expected_size, expected_sha256):
             raise RestoreError(f"backend verification failed for {job.remote_key} (BackupJob {job.id})")
+        _check_cancel(cancel_check)
         return tmp_path, size
     except Exception:
         if tmp_path is not None and os.path.exists(tmp_path):
@@ -240,11 +261,18 @@ def _download_and_verify(storage: BackupStorageBackend, job: BackupJob) -> tuple
         raise
 
 
-def _stream_file_to_rbd(mon_ip: str, local_path: str, command: str, cluster: "Cluster | None" = None) -> None:
+def _stream_file_to_rbd(
+    mon_ip: str,
+    local_path: str,
+    command: str,
+    cluster: "Cluster | None" = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> None:
     """Streams `local_path` into `command` (an `rbd import -`/`rbd
     import-diff -` invocation) over a raw SSH session — same direction and
     pattern as `restore_drill.py::_import_backup_to_scratch`, generalized
     to accept any destination command instead of a scratch-only one."""
+    _check_cancel(cancel_check)
     client = _ssh_connect(mon_ip, cluster)
     deadline = time.monotonic() + float(settings.ceph_backup_operation_timeout)
     try:
@@ -255,6 +283,7 @@ def _stream_file_to_rbd(mon_ip: str, local_path: str, command: str, cluster: "Cl
         )
         with open(local_path, "rb") as f:
             while True:
+                _check_cancel(cancel_check)
                 chunk = f.read(CHUNK_SIZE)
                 if not chunk:
                     break
@@ -268,8 +297,14 @@ def _stream_file_to_rbd(mon_ip: str, local_path: str, command: str, cluster: "Cl
         client.close()
 
 
-def _run_rbd_command(mon_ip: str, command: str, cluster: "Cluster | None" = None) -> None:
+def _run_rbd_command(
+    mon_ip: str,
+    command: str,
+    cluster: "Cluster | None" = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> None:
     """Run a small non-streaming verification/cleanup command."""
+    _check_cancel(cancel_check)
     client = _ssh_connect(mon_ip, cluster)
     deadline = time.monotonic() + float(settings.ceph_backup_operation_timeout)
     try:
@@ -313,6 +348,7 @@ def restore_image(
     cluster_id: str | None = None,
     cleanup_new_destination_on_failure: bool = False,
     recovery_point_job_id: str | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> RestoreResult:
     """Rebuilds `dest_pool/dest_image` (on `cluster_id`'s own cluster --
     `None` means the default cluster/`settings.ceph_mon_nodes`, Phase 3)
@@ -340,21 +376,27 @@ def restore_image(
     destination_created = False
     destination_spec = f"{shlex.quote(dest_pool)}/{shlex.quote(dest_image)}"
     try:
-        full_path, full_size = _download_and_verify(storage, full_job)
+        _check_cancel(cancel_check)
+        full_path, full_size = _download_and_verify(storage, full_job, cancel_check)
         tmp_paths.append(full_path)
         total_size += full_size
         # `rbd import` can create the destination before returning a non-zero
         # status. Mark it as potentially created before streaming so a failed
         # import cannot leave a partial image behind.
         destination_created = cleanup_new_destination_on_failure
-        _stream_file_to_rbd(mon_ip, full_path, f"rbd import - {destination_spec}", cluster)
+        _stream_file_to_rbd(
+            mon_ip, full_path, f"rbd import - {destination_spec}", cluster, cancel_check
+        )
         destination_created = True
 
         for diff_job in diff_jobs:
-            diff_path, diff_size = _download_and_verify(storage, diff_job)
+            _check_cancel(cancel_check)
+            diff_path, diff_size = _download_and_verify(storage, diff_job, cancel_check)
             tmp_paths.append(diff_path)
             total_size += diff_size
-            _stream_file_to_rbd(mon_ip, diff_path, f"rbd import-diff - {destination_spec}", cluster)
+            _stream_file_to_rbd(
+                mon_ip, diff_path, f"rbd import-diff - {destination_spec}", cluster, cancel_check
+            )
             applied_diff_ids.append(diff_job.id)
 
         # Do not treat a successful import stream as sufficient evidence:
@@ -362,8 +404,9 @@ def restore_image(
         # The export is directed to /dev/null, so no restored payload is
         # retained or returned to the Dashboard; it verifies the RBD read path
         # and catches an image that exists but cannot be read after import.
-        _run_rbd_command(mon_ip, f"rbd info {destination_spec} --format json", cluster)
-        _run_rbd_command(mon_ip, f"rbd export {destination_spec} /dev/null", cluster)
+        _check_cancel(cancel_check)
+        _run_rbd_command(mon_ip, f"rbd info {destination_spec} --format json", cluster, cancel_check)
+        _run_rbd_command(mon_ip, f"rbd export {destination_spec} /dev/null", cluster, cancel_check)
 
         return RestoreResult(
             success=True,

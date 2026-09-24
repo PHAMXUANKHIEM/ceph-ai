@@ -193,6 +193,18 @@ def test_rbd_volume_mutations_are_classified_risky():
     assert classify_action("cinder_create_snapshot") == ActionClassification.RISKY
 
 
+def test_rbd_copy_is_dashboard_only_and_outside_incident_contract():
+    import worker.policy.gate as gate
+    from worker.llm.router_client import VALID_ACTION_IDS
+
+    # The Dashboard route has a dedicated snapshot/destination contract.  It
+    # must not accidentally become a Chat/Incident enum item before the typed
+    # gateway supports this target and parameter schema.
+    assert "rbd_copy_volume" not in gate.VALID_MANAGEMENT_ACTION_IDS
+    assert "rbd_copy_volume" not in VALID_ACTION_IDS
+    assert classify_action("rbd_copy_volume") == ActionClassification.RISKY
+
+
 def test_rbd_trash_purge_all_is_classified_destructive():
     # Pha 0.4 (2026-08-18): mass-purges every trashed image in a pool —
     # moved risky: -> destructive:, same "stricter label, not a behavior

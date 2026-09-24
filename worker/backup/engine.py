@@ -323,6 +323,47 @@ def _capacity_admission(target_bindings, estimated_bytes: int) -> None:
             )
 
 
+def _source_pool_capacity_admission(mon_ip: str, pool: str, estimated_bytes: int) -> None:
+    """Reject an explicitly near-full source pool before creating a snapshot.
+
+    Some Ceph deployments do not expose ``ceph df detail`` through the
+    configured runtime. In that case the source capacity is recorded as
+    unknown and target/temp guards remain authoritative; a malformed response
+    is never interpreted as healthy.
+    """
+    if estimated_bytes <= 0:
+        return
+    try:
+        raw = execute_command(mon_ip, "ceph df detail --format json")
+        payload = json.loads(raw) if raw else {}
+    except Exception as exc:
+        logger.warning("backup capacity: source pool probe unavailable for %s: %s", pool, exc)
+        return
+    pools = payload.get("pools") if isinstance(payload, dict) else None
+    if not isinstance(pools, list):
+        return
+    row = next((item for item in pools if isinstance(item, dict) and item.get("name") == pool), None)
+    stats = row.get("stats") if isinstance(row, dict) else None
+    if not isinstance(stats, dict):
+        return
+    max_available = stats.get("max_avail")
+    try:
+        max_available = int(max_available) if max_available is not None else None
+        used_ratio = float(stats.get("percent_used"))
+    except (TypeError, ValueError):
+        return
+    safety_margin = max(64 * 1024 * 1024, int(estimated_bytes * 0.02))
+    required = estimated_bytes + safety_margin
+    if max_available is not None and max_available < required:
+        raise BackupEngineError(
+            f"source pool {pool} không đủ capacity: cần ít nhất {required} byte, còn {max_available}"
+        )
+    if used_ratio > 1:
+        used_ratio /= 100
+    if used_ratio >= 0.95:
+        raise BackupEngineError(f"source pool {pool} đã gần đầy ({used_ratio:.1%})")
+
+
 def run(
     action_pk: str,
     action_id: str,
@@ -623,6 +664,7 @@ def _run_rbd_backup(
     try:
         total_bytes = _rbd_image_size_bytes(mon_ip, pool, image)
         _capacity_admission(target_bindings, total_bytes)
+        _source_pool_capacity_admission(mon_ip, pool, total_bytes)
     except Exception as exc:
         logger.error("backup_engine._run_rbd_backup: capacity admission failed for %s/%s: %s", pool, image, exc)
         progress[0]["status"] = "failed"
@@ -1045,6 +1087,7 @@ def _run_restore_to_production(
         cluster_id=cluster_id,
         cleanup_new_destination_on_failure=restore_as_new,
         recovery_point_job_id=recovery_point_job_id,
+        cancel_check=lambda: _action_cancel_requested(action_pk),
     )
 
     if not result.success:
