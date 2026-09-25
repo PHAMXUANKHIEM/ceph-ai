@@ -4,7 +4,7 @@ set -euo pipefail
 # Run this before every Alembic upgrade. The script never deletes or replaces
 # an existing backup; it creates a new 0600 artifact for the current timestamp.
 database_url="${DATABASE_URL:-${CEPH_AI_DATABASE_URL:-}}"
-destination="${1:-/var/backups/ceph-ai}"
+destination="${1:-${CEPH_AI_DATABASE_BACKUP_DIR:-/var/backups/ceph-ai}}"
 
 if [[ -z "$database_url" ]]; then
   echo "DATABASE_URL or CEPH_AI_DATABASE_URL is required" >&2

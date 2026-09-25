@@ -4,7 +4,9 @@ set -u -o pipefail
 
 DEPLOY_DIR="${CEPH_AI_DEPLOY_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 ENV_FILE="${CEPH_AI_ENV_FILE:-/var/lib/ceph-ai/config/.env}"
-BACKUP_DIR="${CEPH_AI_DATABASE_BACKUP_DIR:-/var/lib/ceph-ai/database-backups}"
+# Same default as backup_database_before_migration.sh, which run_migrations.sh
+# calls; both honour CEPH_AI_DATABASE_BACKUP_DIR.
+BACKUP_DIR="${CEPH_AI_DATABASE_BACKUP_DIR:-/var/backups/ceph-ai}"
 REGISTRY_URL="${CEPH_AI_REGISTRY_PROBE_URL:-https://ghcr.io/v2/}"
 REQUIRED_DIRS="${CEPH_AI_PREFLIGHT_REQUIRED_DIRS:-/etc/systemd/system /var/lib/ceph-ai /var/lib/containers /run/ceph-ai}"
 REQUIRED_COMMANDS="${CEPH_AI_PREFLIGHT_REQUIRED_COMMANDS:-bash git podman systemctl install curl awk mktemp python3 date hostname tee chmod mv}"
@@ -94,11 +96,17 @@ run_checks() {
 
   if [ "${CEPH_AI_PREFLIGHT_SKIP_NETWORK:-0}" = 1 ]; then
     pass registry-network "skipped-by-test-harness"
-  elif curl --silent --show-error --fail --head --connect-timeout 3 --max-time 5 \
-      "$REGISTRY_URL" >/dev/null 2>&1; then
-    pass registry-network "$REGISTRY_URL"
   else
-    fail registry-network "unreachable:$REGISTRY_URL"
+    # Any HTTP status proves DNS/TLS/network reachability. The registry API
+    # answers anonymous requests with 401, so --fail would reject a healthy
+    # registry; only a connection-level failure (no status) is a failure.
+    registry_status="$(curl --silent --head --connect-timeout 3 --max-time 5 \
+      --output /dev/null --write-out '%{http_code}' "$REGISTRY_URL" 2>/dev/null || true)"
+    if [[ "$registry_status" =~ ^[1-5][0-9][0-9]$ ]]; then
+      pass registry-network "$REGISTRY_URL http=$registry_status"
+    else
+      fail registry-network "unreachable:$REGISTRY_URL"
+    fi
   fi
 
   if [ -n "${GH_TOKEN:-}" ] || podman login --get-login ghcr.io >/dev/null 2>&1; then

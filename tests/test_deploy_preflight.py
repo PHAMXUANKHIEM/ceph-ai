@@ -171,3 +171,23 @@ def test_deploy_workflow_redacts_console_and_artifact_streams():
     workflow = WORKFLOW.read_text()
     deploy_job = workflow[workflow.index("  deploy:"):workflow.index("  release_gate:")]
     assert deploy_job.count('python3 "$GITHUB_WORKSPACE/scripts/deploy/redact_deploy_output.py"') == 2
+
+
+def test_registry_answering_401_counts_as_reachable(tmp_path):
+    # GHCR answers anonymous /v2/ requests with 401; that proves the network
+    # path works and must not block a deploy (it did in CI run 36141457826).
+    env = _environment(tmp_path)
+    _executable(Path(env["PATH"].split(":", 1)[0]) / "curl", "printf 401\nexit 22\n")
+    env["CEPH_AI_PREFLIGHT_SKIP_NETWORK"] = "0"
+    result = subprocess.run(["bash", str(SCRIPT)], cwd=ROOT, env=env,
+                            text=True, capture_output=True, check=False)
+    assert "check=registry-network detail=unreachable:" not in result.stderr
+    assert "check=registry-network" in result.stdout + result.stderr
+    assert "http=401" in result.stdout + result.stderr
+
+
+def test_preflight_and_backup_script_share_the_backup_directory_default():
+    preflight = SCRIPT.read_text(encoding="utf-8")
+    backup = (ROOT / "scripts/deploy/backup_database_before_migration.sh").read_text(encoding="utf-8")
+    assert 'BACKUP_DIR="${CEPH_AI_DATABASE_BACKUP_DIR:-/var/backups/ceph-ai}"' in preflight
+    assert 'destination="${1:-${CEPH_AI_DATABASE_BACKUP_DIR:-/var/backups/ceph-ai}}"' in backup
