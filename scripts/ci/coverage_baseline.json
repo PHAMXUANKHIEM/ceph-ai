@@ -1,0 +1,53 @@
+{
+  "schema": "ceph-ai.coverage-baseline.v1",
+  "recorded_at": null,
+  "critical_target_percent": 90.0,
+  "total": {
+    "line_percent": 0.0,
+    "branch_percent": 0.0
+  },
+  "critical_paths": {
+    "auth_session": {
+      "files": [
+        "dashboard/routes/auth.py",
+        "shared/full_executor_auth.py",
+        "shared/ldap_identity.py"
+      ],
+      "baseline": {}
+    },
+    "cluster_scope": {
+      "files": [
+        "dashboard/cluster_scope.py",
+        "shared/single_full_scope.py"
+      ],
+      "baseline": {}
+    },
+    "action_gateway": {
+      "files": [
+        "worker/executor/action_contract.py",
+        "shared/controlled_action_contract.py",
+        "shared/incident_actions.py"
+      ],
+      "baseline": {}
+    },
+    "migration_wrapper": {
+      "files": [
+        "scripts/deploy/record_migration_metadata.py"
+      ],
+      "baseline": {}
+    },
+    "outbox": {
+      "files": [
+        "shared/incident_outbox.py",
+        "shared/telegram_outbox.py"
+      ],
+      "baseline": {}
+    },
+    "deploy_tooling": {
+      "files": [
+        "scripts/deploy/container_restart_helper.py"
+      ],
+      "baseline": {}
+    }
+  }
+}

@@ -200,6 +200,50 @@ def dependency_license_status(artifacts: Path) -> dict[str, Any]:
         return {"status": "invalid", "path": str(reports[0].relative_to(ROOT)), "error": str(exc)}
 
 
+def coverage_status(artifacts: Path) -> dict[str, Any]:
+    """Every Python matrix leg must upload a passing coverage-gate report."""
+    reports = sorted(artifacts.rglob("coverage-gate-*.json"))
+    if not reports:
+        return {"status": "missing", "reports": []}
+    summaries = []
+    for path in reports:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or "total" not in payload:
+                raise ValueError("expected a ceph-ai.coverage-gate report")
+            summaries.append({
+                "path": str(path.relative_to(ROOT)),
+                "status": payload.get("status", "invalid"),
+                "line_percent": payload["total"].get("line_percent"),
+                "branch_percent": payload["total"].get("branch_percent"),
+                "skipped_tests": payload.get("skipped_tests"),
+            })
+        except (OSError, json.JSONDecodeError, AttributeError, ValueError) as exc:
+            summaries.append({"path": str(path.relative_to(ROOT)), "status": "invalid", "error": str(exc)})
+    passed = all(item["status"] == "passed" for item in summaries)
+    return {"status": "passed" if passed else "failed", "reports": summaries}
+
+
+def static_analysis_status(artifacts: Path) -> dict[str, Any]:
+    """Full-tree inventory: budget result plus before/after counts per tool."""
+    reports = sorted(artifacts.rglob("static-analysis-inventory.json"))
+    if not reports:
+        return {"status": "missing", "path": None}
+    try:
+        payload = json.loads(reports[0].read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or not isinstance(payload.get("after"), dict):
+            raise ValueError("expected a ceph-ai.static-analysis-inventory report")
+        return {
+            "status": payload.get("status", "invalid"),
+            "path": str(reports[0].relative_to(ROOT)),
+            "before": payload.get("before", {}),
+            "after": payload["after"],
+            "failures": payload.get("failures", []),
+        }
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return {"status": "invalid", "path": str(reports[0].relative_to(ROOT)), "error": str(exc)}
+
+
 def migration_status() -> dict[str, Any]:
     rc, output = command_output(sys.executable, "-m", "alembic", "heads")
     heads = [line.split()[0] for line in output.splitlines() if line.strip() and "(head)" in line]
@@ -231,6 +275,8 @@ def main() -> int:
         "sbom": sbom_status(artifacts),
         "dependency_license": dependency_license_status(artifacts),
         "migration": migration_status(),
+        "coverage": coverage_status(artifacts),
+        "static_analysis": static_analysis_status(artifacts),
     }
     test_reports = collect_junit(artifacts)
     test_status = {
@@ -281,14 +327,18 @@ def main() -> int:
         f"quality={status['quality']['status']} pip_audit={status['pip_audit']['status']}\n"
         f"image_scan={status['image_scan']['status']} sbom={status['sbom']['status']}\n"
         f"dependency_license={status['dependency_license']['status']}\n"
+        f"coverage={status['coverage']['status']} reports={len(status['coverage']['reports'])}\n"
+        f"static_analysis={status['static_analysis']['status']}\n"
         f"rollback_sha={evidence['rollback_sha'] or 'pending'}\n"
         "production_decision=pending (staging/DR/operator approval are separate gates)\n",
         encoding="utf-8",
     )
 
-    required = ["quality", "pip_audit", "image_scan", "sbom", "dependency_license", "migration"]
+    required = [
+        "quality", "pip_audit", "image_scan", "sbom", "dependency_license", "migration", "static_analysis",
+    ]
     if args.require_ci_artifacts:
-        required.append("tests")
+        required.extend(["tests", "coverage"])
     failures = [name for name in required if status[name].get("status") != "passed"]
     if not status["git_clean"]:
         failures.append("git_clean")

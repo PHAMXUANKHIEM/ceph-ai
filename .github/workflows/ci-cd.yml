@@ -59,7 +59,9 @@ jobs:
       - name: Run tests (Python ${{ matrix.python-version }})
         run: |
           mkdir -p artifacts
-          pytest --junitxml="artifacts/pytest-${{ matrix.python-version }}.xml"
+          pytest --junitxml="artifacts/pytest-${{ matrix.python-version }}.xml" \
+            --cov --cov-report="xml:artifacts/coverage-${{ matrix.python-version }}.xml" \
+            --cov-report="html:artifacts/coverage-html-${{ matrix.python-version }}"
         # `-m 'not live'` is already pytest's default (pyproject.toml
         # addopts) — the `live` suite makes real SSH/network calls to the
         # actual Ceph lab cluster and only ever runs manually, never in CI.
@@ -100,6 +102,18 @@ jobs:
               with open(github_summary, "a", encoding="utf-8") as stream:
                   stream.write("## Pytest failures\n\n" + "\n".join(lines) + "\n")
           PY
+
+      - name: Enforce coverage gate (Python ${{ matrix.python-version }})
+        # Runs after a test failure too, so the coverage report is always
+        # produced; the baseline lives in scripts/ci/coverage_baseline.json.
+        if: always() && hashFiles(format('artifacts/coverage-{0}.xml', matrix.python-version)) != ''
+        run: |
+          set -o pipefail
+          python scripts/ci/coverage_gate.py \
+            --coverage-xml "artifacts/coverage-${{ matrix.python-version }}.xml" \
+            --junit "artifacts/pytest-${{ matrix.python-version }}.xml" \
+            --output "artifacts/coverage-gate-${{ matrix.python-version }}.json" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload test evidence (Python ${{ matrix.python-version }})
         if: always()
@@ -151,6 +165,14 @@ jobs:
           mkdir -p artifacts
           set -o pipefail
           python scripts/ci/quality_gate.py 2>&1 | tee artifacts/quality-gate.log
+
+      - name: Full-tree static-analysis inventory and budget
+        # Complements the changed-file gate above: the whole tree may not grow
+        # past scripts/ci/static_analysis_budget.json (total or critical tier).
+        run: |
+          set -o pipefail
+          python scripts/ci/static_analysis_inventory.py --output artifacts/static-analysis \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Audit Python dependencies
         run: |

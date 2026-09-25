@@ -51,3 +51,39 @@ def test_pip_audit_status_rejects_empty_or_unknown_schema(tmp_path):
     for payload in ({}, {"vulnerabilities": []}, {"dependencies": [{}]}):
         (artifacts / "pip-audit.json").write_text(json.dumps(payload), encoding="utf-8")
         assert module.pip_audit_status(artifacts)["status"] == "invalid"
+
+
+def test_coverage_status_requires_every_matrix_report_to_pass(tmp_path):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    module.ROOT = tmp_path
+    assert module.coverage_status(artifacts)["status"] == "missing"
+    for version, status in (("3.11", "passed"), ("3.12", "failed")):
+        (artifacts / f"coverage-gate-{version}.json").write_text(
+            json.dumps({"status": status, "total": {"line_percent": 70.0, "branch_percent": 60.0}}),
+            encoding="utf-8",
+        )
+    result = module.coverage_status(artifacts)
+    assert result["status"] == "failed"
+    assert [item["status"] for item in result["reports"]] == ["passed", "failed"]
+    (artifacts / "coverage-gate-3.12.json").write_text("{}", encoding="utf-8")
+    assert module.coverage_status(artifacts)["reports"][1]["status"] == "invalid"
+
+
+def test_static_analysis_status_carries_before_and_after_counts(tmp_path):
+    artifacts = tmp_path / "artifacts"
+    (artifacts / "static-analysis").mkdir(parents=True)
+    module.ROOT = tmp_path
+    assert module.static_analysis_status(artifacts)["status"] == "missing"
+    (artifacts / "static-analysis" / "static-analysis-inventory.json").write_text(
+        json.dumps({
+            "status": "passed",
+            "before": {"ruff": {"total": 3, "critical": 1}},
+            "after": {"ruff": {"total": 2, "critical": 0}},
+        }),
+        encoding="utf-8",
+    )
+    result = module.static_analysis_status(artifacts)
+    assert result["status"] == "passed"
+    assert result["before"]["ruff"]["total"] == 3
+    assert result["after"]["ruff"]["total"] == 2

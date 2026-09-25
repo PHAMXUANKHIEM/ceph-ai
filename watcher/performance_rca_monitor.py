@@ -174,7 +174,8 @@ def check_and_alert(cluster_id: str, cluster=None) -> int:
         fingerprint = sha1(
             json.dumps(analysis, ensure_ascii=False, sort_keys=True, default=str).encode(
                 "utf-8"
-            )
+            ),
+            usedforsecurity=False,
         ).hexdigest()[:24]
         sent = telegram_outbox.enqueue_alert_call_and_dispatch(
             event_id=f"performance-rca:{incident_id}:{fingerprint}",

@@ -1,0 +1,69 @@
+{
+  "schema": "ceph-ai.static-analysis-budget.v1",
+  "recorded_at": "2026-09-25",
+  "max": {
+    "ruff": {
+      "total": 278,
+      "critical": 16
+    },
+    "complexity": {
+      "total": 199,
+      "critical": 36
+    },
+    "mypy": {
+      "total": 950,
+      "critical": 152
+    },
+    "bandit": {
+      "total": 148,
+      "critical": 35
+    },
+    "bandit_high": {
+      "total": 0,
+      "critical": 0
+    }
+  },
+  "policy": "max is a ceiling recorded from a clean tree; it may only be lowered. burn_down targets are reported per release and cover the critical tier (security, auth, executor, migration, worker, deploy) before UI/legacy code.",
+  "burn_down": [
+    {
+      "release": "rc-2026-10",
+      "max": {
+        "ruff": {
+          "critical": 12
+        },
+        "complexity": {
+          "critical": 27
+        },
+        "mypy": {
+          "critical": 114
+        },
+        "bandit": {
+          "critical": 26
+        },
+        "bandit_high": {
+          "critical": 0
+        }
+      }
+    },
+    {
+      "release": "rc-2026-11",
+      "max": {
+        "ruff": {
+          "critical": 8
+        },
+        "complexity": {
+          "critical": 18
+        },
+        "mypy": {
+          "critical": 76
+        },
+        "bandit": {
+          "critical": 17
+        },
+        "bandit_high": {
+          "critical": 0
+        }
+      }
+    }
+  ]
+}
