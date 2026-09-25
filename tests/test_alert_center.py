@@ -127,7 +127,7 @@ def test_acknowledge_alert_updates_whole_group_and_audits(session_factory, monke
         session.commit()
     monkeypatch.setattr(incidents_route.db, "SessionLocal", session_factory)
     cluster = SimpleNamespace(id="default-cluster", is_default=True)
-    monkeypatch.setattr(incidents_route, "_resolve_selected_cluster", lambda *_args: ([], cluster))
+    monkeypatch.setattr(incidents_route, "_resolve_selected_cluster", lambda *_args, **_kwargs: ([], cluster))
 
     response = asyncio.run(incidents_route.acknowledge_alert(SimpleNamespace(session={}), "ack-new", "admin"))
 
@@ -145,7 +145,7 @@ def test_mute_alert_rejects_unsupported_duration(session_factory, monkeypatch):
         session.commit()
     monkeypatch.setattr(incidents_route.db, "SessionLocal", session_factory)
     cluster = SimpleNamespace(id="default-cluster", is_default=True)
-    monkeypatch.setattr(incidents_route, "_resolve_selected_cluster", lambda *_args: ([], cluster))
+    monkeypatch.setattr(incidents_route, "_resolve_selected_cluster", lambda *_args, **_kwargs: ([], cluster))
 
     with pytest.raises(incidents_route.HTTPException) as error:
         asyncio.run(incidents_route.mute_alert(SimpleNamespace(session={}), "mute-inc", 2, "admin"))

@@ -111,6 +111,7 @@ def test_management_action_ids_loaded_from_policy_yaml():
         "rbd_rename_volume",
         "rbd_clone_volume",
         "rbd_move_volume",
+        "rbd_move_cleanup_partial",
         "rbd_flatten_volume",
         "rbd_template_mark",
         "rbd_qos_set",

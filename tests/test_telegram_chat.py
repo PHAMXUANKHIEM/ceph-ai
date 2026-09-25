@@ -26,6 +26,24 @@ def _patch_cluster(monkeypatch):
     return cluster
 
 
+def _record_single_full_audit(monkeypatch):
+    """Stub the durable Single Full audit and record its lifecycle.
+
+    The unit tests use an in-memory cluster stub that is not a clusters row,
+    so the real audit (FK to clusters.id) would refuse the run.
+    """
+    events = []
+    monkeypatch.setattr(
+        chat.single_full_audit, "start_run",
+        lambda **kwargs: events.append(("start", kwargs["run_id"], kwargs["cluster_id"])),
+    )
+    monkeypatch.setattr(
+        chat.single_full_audit, "finish_run",
+        lambda run_id, **kwargs: events.append(("finish", run_id, kwargs["status"])),
+    )
+    return events
+
+
 def _settings(monkeypatch, *, allowed=""):
     monkeypatch.setattr(chat.settings, "telegram_chatbox_bot_token", "123:token", raising=False)
     monkeypatch.setattr(chat.settings, "telegram_chatbox_chat_id", "-1001", raising=False)
@@ -207,6 +225,7 @@ def test_single_full_requires_exact_short_lived_confirmation(monkeypatch, tmp_pa
     chat._session_by_chat.clear()
     chat._full_runs.clear()
     _patch_cluster(monkeypatch)
+    audit = _record_single_full_audit(monkeypatch)
     monkeypatch.setattr(chat, "_session_and_history", lambda *_args: ("session-1", []))
     monkeypatch.setattr(chat, "_save_message", lambda **_kwargs: SimpleNamespace(id="message"))
     sent = []
@@ -253,6 +272,9 @@ def test_single_full_requires_exact_short_lived_confirmation(monkeypatch, tmp_pa
     asyncio.run(scenario())
     assert calls == [("restart dashboard", [])]
     assert any("đã restart" in text for text in sent)
+    assert [event[0] for event in audit] == ["start", "finish"]
+    assert audit[0][2] == "cluster-1"
+    assert audit[1][2] == "SUCCEEDED"
 
 
 def test_single_full_rejects_wrong_confirmation_without_executing(monkeypatch, tmp_path):
@@ -320,6 +342,7 @@ def test_interrupted_single_full_is_reported_not_replayed(monkeypatch, tmp_path)
 
 def test_single_full_sends_a_clear_telegram_alert_when_quota_is_exhausted(monkeypatch, tmp_path):
     _settings(monkeypatch)
+    audit = _record_single_full_audit(monkeypatch)
     monkeypatch.setattr(chat, "_FULL_RUN_STATE_PATH", tmp_path / "single-full-runs.json")
     chat._full_runs.clear()
     sent = []
@@ -357,6 +380,39 @@ def test_single_full_sends_a_clear_telegram_alert_when_quota_is_exhausted(monkey
         buttons == [("🔑 Đăng nhập Codex khác", f"{chat.QUOTA_LOGIN_PREFIX}codex")]
         for _text, buttons in sent
     )
+    # A quota failure must still close the durable audit as FAILED.
+    assert audit == [("start", "run-1", "cluster-1"), ("finish", "run-1", "FAILED")]
+
+
+def test_single_full_does_not_run_when_its_audit_cannot_be_written(monkeypatch, tmp_path):
+    _settings(monkeypatch)
+    monkeypatch.setattr(chat, "_FULL_RUN_STATE_PATH", tmp_path / "single-full-runs.json")
+    chat._full_runs.clear()
+    sent = []
+    calls = []
+
+    async def send(_token, _chat_id, text):
+        sent.append(text)
+
+    async def full(*_args, **_kwargs):
+        calls.append("ran")
+        return {"provider": "codex", "content": "should not run"}
+
+    def refuse(**_kwargs):
+        raise RuntimeError("audit table unavailable")
+
+    monkeypatch.setattr(chat, "_send", send)
+    monkeypatch.setattr(chat, "run_single_full_access_chat", full)
+    monkeypatch.setattr(chat.single_full_audit, "start_run", refuse)
+    chat._full_runs["run-2"] = {"task": None, "loop": None, "chat_id": "-1001", "actor": "telegram-chat:77"}
+    asyncio.run(chat._run_single_full_in_background(
+        run_id="run-2", bot_token="123:token", chat_id="-1001", actor="telegram-chat:77",
+        session_id="session-1", cluster_id="cluster-1", text="do work", history=[],
+        cluster_context={"cluster_id": "cluster-1", "cluster_ref": "local:cluster-1", "name": "CS-LAB"},
+    ))
+
+    assert calls == []
+    assert any("không được khởi chạy" in text for text in sent)
 
 
 def test_quota_login_callback_starts_device_auth_for_full_user(monkeypatch):
