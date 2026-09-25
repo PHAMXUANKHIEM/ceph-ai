@@ -16,7 +16,7 @@ from pathlib import Path
 from sqlalchemy import func
 
 from config.settings import settings
-from shared import db
+from shared import db, incident_outbox, telegram_outbox
 from shared.api_observability import get_metrics as get_api_metrics
 from shared.ceph_runner import get_metrics as get_ceph_runner_metrics
 from shared.cluster_snapshot import read_snapshot
@@ -44,6 +44,9 @@ SLO_CONTRACT = {
 _QUEUE_ALERT_COUNT = 100
 _QUEUE_ALERT_AGE_SECONDS = 300
 _STALE_ALERT_SECONDS = 120
+# A due retry should be claimed within one publisher cycle; past this it
+# is overdue and the publisher is not draining the Outbox.
+_RETRY_OVERDUE_SECONDS = 120
 
 
 def _duration_seconds(value) -> float | None:
@@ -138,6 +141,33 @@ def _queue_row(session, model, *, statuses: tuple[str, ...], name: str) -> dict[
     }
 
 
+def _outbox_row(session, model, *, name: str, attempt_limit: int, lease_seconds: int) -> dict[str, object]:
+    """Live backlog plus the retry signals the Outbox recovery gate watches.
+
+    Dead letters are reported separately: counting them in the live backlog
+    would keep ``backlog_alert`` raised forever after one terminal failure and
+    hide whether new traffic is flowing.
+    """
+    row = _queue_row(session, model, statuses=("PENDING", "PROCESSING"), name=name)
+    now = utc_now()
+    row["dead_total"] = int(session.query(func.count(model.id)).filter(model.status == "DEAD").scalar() or 0)
+    row["max_attempts"] = int(
+        session.query(func.max(model.attempts)).filter(model.status.in_(("PENDING", "PROCESSING"))).scalar() or 0
+    )
+    row["attempt_limit"] = attempt_limit
+    row["overdue_retries"] = int(session.query(func.count(model.id)).filter(
+        model.status == "PENDING",
+        model.attempts > 0,
+        model.next_attempt_at <= now - timedelta(seconds=_RETRY_OVERDUE_SECONDS),
+    ).scalar() or 0)
+    row["stuck_claims"] = int(session.query(func.count(model.id)).filter(
+        model.status == "PROCESSING",
+        model.claimed_at <= now - timedelta(seconds=lease_seconds),
+    ).scalar() or 0)
+    row["retry_exhaustion"] = row["max_attempts"] >= max(1, attempt_limit - 2)
+    return row
+
+
 def _db_pool() -> dict[str, object]:
     pool = getattr(db.engine, "pool", None)
     result = {"pool_size": None, "checked_in": None, "checked_out": None, "overflow": None, "exhausted": False}
@@ -168,6 +198,14 @@ def _alerts(freshness, services, queues, pool, deploys, collector) -> list[dict[
     for queue in queues:
         if queue["backlog_alert"]:
             alerts.append({"code": "queue_backlog", "severity": "warning", "queue": queue["name"], "pending_total": queue["pending_total"], "oldest_age_seconds": queue["oldest_age_seconds"], "message": "Queue backlog hoặc queue age vượt ngưỡng."})
+        if queue.get("dead_total"):
+            alerts.append({"code": "outbox_dead_letters", "severity": "critical", "queue": queue["name"], "count": queue["dead_total"], "message": "Outbox có message DEAD sau khi hết số lần retry; cần xử lý thủ công."})
+        if queue.get("retry_exhaustion"):
+            alerts.append({"code": "outbox_retry_exhaustion", "severity": "warning", "queue": queue["name"], "max_attempts": queue["max_attempts"], "attempt_limit": queue["attempt_limit"], "message": "Outbox message sắp hết số lần retry."})
+        if queue.get("overdue_retries"):
+            alerts.append({"code": "outbox_overdue_retry", "severity": "warning", "queue": queue["name"], "count": queue["overdue_retries"], "message": "Retry đã đến hạn nhưng publisher chưa xử lý."})
+        if queue.get("stuck_claims"):
+            alerts.append({"code": "outbox_stuck_claim", "severity": "warning", "queue": queue["name"], "count": queue["stuck_claims"], "message": "Message PROCESSING quá lease; publisher có thể đã chết giữa chừng."})
     if pool.get("exhausted"):
         alerts.append({"code": "db_pool_exhaustion", "severity": "critical", "message": "DB pool đã dùng hết connection."})
     if deploys:
@@ -186,8 +224,14 @@ def collect_reliability() -> dict[str, object]:
     with db.SessionLocal() as session:
         freshness = _freshness(session)
         queues = [
-            _queue_row(session, IncidentOutbox, statuses=("PENDING", "PROCESSING", "DEAD"), name="incident_outbox"),
-            _queue_row(session, TelegramOutbox, statuses=("PENDING", "PROCESSING", "DEAD"), name="telegram_outbox"),
+            _outbox_row(
+                session, IncidentOutbox, name="incident_outbox",
+                attempt_limit=incident_outbox.MAX_ATTEMPTS, lease_seconds=incident_outbox.CLAIM_LEASE_SECONDS,
+            ),
+            _outbox_row(
+                session, TelegramOutbox, name="telegram_outbox",
+                attempt_limit=telegram_outbox.MAX_ATTEMPTS, lease_seconds=telegram_outbox.CLAIM_LEASE_SECONDS,
+            ),
         ]
         actions = _queue_row(session, Action, statuses=("PENDING", "PENDING_APPROVAL", "APPROVED", "EXECUTING", "GRACE_PENDING"), name="action_queue")
         queues.append(actions)
