@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from typing import Dict, Optional
 
 import paramiko
@@ -30,7 +31,8 @@ class ExecutorError(Exception):
 
 
 def execute_command_bytes(
-    host: str, command: str, user: Optional[str] = None, key_path: Optional[str] = None
+    host: str, command: str, user: Optional[str] = None, key_path: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
 ) -> bytes:
     """Run a command over SSH and return stdout without text decoding.
 
@@ -40,6 +42,7 @@ def execute_command_bytes(
     resolved_user = settings.ssh_user if user is None else user
     resolved_key_path = settings.ssh_key_path if key_path is None else key_path
     client = paramiko.SSHClient()
+    deadline_timer = None
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
@@ -52,7 +55,14 @@ def execute_command_bytes(
             banner_timeout=settings.ceph_ssh_banner_timeout,
             auth_timeout=settings.ceph_ssh_auth_timeout,
         )
-        _stdin, stdout, stderr = client.exec_command(command, timeout=COMMAND_TIMEOUT_SECONDS)
+        command_timeout = float(timeout_seconds or COMMAND_TIMEOUT_SECONDS)
+        # Paramiko's channel timeout is an inactivity timeout. A separate
+        # close timer also bounds total worker dispatch time, including a
+        # command that continuously emits output.
+        deadline_timer = threading.Timer(command_timeout, client.close)
+        deadline_timer.daemon = True
+        deadline_timer.start()
+        _stdin, stdout, stderr = client.exec_command(command, timeout=command_timeout)
         output = stdout.read()
         error_output = stderr.read().decode(errors="replace")
         exit_status = stdout.channel.recv_exit_status()
@@ -64,15 +74,20 @@ def execute_command_bytes(
     except Exception as exc:
         raise ExecutorError(f"{host}: failed to execute command: {exc}") from exc
     finally:
+        if deadline_timer is not None:
+            deadline_timer.cancel()
         try:
             client.close()
         except Exception:
             logger.warning("execute_command: error closing SSH connection to %s", host)
 
 
-def execute_command(host: str, command: str, user: Optional[str] = None, key_path: Optional[str] = None) -> str:
+def execute_command(host: str, command: str, user: Optional[str] = None, key_path: Optional[str] = None,
+                    timeout_seconds: Optional[float] = None) -> str:
     """Run a text command over SSH and return UTF-8 stdout."""
-    output = execute_command_bytes(host, command, user=user, key_path=key_path)
+    output = execute_command_bytes(
+        host, command, user=user, key_path=key_path, timeout_seconds=timeout_seconds,
+    )
     try:
         return output.decode()
     except UnicodeDecodeError as exc:

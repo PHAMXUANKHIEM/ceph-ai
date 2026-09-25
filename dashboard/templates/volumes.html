@@ -194,6 +194,14 @@
           <p class="hint" id="volume-protection-status">Đang kiểm tra trạng thái bảo vệ…</p>
           <div class="volume-protection-list" id="volume-protection-list"></div>
         </section>
+        <section class="volume-policy-health" id="volume-metric-health" aria-live="polite">
+          <div class="volume-capacity-risk-header"><div><h2>Metric quality &amp; top consumers</h2><p class="hint">IOPS, throughput, p95 latency, freshness và lifecycle correlation trong 24 giờ. Chỉ đọc.</p></div><span class="volume-capacity-status" id="volume-metric-health-status">Đang tải…</span></div>
+          <div class="volume-dependency-health-details" id="volume-metric-health-details"></div>
+        </section>
+        <section class="volume-policy-health" id="volume-ai-diagnosis" aria-live="polite">
+          <div class="volume-capacity-risk-header"><div><h2>AI inventory diagnosis</h2><p class="hint">AI chỉ giải thích evidence deterministic; không tạo Action và không thực thi mutation.</p></div><button type="button" class="btn btn-ghost btn-sm" id="volume-ai-diagnose">Phân tích</button></div>
+          <div class="volume-dependency-health-details" id="volume-ai-diagnosis-result">Chưa chạy.</div>
+        </section>
       </div>
     </section>
 

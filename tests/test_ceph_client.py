@@ -1822,6 +1822,24 @@ def test_normalize_rbd_inventory_ignores_rbd_du_snapshot_rows():
     assert rows[1]["snapshot_count"] == 0
 
 
+def test_normalize_rbd_capacity_inventory_adds_snapshot_and_thin_usage():
+    payload = {
+        "images": [
+            {"name": "vm-a", "id": "1", "provisioned_size": 1000, "used_size": 400},
+            {"name": "vm-a", "snapshot": "snap-1", "provisioned_size": 1000, "used_size": 100},
+        ]
+    }
+
+    rows = ceph_client._normalize_rbd_capacity_inventory(payload)
+
+    assert rows == [{
+        "name": "vm-a", "image_id": "1", "provisioned_size": 1000,
+        "used_size": 400, "used_percent": 40.0, "snapshot_count": 1,
+        "snapshot_provisioned_size": 1000, "snapshot_used_size": 100,
+        "thin_provisioned_bytes": 600,
+    }]
+
+
 def test_query_rbd_image_usage_reports_the_head_image_not_its_first_snapshot(fake_ssh, monkeypatch):
     """`next(... name == image)` từng lấy dòng ĐẦU TIÊN, tức là một snapshot."""
     GiB = 1024 ** 3

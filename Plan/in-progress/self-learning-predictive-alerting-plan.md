@@ -77,6 +77,18 @@ Bước tiếp theo: Phase 1 — Data-quality gate.
 - [x] Tích hợp vào volume-learning implementation đang chạy trên server.
 - [x] Chặn volume forecast khi lịch sử chưa đủ hoặc gap vượt ngưỡng.
 - [x] Hiển thị trên UI status DATA_QUALITY và reason chi tiết.
+- [~] Capacity observation contract đã mở rộng cho physical usage, provisioned
+  capacity, logical usage, snapshot bytes/count, replica hoặc EC k/m và
+  failure-domain reserve; per-volume RBD attribution được lưu riêng. Còn live
+  Ceph evidence để xác nhận các field này khớp nhiều release và pool profile.
+- [~] Capacity forecast UI đã có actual/forecast/confidence band; alert state
+  có OPEN/RESOLVED, notification cooldown và `notification_count`; threshold
+  notifications fail-closed by default until the operator approves the
+  configured set. Còn browser acceptance cho recovery/cooldown và kiểm tra
+  operator approval trên runtime.
+- [~] Test contract đã bao phủ counter reset, pool mới/missing observation,
+  partial snapshot sample, threshold chưa được operator duyệt và alert
+  lifecycle; còn acceptance matrix cho dữ liệu volume thật.
 
 Tiêu chí hoàn thành Phase 1:
 

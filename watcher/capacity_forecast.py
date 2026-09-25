@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from shared.time import utc_now
 from math import sqrt
 from statistics import median
+import logging
 import uuid
 
 from sqlalchemy import and_, func
@@ -13,9 +14,18 @@ from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from shared import db, telegram_outbox
+from shared.capacity_forecast_engine import (
+    CapacityObservation,
+    aggregate_volume_observations,
+    build_breakdown,
+    build_chart,
+)
+from watcher import ceph_client
 from shared.models import CapacityAlertState, CephCapacitySample, Cluster
 from shared.telegram_alerts import send_capacity_recovery_alert, send_capacity_threshold_alert
 from watcher.capacity_evidence import _cluster_stats, _osd_stats, _pool_stats, _query
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -35,14 +45,83 @@ class Forecast:
     spike_detected: bool = False
     risk_explanation: tuple[str, ...] = ()
     backtest: dict[str, float | int | None] = field(default_factory=dict)
+    capacity_breakdown: dict[str, object] = field(default_factory=dict)
+    chart: list[dict[str, object]] = field(default_factory=list)
 
 
-CAPACITY_THRESHOLDS = (80, 90, 95)
-ALERT_RETRY_SECONDS = 300
+DEFAULT_ALERT_RETRY_SECONDS = 300
+
+
+def _approved_thresholds() -> tuple[int, ...]:
+    if not bool(getattr(settings, "capacity_forecast_thresholds_approved", False)):
+        return ()
+    values = set()
+    for raw in str(getattr(settings, "capacity_forecast_thresholds", "80,90,95")).split(","):
+        try:
+            value = int(raw.strip())
+        except (TypeError, ValueError):
+            continue
+        if 1 <= value < 100:
+            values.add(value)
+    return tuple(sorted(values)) or (80, 90, 95)
 
 
 def _reached_threshold(percent: float) -> int | None:
-    return next((threshold for threshold in reversed(CAPACITY_THRESHOLDS) if percent >= threshold), None)
+    return next((threshold for threshold in reversed(_approved_thresholds()) if percent >= threshold), None)
+
+
+def _pool_redundancy(cluster: Cluster | None) -> dict[str, dict[str, int | None]]:
+    """Read replica/EC metadata once per capacity tick; missing values stay unknown."""
+    try:
+        payload = _query(cluster, "ceph osd pool ls detail")
+    except Exception as exc:
+        logger.warning("capacity forecast: pool redundancy unavailable: %s", exc)
+        return {}
+    rows = payload.get("pools", []) if isinstance(payload, dict) else payload if isinstance(payload, list) else []
+    result: dict[str, dict[str, int | None]] = {}
+    profile_cache: dict[str, dict] = {}
+
+    def profile_chunks(profile: str) -> tuple[int | None, int | None]:
+        if profile not in profile_cache:
+            try:
+                if cluster is None or cluster.is_default:
+                    profile_cache[profile] = ceph_client.query_erasure_code_profile(profile)
+                else:
+                    nodes = [item.strip() for item in cluster.ceph_mon_nodes.split(",") if item.strip()]
+                    profile_cache[profile] = ceph_client.query_erasure_code_profile_with(
+                        profile, nodes, cluster.ceph_container_name, cluster.ssh_user,
+                        cluster.ssh_key_path, cluster.ceph_exec_mode,
+                    )
+            except Exception as exc:
+                logger.warning("capacity forecast: EC profile unavailable profile=%s: %s", profile, exc)
+                profile_cache[profile] = {}
+        profile_row = profile_cache[profile]
+        k = profile_row.get("k") or profile_row.get("data_chunks")
+        m = profile_row.get("m") or profile_row.get("coding_chunks")
+        return (int(k) if str(k).isdigit() else None, int(m) if str(m).isdigit() else None)
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("pool_name") or row.get("name") or "").strip()
+        if not name:
+            continue
+        is_ec = bool(row.get("erasure_code_profile")) or str(row.get("type") or "").lower() in {"erasure", "ec"}
+        if is_ec:
+            profile = str(row.get("erasure_code_profile") or "")
+            profile_k, profile_m = profile_chunks(profile) if profile else (None, None)
+            result[name] = {
+                "replica_factor": None,
+                "ec_k": int(row["k"]) if str(row.get("k", "")).isdigit() else profile_k,
+                "ec_m": int(row["m"]) if str(row.get("m", "")).isdigit() else profile_m,
+            }
+        else:
+            result[name] = {
+                "replica_factor": int(row.get("size") or 0) or None,
+                "ec_k": None,
+                "ec_m": None,
+            }
+    return result
 
 
 def _deliver_transition(
@@ -50,6 +129,8 @@ def _deliver_transition(
     previous_percent: float | None, now: datetime,
 ) -> None:
     """Claim and deliver one transition; failed deliveries remain retryable."""
+    if not _approved_thresholds():
+        return
     current = _reached_threshold(float(row["used_percent"])) or 0
     previous = _reached_threshold(previous_percent or 0.0) or 0
     with db.SessionLocal() as session:
@@ -63,6 +144,9 @@ def _deliver_transition(
                 id=str(uuid.uuid4()), cluster_id=cluster_id, entity_type=kind,
                 entity_name=name, current_threshold=current,
                 notified_threshold=previous if previous_percent is not None else 0,
+                status="OPEN" if current else "RESOLVED",
+                opened_at=now if current else None,
+                resolved_at=None if current else now,
                 updated_at=now,
             )
             session.add(state)
@@ -73,13 +157,22 @@ def _deliver_transition(
                 state = session.query(CapacityAlertState).filter_by(
                     cluster_id=cluster_id, entity_type=kind, entity_name=name,
                 ).one()
-        if state.current_threshold != current:
+        if state.current_threshold != current or state.status != ("OPEN" if current else "RESOLVED"):
             state.current_threshold = current
+            state.status = "OPEN" if current else "RESOLVED"
+            if current and state.opened_at is None:
+                state.opened_at = now
+            if not current:
+                state.resolved_at = now
             state.updated_at = now
             state.last_attempt_at = None
             session.commit()
         notified = state.notified_threshold
-        retry_before = now - timedelta(seconds=ALERT_RETRY_SECONDS)
+        retry_seconds = max(
+            1,
+            int(getattr(settings, "capacity_forecast_notification_cooldown_seconds", DEFAULT_ALERT_RETRY_SECONDS)),
+        )
+        retry_before = now - timedelta(seconds=retry_seconds)
         claimed = session.query(CapacityAlertState).filter(
             CapacityAlertState.id == state.id,
             CapacityAlertState.current_threshold == current,
@@ -126,11 +219,16 @@ def _deliver_transition(
             ).update({
                 CapacityAlertState.notified_threshold: current,
                 CapacityAlertState.updated_at: now,
+                CapacityAlertState.last_notified_at: now,
+                CapacityAlertState.notification_count: CapacityAlertState.notification_count + 1,
             }, synchronize_session=False)
             session.commit()
 
 
-def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: datetime | None = None) -> int:
+def collect_and_store(
+    cluster_id: str, cluster: Cluster | None = None, *, now: datetime | None = None,
+    include_volume_inventory: bool = False,
+) -> int:
     """Collect one coherent capacity tick. Failed queries write no partial tick."""
     captured_at = now or utc_now()
     df = _query(cluster, "ceph df detail")
@@ -145,6 +243,59 @@ def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: d
             **row, "used_bytes": row["used_kb"] * 1024, "total_bytes": row["total_kb"] * 1024,
         }))
     valid = [(kind, name, row) for kind, name, row in rows if row.get("total_bytes", 0) > 0]
+    volume_inventory: dict[str, list[dict]] = {}
+    pool_redundancy = _pool_redundancy(cluster) if include_volume_inventory else {}
+    for kind, name, _row in valid:
+        if not include_volume_inventory:
+            break
+        if kind != "pool":
+            continue
+        try:
+            if cluster is None or cluster.is_default:
+                inventory = ceph_client.query_rbd_capacity_inventory(name)
+            else:
+                nodes = [item.strip() for item in cluster.ceph_mon_nodes.split(",") if item.strip()]
+                inventory = ceph_client.query_rbd_capacity_inventory_with(
+                    name, nodes, cluster.ceph_container_name, cluster.ssh_user,
+                    cluster.ssh_key_path, cluster.ceph_exec_mode,
+                )
+            volume_inventory[name] = [dict(item) for item in inventory]
+        except Exception as exc:
+            logger.warning("capacity forecast: volume inventory unavailable pool=%s: %s", name, exc)
+            volume_inventory[name] = []
+    extended: dict[tuple[str, str], dict] = {}
+    for kind, name, row in valid:
+        if kind != "pool":
+            continue
+        inventory = volume_inventory.get(name, [])
+        if not inventory:
+            continue
+        observation = aggregate_volume_observations(
+            captured_at, "pool", name, inventory,
+            physical_used_bytes=int(row["used_bytes"]),
+            physical_total_bytes=int(row["total_bytes"]),
+            replica_factor=pool_redundancy.get(name, {}).get("replica_factor"),
+            ec_k=pool_redundancy.get(name, {}).get("ec_k"),
+            ec_m=pool_redundancy.get(name, {}).get("ec_m"),
+            failure_domain_reserve_percent=settings.capacity_forecast_failure_domain_reserve_percent,
+        )
+        breakdown = build_breakdown(observation)
+        extended[(kind, name)] = {**observation.__dict__, **breakdown.__dict__}
+        for item in inventory:
+            volume_name = f"{name}/{item.get('name') or 'unknown'}"
+            volume_observation = aggregate_volume_observations(
+                captured_at, "volume", volume_name, [item],
+                physical_used_bytes=int(item.get("used_size") or 0),
+                physical_total_bytes=int(item.get("provisioned_size") or 0),
+                replica_factor=pool_redundancy.get(name, {}).get("replica_factor"),
+                ec_k=pool_redundancy.get(name, {}).get("ec_k"),
+                ec_m=pool_redundancy.get(name, {}).get("ec_m"),
+                failure_domain_reserve_percent=0.0,
+            )
+            extended[("volume", volume_name)] = {
+                **volume_observation.__dict__,
+                **build_breakdown(volume_observation).__dict__,
+            }
     with db.SessionLocal() as session:
         latest_times = session.query(
             CephCapacitySample.entity_type,
@@ -164,11 +315,41 @@ def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: d
         previous = {
             (row.entity_type, row.entity_name): row.used_percent for row in previous_rows
         }
-        session.add_all([CephCapacitySample(
+        capacity_rows = [CephCapacitySample(
             cluster_id=cluster_id, entity_type=kind, entity_name=name,
             used_bytes=int(row["used_bytes"]), total_bytes=int(row["total_bytes"]),
             used_percent=float(row["used_percent"]), captured_at=captured_at,
-        ) for kind, name, row in valid])
+            **{
+                field: extended.get((kind, name), {}).get(field)
+                for field in (
+                    "provisioned_bytes", "logical_used_bytes", "snapshot_provisioned_bytes", "snapshot_bytes",
+                    "replica_factor", "ec_k", "ec_m", "redundancy_overhead_bytes",
+                )
+            },
+            snapshot_count=int(extended.get((kind, name), {}).get("snapshot_count") or 0),
+            failure_domain_reserve_percent=float(
+                extended.get((kind, name), {}).get("failure_domain_reserve_percent") or 0.0
+            ),
+            quality_status=str(extended.get((kind, name), {}).get("quality_status") or "OK"),
+        ) for kind, name, row in valid]
+        capacity_rows.extend(
+            CephCapacitySample(
+                cluster_id=cluster_id, entity_type="volume", entity_name=name,
+                used_bytes=int(values.get("physical_used_bytes") or 0),
+                total_bytes=int(values.get("physical_total_bytes") or 0),
+                used_percent=float(values.get("physical_used_percent") or 0.0),
+                provisioned_bytes=values.get("provisioned_bytes"),
+                logical_used_bytes=values.get("logical_used_bytes"),
+                snapshot_provisioned_bytes=values.get("snapshot_provisioned_bytes"),
+                snapshot_bytes=values.get("snapshot_bytes"),
+                snapshot_count=int(values.get("snapshot_count") or 0),
+                replica_factor=values.get("replica_factor"), ec_k=values.get("ec_k"), ec_m=values.get("ec_m"),
+                redundancy_overhead_bytes=values.get("redundancy_overhead_bytes"),
+                failure_domain_reserve_percent=float(values.get("failure_domain_reserve_percent") or 0.0),
+                quality_status=str(values.get("quality_status") or "OK"), captured_at=captured_at,
+            ) for (kind, name), values in extended.items() if kind == "volume"
+        )
+        session.add_all(capacity_rows)
         session.commit()
         cluster_name = cluster.name if cluster is not None else session.query(Cluster.name).filter_by(id=cluster_id).scalar()
 
@@ -293,6 +474,7 @@ def backtest(rows: list[CephCapacitySample], *, horizon_days: int = 7) -> dict[s
 
 
 def _forecast(rows: list[CephCapacitySample], now: datetime, *, include_backtest: bool = True) -> Forecast | None:
+    rows = [row for row in rows if getattr(row, "quality_status", "OK") == "OK"]
     if len(rows) < settings.capacity_forecast_min_samples:
         return None
     model = _fit_model(rows)
@@ -305,7 +487,7 @@ def _forecast(rows: list[CephCapacitySample], now: datetime, *, include_backtest
     current = float(rows[-1].used_percent)
     confidence = model["confidence"]
     threshold_dates: dict[str, str | None] = {}
-    for threshold in (80, 90, 95):
+    for threshold in _approved_thresholds():
         days = 0.0 if current >= threshold else -1
         if days < 0 and model["slope"] > 0:
             for offset in range(1, settings.capacity_forecast_horizon_days + 1):
@@ -335,6 +517,49 @@ def _forecast(rows: list[CephCapacitySample], now: datetime, *, include_backtest
         explanation.append(f"Xu hướng đang giảm khoảng {abs(model['slope']):.3f} điểm phần trăm/ngày.")
     if model["spike_detected"]:
         explanation.append("Có spike ở mẫu gần nhất; confidence đã bị giảm và cần kiểm tra workload thực tế.")
+    observation = CapacityObservation(
+        timestamp=latest.captured_at,
+        entity_type=latest.entity_type,
+        entity_name=latest.entity_name,
+        physical_used_bytes=latest.used_bytes,
+        physical_total_bytes=latest.total_bytes,
+        provisioned_bytes=getattr(latest, "provisioned_bytes", None),
+        logical_used_bytes=getattr(latest, "logical_used_bytes", None),
+        snapshot_provisioned_bytes=getattr(latest, "snapshot_provisioned_bytes", None),
+        snapshot_bytes=getattr(latest, "snapshot_bytes", None),
+        snapshot_count=getattr(latest, "snapshot_count", 0),
+        replica_factor=getattr(latest, "replica_factor", None),
+        ec_k=getattr(latest, "ec_k", None),
+        ec_m=getattr(latest, "ec_m", None),
+        failure_domain_reserve_percent=getattr(latest, "failure_domain_reserve_percent", 0.0),
+        quality_status=getattr(latest, "quality_status", "OK"),
+    )
+    breakdown = build_breakdown(observation)
+    explanation.append(
+        "Tách riêng physical usage, logical provisioned, snapshot, redundancy overhead "
+        f"và reserve failure-domain ({getattr(latest, 'failure_domain_reserve_percent', 0.0):.1f}%)."
+    )
+    chart = []
+    for point in build_chart(
+        [CapacityObservation(
+            timestamp=row.captured_at, entity_type=row.entity_type,
+            entity_name=row.entity_name, physical_used_bytes=row.used_bytes,
+            physical_total_bytes=row.total_bytes,
+            provisioned_bytes=getattr(row, "provisioned_bytes", None),
+            logical_used_bytes=getattr(row, "logical_used_bytes", None),
+            snapshot_provisioned_bytes=getattr(row, "snapshot_provisioned_bytes", None),
+            snapshot_bytes=getattr(row, "snapshot_bytes", None),
+            snapshot_count=getattr(row, "snapshot_count", 0),
+            replica_factor=getattr(row, "replica_factor", None),
+            ec_k=getattr(row, "ec_k", None), ec_m=getattr(row, "ec_m", None),
+            failure_domain_reserve_percent=getattr(row, "failure_domain_reserve_percent", 0.0),
+            quality_status=getattr(row, "quality_status", "OK"),
+        ) for row in rows
+        ], horizon_days=settings.capacity_forecast_horizon_days,
+    ):
+        chart_row = asdict(point)
+        chart_row["timestamp"] = point.timestamp.isoformat()
+        chart.append(chart_row)
     return Forecast(
         rows[-1].entity_type, rows[-1].entity_name, round(current, 3), round(model["slope"], 4),
         round(confidence, 4), len(rows), round(span_days, 2), threshold_dates, additional,
@@ -342,6 +567,8 @@ def _forecast(rows: list[CephCapacitySample], now: datetime, *, include_backtest
         predicted_percent_at_horizon=round(max(0.0, min(100.0, _predict(model, horizon_at))), 3),
         spike_detected=model["spike_detected"], risk_explanation=tuple(explanation),
         backtest=backtest(rows) if include_backtest else {},
+        capacity_breakdown=asdict(breakdown),
+        chart=chart,
     )
 
 

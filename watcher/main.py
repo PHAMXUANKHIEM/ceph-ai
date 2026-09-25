@@ -1402,7 +1402,7 @@ def run(
             >= settings.capacity_forecast_scan_interval_seconds
         ):
             try:
-                capacity_forecast.collect_and_store(cluster_id)
+                capacity_forecast.collect_and_store(cluster_id, include_volume_inventory=True)
             except Exception:
                 logger.exception("run: capacity forecast collection failed")
             last_capacity_forecast_scan_at = now
@@ -1964,7 +1964,9 @@ def run_observed_cluster_loop(
                 >= settings.capacity_forecast_scan_interval_seconds
             ):
                 try:
-                    capacity_forecast.collect_and_store(cluster.id, cluster=cluster)
+                    capacity_forecast.collect_and_store(
+                        cluster.id, cluster=cluster, include_volume_inventory=True
+                    )
                 except Exception:
                     logger.exception(
                         "run_observed_cluster_loop(%r): capacity forecast collection failed", cluster.name

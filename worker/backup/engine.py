@@ -866,7 +866,15 @@ def _run_restore_to_production(
         )
         return False
 
-    progress[1]["status"] = "done"
+    progress[1].update({
+        "status": "done",
+        "post_restore_check": {
+            "rbd_info": True,
+            "read_after_restore_export_to_dev_null": True,
+            "application_consistency": "not_run",
+            "note": "RBD read-path verified; guest/application health must be checked by the owning service.",
+        },
+    })
     progress[1]["finished_at"] = utc_now().isoformat()
     write_progress(action_pk, progress)
     return True

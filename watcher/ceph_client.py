@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
-from typing import Callable, TypedDict
+from typing import Callable, NotRequired, TypedDict
 
 import paramiko
 from paramiko.hostkeys import HostKeyEntry, InvalidHostKey
@@ -388,6 +388,10 @@ class VolumeIoSample(TypedDict):
     iops: float
     read_latency_ms: float
     write_latency_ms: float
+    read_bytes_per_sec: NotRequired[float]
+    write_bytes_per_sec: NotRequired[float]
+    queue_depth: NotRequired[float]
+    p95_latency_ms: NotRequired[float]
 
 
 class RbdInventoryEntry(TypedDict):
@@ -397,6 +401,37 @@ class RbdInventoryEntry(TypedDict):
     used_size: int
     used_percent: float
     snapshot_count: int
+    snapshot_provisioned_size: NotRequired[int]
+    snapshot_used_size: NotRequired[int]
+    thin_provisioned_bytes: NotRequired[int]
+
+
+def _normalize_rbd_capacity_inventory(payload: dict | list) -> list[RbdInventoryEntry]:
+    """Normalize RBD usage and retain snapshot/thin-provisioning attribution.
+
+    The normal inventory API intentionally keeps its historical response
+    contract. Capacity forecasting uses this separate shape so snapshot rows
+    cannot be mistaken for live images while their measured usage is still
+    attributed to the owning image.
+    """
+    rows = payload.get("images") if isinstance(payload, dict) else payload
+    normalized = _normalize_rbd_inventory(payload)
+    snapshot_totals: dict[str, dict[str, int]] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or row.get("snapshot") is None:
+            continue
+        name = str(row.get("name") or row.get("image") or "")
+        if not name:
+            continue
+        totals = snapshot_totals.setdefault(name, {"provisioned": 0, "used": 0})
+        totals["provisioned"] += _as_int(row.get("provisioned_size") or row.get("size"))
+        totals["used"] += _as_int(row.get("used_size"))
+    for row in normalized:
+        totals = snapshot_totals.get(str(row["name"]), {"provisioned": 0, "used": 0})
+        row["snapshot_provisioned_size"] = totals["provisioned"]
+        row["snapshot_used_size"] = totals["used"]
+        row["thin_provisioned_bytes"] = max(0, int(row["provisioned_size"]) - int(row["used_size"]))
+    return normalized
 
 
 def _as_int(value: object) -> int:
@@ -590,6 +625,24 @@ def query_rbd_inventory_with(
         rows,
         lambda commands: run_ceph_json_batch_command_with(*connection, commands, parallel=True)[1],
     )
+
+
+def query_rbd_capacity_inventory(pool: str) -> list[RbdInventoryEntry]:
+    """Return capacity-only RBD inventory with snapshot/thin attribution."""
+    _, payload = run_ceph_json_command(f"rbd du --pool {shlex.quote(pool)}")
+    return _normalize_rbd_capacity_inventory(payload)
+
+
+def query_rbd_capacity_inventory_with(
+    pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> list[RbdInventoryEntry]:
+    """Cluster-scoped capacity inventory counterpart."""
+    _, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd du --pool {shlex.quote(pool)}",
+    )
+    return _normalize_rbd_capacity_inventory(payload)
 
 
 def query_rbd_image_usage(pool: str, image: str) -> RbdInventoryEntry | None:
@@ -1166,15 +1219,29 @@ def _normalize_rbd_iostat(pool: str, payload: dict | list) -> list[VolumeIoSampl
         write_ops = _as_float(entry.get("write_ops") or entry.get("write_iops"))
         read_latency_ms = _rbd_latency_ms(entry, "read_latency_ms", "read_latency")
         write_latency_ms = _rbd_latency_ms(entry, "write_latency_ms", "write_latency")
-        samples.append(
-            VolumeIoSample(
-                pool=pool,
-                image=image,
-                iops=read_ops + write_ops,
-                read_latency_ms=read_latency_ms,
-                write_latency_ms=write_latency_ms,
-            )
+        sample = VolumeIoSample(
+            pool=pool,
+            image=image,
+            iops=read_ops + write_ops,
+            read_latency_ms=read_latency_ms,
+            write_latency_ms=write_latency_ms,
         )
+        _set_optional_metric(sample, "read_bytes_per_sec", entry, (
+            "read_bytes_per_sec", "read_bps", "read_bytes_sec", "read_bytes/s",
+        ))
+        _set_optional_metric(sample, "write_bytes_per_sec", entry, (
+            "write_bytes_per_sec", "write_bps", "write_bytes_sec", "write_bytes/s",
+        ))
+        _set_optional_metric(sample, "queue_depth", entry, (
+            "queue_depth", "avg_queue_depth", "io_depth", "iodepth",
+        ))
+        p95 = _first_metric_value(entry, (
+            "p95_latency_ms", "latency_p95_ms", "read_latency_p95_ms",
+            "write_latency_p95_ms",
+        ))
+        if p95 is not None:
+            sample["p95_latency_ms"] = p95
+        samples.append(sample)
     return samples
 
 
@@ -1183,6 +1250,19 @@ def _rbd_latency_ms(entry: dict, milliseconds_key: str, nanoseconds_key: str) ->
     if milliseconds_key in entry and entry[milliseconds_key] is not None:
         return _as_float(entry[milliseconds_key])
     return _as_float(entry.get(nanoseconds_key)) / 1_000_000
+
+
+def _first_metric_value(entry: dict, keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        if key in entry and entry[key] is not None:
+            return _as_float(entry[key])
+    return None
+
+
+def _set_optional_metric(sample: VolumeIoSample, name: str, entry: dict, keys: tuple[str, ...]) -> None:
+    value = _first_metric_value(entry, keys)
+    if value is not None:
+        sample[name] = value  # type: ignore[literal-required]
 
 
 def _as_float(value: object) -> float:

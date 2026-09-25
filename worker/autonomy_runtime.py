@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from shared import audit, incident_events, remediation_cases
 from shared.models import Action, ActionStatus, AutopilotLease, Incident, IncidentStatus
+from shared.remediation_state_machine import RemediationState, persist_transition
 
 
 @dataclass(frozen=True)
@@ -85,7 +86,17 @@ def reconcile_expired_executions(session, *, now: datetime) -> int:
         reason = "cluster execution lease expired" if lease is not None else "cluster execution lease is missing"
         if lease is not None:
             session.delete(lease)
-        action.status = ActionStatus.INCONCLUSIVE.value
+        state_decision = persist_transition(
+            session,
+            action=action,
+            incident=session.get(Incident, action.incident_id),
+            requested=RemediationState.INCONCLUSIVE,
+        )
+        if not state_decision.allowed:
+            # Legacy rows may not have been projected into the new state
+            # column yet. Keep recovery fail-closed while preserving the
+            # historical INCONCLUSIVE projection.
+            action.status = ActionStatus.INCONCLUSIVE.value
         remediation_cases.record_inconclusive(
             session, action_id=action.id, at=now, reason=reason,
         )

@@ -15,7 +15,7 @@ import yaml
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
-from shared import alert_lifecycle, audit, change_risk, db, incident_events, log_learning, remediation_cases, trust_engine
+from shared import alert_lifecycle, audit, change_risk, db, incident_events, log_learning, remediation_cases, remediation_runtime, trust_engine
 from shared.synthetic_incidents import is_synthetic_evidence
 from shared.case_retrieval import find_verified_cases
 from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
@@ -38,6 +38,7 @@ from shared.models import (
 from shared.ceph_releases import RELEASES, codename_for_version
 from shared.ceph_query_cache import invalidate as invalidate_ceph_query_cache
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
+from shared.remediation_state_machine import RemediationState, persist_transition
 from shared.rbd_trash_retention import trash_entry_ttl_status
 # ceph_code do monitor tự đặt không có mặt trong `ceph health detail` nên
 # không thể xác minh bằng cách đối chiếu ở đó — xem module ấy.
@@ -1654,6 +1655,17 @@ def _maybe_execute_safe_action(
                 event_type=audit.EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED,
             )
         return
+    # Preserve the hard destructive invariant before the canonical runtime
+    # boundary.  A destructive action must become FAILED, never merely
+    # PENDING_APPROVAL, even if a future caller invokes this helper directly
+    # or a test/plugin overrides the policy classifier.
+    if gate.classify_action(action_id) == ActionClassification.DESTRUCTIVE:
+        logger.error(
+            "_maybe_execute_safe_action: refusing destructive action_id=%s for incident %s",
+            action_id, incident_id,
+        )
+        _record_execution_result(incident_id, action_pk, command=None, succeeded=False)
+        return
     if settings.ai_preflight_enforcement_enabled:
         with db.SessionLocal() as session:
             incident = session.get(Incident, incident_id)
@@ -1688,6 +1700,7 @@ def _maybe_execute_safe_action(
     # Read fresh telemetry directly from MON after every DB/capability check.
     # The Incident envelope may be minutes old by now and is evidence for
     # diagnosis, not authority to mutate the current cluster state.
+    fresh_status = {}
     try:
         with db.SessionLocal() as session:
             incident = session.get(Incident, incident_id)
@@ -1741,6 +1754,40 @@ def _maybe_execute_safe_action(
                 )
             session.commit()
         return
+    # One final, persisted decision boundary is shared by every SAFE caller.
+    # The older checks above remain as compatibility/audit projections; this
+    # record is the canonical explanation shown in the runtime decision UI.
+    with db.SessionLocal() as session:
+        runtime_action = session.get(Action, action_pk)
+        runtime_incident = session.get(Incident, incident_id)
+        runtime_cluster = session.get(Cluster, runtime_cluster_id)
+        runtime_decision = (
+            remediation_runtime.evaluate_and_persist(
+                session,
+                action=runtime_action,
+                cluster=runtime_cluster,
+                incident_id=incident_id,
+                health_status=str((fresh_status or {}).get("health", {}).get("status", "UNKNOWN")),
+                target_nodes=(envelope.get("nodes") if isinstance(envelope.get("nodes"), list) else None),
+            ) if runtime_action is not None else None
+        )
+        if runtime_decision is not None and not runtime_decision.allowed:
+            if runtime_action is not None:
+                runtime_action.status = ActionStatus.PENDING_APPROVAL.value
+            if runtime_incident is not None:
+                runtime_incident.status = IncidentStatus.PENDING_APPROVAL.value
+                runtime_incident.diagnosis_text = (
+                    f"{runtime_incident.diagnosis_text or ''}\n\n"
+                    f"[Canonical runtime guard] Bị chặn: {runtime_decision.reason}"
+                ).strip()
+                audit.record(
+                    session, incident_id=incident_id, action_id=action_pk,
+                    event_type=audit.EVENT_AUTOPILOT_RUNTIME_GUARD_BLOCKED,
+                    actor=audit.ACTOR_SYSTEM,
+                )
+            session.commit()
+            return
+        session.commit()
     now = utc_now()
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)
@@ -1782,6 +1829,7 @@ def _maybe_execute_safe_action(
         incident = session.get(Incident, incident_id)
         if action is not None:
             action.status = ActionStatus.EXECUTING.value
+            action.remediation_state = "EXECUTING"
         if incident is not None:
             incident.status = IncidentStatus.EXECUTING.value
         session.commit()
@@ -1926,6 +1974,18 @@ def _record_execution_result(
             action.status = (
                 ActionStatus.AUTO_EXECUTED.value if succeeded else ActionStatus.FAILED.value
             )
+            if action.remediation_state == RemediationState.EXECUTING.value:
+                state_decision = persist_transition(
+                    session,
+                    action=action,
+                    incident=incident,
+                    requested=(RemediationState.VERIFYING if succeeded else RemediationState.FAILED),
+                )
+                if not state_decision.allowed:
+                    logger.error(
+                        "safe remediation state transition rejected for action %s: %s",
+                        action.id, state_decision.reason,
+                    )
             if succeeded:
                 action.executed_at = utc_now()
             notify_rationale = action.rationale
@@ -3221,6 +3281,32 @@ def _execute_approved_action(action_pk: str) -> None:
                 action_pk,
             )
             return
+        # The conditional Incident update above is the approved-action
+        # dispatch claim. Project it through the canonical state machine only
+        # after all policy/risk checks have passed and this worker owns the
+        # claim; a policy change must leave the row APPROVED/awaiting review,
+        # never EXECUTING.
+        if action.remediation_state == RemediationState.PROPOSED.value:
+            # Rows created before the canonical column was introduced carry
+            # status=APPROVED but the server default PROPOSED. Normalize that
+            # compatibility projection before validating the real dispatch edge.
+            action.remediation_state = RemediationState.APPROVED.value
+        state_decision = persist_transition(
+            session,
+            action=action,
+            incident=session.get(Incident, incident_id),
+            requested=RemediationState.EXECUTING,
+            lock_owner=f"worker:{os.getpid()}",
+            active_lock_owner=f"worker:{os.getpid()}",
+        )
+        if not state_decision.allowed:
+            logger.error(
+                "_execute_approved_action: state-machine claim rejected for action %s: %s",
+                action_pk, state_decision.reason,
+            )
+            session.rollback()
+            return
+        session.commit()
         incident = session.get(Incident, incident_id)
         # 2026-08-10 (multi-tenant remediation Phase 1): resolve THIS
         # Incident's own cluster's SSH creds here, inside the same session —
@@ -3716,6 +3802,18 @@ def _record_approved_execution_result(
         if command is not None:
             action.proposed_command = command
         action.status = ActionStatus.EXECUTED.value if succeeded else ActionStatus.FAILED.value
+        if action.remediation_state == RemediationState.EXECUTING.value:
+            state_decision = persist_transition(
+                session,
+                action=action,
+                incident=incident,
+                requested=(RemediationState.VERIFYING if succeeded else RemediationState.FAILED),
+            )
+            if not state_decision.allowed:
+                logger.error(
+                    "approved remediation state transition rejected for action %s: %s",
+                    action.id, state_decision.reason,
+                )
         if succeeded:
             action.executed_at = utc_now()
             if action.action_id == "rbd_trash_move_volume":
@@ -3832,6 +3930,7 @@ def _record_approved_execution_result(
         if succeeded and action.action_id in {
             "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume",
             "rbd_clone_volume", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
+            "rbd_copy_volume", "rbd_move_volume",
             "rbd_trash_move_volume", "rbd_trash_restore_volume",
             "rbd_trash_remove", "rbd_trash_purge_all",
         }:

@@ -323,8 +323,13 @@ Scope: `Plan/ai-missing-features-roadmap.md` and
 - [ ] Finish operator-maintained, source-backed capability-matrix entries.
 - [ ] Finish AI preflight validation for action, target, version, health, and
   dependencies.
-- [ ] Implement capacity time-series collection, forecasting, confidence
-  intervals, backtesting, and threshold alerts.
+- [~] Implement capacity time-series collection, forecasting, confidence
+  intervals, backtesting, and threshold alerts. The current slice adds
+  volume/snapshot/thin observations, per-volume attribution,
+  physical/logical/redundancy/reserve accounting, OPEN/RESOLVED capacity
+  alerts with cooldown, and actual/forecast confidence chart data. Live Ceph
+  validation, operator acceptance, and the production release gate remain
+  open.
 - [ ] Implement block-storage inventory insight and protection-gap analysis.
 - [ ] Implement performance correlation, hot-resource detection, and
   recommendation simulation.

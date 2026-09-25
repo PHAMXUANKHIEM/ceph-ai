@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Block Storage Audit — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  {% include "_nav.html" %}
+  <main class="page">
+    <section class="card">
+      <div class="card-header">
+        <div><p class="eyebrow">BLOCK STORAGE / AUDIT</p><h1>Audit Block Storage</h1><p class="hint">Lịch sử thao tác RBD theo cluster. Chỉ admin được xem; preview và params đã được redacted.</p></div>
+        <span class="badge">{{ selected_cluster.name }}</span>
+      </div>
+      <div class="card-body">
+        <form method="get" class="audit-filters" aria-label="Lọc audit Block Storage">
+          <label>Cluster<select name="cluster_id" onchange="this.form.submit()">{% for cluster in clusters %}<option value="{{ cluster.id }}" {% if cluster.id == selected_cluster.id %}selected{% endif %}>{{ cluster.name }}</option>{% endfor %}</select></label>
+          <label>Pool<input name="pool" value="{{ pool }}" maxlength="128" placeholder="Ví dụ: volumes"></label>
+          <label>Volume<input name="image" value="{{ image }}" maxlength="128" placeholder="Tên image"></label>
+          <label>Action<input name="action" value="{{ action }}" maxlength="64" placeholder="rbd_resize_volume"></label>
+          <label>Kết quả<select name="result"><option value="">Tất cả</option><option value="succeeded" {% if result == 'succeeded' %}selected{% endif %}>Succeeded</option><option value="failed" {% if result == 'failed' %}selected{% endif %}>Failed</option><option value="pending" {% if result == 'pending' %}selected{% endif %}>Pending</option></select></label>
+          <button class="btn btn-primary" type="submit">Lọc</button>
+        </form>
+        <p class="hint" role="status">{{ total }} sự kiện · trang {{ page }}/{{ total_pages }}</p>
+        <div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Actor</th><th>Action</th><th>Pool / Volume</th><th>Kết quả</th><th>Request ID</th><th>Preview / Params</th></tr></thead><tbody>
+          {% for entry in entries %}<tr><td><time datetime="{{ entry.created_at }}" title="{{ entry.created_at }}">{{ entry.created_at|vntime }}</time></td><td>{{ entry.actor }}</td><td><code>{{ entry.action }}</code><br><small>{{ entry.event_type }}</small></td><td>{{ entry.pool or '—' }} / {{ entry.image or '—' }}</td><td><span class="badge">{{ entry.result }}</span></td><td><code title="{{ entry.request_id }}">{{ entry.request_id[:12] }}…</code></td><td><details><summary>Xem</summary>{% if entry.preview %}<pre>{{ entry.preview }}</pre>{% endif %}<pre>{{ entry.params }}</pre></details></td></tr>
+          {% else %}<tr><td colspan="7"><div class="empty-state"><span class="empty-icon">▤</span><strong>Chưa có audit Block Storage</strong><br><span class="muted">Các thao tác RBD sẽ xuất hiện sau khi có request.</span></div></td></tr>{% endfor %}
+        </tbody></table></div>
+        {% if total_pages > 1 %}<nav class="pagination" aria-label="Phân trang audit">{% if page > 1 %}<a href="?cluster_id={{ selected_cluster.id }}&amp;pool={{ pool|urlencode }}&amp;image={{ image|urlencode }}&amp;action={{ action|urlencode }}&amp;result={{ result|urlencode }}&amp;page={{ page - 1 }}">‹ Trước</a>{% endif %}<span>Trang {{ page }}/{{ total_pages }}</span>{% if page < total_pages %}<a href="?cluster_id={{ selected_cluster.id }}&amp;pool={{ pool|urlencode }}&amp;image={{ image|urlencode }}&amp;action={{ action|urlencode }}&amp;result={{ result|urlencode }}&amp;page={{ page + 1 }}">Sau ›</a>{% endif %}</nav>{% endif %}
+      </div>
+    </section>
+  </main>
+</body>
+</html>

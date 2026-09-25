@@ -13,7 +13,7 @@
 {% set nav_path = request.url.path %}
 {% set cluster_group_exact = [
   "/nodes", "/trash", "/volume-performance", "/pools",
-  "/block-storage", "/pgs", "/capacity-forecast", "/disk-risk",
+  "/block-storage", "/block-storage/audit", "/pgs", "/capacity-forecast", "/disk-risk",
   "/deploy-cluster", "/delete-cluster", "/convert-cluster",
   "/patch", "/log-intelligence", "/ai-learning", "/synthetic-incidents", "/runbooks", "/alerts", "/volumes", "/trash"
 ] %}
@@ -34,6 +34,7 @@
           <a href="/nodes" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/nodes' else '' }}">Cluster Metrics</a>
           <a href="/pools" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/pools' else '' }}">Pools</a>
           <a href="/block-storage" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/block-storage' or nav_path == '/volumes' or nav_path.startswith("/volumes/") or nav_path in ("/trash", "/volume-performance") else '' }}">Block Storage</a>
+          {% if is_admin %}<a href="/block-storage/audit" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/block-storage/audit' else '' }}">Block Storage Audit</a>{% endif %}
           <a href="/capacity-forecast" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/capacity-forecast' else '' }}">Capacity Forecast</a>
           <a href="/disk-risk" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/disk-risk' else '' }}">Disk Failure Risk</a>
           <a href="/deploy-cluster" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/deploy-cluster' else '' }}">Deploy Cluster</a>
@@ -49,6 +50,7 @@
       </div>
       <div class="sidebar-section-title">AI &amp; Intelligence</div>
       <a href="/ai-learning" data-initial="AI" class="nav-link{{ ' active' if nav_path == '/ai-learning' else '' }}">AI Learning</a>
+      <a href="/remediation-runtime" data-initial="RM" class="nav-link{{ ' active' if nav_path == '/remediation-runtime' else '' }}">Remediation Runtime</a>
       <div class="sidebar-section-title">Data Protection</div>
       <a href="/backups" data-initial="B" class="nav-link{{ ' active' if nav_path == '/backups' else '' }}">Backup</a>
       <a href="/cinder-backups" data-initial="CB" class="nav-link nav-cinder-backups{{ ' active' if nav_path == '/cinder-backups' else '' }}">Cinder Volume Backups</a>

@@ -1,7 +1,16 @@
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from watcher import capacity_forecast as subject
+from shared import db
+from shared.models import CapacityAlertState, CephCapacitySample
+
+
+@pytest.fixture(autouse=True)
+def approved_capacity_thresholds(monkeypatch):
+    monkeypatch.setattr(subject.settings, "capacity_forecast_thresholds_approved", True)
 
 
 def _rows(count=31, slope=1.0):
@@ -51,6 +60,61 @@ def test_forecast_includes_confidence_interval_and_rolling_backtest(monkeypatch)
     assert result.predicted_percent_at_horizon is not None
     assert result.backtest["status"] == "ready"
     assert result.backtest["samples"] > 0
+    assert result.chart[-1]["forecast_percent"] is not None
+    assert result.chart[-1]["confidence_low"] is not None
+
+
+def test_forecast_excludes_missing_quality_samples(monkeypatch):
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_samples", 3)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_history_days", 2)
+    rows = _rows(4)
+    rows[1].quality_status = "MISSING_VOLUME_OBSERVATION"
+    rows[2].quality_status = "PARTIAL_SNAPSHOT_USAGE"
+
+    assert subject._forecast(rows, datetime(2026, 1, 5)) is None
+
+
+def test_capacity_forecast_page_serializes_chart_timestamps(dashboard_client, default_cluster_id):
+    start = datetime(2026, 8, 20)
+    with db.SessionLocal() as session:
+        session.add_all([
+            CephCapacitySample(
+                cluster_id=default_cluster_id, entity_type="cluster", entity_name="cluster",
+                used_bytes=500 + index, total_bytes=1000,
+                used_percent=50 + index * 0.5, captured_at=start + timedelta(days=index),
+            ) for index in range(31)
+        ])
+        session.commit()
+
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    response = dashboard_client.get("/capacity-forecast")
+
+    assert response.status_code == 200
+    assert 'data-chart=' in response.text
+    assert 'confidence_low' in response.text
+
+
+def test_operator_approval_is_required_for_capacity_thresholds(monkeypatch):
+    monkeypatch.setattr(subject.settings, "capacity_forecast_thresholds_approved", False)
+
+    assert subject._approved_thresholds() == ()
+
+
+def test_unapproved_thresholds_do_not_create_alert_state(dashboard_client, default_cluster_id, monkeypatch):
+    monkeypatch.setattr(subject.settings, "capacity_forecast_thresholds_approved", False)
+    monkeypatch.setattr(subject, "_query", lambda _cluster, command: {
+        "nodes": []
+    } if command == "ceph osd df" else {
+        "stats": {"total_bytes": 1000, "total_used_bytes": 900, "total_avail_bytes": 100},
+        "pools": [],
+    })
+
+    subject.collect_and_store(default_cluster_id, now=datetime(2026, 6, 1))
+
+    with db.SessionLocal() as session:
+        assert session.query(CapacityAlertState).filter_by(
+            cluster_id=default_cluster_id, entity_type="cluster", entity_name="cluster",
+        ).count() == 0
 
 
 def test_forecast_uses_weekly_correction_only_with_enough_history(monkeypatch):
@@ -97,6 +161,60 @@ def test_collect_stores_cluster_all_pools_and_all_osds(dashboard_client, default
     assert subject.collect_and_store(default_cluster_id) == 25
 
 
+def test_collect_stores_volume_snapshot_attribution_and_redundancy(
+    dashboard_client, default_cluster_id, monkeypatch,
+):
+    df = {
+        "stats": {"total_bytes": 10000, "total_used_bytes": 5000, "total_avail_bytes": 5000},
+        "pools": [{"name": "rbd", "stats": {"bytes_used": 2000, "max_avail": 3000, "percent_used": 40}}],
+    }
+
+    def query(_cluster, command):
+        if command == "ceph osd df":
+            return {"nodes": []}
+        if command == "ceph osd pool ls detail":
+            return {"pools": [{"pool_name": "rbd", "size": 3}]}
+        return df
+
+    monkeypatch.setattr(subject, "_query", query)
+    monkeypatch.setattr(subject.ceph_client, "query_rbd_capacity_inventory", lambda _pool: [{
+        "name": "vm-a", "image_id": "1", "provisioned_size": 1000,
+        "used_size": 400, "used_percent": 40.0, "snapshot_count": 1,
+        "snapshot_provisioned_size": 1000, "snapshot_used_size": 100,
+        "thin_provisioned_bytes": 600,
+    }])
+
+    assert subject.collect_and_store(
+        default_cluster_id, now=datetime(2026, 4, 1), include_volume_inventory=True,
+    ) == 2
+    with db.SessionLocal() as session:
+        pool = session.query(CephCapacitySample).filter_by(
+            cluster_id=default_cluster_id, entity_type="pool", entity_name="rbd",
+        ).one()
+        volume = session.query(CephCapacitySample).filter_by(
+            cluster_id=default_cluster_id, entity_type="volume", entity_name="rbd/vm-a",
+        ).one()
+
+    assert pool.provisioned_bytes == 1000
+    assert pool.snapshot_bytes == 100
+    assert pool.snapshot_provisioned_bytes == 1000
+    assert pool.replica_factor == 3
+    assert pool.failure_domain_reserve_percent == subject.settings.capacity_forecast_failure_domain_reserve_percent
+    assert volume.logical_used_bytes == 400
+    assert volume.snapshot_count == 1
+
+
+def test_pool_redundancy_reads_ec_profile_without_guessing(dashboard_client, monkeypatch):
+    monkeypatch.setattr(subject, "_query", lambda _cluster, _command: {
+        "pools": [{"pool_name": "ec", "type": "erasure", "erasure_code_profile": "ec42"}],
+    })
+    monkeypatch.setattr(subject.ceph_client, "query_erasure_code_profile", lambda _profile: {"k": "4", "m": "2"})
+
+    assert subject._pool_redundancy(None) == {
+        "ec": {"replica_factor": None, "ec_k": 4, "ec_m": 2},
+    }
+
+
 def test_collect_alerts_only_when_crossing_a_higher_threshold(dashboard_client, default_cluster_id, monkeypatch):
     percent = {"value": 79.0}
 
@@ -141,9 +259,16 @@ def test_collect_realerts_after_capacity_recovers_and_recrosses(dashboard_client
     subject.collect_and_store(default_cluster_id, now=datetime(2026, 2, 3))
 
     assert alerts == [95, 95]
+    with db.SessionLocal() as session:
+        state = session.query(CapacityAlertState).filter_by(
+            cluster_id=default_cluster_id, entity_type="cluster", entity_name="cluster",
+        ).one()
+        assert state.status == "OPEN"
+        assert state.notification_count == 3
 
 
 def test_failed_delivery_is_retried_and_recovery_is_sent(dashboard_client, default_cluster_id, monkeypatch):
+    monkeypatch.setattr(subject.settings, "capacity_forecast_notification_cooldown_seconds", 300)
     percent = {"value": 79.0}
     attempts = []
     recoveries = []

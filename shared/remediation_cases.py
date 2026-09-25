@@ -109,12 +109,15 @@ def create_for_action(
 
 
 def record_execution(session, *, action_id: str, succeeded: bool, executed_at: datetime | None) -> None:
+    action = session.get(Action, action_id)
     row = session.query(RemediationCase).filter_by(action_id=action_id).one_or_none()
     if row is None:
         return
     row.executed_at = executed_at
     row.started_at = row.started_at or executed_at
     row.outcome = "EXECUTED_PENDING_VERIFY" if succeeded else "EXECUTION_FAILED"
+    if action is not None:
+        action.remediation_state = "VERIFYING" if succeeded else "FAILED"
 
 
 def record_verified(
@@ -127,6 +130,20 @@ def record_verified(
         row.outcome = "VERIFIED_SUCCESS" if succeeded else "VERIFIED_FAILED"
         row.verified_at = verified_at
         row.post_state_json = _json(post_state or {})
+        action = session.get(Action, row.action_id)
+        if action is not None:
+            from shared.remediation_state_machine import RemediationState, persist_transition
+            if action.remediation_state == RemediationState.VERIFYING.value:
+                decision = persist_transition(
+                    session,
+                    action=action,
+                    incident=session.get(Incident, incident_id),
+                    requested=(RemediationState.SUCCEEDED if succeeded else RemediationState.FAILED),
+                )
+                if not decision.allowed:
+                    action.remediation_state = "SUCCEEDED" if succeeded else "FAILED"
+            else:
+                action.remediation_state = "SUCCEEDED" if succeeded else "FAILED"
         if succeeded:
             incident = session.get(Incident, incident_id)
             if incident is not None:
@@ -134,12 +151,15 @@ def record_verified(
 
 
 def record_inconclusive(session, *, action_id: str, at: datetime, reason: str) -> None:
+    action = session.get(Action, action_id)
     row = session.query(RemediationCase).filter_by(action_id=action_id).one_or_none()
     if row is None:
         return
     row.outcome = "INCONCLUSIVE"
     row.verified_at = at
     row.side_effects_json = _json({"reason": reason, "auto_retry": False})
+    if action is not None:
+        action.remediation_state = "INCONCLUSIVE"
 
 
 def _legacy_outcome(action: Action, incident: Incident) -> str:

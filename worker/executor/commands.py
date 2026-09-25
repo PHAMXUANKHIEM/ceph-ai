@@ -506,6 +506,49 @@ def _rbd_clone_volume_command(params: dict) -> str:
     )
 
 
+def _rbd_copy_volume_command(params: dict) -> str:
+    """Copy an image between RBD pools without deleting the source.
+
+    The destination is verified after the copy.  If the copy fails, the
+    source remains authoritative and the destination is left for the bounded
+    reconciliation/cleanup path to inspect; the command never guesses that a
+    partial copy is complete.
+    """
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    dest_pool = params.get("dest_pool")
+    dest_image = params.get("dest_image")
+    if not isinstance(dest_pool, str) or not _POOL_NAME_RE.fullmatch(dest_pool):
+        raise ExecutorError(f"invalid or missing destination pool: {dest_pool!r}")
+    if not isinstance(dest_image, str) or not _RBD_IMAGE_RE.fullmatch(dest_image):
+        raise ExecutorError(f"invalid or missing destination RBD image: {dest_image!r}")
+    if pool == dest_pool and image == dest_image:
+        raise ExecutorError("destination RBD image must differ from source")
+    source = shlex.quote(f"{pool}/{image}")
+    destination = shlex.quote(f"{dest_pool}/{dest_image}")
+    return f"rbd cp {source} {destination} && rbd info {destination} --format json"
+
+
+def _rbd_move_volume_command(params: dict) -> str:
+    """Move an image by verified copy followed by reversible trash move."""
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    dest_pool = params.get("dest_pool")
+    dest_image = params.get("dest_image")
+    if not isinstance(dest_pool, str) or not _POOL_NAME_RE.fullmatch(dest_pool):
+        raise ExecutorError(f"invalid or missing destination pool: {dest_pool!r}")
+    if not isinstance(dest_image, str) or not _RBD_IMAGE_RE.fullmatch(dest_image):
+        raise ExecutorError(f"invalid or missing destination RBD image: {dest_image!r}")
+    if pool == dest_pool and image == dest_image:
+        raise ExecutorError("destination RBD image must differ from source")
+    source = shlex.quote(f"{pool}/{image}")
+    destination = shlex.quote(f"{dest_pool}/{dest_image}")
+    return (
+        f"rbd cp {source} {destination} && rbd info {destination} --format json && "
+        f"rbd trash mv {source}"
+    )
+
+
 def _rbd_flatten_volume_command(params: dict) -> str:
     pool = _require_pool_name(params)
     image = _require_rbd_image(params)
@@ -715,6 +758,8 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "rbd_resize_volume": _rbd_resize_volume_command,
     "rbd_rename_volume": _rbd_rename_volume_command,
     "rbd_clone_volume": _rbd_clone_volume_command,
+    "rbd_copy_volume": _rbd_copy_volume_command,
+    "rbd_move_volume": _rbd_move_volume_command,
     "rbd_flatten_volume": _rbd_flatten_volume_command,
     "rbd_template_mark": _rbd_template_mark_command,
     "rbd_qos_set": _rbd_qos_set_command,
@@ -752,6 +797,8 @@ _CEPH_RUNTIME_ACTION_IDS = frozenset({
     "rbd_resize_volume",
     "rbd_rename_volume",
     "rbd_clone_volume",
+    "rbd_copy_volume",
+    "rbd_move_volume",
     "rbd_flatten_volume",
     "rbd_template_mark",
     "rbd_qos_set",

@@ -48,6 +48,21 @@ _ALLOWED = {
     RemediationState.INCONCLUSIVE: frozenset({RemediationState.ROLLED_BACK}),
 }
 
+_LEGACY_ACTION_STATUS = {
+    RemediationState.PROPOSED: "PENDING",
+    RemediationState.APPROVED: "APPROVED",
+    RemediationState.EXECUTING: "EXECUTING",
+    # Existing ActionStatus has no VERIFYING/SUCCEEDED values. EXECUTED is
+    # retained while remediation_state carries the canonical lifecycle.
+    RemediationState.VERIFYING: "EXECUTED",
+    RemediationState.SUCCEEDED: "EXECUTED",
+    RemediationState.FAILED: "FAILED",
+    RemediationState.ROLLED_BACK: "FAILED",
+    RemediationState.INCONCLUSIVE: "INCONCLUSIVE",
+    RemediationState.EXPIRED: "REJECTED",
+    RemediationState.CANCELLED: "REJECTED",
+}
+
 
 @dataclass(frozen=True)
 class TransitionDecision:
@@ -152,6 +167,61 @@ def recover_after_worker_restart(
         "worker lock disappeared; mark inconclusive and require operator review",
         requires_lock=True, terminal=True,
     )
+
+
+def persist_transition(
+    session, *, action, requested: RemediationState | str,
+    incident=None, case=None, now: datetime | None = None,
+    expires_at: datetime | None = None, lock_owner: str | None = None,
+    active_lock_owner: str | None = None,
+) -> TransitionDecision:
+    """Validate and persist one canonical transition atomically.
+
+    Legacy Action/Incident/RemediationCase fields are updated as a projection
+    of the canonical Action.remediation_state. No command is executed here.
+    """
+    current = getattr(action, "remediation_state", None) or canonical_state(
+        action_status=getattr(action, "status", None),
+        case_outcome=getattr(case, "outcome", None),
+        incident_status=getattr(incident, "status", None),
+    ).value
+    decision = transition(
+        current, requested, now=now, expires_at=expires_at,
+        lock_owner=lock_owner, active_lock_owner=active_lock_owner,
+    )
+    if not decision.allowed:
+        return decision
+    state = decision.requested
+    action.remediation_state = state.value
+    action.status = _LEGACY_ACTION_STATUS[state]
+    if case is not None:
+        case.outcome = {
+            RemediationState.PROPOSED: "PROPOSED",
+            RemediationState.APPROVED: "APPROVED",
+            RemediationState.EXECUTING: "EXECUTING",
+            RemediationState.VERIFYING: "EXECUTED_PENDING_VERIFY",
+            RemediationState.SUCCEEDED: "VERIFIED_SUCCESS",
+            RemediationState.FAILED: "VERIFIED_FAILED",
+            RemediationState.ROLLED_BACK: "ROLLED_BACK",
+            RemediationState.INCONCLUSIVE: "INCONCLUSIVE",
+            RemediationState.EXPIRED: "EXPIRED",
+            RemediationState.CANCELLED: "CANCELLED",
+        }[state]
+    if incident is not None:
+        from shared.models import IncidentStatus
+        incident.status = {
+            RemediationState.PROPOSED: IncidentStatus.NEW.value,
+            RemediationState.APPROVED: IncidentStatus.APPROVED.value,
+            RemediationState.EXECUTING: IncidentStatus.EXECUTING.value,
+            RemediationState.VERIFYING: IncidentStatus.VERIFYING.value,
+            RemediationState.SUCCEEDED: IncidentStatus.RESOLVED.value,
+            RemediationState.FAILED: IncidentStatus.FAILED.value,
+            RemediationState.ROLLED_BACK: IncidentStatus.FAILED.value,
+            RemediationState.INCONCLUSIVE: IncidentStatus.FAILED.value,
+            RemediationState.EXPIRED: IncidentStatus.REJECTED.value,
+            RemediationState.CANCELLED: IncidentStatus.REJECTED.value,
+        }[state]
+    return decision
 
 
 def canonical_state(

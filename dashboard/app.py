@@ -58,6 +58,7 @@ from dashboard.routes import (
     restore_cluster,
     runbooks as runbooks_routes,
     settings as settings_routes,
+    remediation_runtime as remediation_runtime_routes,
     system_health as system_health_routes,
     synthetic_incidents as synthetic_incidents_routes,
     telegram_alerts,
@@ -563,6 +564,7 @@ def create_app() -> FastAPI:
     application.include_router(block_storage.router)
     application.include_router(openstack.router)
     application.include_router(settings_routes.router)
+    application.include_router(remediation_runtime_routes.router)
     application.include_router(maintenance.router)
     application.include_router(actions.router)
     application.include_router(ai_cost_routes.router)

@@ -120,6 +120,16 @@
           <div class="volume-action-row"><input id="volume-clone-dest-pool" maxlength="128" required placeholder="Pool đích"><input id="volume-clone-dest-image" maxlength="128" required placeholder="Volume mới"><button class="btn btn-primary btn-sm" type="submit">Clone</button></div>
           <small class="hint">Clone giữ parent dependency; snapshot sẽ được bảo vệ tự động trước khi clone.</small>
         </form>
+        <form class="volume-action" id="volume-copy-form">
+          <label>Copy sang pool khác</label>
+          <div class="volume-action-row"><input id="volume-copy-dest-pool" maxlength="64" required placeholder="Pool đích"><input id="volume-copy-dest-image" maxlength="128" required placeholder="Tên volume đích"><button class="btn btn-primary btn-sm" type="submit">Copy</button></div>
+          <small class="hint">Nguồn được giữ nguyên; destination phải được xác minh sau khi copy.</small>
+        </form>
+        <form class="volume-action" id="volume-move-form">
+          <label>Move sang pool khác</label>
+          <div class="volume-action-row"><input id="volume-move-dest-pool" maxlength="64" required placeholder="Pool đích"><input id="volume-move-dest-image" maxlength="128" required placeholder="Tên volume đích"><button class="btn btn-warning-outline btn-sm" type="submit">Move</button></div>
+          <small class="hint">Chỉ source đã detached mới được đề xuất; source được đưa vào Trash sau khi verify destination.</small>
+        </form>
         <form class="volume-action" id="volume-template-form">
           <label for="volume-template-snapshot">Đánh dấu snapshot thành template read-only</label>
           <div class="volume-action-row"><input id="volume-template-snapshot" maxlength="128" required placeholder="Tên snapshot"><input id="volume-template-name" maxlength="64" required placeholder="Tên template"><button class="btn btn-primary btn-sm" type="submit">Tạo template</button></div>
@@ -128,6 +138,7 @@
         </form>
         <form class="volume-action" id="volume-qos-form">
           <label>QoS per-image <small class="hint">0 = không giới hạn</small></label>
+          <div class="volume-action-row"><select id="qos-template"><option value="">Tuỳ chỉnh</option><option value="balanced">Balanced</option><option value="latency_sensitive">Latency-sensitive</option><option value="throughput">Throughput</option><option value="unlimited">Unlimited</option></select></div>
           <div class="volume-qos-grid">
             <input id="qos-iops-limit" type="number" min="0" placeholder="IOPS tổng">
             <input id="qos-bps-limit" type="number" min="0" placeholder="bytes/s tổng">
@@ -135,6 +146,7 @@
             <input id="qos-bps-burst" type="number" min="0" placeholder="bytes/s burst">
           </div>
           <button class="btn btn-warning-outline btn-sm" type="submit">Đề xuất QoS</button>
+          <button class="btn btn-ghost btn-sm" type="button" id="volume-qos-rollback" disabled>Rollback proposal gần nhất</button>
           <small class="hint">Thay đổi cần approval và chạy qua Worker; không giới hạn mặc định là 0.</small>
           <p id="volume-qos-result" class="hint" hidden></p>
         </form>

@@ -290,7 +290,7 @@ thích và xếp hạng trên dữ liệu từ deterministic planner.
 ### Pha 8 — Closed-loop Remediation và Rollback dùng chung — P3
 
 - [~] **8.1 Remediation state machine**
-  - Thêm canonical state contract không cần migration: transition hợp lệ, expiry, cancellation, distributed lock và worker-restart recovery fail-closed. Chưa nối toàn bộ executor/DB lifecycle vào contract.
+  - Thêm canonical state contract và migration cho `Action.remediation_state`; executor success/failure, approved dispatch claim, case verification và worker-restart recovery đều chiếu qua state machine. Legacy status vẫn được giữ làm projection tương thích.
   - `PROPOSED → APPROVED → EXECUTING → VERIFYING → SUCCEEDED/FAILED/ROLLED_BACK`.
   - Hỗ trợ expiry, cancellation, distributed lock và recovery sau worker restart.
 - [~] **8.2 Universal post-check contract** — playbook registry hiện snapshot
@@ -298,7 +298,9 @@ thích và xếp hạng trên dữ liệu từ deterministic planner.
   success criteria `fresh_telemetry/fault_absent/no_new_critical`, health floor,
   rollback approval flag và fail-closed resolver cho inverse action chưa được
   kiểm thử; Watcher thực thi health-floor `NO_NEW_CRITICAL` trước khi xác nhận.
-  Đã nối timeout contract vào Watcher verify; timeout/malformed timeout chuyển sang INCONCLUSIVE và yêu cầu operator review. Còn timeout ở worker dispatch và inverse rollback cho từng action.
+  Đã nối timeout contract vào Watcher verify và thêm total SSH dispatch deadline;
+  timeout/malformed timeout chuyển sang INCONCLUSIVE và yêu cầu operator review.
+  Inverse rollback vẫn chỉ cho phép khi có contract và evidence test.
   - Mỗi action khai báo success criteria, thời gian chờ, health guard và evidence
     trước/sau.
 - [~] **8.3 Rollback planner**
@@ -309,7 +311,7 @@ thích và xếp hạng trên dữ liệu từ deterministic planner.
   - Thêm allowlist/preflight contract cho RGW, Block và Vitastor; bắt buộc capability, target, fresh telemetry, shadow/canary và approval; không sinh shell command. Chưa mở action ghi thật.
   - Mở từng action sau shadow mode và canary; RISKY/DESTRUCTIVE luôn cần phê duyệt.
 - [~] **8.5 Kiểm thử failure injection**
-  - Đã test transition sai, lock mismatch, expiry, worker restart, unknown action, thiếu shadow và thiếu approval; còn thiếu injection end-to-end trên SSH/worker/partial success/rollback.
+  - Đã thêm test injection cho SSH dispatch timeout, provider/health unavailable, split-brain worker, budget exhaustion, partial success → FAILED → ROLLED_BACK và recovery sau worker restart. Các action không có inverse vẫn fail-closed.
   - Timeout, SSH disconnect, partial success, stale approval, concurrent action,
     failed post-check, failed rollback và worker crash.
 
@@ -319,22 +321,22 @@ thao tác thủ công, có audit và không tuyên bố thành công trước po
 ### Pha 9 — Safe Autopilot nhiều cấp — P3
 
 - [~] **9.1 Ba chế độ vận hành**
-  - Thêm contract ADVISORY/APPROVAL_REQUIRED/LIMITED_AUTOPILOT; chưa thay thế cờ Autopilot hiện hữu trong runtime.
+  - Thêm contract ADVISORY/APPROVAL_REQUIRED/LIMITED_AUTOPILOT; mode được persist per-cluster và được đọc tại runtime boundary. `LEGACY` chỉ là projection tương thích cho cluster cũ.
   - `ADVISORY`: chỉ chẩn đoán/đề xuất.
   - `APPROVAL_REQUIRED`: operator duyệt từng action.
   - `LIMITED_AUTOPILOT`: tự chạy tập SAFE đã duyệt trước trong phạm vi/time window.
 - [~] **9.2 Guardrails**
-  - Thêm evaluator fail-closed cho kill switch, cluster gate, allowlist, maintenance window, action budget, blast radius, cooldown, health floor và SAFE-only; cần nối vào runtime trước khi coi là hoàn thành.
+  - Thêm evaluator fail-closed cho kill switch, cluster gate, allowlist, maintenance window, action budget, blast radius, cooldown, health floor và SAFE-only; đã nối canonical boundary ngay trước lease/SSH dispatch và persist mọi ALLOWED/BLOCKED decision.
   - Maintenance window, action budget, blast-radius limit, health floor, cooldown,
     kill switch và per-cluster allowlist.
 - [~] **9.3 Shadow mode và promotion**
   - Đã có trust_engine shadow decision/evaluation, precision, unsafe miss và promotion candidate; promotion vẫn phải do operator duyệt, không tự mở Autopilot.
   - Đo precision, false-positive, expected/actual outcome trước khi action được nâng cấp.
 - [~] **9.4 Operator controls**
-  - Đã có global/cluster/action-policy controls, audit và promotion approval trong Settings; bổ sung operator snapshot hiển thị mode, gate và lý do bị chặn. Chưa có màn hình riêng cho mọi runtime decision.
+  - Đã có global/cluster/action-policy controls, audit và promotion approval trong Settings; thêm màn hình `/remediation-runtime` hiển thị mode, classification, worker, controls, decision và lý do; admin có thể persist mode per cluster.
   - Hiển thị rõ chế độ hiện tại, action sắp chạy, lịch sử, lý do dừng và cách vô hiệu hóa.
 - [~] **9.5 Kiểm thử**
-  - Đã kiểm thử guardrail bypass, mode, budget, health floor, unknown action, lock mismatch và restart recovery; còn split-brain worker/provider unavailable end-to-end.
+  - Đã kiểm thử guardrail bypass, mode, budget, health floor, unknown action, lock mismatch, restart recovery, split-brain worker và provider/health unavailable; policy reload và kill switch vẫn được kiểm tra qua runtime boundary và cần live rehearsal trước release.
   - Guardrail bypass, policy reload, split-brain worker, kill switch, budget exhaustion
     và model/provider unavailable.
 
@@ -386,6 +388,7 @@ Một tính năng chỉ được coi là hoàn thành khi đáp ứng đủ:
 
 | Ngày | Hạng mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---|---|---|---|---|
+| 2026-09-25 | Pha 8/9 — remediation runtime wiring và operator decision screen | Một phần | Thêm migration hợp nhất cho `autopilot_mode`, `Action.remediation_state` và bảng append-only `remediation_runtime_decisions`; nối approved/autonomous executor, case verification và lease recovery vào state machine; thêm total SSH dispatch timeout; persist per-cluster mode và UI/API `/remediation-runtime`; canonical guard ghi decision trước lease/SSH. RGW/Block/Vitastor controlled write vẫn approval-only, inverse rollback chưa có evidence production nên fail-closed. | `pytest tests/test_ssh_executor.py tests/test_remediation_cases.py tests/test_remediation_runtime_e2e.py tests/test_dashboard_remediation_runtime.py tests/test_router_client.py::test_execute_approved_action_ssh_failure_marks_failed tests/test_dashboard_settings.py::test_migrate_database_route_adds_missing_table` (19/19) + `alembic heads` một head `m20260925merge` + `git diff --check` | Chờ commit |
 | 2026-09-21 | Pha 7.1–7.5 — Capacity planner deterministic core | Một phần | Thêm workload/topology planner cho Ceph và Vitastor, so sánh replica/EC, tính headroom/growth/capacity/performance OSD, warning failure-domain và explainability; cost/benchmark không đủ evidence thì unknown. Thêm POST /api/capacity-planner. | pytest tests/test_capacity_planner.py tests/test_capacity_forecast.py tests/test_capacity_failure_simulation.py + compileall + git diff --check | Chờ commit |
 | 2026-09-21 | Pha 6.4/6.5 — Postmortem export và review | Một phần | Thêm export Markdown evidence-only và review approve/reject có AuditEntry; citation không tồn tại bị loại, không sửa evidence gốc. Bổ sung test renderer và timeline edge cases. Chưa có PDF/editor UI. | pytest tests/test_incident_postmortem.py tests/test_dashboard_feed.py tests/test_unified_event_timeline.py + compileall + git diff --check | Chờ commit |
 | 2026-09-21 | Pha 6.2/6.3 — Root-cause chain và postmortem evidence | Một phần | Thêm deterministic root-cause chain có citation event ID, confidence và evidence gaps; API GET /api/incidents/{incident_id}/root-cause-chain, chỉ candidate_only khi chưa chứng minh causal link. Tận dụng postmortem validator hiện có, không tự sinh conclusion không có evidence. | pytest tests/test_root_cause_chain.py tests/test_dashboard_feed.py + compileall + git diff --check | Chờ commit |

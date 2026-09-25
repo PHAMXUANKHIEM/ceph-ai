@@ -67,6 +67,8 @@ management_action_ids:
   - rbd_resize_volume
   - rbd_rename_volume
   - rbd_clone_volume
+  - rbd_copy_volume
+  - rbd_move_volume
   - rbd_flatten_volume
   - rbd_template_mark
   - rbd_qos_set
@@ -350,6 +352,8 @@ risky:
   - rbd_resize_volume
   - rbd_rename_volume
   - rbd_clone_volume
+  - rbd_copy_volume
+  - rbd_move_volume
   - rbd_template_mark
   - rbd_qos_set
   - rbd_trash_move_volume

@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -347,6 +347,10 @@ def test_secondary_cluster_poll_uses_its_connection_and_persists_cluster_id(isol
         vm.ceph_client, "query_rbd_iostat_with",
         lambda *args: iostat_calls.append(args) or [_sample(pool="volumes", image="vm-2")],
     )
+    monkeypatch.setattr(
+        vm.ceph_client, "query_rbd_pool_overview_with",
+        lambda *args: {"percent_used": 25.0, "bytes_used": 25, "quota_max_bytes": 0},
+    )
 
     assert vm.check_volumes(cluster=cluster) == {}
     vm.persist_last_poll_metrics(cluster_id=cluster_id)
@@ -359,6 +363,72 @@ def test_secondary_cluster_poll_uses_its_connection_and_persists_cluster_id(isol
         assert row.cluster_id == cluster_id
         assert row.pool == "volumes"
         assert row.image == "vm-2"
+
+
+def test_metric_alert_refresh_persists_and_resolves_capacity_quota_noisy_and_stuck(
+    isolated_db, monkeypatch
+):
+    cluster = Cluster(
+        name="alerts", ceph_mon_nodes="10.0.0.1", ceph_container_name="",
+        ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none",
+        is_default=False,
+    )
+    now = vm.utc_now()
+    with db_module.SessionLocal() as session:
+        session.add(cluster)
+        session.commit()
+        cluster_id = cluster.id
+        incident = Incident(cluster_id=cluster_id, ceph_code="RBD_VOLUME_MOVE",
+                            status=IncidentStatus.EXECUTING.value, detected_at=now)
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="rbd_move_volume", classification="RISKY",
+            status=ActionStatus.EXECUTING.value,
+            action_params='{"pool_name":"vms","image":"busy"}',
+        )
+        action.updated_at = now - timedelta(hours=1)
+        session.add(action)
+        session.add_all([
+            VolumeMetric(cluster_id=cluster_id, pool="vms", image="busy", iops=90,
+                         read_latency_ms=1, write_latency_ms=1, saturated=False, polled_at=now),
+            VolumeMetric(cluster_id=cluster_id, pool="vms", image="quiet", iops=10,
+                         read_latency_ms=1, write_latency_ms=1, saturated=False, polled_at=now),
+        ])
+        session.commit()
+    monkeypatch.setattr(
+        vm.ceph_client, "query_rbd_pool_overview_with",
+        lambda *args: {"percent_used": 96, "near_full": True,
+                       "bytes_used": 90, "quota_max_bytes": 100},
+    )
+
+    vm._refresh_metric_alerts(cluster_id)
+
+    with db_module.SessionLocal() as session:
+        codes = {row.ceph_code for row in session.query(Incident).filter(
+            Incident.cluster_id == cluster_id,
+            Incident.ceph_code.like("BLOCK_STORAGE_%"),
+        )}
+        assert codes == {
+            "BLOCK_STORAGE_CAPACITY", "BLOCK_STORAGE_QUOTA",
+            "BLOCK_STORAGE_NOISY_NEIGHBOR", "BLOCK_STORAGE_STUCK_JOB",
+        }
+
+    monkeypatch.setattr(
+        vm.ceph_client, "query_rbd_pool_overview_with",
+        lambda *args: {"percent_used": 10, "near_full": False,
+                       "bytes_used": 10, "quota_max_bytes": 100},
+    )
+    with db_module.SessionLocal() as session:
+        session.query(VolumeMetric).filter_by(cluster_id=cluster_id, image="busy").update({"iops": 50})
+        session.query(VolumeMetric).filter_by(cluster_id=cluster_id, image="quiet").update({"iops": 50})
+        session.query(Action).filter_by(action_id="rbd_move_volume").update({"status": ActionStatus.EXECUTED.value})
+        session.commit()
+    vm._refresh_metric_alerts(cluster_id)
+    with db_module.SessionLocal() as session:
+        alerts = session.query(Incident).filter(Incident.ceph_code.like("BLOCK_STORAGE_%")).all()
+        assert alerts
+        assert all(row.status == IncidentStatus.RESOLVED.value for row in alerts)
 
 
 def test_volume_state_is_isolated_between_clusters(monkeypatch):

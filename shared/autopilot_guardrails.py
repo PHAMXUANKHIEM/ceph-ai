@@ -37,7 +37,14 @@ class GuardrailDecision:
 
 
 def _mode(value: AutopilotMode | str) -> AutopilotMode:
-    return value if isinstance(value, AutopilotMode) else AutopilotMode(str(value).upper())
+    if isinstance(value, AutopilotMode):
+        return value
+    normalized = str(value).upper()
+    # LEGACY is the persisted compatibility value for clusters created before
+    # explicit per-cluster modes. The caller resolves its boolean gates first.
+    if normalized == "LEGACY":
+        return AutopilotMode.LIMITED_AUTOPILOT
+    return AutopilotMode(normalized)
 
 
 def resolve_mode(*, global_enabled: bool, cluster_enabled: bool,

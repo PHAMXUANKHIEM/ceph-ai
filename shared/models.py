@@ -152,6 +152,12 @@ class Cluster(Base):
     autopilot_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false"),
     )
+    # Explicit per-cluster mode. LEGACY preserves the pre-mode boolean
+    # behaviour for existing rows; new operator changes use one of the three
+    # Safe Autopilot modes and are persisted with the cluster gate.
+    autopilot_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="LEGACY", server_default="LEGACY",
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
@@ -420,6 +426,10 @@ class Action(Base):
     action_id: Mapped[str] = mapped_column(String(64), nullable=False)
     classification: Mapped[str] = mapped_column(String(16), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=ActionStatus.PENDING.value)
+    # Canonical remediation lifecycle, independent from legacy ActionStatus.
+    remediation_state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="PROPOSED", server_default="PROPOSED",
+    )
     # Not populated by this story — Story 3.2 builds the real Command object
     # per action_id and fills this in when it exists.
     proposed_command: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -670,6 +680,28 @@ class AutopilotClusterConfigAudit(Base):
     previous_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
     new_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class RemediationRuntimeDecision(Base):
+    """Append-only explanation of every final runtime remediation gate."""
+
+    __tablename__ = "remediation_runtime_decisions"
+    __table_args__ = (
+        Index("ix_remediation_runtime_decisions_cluster_time", "cluster_id", "created_at"),
+        Index("ix_remediation_runtime_decisions_action_time", "action_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
+    incident_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("incidents.id"), nullable=True)
+    action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False, default="unknown")
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    classification: Mapped[str] = mapped_column(String(16), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    controls_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
@@ -1627,6 +1659,11 @@ class VolumeMetric(Base):
     iops: Mapped[float] = mapped_column(Float, nullable=False)
     read_latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
     write_latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    read_bytes_per_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    write_bytes_per_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    queue_depth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p95_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    freshness_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     saturated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
@@ -2413,6 +2450,17 @@ class CephCapacitySample(Base):
     used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     used_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    provisioned_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    logical_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    snapshot_provisioned_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    snapshot_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    snapshot_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    replica_factor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ec_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ec_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    redundancy_overhead_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    failure_domain_reserve_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    quality_status: Mapped[str] = mapped_column(String(32), nullable=False, default="OK")
     captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
@@ -3368,6 +3416,11 @@ class CapacityAlertState(Base):
     entity_name: Mapped[str] = mapped_column(String(128), nullable=False)
     current_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     notified_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="RESOLVED")
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notification_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utc_now, onupdate=utc_now,

@@ -2334,6 +2334,142 @@ def test_volume_qos_api_rejects_out_of_range_value(dashboard_client, monkeypatch
     assert response.status_code == 400
 
 
+def test_volume_qos_template_and_rollback_use_server_side_before_state(
+    dashboard_client, monkeypatch
+):
+    _configure_pools(monkeypatch)
+    current = {
+        "rbd_qos_iops_limit": 100,
+        "rbd_qos_bps_limit": 0,
+        "rbd_qos_iops_burst": 0,
+        "rbd_qos_bps_burst": 0,
+        "rbd_qos_read_iops_limit": 0,
+        "rbd_qos_read_bps_limit": 0,
+        "rbd_qos_write_iops_limit": 0,
+        "rbd_qos_write_bps_limit": 0,
+    }
+    live = {"value": current}
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_qos",
+        lambda pool, image: dict(live["value"]),
+    )
+    _login(dashboard_client)
+
+    proposed = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/qos",
+        json={"template": "throughput"},
+        headers={"Idempotency-Key": "qos-template-vm01"},
+    )
+    assert proposed.status_code == 201
+    assert proposed.json()["after"]["rbd_qos_bps_limit"] == 1_073_741_824
+    assert proposed.json()["diff"]["rbd_qos_iops_limit"] == {"before": 100, "after": 0}
+
+    with db_module.SessionLocal() as session:
+        original = session.get(Action, proposed.json()["action_id"])
+        original.status = ActionStatus.EXECUTED.value
+        session.get(Incident, original.incident_id).status = IncidentStatus.RESOLVED.value
+        session.commit()
+
+    live["value"] = {**current, "rbd_qos_iops_limit": 900}
+    rollback = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/qos/rollback",
+        json={"action_id": proposed.json()["action_id"]},
+        headers={"Idempotency-Key": "qos-rollback-vm01"},
+    )
+    assert rollback.status_code == 201
+    assert rollback.json()["after"]["rbd_qos_iops_limit"] == 100
+    assert rollback.json()["before"]["rbd_qos_iops_limit"] == 900
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, rollback.json()["action_id"])
+        assert json.loads(action.action_params)["rollback_of"] == proposed.json()["action_id"]
+
+
+def test_volume_metrics_summary_returns_top_consumers_and_lifecycle_correlation(
+    dashboard_client, monkeypatch
+):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_overview",
+        lambda pool: {
+            "percent_used": 86.0, "near_full": True, "bytes_used": 86,
+            "quota_max_bytes": 100,
+        },
+    )
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        session.add_all([
+            VolumeMetric(cluster_id=cluster.id, pool="vms", image="busy", iops=90,
+                         read_latency_ms=1, write_latency_ms=2,
+                         read_bytes_per_sec=100, write_bytes_per_sec=200,
+                         queue_depth=4, p95_latency_ms=3, saturated=False, polled_at=now),
+            VolumeMetric(cluster_id=cluster.id, pool="vms", image="quiet", iops=10,
+                         read_latency_ms=1, write_latency_ms=1,
+                         read_bytes_per_sec=10, write_bytes_per_sec=20,
+                         queue_depth=1, p95_latency_ms=2, saturated=False, polled_at=now),
+        ])
+        incident = Incident(cluster_id=cluster.id, ceph_code="RBD_VOLUME_RESIZE",
+                            status=IncidentStatus.RESOLVED.value, detected_at=now)
+        session.add(incident)
+        session.flush()
+        session.add(Action(
+            incident_id=incident.id, action_id="rbd_resize_volume", classification="RISKY",
+            status=ActionStatus.EXECUTED.value,
+            action_params=json.dumps({"pool_name": "vms", "image": "busy"}),
+        ))
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/metrics/summary?hours=24")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["top_consumers"][0]["image"] == "busy"
+    assert payload["summary"]["read_bytes_per_sec"] == 110
+    assert payload["correlation_events"][0]["action_id"] == "rbd_resize_volume"
+    assert {item["kind"] for item in payload["alerts"]} >= {
+        "BLOCK_STORAGE_CAPACITY", "BLOCK_STORAGE_QUOTA", "BLOCK_STORAGE_NOISY_NEIGHBOR",
+    }
+
+
+def test_inventory_ai_diagnosis_route_uses_server_collected_evidence(
+    dashboard_client, monkeypatch
+):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(settings, "router_enabled", True)
+    monkeypatch.setattr(
+        volumes_route, "_cached_rbd_inventory_with_state",
+        lambda cluster, pool: ([{
+            "name": "vm-01", "provisioned_size": 100, "used_size": 1,
+            "snapshot_count": 0, "attachment_state": "idle", "watcher_count": 0,
+        }], {"stale": False, "refreshing": False, "age_seconds": 1, "source": "cache"}),
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_overview",
+        lambda pool: {"percent_used": 10, "near_full": False},
+    )
+    captured = {}
+
+    async def fake_diagnose(evidence):
+        captured.update(evidence)
+        return {
+            "verdict": "INSUFFICIENT_EVIDENCE", "severity": "info",
+            "summary_vi": "Chưa đủ dữ liệu.", "evidence_refs": ["inventory"],
+            "recommended_next_step_vi": "Thu thập thêm metric.", "confidence": 0.5,
+            "read_only": True, "action_id": None,
+        }
+
+    monkeypatch.setattr(volumes_route, "diagnose_inventory", fake_diagnose)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/vms/inventory-insights/diagnose")
+
+    assert response.status_code == 200
+    assert captured["pool"] == "vms"
+    assert response.json()["diagnosis"]["action_id"] is None
+    assert response.json()["read_only"] is True
+
+
 def test_volume_inventory_rejects_inactive_cluster_without_default_fallback(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     with db_module.SessionLocal() as session:
@@ -2591,6 +2727,72 @@ def test_propose_clone_volume_rejects_missing_snapshot(dashboard_client, monkeyp
         "snapshot": "missing", "dest_pool": "backups", "dest_image": "vm-copy",
     })
 
+    assert response.status_code == 409
+
+
+def test_propose_copy_and_move_are_scoped_and_move_verifies_source_preservation(
+    dashboard_client, monkeypatch
+):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"pool": pool, "name": image, "size": 2 * 1024 ** 3,
+                             "watchers": [], "locks": []},
+    )
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [])
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_overview",
+        lambda pool: {"rbd_enabled": True, "near_full": False, "max_available": 8 * 1024 ** 3},
+    )
+    _login(dashboard_client)
+
+    copied = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/copy",
+        json={"dest_pool": "backups", "dest_image": "vm-copy"},
+    )
+    moved = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-02/move",
+        json={"dest_pool": "backups", "dest_image": "vm-moved"},
+    )
+
+    assert copied.status_code == 201
+    assert moved.status_code == 201
+    with db_module.SessionLocal() as session:
+        copy_action = session.get(Action, copied.json()["action_id"])
+        move_action = session.get(Action, moved.json()["action_id"])
+        assert copy_action.action_id == "rbd_copy_volume"
+        assert move_action.action_id == "rbd_move_volume"
+        assert json.loads(copy_action.action_params)["source_preserved"] is True
+        assert json.loads(move_action.action_params)["source_preserved"] is False
+        assert "rbd trash mv vms/vm-02" in move_action.proposed_command
+
+
+def test_propose_copy_blocks_busy_source_and_destination_capacity(
+    dashboard_client, monkeypatch
+):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"size": 10, "watchers": [{"client": "client.1"}], "locks": []},
+    )
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [])
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda pool: {"max_available": 1})
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/copy",
+        json={"dest_pool": "backups", "dest_image": "vm-copy"},
+    )
+    assert response.status_code == 409
+
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"size": 10, "watchers": [], "locks": []},
+    )
+    response = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/copy",
+        json={"dest_pool": "backups", "dest_image": "vm-copy"},
+    )
     assert response.status_code == 409
 
 

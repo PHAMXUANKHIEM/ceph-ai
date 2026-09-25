@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from dashboard import volume_perf_analysis
+from dashboard.block_storage_ai import BlockStorageAIError, diagnose_inventory
 from dashboard.cinder_discovery import (
     build_boot_dependency_report,
     build_attachment_remediation,
@@ -56,6 +57,7 @@ from shared.models import (
     VolumeSnapshotPolicy,
 )
 from shared.volume_snapshot_policy import next_run_at, snapshot_name, validate_snapshot_policy
+from shared.block_storage_qos import QOS_BOUNDS as _RBD_QOS_BOUNDS, diff as qos_diff, validate_values as validate_qos_values, values_for_template
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher.volume_monitor import ceph_code_for
@@ -69,6 +71,7 @@ from watcher.block_storage_capacity import build_capacity_risk
 from watcher.block_storage_dependencies import build_pool_dependency_health
 from watcher.block_storage_integrity import build_integrity_evidence
 from watcher.block_storage_pool_lifecycle import build_pool_lifecycle_inventory
+from watcher.block_storage_metric_health import aggregate_pool_metrics, evaluate_metric_alerts
 from watcher.block_storage_policy import build_durability_policy
 from watcher.capacity_failure_simulation import simulate as simulate_capacity_failure
 from watcher.capacity_forecast import forecasts as capacity_forecasts
@@ -365,6 +368,8 @@ RBD_VOLUME_CREATE_CEPH_CODE = "RBD_VOLUME_CREATE"
 RBD_VOLUME_RESIZE_CEPH_CODE = "RBD_VOLUME_RESIZE"
 RBD_VOLUME_RENAME_CEPH_CODE = "RBD_VOLUME_RENAME"
 RBD_VOLUME_CLONE_CEPH_CODE = "RBD_VOLUME_CLONE"
+RBD_VOLUME_COPY_CEPH_CODE = "RBD_VOLUME_COPY"
+RBD_VOLUME_MOVE_CEPH_CODE = "RBD_VOLUME_MOVE"
 RBD_VOLUME_FLATTEN_CEPH_CODE = "RBD_VOLUME_FLATTEN"
 RBD_VOLUME_TEMPLATE_CEPH_CODE = "RBD_VOLUME_TEMPLATE"
 RBD_VOLUME_QOS_CEPH_CODE = "RBD_VOLUME_QOS"
@@ -423,18 +428,6 @@ _OPENSTACK_UUID_RE = re.compile(
 )
 _CINDER_SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
-_RBD_QOS_BOUNDS = {
-    "rbd_qos_iops_limit": (0, 1_000_000_000),
-    "rbd_qos_bps_limit": (0, 10_000_000_000_000),
-    "rbd_qos_iops_burst": (0, 1_000_000_000),
-    "rbd_qos_bps_burst": (0, 10_000_000_000_000),
-    "rbd_qos_read_iops_limit": (0, 1_000_000_000),
-    "rbd_qos_read_bps_limit": (0, 10_000_000_000_000),
-    "rbd_qos_write_iops_limit": (0, 1_000_000_000),
-    "rbd_qos_write_bps_limit": (0, 10_000_000_000_000),
-}
-
-
 def _rbd_qos_unsupported(exc: Exception) -> bool:
     message = str(exc).lower()
     return any(token in message for token in (
@@ -444,7 +437,7 @@ def _rbd_qos_unsupported(exc: Exception) -> bool:
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 _RBD_VOLUME_MUTATION_ACTION_IDS = (
-    "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume", "rbd_clone_volume", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
+    "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume", "rbd_clone_volume", "rbd_copy_volume", "rbd_move_volume", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
     "rbd_trash_move_volume", "rbd_trash_restore_volume",
     "cinder_attach_volume", "cinder_detach_volume",
     "cinder_create_snapshot", "cinder_delete_snapshot",
@@ -1495,6 +1488,34 @@ async def volume_inventory_insights_api(
     }
 
 
+@router.post("/api/volumes/{pool}/inventory-insights/diagnose")
+async def volume_inventory_insights_diagnose_api(
+    request: Request, pool: str, user: str = Depends(require_login),
+):
+    """Add an evidence-bound AI explanation to deterministic inventory findings."""
+    if not settings.router_enabled:
+        raise HTTPException(status_code=503, detail="AI diagnosis chưa được bật")
+    deterministic = await volume_inventory_insights_api(request, pool, user)
+    metrics = await volume_metrics_summary_api(request, pool, hours=24, user=user)
+    evidence = {
+        "pool": pool,
+        "cluster_id": deterministic["cluster_id"],
+        "insights": deterministic["insights"],
+        "summary": deterministic["summary"],
+        "metrics": metrics["summary"],
+        "freshness": {
+            "inventory_stale": deterministic["stale"],
+            "cache_age_seconds": deterministic["cache_age_seconds"],
+        },
+    }
+    try:
+        diagnosis = await diagnose_inventory(evidence)
+    except BlockStorageAIError as exc:
+        raise HTTPException(status_code=503, detail=f"AI diagnosis unavailable: {exc}") from exc
+    return {"cluster_id": deterministic["cluster_id"], "pool": pool,
+            "evidence": evidence, "diagnosis": diagnosis, "read_only": True}
+
+
 @router.get("/api/volumes/{pool}/snapshot-clone-insights")
 async def volume_snapshot_clone_insights_api(
     request: Request,
@@ -1732,12 +1753,11 @@ async def propose_volume_qos(
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="QoS payload không hợp lệ")
-    values = {}
-    for option, (low, high) in _RBD_QOS_BOUNDS.items():
-        raw = body.get(option, 0)
-        if isinstance(raw, bool) or not isinstance(raw, int) or raw < low or raw > high:
-            raise HTTPException(status_code=400, detail=f"{option} phải là số nguyên trong khoảng {low}–{high}")
-        values[option] = raw
+    try:
+        values = values_for_template(str(body["template"])) if body.get("template") else validate_qos_values(body)
+        values = validate_qos_values(values)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     query = ceph_client.query_rbd_qos if cluster.is_default else ceph_client.query_rbd_qos_with
     try:
         before = query(pool, image) if cluster.is_default else query(pool, image, *cluster_connection(cluster))
@@ -1759,11 +1779,76 @@ async def propose_volume_qos(
         "action_id": action_id,
         "before": before,
         "after": values,
+        "template": body.get("template"),
+        "diff": qos_diff(before, values),
         "impact_preview": {
             "limited": any(values[name] > 0 for name in _RBD_QOS_BOUNDS),
             "unlimited_options": [name for name in _RBD_QOS_BOUNDS if values[name] == 0],
             "note": "Đây là preview cấu hình; hiệu năng thực tế còn phụ thuộc workload và pool.",
         },
+        "requires_approval": True,
+    }
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/qos/rollback", status_code=201)
+async def propose_volume_qos_rollback(
+    request: Request, pool: str, image: str, user: str = Depends(require_login),
+):
+    """Propose restoring the exact QoS state captured by a prior proposal.
+
+    The previous action is evidence, not authority: the route validates its
+    cluster/resource scope and reads the live QoS again before creating a new
+    approval-gated action.  This prevents a stale browser payload from being
+    turned into a rollback for another volume.
+    """
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if not image or not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+    body = await request.json()
+    source_action_id = str(body.get("action_id") or "").strip()
+    if not source_action_id:
+        raise HTTPException(status_code=400, detail="Thiếu action_id của proposal QoS cần rollback")
+    with db.SessionLocal() as session:
+        source_action = session.get(Action, source_action_id)
+        if source_action is None or source_action.action_id != "rbd_qos_set":
+            raise HTTPException(status_code=404, detail="Không tìm thấy proposal QoS hợp lệ")
+        source_incident = session.get(Incident, source_action.incident_id)
+        if source_incident is None or source_incident.cluster_id != cluster.id:
+            raise HTTPException(status_code=404, detail="Proposal QoS không thuộc cluster đang chọn")
+        try:
+            source_params = json.loads(source_action.action_params or "{}")
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail="Proposal QoS có metadata lỗi") from exc
+    if source_params.get("pool_name") != pool or source_params.get("image") != image:
+        raise HTTPException(status_code=409, detail="Proposal QoS không thuộc volume đang chọn")
+    try:
+        target_values = validate_qos_values(source_params.get("qos_before") or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Proposal cũ không có before-state đầy đủ") from exc
+    query = ceph_client.query_rbd_qos if cluster.is_default else ceph_client.query_rbd_qos_with
+    try:
+        before = query(pool, image) if cluster.is_default else query(pool, image, *cluster_connection(cluster))
+    except CephQueryError as exc:
+        if _rbd_qos_unsupported(exc):
+            raise HTTPException(status_code=409, detail="Ceph release không hỗ trợ per-image QoS") from exc
+        raise HTTPException(status_code=502, detail=f"Không đọc được QoS hiện tại; không tạo rollback: {exc}") from exc
+    rollback_action_id = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image, action_id="rbd_qos_set",
+        ceph_code=RBD_VOLUME_QOS_CEPH_CODE, user=user,
+        rationale=f"Rollback QoS của {pool}/{image} theo proposal {source_action_id}",
+        extra_params={**target_values, "qos_before": validate_qos_values(before),
+                      "rollback_of": source_action_id},
+        idempotency_key=request.headers.get("Idempotency-Key"),
+    )
+    return {
+        "action_id": rollback_action_id,
+        "rollback_of": source_action_id,
+        "before": validate_qos_values(before),
+        "after": target_values,
+        "diff": qos_diff(before, target_values),
         "requires_approval": True,
     }
 
@@ -2263,6 +2348,79 @@ async def propose_volume_clone(
     )
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL",
                          "estimated_size_bytes": source_size}, status_code=201)
+
+
+async def _propose_cross_pool_copy_or_move(
+    request: Request, pool: str, image: str, *, move: bool, user: str,
+):
+    """Create a guarded cross-pool copy/move proposal.
+
+    Move is implemented as copy -> destination verification -> source trash
+    move.  This deliberately leaves the source recoverable if the final step
+    fails, so a partial failure cannot silently destroy the original image.
+    """
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    body = await request.json()
+    dest_pool = str(body.get("dest_pool") or "").strip()
+    dest_image = str(body.get("dest_image") or "").strip()
+    if pool not in allowed_pools or dest_pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool nguồn/đích không nằm trong cluster scope")
+    if not _RBD_IMAGE_NAME_RE.fullmatch(image) or not _RBD_IMAGE_NAME_RE.fullmatch(dest_image):
+        raise HTTPException(status_code=400, detail="Tên Volume nguồn/đích không hợp lệ")
+    if pool == dest_pool and image == dest_image:
+        raise HTTPException(status_code=409, detail="Volume đích phải khác volume nguồn")
+    action_id = "rbd_move_volume" if move else "rbd_copy_volume"
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id=action_id, user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image, "dest_pool": dest_pool, "dest_image": dest_image},
+    )
+    if replay:
+        return replay
+    query_detail = ceph_client.query_rbd_image_detail if cluster.is_default else ceph_client.query_rbd_image_detail_with
+    query_inventory = ceph_client.query_rbd_inventory if cluster.is_default else ceph_client.query_rbd_inventory_with
+    query_overview = ceph_client.query_rbd_pool_overview if cluster.is_default else ceph_client.query_rbd_pool_overview_with
+    try:
+        source = (query_detail(pool, image) if cluster.is_default
+                  else query_detail(pool, image, *cluster_connection(cluster)))
+        destination_inventory = (query_inventory(dest_pool) if cluster.is_default
+                                 else query_inventory(dest_pool, *cluster_connection(cluster)))
+        overview = (query_overview(dest_pool) if cluster.is_default
+                    else query_overview(dest_pool, *cluster_connection(cluster)))
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight copy/move: {exc}") from exc
+    if source.get("watchers") or source.get("locks"):
+        raise HTTPException(status_code=409, detail="Volume nguồn đang attached/locked; không copy/move")
+    if any(row.get("name") == dest_image for row in destination_inventory):
+        raise HTTPException(status_code=409, detail="Volume đích đã tồn tại")
+    if overview.get("rbd_enabled") is False:
+        raise HTTPException(status_code=409, detail="Pool đích chưa bật ứng dụng RBD")
+    source_size = int(source.get("size") or 0)
+    max_available = int(overview.get("max_available") or 0)
+    if overview.get("near_full") or (max_available and source_size > max_available):
+        raise HTTPException(status_code=409, detail="Pool đích không đủ capacity an toàn")
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image, action_id=action_id,
+        ceph_code=RBD_VOLUME_MOVE_CEPH_CODE if move else RBD_VOLUME_COPY_CEPH_CODE,
+        user=user, idempotency_key=idempotency_key,
+        extra_params={"dest_pool": dest_pool, "dest_image": dest_image,
+                      "size_bytes": source_size, "source_preserved": not move},
+        conflicting_images={image, dest_image},
+        rationale=(f"{'Move' if move else 'Copy'} {pool}/{image} sang "
+                   f"{dest_pool}/{dest_image}; {'source sẽ vào Trash sau khi destination được verify' if move else 'source được giữ nguyên'}"),
+    )
+    return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL",
+                         "source_preserved": not move, "estimated_size_bytes": source_size}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/copy")
+async def propose_volume_copy(request: Request, pool: str, image: str, user: str = Depends(require_login)):
+    return await _propose_cross_pool_copy_or_move(request, pool, image, move=False, user=user)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/move")
+async def propose_volume_move(request: Request, pool: str, image: str, user: str = Depends(require_login)):
+    return await _propose_cross_pool_copy_or_move(request, pool, image, move=True, user=user)
 
 
 @router.post("/api/volumes/{pool}/inventory/{image}/flatten")
@@ -3245,6 +3403,11 @@ async def volume_history_api(
                 "iops": row.iops,
                 "read_latency_ms": row.read_latency_ms,
                 "write_latency_ms": row.write_latency_ms,
+                "read_bytes_per_sec": row.read_bytes_per_sec,
+                "write_bytes_per_sec": row.write_bytes_per_sec,
+                "queue_depth": row.queue_depth,
+                "p95_latency_ms": row.p95_latency_ms,
+                "freshness_seconds": row.freshness_seconds,
                 "saturated": row.saturated,
             }
             for row in rows
@@ -3286,6 +3449,104 @@ async def volume_history_api(
         "samples": samples,
         "peak": peak,
         "saturated": saturated_now,
+    }
+
+
+@router.get("/api/volumes/{pool}/metrics/summary")
+async def volume_metrics_summary_api(
+    request: Request, pool: str, hours: int = _DEFAULT_HISTORY_HOURS,
+    user: str = Depends(require_login),
+):
+    """Return pool aggregation, top consumers, freshness and lifecycle correlation."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    hours = max(1, min(hours, _MAX_HISTORY_HOURS))
+    cutoff = utc_now() - timedelta(hours=hours)
+    with db.SessionLocal() as session:
+        rows = session.query(VolumeMetric).filter(
+            _cluster_row_filter(VolumeMetric.cluster_id, cluster),
+            VolumeMetric.pool == pool,
+            VolumeMetric.polled_at >= cutoff,
+        ).order_by(VolumeMetric.polled_at.asc()).all()
+        evidence = []
+        lifecycle_ids = {
+            "rbd_resize_volume", "rbd_rename_volume", "rbd_copy_volume", "rbd_move_volume",
+            "cinder_create_snapshot", "cinder_delete_snapshot", "rbd_clone_volume",
+        }
+        actions = session.query(Action).join(Incident, Action.incident_id == Incident.id).filter(
+            _cluster_row_filter(Incident.cluster_id, cluster),
+            Action.action_id.in_(lifecycle_ids),
+            Action.created_at >= cutoff,
+        ).order_by(Action.created_at.desc()).limit(100).all()
+        for action in actions:
+            try:
+                params = json.loads(action.action_params or "{}")
+            except (TypeError, ValueError):
+                params = {}
+            if params.get("pool_name") != pool and params.get("dest_pool") != pool:
+                continue
+            evidence.append({
+                "type": "lifecycle_action", "action_id": action.action_id,
+                "status": action.status, "created_at": action.created_at.isoformat() + "Z",
+                "image": params.get("image") or params.get("dest_image"),
+            })
+        policies = session.query(VolumeSnapshotPolicy).filter(
+            _cluster_row_filter(VolumeSnapshotPolicy.cluster_id, cluster),
+            VolumeSnapshotPolicy.pool == pool,
+        ).all()
+        for policy in policies:
+            at = policy.last_run_at or policy.updated_at or policy.created_at
+            if at and at >= cutoff:
+                evidence.append({
+                    "type": "snapshot_policy", "image": policy.image,
+                    "status": policy.last_status, "created_at": at.isoformat() + "Z",
+                })
+    overview = None
+    capacity_gaps = []
+    try:
+        if cluster.is_default:
+            overview = await asyncio.to_thread(ceph_client.query_rbd_pool_overview, pool)
+        else:
+            overview = await asyncio.to_thread(
+                ceph_client.query_rbd_pool_overview_with, pool, *cluster_connection(cluster)
+            )
+    except CephQueryError as exc:
+        capacity_gaps.append(f"pool overview unavailable: {exc}")
+    serialized = [
+        {
+            "pool": row.pool, "image": row.image, "iops": row.iops,
+            "read_latency_ms": row.read_latency_ms, "write_latency_ms": row.write_latency_ms,
+            "read_bytes_per_sec": row.read_bytes_per_sec,
+            "write_bytes_per_sec": row.write_bytes_per_sec,
+            "queue_depth": row.queue_depth, "p95_latency_ms": row.p95_latency_ms,
+            "polled_at": row.polled_at,
+        }
+        for row in rows
+    ]
+    aggregates = aggregate_pool_metrics(serialized, now=utc_now())
+    pool_summary = next((item for item in aggregates["pools"] if item["pool"] == pool), None)
+    if pool_summary is not None:
+        pool_summary["near_full"] = bool((overview or {}).get("near_full"))
+        pool_summary["used_percent"] = float((overview or {}).get("percent_used") or 0)
+    quota_limit = int((overview or {}).get("quota_max_bytes") or 0)
+    quota_used = int((overview or {}).get("bytes_used") or 0)
+    quota_ratio = quota_used / quota_limit if quota_limit > 0 else 0.0
+    quota_state = [{
+        "pool": pool,
+        "near_quota": quota_limit > 0 and quota_ratio >= 0.80,
+        "over_quota": quota_limit > 0 and quota_ratio >= 1.0,
+    }]
+    alerts = evaluate_metric_alerts(aggregates, quota_state=quota_state, jobs=[{
+        "id": action.id, "status": action.status, "started_at": action.updated_at,
+    } for action in actions], now=utc_now())
+    return {
+        "cluster_id": cluster.id, "pool": pool, "hours": hours,
+        "summary": pool_summary or {"pool": pool, "sample_count": 0, "stale": True, "top_consumers": []},
+        "correlation_events": evidence,
+        "alerts": alerts,
+        "evidence_gaps": capacity_gaps,
+        "read_only": True,
     }
 
 

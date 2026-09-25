@@ -29,6 +29,7 @@ class FakeSSHClient:
 
     behavior: dict = {}
     calls: list = []
+    exec_timeouts: list = []
 
     def __init__(self):
         self._host = None
@@ -50,6 +51,7 @@ class FakeSSHClient:
         self._host = hostname
 
     def exec_command(self, command, timeout=None):
+        FakeSSHClient.exec_timeouts.append(timeout)
         exit_status, stdout_text, stderr_text = FakeSSHClient.behavior[self._host]
         return None, _FakeStream(stdout_text, exit_status), _FakeStream(stderr_text)
 
@@ -61,6 +63,7 @@ class FakeSSHClient:
 def fake_ssh(monkeypatch):
     FakeSSHClient.behavior = {}
     FakeSSHClient.calls = []
+    FakeSSHClient.exec_timeouts = []
     monkeypatch.setattr(ssh_executor.paramiko, "SSHClient", FakeSSHClient)
     yield FakeSSHClient
 
@@ -85,3 +88,10 @@ def test_execute_command_raises_on_connection_failure(fake_ssh):
 
     with pytest.raises(ExecutorError, match="failed to execute command"):
         execute_command("10.20.1.249", "some command")
+
+
+def test_execute_command_passes_dispatch_timeout_to_ssh_channel(fake_ssh):
+    fake_ssh.behavior = {"10.20.1.249": (0, "ok\n", "")}
+
+    assert execute_command("10.20.1.249", "long-running", timeout_seconds=7.5) == "ok\n"
+    assert fake_ssh.exec_timeouts == [7.5]

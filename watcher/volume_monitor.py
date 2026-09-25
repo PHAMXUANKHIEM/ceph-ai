@@ -38,16 +38,18 @@ import json
 import logging
 import threading
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from shared.time import utc_now
 from concurrent.futures import ThreadPoolExecutor
 
 from config.settings import settings
 from shared import audit, db
+from shared.cluster_nodes import resolve_ssh_creds
 from shared.incident_actions import cancel_pending_actions
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, VolumeMetric
 from watcher import ceph_client, volume_learning
 from watcher.ceph_client import CephQueryError
+from watcher.block_storage_metric_health import aggregate_pool_metrics, evaluate_metric_alerts, sync_metric_alert_incidents
 from worker.policy import gate
 
 logger = logging.getLogger(__name__)
@@ -223,6 +225,10 @@ def check_volumes(cluster: Cluster | None = None, cluster_id: str | None = None)
                     "iops": sample["iops"],
                     "read_latency_ms": sample["read_latency_ms"],
                     "write_latency_ms": sample["write_latency_ms"],
+                    "read_bytes_per_sec": sample.get("read_bytes_per_sec"),
+                    "write_bytes_per_sec": sample.get("write_bytes_per_sec"),
+                    "queue_depth": sample.get("queue_depth"),
+                    "p95_latency_ms": sample.get("p95_latency_ms"),
                     "saturated": is_saturated_now,
                 }
             )
@@ -255,6 +261,7 @@ def persist_last_poll_metrics(cluster_id: str | None = None) -> None:
     calls both, every poll."""
     samples = _last_poll_samples.get(cluster_id, [])
     if not samples:
+        _refresh_metric_alerts(cluster_id)
         return
     polled_at = utc_now()
     with db.SessionLocal() as session:
@@ -266,6 +273,11 @@ def persist_last_poll_metrics(cluster_id: str | None = None) -> None:
                 iops=sample["iops"],
                 read_latency_ms=sample["read_latency_ms"],
                 write_latency_ms=sample["write_latency_ms"],
+                read_bytes_per_sec=sample.get("read_bytes_per_sec"),
+                write_bytes_per_sec=sample.get("write_bytes_per_sec"),
+                queue_depth=sample.get("queue_depth"),
+                p95_latency_ms=sample.get("p95_latency_ms"),
+                freshness_seconds=0.0,
                 saturated=sample["saturated"],
                 polled_at=polled_at,
             )
@@ -277,6 +289,78 @@ def persist_last_poll_metrics(cluster_id: str | None = None) -> None:
             volume_learning.observe_sample(session, cluster_id, sample, polled_at)
         session.commit()
     volume_learning.deliver_pending_forecast_alerts(cluster_id)
+    _refresh_metric_alerts(cluster_id)
+
+
+def _refresh_metric_alerts(cluster_id: str | None) -> None:
+    """Evaluate alert state from persisted evidence without blocking Ceph polling."""
+    if not cluster_id:
+        return
+    try:
+        now = utc_now()
+        with db.SessionLocal() as session:
+            cluster = session.get(Cluster, cluster_id)
+            if cluster is None:
+                return
+            rows = session.query(VolumeMetric).filter(
+                VolumeMetric.cluster_id == cluster_id,
+                VolumeMetric.polled_at >= now.replace(microsecond=0) - timedelta(hours=24),
+            ).all()
+            jobs = session.query(Action).join(Incident, Action.incident_id == Incident.id).filter(
+                Incident.cluster_id == cluster_id,
+                Action.status == ActionStatus.EXECUTING.value,
+            ).all()
+        serialized = [{
+            "pool": row.pool, "image": row.image, "iops": row.iops,
+            "read_latency_ms": row.read_latency_ms, "write_latency_ms": row.write_latency_ms,
+            "read_bytes_per_sec": row.read_bytes_per_sec,
+            "write_bytes_per_sec": row.write_bytes_per_sec,
+            "queue_depth": row.queue_depth, "p95_latency_ms": row.p95_latency_ms,
+            "polled_at": row.polled_at,
+        } for row in rows]
+        aggregates = aggregate_pool_metrics(serialized, now=now)
+        quota_state = []
+        overview_succeeded = False
+        pool_summaries = {item["pool"]: item for item in aggregates["pools"]}
+        for pool, summary in pool_summaries.items():
+            try:
+                if cluster.is_default:
+                    overview = ceph_client.query_rbd_pool_overview(pool)
+                else:
+                    mon_nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]
+                    ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(cluster)
+                    overview = ceph_client.query_rbd_pool_overview_with(
+                        pool, mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+                    )
+            except CephQueryError as exc:
+                logger.warning("metric alert pool overview failed for %s/%s: %s", cluster_id, pool, exc)
+                continue
+            overview_succeeded = True
+            summary["near_full"] = bool(overview.get("near_full"))
+            summary["used_percent"] = float(overview.get("percent_used") or 0)
+            quota_limit = int(overview.get("quota_max_bytes") or 0)
+            quota_used = int(overview.get("bytes_used") or 0)
+            quota_ratio = quota_used / quota_limit if quota_limit > 0 else 0.0
+            quota_state.append({
+                "pool": pool,
+                "near_quota": quota_limit > 0 and quota_ratio >= 0.80,
+                "over_quota": quota_limit > 0 and quota_ratio >= 1.0,
+            })
+        alerts = evaluate_metric_alerts(
+            aggregates,
+            quota_state=quota_state,
+            jobs=[{"id": row.id, "status": row.status, "started_at": row.updated_at} for row in jobs],
+            now=now,
+        )
+        evaluated_codes = {
+            "BLOCK_STORAGE_METRIC_STALE", "BLOCK_STORAGE_NOISY_NEIGHBOR",
+            "BLOCK_STORAGE_STUCK_JOB",
+        }
+        if overview_succeeded:
+            evaluated_codes.update({"BLOCK_STORAGE_CAPACITY", "BLOCK_STORAGE_QUOTA"})
+        sync_metric_alert_incidents(cluster_id, alerts, evaluated_codes=evaluated_codes)
+    except Exception as exc:  # alerting must never stop the health loop
+        logger.warning("metric alert refresh failed for cluster %s: %s", cluster_id, exc)
 
 
 def _rationale_for(detail: dict) -> str:

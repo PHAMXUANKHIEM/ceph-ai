@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Remediation Runtime</title><link rel="stylesheet" href="/static/style.css?v={{ static_version }}"></head>
+<body>
+{% include "_nav.html" %}
+<main class="page">
+  <section class="card"><div class="card-header"><div><h1>Remediation Runtime Decisions</h1><p class="hint">Màn hình chỉ đọc quyết định runtime cuối cùng: mode, gate, worker, action và lý do block/allow. Không hiển thị secret hoặc command.</p></div></div>
+    <div class="card-body"><form method="get" class="audit-filters"><label>Cluster<select name="cluster" onchange="this.form.submit()">{% for cluster in clusters %}<option value="{{ cluster.id }}" {% if selected_cluster and cluster.id == selected_cluster.id %}selected{% endif %}>{{ cluster.name }}</option>{% endfor %}</select></label></form>
+      {% if selected_cluster %}<div class="learning-status-grid"><div><span class="hint">Cluster mode</span><strong>{{ selected_cluster.autopilot_mode }}</strong><small>enabled gate: {{ selected_cluster.autopilot_enabled }}</small></div><div><span class="hint">Global kill switch</span><strong>Được kiểm tra tại Worker</strong><small>mọi block đều fail-closed</small></div><div><span class="hint">Decision count</span><strong>{{ decisions|length }}</strong><small>100 quyết định gần nhất</small></div></div>
+      {% if is_admin %}<form method="post" action="/remediation-runtime/clusters/{{ selected_cluster.id }}/mode" class="audit-filters"><label>Mode<select name="mode">{% for mode in valid_modes %}<option value="{{ mode }}" {% if selected_cluster.autopilot_mode == mode %}selected{% endif %}>{{ mode }}</option>{% endfor %}</select></label><label>Lý do<input name="reason" minlength="8" required placeholder="Ít nhất 8 ký tự"></label><button class="btn btn-primary" type="submit">Lưu mode</button></form>{% endif %}{% endif %}
+    </div>
+  </section>
+  <section class="card"><div class="card-header"><div><h2>Lịch sử runtime decision</h2><p class="hint">Append-only evidence từ boundary dispatch; split-brain/kill switch/budget/health floor đều phải có reason.</p></div></div><div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Decision</th><th>Mode / class</th><th>Action / incident</th><th>Worker</th><th>Reason</th><th>Controls</th></tr></thead><tbody>
+  {% for row in decisions %}<tr><td>{{ row.created_at }}</td><td>{% if row.decision == 'ALLOWED' %}<span class="badge badge-ok">ALLOWED</span>{% else %}<span class="badge badge-err">BLOCKED</span>{% endif %}</td><td>{{ row.mode }}<br><span class="hint">{{ row.classification }}</span></td><td><code>{{ row.action_id or '—' }}</code><br><span class="hint">{{ row.incident_id or '—' }}</span></td><td><code>{{ row.worker_id }}</code></td><td>{{ row.reason }}</td><td><details><summary>Xem</summary><pre>{{ row.controls_json }}</pre></details></td></tr>{% else %}<tr class="empty-row"><td colspan="7">Chưa có runtime decision.</td></tr>{% endfor %}
+  </tbody></table></div></section>
+</main>
+</body></html>

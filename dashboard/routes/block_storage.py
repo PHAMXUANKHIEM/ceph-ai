@@ -1,16 +1,20 @@
 """Read-only RBD inventory for the selected Ceph cluster."""
 
 import asyncio
+import json
 import logging
 import shlex
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from dashboard.cluster_scope import cluster_connection, cluster_selection
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
+from shared import db
+from shared.ai_redaction import redact_text
+from shared.models import Action, AuditEntry, Incident
 from shared.object_storage_cache import get_or_load, is_refreshing as cache_is_refreshing
 from shared.ceph_query_cache import get_cached as get_persisted_cache, store as store_persisted_cache
 from watcher.ceph_client import (
@@ -29,12 +33,91 @@ BLOCK_STORAGE_OVERVIEW_LIMIT = 10
 BLOCK_STORAGE_CACHE_TTL_SECONDS = 1800
 BLOCK_STORAGE_CACHE_STALE_TTL_SECONDS = 3600
 BLOCK_STORAGE_API_VERSION = "v1"
+BLOCK_STORAGE_AUDIT_LIMIT = 100
 
 
 class BlockStorageInventory(list):
     def __init__(self, rows=(), *, pools=()):
         super().__init__(rows)
         self.pools = list(pools)
+
+
+def _block_storage_audit_rows(
+    cluster_id: str,
+    *,
+    pool: str = "",
+    image: str = "",
+    action: str = "",
+    result: str = "",
+    limit: int = BLOCK_STORAGE_AUDIT_LIMIT,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """Return bounded, redacted RBD mutation audit rows for one cluster."""
+    with db.SessionLocal() as session:
+        rows = session.query(AuditEntry, Incident, Action).join(
+            Incident, AuditEntry.incident_id == Incident.id,
+        ).outerjoin(
+            Action, AuditEntry.action_id == Action.id,
+        ).filter(
+            Incident.cluster_id == cluster_id,
+        ).order_by(AuditEntry.created_at.desc()).limit(5000).all()
+
+    entries: list[dict] = []
+    for audit_entry, _incident, action_row in rows:
+        action_id = str(action_row.action_id if action_row is not None else "")
+        if not action_id.startswith(("rbd_", "cinder_")):
+            continue
+        params: dict = {}
+        if action_row is not None and action_row.action_params:
+            try:
+                candidate = json.loads(action_row.action_params)
+                if isinstance(candidate, dict):
+                    params = candidate
+            except (TypeError, ValueError):
+                params = {}
+        pool_value = str(params.get("pool_name") or params.get("pool") or "")
+        image_value = str(
+            params.get("image") or params.get("source_image") or params.get("dest_image")
+            or params.get("new_image") or ""
+        )
+        status = str(action_row.status if action_row is not None else audit_entry.event_type).lower()
+        if status in {"executed", "succeeded", "success"}:
+            normalized_result = "succeeded"
+        elif status in {"failed", "error"}:
+            normalized_result = "failed"
+        elif "pending" in status or status in {"approved", "proposed"}:
+            normalized_result = "pending"
+        else:
+            normalized_result = status
+        if pool and pool != pool_value:
+            continue
+        if image and image not in {image_value, str(params.get("new_image") or "")}:
+            continue
+        if action and action != action_id:
+            continue
+        if result and result != normalized_result:
+            continue
+        preview = redact_text(str(action_row.proposed_command or "")) if action_row is not None else ""
+        entries.append({
+            "id": audit_entry.id,
+            "actor": audit_entry.actor,
+            "action": action_id,
+            "pool": pool_value,
+            "image": image_value,
+            "result": normalized_result,
+            "event_type": audit_entry.event_type,
+            "created_at": audit_entry.created_at.isoformat() if audit_entry.created_at else "",
+            "request_id": audit_entry.id,
+            "params": redact_text(json.dumps(params, ensure_ascii=False, sort_keys=True)) if params else "{}",
+            "preview": preview,
+        })
+    total = len(entries)
+    return entries[offset:offset + limit], total
+
+
+def _require_block_storage_audit_admin(user: str) -> None:
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xem audit Block Storage")
 
 
 def _inventory_summary(images: list[dict]) -> dict:
@@ -430,4 +513,62 @@ async def block_storage_page(
         "error": error,
         "cache_loading": cache_loading,
         "inventory_summary": inventory_summary,
+    })
+
+
+@router.get("/api/block-storage/audit", tags=["block-storage"])
+async def block_storage_audit_api(
+    request: Request,
+    pool: str = Query("", max_length=128),
+    image: str = Query("", max_length=128),
+    action: str = Query("", max_length=64),
+    result: str = Query("", max_length=16),
+    limit: int = Query(BLOCK_STORAGE_AUDIT_LIMIT, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=5000),
+    user: str = Depends(require_login),
+):
+    _require_block_storage_audit_admin(user)
+    cluster = cluster_selection(request)[1]
+    entries, total = _block_storage_audit_rows(
+        cluster.id, pool=pool.strip(), image=image.strip(), action=action.strip(),
+        result=result.strip(), limit=limit, offset=offset,
+    )
+    return {
+        "cluster_id": cluster.id, "cluster_name": cluster.name,
+        "entries": entries, "total": total, "limit": limit, "offset": offset,
+    }
+
+
+@router.get("/block-storage/audit", response_class=HTMLResponse)
+async def block_storage_audit_page(
+    request: Request,
+    pool: str = Query("", max_length=128),
+    image: str = Query("", max_length=128),
+    action: str = Query("", max_length=64),
+    result: str = Query("", max_length=16),
+    page: int = Query(1, ge=1),
+    user: str = Depends(require_login),
+):
+    _require_block_storage_audit_admin(user)
+    clusters, cluster = cluster_selection(request)
+    limit = BLOCK_STORAGE_AUDIT_LIMIT
+    entries, total = _block_storage_audit_rows(
+        cluster.id, pool=pool.strip(), image=image.strip(), action=action.strip(),
+        result=result.strip(), limit=limit, offset=(page - 1) * limit,
+    )
+    total_pages = max(1, (total + limit - 1) // limit)
+    page = min(page, total_pages)
+    return templates.TemplateResponse(request, "block_storage_audit.html", {
+        "user": user,
+        "is_admin": True,
+        "clusters": clusters,
+        "selected_cluster": cluster,
+        "entries": entries,
+        "total": total,
+        "page": page,
+        "total_pages": total_pages,
+        "pool": pool,
+        "image": image,
+        "action": action,
+        "result": result,
     })

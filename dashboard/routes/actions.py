@@ -18,6 +18,7 @@ from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from shared import audit, change_risk, db
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
+from shared.remediation_state_machine import RemediationState, persist_transition
 from shared.node_upgrade_gate import is_node_upgrade_gate_pending
 from worker.policy import gate
 
@@ -299,9 +300,17 @@ def approve_action_core(action_id: str, actor: str) -> ApprovalResult:
             session.commit()
             return ApprovalResult(ApprovalOutcome.ACKNOWLEDGED, action.id, action.incident_id)
 
-        action.status = ActionStatus.APPROVED.value
-        if incident is not None:
-            incident.status = IncidentStatus.APPROVED.value
+        transition_decision = persist_transition(
+            session,
+            action=action,
+            incident=incident,
+            requested=RemediationState.APPROVED,
+            expires_at=action.expires_at,
+        )
+        if not transition_decision.allowed:
+            raise ActionConflictError(
+                f"Không thể chuyển Action sang APPROVED: {transition_decision.reason}"
+            )
         audit.record(
             session,
             incident_id=action.incident_id,
@@ -324,12 +333,17 @@ def reject_action_core(action_id: str, actor: str) -> ApprovalResult:
         if action.status != ActionStatus.PENDING_APPROVAL.value:
             return ApprovalResult(ApprovalOutcome.ALREADY_HANDLED, action.id, action.incident_id)
 
-        action.status = ActionStatus.REJECTED.value
         incident = session.get(Incident, action.incident_id)
-        if incident is not None:
-            # AC (Story 4.3): Incident vẫn lưu lại để tham khảo, không thử
-            # thêm hành động nào — REJECTED is a terminal Incident status too.
-            incident.status = IncidentStatus.REJECTED.value
+        transition_decision = persist_transition(
+            session,
+            action=action,
+            incident=incident,
+            requested=RemediationState.CANCELLED,
+        )
+        if not transition_decision.allowed:
+            raise ActionConflictError(
+                f"Không thể huỷ Action: {transition_decision.reason}"
+            )
         audit.record(
             session,
             incident_id=action.incident_id,

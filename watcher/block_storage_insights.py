@@ -74,6 +74,11 @@ def _with_advisory(
     as a current approval to mutate the cluster.
     """
     captured = _as_datetime(evidence_at) or utc_now()
+    if payload.get("pool") and payload.get("image") and payload.get("kind"):
+        payload.setdefault(
+            "id",
+            f"{payload['kind']}:{payload['pool']}:{payload['image']}",
+        )
     payload.update({
         "recommendation_mode": "ADVISORY",
         "read_only": True,

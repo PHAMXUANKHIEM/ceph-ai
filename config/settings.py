@@ -889,6 +889,12 @@ class Settings(BaseSettings):
     capacity_forecast_min_samples: int = 30
     capacity_forecast_horizon_days: int = 365
     capacity_forecast_min_confidence: float = 0.5
+    capacity_forecast_thresholds: str = "80,90,95"
+    # Capacity notifications stay fail-closed until an operator explicitly
+    # approves the configured threshold set in the runtime environment.
+    capacity_forecast_thresholds_approved: bool = False
+    capacity_forecast_failure_domain_reserve_percent: float = 10.0
+    capacity_forecast_notification_cooldown_seconds: int = 900
 
     # Minimum model-reported confidence required before Incident diagnosis
     # may create an executable Action. Missing/invalid confidence is rejected;

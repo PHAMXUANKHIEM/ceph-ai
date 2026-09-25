@@ -255,8 +255,10 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
     xác nhận `multiattach=true`; server đã attach bị chặn. Không dùng `rbd map/unmap`.
 - [~] **2.4 Rename/move/copy theo capability**
   - Preview downtime, dung lượng và dependency; copy/move là async job có tiến độ.
-  - Đã có rename cùng pool qua Worker, chặn watcher/tên đích tồn tại và dedup
-    chéo create/resize/rename; move/copy khác pool chưa triển khai.
+  - Đã có rename cùng pool qua Worker; copy/move khác pool có preflight watcher/
+    lock, destination/capacity/RBD capability, idempotency và action approval.
+    Copy giữ source; move chỉ đưa source vào Trash sau khi copy và `rbd info`
+    destination thành công. Partial failure không được coi là hoàn tất.
 - [x] **2.5 Delete và recycle policy**
   - Mặc định soft-delete/trash với thời hạn khôi phục; hard-delete yêu cầu xác
     nhận nâng cao và chặn khi còn attachment/snapshot/clone/backup dependency.
@@ -277,8 +279,9 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
 - [~] **2.7 Test**
   - Quota/capacity race, duplicate request, busy/locked image, partial failure,
     inactive cluster, RBAC, CSRF và destructive-action guard.
-  - Đã phủ command validation, policy RISKY, create preflight, expand-only và
-    duplicate in-flight; các tình huống race/busy/partial failure còn lại chưa xong.
+  - Đã phủ command validation, policy RISKY, create preflight, expand-only,
+    duplicate in-flight, busy/locked source và copy/move partial-failure ordering;
+    live concurrency acceptance vẫn còn.
 
 **Hoàn thành khi:** vòng đời volume vận hành end-to-end qua Worker, có audit và
 không báo thành công trước khi đã xác minh trạng thái thực tế.
@@ -302,8 +305,9 @@ không báo thành công trước khi đã xác minh trạng thái thực tế.
   - Restore thành volume mới là mặc định, có recovery-point chain, checksum,
     destination/capacity/RBD preflight và action chờ approval. Restore ghi đè
     production là destructive, preflight + Worker re-check bắt buộc image
-    detached, không có watcher/clone child; còn thiếu post-restore application
-    check và live Cinder acceptance.
+    detached, không có watcher/clone child; RBD read-after-restore (`rbd info`
+    và export vào `/dev/null`) được ghi vào progress, còn guest/application
+    health check và live Cinder acceptance vẫn mở.
 - [~] **3.4 Clone và flatten**
   - Có clone từ snapshot với source/destination/capacity preflight, tự bảo vệ
     snapshot trước clone; có parent/child detail. Flatten chỉ mở khi có parent
@@ -336,8 +340,9 @@ restore luôn tạo bằng chứng recovery point đã sử dụng.
 - [~] **4.3 Restore workflow**
   - Restore sang volume mới theo mặc định, chọn cluster/pool đích trong modal,
     hiển thị recovery chain/preflight và giữ proposal qua approval. Worker
-    re-check destination và restore in-place safety trước import; còn thiếu
-    read-after-restore/application check và live cross-cluster acceptance.
+    re-check destination và restore in-place safety trước import; post-restore
+    evidence ghi rõ `rbd_info`, read-after-restore và trạng thái application
+    check chưa chạy; live cross-cluster acceptance vẫn mở.
 - [~] **4.4 Replication liên cluster/site**
   - Có read-only API/UI đọc `rbd mirror pool info/status`, hiển thị mode và
     posture theo cluster/pool; pool chưa bật mirroring hiển thị rõ `disabled`.
@@ -363,31 +368,44 @@ job copy đã chạy, và mỗi failover/failback có runbook cùng audit đầy
 
 - [~] **5.1 Metric volume/pool**: IOPS read/write, throughput, latency percentile,
   queue depth, used/provisioned bytes và sampling freshness.
+  - `VolumeMetric`/collector nhận optional throughput, queue depth, p95 và
+    freshness; `/api/volumes/{pool}/metrics/summary` aggregate theo pool và
+    công bố stale state, top consumer, quota/capacity/stuck/noisy alerts.
 - [~] **5.2 Dashboard lịch sử**: range/zoom, top consumer, so sánh baseline và
   liên kết sự kiện deploy/resize/snapshot với biến động hiệu năng.
+  - Trang Volumes đã có card metric quality/top consumer và lifecycle correlation;
+    biểu đồ volume hiện có vẫn dùng history API cũ tương thích.
 - [~] **5.3 QoS policy**: Có read-only per-image QoS inventory, form/API tạo
   proposal với IOPS/throughput limit + burst, zero = unlimited, validation bounds,
-  RISKY approval, Worker command và post-check/reconciliation. Còn capability
-  detection/unsupported rõ theo từng Ceph release, preview tác động theo workload
-  và rollback proposal từ cấu hình trước.
+  RISKY approval, Worker command và post-check/reconciliation. Có capability
+  unsupported rõ, template/diff theo server-side bounds và rollback proposal từ
+  before-state; live release-output validation vẫn mở.
 - [~] **5.4 Capacity forecasting**: dự báo mốc 80/90/95%, thin-provisioning risk,
   replica/EC overhead và failure-domain reserve.
   - Đã có API/UI read-only `capacity-risk` phân biệt physical pool và logical
     provisioned/used, cảnh báo overcommit, tính raw-equivalent theo replica xN,
     nhận EC k/m khi evidence có sẵn, và fail-closed khi EC overhead chưa rõ.
   - Đã nối forecast pool 80/90/95% và failure-domain simulation vào Block Storage
-    Overview; còn live acceptance, đọc EC profile k/m từ từng Ceph release và
-    policy threshold theo workload thực tế.
+    Overview; capacity engine hiện lưu observation volume/snapshot/thin
+    provisioning, per-volume attribution, physical-vs-logical breakdown,
+    replica/EC overhead, reserve và confidence chart. Còn live acceptance,
+    đọc EC profile k/m từ từng Ceph release và policy threshold theo workload
+    thực tế.
 - [~] **5.5 Benchmark an toàn**
   - Chỉ chạy trên volume test hoặc có xác nhận rõ; giới hạn tải/thời gian, không
     benchmark volume production đang attach mặc định.
 - [~] **5.6 Alerting**: latency/IOPS anomaly, quota/capacity threshold, stuck job,
-  stale metric và noisy-neighbor candidate; dedup/resolve lifecycle.
+  stale metric và noisy-neighbor candidate; dedup/resolve lifecycle. Capacity
+  threshold đã có OPEN/RESOLVED, cooldown chống spam và suppression khi
+  threshold chưa được operator duyệt. Metric health có dedup/resolve Incident
+  lifecycle cho stale, capacity, quota, noisy-neighbor và stuck-job; còn
+  acceptance với notification backend thật.
 - [~] **5.7 Test**: counter reset, missing/stale metric, percentile, threshold,
   timezone, QoS unsupported/rollback và benchmark guard.
-  - Thêm unit/route coverage cho logical-vs-physical, replica/EC unknown,
-    overcommit, stale evidence và reserve sau failure-domain simulation; còn
-    các nhóm test metric/QoS/benchmark chưa được gom thành acceptance matrix.
+  - Đã thêm unit coverage cho logical-vs-physical, per-volume snapshot/thin
+    attribution, replica/EC, counter reset, missing sample, pool mới,
+    confidence chart, operator-approved threshold và alert lifecycle; còn các
+    nhóm test metric/QoS/benchmark chưa được gom thành acceptance matrix.
 
 **Hoàn thành khi:** dashboard phân biệt rõ dữ liệu mới/cũ, logical/physical
 capacity và không áp QoS hoặc benchmark sai target.
@@ -485,8 +503,11 @@ luôn đi qua source of truth tương ứng và không làm lệch metadata.
 
 ### 8. AI Diagnosis và Automation an toàn — ưu tiên P2
 
-- [ ] **8.1 AI inventory insight**: stale/unattached volume, snapshot quá hạn,
+- [~] **8.1 AI inventory insight**: stale/unattached volume, snapshot quá hạn,
   clone chain sâu, backup trễ và capacity waste với evidence cụ thể.
+  - Deterministic evidence vẫn là source of truth; thêm endpoint AI diagnosis
+    strict-tool, redaction, allowed evidence refs, confidence/verdict và
+    `read_only=true`, `action_id=null`. Không có shell hoặc mutation path.
 - [ ] **8.2 Chẩn đoán hiệu năng**: tương quan volume/pool/OSD/host, phân biệt
   contention, capacity pressure và lỗi consumer; hiển thị confidence.
 - [ ] **8.3 Recommendation có mô phỏng** cho resize, QoS, flatten, retention và
@@ -501,24 +522,37 @@ qua cùng RBAC/policy/executor như thao tác thủ công.
 
 ### 9. Hardening, vận hành và phát hành — gate bắt buộc cho từng pha
 
-- [ ] **9.1 Security review**: RBAC/capability, CSRF, rate limit, input validation,
-  secret redaction, encryption at rest/in transit và KMS/key rotation.
-- [ ] **9.2 Audit viewer**: actor, cluster, pool/volume, preview/diff, approval,
-  kết quả, request id và retention/export policy.
+- [~] **9.1 Security review**: RBAC/capability, CSRF, rate limit, input validation,
+  secret redaction, encryption at rest/in transit và KMS/key rotation. Security
+  baseline đã có CSRF, shared rate limit, trusted proxy/headers, mutation audit
+  và redaction regression; còn review đầy đủ cluster/tenant isolation,
+  encryption/KMS và từng Block Storage route.
+- [~] **9.2 Audit viewer**: actor, cluster, pool/volume, preview/diff, approval,
+  kết quả, request id và retention/export policy. Đã thêm admin-only
+  `/block-storage/audit` và `/api/block-storage/audit`, filter cluster/pool/image/
+  action/result, pagination, redacted preview/params và empty state; còn export,
+  retention policy và browser acceptance.
 - [ ] **9.3 SLO và observability nội bộ**: API/job latency, queue depth, failure
   rate, stuck job, backend timeout, scheduler health và alert ownership.
-- [ ] **9.4 Runbook**: create/resize/attach, busy image, snapshot dependency,
+- [~] **9.4 Runbook**: create/resize/attach, busy image, snapshot dependency,
   backup chain, restore, failover/failback, capacity incident và credential loss.
-- [ ] **9.5 Test matrix/release gate**
+  Đã có runbook DR, RGW, Vault và online-learning; runbook Block Storage đầy đủ
+  và operator drill vẫn còn thiếu.
+- [~] **9.5 Test matrix/release gate**
   - Default cluster, secondary active/inactive, Ceph unavailable/degraded, pool
     full, empty inventory, viewer/operator/admin và backend version supported/
-    unsupported.
-- [ ] **9.6 Upgrade/rollback và migration**
+    unsupported. Deterministic gates và supported-release capability matrix đã
+    có; multi-version live Ceph/release evidence còn mở.
+- [~] **9.6 Upgrade/rollback và migration**
   - Một Alembic head, backward-compatible deployment, worker restart recovery,
-    feature flag và rollback plan cho từng pha.
-- [ ] **9.7 Tài liệu và UX**
+    feature flag và rollback plan cho từng pha. Migration head và disposable
+    SQLite rehearsal đã được kiểm tra; PostgreSQL rollback/live operator drill
+    còn mở.
+- [~] **9.7 Tài liệu và UX**
   - Navigation, API docs, terminology, timezone/unit, accessibility, empty/error/
-    loading state và cập nhật roadmap trước release.
+    loading state và cập nhật roadmap trước release. Block Storage Audit đã có
+    navigation, filters và empty state; full accessibility/API documentation
+    review còn mở.
 
 ## Lộ trình phát hành đề xuất
 
@@ -609,6 +643,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-09-19 | BS-06.5 Pool lifecycle inventory | Đang làm | Thêm `build_pool_lifecycle_inventory()` và API `/api/volumes/{pool}/pool-lifecycle`; mở rộng pool overview với application metadata, quota, PG autoscaler và target size. UI hiển thị capability, dependency count và guard: pool non-empty không được xóa trực tiếp, mutation vẫn disabled/read-only. | `tests/test_block_storage_pool_lifecycle.py` + dashboard/Ceph/Block Storage focused suite: `289 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn preflight và Worker/approval cho create/configure/delete, release capability detection, live pool lifecycle acceptance; chưa có thao tác ghi. |
 
 | 2026-09-18 | 0.4 Regression baseline | Hoàn thành phần test | Cập nhật test contract từ query `image=...` cũ sang deep-link `/volumes/{pool}/{image}` đang được UI sử dụng; không thay đổi hành vi production. | `.venv/bin/pytest -q tests/test_dashboard_block_storage.py tests/test_dashboard_volumes.py tests/test_rbd_reconciliation.py tests/test_volume_monitor.py tests/test_volume_perf.py tests/test_volume_perf_analysis.py tests/test_volume_snapshot_policy.py tests/test_volume_snapshot_scheduler.py tests/test_cinder_discovery.py tests/test_cinder_reconciliation.py`: `216 passed, 1 warning`. | Còn live Ceph audit và full repository/Alembic regression trước khi đóng toàn bộ mục 0.4. |
+| 2026-09-25 | BS-02/03/04/05/08.1 | Hoàn thiện code, chưa đóng live gate | Thêm copy/move cross-pool approval workflow với busy/capacity/idempotency/partial-failure guard; QoS template, before-state diff và rollback proposal; metric quality columns, pool aggregation, top-consumer/lifecycle dashboard, freshness/noisy/stuck/quota/capacity alert lifecycle; AI inventory diagnosis strict-tool chỉ đọc với redaction và evidence-reference validation; restore progress ghi rõ RBD read-after-restore và application check chưa chạy. Sửa incident metric alert luôn có `detected_at` và severity để transaction không bị rollback. | Affected regression: `438 passed, 208 warnings`; focused feature tests: `24 passed`; `compileall`, hai `node --check`, `git diff --check` đạt. Alembic có một head `m20260925metricquality`; rehearsal trên SQLite tạm đã upgrade fresh → downgrade `m20260925merge` → upgrade head thành công. | Áp migration vào môi trường staging theo release procedure, rồi nghiệm thu live Ceph/Cinder/notification backend/browser; không tự coi code/test local là live acceptance. |
 ## Ghi chú bàn giao
 
 - Không ghi đè thay đổi chưa commit của người khác; luôn kiểm tra `git status`
