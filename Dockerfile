@@ -40,6 +40,7 @@ COPY docs/ceph-ai-rca-knowledge.md docs/runbook-dr.md docs/runbook-log-intellige
 # installing the local package resolve a second, newer dependency set.
 RUN python -m pip install --disable-pip-version-check --require-hashes -r requirements-prod.lock \
     && python -m pip install --disable-pip-version-check --no-deps --no-build-isolation . \
+    && python -m pip uninstall --yes setuptools wheel \
     && test -s dashboard/static/ceph-health/app.js \
     && test -s dashboard/static/ceph-health/style.css
 
