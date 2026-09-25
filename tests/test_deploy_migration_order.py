@@ -23,3 +23,12 @@ def test_migration_entrypoint_refuses_to_upgrade_without_backup():
     upgrade = script.index(".venv/bin/python -m alembic upgrade head")
 
     assert backup < backup_guard < upgrade
+
+
+def test_migration_entrypoint_verifies_backup_before_upgrade():
+    script = (ROOT / "scripts/deploy/run_migrations.sh").read_text()
+    backup_guard = script.index('if [[ -z "$backup_path" ]]')
+    verify = script.index('scripts/deploy/verify_migration_backup.py "$backup_path"')
+    upgrade = script.index(".venv/bin/python -m alembic upgrade head")
+
+    assert backup_guard < verify < upgrade

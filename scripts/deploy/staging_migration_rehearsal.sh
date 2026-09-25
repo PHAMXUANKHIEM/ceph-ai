@@ -48,6 +48,7 @@ backup_output="$(DATABASE_URL="$STAGING_DATABASE_URL" bash scripts/deploy/backup
 printf '%s\n' "$backup_output"
 backup_path="$(printf '%s\n' "$backup_output" | sed -n 's/^Created PostgreSQL backup: //p')"
 [ -n "$backup_path" ] || { echo "Backup path was not reported; refusing migration" >&2; exit 2; }
+"$repo_root/.venv/bin/python" scripts/deploy/verify_migration_backup.py "$backup_path"
 
 pg_restore_bin="${PG_RESTORE_BIN:-$(command -v pg_restore || true)}"
 [ -x "$pg_restore_bin" ] || { echo "pg_restore is required to validate the backup" >&2; exit 2; }

@@ -24,6 +24,9 @@ if [[ -z "$backup_path" ]]; then
   echo "Migration backup path was not reported; refusing to migrate" >&2
   exit 2
 fi
+# Prove the reported artifact is present, private, fresh and a real dump
+# before any schema change; a missing or exposed backup stops the deploy.
+.venv/bin/python scripts/deploy/verify_migration_backup.py "$backup_path"
 
 revision() {
   DATABASE_URL="$database_url" .venv/bin/python -c \

@@ -18,7 +18,8 @@ import argparse
 import json
 import re
 import shutil
-import subprocess  # nosec B404 - fixed tool argv, no shell
+# Fixed tool argv, no shell.
+import subprocess  # nosec B404
 import sys
 from collections import Counter
 from datetime import datetime, timezone
