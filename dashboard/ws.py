@@ -88,13 +88,19 @@ async def incidents_ws(websocket: WebSocket) -> None:
         await websocket.close(code=WS_POLICY_VIOLATION)
         return
 
-    await websocket.accept()
     with db.SessionLocal() as session:
         default_cluster = ensure_default_cluster(session)
         active = {cluster.id: cluster for cluster in list_active_clusters(session)}
         selected = active.get(websocket.session.get("selected_cluster_id"), default_cluster)
         selected_id = selected.id
         selected_is_default = selected.is_default
+    requested_id = websocket.query_params.get("cluster_id") or websocket.query_params.get("cluster")
+    if requested_id and requested_id != selected_id:
+        _record_metric("cluster_state_policy_rejections_total")
+        await websocket.accept()
+        await websocket.close(code=WS_POLICY_VIOLATION)
+        return
+    await websocket.accept()
     last_seen = _snapshot(selected_id, selected_is_default)
     try:
         while True:

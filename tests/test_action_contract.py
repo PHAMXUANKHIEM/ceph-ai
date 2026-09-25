@@ -178,6 +178,24 @@ def test_approval_requires_server_owned_matching_fingerprint():
     ).approval_fingerprint == fingerprint
 
 
+def test_approval_cannot_be_replayed_after_cluster_change():
+    original = TypedActionRequest.model_validate(_request())
+    fingerprint = execution_fingerprint(original)
+    moved = original.model_copy(update={
+        "cluster_id": "cluster-2",
+        "approval_fingerprint": fingerprint,
+    })
+    gateway = TypedActionGateway(
+        allowed_action_ids={original.action_id},
+        allowed_capabilities={original.capability},
+        target_scope=TargetScope(cluster_id="cluster-2", volumes={original.target_id}),
+        approval_required={original.action_id},
+    )
+
+    with pytest.raises(ActionContractError, match="approval fingerprint"):
+        gateway.authorize(moved, approved_fingerprint=fingerprint, now=NOW)
+
+
 def test_capability_matrix_callback_is_fail_closed():
     gateway = TypedActionGateway(
         allowed_action_ids={"rbd_trash_move_volume"},

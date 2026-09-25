@@ -441,3 +441,31 @@ def test_poller_detects_changes_without_deserializing_snapshots(
     after = ws_module._snapshot()
 
     assert before != after
+
+
+
+def test_incidents_websocket_rejects_different_cluster_query(dashboard_client):
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+
+    try:
+        with dashboard_client.websocket_connect("/ws/incidents?cluster_id=not-the-session-cluster") as websocket:
+            websocket.receive_json()
+            connected = True
+    except Exception:
+        connected = False
+
+    assert not connected, "incidents websocket must reject a cluster outside the session scope"
+
+
+def test_cluster_state_websocket_rejects_different_cluster_query(dashboard_client):
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+
+    try:
+        with dashboard_client.websocket_connect(
+            "/ws/cluster-state?cluster_id=not-the-session-cluster"
+        ) as websocket:
+            websocket.receive_json()
+            connected = True
+    except Exception:
+        connected = False
+
