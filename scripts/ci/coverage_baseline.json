@@ -1,10 +1,12 @@
 {
   "schema": "ceph-ai.coverage-baseline.v1",
-  "recorded_at": null,
+  "recorded_at": "2026-09-25",
   "critical_target_percent": 90.0,
   "total": {
-    "line_percent": 0.0,
-    "branch_percent": 0.0
+    "line_percent": 73.72,
+    "branch_percent": 62.02,
+    "measured_line_percent": 74.72,
+    "measured_branch_percent": 63.02
   },
   "critical_paths": {
     "auth_session": {
@@ -13,14 +15,24 @@
         "shared/full_executor_auth.py",
         "shared/ldap_identity.py"
       ],
-      "baseline": {}
+      "baseline": {
+        "line_percent": 76.18,
+        "branch_percent": 60.67,
+        "measured_line_percent": 77.18,
+        "measured_branch_percent": 61.67
+      }
     },
     "cluster_scope": {
       "files": [
         "dashboard/cluster_scope.py",
         "shared/single_full_scope.py"
       ],
-      "baseline": {}
+      "baseline": {
+        "line_percent": 86.78,
+        "branch_percent": 64.0,
+        "measured_line_percent": 87.78,
+        "measured_branch_percent": 65.0
+      }
     },
     "action_gateway": {
       "files": [
@@ -28,26 +40,47 @@
         "shared/controlled_action_contract.py",
         "shared/incident_actions.py"
       ],
-      "baseline": {}
+      "baseline": {
+        "line_percent": 93.35,
+        "branch_percent": 82.75,
+        "measured_line_percent": 94.35,
+        "measured_branch_percent": 83.75
+      }
     },
     "migration_wrapper": {
       "files": [
         "scripts/deploy/record_migration_metadata.py"
       ],
-      "baseline": {}
+      "baseline": {
+        "line_percent": 92.55,
+        "branch_percent": 49.0,
+        "measured_line_percent": 93.55,
+        "measured_branch_percent": 50.0
+      }
     },
     "outbox": {
       "files": [
         "shared/incident_outbox.py",
         "shared/telegram_outbox.py"
       ],
-      "baseline": {}
+      "baseline": {
+        "line_percent": 89.76,
+        "branch_percent": 74.83,
+        "measured_line_percent": 90.76,
+        "measured_branch_percent": 75.83
+      }
     },
     "deploy_tooling": {
       "files": [
         "scripts/deploy/container_restart_helper.py"
       ],
-      "baseline": {}
+      "baseline": {
+        "line_percent": 59.32,
+        "branch_percent": 46.73,
+        "measured_line_percent": 60.32,
+        "measured_branch_percent": 47.73
+      }
     }
-  }
+  },
+  "margin_percent": 1.0
 }
