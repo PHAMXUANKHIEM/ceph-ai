@@ -130,6 +130,65 @@ def _documentation_evidence(artifacts: Path) -> dict[str, Any]:
     }
 
 
+def base_image() -> dict[str, Any]:
+    """The Dockerfile base image; a digest pin is required for identity."""
+    dockerfile = ROOT / "Dockerfile"
+    if not dockerfile.is_file():
+        return {"reference": None, "digest": None, "pinned": False}
+    for line in dockerfile.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].upper() == "FROM":
+            reference = parts[1]
+            digest = reference.rsplit("@", 1)[-1] if "@sha256:" in reference else None
+            return {"reference": reference, "digest": digest, "pinned": digest is not None}
+    return {"reference": None, "digest": None, "pinned": False}
+
+
+def _first_json(artifacts: Path, name: str) -> tuple[Path | None, Any]:
+    reports = sorted(artifacts.rglob(name))
+    if not reports:
+        return None, None
+    try:
+        return reports[0], json.loads(reports[0].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return reports[0], None
+
+
+def supply_chain(artifacts: Path) -> dict[str, Any]:
+    """Hashes and tool versions of the SBOM, image scan and provenance."""
+    sbom_path, sbom = _first_json(artifacts, "sbom.cyclonedx.json")
+    sbom_tools: list[str] = []
+    if isinstance(sbom, dict):
+        tools = (sbom.get("metadata") or {}).get("tools") or {}
+        components = tools.get("components", []) if isinstance(tools, dict) else tools
+        sbom_tools = [
+            f"{item.get('name')}@{item.get('version')}" for item in components if isinstance(item, dict)
+        ]
+    scan_path, scan = _first_json(artifacts, "trivy-image.json")
+    scanner_version = None
+    if isinstance(scan, dict):
+        scanner_version = (scan.get("Trivy") or {}).get("Version")
+    provenance_path, provenance = _first_json(artifacts, "provenance.json")
+    return {
+        "sbom": {
+            "artifact": _display_path(sbom_path) if sbom_path else None,
+            "sha256": _sha256(sbom_path) if sbom_path else None,
+            "format": sbom.get("bomFormat") if isinstance(sbom, dict) else None,
+            "components": len(sbom.get("components", [])) if isinstance(sbom, dict) else 0,
+            "generator": sbom_tools,
+        },
+        "image_scan": {
+            "artifact": _display_path(scan_path) if scan_path else None,
+            "sha256": _sha256(scan_path) if scan_path else None,
+            "scanner": "trivy",
+            "scanner_version": scanner_version,
+        },
+        "provenance": provenance
+        if isinstance(provenance, dict)
+        else {"status": "missing", "reason": "no attestation for this build (only main pushes are attested)"},
+    }
+
+
 def build_manifest(environment: str, artifacts: Path) -> dict[str, Any]:
     commit = _git_value("rev-parse", "HEAD")
     image_digest = _image_digest(artifacts)
@@ -156,8 +215,11 @@ def build_manifest(environment: str, artifacts: Path) -> dict[str, Any]:
         "migration": migration,
         "dependencies": {
             "sha256": dependency_hashes(),
+            "lock_sha256": dependency_hashes().get("requirements-prod.lock"),
             "python": sys.version.split()[0],
         },
+        "base_image": base_image(),
+        "supply_chain": supply_chain(artifacts),
         "image": {
             "reference": registry_reference or os.environ.get("CEPH_AI_IMAGE", "").strip() or None,
             "digest": image_digest or None,
@@ -174,6 +236,11 @@ def build_manifest(environment: str, artifacts: Path) -> dict[str, Any]:
             "pip_audit": release_status.get("pip_audit", {"status": "missing"}),
             "image_scan": release_status.get("image_scan", {"status": "missing"}),
             "sbom": release_status.get("sbom", {"status": "missing"}),
+            "coverage": release_status.get("coverage", {"status": "missing"}),
+            "static_analysis": release_status.get("static_analysis", {"status": "missing"}),
+            # The deploy job runs after this manifest is built and uploads
+            # its phase log, redacted output and result under this name.
+            "deploy_evidence_artifact": f"deploy-evidence-{commit}" if commit else None,
             "documentation_freshness": documentation,
             "config_fingerprint": os.environ.get("CEPH_AI_CONFIG_FINGERPRINT", "").strip() or None,
             "rollback_artifact": os.environ.get("CEPH_AI_ROLLBACK_ARTIFACT", "").strip() or None,

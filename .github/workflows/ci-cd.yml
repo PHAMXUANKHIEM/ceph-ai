@@ -22,7 +22,7 @@ jobs:
     # instance can't guarantee (see that file's own comment on this).
     services:
       rabbitmq:
-        image: rabbitmq:3.13-management
+        image: docker.io/library/rabbitmq:3.13-management@sha256:e582c0bc7766f3342496d8485efb5a1df782b5ce3886ad017e2eaae442311f69
         ports:
           - 5672:5672
         options: >-
@@ -31,13 +31,13 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20.x"
           cache: npm
@@ -48,7 +48,11 @@ jobs:
           python -m pip install --upgrade pip setuptools
           python -m pip install --upgrade 'pip>=26.2'
           python -m pip --version
+          # Same hashed dependency set as the runtime image; the dev
+          # extra only adds test tools on top of it.
+          python -m pip install --require-hashes -r requirements-prod.lock
           pip install -e .[dev]
+          python scripts/ci/verify_lock_parity.py
 
       - name: Build Ceph Health dashboard
         run: npm --prefix ceph-health-dashboard ci && npm --prefix ceph-health-dashboard run build
@@ -117,7 +121,7 @@ jobs:
 
       - name: Upload test evidence (Python ${{ matrix.python-version }})
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-evidence-python-${{ matrix.python-version }}-${{ github.sha }}
           path: artifacts/
@@ -130,18 +134,21 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Sigstore-signed SLSA build provenance for the pushed image digest.
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # quality_gate.py compares the pushed commit with github.event.before.
           # A shallow checkout does not contain that baseline SHA.
           fetch-depth: 0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20.x"
           cache: npm
@@ -152,8 +159,12 @@ jobs:
           python -m pip install --upgrade pip setuptools
           python -m pip install --upgrade 'pip>=26.2'
           python -m pip --version
+          # Same hashed dependency set as the runtime image; the dev
+          # extra only adds test tools on top of it.
+          python -m pip install --require-hashes -r requirements-prod.lock
           pip install -e .[dev]
           pip install ruff==0.12.10 mypy==1.17.1 bandit==1.8.6 pip-audit==2.9.0
+          python scripts/ci/verify_lock_parity.py
           npm --prefix ceph-health-dashboard ci
 
       - name: Run blocking quality and security gate
@@ -199,7 +210,7 @@ jobs:
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock:ro \
             -v "$PWD/artifacts:/out" \
-            aquasec/trivy:0.64.1 image \
+            aquasec/trivy:0.64.1@sha256:a8ca29078522f30393bdb34225e4c0994d38f37083be81a42da3a2a7e1488e9e image \
             --format json --output /out/trivy-image.json \
             --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "$IMAGE_TAG"
           rc=$?
@@ -213,10 +224,11 @@ jobs:
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock:ro \
             -v "$PWD/artifacts:/out" \
-            anchore/syft:v1.18.1 "docker:$IMAGE_TAG" \
+            anchore/syft:v1.18.1@sha256:b8c170b8e51bfc4779ec3ef4399942c57290f5ce76a9c3af564c9d00d4946a6b "docker:$IMAGE_TAG" \
             -o cyclonedx-json=/out/sbom.cyclonedx.json
 
       - name: Push the scanned image and record its registry digest
+        id: push
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -230,7 +242,40 @@ jobs:
           digest="$(awk '/digest: sha256:/ {print $3}' artifacts/image-push.log | tail -1)"
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           printf '%s@%s\n' "$registry_image" "$digest" > artifacts/registry-image-ref.txt
+          printf 'name=%s\ndigest=%s\n' "$registry_image" "$digest" >> "$GITHUB_OUTPUT"
           docker logout ghcr.io
+
+      - name: Attest build provenance for the pushed digest
+        id: attest
+        if: steps.push.outcome == 'success'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Record provenance evidence
+        if: steps.attest.outcome == 'success'
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+          SUBJECT_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cp "$BUNDLE_PATH" artifacts/provenance-bundle.jsonl
+          python - <<'PY'
+          import hashlib, json, os, pathlib
+          bundle = pathlib.Path("artifacts/provenance-bundle.jsonl")
+          pathlib.Path("artifacts/provenance.json").write_text(json.dumps({
+              "status": "attested",
+              "predicate_type": "https://slsa.dev/provenance/v1",
+              "subject_digest": os.environ["SUBJECT_DIGEST"],
+              "attestation_id": os.environ["ATTESTATION_ID"],
+              "attestation_url": os.environ["ATTESTATION_URL"],
+              "bundle_sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
+          }, indent=2) + "\n", encoding="utf-8")
+          PY
 
       - name: Surface quality gate evidence
         if: failure()
@@ -258,7 +303,7 @@ jobs:
 
       - name: Upload quality and security reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: quality-security-evidence-${{ github.sha }}
           path: artifacts/
@@ -276,11 +321,11 @@ jobs:
       group: ceph-ai-lab-deploy
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: quality-security-evidence-${{ github.sha }}
           path: deploy-artifacts
@@ -315,7 +360,7 @@ jobs:
 
       - name: Upload deployment preflight evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: deploy-preflight-evidence-${{ github.sha }}
           path: ${{ runner.temp }}/ceph-ai-deploy-evidence/
@@ -327,25 +372,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20.x"
 
       - name: Install release-gate dependencies on the clean runner
         run: |
           python -m pip install --upgrade pip setuptools
+          # Same hashed dependency set as the runtime image; the dev
+          # extra only adds test tools on top of it.
+          python -m pip install --require-hashes -r requirements-prod.lock
           pip install -e .[dev]
+          python scripts/ci/verify_lock_parity.py
 
       - name: Download test and quality evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: "*-evidence-*"
           path: artifacts
@@ -369,7 +418,7 @@ jobs:
 
       - name: Upload release evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-evidence-${{ github.sha }}
           path: artifacts/release/
@@ -384,7 +433,7 @@ jobs:
     timeout-minutes: 20
     services:
       rabbitmq:
-        image: rabbitmq:3.13-management
+        image: docker.io/library/rabbitmq:3.13-management@sha256:e582c0bc7766f3342496d8485efb5a1df782b5ce3886ad017e2eaae442311f69
         # RabbitMQ restricts the built-in guest user to loopback inside the
         # broker container. The runner reaches this service through the
         # published port, so use a disposable CI-only account instead.
@@ -400,14 +449,18 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip setuptools
+          # Same hashed dependency set as the runtime image; the dev
+          # extra only adds test tools on top of it.
+          python -m pip install --require-hashes -r requirements-prod.lock
           pip install -e .[dev]
+          python scripts/ci/verify_lock_parity.py
       - name: Run integration suite explicitly
         env:
           RABBITMQ_URL: amqp://ceph_ai_ci:ceph-ai-ci-only-password@127.0.0.1:5672/
@@ -416,7 +469,7 @@ jobs:
           pytest -m integration --junitxml=artifacts/pytest-integration.xml
       - name: Upload integration evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: integration-evidence-${{ github.sha }}
           path: artifacts/
@@ -427,21 +480,25 @@ jobs:
     runs-on: [self-hosted, linux, x64, ceph-ai-lab]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip setuptools
+          # Same hashed dependency set as the runtime image; the dev
+          # extra only adds test tools on top of it.
+          python -m pip install --require-hashes -r requirements-prod.lock
           pip install -e .[dev]
+          python scripts/ci/verify_lock_parity.py
       - name: Run live suite explicitly
         run: |
           mkdir -p artifacts
           pytest -m live --junitxml=artifacts/pytest-live.xml
       - name: Upload live evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: live-evidence-${{ github.sha }}
           path: artifacts/

@@ -105,3 +105,43 @@ def test_manifest_accepts_external_artifact_directory(tmp_path, monkeypatch):
     assert payload["evidence"]["documentation_freshness"]["artifact"].endswith(
         "documentation-freshness.json"
     )
+
+
+def test_manifest_records_base_image_supply_chain_and_deploy_link(tmp_path, monkeypatch):
+    module.ROOT = tmp_path
+    (tmp_path / "requirements-prod.lock").write_text("jinja2==3.1.6\n", encoding="utf-8")
+    (tmp_path / "Dockerfile").write_text(
+        "FROM docker.io/library/python:3.11-slim@sha256:" + "b" * 64 + "\nRUN true\n", encoding="utf-8"
+    )
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "sbom.cyclonedx.json").write_text(json.dumps({
+        "bomFormat": "CycloneDX",
+        "components": [{"name": "river"}],
+        "metadata": {"tools": {"components": [{"name": "syft", "version": "1.18.1"}]}},
+    }), encoding="utf-8")
+    (artifacts / "trivy-image.json").write_text(json.dumps({"Trivy": {"Version": "0.64.1"}}), encoding="utf-8")
+    monkeypatch.setattr(module, "_git_value", lambda *args: "c" * 40 if args == ("rev-parse", "HEAD") else "")
+    monkeypatch.setattr(module, "migration_heads", lambda: {"status": "passed", "heads": ["h"], "head_count": 1})
+
+    payload = module.build_manifest("ci", artifacts)
+
+    assert payload["base_image"] == {
+        "reference": "docker.io/library/python:3.11-slim@sha256:" + "b" * 64,
+        "digest": "sha256:" + "b" * 64,
+        "pinned": True,
+    }
+    assert payload["dependencies"]["lock_sha256"] == payload["dependencies"]["sha256"]["requirements-prod.lock"]
+    supply = payload["supply_chain"]
+    assert supply["sbom"]["generator"] == ["syft@1.18.1"]
+    assert supply["sbom"]["components"] == 1
+    assert len(supply["sbom"]["sha256"]) == 64
+    assert supply["image_scan"]["scanner_version"] == "0.64.1"
+    assert supply["provenance"]["status"] == "missing"
+    assert payload["evidence"]["deploy_evidence_artifact"] == "deploy-evidence-" + "c" * 40
+    assert payload["evidence"]["coverage"] == {"status": "missing"}
+
+    (artifacts / "provenance.json").write_text(
+        json.dumps({"status": "attested", "subject_digest": "sha256:" + "d" * 64}), encoding="utf-8"
+    )
+    assert module.build_manifest("ci", artifacts)["supply_chain"]["provenance"]["status"] == "attested"
