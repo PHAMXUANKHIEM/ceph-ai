@@ -1,0 +1,84 @@
+name: Live read-only acceptance
+
+# Plan 5.3: read-only health/inventory/pool/PG/CRUSH/RBD/RGW probes against
+# the real clusters. Manual only; the `live-readonly` environment carries the
+# required-reviewer protection rule, and the runner refuses to start outside
+# the declared UTC safety window. No mutation is possible: every SSH command
+# is checked at the transport by scripts/live_readonly_acceptance.py.
+
+on:
+  workflow_dispatch:
+    inputs:
+      safety_window_utc:
+        description: "UTC window the run must start in, HH:MM-HH:MM (e.g. 01:00-05:00)"
+        required: true
+      clusters:
+        description: "Space-separated cluster names/ids (empty = every active cluster)"
+        required: false
+        default: ""
+      min_clusters:
+        description: "Minimum clusters in the matrix"
+        required: false
+        default: "2"
+      min_releases:
+        description: "Minimum distinct Ceph major releases in the matrix"
+        required: false
+        default: "2"
+      dashboard_url:
+        description: "Optional dashboard base URL for API p95 probes"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ceph-ai-live-readonly
+  cancel-in-progress: false
+
+jobs:
+  live-readonly:
+    runs-on: [self-hosted, linux, x64, ceph-ai-lab]
+    environment: live-readonly
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Install the production dependency set
+        run: |
+          python -m pip install --upgrade pip setuptools
+          python -m pip install --require-hashes -r requirements-prod.lock
+          pip install --no-deps -e .
+          python scripts/ci/verify_lock_parity.py
+
+      - name: Run read-only probes
+        env:
+          # config.settings loads this host-local file itself (cluster rows,
+          # SSH credentials); it is never sourced into the shell or uploaded.
+          CEPH_AI_ENV_FILE: ${{ vars.CEPH_AI_ENV_FILE || '/var/lib/ceph-ai/config/.env' }}
+          CEPH_AI_ACCEPTANCE_COOKIE: ${{ secrets.CEPH_AI_ACCEPTANCE_COOKIE }}
+          WINDOW: ${{ inputs.safety_window_utc }}
+          CLUSTERS: ${{ inputs.clusters }}
+          MIN_CLUSTERS: ${{ inputs.min_clusters }}
+          MIN_RELEASES: ${{ inputs.min_releases }}
+          DASHBOARD_URL: ${{ inputs.dashboard_url }}
+        run: |
+          set -euo pipefail
+          args=(--output artifacts/live-readonly --window "$WINDOW"
+                --min-clusters "$MIN_CLUSTERS" --min-releases "$MIN_RELEASES")
+          for cluster in $CLUSTERS; do args+=(--cluster "$cluster"); done
+          if [ -n "$DASHBOARD_URL" ]; then args+=(--dashboard-url "$DASHBOARD_URL"); fi
+          python scripts/live_readonly_acceptance.py "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload live evidence
+        # Named separately from every fixture/test artifact on purpose.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: live-readonly-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: artifacts/live-readonly/
+          if-no-files-found: warn
