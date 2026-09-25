@@ -30,6 +30,15 @@ PROMOTION_BLOCKED = "PROMOTION_BLOCKED"
 PROMOTED = "PROMOTED"
 ROLLED_BACK = "ROLLED_BACK"
 ROLLBACK_BLOCKED = "ROLLBACK_BLOCKED"
+BASELINE_REGISTERED = "BASELINE_REGISTERED"
+BOOTSTRAP_ACTOR = "system:registry-bootstrap"
+# Online-learned models change with every sample; they may only become
+# ACTIVE through the operator promotion path, never by registry bootstrap.
+LEARNED_ALGORITHM_PREFIX = "river"
+
+
+def is_learned_algorithm(algorithm: str | None) -> bool:
+    return str(algorithm or "").split(":", 1)[0].strip().lower().startswith(LEARNED_ALGORITHM_PREFIX)
 
 
 @dataclass(frozen=True)
@@ -290,6 +299,9 @@ def ensure_shadow_model_pair(session, comparison, *, now: datetime | None = None
     This is bootstrap-only: once a scope has a registry ACTIVE row, a
     different runtime active identity is rejected rather than silently
     promoted.  Only the explicit approval path may change selected state.
+    The bootstrap itself only accepts a deterministic champion and writes a
+    ``BASELINE_REGISTERED`` audit row; an online-learned runtime model with no
+    approved registry row is refused.
     """
     scope_type, scope_key, name, schema = _scope_model_identity(comparison)
     when = now or utc_now()
@@ -303,7 +315,21 @@ def ensure_shadow_model_pair(session, comparison, *, now: datetime | None = None
         scope_type=scope_type, scope_key=scope_key, status="ACTIVE",
     ).one_or_none()
     if current_active is None:
+        if is_learned_algorithm(comparison.active_algorithm):
+            raise ValueError(
+                "runtime active model is online-learned and has no approved registry ACTIVE row; "
+                "only a deterministic champion may be registered as the baseline"
+            )
         set_status(session, active, status="ACTIVE", reason="initial guarded-promotion baseline", now=when)
+        # Every ACTIVE row must be traceable: the bootstrap is recorded like a
+        # promotion, under a system actor, so it is never mistaken for one.
+        _audit(
+            session, candidate_model_id=active.id, previous_active_model_id=None,
+            event_type=BASELINE_REGISTERED, actor=BOOTSTRAP_ACTOR,
+            reason="deterministic champion registered as the initial ACTIVE baseline",
+            evidence={"algorithm": comparison.active_algorithm, "window_hours": comparison.active_window_hours},
+            now=when,
+        )
         current_active = active
     elif current_active.id != active.id:
         raise ValueError("runtime active model differs from registry ACTIVE model")

@@ -2,6 +2,8 @@ import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from shared import model_registry
 from shared.forecast_scope import SCOPE_SCHEMA
 from shared.models import (
@@ -196,3 +198,34 @@ def test_promotion_blocks_interval_alert_and_quality_regressions():
     assert decision.checks["interval_coverage_guard"] is False
     assert decision.checks["alert_volume_guard"] is False
     assert decision.checks["data_quality_guard"] is False
+
+
+def test_baseline_bootstrap_is_audited_as_a_system_registration(db_session):
+    active, _candidate = model_registry.ensure_shadow_model_pair(
+        db_session, _comparison(), now=datetime(2026, 9, 21),
+    )
+    audits = db_session.query(ForecastModelPromotionAudit).filter_by(candidate_model_id=active.id).all()
+    assert [(row.event_type, row.actor) for row in audits] == [
+        (model_registry.BASELINE_REGISTERED, model_registry.BOOTSTRAP_ACTOR),
+    ]
+    assert json.loads(audits[0].evidence_json)["algorithm"] == "linear"
+
+    # A second pass for the same scope must not register or audit again.
+    model_registry.ensure_shadow_model_pair(db_session, _comparison(), now=datetime(2026, 9, 22))
+    assert db_session.query(ForecastModelPromotionAudit).filter_by(candidate_model_id=active.id).count() == 1
+
+
+def test_learned_runtime_model_is_never_bootstrapped_as_active(db_session):
+    comparison = _comparison()
+    comparison.active_algorithm = "river_linear_v2"
+    with pytest.raises(ValueError, match="online-learned"):
+        model_registry.ensure_shadow_model_pair(db_session, comparison, now=datetime(2026, 9, 21))
+    assert db_session.query(ForecastModelRegistry).filter_by(status="ACTIVE").count() == 0
+
+
+def test_learned_algorithm_detection():
+    assert model_registry.is_learned_algorithm("river_mean")
+    assert model_registry.is_learned_algorithm("river_linear_v2:24h")
+    assert not model_registry.is_learned_algorithm("linear")
+    assert not model_registry.is_learned_algorithm("seasonal_median:168h")
+
