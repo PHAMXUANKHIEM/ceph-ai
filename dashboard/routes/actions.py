@@ -3,7 +3,6 @@ import json
 import re
 import logging
 from dataclasses import dataclass
-from datetime import datetime
 from shared.time import utc_now
 from enum import Enum
 
@@ -13,6 +12,7 @@ from fastapi.responses import RedirectResponse
 from dashboard.routes import patch as patch_routes
 from dashboard.routes import upgrade as upgrade_routes
 from dashboard.routes import auth
+from dashboard.cluster_authorization import CAPABILITY_APPROVE, require_cluster_capability
 from dashboard.routes.auth import require_login
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
@@ -28,6 +28,20 @@ router = APIRouter()
 _POOL_APP_CODE = "POOL_APP_NOT_ENABLED"
 _POOL_NAME_RE = re.compile(r"pool\s+['\"]([^'\"]+)['\"]", re.IGNORECASE)
 _ALLOWED_POOL_APPS = {"rbd", "cephfs", "rgw"}
+
+
+def _authorize_action_route(request: Request, action_id: str, user: str) -> str:
+    """Resolve the action's cluster and enforce approval capability server-side."""
+    with db.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        if action is None:
+            raise ActionNotFoundError(action_id)
+        incident = session.get(Incident, action.incident_id) if action.incident_id else None
+        cluster_id = incident.cluster_id if incident and incident.cluster_id else None
+        if not cluster_id:
+            from shared.clusters import ensure_default_cluster
+            cluster_id = ensure_default_cluster(session).id
+    return require_cluster_capability(request, cluster_id, CAPABILITY_APPROVE, username=user)
 
 
 def _require_admin_for_destructive_approval(action_id: str, user: str, confirm_text: str) -> None:
@@ -371,6 +385,7 @@ async def approve_action(
     confirm_text: str = Form(""),
 ):
     try:
+        _authorize_action_route(request, action_id, user)
         await asyncio.to_thread(_require_admin_for_destructive_approval, action_id, user, confirm_text)
         if pool_app:
             await asyncio.to_thread(_prepare_pool_application_choice, action_id, pool_app)
@@ -388,6 +403,7 @@ async def approve_action(
 @router.post("/actions/{action_id}/reject")
 async def reject_action(action_id: str, request: Request, user: str = Depends(require_login)):
     try:
+        _authorize_action_route(request, action_id, user)
         result = await asyncio.to_thread(reject_action_core, action_id, user)
     except ActionNotFoundError:
         raise HTTPException(status_code=404, detail="Không tìm thấy Action")
@@ -398,8 +414,9 @@ async def reject_action(action_id: str, request: Request, user: str = Depends(re
 
 
 @router.post("/actions/{action_id}/cancel-grace")
-async def cancel_grace_action(action_id: str, user: str = Depends(require_login)):
+async def cancel_grace_action(action_id: str, request: Request, user: str = Depends(require_login)):
     try:
+        _authorize_action_route(request, action_id, user)
         result = await asyncio.to_thread(cancel_grace_action_core, action_id, user)
     except ActionNotFoundError:
         raise HTTPException(status_code=404, detail="Không tìm thấy Action")

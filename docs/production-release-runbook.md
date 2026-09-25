@@ -34,6 +34,25 @@ missing required evidence.
 8. Record phase logs, running image digests, health evidence and operator
    witness in the release artifact.
 
+For an isolated PostgreSQL restore rehearsal, use an explicit source and a
+different staging target. The command rejects production target IDs and
+identical source/target endpoints:
+
+```bash
+python scripts/deploy/postgresql_restore_rehearsal.py \
+  --source-url "$STAGING_SOURCE_DATABASE_URL" \
+  --source-id staging-source-20260925 \
+  --target-url "$STAGING_RESTORE_DATABASE_URL" \
+  --target-id staging-restore-20260925 \
+  --confirm I_UNDERSTAND_STAGING_ONLY \
+  --backup-dir /var/lib/ceph-ai/rehearsal-backups \
+  --report artifacts/postgresql-restore-rehearsal.json
+```
+
+The report is evidence for review, not a production approval. Run failure
+injection with `--inject-failure before_restore`, `after_restore`,
+`before_migration` or `after_migration` only against the disposable target.
+
 ## Rollback
 
 Container rollback and database rollback are separate operations. A failed

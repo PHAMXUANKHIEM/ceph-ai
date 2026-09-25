@@ -71,6 +71,13 @@ management_action_ids:
   # part of Chat/Incident's management enum until a typed gateway contract is
   # wired into that path. It remains classified RISKY below for the Worker.
   - rbd_flatten_volume
+  # rbd_move_volume is Dashboard-only and destructive: the typed contract
+  # requires explicit source-delete confirmation and a verified copy first.
+  - rbd_move_volume
+  # Partial move cleanup is Dashboard-only and destructive: it may remove a
+  # destination image only after the failed move's token and source presence
+  # are re-checked by the Worker.
+  - rbd_move_cleanup_partial
   - rbd_template_mark
   - rbd_qos_set
   - rbd_trash_move_volume
@@ -358,6 +365,8 @@ risky:
   - rbd_rename_volume
   - rbd_clone_volume
   - rbd_copy_volume
+  - rbd_move_volume
+  - rbd_move_cleanup_partial
   - rbd_template_mark
   - rbd_qos_set
   - rbd_trash_move_volume
@@ -484,6 +493,12 @@ destructive:
   # Flatten detaches a clone from its parent and may allocate the full
   # logical image; it is irreversible and therefore always destructive.
   - rbd_flatten_volume
+  # Cross-pool move deletes the source only after an export-diff checksum
+  # match. It is still permanently destructive and never auto-runs.
+  - rbd_move_volume
+  # Partial move cleanup deletes a destination image, but only with the
+  # original server-generated token and while the source remains present.
+  - rbd_move_cleanup_partial
   # Deletes a backup outside the automatic retention schedule — the
   # operator's own last-resort recovery copy, permanently gone once this
   # runs.

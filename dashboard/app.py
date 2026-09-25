@@ -45,6 +45,7 @@ from dashboard.routes import (
     event_timeline,
     federated_iam,
     performance_rca as performance_rca_routes,
+    rbac,
     log_intelligence as log_intelligence_routes,
     chat,
     cinder_backups,
@@ -633,6 +634,7 @@ def create_app() -> FastAPI:
     application.include_router(performance_rca_routes.router)
     application.include_router(event_timeline.router)
     application.include_router(federated_iam.router)
+    application.include_router(rbac.router)
     application.include_router(disk_risk_routes.router)
     application.include_router(log_intelligence_routes.router)
     application.include_router(clusters_routes.router)

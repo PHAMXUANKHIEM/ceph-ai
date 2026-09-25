@@ -1035,9 +1035,27 @@
       });
   }
 
-  loadPreferences()
-    .catch(function () {})
-    .then(loadHistory);
+  var chatDataInitialized = false;
+  function initializeChatData() {
+    if (chatDataInitialized) return;
+    chatDataInitialized = true;
+    loadPreferences()
+      .catch(function () {})
+      .then(loadHistory);
+    checkAiLimitWarnings();
+  }
+
+  // Cluster health is the Dashboard's critical first-paint path. Loading chat
+  // history and asking the configured AI provider for quota at script startup
+  // made every browser tab compete with the snapshot request. Warm chat after
+  // the page has settled, or immediately on an intentional pointer action.
+  // This is data deferral only: the panel remains rendered and usable.
+  panelEl.addEventListener("pointerdown", initializeChatData, { once: true });
+  function scheduleChatInitialization() {
+    window.setTimeout(initializeChatData, 1500);
+  }
+  if (document.readyState === "complete") scheduleChatInitialization();
+  else window.addEventListener("load", scheduleChatInitialization, { once: true });
 
   // Worker actions complete asynchronously after the OK response. Pull new
   // messages for the active session so stdout/stderr appears without the
@@ -1826,5 +1844,4 @@
         btn.textContent = "Thực hiện";
       });
   });
-  checkAiLimitWarnings();
 })();

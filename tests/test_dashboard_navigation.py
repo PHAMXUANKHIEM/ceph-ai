@@ -167,6 +167,14 @@ def test_shared_table_classes_are_defined_once():
 CHAT_WIDGET = Path("dashboard/static/chat_widget.js")
 
 
+def test_chat_secondary_data_is_deferred_until_after_dashboard_first_paint():
+    source = CHAT_WIDGET.read_text(encoding="utf-8")
+
+    assert "function initializeChatData()" in source
+    assert 'window.setTimeout(initializeChatData, 1500)' in source
+    assert 'panelEl.addEventListener("pointerdown", initializeChatData' in source
+
+
 def test_assistant_markdown_is_built_as_dom_not_html_strings():
     """Nội dung tin nhắn đến từ mô hình ngôn ngữ — dữ liệu không tin cậy.
     Bộ render markdown phải dựng node bằng createElement/textContent; một

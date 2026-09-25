@@ -39,6 +39,8 @@ def main() -> int:
             "snapshot_freshness": sample.get("snapshot_freshness"),
             "queues": sample.get("queues", []),
             "db_pool": sample.get("db_pool"),
+            "database_storage": sample.get("database_storage"),
+            "observed_slo": sample.get("observed_slo"),
             "api": {"p95_duration_ms": (sample.get("api") or {}).get("p95_duration_ms")},
             "collector": sample.get("collector", {}),
             "ssh": {key: (sample.get("ssh") or {}).get(key) for key in ("command_success_total", "command_failures_total", "connect_failures_total", "p95_duration_ms")},

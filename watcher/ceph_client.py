@@ -282,14 +282,22 @@ def _balanced_query_mon_nodes(mon_nodes: list[str], command: str, exec_mode: str
     cephadm starts a transient shell container for every command, and the
     host-local lock serializes those starts on one MON.  A stable hash keeps
     retries deterministic while sending different pool/image queries to
-    different MONs; failures still fall through the complete ordered list.
-    Health polling intentionally keeps its sticky MON behavior separately.
+    different MONs. Once health has a known-good sticky MON, auxiliary reads
+    reserve it as the final fallback instead of their first choice. This keeps
+    a long RBD/inventory command from sitting ahead of the critical health
+    query on the same remote cephadm lock. Failures still fall through the
+    complete MON list, so this is load isolation rather than a hard exclusion.
     """
     nodes = ordered_mon_nodes(mon_nodes)
     if exec_mode != "cephadm" or len(nodes) < 2:
         return nodes
-    offset = int(hashlib.sha256(command.encode("utf-8")).hexdigest()[:8], 16) % len(nodes)
-    return nodes[offset:] + nodes[:offset]
+    reserved_health_node = last_successful_mon_node if last_successful_mon_node in nodes else None
+    query_nodes = [node for node in nodes if node != reserved_health_node]
+    offset = int(hashlib.sha256(command.encode("utf-8")).hexdigest()[:8], 16) % len(query_nodes)
+    balanced = query_nodes[offset:] + query_nodes[:offset]
+    if reserved_health_node is not None:
+        balanced.append(reserved_health_node)
+    return balanced
 
 class CephQueryError(Exception):
     """Raised when no MON node could be reached and queried successfully."""

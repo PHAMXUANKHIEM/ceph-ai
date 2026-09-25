@@ -4,14 +4,48 @@ import dashboard.routes.volumes as volumes_route
 from shared import db as db_module
 from shared.models import BackupJob, Cluster, VolumeDependencySnapshot, VolumeMetric
 from watcher.block_storage_insights import (
+    build_capacity_waste_summary,
     build_inventory_insights,
     build_protection_gap_insights,
     build_snapshot_clone_insights,
     persist_dependency_snapshots,
+    owner_project_evidence,
 )
 
 
 NOW = datetime(2026, 9, 19, 12, 0, 0)
+
+
+def test_capacity_summary_aggregates_measured_bytes_and_preserves_unknowns():
+    summary = build_capacity_waste_summary([
+        _inventory(project_id="project-a"),
+        _inventory(name="volume-b", provisioned_size=500, used_size=100, project_id="project-a"),
+        _inventory(name="volume-cinder", provisioned_size=250, used_size=50,
+                   cinder={"project_id": "project-b"}),
+        _inventory(name="volume-unknown", used_size=None),
+    ])
+
+    assert summary["volume_count"] == 4
+    assert summary["measured_volume_count"] == 3
+    assert summary["unknown_capacity_count"] == 1
+    assert summary["provisioned_bytes"] == 1750
+    assert summary["used_bytes"] == 550
+    assert summary["unconsumed_provisioned_bytes"] == 1200
+    assert summary["by_project"]["project-a"] == {
+        "volumes": 2, "provisioned_bytes": 1500, "used_bytes": 500,
+    }
+    assert summary["by_project"]["project-b"]["volumes"] == 1
+    assert "not a safe" in summary["interpretation"]
+
+
+def test_owner_project_evidence_never_guesses_and_accepts_explicit_cinder_fields():
+    assert owner_project_evidence({"name": "volume-project-secret"}) == {
+        "owner_id": None, "project_id": None, "source": None, "verified": False,
+    }
+    assert owner_project_evidence({"cinder": {"project_id": "project-1", "user_id": "user-1"}}) == {
+        "owner_id": "user-1", "project_id": "project-1",
+        "source": "cinder_metadata", "verified": True,
+    }
 
 
 def _inventory(**overrides):
@@ -111,6 +145,9 @@ def test_inventory_insights_api_returns_evidence_and_coverage(dashboard_client, 
     payload = response.json()
     assert payload["summary"]["stale_unattached"] == 1
     assert payload["coverage"]["owner_project"] is False
+    assert payload["coverage"]["owner_project_mapped"] == 0
+    assert payload["summary"]["capacity"]["provisioned_bytes"] == 1000
+    assert payload["summary"]["capacity"]["used_bytes"] == 400
     assert payload["insights"][0]["kind"] == "STALE_UNATTACHED"
 
 

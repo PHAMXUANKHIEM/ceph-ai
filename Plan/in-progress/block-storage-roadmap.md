@@ -201,7 +201,9 @@ lưu bền vững. Không lưu secret dạng clear text.
   - Có search, filter, sort, cursor pagination, timeout và partial-error state.
   - Đã có API live `/api/volumes/{pool}/inventory` từ `rbd du`: image id,
     provisioned/used size, snapshot count, search, sort, page/page-size và
-    `collected_at`; default/secondary cluster dùng đúng connection.
+    `collected_at`; default/secondary cluster dùng đúng connection. API công bố
+    thêm `stale`, `refreshing`, `cache_age_seconds` và `cache_source`, nên snapshot
+    stale-if-error không bị hiển thị như dữ liệu live.
 - [~] **1.2 Trang `/volumes`**
   - Bộ lọc cluster/pool/project/status/attachment, capacity summary và deep link.
   - Không dùng sample data khi backend trả rỗng hoặc lỗi.
@@ -212,8 +214,8 @@ lưu bền vững. Không lưu secret dạng clear text.
     backup status, metric và audit gần nhất.
   - Đã có size/format/features, snapshot, parent, children/clone và watcher từ
     `rbd info/snap ls/status/children`; command phụ lỗi được degrade theo từng
-    subsection và trả `partial_errors`, không làm mất metadata chính. Còn thiếu
-    backup/audit summary.
+    subsection và trả `partial_errors`; backup/audit summary theo cluster/pool/image
+    đã được nối vào detail, không làm mất metadata chính khi một subsection lỗi.
 - [~] **1.4 Pool overview read-only**
   - Pool type, replication/EC profile, logical/physical usage, image count,
     health, near-full state và capability RBD.
@@ -224,9 +226,11 @@ lưu bền vững. Không lưu secret dạng clear text.
 - [~] **1.5 Kiểm thử và nghiệm thu**
   - Empty/error/pagination, input escaping, cluster isolation, stale cache,
     non-admin read-only và redaction.
-  - Đã có 11 test cho parser, search/sort/pagination, secondary-cluster
+  - Đã có test cho parser, search/sort/pagination, secondary-cluster
     connection, input validation, read-only role, backend error, pool overview
-    partial error và inactive-cluster fail-closed. Còn thiếu live Ceph.
+    partial error, inactive-cluster fail-closed và stale snapshot metadata.
+    Focused acceptance hiện đạt `232 passed, 3 warnings`; còn thiếu live Ceph
+    acceptance đầy đủ và OpenStack/Cinder evidence.
 
 **Hoàn thành khi:** operator xem được inventory thật và dependency của volume ở
 cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
@@ -259,8 +263,16 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
     chéo create/resize/rename. Đã thêm copy khác pool từ snapshot RBD rõ ràng:
     API/Volume Detail tạo Action RISKY chờ duyệt, Worker chạy `rbd cp`, hậu kiểm
     tên và dung lượng snapshot, chặn pool đích thiếu capacity/RBD hoặc tên đích
-    trùng; nguồn luôn được giữ nguyên. Chưa có move (xóa/chuyển nguồn), progress
-    bền vững, checksum byte-level, cleanup bản copy dở hoặc live acceptance.
+    trùng; proposal khác nguồn nhưng cùng destination cũng bị chặn khi còn
+    in-flight; nguồn luôn được giữ nguyên. Đã thêm move khác pool cho image RBD
+    unmanaged: preflight bắt buộc detached, không watcher/lock/snapshot/clone/
+    parent, đích chưa tồn tại và đủ capacity; proposal DESTRUCTIVE cần xác nhận
+    xóa nguồn. Worker copy → export-diff SHA-256 + size post-check → mới xóa
+    nguồn; stale recovery chỉ read-only. Đã bổ sung progress bền vững theo phase
+    trên Action, polling API/Volume Detail và resume token gắn với proposal để
+    không nhận nhầm destination của thao tác khác. Nếu marker không khớp thì
+    fail-closed, không overwrite và không xóa nguồn. Còn cleanup bản copy dở và
+    live acceptance.
 - [x] **2.5 Delete và recycle policy**
   - Mặc định soft-delete/trash với thời hạn khôi phục; hard-delete yêu cầu xác
     nhận nâng cao và chặn khi còn attachment/snapshot/clone/backup dependency.
@@ -281,8 +293,10 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
 - [~] **2.7 Test**
   - Quota/capacity race, duplicate request, busy/locked image, partial failure,
     inactive cluster, RBAC, CSRF và destructive-action guard.
-  - Đã phủ command validation, policy RISKY, create preflight, expand-only và
-    duplicate in-flight; các tình huống race/busy/partial failure còn lại chưa xong.
+  - Đã phủ command validation, policy RISKY, create preflight, expand-only,
+    duplicate in-flight, race destination của cross-pool copy và move guard
+    (confirmation/dependency/destructive classification); các tình huống partial
+    failure/live acceptance và browser acceptance còn lại chưa xong.
 
 **Hoàn thành khi:** vòng đời volume vận hành end-to-end qua Worker, có audit và
 không báo thành công trước khi đã xác minh trạng thái thực tế.
@@ -496,6 +510,12 @@ luôn đi qua source of truth tương ứng và không làm lệch metadata.
 
 - [~] **8.1 AI inventory insight**: stale/unattached volume, snapshot quá hạn,
   clone chain sâu, backup trễ và capacity waste với evidence cụ thể.
+  - Bổ sung aggregation provisioned/used/unconsumed theo inventory có đo được,
+    giữ riêng số volume thiếu số liệu; unconsumed provisioned không được gọi là
+    reclaimable/safe resize. Insight chỉ nhận owner/project từ metadata tường
+    minh, không suy diễn từ tên image. Còn nối nguồn Cinder mapping có cache/
+    snapshot và kiểm chứng owner coverage trên data thật; backup recency cũng
+    chưa được nối vào endpoint này.
 - [~] **8.2 Chẩn đoán hiệu năng**: tương quan volume/pool/OSD/host, phân biệt
   contention, capacity pressure và lỗi consumer; hiển thị confidence.
   - Đã thêm `/api/performance-rca/diagnosis?pool=...&image=...` cho một volume:
@@ -585,6 +605,11 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 
 | Ngày | Mục | Trạng thái | Thay đổi / bằng chứng | Kiểm thử | Commit / việc tiếp theo |
 |---|---:|---|---|---|---|
+| 2026-09-25 | BS-02.4 / 2.7 Safe cross-pool move | Hoàn thành code + test | Thêm Volume Detail form và API proposal `rbd_move_volume`; preflight chặn Cinder-managed, watcher/lock/snapshot/clone/parent, destination tồn tại, pool chưa sẵn sàng hoặc thiếu capacity. Action được phân loại DESTRUCTIVE, bắt buộc `confirm_source_delete`, Idempotency-Key và approval. Worker copy → so sánh SHA-256 từ `rbd export-diff` + kích thước đích → mới `rbd rm` nguồn; stale recovery chỉ đọc và fail-closed nếu source còn tồn tại. Không chạy mutation Ceph live. | Nhóm focused move: `7 passed, 3 warnings`; `node --check`; `git diff --check` đạt. Full nhóm Block Storage trước slice progress: `370 passed, 3 warnings`. | Còn live acceptance và kiểm thử partial failure; giữ BS-02 `[~]`. |
+| 2026-09-25 | BS-02.4 / 2.7 Move progress/resume | Hoàn thành code + test | Worker mới ghi progress durable theo ba phase, giữ output hậu kiểm, Dashboard có endpoint/polling tiến độ. Command re-check size/watcher/snapshot sau approval, dùng `ceph.ai.move_token` server-generated để resume đúng destination của proposal; token/checksum schema sai thì fail-closed, không overwrite và không xóa nguồn. Không chạy move Ceph live. | `tests/test_rbd_move.py` và regression move/API/command/reconciliation/contract: `6 passed, 3 warnings`; `py_compile`, `node --check`, `git diff --check` đạt. Full regression có 369 pass và 3 test RBAC/cluster-authorization hiện có fail độc lập do user test chưa được grant cluster. | Còn live acceptance, cleanup đã bổ sung ở dòng kế tiếp và kiểm thử partial failure; giữ BS-02 `[~]`. |
+| 2026-09-25 | BS-02.4 / 2.7 Partial-copy cleanup | Hoàn thành code + test | Thêm action Dashboard/Worker `rbd_move_cleanup_partial` approval-gated. Route chỉ lấy destination/token từ move Action đã `FAILED`, yêu cầu source còn tồn tại và bản copy còn hiện diện; Worker kiểm tra source giữ nguyên kích thước, destination đúng `ceph.ai.move_token`, không có watcher/snapshot rồi mới xóa destination. Reconciliation sau cleanup chỉ công nhận source còn và destination đã mất; stale recovery chỉ read-only, không replay `rbd rm`. UI hiển thị nút cleanup khi phase copy/post-check thất bại. Không chạy mutation Ceph live. | `tests/test_rbd_move_cleanup.py` + route cleanup test; `py_compile`, `node --check`, `git diff --check` đạt. | Còn live acceptance và kiểm thử partial failure thật trên lab; giữ BS-02 `[~]`. |
+| 2026-09-25 | BS-02.4 / 2.7 Copy destination race guard | Hoàn thành code + test | Proposal cross-pool copy hiện đưa cả source và destination vào conflict guard; hai proposal khác source nhưng cùng destination bị từ chối khi action trước còn pending/approved. Không copy hoặc xóa dữ liệu Ceph trong test. | `tests/test_dashboard_volumes.py -k cross_pool_copy`: `3 passed, 3 warnings`; `git diff --check` đạt. | Còn progress/resume, checksum/cleanup và live acceptance; giữ BS-02 `[~]`. |
+| 2026-09-25 | BS-01 Inventory freshness | Hoàn thành code + test | Inventory API dùng timestamp của snapshot cache thay vì timestamp response; công bố `stale/refreshing/cache_age_seconds/cache_source`; UI hiển thị tuổi snapshot và cảnh báo màu vàng khi đang dùng stale-if-error. Không thay đổi Ceph, chỉ read-only/cache refresh nền. | `node --check dashboard/static/volume_inventory.js`; focused Block Storage suite: `232 passed, 3 warnings`; `git diff --check` đạt. | Live inventory từng có evidence nhưng lần kiểm tra mới gặp MON `10.3.53.69` timeout; Cinder acceptance chưa thực hiện được vì `CS-LAB` thiếu Controller/openrc. Giữ BS-01 `[~]`. |
 | 2026-09-21 | BS-07.4 API contract | Một phần | Thêm `GET /api/v1/block-storage/contract`: versioned contract, cluster scope, OpenAPI/legacy compatibility, mutation/idempotency/approval/post-check, action polling, error schema và trạng thái Terraform/SDK/webhook chưa hỗ trợ. | `tests/test_block_storage_contract.py tests/test_volume_path_discovery.py tests/test_boot_dependencies_api.py`: `7 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn SDK/CLI/IaC provider, webhook/job callback và versioned aliases cho từng mutation route. |
 | 2026-09-21 | BS-07.3 Multipath/NVMe-oF/iSCSI | Một phần | Thêm `dashboard/volume_path_discovery.py` và API read-only `/api/volumes/{pool}/inventory/{image}/paths`; parser bounded cho multipath/NVMe-oF/iSCSI, query chỉ chạy trên compute node đã cấu hình, reconnect/failover bị khóa. Volume Detail hiển thị host/path/session summary và evidence gaps. | `tests/test_volume_path_discovery.py tests/test_cinder_discovery.py tests/test_boot_dependencies_api.py`: `20 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn live gateway acceptance và mapping path-to-volume thực tế; giữ `[~]`. |
 | 2026-09-21 | BS-07.2 Boot-from-volume và Image Service | Một phần | Thêm read-only Cinder/Nova/Glance discovery và API `/api/volumes/{pool}/inventory/{image}/boot-dependencies`; Volume Detail hiển thị boot source, VM attachment, Glance image, snapshot delete guard và evidence gaps. Không attach/detach, xóa snapshot hoặc thay đổi control plane từ endpoint này. | `tests/test_cinder_discovery.py tests/test_boot_dependencies_api.py tests/test_cinder_mapping_api.py`: `18 passed`; `compileall`, `node --check`, `git diff --check` đạt. | Còn live Controller/Glance acceptance và xác minh snapshot đang được VM sử dụng; giữ `[~]`. |

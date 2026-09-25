@@ -29,8 +29,7 @@ from shared import incident_postmortem, trust_engine
 from shared.unified_event_timeline import merge_event_sources
 from shared.root_cause_chain import build_root_cause_chain
 from dashboard import alert_center
-from shared.clusters import ensure_default_cluster, list_active_clusters
-from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
+from shared.cluster_nodes import configured_nodes
 from shared.models import (
     Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus,
     IncidentTimelineEvent, ObjectStorageAuditEntry, RgwAccessAuditEvent,
@@ -45,7 +44,6 @@ from shared.cluster_snapshot import (
     read_snapshot,
 )
 from watcher.ceph_client import (
-    CephQueryError,
     run_ceph_json_command_with,
 )
 from watcher import cluster_snapshot_collector, incident_grouping
@@ -229,7 +227,7 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
         period_filter = "all"
     try:
         clusters, selected_cluster = _resolve_selected_cluster(
-            request.query_params.get("cluster", ""), request.session.get("selected_cluster_id", "")
+            request.query_params.get("cluster", ""), request.session.get("selected_cluster_id", ""), request=request
         )
         request.session["selected_cluster_id"] = selected_cluster.id
         cluster_filter = (
@@ -299,7 +297,7 @@ async def _update_alert_lifecycle(
     request: Request, incident_id: str, user: str, operation: str, mute_hours: int | None = None,
 ):
     _clusters, selected_cluster = _resolve_selected_cluster(
-        "", request.session.get("selected_cluster_id", "")
+        "", request.session.get("selected_cluster_id", ""), request=request
     )
     with db.SessionLocal() as session:
         group = _alert_group_for_incident(session, incident_id, selected_cluster)
@@ -376,7 +374,7 @@ async def unified_event_timeline_api(
     """Merge cluster-scoped lifecycle, audit and RGW events read-only."""
     del user
     _clusters, cluster = _resolve_selected_cluster(
-        "", request.session.get("selected_cluster_id", "")
+        "", request.session.get("selected_cluster_id", ""), request=request
     )
     with db.SessionLocal() as session:
         incident_scope = (
@@ -472,7 +470,7 @@ async def root_cause_chain_api(
     """Return citation-linked root-cause candidates without executing actions."""
     del user
     _clusters, selected = _resolve_selected_cluster(
-        "", request.session.get("selected_cluster_id", "")
+        "", request.session.get("selected_cluster_id", ""), request=request
     )
     with db.SessionLocal() as session:
         incident = _incident_in_selected_cluster(session, incident_id, selected)
@@ -489,7 +487,7 @@ async def export_incident_postmortem(
     user: str = Depends(require_login),
 ):
     _clusters, selected = _resolve_selected_cluster(
-        "", request.session.get("selected_cluster_id", "")
+        "", request.session.get("selected_cluster_id", ""), request=request
     )
     with db.SessionLocal() as session:
         incident = _incident_in_selected_cluster(session, incident_id, selected)
@@ -524,7 +522,7 @@ async def review_incident_postmortem(
     if decision == "rejected" and len(note) < 5:
         raise HTTPException(status_code=400, detail="Review reject cần note ít nhất 5 ký tự")
     _clusters, selected = _resolve_selected_cluster(
-        "", request.session.get("selected_cluster_id", "")
+        "", request.session.get("selected_cluster_id", ""), request=request
     )
     with db.SessionLocal() as session:
         incident = _incident_in_selected_cluster(session, incident_id, selected)
@@ -547,7 +545,7 @@ async def review_incident_postmortem(
 @router.get("/incidents/{incident_id}/timeline", response_class=HTMLResponse)
 async def incident_timeline_page(request: Request, incident_id: str, user: str = Depends(require_login)):
     clusters, selected_cluster = _resolve_selected_cluster(
-        "", request.session.get("selected_cluster_id", "")
+        "", request.session.get("selected_cluster_id", ""), request=request
     )
     with db.SessionLocal() as session:
         incident = _incident_in_selected_cluster(session, incident_id, selected_cluster)
@@ -611,7 +609,7 @@ async def update_remediation_case_verdict(
     if len(note) > 2000:
         raise HTTPException(status_code=400, detail="Ghi chú tối đa 2000 ký tự")
     _clusters, selected_cluster = _resolve_selected_cluster(
-        "", request.session.get("selected_cluster_id", "")
+        "", request.session.get("selected_cluster_id", ""), request=request
     )
     with db.SessionLocal() as session:
         incident = _incident_in_selected_cluster(session, incident_id, selected_cluster)
@@ -637,7 +635,7 @@ async def generate_incident_postmortem(
     request: Request, incident_id: str, user: str = Depends(require_login)
 ):
     _clusters, selected_cluster = _resolve_selected_cluster(
-        "", request.session.get("selected_cluster_id", "")
+        "", request.session.get("selected_cluster_id", ""), request=request
     )
     with db.SessionLocal() as session:
         if _incident_in_selected_cluster(session, incident_id, selected_cluster) is None:
@@ -1014,7 +1012,9 @@ def _fetch_dashboard_data(
     )
 
 
-def _resolve_selected_cluster(requested_cluster_id: str, session_cluster_id: str = "") -> tuple[list[Cluster], Cluster]:
+def _resolve_selected_cluster(
+    requested_cluster_id: str, session_cluster_id: str = "", *, request: Request | None = None
+) -> tuple[list[Cluster], Cluster]:
     """Multi-cluster observability Phase 1's cluster switcher — `?cluster=`
     on `/` (a plain query param, same pattern this file already uses for
     incident_id/since/until — bookmarkable, and every existing link/form on
@@ -1040,6 +1040,9 @@ def _resolve_selected_cluster(requested_cluster_id: str, session_cluster_id: str
     # dependency-free implementation belongs in dashboard.cluster_scope.
     from dashboard.cluster_scope import resolve_cluster_selection
 
+    if request is not None:
+        from dashboard.cluster_scope import cluster_selection
+        return cluster_selection(request)
     return resolve_cluster_selection(requested_cluster_id, session_cluster_id)
 
 
@@ -1235,11 +1238,11 @@ def _dashboard_health_snapshot_response(
 
 
 @router.get("/api/dashboard/health")
-async def dashboard_health(request: Request, _user: str = Depends(require_login)):
+def dashboard_health(request: Request, _user: str = Depends(require_login)):
     """Return the latest shared snapshot without running a Ceph command."""
     _clusters, selected_cluster = _resolve_selected_cluster(
         request.query_params.get("cluster", "").strip(),
-        request.session.get("selected_cluster_id", ""),
+        request.session.get("selected_cluster_id", ""), request=request,
     )
     snapshot = read_snapshot(
         selected_cluster.id,
@@ -1254,7 +1257,7 @@ async def refresh_dashboard_health(request: Request, _user: str = Depends(requir
     """Queue an explicit operator refresh; never wait for Ceph in HTTP."""
     _clusters, selected_cluster = _resolve_selected_cluster(
         request.query_params.get("cluster", "").strip(),
-        request.session.get("selected_cluster_id", ""),
+        request.session.get("selected_cluster_id", ""), request=request,
     )
     _schedule_dashboard_health_refresh(selected_cluster)
     return {
@@ -1265,7 +1268,7 @@ async def refresh_dashboard_health(request: Request, _user: str = Depends(requir
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(
+def index(
     request: Request,
     user: str = Depends(require_login),
     incident_id: str = "",
@@ -1282,7 +1285,7 @@ async def index(
         # fail the same clean 503 way if the DB is unreachable, not an
         # unhandled 500 from before the try block even started.
         clusters, selected_cluster = _resolve_selected_cluster(
-            cluster.strip(), request.session.get("selected_cluster_id", "")
+            cluster.strip(), request.session.get("selected_cluster_id", ""), request=request
         )
         # Persist whatever we landed on (explicit ?cluster=, prior session
         # value, or the default-cluster fallback) so the NEXT visit to `/`

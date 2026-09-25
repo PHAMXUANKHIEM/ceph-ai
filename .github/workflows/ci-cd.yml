@@ -345,24 +345,48 @@ jobs:
         env:
           DEPLOY_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_EVIDENCE_DIR: ${{ runner.temp }}/ceph-ai-deploy-evidence
           CEPH_AI_DEPLOY_ALLOWED_DIRTY_PATHS: Plan/in-progress/natural-language-ceph-ai-plan.md
           # The active compose deployment lives here. A self-hosted runner
           # may override this repository variable for another lab host.
           CEPH_AI_DEPLOY_DIR: ${{ vars.CEPH_AI_DEPLOY_DIR || '/root/ceph-ai' }}
         run: |
           set -euo pipefail
-          image_ref="$(< deploy-artifacts/registry-image-ref.txt)"
-          [[ "$image_ref" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]
-          printf '%s' "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          cd "$CEPH_AI_DEPLOY_DIR"
-          test "$(git rev-parse --show-toplevel)" = "$CEPH_AI_DEPLOY_DIR"
-          CEPH_AI_IMAGE="$image_ref" DEPLOY_REF="$DEPLOY_SHA" bash scripts/deploy/restart_container_stack.sh
+          install -d -m 0700 "$DEPLOY_EVIDENCE_DIR"
+          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          image_ref="unknown"
+          set +e
+          {
+            image_ref="$(< deploy-artifacts/registry-image-ref.txt)"
+            [[ "$image_ref" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]
+            printf '%s' "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            cd "$CEPH_AI_DEPLOY_DIR"
+            test "$(git rev-parse --show-toplevel)" = "$CEPH_AI_DEPLOY_DIR"
+            CEPH_AI_DEPLOY_EVENT_LOG="$DEPLOY_EVIDENCE_DIR/deploy-phases.log" \
+              CEPH_AI_IMAGE="$image_ref" DEPLOY_REF="$DEPLOY_SHA" \
+              bash scripts/deploy/restart_container_stack.sh
+          } > >(python3 "$GITHUB_WORKSPACE/scripts/deploy/redact_deploy_output.py" | tee "$DEPLOY_EVIDENCE_DIR/deploy-stdout.log") \
+            2> >(python3 "$GITHUB_WORKSPACE/scripts/deploy/redact_deploy_output.py" | tee "$DEPLOY_EVIDENCE_DIR/deploy-stderr.log" >&2)
+          deploy_exit=$?
+          set -e
+          finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          target_host="$(hostname --fqdn 2>/dev/null || hostname)"
+          {
+            printf 'deploy_sha=%s\n' "$DEPLOY_SHA"
+            printf 'image_ref=%s\n' "$image_ref"
+            printf 'target_host=%s\n' "$target_host"
+            printf 'started_at=%s\n' "$started_at"
+            printf 'finished_at=%s\n' "$finished_at"
+            printf 'exit_code=%s\n' "$deploy_exit"
+          } > "$DEPLOY_EVIDENCE_DIR/deploy-result.env"
+          chmod 0640 "$DEPLOY_EVIDENCE_DIR"/deploy-*.log "$DEPLOY_EVIDENCE_DIR/deploy-result.env" 2>/dev/null || true
+          exit "$deploy_exit"
 
-      - name: Upload deployment preflight evidence
+      - name: Upload deployment evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: deploy-preflight-evidence-${{ github.sha }}
+          name: deploy-evidence-${{ github.sha }}
           path: ${{ runner.temp }}/ceph-ai-deploy-evidence/
           if-no-files-found: warn
 

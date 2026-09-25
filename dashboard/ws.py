@@ -9,6 +9,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, or_
 
 from config.settings import settings
+from dashboard.cluster_authorization import CAPABILITY_READ, has_cluster_capability
 from dashboard.routes.auth import _session_is_valid
 from shared import db
 from shared.cluster_events import read_latest_event
@@ -95,6 +96,13 @@ async def incidents_ws(websocket: WebSocket) -> None:
         selected = active.get(websocket.session.get("selected_cluster_id"), default_cluster)
         selected_id = selected.id
         selected_is_default = selected.is_default
+    if not has_cluster_capability(
+        str(websocket.session.get("user") or ""), selected_id, CAPABILITY_READ
+    ):
+        _record_metric("cluster_state_policy_rejections_total")
+        await websocket.accept()
+        await websocket.close(code=WS_POLICY_VIOLATION)
+        return
     requested_id = websocket.query_params.get("cluster_id") or websocket.query_params.get("cluster")
     if requested_id and requested_id != selected_id:
         _record_metric("cluster_state_policy_rejections_total")
@@ -156,6 +164,12 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
         active = {cluster.id: cluster for cluster in list_active_clusters(session)}
         selected = active.get(websocket.session.get("selected_cluster_id"), default_cluster)
         selected_id = selected.id
+    if not has_cluster_capability(
+        str(websocket.session.get("user") or ""), selected_id, CAPABILITY_READ
+    ):
+        await websocket.accept()
+        await websocket.close(code=WS_POLICY_VIOLATION)
+        return
     requested_id = websocket.query_params.get("cluster_id") or websocket.query_params.get("cluster")
     if requested_id and requested_id != selected_id:
         _record_metric("cluster_state_policy_rejections_total")

@@ -38,6 +38,18 @@
   function truncated(value) { var text = String(value || ""); return text.length > 18 ? text.slice(0, 10) + "…" + text.slice(-6) : text; }
   function cell(row, value, className) { var td = document.createElement("td"); if (className) td.className = className; if (value instanceof Node) td.appendChild(value); else td.textContent = value; row.appendChild(td); return td; }
 
+  function renderFreshness(data) {
+    if (!freshness) return;
+    var age = Number(data.cache_age_seconds || 0);
+    if (data.stale) {
+      freshness.textContent = "Snapshot cũ · " + Math.round(age) + "s · đang làm mới";
+      freshness.classList.add("is-stale");
+    } else {
+      freshness.textContent = "Snapshot live · " + Math.round(age) + "s trước";
+      freshness.classList.remove("is-stale");
+    }
+  }
+
   function renderRows(data) {
     tbody.innerHTML = "";
     if (!data.items.length) { var empty = document.createElement("tr"), message = cell(empty, "Không có Volume phù hợp trong pool này.", "hint"); message.colSpan = 8; tbody.appendChild(empty); }
@@ -57,7 +69,7 @@
     state.page = data.page; state.pages = data.pages; pager.hidden = data.total <= data.page_size;
     var first = data.total ? ((data.page - 1) * data.page_size + 1) : 0, last = Math.min(data.page * data.page_size, data.total); pageSummary.textContent = "Hiển thị " + first + "–" + last + " / " + data.total + " mục"; pageSummary.dataset.mobileSummary = first + "–" + last + " / " + data.total; pageStatus.textContent = "Trang " + data.page + " / " + data.pages; prev.disabled = data.page <= 1; next.disabled = data.page >= data.pages;
     if (window.DashboardPagination) window.DashboardPagination.renderPages(pageButtons, data.page, data.pages, function (page) { state.page = page; loadInventory(); });
-    document.getElementById("volume-page-total").textContent = String(data.summary.image_count || data.total || 0); document.getElementById("volume-page-updated").textContent = "Cập nhật: " + new Date(data.collected_at).toLocaleTimeString("vi-VN"); freshness.textContent = "Cập nhật live: " + new Date(data.collected_at).toLocaleString("vi-VN") + " · Đã dùng " + bytes(data.summary.used_size) + " / " + bytes(data.summary.provisioned_size);
+    document.getElementById("volume-page-total").textContent = String(data.summary.image_count || data.total || 0); document.getElementById("volume-page-updated").textContent = "Thu thập: " + new Date(data.collected_at).toLocaleTimeString("vi-VN"); renderFreshness(data);
     var activeTab = document.querySelector('.volumes-pool-tab[data-pool="' + pool.replace(/"/g, '\\"') + '"] [data-pool-count]'); if (activeTab) activeTab.textContent = "(" + data.total + ")";
   }
   function loadInventory() { if (state.loading) return; state.loading = true; error.hidden = true; var params = new URLSearchParams({ search: search.value.trim(), sort: state.sort, order: state.order, page: String(state.page), page_size: String(PAGE_SIZE) }); requestJson("/api/volumes/" + encodeURIComponent(pool) + "/inventory?" + params.toString()).then(renderRows).catch(function (exc) { if (exc.message === "unauthenticated") return; error.textContent = exc.message; error.hidden = false; freshness.textContent = "Không lấy được dữ liệu live"; }).finally(function () { state.loading = false; }); }

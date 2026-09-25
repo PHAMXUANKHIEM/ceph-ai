@@ -49,6 +49,67 @@ def _as_int(value: object, default: int = 0) -> int:
         return default
 
 
+def build_capacity_waste_summary(inventory_rows: Iterable[Mapping[str, object]]) -> dict:
+    """Aggregate observed provisioned/used capacity without calling it savings.
+
+    ``used_size`` is backend usage, not a safe shrink target. Missing or
+    malformed measurements are excluded from byte totals and counted as
+    unknown so consumers cannot mistake incomplete inventory for zero usage.
+    """
+    total = provisioned = used = measured = unknown = 0
+    by_project: dict[str, dict[str, int]] = {}
+    for row in inventory_rows:
+        if not isinstance(row, Mapping):
+            continue
+        total += 1
+        raw_provisioned = row.get("provisioned_size", row.get("size"))
+        raw_used = row.get("used_size")
+        try:
+            p_bytes, u_bytes = int(raw_provisioned), int(raw_used)
+            if p_bytes < 0 or u_bytes < 0:
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            unknown += 1
+            continue
+        measured += 1
+        provisioned += p_bytes
+        used += u_bytes
+        project_id = str(owner_project_evidence(row).get("project_id") or "").strip()
+        if project_id:
+            bucket = by_project.setdefault(project_id, {"volumes": 0, "provisioned_bytes": 0, "used_bytes": 0})
+            bucket["volumes"] += 1
+            bucket["provisioned_bytes"] += p_bytes
+            bucket["used_bytes"] += u_bytes
+    return {
+        "volume_count": total,
+        "measured_volume_count": measured,
+        "unknown_capacity_count": unknown,
+        "provisioned_bytes": provisioned,
+        "used_bytes": used,
+        "unconsumed_provisioned_bytes": max(0, provisioned - used),
+        "utilization_percent": round(used / provisioned * 100, 2) if provisioned else None,
+        "interpretation": "Unconsumed provisioned capacity is not a safe reclaim or resize estimate.",
+        "by_project": by_project,
+    }
+
+
+def owner_project_evidence(row: Mapping[str, object]) -> dict:
+    """Return only explicit owner/project metadata; never infer it from image names."""
+    cinder = row.get("cinder") if isinstance(row.get("cinder"), Mapping) else {}
+    project_id = row.get("project_id") or row.get("owner_project_id") or cinder.get("project_id")
+    owner_id = row.get("owner_id") or row.get("user_id") or cinder.get("user_id")
+    return {
+        "owner_id": str(owner_id).strip() if owner_id else None,
+        "project_id": str(project_id).strip() if project_id else None,
+        "source": (
+            "cinder_metadata" if cinder and (owner_id or project_id)
+            else "inventory_metadata" if owner_id or project_id
+            else None
+        ),
+        "verified": bool(owner_id or project_id),
+    }
+
+
 def _as_datetime(value: object) -> datetime | None:
     if isinstance(value, datetime):
         return value.replace(tzinfo=None)

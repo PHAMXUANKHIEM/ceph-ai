@@ -34,7 +34,7 @@ exhausted.
 ## Diagnostics and alerts
 
 `/api/system/reliability` is read-only and reports API p95, collector lag,
-DB pool usage, queue age/backlog, process RSS/cgroup usage, SSH command
+DB pool usage and current database size, queue age/backlog, process RSS/cgroup usage, SSH command
 counts/p95, failed deploys in the last 24 hours and federated mapping
 reconcile state. It emits bounded alert codes for stale snapshots, queue
 backlog, DB pool exhaustion, collector/reconnect failure, stale service

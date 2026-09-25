@@ -52,23 +52,23 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 ### 3.1 Thu thập failure evidence của deploy
 
-- [ ] Sửa workflow để upload deploy stdout/stderr đã redact, exit code, command phase, host, `DEPLOY_SHA`, image digest và timestamp kể cả khi job fail.
-- [ ] Mỗi phase phải có marker rõ: `preflight`, `checkout`, `registry_pull`, `migration`, `restart`, `health`, `consumer`, `smoke`, `rollback`.
-- [ ] Không chỉ báo `exit 127`; nếu command thiếu phải ghi chính xác command và `PATH` đã dùng.
-- [ ] Tạo artifact `deploy-evidence-<sha>` và liên kết artifact đó vào release manifest.
+- [~] Workflow đã capture deploy stdout/stderr qua streaming redactor, exit code, host, `DEPLOY_SHA`, immutable image ref và timestamp bằng `if: always()`; cần CI failure witness để acceptance.
+- [~] Đã có marker `preflight`, `checkout`, `runtime_setup`, `registry_pull`, `migration`, `restart`, `health`, `consumer`, `smoke` và terminal result; marker `rollback` còn nằm ngoài deploy flow và chưa hoàn thiện.
+- [~] Preflight ghi tên command thiếu; artifact ghi phase/exit code. Việc ghi `PATH` đã sanitize và failure injection trên self-hosted runner còn thiếu.
+- [~] Workflow tạo artifact `deploy-evidence-<sha>`; chưa liên kết artifact vào release manifest.
 - [ ] Kiểm tra run `36086871922` và run mới bằng artifact/log; không ghi nguyên nhân “dirty worktree” nếu chưa có log trực tiếp chứng minh.
 
 **Đạt khi:** một deploy fail có thể xác định phase và nguyên nhân từ artifact mà không cần SSH thủ công vào runner.
 
 ### 3.2 Preflight dependency và quyền trên self-hosted host
 
-- [ ] Tạo `scripts/deploy/deploy_preflight.sh` chạy trước mọi mutation.
-- [ ] Kiểm tra `bash`, `git`, `podman`, `podman-compose` hoặc compose provider thực tế, `systemctl`, `install`, `curl`, `awk`, `mktemp`, `rabbitmqctl`.
-- [ ] Kiểm tra version tối thiểu, `PATH`, user/group, quyền `/etc/systemd/system`, `/var/lib/ceph-ai`, `/var/lib/containers`, `/run/ceph-ai`.
-- [ ] Kiểm tra systemd units, socket, RabbitMQ container, registry login và DNS/HTTPS tới GHCR.
-- [ ] Kiểm tra migration tool, database URL profile và backup destination trước khi sửa database.
-- [ ] Xuất report pass/fail đã redact; fail trước khi checkout/reset hoặc restart.
-- [ ] Bổ sung unit tests cho missing command, permission denied, registry unavailable và RabbitMQ unavailable.
+- [~] Tạo `scripts/deploy/deploy_preflight.sh` chạy trước mọi mutation; đã nối vào deploy job trước registry login/rollout, còn cần acceptance trên self-hosted runner.
+- [~] Kiểm tra `bash`, `git`, `podman`, compose provider thực tế, `systemctl`, `install`, `curl`, `awk`, `mktemp` và `rabbitmqctl` trong RabbitMQ container; còn thiếu version floor acceptance trên host thật.
+- [~] Kiểm tra checkout, quyền `/etc/systemd/system`, `/var/lib/ceph-ai`, `/var/lib/containers`, `/run/ceph-ai`; còn thiếu user/group và version tối thiểu.
+- [~] Kiểm tra systemd unit, RabbitMQ container, registry credential source và HTTPS tới GHCR; chưa thực hiện registry login acceptance thật.
+- [~] Kiểm tra migration tool, PostgreSQL URL profile và backup destination trước rollout; chưa có staging witness.
+- [~] Xuất report pass/fail mode `0640`, không ghi DATABASE_URL/credential; workflow upload report bằng `if: always()`.
+- [~] Có unit tests cho missing command, permission target, registry unavailable, RabbitMQ unavailable, redaction và thứ tự preflight trước rollout; live negative injection để sau.
 
 **Đạt khi:** cố ý làm thiếu từng dependency tạo lỗi có tên dependency/phase, không phải `127` chung chung.
 
@@ -121,9 +121,9 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 ### 4.1 PostgreSQL rehearsal
 
-- [ ] Dựng PostgreSQL staging gần production về version, extension, collation, pool và credential mode.
-- [ ] Restore backup thực tế vào database mới; xác minh row counts, migration head, checksum và các bảng critical.
-- [ ] Chạy migration từ một revision cũ có dữ liệu; inject failure trước/sau từng phase chính.
+- [~] Dựng PostgreSQL staging gần production về version, extension, collation, pool và credential mode: đã thêm restore-rehearsal tooling và strict target guards; chưa có staging witness mới.
+- [~] Restore backup thực tế vào database mới; xác minh row counts, migration head, checksum và các bảng critical: script `scripts/deploy/postgresql_restore_rehearsal.py` đã thực hiện flow này khi được cấp PostgreSQL staging.
+- [~] Chạy migration từ một revision cũ có dữ liệu; inject failure trước/sau từng phase chính: đã có failure-injection phases trong script, chưa chạy acceptance trên database thật.
 - [ ] Kiểm tra backup trước migration bị thiếu/quyền sai thì deploy dừng.
 - [ ] Xác minh restore không cần database production đang chạy.
 - [ ] Đo RPO/RTO và lưu report JSON + log + operator witness.
@@ -189,26 +189,26 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 ### 6.1 RBAC/cross-cluster
 
 - [~] WebSocket incidents/cluster-state đã có guard query cluster và stale approval fingerprint test.
-- [ ] Hoàn thiện user-to-cluster capability grant model hoặc ghi rõ mô hình admin-only được chấp nhận bởi operator.
-- [ ] Test direct API, Dashboard, Worker, Telegram approval và WebSocket với user thiếu capability.
-- [ ] Replay envelope/action/evidence của cluster A lên cluster B phải bị từ chối ở server-side.
+- [~] Đã thêm user-to-cluster capability grant model, migration và API quản lý grant; còn cần operator sign-off capability catalogue.
+- [~] Dashboard action approval, cluster selection và WebSocket đã kiểm tra capability server-side; còn test Worker/Telegram approval với user thiếu capability.
+- [~] Cluster selection, action approval và WebSocket đã chặn cross-cluster ở server-side; còn replay envelope/action/evidence qua Worker.
 - [ ] Target node/pool/volume/bucket phải được resolve lại ở execution-time.
-- [ ] Audit phải ghi actor, role/capability, cluster, action, target, evidence fingerprint, decision và reason.
+- [~] Single Full có audit bền vững actor/session/run/cluster/start/end/result và prompt fingerprint; audit capability grant/action đầy đủ còn mở.
 - [ ] Không dùng UI ẩn nút thay cho authorization.
 
 ### 6.2 Credential separation
 
-- [ ] Watcher/Dashboard dùng SSH identity read-only.
-- [ ] Mutation identity chỉ tồn tại ở executor boundary được phê duyệt.
+- [~] Dashboard/Watcher/Telegram đã nhận read-only identity riêng; cần acceptance chứng minh key trên node thực sự không có quyền mutation.
+- [~] Worker typed remediation nhận mutation identity riêng và Single Full giữ identity riêng; còn acceptance boundary trên host thật.
 - [ ] Tách OAuth/AI account directory theo service capability.
-- [ ] Thu hẹp mount `/var/lib/ceph-ai` và network egress theo service.
+- [~] Compose đã che khuất các thư mục full-executor-ssh/secrets/accounts khỏi service thường và tách mount identity; network egress và toàn bộ `/var/lib/ceph-ai` còn cần thu hẹp.
 - [ ] Test read-only identity không mutation được; mutation key không xuất hiện trong read-only container.
-- [ ] Redact credential trong log, AI context, artifact, traceback và release manifest.
+- [~] Single Full audit chỉ lưu prompt SHA-256, không lưu prompt/output thô; cần hoàn tất kiểm tra redaction trên mọi artifact/traceback.
 
 ### 6.3 Single Full
 
-- [ ] Giữ nguyên quyền toàn quyền của Single Full theo quyết định operator.
-- [ ] Bổ sung audit bắt buộc: actor, session, target cluster, start/end, command class, result và operator acknowledgement.
+- [~] Đã giữ nguyên quyền toàn quyền của Single Full và không hạ quyền model; boundary vẫn dựa trên Telegram allowlist, token, scope và confirmation.
+- [~] Đã bổ sung durable audit bắt buộc cho actor, run/session, target cluster, start/end, command class, result và operator acknowledgement; còn kiểm tra runtime production.
 - [ ] Kiểm tra kill switch, session expiry, reconnect và retry không tạo hành động ngoài context.
 - [ ] Red-team prompt injection trong staging cô lập; không dùng cluster production.
 - [ ] Không coi prompt “cấm phá hoại” là security boundary; chỉ ghi nhận typed remediation boundary ở các flow chuẩn.
@@ -253,7 +253,7 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 - [x] Xác định runtime owner duy nhất cho Dashboard, Watcher, Worker, Remediation Worker, Telegram outbox và Code Repair: Podman Compose do `ceph-ai-containers.service` sở hữu trên server hiện tại; không chạy song song systemd legacy units.
 - [x] Kiểm tra restart/reconnect/reconcile của từng process: endpoint `/api/system/reliability` đọc heartbeat, collector/SSH failure và durable queue/role-mapping states; không tự restart hoặc reconcile từ diagnostics.
 - [ ] Thiết kế HA hoặc ghi rõ single-node limitation trong release contract.
-- [~] Đo p95 API, collector lag, DB connections, queue age, CPU/RAM, SSH calls và database growth: endpoint đã có API/collector/DB/queue/CPU-RAM/SSH; database growth và 24h time-series persistence còn cần bổ sung.
+- [~] Đo p95 API, collector lag, DB connections, queue age, CPU/RAM, SSH calls và database growth: endpoint đã có API/collector/DB/queue/CPU-RAM/SSH và current database size; growth rate cần hai mẫu soak liên tiếp.
 - [x] Đặt SLO/error budget cho dashboard freshness, incident processing, notification delivery và post-check; contract 30 ngày nằm trong `docs/operations/reliability-slo.md`.
 - [x] Có alert khi stale snapshot, queue backlog, DB pool exhaustion, outbox retry/collector failure và failed deploy qua `/api/system/reliability`.
 - [~] Chạy 24 giờ soak trên cluster/node thật cho collector và control plane: đã có script read-only `scripts/reliability_soak.py`, chưa chạy đủ 24 giờ nên chưa đánh dấu hoàn thành.
@@ -312,6 +312,8 @@ Chỉ chuyển `STAGING-APPROVED` sang `PRODUCTION-CANARY` khi có operator sign
 | 25/09/2026 | Image quality | Trivy HIGH/CRITICAL = 0 sau gỡ build tooling khỏi runtime image | Commit `87ac883d`, CI run `36086871922` | Accepted |
 | 25/09/2026 | RBAC WebSocket/stale approval | `42 passed`; cross-cluster query bị từ chối | Commit `6bf41927` | Partial |
 | 25/09/2026 | CD deploy | Run trước quality/release pass nhưng deploy fail; run mới chưa tới CD tại thời điểm lập kế hoạch | Actions run `36086871922`, `36089126816` | Open |
+| 25/09/2026 | Deploy preflight code/test | Thêm preflight read-only, report luôn được upload và negative tests; chưa dùng kết quả này để tuyên bố host/deploy accepted | `tests/test_deploy_preflight.py` 11 passed; deploy regression chạy cục bộ | Partial |
+| 25/09/2026 | Deploy failure evidence code/test | Thêm phase log, metadata kết quả, stdout/stderr streaming redaction và artifact `if: always()`; chưa có deploy fail/pass witness thật | Deploy/preflight regression `13 passed`; YAML/Python/Bash syntax đạt | Partial |
 
 ## 13. Quy tắc trạng thái
 

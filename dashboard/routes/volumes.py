@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import ipaddress
 import json
 import logging
@@ -60,10 +61,12 @@ from watcher import ceph_client
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher.volume_monitor import ceph_code_for
 from watcher.block_storage_insights import (
+    build_capacity_waste_summary,
     build_inventory_insights,
     build_protection_gap_insights,
     build_snapshot_clone_insights,
     persist_dependency_snapshots,
+    owner_project_evidence,
 )
 from watcher.block_storage_capacity import build_capacity_risk
 from watcher.block_storage_dependencies import build_pool_dependency_health
@@ -366,6 +369,8 @@ RBD_VOLUME_RESIZE_CEPH_CODE = "RBD_VOLUME_RESIZE"
 RBD_VOLUME_RENAME_CEPH_CODE = "RBD_VOLUME_RENAME"
 RBD_VOLUME_CLONE_CEPH_CODE = "RBD_VOLUME_CLONE"
 RBD_VOLUME_COPY_CEPH_CODE = "RBD_VOLUME_COPY"
+RBD_VOLUME_MOVE_CEPH_CODE = "RBD_VOLUME_MOVE"
+RBD_VOLUME_MOVE_CLEANUP_CEPH_CODE = "RBD_VOLUME_MOVE_CLEANUP"
 RBD_VOLUME_FLATTEN_CEPH_CODE = "RBD_VOLUME_FLATTEN"
 RBD_VOLUME_TEMPLATE_CEPH_CODE = "RBD_VOLUME_TEMPLATE"
 RBD_VOLUME_QOS_CEPH_CODE = "RBD_VOLUME_QOS"
@@ -445,7 +450,7 @@ def _rbd_qos_unsupported(exc: Exception) -> bool:
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 _RBD_VOLUME_MUTATION_ACTION_IDS = (
-    "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume", "rbd_clone_volume", "rbd_copy_volume", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
+    "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume", "rbd_clone_volume", "rbd_copy_volume", "rbd_move_volume", "rbd_move_cleanup_partial", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
     "rbd_trash_move_volume", "rbd_trash_restore_volume",
     "cinder_attach_volume", "cinder_detach_volume",
     "cinder_create_snapshot", "cinder_delete_snapshot",
@@ -474,6 +479,10 @@ def _rbd_mutation_dedupe_key(
         return f"rbd-volume:{pool}/{'/'.join(names)}"
     if action_id == "rbd_copy_volume":
         return f"rbd-copy:{pool}/{image}@{params.get('snapshot') or ''}->{params.get('dest_pool') or ''}/{params.get('dest_image') or ''}"
+    if action_id == "rbd_move_volume":
+        return f"rbd-move:{pool}/{image}->{params.get('dest_pool') or ''}/{params.get('dest_image') or ''}"
+    if action_id == "rbd_move_cleanup_partial":
+        return f"rbd-move-cleanup:{pool}/{image}->{params.get('dest_pool') or ''}/{params.get('dest_image') or ''}"
     if action_id == "rbd_template_mark":
         return f"rbd-template:{pool}/{image}@{params.get('snapshot') or ''}"
     if action_id == "rbd_qos_set":
@@ -1577,6 +1586,19 @@ async def volume_inventory_insights_api(
     insights = build_inventory_insights(
         scoped_inventory, metric_rows, now=now, history_days=7, policy_keys=policy_keys,
     )
+    identity_by_key = {
+        (str(row.get("pool") or pool), str(row.get("name") or row.get("image") or "")): owner_project_evidence(row)
+        for row in scoped_inventory
+    }
+    for insight in insights:
+        identity = identity_by_key.get((insight["pool"], insight["image"]), {})
+        insight["owner_id"] = identity.get("owner_id")
+        insight["project_id"] = identity.get("project_id")
+        insight["owner_project_source"] = identity.get("source")
+        insight["owner_project_verified"] = bool(identity.get("verified"))
+    owner_project_count = sum(
+        bool(item.get("owner_project_verified")) for item in identity_by_key.values()
+    )
     return {
         "cluster_id": cluster.id,
         "pool": pool,
@@ -1587,11 +1609,14 @@ async def volume_inventory_insights_api(
             "stale_unattached": sum(item["kind"] == "STALE_UNATTACHED" for item in insights),
             "snapshot_review": sum(item["kind"] == "SNAPSHOT_REVIEW" for item in insights),
             "insufficient_evidence": sum(item["kind"] == "INSUFFICIENT_EVIDENCE" for item in insights),
+            "capacity": build_capacity_waste_summary(scoped_inventory),
         },
         "coverage": {
-            "owner_project": False,
+            "owner_project": owner_project_count == len(scoped_inventory) and bool(scoped_inventory),
+            "owner_project_mapped": owner_project_count,
+            "owner_project_total": len(scoped_inventory),
             "backup_recency": False,
-            "note": "Owner/project và backup recency chưa có evidence collector trong slice này.",
+            "note": "Chỉ dùng owner/project metadata có sẵn trong inventory; không suy đoán từ tên image. Cinder mapping collector/bản lưu riêng chưa nối vào insight.",
         },
         "collected_at": _cache_collected_at(cache_state),
         "stale": bool(cache_state["stale"]),
@@ -2449,13 +2474,252 @@ async def propose_volume_copy(
         cluster=cluster, pool=pool, image=image,
         extra_params={"snapshot": snapshot, "dest_pool": dest_pool,
                       "dest_image": dest_image, "size_bytes": size_bytes},
-        conflicting_images={image}, action_id="rbd_copy_volume",
+        conflicting_images={image, dest_image}, action_id="rbd_copy_volume",
         ceph_code=RBD_VOLUME_COPY_CEPH_CODE, user=user,
         idempotency_key=idempotency_key,
         rationale=f"Copy snapshot {pool}/{image}@{snapshot} sang {dest_pool}/{dest_image}; không xóa nguồn",
     )
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL",
                          "estimated_size_bytes": size_bytes, "source_preserved": True}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/move")
+async def propose_volume_move(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Propose a guarded cross-pool move of an unmanaged RBD image.
+
+    The Worker performs copy -> export-diff checksum/size verification ->
+    source deletion. This route never executes the move itself.
+    """
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    body = await request.json()
+    dest_pool = str(body.get("dest_pool") or "").strip()
+    dest_image = str(body.get("dest_image") or "").strip()
+    if body.get("confirm_source_delete") is not True:
+        raise HTTPException(status_code=400, detail="Cần xác nhận rõ rằng volume nguồn sẽ bị xóa sau khi copy được kiểm tra")
+    if pool not in allowed_pools or not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=404, detail="Pool/image nguồn không hợp lệ hoặc không được phép")
+    if dest_pool not in allowed_pools or not _RBD_IMAGE_NAME_RE.fullmatch(dest_image):
+        raise HTTPException(status_code=400, detail="Pool/image đích không hợp lệ")
+    if pool == dest_pool:
+        raise HTTPException(status_code=409, detail="Move phải sang pool đích khác pool nguồn")
+    if image == dest_image:
+        raise HTTPException(status_code=409, detail="Tên image nguồn và đích không được trùng")
+    if image.startswith("volume-") or dest_image.startswith("volume-"):
+        raise HTTPException(status_code=409, detail="Volume do Cinder quản lý phải chuyển qua Cinder, không move trực tiếp bằng RBD")
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id="rbd_move_volume", user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image, "dest_pool": dest_pool,
+                "dest_image": dest_image, "confirm_source_delete": True},
+    )
+    if replay:
+        return replay
+    try:
+        source = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+        inventory = (
+            ceph_client.query_rbd_inventory(dest_pool)
+            if cluster.is_default else ceph_client.query_rbd_inventory_with(dest_pool, *cluster_connection(cluster))
+        )
+        overview = (
+            ceph_client.query_rbd_pool_overview(dest_pool)
+            if cluster.is_default else ceph_client.query_rbd_pool_overview_with(dest_pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight move Volume: {exc}") from exc
+    if any(row.get("name") == dest_image for row in inventory):
+        raise HTTPException(status_code=409, detail="Volume đích đã tồn tại")
+    blockers = []
+    if source.get("watchers"):
+        blockers.append("watcher/attachment")
+    if source.get("locks"):
+        blockers.append("lock")
+    if source.get("snapshots"):
+        blockers.append("snapshot")
+    if source.get("children"):
+        blockers.append("clone child")
+    if source.get("parent"):
+        blockers.append("parent clone")
+    if blockers:
+        raise HTTPException(status_code=409, detail="Không thể move khi còn dependency: " + ", ".join(blockers))
+    try:
+        size_bytes = int(source.get("size") or 0)
+        max_available = int(overview.get("max_available") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="Dung lượng nguồn hoặc pool đích không hợp lệ") from exc
+    if size_bytes <= 0 or max_available <= 0:
+        raise HTTPException(status_code=409, detail="Thiếu bằng chứng dung lượng nguồn hoặc pool đích")
+    if overview.get("rbd_enabled") is not True or overview.get("near_full"):
+        raise HTTPException(status_code=409, detail="Pool đích chưa sẵn sàng cho RBD move")
+    if size_bytes > max_available:
+        raise HTTPException(status_code=409, detail="Không đủ dung lượng khả dụng trong pool đích")
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image,
+        extra_params={"dest_pool": dest_pool, "dest_image": dest_image,
+                      "size_bytes": size_bytes, "delete_source": True,
+                      "checksum": "rbd-export-diff-sha256",
+                      "move_token": hashlib.sha256(
+                          f"{cluster.id}|{pool}|{image}|{dest_pool}|{dest_image}|{idempotency_key or user}".encode()
+                      ).hexdigest()[:32]},
+        conflicting_images={image, dest_image}, action_id="rbd_move_volume",
+        ceph_code=RBD_VOLUME_MOVE_CEPH_CODE, user=user,
+        idempotency_key=idempotency_key,
+        rationale=f"Move {pool}/{image} sang {dest_pool}/{dest_image}; copy và kiểm tra checksum trước khi xóa nguồn",
+    )
+    return JSONResponse({
+        "action_id": action_pk, "status": "PENDING_APPROVAL",
+        "estimated_size_bytes": size_bytes, "source_deleted_after_verified_copy": True,
+        "requires_explicit_approval": True,
+    }, status_code=201)
+
+
+@router.get("/api/volumes/{pool}/inventory/{image}/move/progress")
+async def volume_move_progress_api(
+    request: Request, pool: str, image: str, action_id: str = Query(...),
+    user: str = Depends(require_login),
+):
+    """Return durable phase progress for a move or its explicit cleanup."""
+    _require_admin_privilege(user)
+    cluster = _cluster_for_request(request)
+    with db.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        if action is None or action.action_id not in {"rbd_move_volume", "rbd_move_cleanup_partial"}:
+            raise HTTPException(status_code=404, detail="Không tìm thấy proposal move")
+        incident = session.get(Incident, action.incident_id)
+        if incident is None or incident.cluster_id != cluster.id:
+            raise HTTPException(status_code=404, detail="Proposal không thuộc cluster đang chọn")
+        action_status = action.status
+        action_kind = action.action_id
+        action_pk = action.id
+        try:
+            params = json.loads(action.action_params or "{}")
+            progress = json.loads(action.execution_progress or "[]")
+        except (TypeError, ValueError):
+            params, progress = {}, []
+    failed_copy_phase = any(
+        isinstance(item, dict)
+        and item.get("phase") in {"copy_verify_delete", "post_check"}
+        and item.get("status") == "failed"
+        for item in (progress if isinstance(progress, list) else [])
+    )
+    return {
+        "action_id": action_pk,
+        "action_type": action_kind,
+        "status": action_status,
+        "progress": progress if isinstance(progress, list) else [],
+        "source": f"{params.get('pool_name', pool)}/{params.get('image', image)}",
+        "destination": f"{params.get('dest_pool', '')}/{params.get('dest_image', '')}",
+        "partial_cleanup_supported": action_kind == "rbd_move_volume" and action_status == ActionStatus.FAILED.value and failed_copy_phase,
+        "recovery": (
+            "Nếu bị gián đoạn, Worker chỉ đối soát read-only; không tự xóa source "
+            "khi chưa có bằng chứng checksum."
+        ),
+    }
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/move/cleanup")
+async def propose_partial_move_cleanup(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Propose removal of a token-owned partial destination after a failed move.
+
+    This route never accepts a destination/token from the browser. It loads
+    both from the failed move Action, requires that source is still present,
+    and keeps the cleanup approval-gated through the normal Worker boundary.
+    """
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools or not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=404, detail="Pool/image nguồn không hợp lệ hoặc không được phép")
+    body = await request.json()
+    move_action_id = str(body.get("move_action_id") or "").strip()
+    if not move_action_id or len(move_action_id) > 64:
+        raise HTTPException(status_code=400, detail="Thiếu move_action_id hợp lệ")
+    if body.get("confirm_partial_cleanup") is not True:
+        raise HTTPException(status_code=400, detail="Cần xác nhận rõ rằng chỉ xóa bản copy dở dang ở destination")
+    idempotency_key, replay = _idempotency_replay(
+        request,
+        action_id="rbd_move_cleanup_partial",
+        user=user,
+        cluster_id=cluster.id,
+        intent={"cleanup_of_action_id": move_action_id, "pool_name": pool, "image": image},
+    )
+    if replay:
+        return replay
+
+    with db.SessionLocal() as session:
+        move_action = session.get(Action, move_action_id)
+        if move_action is None or move_action.action_id != "rbd_move_volume":
+            raise HTTPException(status_code=404, detail="Không tìm thấy move proposal nguồn")
+        move_incident = session.get(Incident, move_action.incident_id)
+        if move_incident is None or move_incident.cluster_id != cluster.id:
+            raise HTTPException(status_code=404, detail="Move proposal không thuộc cluster đang chọn")
+        if move_action.status != ActionStatus.FAILED.value:
+            raise HTTPException(status_code=409, detail="Chỉ được cleanup sau khi move đã kết thúc FAILED")
+        try:
+            move_params = json.loads(move_action.action_params or "{}")
+            move_progress = json.loads(move_action.execution_progress or "[]")
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail="Move proposal không có metadata hợp lệ để cleanup") from exc
+    if not isinstance(move_params, dict) or move_params.get("pool_name") != pool or move_params.get("image") != image:
+        raise HTTPException(status_code=409, detail="Move proposal không khớp volume đang chọn")
+    if not any(
+        isinstance(item, dict)
+        and item.get("phase") in {"copy_verify_delete", "post_check"}
+        and item.get("status") == "failed"
+        for item in (move_progress if isinstance(move_progress, list) else [])
+    ):
+        raise HTTPException(status_code=409, detail="Move chưa có bằng chứng lỗi sau giai đoạn copy; không mở cleanup")
+    dest_pool = move_params.get("dest_pool")
+    dest_image = move_params.get("dest_image")
+    if dest_pool not in allowed_pools or not isinstance(dest_image, str) or not _RBD_IMAGE_NAME_RE.fullmatch(dest_image):
+        raise HTTPException(status_code=409, detail="Destination trong move proposal không còn hợp lệ")
+    try:
+        source = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+        destination_inventory = (
+            ceph_client.query_rbd_inventory(dest_pool)
+            if cluster.is_default else ceph_client.query_rbd_inventory_with(dest_pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không kiểm tra được trạng thái partial move: {exc}") from exc
+    if not source:
+        raise HTTPException(status_code=409, detail="Source không còn tồn tại; không được cleanup destination tự động")
+    if not any(isinstance(row, dict) and row.get("name") == dest_image for row in destination_inventory):
+        raise HTTPException(status_code=409, detail="Không còn destination để cleanup")
+    extra_params = {
+        "dest_pool": dest_pool,
+        "dest_image": dest_image,
+        "size_bytes": move_params.get("size_bytes"),
+        "delete_destination": True,
+        "move_token": move_params.get("move_token"),
+        "checksum": move_params.get("checksum"),
+        "cleanup_of_action_id": move_action_id,
+    }
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster,
+        pool=pool,
+        image=image,
+        extra_params=extra_params,
+        conflicting_images={image, dest_image},
+        action_id="rbd_move_cleanup_partial",
+        ceph_code=RBD_VOLUME_MOVE_CLEANUP_CEPH_CODE,
+        user=user,
+        idempotency_key=idempotency_key,
+        rationale=f"Cleanup bản copy dở dang {dest_pool}/{dest_image} của move {move_action_id}; giữ nguyên source {pool}/{image}",
+    )
+    return JSONResponse({
+        "action_id": action_pk,
+        "status": "PENDING_APPROVAL",
+        "source_preserved": True,
+        "destination_deleted_only_after_token_check": True,
+    }, status_code=201)
 
 
 @router.post("/api/volumes/{pool}/inventory/{image}/flatten")

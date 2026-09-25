@@ -146,6 +146,28 @@ def test_dashboard_health_api_surfaces_snapshot_refresh_error(dashboard_client):
     assert body["stale"] is True
     assert body["last_error"] == "MON unreachable"
 
+
+def test_dashboard_health_error_retains_last_good_snapshot(dashboard_client):
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    cluster_id = _default_cluster_id()
+    from watcher.cluster_snapshot_collector import publish_health_error
+
+    published = publish_snapshot(
+        cluster_id,
+        {"health": {"status": "HEALTH_WARN", "checks": {"OSD_DOWN": {}}}},
+    )
+    publish_health_error(cluster_id, "MON query timed out")
+
+    body = dashboard_client.get(f"/api/dashboard/health?cluster={cluster_id}").json()
+
+    assert body["health"] == "WARN"
+    assert body["health_available"] is True
+    assert body["generation"] == published["generation"]
+    assert body["collected_at"] == published["collected_at"]
+    assert body["last_error"] == "MON query timed out"
+    assert body["partial_errors"] == {"health": "MON query timed out"}
+
+
 def test_dashboard_health_api_maps_flat_watcher_health_status(dashboard_client):
     dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
     cluster_id = _default_cluster_id()

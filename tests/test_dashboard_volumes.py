@@ -1645,6 +1645,28 @@ def test_volume_inventory_api_searches_sorts_and_pages(dashboard_client, monkeyp
     assert body["summary"] == {"image_count": 2, "provisioned_size": 30, "used_size": 12, "used_percent": 40.0}
 
 
+def test_volume_inventory_api_exposes_stale_snapshot_metadata(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route,
+        "_cached_rbd_inventory_with_state",
+        lambda cluster, pool: ([
+            {"name": "volume-stale", "image_id": "stale-id", "provisioned_size": 100, "used_size": 25, "snapshot_count": 1},
+        ], {"stale": True, "refreshing": True, "age_seconds": 301.4, "source": "stale-cache"}),
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/inventory")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stale"] is True
+    assert body["refreshing"] is True
+    assert body["cache_age_seconds"] == 301.4
+    assert body["cache_source"] == "stale-cache"
+    assert body["collected_at"].endswith("Z")
+
+
 def test_volume_inventory_defaults_to_ten_rows_and_rejects_larger_pages(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [
@@ -2656,6 +2678,141 @@ def test_propose_cross_pool_copy_requires_approval_and_preserves_source(dashboar
     )
     assert replay.status_code == 200
     assert replay.json()["action_id"] == response.json()["action_id"]
+
+
+def test_cross_pool_copy_rejects_another_inflight_proposal_for_same_destination(
+    dashboard_client, monkeypatch,
+):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_image_detail", lambda *_: {
+        "size": 2 * 1024 ** 3, "snapshots": [{"name": "gold", "size": 2 * 1024 ** 3}],
+    })
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda *_: [])
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda *_: {
+        "max_available": 8 * 1024 ** 3, "rbd_enabled": True, "near_full": False,
+    })
+    _login(dashboard_client)
+    first = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/copy",
+        json={"snapshot": "gold", "dest_pool": "backups", "dest_image": "vm-copy"},
+        headers={"Idempotency-Key": "copy-first-2026"},
+    )
+    second = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-02/copy",
+        json={"snapshot": "gold", "dest_pool": "backups", "dest_image": "vm-copy"},
+        headers={"Idempotency-Key": "copy-second-2026"},
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert "thay đổi" in second.json()["detail"]
+
+
+def test_propose_cross_pool_move_is_destructive_and_requires_verified_copy(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_image_detail", lambda *_: {
+        "size": 3 * 1024 ** 3, "snapshots": [], "watchers": [], "locks": [], "children": [],
+    })
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda *_: [])
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda *_: {
+        "max_available": 8 * 1024 ** 3, "rbd_enabled": True, "near_full": False,
+    })
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/move",
+        json={"dest_pool": "backups", "dest_image": "vm-moved", "confirm_source_delete": True},
+        headers={"Idempotency-Key": "move-vm-01-2026"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["source_deleted_after_verified_copy"] is True
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "rbd_move_volume"
+        assert action.classification == "DESTRUCTIVE"
+        assert "rbd cp --no-progress vms/vm-01 backups/vm-moved" in action.proposed_command
+        assert "rbd rm vms/vm-01" in action.proposed_command
+        assert json.loads(action.action_params)["delete_source"] is True
+        action.execution_progress = json.dumps([{"phase": "copy_verify_delete", "status": "running"}])
+        session.commit()
+    progress = dashboard_client.get(
+        f"/api/volumes/vms/inventory/vm-01/move/progress?action_id={response.json()['action_id']}"
+    )
+    assert progress.status_code == 200
+    assert progress.json()["progress"][0]["phase"] == "copy_verify_delete"
+
+
+def test_cross_pool_move_rejects_missing_confirmation_or_dependencies(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_image_detail", lambda *_: {
+        "size": 2 * 1024 ** 3, "snapshots": [], "watchers": [{"client": "client.1"}],
+        "locks": [], "children": [],
+    })
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda *_: [])
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda *_: {
+        "max_available": 8 * 1024 ** 3, "rbd_enabled": True, "near_full": False,
+    })
+    _login(dashboard_client)
+    missing_confirmation = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/move",
+        json={"dest_pool": "backups", "dest_image": "vm-moved"},
+    )
+    attached = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/move",
+        json={"dest_pool": "backups", "dest_image": "vm-moved", "confirm_source_delete": True},
+    )
+    assert missing_confirmation.status_code == 400
+    assert attached.status_code == 409
+    assert "watcher" in attached.json()["detail"]
+
+
+def test_partial_move_cleanup_requires_failed_move_and_keeps_source(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_image_detail", lambda *_: {
+        "size": 3 * 1024 ** 3, "snapshots": [], "watchers": [], "locks": [], "children": [],
+    })
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda *_: [])
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_pool_overview", lambda *_: {
+        "max_available": 8 * 1024 ** 3, "rbd_enabled": True, "near_full": False,
+    })
+    _login(dashboard_client)
+    move = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/move",
+        json={"dest_pool": "backups", "dest_image": "vm-moved", "confirm_source_delete": True},
+        headers={"Idempotency-Key": "move-cleanup-source-2026"},
+    )
+    assert move.status_code == 201
+    move_id = move.json()["action_id"]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, move_id)
+        action.status = ActionStatus.FAILED.value
+        action.execution_progress = json.dumps([
+            {"phase": "preflight", "status": "done"},
+            {"phase": "copy_verify_delete", "status": "failed", "error": "SSH timeout"},
+        ])
+        session.commit()
+
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_inventory",
+        lambda pool: [{"name": "vm-moved"}] if pool == "backups" else [],
+    )
+    cleanup = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/move/cleanup",
+        json={"move_action_id": move_id, "confirm_partial_cleanup": True},
+        headers={"Idempotency-Key": "cleanup-move-source-2026"},
+    )
+
+    assert cleanup.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, cleanup.json()["action_id"])
+        params = json.loads(action.action_params)
+        assert action.action_id == "rbd_move_cleanup_partial"
+        assert action.classification == "DESTRUCTIVE"
+        assert params["cleanup_of_action_id"] == move_id
+        assert "rbd image-meta get backups/vm-moved" in action.proposed_command
+        assert "rbd rm backups/vm-moved" in action.proposed_command
+        assert "rbd rm vms/vm-01" not in action.proposed_command
 
 
 def test_cross_pool_copy_fails_closed_on_missing_snapshot_capacity_or_cinder(dashboard_client, monkeypatch):

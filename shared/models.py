@@ -1216,6 +1216,56 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
+class ClusterCapabilityGrant(Base):
+    """Server-side capability grant for one user and one Ceph cluster."""
+
+    __tablename__ = "cluster_capability_grants"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "cluster_id", "capability",
+            name="uq_cluster_capability_grant_user_cluster_capability",
+        ),
+        Index("ix_cluster_capability_grants_user_cluster", "user_id", "cluster_id"),
+        Index("ix_cluster_capability_grants_cluster_capability", "cluster_id", "capability"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    capability: Mapped[str] = mapped_column(String(96), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+    granted_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now, onupdate=utc_now)
+
+
+class SingleFullAudit(Base):
+    """Durable audit for each authorized Single Full execution."""
+
+    __tablename__ = "single_full_audits"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_single_full_audit_run_id"),
+        Index("ix_single_full_audits_cluster_created", "cluster_id", "created_at"),
+        Index("ix_single_full_audits_actor_created", "actor", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    cluster_ref: Mapped[str] = mapped_column(String(256), nullable=False)
+    prompt_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    command_class: Mapped[str] = mapped_column(String(64), nullable=False, default="single_full")
+    operator_acknowledged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="RUNNING")
+    result_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
 class AuthLoginRateLimit(Base):
     """Shared failed-login state used by every Dashboard replica.
 

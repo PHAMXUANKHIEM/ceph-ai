@@ -34,6 +34,65 @@ def test_auxiliary_scan_runs_in_background_and_prevents_overlap():
     assert finished.wait(1)
 
 
+def test_production_run_dispatches_slow_collectors_off_critical_health_loop(monkeypatch):
+    dispatched = []
+
+    class StopLoop(RuntimeError):
+        pass
+
+    def capture_dispatch(name, _callback, *, background):
+        dispatched.append((name, background))
+        return True
+
+    monkeypatch.setattr(watcher_main, "_run_auxiliary_scan", capture_dispatch)
+    monkeypatch.setattr(
+        watcher_main,
+        "query_cluster_health",
+        lambda: {"status": "HEALTH_OK", "checks": {}},
+    )
+    monkeypatch.setattr(
+        watcher_main.cluster_snapshot_collector,
+        "publish_health_snapshot",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(watcher_main, "_record_heartbeat_safe", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(watcher_main.settings, "device_health_scan_interval_seconds", 0)
+    monkeypatch.setattr(watcher_main.settings, "node_reachability_scan_interval_seconds", 0)
+    monkeypatch.setattr(watcher_main.settings, "node_health_scan_interval_seconds", 0)
+    monkeypatch.setattr(watcher_main.settings, "bluestore_omap_scan_interval_seconds", 0)
+    monkeypatch.setattr(watcher_main.settings, "osd_latency_scan_interval_seconds", 0)
+    monkeypatch.setattr(watcher_main.settings, "crush_scan_interval_seconds", 0)
+    monkeypatch.setattr(watcher_main.settings, "capability_inventory_scan_interval_seconds", 0)
+    monkeypatch.setattr(watcher_main.settings, "capacity_forecast_enabled", True)
+    monkeypatch.setattr(watcher_main.settings, "capacity_forecast_scan_interval_seconds", 0)
+    monkeypatch.setattr(
+        watcher_main.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(StopLoop()),
+    )
+
+    with pytest.raises(StopLoop):
+        watcher_main.run(
+            on_transition=lambda *_: None,
+            max_iterations=None,
+            cluster_id="cluster-a",
+        )
+
+    dispatched_by_name = dict(dispatched)
+    expected = {
+        "device-health-cluster-a",
+        "node-reachability-cluster-a",
+        "node-health-cluster-a",
+        "bluestore-omap-cluster-a",
+        "osd-latency-cluster-a",
+        "crush-cluster-a",
+        "capacity-forecast-cluster-a",
+        "capability-inventory-cluster-a",
+    }
+    assert expected <= dispatched_by_name.keys()
+    assert all(dispatched_by_name[name] is True for name in expected)
+
+
 @pytest.fixture(autouse=True)
 def isolated_db(monkeypatch):
     # Story 5.2: run() now writes a heartbeat row on every poll — every test

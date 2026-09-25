@@ -98,6 +98,33 @@ def test_first_section_error_is_unavailable(monkeypatch, tmp_path):
     assert stored["section_available"] is False
 
 
+def test_section_error_retains_last_good_payload_and_generation(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+    published = cluster_snapshot.publish_section_snapshot(
+        "cluster-a",
+        "pools",
+        [{"name": "volumes", "bytes_used": 4096}],
+    )
+
+    failed = cluster_snapshot.record_section_error(
+        "cluster-a",
+        "pools",
+        RuntimeError("MON query timed out"),
+        empty_data=[],
+    )
+    stored = cluster_snapshot.read_section_snapshot("cluster-a", "pools")
+
+    assert failed is not None
+    assert failed["generation"] == published["generation"]
+    assert stored is not None
+    assert stored["pools"] == [{"name": "volumes", "bytes_used": 4096}]
+    assert stored["section_available"] is True
+    assert stored["last_error"] == "MON query timed out"
+    assert stored["partial_errors"] == {"pools": "MON query timed out"}
+    assert stored["collected_at"] == published["collected_at"]
+    assert isinstance(stored["last_attempted_at"], str)
+
+
 def test_refresh_lifecycle_is_persistent_and_invalidation_is_cluster_scoped(monkeypatch, tmp_path):
     _isolate_cache(monkeypatch, tmp_path)
     cluster_snapshot.publish_snapshot("cluster-a", {"health": "HEALTH_OK"})

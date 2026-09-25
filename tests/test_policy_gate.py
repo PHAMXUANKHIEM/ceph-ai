@@ -110,6 +110,7 @@ def test_management_action_ids_loaded_from_policy_yaml():
         "rbd_resize_volume",
         "rbd_rename_volume",
         "rbd_clone_volume",
+        "rbd_move_volume",
         "rbd_flatten_volume",
         "rbd_template_mark",
         "rbd_qos_set",
@@ -203,6 +204,15 @@ def test_rbd_copy_is_dashboard_only_and_outside_incident_contract():
     assert "rbd_copy_volume" not in gate.VALID_MANAGEMENT_ACTION_IDS
     assert "rbd_copy_volume" not in VALID_ACTION_IDS
     assert classify_action("rbd_copy_volume") == ActionClassification.RISKY
+
+
+def test_rbd_move_is_dashboard_only_and_destructive():
+    import worker.policy.gate as gate
+    from worker.llm.router_client import VALID_ACTION_IDS
+
+    assert "rbd_move_volume" in gate.VALID_MANAGEMENT_ACTION_IDS
+    assert "rbd_move_volume" not in VALID_ACTION_IDS
+    assert classify_action("rbd_move_volume") == ActionClassification.DESTRUCTIVE
 
 
 def test_rbd_trash_purge_all_is_classified_destructive():

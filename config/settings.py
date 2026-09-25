@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     # ceph_container_name/ceph_osd_container_name are ignored in "cephadm"
     # and "none" modes.
     ceph_exec_mode: str = "docker"
-    watcher_poll_interval_seconds: int = 15
+    watcher_poll_interval_seconds: int = 5
     # Central bounds for read-only Ceph collection. Keep these separate from
     # Worker mutation-command settings so a slow MON cannot hold an HTTP
     # request or a remediation job indefinitely.

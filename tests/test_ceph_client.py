@@ -113,6 +113,30 @@ def test_get_mon_nodes_parses_settings(monkeypatch):
     assert get_mon_nodes() == ["1.1.1.1", "2.2.2.2", "3.3.3.3"]
 
 
+def test_cephadm_auxiliary_queries_reserve_sticky_health_mon_as_fallback():
+    ceph_client.last_successful_mon_node = "mon-b"
+
+    ordered = ceph_client._balanced_query_mon_nodes(
+        ["mon-a", "mon-b", "mon-c"],
+        "rbd du volumes --format json",
+        "cephadm",
+    )
+
+    assert set(ordered) == {"mon-a", "mon-b", "mon-c"}
+    assert ordered[-1] == "mon-b"
+    assert set(ordered[:2]) == {"mon-a", "mon-c"}
+
+
+def test_non_cephadm_queries_keep_normal_sticky_order():
+    ceph_client.last_successful_mon_node = "mon-b"
+
+    assert ceph_client._balanced_query_mon_nodes(
+        ["mon-a", "mon-b", "mon-c"],
+        "ceph status --format json",
+        "native",
+    ) == ["mon-b", "mon-a", "mon-c"]
+
+
 def test_query_cluster_health_returns_parsed_json_from_first_node(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150,10.20.1.249,10.20.1.253")
     fake_ssh.behavior = {

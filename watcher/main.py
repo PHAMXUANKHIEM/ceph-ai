@@ -965,6 +965,18 @@ def run(
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
 
+    def run_auxiliary_scan(name: str, callback: Callable[[], None]) -> bool:
+        """Run slow scans off the critical-health loop in production.
+
+        Bounded test runs stay synchronous so their assertions remain
+        deterministic and no daemon thread outlives an isolated test DB.
+        """
+        return _run_auxiliary_scan(
+            name,
+            callback,
+            background=max_iterations is None,
+        )
+
     while max_iterations is None or iterations < max_iterations:
         service_health.record_safe("watcher")
         poll_started_monotonic = time.monotonic()
@@ -1238,13 +1250,18 @@ def run(
             or (now - last_device_health_scan_at).total_seconds()
             >= settings.device_health_scan_interval_seconds
         ):
-            try:
-                current_predicted_failing = device_health_monitor.check_predicted_failing_osds()
-                device_health_monitor.create_or_resolve_device_health_incidents(
-                    current_predicted_failing
-                )
-            except Exception:
-                logger.exception("run: device health scan failed")
+            def scan_device_health() -> None:
+                try:
+                    current_predicted_failing = device_health_monitor.check_predicted_failing_osds()
+                    device_health_monitor.create_or_resolve_device_health_incidents(
+                        current_predicted_failing
+                    )
+                except Exception:
+                    logger.exception("run: device health scan failed")
+
+            run_auxiliary_scan(
+                f"device-health-{cluster_id or 'default'}", scan_device_health,
+            )
             last_device_health_scan_at = now
 
         # A down host otherwise only appears as best-effort collector errors.
@@ -1255,16 +1272,21 @@ def run(
             or (now - last_node_reachability_scan_at).total_seconds()
             >= settings.node_reachability_scan_interval_seconds
         ):
-            try:
-                node_still_unreachable: set[str] = set()
-                current_node_reachability = node_health_monitor.check_node_reachability(
-                    node_still_unreachable,
-                )
-                node_health_monitor.create_or_resolve_node_unreachable_incidents(
-                    current_node_reachability, node_still_unreachable,
-                )
-            except Exception:
-                logger.exception("run: node reachability scan failed")
+            def scan_node_reachability() -> None:
+                try:
+                    node_still_unreachable: set[str] = set()
+                    current_node_reachability = node_health_monitor.check_node_reachability(
+                        node_still_unreachable,
+                    )
+                    node_health_monitor.create_or_resolve_node_unreachable_incidents(
+                        current_node_reachability, node_still_unreachable,
+                    )
+                except Exception:
+                    logger.exception("run: node reachability scan failed")
+
+            run_auxiliary_scan(
+                f"node-reachability-{cluster_id or 'default'}", scan_node_reachability,
+            )
             last_node_reachability_scan_at = now
 
         # 2026-08-05: Node hardware (CPU/RAM) threshold scan — own
@@ -1279,14 +1301,19 @@ def run(
             or (now - last_node_health_scan_at).total_seconds()
             >= settings.node_health_scan_interval_seconds
         ):
-            try:
-                node_still_over: set[str] = set()
-                current_node_resources = node_health_monitor.check_node_resources(node_still_over)
-                node_health_monitor.create_or_resolve_node_health_incidents(
-                    current_node_resources, node_still_over
-                )
-            except Exception:
-                logger.exception("run: node health scan failed")
+            def scan_node_health() -> None:
+                try:
+                    node_still_over: set[str] = set()
+                    current_node_resources = node_health_monitor.check_node_resources(node_still_over)
+                    node_health_monitor.create_or_resolve_node_health_incidents(
+                        current_node_resources, node_still_over
+                    )
+                except Exception:
+                    logger.exception("run: node health scan failed")
+
+            run_auxiliary_scan(
+                f"node-health-{cluster_id or 'default'}", scan_node_health,
+            )
             last_node_health_scan_at = now
 
         # 2026-08-06: BlueStore per-pool omap quick-fix, system-proposed —
@@ -1306,11 +1333,22 @@ def run(
             or (now - last_bluestore_omap_scan_at).total_seconds()
             >= settings.bluestore_omap_scan_interval_seconds
         ):
-            try:
-                current_legacy_omap = bluestore_omap_monitor.check_legacy_omap_osds(health)
-                bluestore_omap_monitor.create_or_resolve_bluestore_incidents(current_legacy_omap)
-            except Exception:
-                logger.exception("run: bluestore omap scan failed")
+            health_for_omap = health
+
+            def scan_bluestore_omap() -> None:
+                try:
+                    current_legacy_omap = bluestore_omap_monitor.check_legacy_omap_osds(
+                        health_for_omap
+                    )
+                    bluestore_omap_monitor.create_or_resolve_bluestore_incidents(
+                        current_legacy_omap
+                    )
+                except Exception:
+                    logger.exception("run: bluestore omap scan failed")
+
+            run_auxiliary_scan(
+                f"bluestore-omap-{cluster_id or 'default'}", scan_bluestore_omap,
+            )
             last_bluestore_omap_scan_at = now
 
         # 2026-08-07: OSD latency outlier scan — own independent try/except
@@ -1326,14 +1364,21 @@ def run(
             or (now - last_osd_latency_scan_at).total_seconds()
             >= settings.osd_latency_scan_interval_seconds
         ):
-            try:
-                latency_still_over: set[str] = set()
-                current_osd_latency = osd_latency_monitor.check_osd_latency_outliers(latency_still_over)
-                osd_latency_monitor.create_or_resolve_osd_latency_incidents(
-                    current_osd_latency, latency_still_over
-                )
-            except Exception:
-                logger.exception("run: osd latency scan failed")
+            def scan_osd_latency() -> None:
+                try:
+                    latency_still_over: set[str] = set()
+                    current_osd_latency = osd_latency_monitor.check_osd_latency_outliers(
+                        latency_still_over
+                    )
+                    osd_latency_monitor.create_or_resolve_osd_latency_incidents(
+                        current_osd_latency, latency_still_over
+                    )
+                except Exception:
+                    logger.exception("run: osd latency scan failed")
+
+            run_auxiliary_scan(
+                f"osd-latency-{cluster_id or 'default'}", scan_osd_latency,
+            )
             last_osd_latency_scan_at = now
 
         # 2026-08-07 (Epic 12, Story 12.1 + 12.2): CRUSH structure + OSD
@@ -1353,24 +1398,25 @@ def run(
             last_crush_scan_at is None
             or (now - last_crush_scan_at).total_seconds() >= settings.crush_scan_interval_seconds
         ):
-            try:
-                crush_structure_monitor.scan_and_store(cluster_id)
-                crush_distribution_monitor.sync_distribution(cluster_id)
-                # 2026-08-07 (Epic 12, Story 12.2): Skew detection reads
-                # BACK the 2 tables the calls above just wrote, on the SAME
-                # tick (AD-28 — 2 independent signals, USE and PG, both
-                # computed off this one shared scan). Kept in the SAME
-                # try/except as the collection calls above (not a separate
-                # block) so one shared failure-isolation boundary covers
-                # this whole tick, same as every other scan block in this
-                # function.
-                skew_still_over: set[str] = set()
-                current_crush_skew = crush_skew_monitor.check_crush_skew(cluster_id, skew_still_over)
-                crush_skew_monitor.create_or_resolve_crush_skew_incidents(
-                    current_crush_skew, skew_still_over
-                )
-            except Exception:
-                logger.exception("run: crush structure/distribution/skew scan failed")
+            def scan_crush() -> None:
+                try:
+                    crush_structure_monitor.scan_and_store(cluster_id)
+                    crush_distribution_monitor.sync_distribution(cluster_id)
+                    # Skew detection reads back both tables from this same
+                    # scan. Keep the work ordered inside one background job.
+                    skew_still_over: set[str] = set()
+                    current_crush_skew = crush_skew_monitor.check_crush_skew(
+                        cluster_id, skew_still_over
+                    )
+                    crush_skew_monitor.create_or_resolve_crush_skew_incidents(
+                        current_crush_skew, skew_still_over
+                    )
+                except Exception:
+                    logger.exception("run: crush structure/distribution/skew scan failed")
+
+            run_auxiliary_scan(
+                f"crush-{cluster_id or 'default'}", scan_crush,
+            )
             last_crush_scan_at = now
 
             # Cross-layer RCA needs the current RBD header-object acting set.
@@ -1431,10 +1477,15 @@ def run(
             or (now - last_capacity_forecast_scan_at).total_seconds()
             >= settings.capacity_forecast_scan_interval_seconds
         ):
-            try:
-                capacity_forecast.collect_and_store(cluster_id)
-            except Exception:
-                logger.exception("run: capacity forecast collection failed")
+            def scan_capacity_forecast() -> None:
+                try:
+                    capacity_forecast.collect_and_store(cluster_id)
+                except Exception:
+                    logger.exception("run: capacity forecast collection failed")
+
+            run_auxiliary_scan(
+                f"capacity-forecast-{cluster_id}", scan_capacity_forecast,
+            )
             last_capacity_forecast_scan_at = now
 
         # 2026-08-17 (AI roadmap Pha 0.1): Cluster capability inventory --
@@ -1449,10 +1500,16 @@ def run(
             or (now - last_capability_scan_at).total_seconds()
             >= settings.capability_inventory_scan_interval_seconds
         ):
-            try:
-                capability_inventory.scan_and_store(cluster_id)
-            except Exception:
-                logger.exception("run: capability inventory scan failed")
+            def scan_capability_inventory() -> None:
+                try:
+                    capability_inventory.scan_and_store(cluster_id)
+                except Exception:
+                    logger.exception("run: capability inventory scan failed")
+
+            run_auxiliary_scan(
+                f"capability-inventory-{cluster_id or 'default'}",
+                scan_capability_inventory,
+            )
             last_capability_scan_at = now
 
         # 2026-08-10: ceph-aiops's OWN database size — own independent

@@ -57,7 +57,7 @@ from shared.telegram_alerts import (
     send_update_failure_alert,
 )
 from worker.backup import engine as backup_engine
-from worker.executor import bounded_job, cinder_reconciliation, cluster_deploy, commands, rbd_reconciliation, vm_perf, volume_perf
+from worker.executor import bounded_job, cinder_reconciliation, cluster_deploy, commands, rbd_move, rbd_move_cleanup, rbd_reconciliation, vm_perf, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.executor.action_contract import (
     ActionContractError,
@@ -3487,6 +3487,44 @@ def _execute_approved_action(action_pk: str) -> None:
         _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
         return
 
+    if action_id_str == rbd_move.RBD_MOVE_ACTION_ID:
+        if not isinstance(action_params, dict):
+            _record_approved_execution_result(action_pk, command=None, succeeded=False)
+            return
+        succeeded, command, output = rbd_move.run(
+            action_pk,
+            action_params,
+            nodes[0],
+            ssh_user,
+            ssh_key_path,
+            ceph_exec_mode,
+            ceph_container_name,
+            _write_action_progress,
+        )
+        _record_approved_execution_result(
+            action_pk, command=command or None, succeeded=succeeded, command_output=output
+        )
+        return
+
+    if action_id_str == rbd_move_cleanup.RBD_MOVE_CLEANUP_ACTION_ID:
+        if not isinstance(action_params, dict):
+            _record_approved_execution_result(action_pk, command=None, succeeded=False)
+            return
+        succeeded, command, output = rbd_move_cleanup.run(
+            action_pk,
+            action_params,
+            nodes[0],
+            ssh_user,
+            ssh_key_path,
+            ceph_exec_mode,
+            ceph_container_name,
+            _write_action_progress,
+        )
+        _record_approved_execution_result(
+            action_pk, command=command or None, succeeded=succeeded, command_output=output
+        )
+        return
+
 
     # 2026-07-25 (Story 8.1): Dựng cụm Ceph tự động's 3 action_ids delegate
     # entirely to worker/executor/cluster_deploy.py's own multi-phase
@@ -4021,6 +4059,7 @@ def _record_approved_execution_result(
             "rbd_clone_volume", "rbd_flatten_volume", "rbd_template_mark", "rbd_qos_set",
             "rbd_trash_move_volume", "rbd_trash_restore_volume",
             "rbd_trash_remove", "rbd_trash_purge_all",
+            "rbd_move_volume",
         }:
             try:
                 params = json.loads(action.action_params or "{}")

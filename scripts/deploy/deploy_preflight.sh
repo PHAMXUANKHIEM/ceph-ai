@@ -7,7 +7,7 @@ ENV_FILE="${CEPH_AI_ENV_FILE:-/var/lib/ceph-ai/config/.env}"
 BACKUP_DIR="${CEPH_AI_DATABASE_BACKUP_DIR:-/var/lib/ceph-ai/database-backups}"
 REGISTRY_URL="${CEPH_AI_REGISTRY_PROBE_URL:-https://ghcr.io/v2/}"
 REQUIRED_DIRS="${CEPH_AI_PREFLIGHT_REQUIRED_DIRS:-/etc/systemd/system /var/lib/ceph-ai /var/lib/containers /run/ceph-ai}"
-REQUIRED_COMMANDS="${CEPH_AI_PREFLIGHT_REQUIRED_COMMANDS:-bash git podman systemctl install curl awk mktemp}"
+REQUIRED_COMMANDS="${CEPH_AI_PREFLIGHT_REQUIRED_COMMANDS:-bash git podman systemctl install curl awk mktemp python3 date hostname tee chmod mv}"
 REPORT_FILE="${CEPH_AI_PREFLIGHT_REPORT:-}"
 failures=0
 

@@ -136,6 +136,16 @@
           <div class="volume-action-row"><input id="volume-copy-dest-pool" maxlength="128" required placeholder="Pool đích"><input id="volume-copy-dest-image" maxlength="128" required placeholder="Tên volume mới"><button class="btn btn-primary btn-sm" type="submit">Đề xuất copy</button></div>
           <small class="hint">Tạo bản sao độc lập tại thời điểm snapshot; không xóa nguồn. Cần phê duyệt. Volume do Cinder quản lý không hỗ trợ đường này.</small>
         </form>
+        <form class="volume-action volume-action-move" id="volume-move-form">
+          <label for="volume-move-dest-pool">Move volume sang pool khác</label>
+          <div class="volume-action-row"><input id="volume-move-dest-pool" maxlength="128" required placeholder="Pool đích"><input id="volume-move-dest-image" maxlength="128" required placeholder="Tên volume mới"></div>
+          <label class="volume-move-confirm"><input id="volume-move-confirm" type="checkbox" required> Tôi hiểu volume nguồn sẽ bị xóa sau khi copy được kiểm tra</label>
+          <button class="btn volume-action-danger" type="submit">Đề xuất move (destructive)</button>
+          <small class="hint">Chỉ dành cho RBD không do Cinder quản lý, đã detached, không lock/watcher/snapshot/clone. Worker sẽ kiểm tra export-diff SHA-256 trước khi xóa nguồn.</small>
+          <p id="volume-move-progress" class="hint" role="status" aria-live="polite" hidden></p>
+          <button class="btn btn-warning-outline btn-sm" type="button" id="volume-move-cleanup-button" hidden>Dọn bản copy dở dang</button>
+          <small id="volume-move-cleanup-hint" class="hint" hidden>Chỉ xuất hiện khi move FAILED và source vẫn còn. Cleanup cần approval và chỉ xóa destination đã được xác minh bằng move token.</small>
+        </form>
         <form class="volume-action" id="volume-template-form">
           <label for="volume-template-snapshot">Đánh dấu snapshot thành template read-only</label>
           <div class="volume-action-row"><input id="volume-template-snapshot" maxlength="128" required placeholder="Tên snapshot"><input id="volume-template-name" maxlength="64" required placeholder="Tên template"><button class="btn btn-primary btn-sm" type="submit">Tạo template</button></div>

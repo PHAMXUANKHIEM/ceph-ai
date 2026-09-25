@@ -5,6 +5,7 @@ import pytest
 from worker.executor.action_contract import (
     ActionContractError,
     RBD_COPY_VOLUME_CONTRACT,
+    RbdMoveVolumeParams,
     RbdCopyVolumeParams,
     TargetScope,
     TypedActionGateway,
@@ -99,6 +100,23 @@ def test_rbd_copy_has_strict_typed_params_and_requires_approval():
 def test_rbd_copy_rejects_invalid_typed_params(params, expected):
     with pytest.raises((ActionContractError, ValueError), match=expected):
         validate_typed_action_params("rbd_copy_volume", params)
+
+
+def test_rbd_move_contract_requires_explicit_delete_confirmation():
+    params = RbdMoveVolumeParams.model_validate({
+        "pool_name": "images", "image": "vm-source", "dest_pool": "vms",
+        "dest_image": "vm-copy", "size_bytes": 1024, "delete_source": True,
+        "move_token": "move-token-20260925-01",
+        "checksum": "rbd-export-diff-sha256",
+    })
+    assert params.delete_source is True
+    with pytest.raises(ActionContractError, match="xác nhận"):
+        validate_typed_action_params("rbd_move_volume", {
+            "pool_name": "images", "image": "vm-source", "dest_pool": "vms",
+            "dest_image": "vm-copy", "size_bytes": 1024, "delete_source": False,
+            "move_token": "move-token-20260925-01",
+            "checksum": "rbd-export-diff-sha256",
+        })
 
 
 def test_valid_typed_action_is_authorized():

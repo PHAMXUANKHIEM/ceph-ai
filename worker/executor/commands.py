@@ -215,6 +215,7 @@ _TRASH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # can never be interpreted as a CLI option.
 _RBD_IMAGE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _RBD_SNAPSHOT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+_RBD_MOVE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{15,63}$")
 _RBD_SIZE_MIB_RANGE = (1, 64 * 1024 * 1024)
 
 
@@ -526,6 +527,138 @@ def _rbd_copy_volume_command(params: dict) -> str:
     return f"rbd cp --no-progress {source} {destination} && rbd info {destination} --format json"
 
 
+def _rbd_move_volume_command(params: dict) -> str:
+    """Copy, verify, then delete an unmanaged detached RBD image.
+
+    The source is deliberately not removed until export-diff SHA-256 values
+    and the destination logical size have both been verified.  The command
+    returns a small JSON envelope consumed by rbd_reconciliation.py.
+    """
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    dest_pool = params.get("dest_pool")
+    dest_image = params.get("dest_image")
+    size_bytes = params.get("size_bytes")
+    move_token = params.get("move_token")
+    if not isinstance(dest_pool, str) or not _POOL_NAME_RE.fullmatch(dest_pool):
+        raise ExecutorError("invalid or missing destination pool")
+    if not isinstance(dest_image, str) or not _RBD_IMAGE_RE.fullmatch(dest_image):
+        raise ExecutorError("invalid or missing destination RBD image")
+    if pool == dest_pool:
+        raise ExecutorError("cross-pool move requires a different destination pool")
+    if image.startswith("volume-") or dest_image.startswith("volume-"):
+        raise ExecutorError("Cinder-managed volume cannot be moved directly through RBD")
+    if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes <= 0:
+        raise ExecutorError("move requires a positive approved size_bytes")
+    if params.get("delete_source") is not True:
+        raise ExecutorError("move requires explicit delete_source confirmation")
+    if params.get("checksum") != "rbd-export-diff-sha256":
+        raise ExecutorError("move requires the approved export-diff SHA-256 checksum")
+    if not isinstance(move_token, str) or not _RBD_MOVE_TOKEN_RE.fullmatch(move_token):
+        raise ExecutorError("move requires a server-generated resume token")
+    source = shlex.quote(f"{pool}/{image}")
+    destination = shlex.quote(f"{dest_pool}/{dest_image}")
+    token = shlex.quote(move_token)
+    metadata_key = shlex.quote("ceph.ai.move_token")
+    # Python is used only to read the already-returned rbd info JSON; it does
+    # not receive user input.  Keep all image/pool values shell-quoted above.
+    inner = (
+        f"set -eu; source_info=$(rbd info {source} --format json); "
+        f"actual_source_size=$(printf '%s' \"$source_info\" | python3 -c "
+        f"'import json,sys; print(int(json.load(sys.stdin)[\"size\"]))'); "
+        f"if [ \"$actual_source_size\" != \"{size_bytes}\" ]; then "
+        f"echo 'RBD move source size changed; source was preserved' >&2; exit 1; fi; "
+        f"watcher_count=$(rbd status {source} --format json | python3 -c "
+        f"'import json,sys; p=json.load(sys.stdin); print(len(p.get(\"watchers\", [])) if isinstance(p,dict) else 0)'); "
+        f"if [ \"$watcher_count\" != 0 ]; then "
+        f"echo 'RBD move source has active watchers; source was preserved' >&2; exit 1; fi; "
+        f"snapshot_count=$(rbd snap ls {source} --format json | python3 -c "
+        f"'import json,sys; p=json.load(sys.stdin); print(len(p if isinstance(p,list) else p.get(\"snapshots\", [])))'); "
+        f"if [ \"$snapshot_count\" != 0 ]; then "
+        f"echo 'RBD move source has snapshots; source was preserved' >&2; exit 1; fi; "
+        f"destination_exists=$(rbd ls {shlex.quote(dest_pool)} --format json | python3 -c "
+        f"'import json,sys; p=json.load(sys.stdin); names=[x if isinstance(x,str) else x.get(\"name\") for x in (p if isinstance(p,list) else p.get(\"images\", []))]; print(\"1\" if \"{dest_image}\" in names else \"0\")'); "
+        f"if [ \"$destination_exists\" = 1 ]; then "
+        f"marker=$(rbd image-meta get {destination} {metadata_key} 2>/dev/null || true); "
+        f"if [ \"$marker\" != {token} ]; then "
+        f"echo 'RBD move destination exists without matching resume token; source was preserved' >&2; exit 23; fi; "
+        f"else rbd cp --no-progress {source} {destination} && rbd image-meta set {destination} {metadata_key} {token}; fi; "
+        f"source_sha256=$(rbd export-diff {source} - | sha256sum | cut -d ' ' -f 1); "
+        f"dest_sha256=$(rbd export-diff {destination} - | sha256sum | cut -d ' ' -f 1); "
+        f"if [ \"$source_sha256\" != \"$dest_sha256\" ]; then "
+        f"echo 'RBD move checksum mismatch; source was preserved' >&2; exit 1; fi; "
+        f"dest_info=$(rbd info {destination} --format json); "
+        f"actual_size=$(printf '%s' \"$dest_info\" | python3 -c "
+        f"'import json,sys; print(int(json.load(sys.stdin)[\"size\"]))'); "
+        f"if [ \"$actual_size\" != \"{size_bytes}\" ]; then "
+        f"echo 'RBD move destination size mismatch; source was preserved' >&2; exit 1; fi; "
+        f"rbd rm {source}; "
+        f"printf '{{\"name\":\"{dest_image}\",\"size\":%s,\"source_deleted\":true,"
+        f"\"checksum_verified\":true,\"source_sha256\":\"%s\",\"dest_sha256\":\"%s\"}}' "
+        f"\"$actual_size\" \"$source_sha256\" \"$dest_sha256\""
+    )
+    return "sh -c " + shlex.quote(inner)
+
+
+def _rbd_move_cleanup_partial_command(params: dict) -> str:
+    """Remove only a token-owned partial move destination.
+
+    Cleanup is fail-closed: the source must still exist with the approved
+    size, the destination must carry the server-generated move token, and the
+    destination must have no watcher or snapshot.  A destination without the
+    token is never removed because ownership cannot be proven.
+    """
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    dest_pool = params.get("dest_pool")
+    dest_image = params.get("dest_image")
+    size_bytes = params.get("size_bytes")
+    move_token = params.get("move_token")
+    if not isinstance(dest_pool, str) or not _POOL_NAME_RE.fullmatch(dest_pool):
+        raise ExecutorError("invalid or missing destination pool")
+    if not isinstance(dest_image, str) or not _RBD_IMAGE_RE.fullmatch(dest_image):
+        raise ExecutorError("invalid or missing destination RBD image")
+    if pool == dest_pool:
+        raise ExecutorError("partial move cleanup requires a different destination pool")
+    if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes <= 0:
+        raise ExecutorError("partial cleanup requires a positive approved source size_bytes")
+    if params.get("delete_destination") is not True:
+        raise ExecutorError("partial cleanup requires explicit destination-delete confirmation")
+    if params.get("checksum") != "rbd-export-diff-sha256":
+        raise ExecutorError("partial cleanup requires the approved export-diff SHA-256 checksum")
+    if not isinstance(move_token, str) or not _RBD_MOVE_TOKEN_RE.fullmatch(move_token):
+        raise ExecutorError("partial cleanup requires the original server-generated move token")
+    source = shlex.quote(f"{pool}/{image}")
+    destination = shlex.quote(f"{dest_pool}/{dest_image}")
+    token = shlex.quote(move_token)
+    metadata_key = shlex.quote("ceph.ai.move_token")
+    inner = (
+        f"set -eu; source_info=$(rbd info {source} --format json); "
+        f"actual_source_size=$(printf '%s' \"$source_info\" | python3 -c "
+        f"'import json,sys; print(int(json.load(sys.stdin)[\"size\"]))'); "
+        f"if [ \"$actual_source_size\" != \"{size_bytes}\" ]; then "
+        f"echo 'RBD partial cleanup source size changed; destination was preserved' >&2; exit 1; fi; "
+        f"destination_info=$(rbd info {destination} --format json); "
+        f"watcher_count=$(rbd status {destination} --format json | python3 -c "
+        f"'import json,sys; p=json.load(sys.stdin); print(len(p.get(\"watchers\", [])) if isinstance(p,dict) else 0)'); "
+        f"if [ \"$watcher_count\" != 0 ]; then "
+        f"echo 'RBD partial cleanup destination has active watchers; destination was preserved' >&2; exit 1; fi; "
+        f"snapshot_count=$(rbd snap ls {destination} --format json | python3 -c "
+        f"'import json,sys; p=json.load(sys.stdin); print(len(p if isinstance(p,list) else p.get(\"snapshots\", [])))'); "
+        f"if [ \"$snapshot_count\" != 0 ]; then "
+        f"echo 'RBD partial cleanup destination has snapshots; destination was preserved' >&2; exit 1; fi; "
+        f"marker=$(rbd image-meta get {destination} {metadata_key} 2>/dev/null || true); "
+        f"if [ \"$marker\" != {token} ]; then "
+        f"echo 'RBD partial cleanup destination token mismatch; destination was preserved' >&2; exit 23; fi; "
+        f"actual_destination_size=$(printf '%s' \"$destination_info\" | python3 -c "
+        f"'import json,sys; print(int(json.load(sys.stdin)[\"size\"]))'); "
+        f"rbd rm {destination}; "
+        f"printf '{{\"name\":\"{dest_image}\",\"size\":%s,\"source_present\":true,'"
+        f"'\"destination_deleted\":true,\"marker_verified\":true}}' \"$actual_destination_size\""
+    )
+    return "sh -c " + shlex.quote(inner)
+
+
 def _rbd_flatten_volume_command(params: dict) -> str:
     pool = _require_pool_name(params)
     image = _require_rbd_image(params)
@@ -736,6 +869,8 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "rbd_rename_volume": _rbd_rename_volume_command,
     "rbd_clone_volume": _rbd_clone_volume_command,
     "rbd_copy_volume": _rbd_copy_volume_command,
+    "rbd_move_volume": _rbd_move_volume_command,
+    "rbd_move_cleanup_partial": _rbd_move_cleanup_partial_command,
     "rbd_flatten_volume": _rbd_flatten_volume_command,
     "rbd_template_mark": _rbd_template_mark_command,
     "rbd_qos_set": _rbd_qos_set_command,
@@ -774,6 +909,8 @@ _CEPH_RUNTIME_ACTION_IDS = frozenset({
     "rbd_rename_volume",
     "rbd_clone_volume",
     "rbd_copy_volume",
+    "rbd_move_volume",
+    "rbd_move_cleanup_partial",
     "rbd_flatten_volume",
     "rbd_template_mark",
     "rbd_qos_set",

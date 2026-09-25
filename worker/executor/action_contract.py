@@ -14,7 +14,7 @@ import json
 import math
 import re
 from datetime import datetime, timezone
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -74,6 +74,73 @@ RBD_COPY_VOLUME_CONTRACT = {
     "source_preserved": True,
 }
 
+RBD_MOVE_VOLUME_CONTRACT = {
+    "action_id": "rbd_move_volume",
+    "surface": "dashboard_worker_only",
+    "incident_autopilot": False,
+    "classification": "DESTRUCTIVE",
+    "capability": "block_storage.rbd_move_unmanaged",
+    "target_type": "volume",
+    "typed_params": {
+        "pool_name": "source RBD pool",
+        "image": "source unmanaged RBD image",
+        "dest_pool": "different destination RBD pool",
+        "dest_image": "new destination RBD image",
+        "size_bytes": "positive integer approved by preflight",
+        "delete_source": "must be true after explicit operator confirmation",
+        "move_token": "server-generated token used to resume only its own destination",
+        "checksum": "must be rbd-export-diff-sha256",
+    },
+    "requires_approval": True,
+    "idempotency": "Idempotency-Key scoped to user/cluster/intent; replay returns the existing Action",
+    "expiry": "Never admitted to Incident/Autopilot typed lease; Dashboard proposal remains approval-gated",
+    "preflight": [
+        "source is unmanaged, detached, unlocked, watcher-free and has no snapshot/clone dependency",
+        "destination pool is allowed, RBD-enabled and has capacity",
+        "destination image does not exist",
+        "Cinder-managed volume names are rejected",
+        "explicit confirmation to delete source is required",
+    ],
+    "post_check": [
+        "destination name and size match approved parameters",
+        "source/destination export-diff SHA-256 values match before source deletion",
+        "source is absent only after the verified copy",
+    ],
+    "source_preserved_until_verified": True,
+}
+
+RBD_MOVE_CLEANUP_PARTIAL_CONTRACT = {
+    "action_id": "rbd_move_cleanup_partial",
+    "surface": "dashboard_worker_only",
+    "incident_autopilot": False,
+    "classification": "DESTRUCTIVE",
+    "capability": "block_storage.rbd_move_cleanup_partial",
+    "target_type": "volume",
+    "typed_params": {
+        "pool_name": "source RBD pool",
+        "image": "source RBD image that must remain present",
+        "dest_pool": "destination RBD pool",
+        "dest_image": "token-owned partial destination image",
+        "size_bytes": "positive approved source size",
+        "delete_destination": "must be true after explicit operator confirmation",
+        "move_token": "original server-generated move token",
+        "checksum": "must be rbd-export-diff-sha256",
+        "cleanup_of_action_id": "failed rbd_move_volume Action being cleaned up",
+    },
+    "requires_approval": True,
+    "preflight": [
+        "the original move Action is FAILED and its source remains present",
+        "destination exists and carries the exact original move token",
+        "destination has no watcher or snapshot dependency",
+        "source size still matches the approved move size",
+    ],
+    "post_check": [
+        "source remains present",
+        "destination is absent only after token ownership was verified",
+    ],
+    "source_preserved": True,
+}
+
 
 class ActionContractError(ValueError):
     """The proposed action cannot cross the typed execution boundary."""
@@ -116,8 +183,105 @@ class RbdCopyVolumeParams(BaseModel):
         return self
 
 
+class RbdMoveVolumeParams(BaseModel):
+    """Strict parameter schema for the destructive copy-then-remove flow."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    pool_name: str = Field(min_length=1, max_length=128)
+    image: str = Field(min_length=1, max_length=128)
+    dest_pool: str = Field(min_length=1, max_length=128)
+    dest_image: str = Field(min_length=1, max_length=128)
+    size_bytes: int = Field(gt=0)
+    delete_source: bool
+    move_token: str = Field(min_length=16, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{15,63}$")
+    checksum: Literal["rbd-export-diff-sha256"]
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+    requested_by: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("pool_name", "dest_pool")
+    @classmethod
+    def validate_pool_name(cls, value: str) -> str:
+        if not _RBD_POOL_NAME_RE.fullmatch(value):
+            raise ValueError("RBD pool name không hợp lệ")
+        return value
+
+    @field_validator("image", "dest_image")
+    @classmethod
+    def validate_image_name(cls, value: str) -> str:
+        if not _RBD_IMAGE_NAME_RE.fullmatch(value):
+            raise ValueError("RBD image name không hợp lệ")
+        return value
+
+    @model_validator(mode="after")
+    def validate_move_boundary(self):
+        if self.pool_name == self.dest_pool:
+            raise ValueError("move phải sang pool RBD khác")
+        if self.image == self.dest_image:
+            raise ValueError("image nguồn và đích không được trùng tên")
+        if self.image.startswith("volume-") or self.dest_image.startswith("volume-"):
+            raise ValueError("Cinder-managed volume không được move trực tiếp qua RBD")
+        if self.delete_source is not True:
+            raise ValueError("move bắt buộc có xác nhận xóa nguồn")
+        return self
+
+
+class RbdMoveCleanupPartialParams(BaseModel):
+    """Strict schema for deleting a token-owned incomplete destination only."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    pool_name: str = Field(min_length=1, max_length=128)
+    image: str = Field(min_length=1, max_length=128)
+    dest_pool: str = Field(min_length=1, max_length=128)
+    dest_image: str = Field(min_length=1, max_length=128)
+    size_bytes: int = Field(gt=0)
+    delete_destination: bool
+    move_token: str = Field(min_length=16, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{15,63}$")
+    checksum: Literal["rbd-export-diff-sha256"]
+    cleanup_of_action_id: str = Field(min_length=1, max_length=64)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+    requested_by: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("pool_name", "dest_pool")
+    @classmethod
+    def validate_pool_name(cls, value: str) -> str:
+        if not _RBD_POOL_NAME_RE.fullmatch(value):
+            raise ValueError("RBD pool name không hợp lệ")
+        return value
+
+    @field_validator("image", "dest_image")
+    @classmethod
+    def validate_image_name(cls, value: str) -> str:
+        if not _RBD_IMAGE_NAME_RE.fullmatch(value):
+            raise ValueError("RBD image name không hợp lệ")
+        return value
+
+    @model_validator(mode="after")
+    def validate_cleanup_boundary(self):
+        if self.pool_name == self.dest_pool:
+            raise ValueError("partial cleanup phải ở pool đích khác pool nguồn")
+        if self.image == self.dest_image:
+            raise ValueError("image nguồn và đích không được trùng tên")
+        if self.delete_destination is not True:
+            raise ValueError("partial cleanup bắt buộc có xác nhận xóa destination")
+        return self
+
+
 def validate_typed_action_params(action_id: str, params: Mapping[str, Any]) -> None:
     """Apply action-specific schemas after the generic JSON boundary."""
+    if action_id == "rbd_move_volume":
+        try:
+            RbdMoveVolumeParams.model_validate(params)
+        except Exception as exc:
+            raise ActionContractError(f"params của {action_id} không hợp lệ: {exc}") from exc
+        return
+    if action_id == "rbd_move_cleanup_partial":
+        try:
+            RbdMoveCleanupPartialParams.model_validate(params)
+        except Exception as exc:
+            raise ActionContractError(f"params của {action_id} không hợp lệ: {exc}") from exc
+        return
     if action_id != "rbd_copy_volume":
         return
     try:

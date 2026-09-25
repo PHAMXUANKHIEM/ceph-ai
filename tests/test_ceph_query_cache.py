@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import threading
 from contextlib import contextmanager
 
@@ -197,3 +200,70 @@ def test_store_does_not_alias_the_callers_value(monkeypatch, tmp_path):
 
     cached, _age = ceph_query_cache.get_cached("inventory", "cluster")
     assert cached["nodes"][0]["host"] == "node-a"
+
+
+def test_persistent_record_has_checksum_and_rejects_tampering(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    ceph_query_cache.store("cluster-snapshot", "cluster", {"health": "HEALTH_OK"})
+    path = ceph_query_cache._path("cluster-snapshot", "cluster")
+    record = json.loads(path.read_text(encoding="utf-8"))
+
+    assert record["checksum"].startswith("sha256:")
+    before = ceph_query_cache.get_metrics()["cache_integrity_failures_total"]
+    record["value"]["health"] = "HEALTH_ERR"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+
+    assert ceph_query_cache.get_cached(
+        "cluster-snapshot", "cluster", prefer_disk=True
+    ) is None
+    assert ceph_query_cache.get_metrics()["cache_integrity_failures_total"] == before + 1
+
+
+def test_legacy_record_without_checksum_remains_readable(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    path = ceph_query_cache._path("cluster-snapshot", "legacy")
+    path.write_text(
+        json.dumps({"created_at": 1_900_000_000, "value": {"health": "HEALTH_OK"}}),
+        encoding="utf-8",
+    )
+
+    cached = ceph_query_cache.get_cached("cluster-snapshot", "legacy", prefer_disk=True)
+
+    assert cached is not None
+    assert cached[0] == {"health": "HEALTH_OK"}
+
+
+def test_cross_process_lock_keeps_generation_monotonic_and_json_valid(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    child_env = os.environ.copy()
+    child_env["CEPH_AI_CACHE_DIR"] = str(tmp_path)
+    code = (
+        "from shared.ceph_query_cache import store_versioned; "
+        "print(store_versioned('cluster-snapshot', 'cluster', {'health': 'OK'})['generation'])"
+    )
+    children = [
+        subprocess.Popen(
+            [sys.executable, "-c", code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=child_env,
+        )
+        for _ in range(8)
+    ]
+    generations = []
+    for child in children:
+        stdout, stderr = child.communicate(timeout=15)
+        assert child.returncode == 0, stderr
+        generations.append(int(stdout.strip()))
+
+    assert sorted(generations) == list(range(1, 9))
+    record = json.loads(
+        ceph_query_cache._path("cluster-snapshot", "cluster").read_text(encoding="utf-8")
+    )
+    assert record["value"]["generation"] == 8
+    assert record["checksum"] == ceph_query_cache._value_checksum(record["value"])

@@ -13,7 +13,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from config.settings import settings
 from shared import db, incident_outbox, telegram_outbox
@@ -104,6 +104,15 @@ def _runtime_owner() -> dict[str, object]:
     }
 
 
+def _service_health(name: str) -> dict[str, object]:
+    value = service_status(name, stale_after_seconds=60)
+    value["observable"] = bool(value.get("updated_at"))
+    if not value["observable"]:
+        value["reason"] = "Heartbeat file chưa được mount vào process diagnostics."
+        value["healthy"] = None
+    return value
+
+
 def _freshness(session) -> list[dict[str, object]]:
     rows = []
     for cluster in list_active_clusters(session):
@@ -185,6 +194,37 @@ def _db_pool() -> dict[str, object]:
     return result
 
 
+def _database_storage(session) -> dict[str, object]:
+    """Return current DB size; growth rate needs at least two soak samples."""
+    url = str(db.engine.url)
+    result: dict[str, object] = {"available": False, "size_bytes": None, "growth_rate_bytes_per_hour": None}
+    try:
+        if url.startswith("postgres"):
+            value = session.execute(text("SELECT pg_database_size(current_database())")).scalar()
+            result.update({"available": True, "size_bytes": int(value), "kind": "postgresql"})
+        elif url.startswith("sqlite"):
+            path = url.split("///", 1)[-1].split("?", 1)[0]
+            result.update({"available": True, "size_bytes": int(Path(path).stat().st_size), "kind": "sqlite"})
+    except (OSError, TypeError, ValueError):
+        pass
+    return result
+
+
+def _observed_slo(api: dict, freshness: list[dict[str, object]], queues: list[dict[str, object]]) -> dict[str, object]:
+    """Expose process-lifetime observations without pretending they are 30d SLOs."""
+    requests = int(api.get("requests_total", 0))
+    errors = int(api.get("errors_total", 0))
+    available = [row for row in freshness if row.get("available")]
+    fresh = [row for row in available if not row.get("stale")]
+    return {
+        "window": "process_lifetime",
+        "requires_30d_soak_for_acceptance": True,
+        "dashboard_freshness": None if not available else round(len(fresh) / len(available), 6),
+        "api_success_rate": None if not requests else round((requests - errors) / requests, 6),
+        "queue_backlog_free": all(not row.get("backlog_alert") for row in queues),
+    }
+
+
 def _alerts(freshness, services, queues, pool, deploys, collector) -> list[dict[str, object]]:
     alerts = []
     for row in freshness:
@@ -193,7 +233,7 @@ def _alerts(freshness, services, queues, pool, deploys, collector) -> list[dict[
         if row.get("last_error"):
             alerts.append({"code": "snapshot_refresh_error", "severity": "warning", "cluster_id": row.get("cluster_id"), "message": row["last_error"]})
     for name, value in services.items():
-        if not value.get("healthy"):
+        if value.get("observable") and value.get("healthy") is False:
             alerts.append({"code": "service_heartbeat_stale", "severity": "critical", "service": name, "message": f"{name} không có heartbeat hợp lệ."})
     for queue in queues:
         if queue["backlog_alert"]:
@@ -217,7 +257,8 @@ def _alerts(freshness, services, queues, pool, deploys, collector) -> list[dict[
 
 def collect_reliability() -> dict[str, object]:
     started = time.monotonic()
-    services = {name: service_status(name, stale_after_seconds=60) for name in ("watcher", "worker", "remediation-watcher", "telegram-ai")}
+    services = {name: _service_health(name) for name in ("watcher", "worker", "remediation-watcher", "telegram-ai")}
+    services["dashboard-web"] = {"healthy": True, "observable": True, "pid": os.getpid(), "age_seconds": 0.0, "updated_at": utc_now().isoformat()}
     api = get_api_metrics()
     collector = get_collector_metrics()
     runner = get_ceph_runner_metrics()
@@ -241,6 +282,7 @@ def collect_reliability() -> dict[str, object]:
         ).order_by(VitastorOperation.finished_at.desc()).limit(20).all()
         failed_deploy_view = [{"id": row.id, "operation": row.operation, "cluster_name": row.cluster_name, "finished_at": row.finished_at.isoformat() if row.finished_at else None, "error": str(row.error_message or "")[:240]} for row in failed_deploys]
         reconcile = {str(status): int(count) for status, count in session.query(RgwFederatedRoleMapping.status, func.count(RgwFederatedRoleMapping.id)).group_by(RgwFederatedRoleMapping.status).all()}
+        database_storage = _database_storage(session)
     pool = _db_pool()
     alerts = _alerts(freshness, services, queues, pool, failed_deploy_view, collector)
     elapsed = round((time.monotonic() - started) * 1000, 2)
@@ -259,11 +301,13 @@ def collect_reliability() -> dict[str, object]:
         "snapshot_freshness": {"clusters": freshness, "stale_count": sum(bool(row.get("stale")) for row in freshness)},
         "queues": queues,
         "db_pool": pool,
+        "database_storage": database_storage,
         "api": api,
         "collector": collector,
         "ssh": runner,
         "resources": _proc_resources(),
         "failed_deploys_24h": failed_deploy_view,
         "alerts": alerts,
+        "observed_slo": _observed_slo(api, freshness, queues),
         "status": "critical" if any(item["severity"] == "critical" for item in alerts) else ("degraded" if alerts else "ok"),
     }

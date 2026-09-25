@@ -43,3 +43,18 @@ def test_rbd_copy_contract_is_dashboard_only_and_approval_gated(dashboard_client
     assert contract["requires_approval"] is True
     assert contract["typed_params"]["snapshot"] == "explicit source snapshot"
     assert contract["source_preserved"] is True
+
+
+def test_rbd_move_contract_is_destructive_and_verification_gated(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        block_storage_route,
+        "cluster_selection",
+        lambda _request: ([], type("Cluster", (), {"id": "cluster-contract"})()),
+    )
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+
+    contract = dashboard_client.get("/api/v1/block-storage/contract").json()["action_contracts"]["rbd_move_volume"]
+    assert contract["classification"] == "DESTRUCTIVE"
+    assert contract["requires_approval"] is True
+    assert contract["typed_params"]["delete_source"]
+    assert contract["source_preserved_until_verified"] is True

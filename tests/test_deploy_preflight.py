@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/deploy/deploy_preflight.sh"
 WORKFLOW = ROOT / ".github/workflows/ci-cd.yml"
+REDACTOR = ROOT / "scripts/deploy/redact_deploy_output.py"
 
 
 def _executable(path: Path, body: str) -> None:
@@ -125,4 +127,47 @@ def test_deploy_workflow_runs_preflight_before_registry_login_and_rollout():
     rollout = deploy_job.index("bash scripts/deploy/restart_container_stack.sh")
     assert preflight < registry_login < rollout
     assert "if: always()" in deploy_job
-    assert "deploy-preflight-evidence-${{ github.sha }}" in deploy_job
+    assert "deploy-evidence-${{ github.sha }}" in deploy_job
+
+
+def test_deploy_workflow_captures_failure_evidence_even_when_rollout_fails():
+    workflow = WORKFLOW.read_text()
+    deploy_job = workflow[workflow.index("  deploy:"):workflow.index("  release_gate:")]
+    for field in ("deploy_sha", "image_ref", "target_host", "started_at", "finished_at", "exit_code"):
+        assert f"printf '{field}=%s" in deploy_job
+    assert "deploy-stdout.log" in deploy_job
+    assert "deploy-stderr.log" in deploy_job
+    assert "deploy-phases.log" in deploy_job
+    assert "if: always()" in deploy_job
+    assert 'exit "$deploy_exit"' in deploy_job
+
+
+def test_rollout_script_emits_required_phase_markers_and_failure_exit_code():
+    rollout = (ROOT / "scripts/deploy/restart_container_stack.sh").read_text()
+    phases = ["checkout", "runtime_setup", "registry_pull", "migration", "restart", "health", "consumer", "smoke"]
+    positions = [rollout.index(f"start_phase {phase}") for phase in phases]
+    assert positions == sorted(positions)
+    assert 'record_deploy_event "$CURRENT_DEPLOY_PHASE" FAILED "exit_code=$exit_status"' in rollout
+    assert "record_deploy_event complete PASSED" in rollout
+
+
+def test_deploy_output_redactor_removes_common_secret_forms():
+    source = (
+        "password=hunter2 token: abc.def.ghi Authorization:Bearer-value\n"
+        "DATABASE_URL=postgresql://operator:db-pass@db/ceph ghp_1234567890abcdefghijkl\n"
+        "access_key AKIA1234567890ABCDEF secret_access_key=top-secret\n"
+    )
+    result = subprocess.run(
+        [sys.executable, str(REDACTOR)], input=source, text=True,
+        capture_output=True, check=True,
+    )
+    for secret in ("hunter2", "abc.def.ghi", "Bearer-value", "operator", "db-pass",
+                   "ghp_1234567890abcdefghijkl", "AKIA1234567890ABCDEF", "top-secret"):
+        assert secret not in result.stdout
+    assert result.stdout.count("[REDACTED]") >= 7
+
+
+def test_deploy_workflow_redacts_console_and_artifact_streams():
+    workflow = WORKFLOW.read_text()
+    deploy_job = workflow[workflow.index("  deploy:"):workflow.index("  release_gate:")]
+    assert deploy_job.count('python3 "$GITHUB_WORKSPACE/scripts/deploy/redact_deploy_output.py"') == 2

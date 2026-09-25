@@ -43,6 +43,30 @@ def test_reconcile_copy_requires_exact_destination_and_size():
         reconcile("rbd_copy_volume", {**params, "size_bytes": 0}, '{"name":"vm-copy","size":0}')
 
 
+def test_reconcile_move_requires_verified_copy_and_source_deletion():
+    params = {
+        "pool_name": "vms", "image": "vm-old", "dest_pool": "images",
+        "dest_image": "vm-new", "size_bytes": 1024, "delete_source": True,
+        "move_token": "move-token-20260925-01",
+        "checksum": "rbd-export-diff-sha256",
+    }
+    reconcile(
+        "rbd_move_volume", params,
+        '{"name":"vm-new","size":1024,"source_deleted":true,"checksum_verified":true}',
+    )
+    recovery = reconciliation_command("rbd_move_volume", params)
+    assert "rbd info images/vm-new --format json" in recovery
+    assert "rbd info vms/vm-old --format json" in recovery
+    assert "rbd cp" not in recovery and "rbd rm" not in recovery
+    with pytest.raises(ExecutorError, match="source deletion"):
+        reconcile("rbd_move_volume", params, '{"name":"vm-new","size":1024}')
+    with pytest.raises(ExecutorError, match="checksum"):
+        reconcile(
+            "rbd_move_volume", params,
+            '{"name":"vm-new","size":1024,"source_deleted":true,"checksum_verified":false}',
+        )
+
+
 def test_reconcile_template_requires_protected_snapshot():
     reconcile("rbd_template_mark", {"snapshot": "gold"},
               '[{"name":"gold","protected":true}]')

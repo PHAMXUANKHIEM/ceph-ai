@@ -9,6 +9,7 @@ from shared import db
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.models import Cluster
+from dashboard.cluster_authorization import authorized_cluster_ids
 
 
 # Realtime pages resolve the same active cluster on every snapshot read. A
@@ -72,13 +73,14 @@ def resolve_cluster_selection(
 
 def selected_cluster(request: Request) -> Cluster:
     """Return the active cluster selected by ``?cluster=``/``?cluster_id=`` or the session."""
-    _clusters, cluster = resolve_cluster_selection(
+    clusters, cluster = resolve_cluster_selection(
         (
             request.query_params.get("cluster_id", "").strip()
             or request.query_params.get("cluster", "").strip()
         ),
         request.session.get("selected_cluster_id", ""),
     )
+    cluster = _enforce_request_cluster_access(request, clusters, cluster)
     request.session["selected_cluster_id"] = cluster.id
     return cluster
 
@@ -92,8 +94,37 @@ def cluster_selection(request: Request) -> tuple[list[Cluster], Cluster]:
         ),
         request.session.get("selected_cluster_id", ""),
     )
+    cluster = _enforce_request_cluster_access(request, clusters, cluster)
+    allowed_ids = authorized_cluster_ids(str(request.session.get("user") or ""))
+    if allowed_ids is not None:
+        clusters = [
+            item for item in clusters
+            if item.id in allowed_ids or (not allowed_ids and item.is_default)
+        ]
     request.session["selected_cluster_id"] = cluster.id
     return clusters, cluster
+
+
+def _enforce_request_cluster_access(
+    request: Request, clusters: list[Cluster], selected: Cluster
+) -> Cluster:
+    """Apply the user/cluster grant at the common selection boundary."""
+    actor = str(request.session.get("user") or "")
+    allowed_ids = authorized_cluster_ids(actor)
+    if allowed_ids is None:
+        return selected
+    requested = (
+        request.query_params.get("cluster_id", "").strip()
+        or request.query_params.get("cluster", "").strip()
+    )
+    if requested and requested not in allowed_ids and not (not allowed_ids and selected.is_default):
+        raise HTTPException(status_code=403, detail="Bạn không được truy cập cụm đã chọn")
+    if selected.id in allowed_ids or (not allowed_ids and selected.is_default):
+        return selected
+    for cluster in clusters:
+        if cluster.id in allowed_ids:
+            return cluster
+    raise HTTPException(status_code=403, detail="Tài khoản chưa được cấp quyền trên cluster nào")
 
 
 def cluster_connection(cluster: Cluster) -> tuple[list[str], str, str, str, str]:

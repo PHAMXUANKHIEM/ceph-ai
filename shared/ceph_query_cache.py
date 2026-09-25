@@ -2,6 +2,7 @@
 
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -34,6 +35,7 @@ _metrics = {
     "cache_prune_runs_total": 0,
     "cache_pruned_files_total": 0,
     "cache_prune_errors_total": 0,
+    "cache_integrity_failures_total": 0,
 }
 _last_prune_monotonic = 0.0
 
@@ -168,11 +170,24 @@ def _decode_value(text: str):
     return json.loads(text)["value"]
 
 
+def _value_checksum(value: object) -> str:
+    """Return a stable checksum for the exact JSON-compatible value."""
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _read_entry(namespace: str, key: str):
     """Return (created_at, serialized record, freshly decoded value)."""
     try:
         text = _path(namespace, key).read_text(encoding="utf-8")
         record = json.loads(text)
+        checksum = record.get("checksum")
+        if checksum is not None and (
+            not isinstance(checksum, str)
+            or not hmac.compare_digest(checksum, _value_checksum(record["value"]))
+        ):
+            _record_cache_metric("cache_integrity_failures_total")
+            return None
         return float(record["created_at"]), text, record["value"]
     except _DECODE_ERRORS:
         return None
@@ -194,7 +209,12 @@ def _write(namespace: str, key: str, created_at: float, value: object) -> str | 
     nothing extra and removes the need to deep-copy the value.
     """
     try:
-        text = json.dumps({"created_at": created_at, "value": value}, separators=(",", ":"))
+        record = {
+            "created_at": created_at,
+            "checksum": _value_checksum(value),
+            "value": value,
+        }
+        text = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
         _cache_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
         destination = _path(namespace, key)
         temporary = destination.with_suffix(".tmp")

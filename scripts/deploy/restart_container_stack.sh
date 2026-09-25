@@ -12,6 +12,27 @@ SERVICES=(dashboard-web full-executor watcher worker telegram-ai)
 DEPLOY_IMAGE="${CEPH_AI_IMAGE:-}"
 IMAGE_REF_FILE=/var/lib/ceph-ai/release-artifacts/current-image-ref
 PREVIOUS_IMAGE_REF_FILE=/var/lib/ceph-ai/release-artifacts/previous-image-ref
+DEPLOY_EVENT_LOG="${CEPH_AI_DEPLOY_EVENT_LOG:-}"
+CURRENT_DEPLOY_PHASE="startup"
+
+record_deploy_event() {
+  local phase="$1" status="$2" detail="${3:-}"
+  local line
+  line="$(date -u +%Y-%m-%dT%H:%M:%SZ) phase=$phase status=$status detail=$detail"
+  printf 'DEPLOY_EVENT %s\n' "$line"
+  if [ -n "$DEPLOY_EVENT_LOG" ]; then
+    printf '%s\n' "$line" >> "$DEPLOY_EVENT_LOG"
+  fi
+}
+
+start_phase() {
+  CURRENT_DEPLOY_PHASE="$1"
+  record_deploy_event "$CURRENT_DEPLOY_PHASE" STARTED
+}
+
+finish_phase() {
+  record_deploy_event "$CURRENT_DEPLOY_PHASE" PASSED
+}
 
 cd "$REPO_DIR"
 # A self-hosted runner may share the canonical checkout with an operator who
@@ -23,6 +44,9 @@ ALLOWED_DIRTY_PATHS="${CEPH_AI_DEPLOY_ALLOWED_DIRTY_PATHS:-}"
 PRESERVED_DIRTY_ROOT=""
 restore_allowed_dirty_files() {
   local exit_status=$?
+  if [ "$exit_status" -ne 0 ]; then
+    record_deploy_event "$CURRENT_DEPLOY_PHASE" FAILED "exit_code=$exit_status"
+  fi
   if [ -n "$PRESERVED_DIRTY_ROOT" ]; then
     while IFS= read -r path; do
       [ -n "$path" ] || continue
@@ -39,6 +63,7 @@ restore_allowed_dirty_files() {
 }
 trap restore_allowed_dirty_files EXIT
 
+start_phase checkout
 dirty_status="$(git status --porcelain --untracked-files=all)"
 if [ -n "$dirty_status" ]; then
   PRESERVED_DIRTY_ROOT="$(mktemp -d /tmp/ceph-ai-deploy-preserved.XXXXXX)"
@@ -80,10 +105,12 @@ else
   git checkout --detach "$DEPLOY_REF"
 fi
 git reset --hard "$DEPLOY_REF"
+finish_phase
 
 # Keep the narrow per-container restart helper in sync with the deployed
 # checkout. The Dashboard talks to its Unix socket; no host D-Bus is exposed
 # to the web container.
+start_phase runtime_setup
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-container-restart.service" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-container-restart.socket" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-code-repair-supervisor.service" /etc/systemd/system/
@@ -104,9 +131,11 @@ rm -f /etc/systemd/system/ceph-ai-container-restart@.service
 systemctl daemon-reload
 systemctl reset-failed ceph-ai-container-restart.service || true
 systemctl enable --now ceph-ai-container-restart.socket
+finish_phase
 
 # Pull the registry manifest that passed CI. The immutable reference is the
 # release identity; a local image ID is used only for running-container checks.
+start_phase registry_pull
 export CEPH_AI_IMAGE="$DEPLOY_IMAGE"
 if [ -n "$DEPLOY_IMAGE" ]; then
   if [[ ! "$DEPLOY_IMAGE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]; then
@@ -124,11 +153,14 @@ else
   echo "ERROR: deployment requires CEPH_AI_IMAGE=ghcr.io/...@sha256:<digest>" >&2
   exit 4
 fi
+finish_phase
 
 # Only migrate after the exact artifact has been verified or built. The
 # canonical migration entrypoint creates a backup first and records revision,
 # checksum, artifact and commit metadata. A failed backup must stop rollout.
+start_phase migration
 "$REPO_DIR/scripts/deploy/run_migrations.sh"
+finish_phase
 
 # Persist the approved reference before systemd restarts the stack. A reboot
 # must reuse it. Preserve the previous digest for explicit, schema-compatible
@@ -144,8 +176,11 @@ mv -f "$image_ref_tmp" "$IMAGE_REF_FILE"
 
 # The container service's launcher disables conflicting legacy service units
 # and force-recreates the Python processes from the immutable image.
+start_phase restart
 systemctl restart ceph-ai-containers.service
+finish_phase
 
+start_phase health
 for _attempt in $(seq 1 24); do
   all_healthy=true
   for service in "${SERVICES[@]}"; do
@@ -168,7 +203,9 @@ if [ "$all_healthy" != true ] || [ "${consumer_count:-0}" -lt 1 ]; then
   podman ps --format '{{.Names}} {{.Status}}' >&2 || true
   exit 1
 fi
+finish_phase
 
+start_phase consumer
 for service in "${SERVICES[@]}"; do
   running_image_id="$(podman inspect "ceph-ai_${service}_1" --format '{{.Image}}')"
   if [ "$running_image_id" != "$approved_image_id" ]; then
@@ -177,11 +214,19 @@ for service in "${SERVICES[@]}"; do
     exit 5
   fi
 done
+if [ "${consumer_count:-0}" -lt 1 ]; then
+  echo "ERROR: incident queue has no Worker consumer" >&2
+  exit 1
+fi
+finish_phase
 
+start_phase smoke
 curl -fsS --max-time 10 http://127.0.0.1:8000/login >/dev/null
 # Code Repair continues as a separate host-owned process, without container
 # source mounts. Its unit explicitly disables auto-push/deploy/promotion until
 # candidates have their own scanned-artifact pipeline.
 systemctl daemon-reload
 systemctl enable --now ceph-ai-code-repair-supervisor.service
+finish_phase
+record_deploy_event complete PASSED "sha=$(git rev-parse HEAD)"
 echo "Deploy complete: $(git rev-parse HEAD); incident consumers=${consumer_count}"

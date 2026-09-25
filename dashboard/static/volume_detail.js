@@ -63,6 +63,76 @@
       action("/copy", {snapshot: snapshot, dest_pool: destPool, dest_image: destImage},
         "Copy " + pool + "/" + image + "@" + snapshot + " sang " + destPool + "/" + destImage + "? Nguồn được giữ nguyên; tác vụ cần phê duyệt.");
     });
+    function pollMoveAction(actionId) {
+      var progressNode = document.getElementById("volume-move-progress");
+      var cleanupButton = document.getElementById("volume-move-cleanup-button");
+      var cleanupHint = document.getElementById("volume-move-cleanup-hint");
+      if (!progressNode || !actionId) return;
+      progressNode.hidden = false;
+      var terminal = { EXECUTED: true, FAILED: true, REJECTED: true, INCONCLUSIVE: true, CANCELLED: true };
+      var poll = function () {
+        requestJson("/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(image) + "/move/progress?action_id=" + encodeURIComponent(actionId))
+          .then(function (state) {
+            var steps = (state.progress || []).filter(function (item) { return item && item.status; });
+            var current = steps.filter(function (item) { return item.status === "running"; })[0] || steps.filter(function (item) { return item.status === "failed"; })[0];
+            progressNode.textContent = current ? (current.label || current.phase || "Đang xử lý") + (current.error ? ": " + current.error : "…") : "Đang chờ phê duyệt…";
+            if (terminal[state.status]) {
+              if (state.partial_cleanup_supported && cleanupButton) {
+                cleanupButton.hidden = false;
+                cleanupButton.dataset.moveActionId = actionId;
+                if (cleanupHint) cleanupHint.hidden = false;
+              }
+              progressNode.textContent = state.status === "EXECUTED" ? "Move đã hoàn tất và đã xác nhận hậu kiểm." : "Move kết thúc với trạng thái " + state.status + ". Nguồn không bị tự động xóa nếu thiếu bằng chứng.";
+              return true;
+            }
+            return false;
+          })
+          .catch(function (error) { progressNode.textContent = "Không đọc được tiến độ move: " + error.message; return false; });
+      };
+      poll().then(function (done) {
+        if (!done) {
+          var timer = window.setInterval(function () {
+            poll().then(function (finished) { if (finished) window.clearInterval(timer); });
+          }, 3000);
+        }
+      });
+    }
+    document.getElementById("volume-move-form").addEventListener("submit", function (event) {
+      event.preventDefault();
+      var destPool = document.getElementById("volume-move-dest-pool").value.trim();
+      var destImage = document.getElementById("volume-move-dest-image").value.trim();
+      if (!document.getElementById("volume-move-confirm").checked) return;
+      if (!window.confirm("Move " + pool + "/" + image + " sang " + destPool + "/" + destImage + "? Nguồn sẽ bị xóa sau khi checksum được xác minh. Thao tác này là DESTRUCTIVE và cần phê duyệt.")) return;
+      var result = document.getElementById("volume-action-result");
+      result.hidden = false;
+      result.textContent = "Đang gửi đề xuất move…";
+      requestJson("/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(image) + "/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json", "Idempotency-Key": "move-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10) },
+        body: JSON.stringify({ dest_pool: destPool, dest_image: destImage, confirm_source_delete: true })
+      }).then(function (payload) {
+        result.textContent = "Đã tạo đề xuất move " + (payload.action_id || "") + ". Chờ phê duyệt; nguồn chỉ bị xóa sau khi hậu kiểm thành công.";
+        pollMoveAction(payload.action_id);
+      }).catch(function (error) { result.textContent = error.message; });
+    });
+    document.getElementById("volume-move-cleanup-button").addEventListener("click", function (event) {
+      var button = event.currentTarget;
+      var moveActionId = button.dataset.moveActionId;
+      if (!moveActionId || !window.confirm("Cleanup chỉ xóa destination đã mang đúng move token; source sẽ được giữ nguyên. Tạo đề xuất cleanup?")) return;
+      var result = document.getElementById("volume-action-result");
+      result.hidden = false;
+      result.textContent = "Đang tạo đề xuất cleanup…";
+      requestJson("/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(image) + "/move/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json", "Idempotency-Key": "cleanup-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10) },
+        body: JSON.stringify({ move_action_id: moveActionId, confirm_partial_cleanup: true })
+      }).then(function (payload) {
+        button.hidden = true;
+        document.getElementById("volume-move-cleanup-hint").hidden = true;
+        result.textContent = "Đã tạo đề xuất cleanup " + (payload.action_id || "") + ". Chờ phê duyệt; source vẫn được giữ nguyên.";
+        pollMoveAction(payload.action_id);
+      }).catch(function (error) { result.textContent = error.message; });
+    });
   }
   document.getElementById("detail-diagnosis-load").addEventListener("click", function (event) {
     var button = event.currentTarget, status = document.getElementById("detail-diagnosis-status");

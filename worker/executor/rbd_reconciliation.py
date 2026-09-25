@@ -12,6 +12,8 @@ RBD_RECONCILED_ACTION_IDS = frozenset({
     "rbd_rename_volume",
     "rbd_clone_volume",
     "rbd_copy_volume",
+    "rbd_move_volume",
+    "rbd_move_cleanup_partial",
     "rbd_flatten_volume",
     "rbd_template_mark",
     "rbd_qos_set",
@@ -51,16 +53,28 @@ def reconcile(action_id: str, params: dict, output: str) -> None:
             )
         return
 
-    if action_id in {"rbd_rename_volume", "rbd_clone_volume", "rbd_copy_volume", "rbd_flatten_volume", "rbd_trash_restore_volume"}:
+    if action_id == "rbd_move_cleanup_partial":
+        if not isinstance(payload, dict) or payload.get("name") != params.get("dest_image"):
+            raise ExecutorError("RBD partial cleanup post-check returned a different destination")
+        if payload.get("source_present") is not True:
+            raise ExecutorError("RBD partial cleanup post-check did not confirm source preservation")
+        if payload.get("destination_deleted") is not True:
+            raise ExecutorError("RBD partial cleanup post-check did not confirm destination deletion")
+        if payload.get("marker_verified") is not True:
+            if not (payload.get("recovered") is True and payload.get("source_present") is True):
+                raise ExecutorError("RBD partial cleanup post-check did not confirm token ownership")
+        return
+
+    if action_id in {"rbd_rename_volume", "rbd_clone_volume", "rbd_copy_volume", "rbd_move_volume", "rbd_flatten_volume", "rbd_trash_restore_volume"}:
         expected_name = (
             params.get("new_image") if action_id == "rbd_rename_volume"
-            else params.get("dest_image") if action_id in {"rbd_clone_volume", "rbd_copy_volume"}
+            else params.get("dest_image") if action_id in {"rbd_clone_volume", "rbd_copy_volume", "rbd_move_volume"}
             else params.get("image")
         )
         if not isinstance(payload, dict) or payload.get("name") != expected_name:
             raise ExecutorError("RBD post-check did not find the expected destination image")
-        if action_id == "rbd_copy_volume" or (action_id == "rbd_clone_volume" and params.get("size_bytes") is not None):
-            if action_id == "rbd_copy_volume" and (not isinstance(params.get("size_bytes"), int) or params["size_bytes"] <= 0):
+        if action_id in {"rbd_copy_volume", "rbd_move_volume"} or (action_id == "rbd_clone_volume" and params.get("size_bytes") is not None):
+            if action_id in {"rbd_copy_volume", "rbd_move_volume"} and (not isinstance(params.get("size_bytes"), int) or params["size_bytes"] <= 0):
                 raise ExecutorError("RBD copy/clone post-check is missing approved size")
             try:
                 actual_size = int(payload.get("size"))
@@ -68,6 +82,12 @@ def reconcile(action_id: str, params: dict, output: str) -> None:
                 actual_size = -1
             if actual_size != int(params["size_bytes"]):
                 raise ExecutorError("RBD copy/clone post-check size mismatch")
+        if action_id == "rbd_move_volume":
+            if payload.get("source_deleted") is not True:
+                raise ExecutorError("RBD move post-check did not confirm source deletion")
+            if payload.get("checksum_verified") is not True:
+                if not (payload.get("recovered") is True and payload.get("source_deleted") is True):
+                    raise ExecutorError("RBD move post-check did not confirm checksum verification")
         return
 
     if action_id == "rbd_template_mark":
@@ -141,6 +161,30 @@ def reconciliation_command(
         command = f"rbd info {pool}/{shlex.quote(params['new_image'])} --format json"
     elif action_id in {"rbd_clone_volume", "rbd_copy_volume"}:
         command = f"rbd info {shlex.quote(params['dest_pool'])}/{shlex.quote(params['dest_image'])} --format json"
+    elif action_id == "rbd_move_volume":
+        source = f"{pool}/{shlex.quote(params['image'])}"
+        destination = f"{shlex.quote(params['dest_pool'])}/{shlex.quote(params['dest_image'])}"
+        # A stale move is reconciled only when the source is absent and the
+        # destination still has the approved size. No mutation is replayed.
+        inner = (
+            f"set -eu; dest_info=$(rbd info {destination} --format json); "
+            f"if rbd info {source} --format json >/dev/null 2>&1; then "
+            f"echo 'RBD move is inconclusive: source still exists' >&2; exit 42; fi; "
+            "printf '%s' \"$dest_info\" | python3 -c "
+            "'import json,sys; p=json.load(sys.stdin); p.update(source_deleted=True, recovered=True, checksum_verified=False); print(json.dumps(p))'"
+        )
+        command = "sh -c " + shlex.quote(inner)
+    elif action_id == "rbd_move_cleanup_partial":
+        source = f"{pool}/{shlex.quote(params['image'])}"
+        destination = f"{shlex.quote(params['dest_pool'])}/{shlex.quote(params['dest_image'])}"
+        inner = (
+            f"set -eu; source_info=$(rbd info {source} --format json); "
+            f"if rbd info {destination} --format json >/dev/null 2>&1; then "
+            "echo 'RBD partial cleanup is inconclusive: destination still exists' >&2; exit 43; fi; "
+            "printf '%s' \"$source_info\" | python3 -c "
+            f"'import json,sys; p=json.load(sys.stdin); p.update(name=\"{params['dest_image']}\", source_present=True, destination_deleted=True, marker_verified=False, recovered=True); print(json.dumps(p))'"
+        )
+        command = "sh -c " + shlex.quote(inner)
     elif action_id == "rbd_template_mark":
         command = f"rbd snap ls {pool}/{shlex.quote(params['image'])} --format json"
     elif action_id == "rbd_qos_set":

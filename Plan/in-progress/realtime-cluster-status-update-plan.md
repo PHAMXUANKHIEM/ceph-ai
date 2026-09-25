@@ -6,9 +6,9 @@
 
 **Ngày lập kế hoạch:** 2026-09-14
 
-**Trạng thái:** Đang triển khai theo vertical slice có test; RT-00 đến RT-06
-đã có foundation, RT-07 còn một số trang cần chuẩn hóa UI, RT-08/RT-09 đang
-được thực hiện theo inventory và source mapping.
+**Trạng thái:** RT-00 đến RT-09 đã có implementation và regression test. Live
+Phase 6 ngày 2026-09-25 đã xác nhận snapshot/API/WebSocket/fallback/không SSH;
+còn browser end-to-end p95 burst 10 tab, live cluster A/B và soak freshness dài hạn.
 
 ---
 
@@ -316,7 +316,7 @@ lỗi, giữ dữ liệu cũ và hiện stale/error.
 
 ## 5. Kế hoạch triển khai theo work package
 
-### RT-00 — Baseline và đo đạc trước khi sửa `[~]`
+### RT-00 — Baseline và đo đạc trước khi sửa `[x]`
 
 - [x] Ghi trạng thái dirty tree và container đang chạy.
 - [x] Đo thời gian từng đường hiện tại bằng monotonic timer:
@@ -327,17 +327,19 @@ lỗi, giữ dữ liệu cũ và hiện stale/error.
   - mỗi lệnh batch/SSH/cephadm.
 - [x] Ghi exec mode, cadence Watcher, cache threshold và stale TTL.
 - [x] Ghi kích thước rows Pools/PGs và xác định đường normalize JSON.
-- [~] Chưa chụp baseline với 1, 5 và 10 tab browser; sẽ đo sau khi có snapshot
-  collector để không tạo tải SSH/Ceph vô ích trên baseline cũ.
+- [x] Đã chụp benchmark Chromium thật với 1, 5 và 10 tab sau khi snapshot
+  collector hoạt động; số health request, WebSocket, SSH command và p95 được
+  ghi trong evidence Phase 6.
 - [x] Không thay đổi timeout hoặc poll interval chỉ để làm benchmark đẹp hơn.
 
 **Bằng chứng:** xem
 `Plan/realtime-cluster-status-baseline-2026-09-14.md`.
 
-**Exit gate còn thiếu:** benchmark nhiều tab và số lần SSH/cephadm trong một
-cửa sổ có tải browser. Baseline đơn request đã xác định được bottleneck chính:
+**Exit gate:** đã có benchmark nhiều tab và counter SSH/cephadm trong cửa sổ
+có tải browser. Baseline đơn request trước tối ưu xác định bottleneck chính:
 Pools khoảng 6,5–7,1 giây, PGs khoảng 16,6–19,9 giây, health khoảng 6,9–8,9
-giây trên `CS-LAB`.
+giây trên `CS-LAB`. Kết quả sau tối ưu nằm tại
+`docs/ai/realtime-dashboard-phase6-evidence-2026-09-25.md`.
 
 ### RT-01 — Tạo snapshot contract và shared store [~]
 
@@ -349,8 +351,9 @@ giây trên `CS-LAB`.
   hiện được kế thừa từ `shared.ceph_query_cache`.
 - [x] Cache không còn chạy loader khi không lấy được lock; versioned publish
   báo lỗi rõ ràng nếu lock hoặc persistent write thất bại.
-- [~] Hoàn thiện checksum và lock chống hai collector cùng refresh một cluster;
-  phần scheduler/lifecycle này sẽ chốt ở RT-03.
+- [x] Snapshot cache có SHA-256 checksum, metric integrity failure, atomic
+  replace và `flock` liên process. Test 8 writer đồng thời xác nhận generation
+  1–8, JSON/checksum cuối hợp lệ; record legacy chưa checksum vẫn đọc được.
 - [x] Có hàm đọc/ghi nền tảng:
 
 ```python
@@ -368,6 +371,9 @@ publish_snapshot(cluster_id, sections, ...)
 - [x] Thêm test cho generation tăng sau reset memory, stale metadata, cluster
   isolation, input threshold/timestamp không hợp lệ, disk write failure,
   lock unavailable và đọc được bản mới do process khác ghi.
+- [x] Test partial failure xác nhận lỗi refresh không thay payload tốt gần nhất,
+  `collected_at` hay generation; lỗi được công bố qua `last_error` và
+  `partial_errors`. Trường hợp chưa có dữ liệu tốt được đánh dấu unavailable.
 
 **Bằng chứng RT-01 slice hiện tại:**
 
@@ -679,13 +685,15 @@ thao tác thất bại không làm mất dữ liệu cũ hoặc báo thành côn
   prune oldest JSON payload theo `ceph_snapshot_cache_max_bytes` và
   `ceph_realtime_cache_max_files`, có metric prune/error; PG/CRUSH vẫn có
   payload limits.
-- [x] Browser load/isolation test 1/5/10 tabs và p95 latency: đã chạy bằng
-  Chrome với `scripts/realtime_browser_test.mjs`, read-only và authenticated.
-  Live dashboard (1 active cluster) ghi nhận p95 khoảng **157/174/296 ms**.
-  Môi trường isolation tạm thời có 2 active clusters ghi nhận **286.95 /
-  171.67 / 118.18 ms** cho 1/5/10 tabs; các tab luân phiên A/B trả đúng
-  `cluster_id`, còn WebSocket probe ngoài scope đóng `1008`. Không chạy lệnh
-  thay đổi dữ liệu Ceph.
+- [x] Browser load test 1/5/10 tab bằng Chromium thật, read-only và
+  authenticated. Live ngày 2026-09-25 ghi nhận health API p95 **87,62 /
+  66,01 / 189,26 ms**; mỗi tab đúng một health request và một WebSocket.
+  Cold HTML navigation p95 **80,87 / 250,83 / 561,75 ms**, vì vậy target HTML
+  dưới 200 ms chưa được đánh dấu đạt ở 5/10 tab. Lượt regression sau checksum
+  có server health p95 bucket 100 ms nhưng browser health end-to-end 10-tab là
+  278,70 ms, nên target browser burst chưa ổn định. Deployment chỉ có một
+  active cluster: probe ngoài scope đóng `1008`, còn live A/B chưa chạy. Evidence:
+  `docs/ai/realtime-dashboard-phase6-evidence-2026-09-25.md`.
 
 **RT-08/RT-09 implementation evidence (2026-09-21):**
 
@@ -901,25 +909,27 @@ benchmark realtime.
 
 ### Feature flag
 
-Triển khai flag mặc định tắt ở lần đầu:
+Các flag thực tế đang dùng trong production ngày 2026-09-25:
 
 ```text
-DASHBOARD_CLUSTER_SNAPSHOT_ENABLED=false
-DASHBOARD_CLUSTER_EVENTS_ENABLED=false
+DASHBOARD_LEGACY_FEED_ENABLED=false
+DASHBOARD_CLUSTER_EVENTS_ENABLED=true
+DASHBOARD_API_RATE_LIMIT_RESERVATION_SIZE=10
+WATCHER_POLL_INTERVAL_SECONDS=5
 ```
 
-Khi collector và API mới đã được kiểm thử:
-
-1. Bật collector nhưng UI vẫn đọc đường cũ, chỉ ghi metric so sánh.
-2. Bật API snapshot cho Dashboard chính.
-3. Bật Pools/PGs từng trang.
-4. Bật WebSocket event.
-5. Bật invalidation sau mutation.
-6. Sau ít nhất một chu kỳ vận hành ổn định mới bỏ đường cũ.
+Snapshot read là đường dữ liệu production hiện tại, không còn flag giả định
+`DASHBOARD_CLUSTER_SNAPSHOT_ENABLED`. WebSocket có thể tắt độc lập; client sẽ
+fallback sang polling snapshot đã xác thực.
 
 ### Rollback
 
-- Tắt feature flag event/snapshot để route quay về cache cũ.
+- Tắt `DASHBOARD_CLUSTER_EVENTS_ENABLED` để buộc polling fallback.
+- Bật `DASHBOARD_LEGACY_FEED_ENABLED` nếu cần khôi phục feed HTML cũ.
+- Đặt `DASHBOARD_API_RATE_LIMIT_RESERVATION_SIZE=1` để bỏ block reservation.
+- Tăng `WATCHER_POLL_INTERVAL_SECONDS` về 10/15 nếu tải critical collector tăng.
+- Rollback riêng Watcher về `ceph-ai:realtime-pre-mon-reservation-20260925`
+  hoặc `ceph-ai:realtime-pre-aux-20260925`; không cần recreate Dashboard.
 - Không xóa snapshot store trong rollback.
 - Giữ schema migration backward-compatible; rollback code không được làm app
   không đọc được DB/cache cũ.
@@ -960,22 +970,28 @@ hơn; vấn đề cần giải quyết là data path, không phải tốc độ 
 
 ## 11. Checklist nghiệm thu cuối
 
-- [ ] Mở 10 tab không tạo 10 collector.
-- [ ] Trang mở ngay với snapshot gần nhất.
-- [ ] Không còn request page reload định kỳ để cập nhật trạng thái.
-- [ ] Pools/PGs/CRUSH/Nodes không gọi SSH trong browser request bình thường.
-- [ ] Health thay đổi được phản ánh trong 10 giây ở lab benchmark.
-- [ ] Action thành công chỉ phát event sau post-check.
-- [ ] Action thất bại giữ snapshot cũ và báo lỗi.
-- [ ] Timestamp hiển thị là `collected_at`, có timezone rõ và tuổi dữ liệu đúng.
-- [ ] Ceph/MON chậm không làm bảng trắng hoặc biến thành “chưa có pool”.
-- [ ] WebSocket mất kết nối vẫn có polling fallback.
-- [ ] Cluster A/B không lẫn snapshot, event, cache hoặc action.
-- [ ] Viewer/admin RBAC không thay đổi ngoài ý muốn.
-- [ ] Không lộ credential trong API/event/log.
+- [x] Mở 10 tab không tạo 10 collector.
+- [x] Trang mở ngay với snapshot gần nhất.
+- [x] Không còn request page reload định kỳ để cập nhật trạng thái.
+- [x] Pools/PGs/CRUSH/Nodes không gọi SSH trong browser request bình thường.
+- [x] Health steady-state được publish trong 8,2–9,1 giây ở live lab; startup
+  warmup và p95 dài hạn vẫn cần soak riêng. Sau scheduler/MON isolation,
+  soak 180 giây đạt collection gap p95 8,473 giây, max 8,563 giây, 0
+  stale/error; lượt xác nhận đạt publication gap max 8,294 giây.
+- [x] Action thành công chỉ phát event sau post-check.
+- [x] Action thất bại giữ snapshot cũ và báo lỗi.
+- [x] Timestamp hiển thị là `collected_at`, có timezone rõ và tuổi dữ liệu đúng.
+- [x] Ceph/MON chậm không làm bảng trắng hoặc biến thành “chưa có pool”.
+- [x] WebSocket mất kết nối vẫn có polling fallback.
+- [ ] Live cluster A/B chưa chạy vì deployment chỉ có một active cluster;
+  regression isolation và out-of-scope close `1008` đã đạt.
+- [x] Viewer/admin RBAC không thay đổi ngoài ý muốn trong regression suite.
+- [x] Không lộ credential trong API/event/log.
 - [ ] Full test suite đạt; các test fail phải phân loại nguyên nhân, không bỏ qua.
-- [ ] Có log/metric chứng minh p95 và query rate đạt mục tiêu.
-- [ ] Đã ghi lại cách rollback và flag hiện đang bật/tắt.
+- [ ] Server health p95/query rate đã có evidence và đạt; browser end-to-end
+  health/cold HTML ở burst 10 tab chưa ổn định dưới 200 ms nên tiêu chí tổng
+  chưa đóng.
+- [x] Đã ghi lại cách rollback và flag hiện đang bật/tắt.
 
 ---
 
@@ -1024,3 +1040,6 @@ mượt của toàn bộ các trang còn lại.
 | 2026-09-21 | RT-09.8 global concurrency cap | SSH lease có giới hạn toàn process bên cạnh giới hạn theo host/pool; chờ và timeout đều bounded, có metric để phân biệt queue pressure với Ceph failure | `shared/ceph_runner.py`, `tests/test_ceph_runner.py` — **8 passed** |
 | 2026-09-21 | RT-09.9 observability diagnostics | Admin diagnostics gom query duration/queue, snapshot freshness, collector duration, WebSocket client/reconnect counters, API refresh metrics và event publish errors; response bounded, không lộ secret | `dashboard/routes/system_health.py`, `shared/ceph_runner.py`, `watcher/cluster_snapshot_collector.py`, `dashboard/ws.py`, `tests/test_ceph_debug.py` |
 | 2026-09-23 | RT-04 health precedence + Phase 4 browser baseline | Đã sửa lỗi health mới bị status cũ ghi đè trên server; Dashboard restart healthy, health API 8 passed. Chrome fixture local 1/5/10 tab đạt API p95 4,7/11,1/23,5 ms, 0 remote command; WebSocket fallback và cluster A/B isolation đạt. Còn cần live baseline/soak trên 10.3.55.213. | `dashboard/routes/incidents.py`, `tests/test_dashboard_health_api.py`, `docs/ai/realtime-dashboard-phase4-evidence-2026-09-23.md` |
+| 2026-09-25 | Phase 6 live benchmark/hardening | Chromium thật 1/5/10 tab: baseline health API p95 87,62/66,01/189,26 ms; regression checksum 60,93/165,64/278,70 ms end-to-end trong khi server p95 bucket 100 ms. Không reload, fallback đạt, SSH counter không tăng, một Watcher process, steady-state snapshot 8,2–9,1 giây. Browser burst 10 tab và live A/B còn mở; không ghi nhận hoàn thành giả. Regression 121 passed. | `docs/ai/realtime-dashboard-phase6-evidence-2026-09-25.md` |
+| 2026-09-25 | RT-09.10 snapshot integrity + partial failure | Cache record có SHA-256 checksum, integrity counter, legacy compatibility, atomic replace và `flock`; 8 writer liên process giữ generation 1–8. Health/section refresh lỗi giữ last-good payload và công bố metadata lỗi. Regression cuối 48 passed. | `shared/ceph_query_cache.py`, `shared/cluster_snapshot.py`, `tests/test_ceph_query_cache.py`, `tests/test_cluster_snapshot.py`, `tests/test_dashboard_health_api.py` |
+| 2026-09-25 | RT-09.11 critical-health scheduler isolation | Soak đầu phát hiện gap 38,171 giây. Chuyển 8 nhóm collector chậm sang background có single-flight, sau đó dành sticky health MON làm fallback cuối cho auxiliary cephadm queries. Soak 180 giây sau fix: 89/89 request, 0 stale/error, API p95 88,3 ms, collection gap p95/max 8,473/8,563 giây; publication gap xác nhận max 8,294 giây. | `watcher/main.py`, `watcher/ceph_client.py`, `scripts/realtime_snapshot_soak.mjs`, `tests/test_watcher_main.py`, `tests/test_ceph_client.py`, `docs/ai/realtime-dashboard-phase6-evidence-2026-09-25.md` — **170 passed** |

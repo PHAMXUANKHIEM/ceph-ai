@@ -11,6 +11,7 @@
 .volume-total-badge { color: #cffafe; background: rgba(34,211,238,.1); border: 1px solid rgba(34,211,238,.3); border-radius: 999px; padding: 7px 12px; font-size: 13px; }
 .volume-total-badge strong { font-size: 15px; }
 .volume-updated { color: #64748b; font-size: 12px; }
+.volume-updated.is-stale { color: #fbbf24; }
 .volumes-pool-tabs { display: flex; align-items: stretch; gap: 4px; overflow-x: auto; border-bottom: 1px solid #334155; margin-bottom: 18px; }
 .volumes-pool-tab { display: inline-flex; align-items: center; gap: 5px; padding: 10px 15px 11px; color: #94a3b8; text-decoration: none; white-space: nowrap; border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; }
 .volumes-pool-tab:hover { color: #e2e8f0; }
@@ -182,3 +183,6 @@
 .btn-warning-outline:hover:not(:disabled) { background: rgba(245,158,11,.1); }
 .volume-action small.hint { line-height: 1.4; }
 .volume-action textarea { width: 100%; resize: vertical; font: inherit; }
+.volume-action-move { border-top-color: rgba(239,68,68,.55); background: rgba(127,29,29,.08); padding-left: 12px; padding-right: 12px; border-radius: 8px; }
+.volume-move-confirm { display: flex; flex-direction: row; align-items: center; gap: 8px; color: #fecaca !important; }
+.volume-move-confirm input { accent-color: #ef4444; }

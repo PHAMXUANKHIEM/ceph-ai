@@ -42,6 +42,7 @@ from shared.codex_app_server import (
     start_cli_device_login,
 )
 from shared.models import Action, ActionStatus, ChatMessage, Cluster
+from shared import single_full_audit
 from shared.single_full_scope import normalize_scope, sign_scope
 from shared.telegram_client import edit_telegram_message, send_telegram_message, send_telegram_message_with_keyboard
 
@@ -644,7 +645,6 @@ def is_allowed_message(message: dict, bot_token: str) -> bool:
 def is_allowed_callback(callback_query: dict, bot_token: str) -> bool:
     message = callback_query.get("message") or {}
     chat = message.get("chat") or {}
-    incoming_chat_id = str(chat.get("id", ""))
     return is_allowed_message(
         {"chat": chat, "from": callback_query.get("from") or {}}, bot_token
     )
@@ -1154,6 +1154,8 @@ async def _run_single_full_in_background(
             if _full_runs.get(run_id) is run_state:
                 _full_runs.pop(run_id, None)
         return
+    audit_started = False
+    audit_closed = False
     try:
         try:
             _mark_full_run_started(
@@ -1168,7 +1170,24 @@ async def _run_single_full_in_background(
                 "Không thể tạo audit recovery cho Single Full; phiên toàn quyền không được khởi chạy.",
             )
             return
+        try:
+            single_full_audit.start_run(
+                run_id=run_id, actor=actor, chat_id=chat_id,
+                cluster_id=cluster_id,
+                cluster_ref=str((cluster_context or {}).get("cluster_ref") or ""),
+                prompt=text,
+            )
+            audit_started = True
+        except Exception:
+            logger.exception("telegram_chat: cannot persist Single Full database audit")
+            await _send(
+                bot_token, chat_id,
+                "Không thể ghi audit Single Full vào database; phiên toàn quyền không được khởi chạy.",
+            )
+            return
         event = await _run_single_full_turn(run_id, text, history, cluster_context)
+        single_full_audit.finish_run(run_id, status="SUCCEEDED", result_code="completed")
+        audit_closed = True
         content = f"[Single Full · {event.get('provider', '—')}]\n{event.get('content', '')}"
         _save_message(
             session_id=session_id, cluster_id=cluster_id, actor=actor,
@@ -1186,6 +1205,14 @@ async def _run_single_full_in_background(
         logger.exception("telegram_chat: single-full mode failed")
         await _send(bot_token, chat_id, "Single Full gặp lỗi nội bộ; kiểm tra log Dashboard.")
     finally:
+        if audit_started and not audit_closed:
+            try:
+                single_full_audit.finish_run(
+                    run_id, status="FAILED", result_code="interrupted",
+                    error_type="cancelled_or_runtime_failure",
+                )
+            except Exception:
+                logger.exception("telegram_chat: failed to close Single Full audit")
         try:
             _mark_full_run_finished(run_id)
         except Exception:

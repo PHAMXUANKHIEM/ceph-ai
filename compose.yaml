@@ -10,7 +10,6 @@ x-app: &app
     CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
     CEPH_AI_RUNTIME_DIR: /run/ceph-ai
     CEPH_AI_CONTAINERIZED: "true"
-    SSH_KEY_PATH: /var/lib/ceph-ai/full-executor-ssh/id_ed25519
   init: true
   user: "10001:10001"
   read_only: true
@@ -42,21 +41,33 @@ services:
     ports: ["8000:8000"]
     volumes:
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
-      # Dashboard only needs read access to service heartbeats plus the
-      # dedicated restart socket. Do not expose the whole runtime directory.
-      - /run/ceph-ai/worker.json:/run/ceph-ai/worker.json:ro
-      - /run/ceph-ai/watcher.json:/run/ceph-ai/watcher.json:ro
+      # Dashboard is read-only with respect to Ceph.  The full-executor key
+      # and token directories are hidden by tmpfs below; only the dedicated
+      # read-only identity is mounted into this container.
+      - /root/.ssh/id_ed25519:/run/ceph-ai/credentials/readonly/id_ed25519:ro
+      # Mount the runtime directory rather than individual heartbeat files.
+      # Heartbeats are atomically replaced; a single-file bind mount would
+      # keep the old inode and make Dashboard report false stale alerts.
+      # The directory contains only bounded heartbeat/lock metadata; the
+      # restart socket is over-mounted below with the required write access.
+      - /run/ceph-ai:/run/ceph-ai:ro
       - /run/ceph-ai/container-restart.sock:/run/ceph-ai/container-restart.sock
       - /root/.local:/opt/ai-tools:ro
       - /root/.codex/packages:/opt/codex-packages:ro
       # OAuth state is data, not executable application source.
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+      - /var/lib/ceph-ai/full-executor-ssh:rw,noexec,nosuid,nodev,size=1m
+      - /var/lib/ceph-ai/full-executor-secrets:rw,noexec,nosuid,nodev,size=1m
+      - /var/lib/ceph-ai/full-executor-accounts:rw,noexec,nosuid,nodev,size=1m
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
-      SSH_KEY_PATH: /var/lib/ceph-ai/full-executor-ssh/id_ed25519
+      SSH_KEY_PATH: /run/ceph-ai/credentials/readonly/id_ed25519
+      CEPH_AI_SSH_IDENTITY_ROLE: read-only
       TELEGRAM_LISTENER_ENABLED: "false"
       # The Dashboard's own Settings page (Codex/Claude account login,
       # rate-limit lookup) and web Chatbox spawn these CLIs directly, same
@@ -79,16 +90,24 @@ services:
     volumes:
       - /run/ceph-ai:/run/ceph-ai:rw
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      - /root/.ssh/id_ed25519:/run/ceph-ai/credentials/readonly/id_ed25519:ro
+      - /var/lib/ceph-ai/full-executor-secrets/token:/run/ceph-ai/credentials/single-full/token:ro
       - /root/.local:/opt/ai-tools:ro
       - /root/.codex/packages:/opt/codex-packages:ro
       # Telegram's login retry flow shares the dedicated OAuth data mounts.
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+      - /var/lib/ceph-ai/full-executor-ssh:rw,noexec,nosuid,nodev,size=1m
+      - /var/lib/ceph-ai/full-executor-secrets:rw,noexec,nosuid,nodev,size=1m
+      - /var/lib/ceph-ai/full-executor-accounts:rw,noexec,nosuid,nodev,size=1m
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
-      SSH_KEY_PATH: /var/lib/ceph-ai/full-executor-ssh/id_ed25519
+      SSH_KEY_PATH: /run/ceph-ai/credentials/readonly/id_ed25519
+      CEPH_AI_SSH_IDENTITY_ROLE: read-only
       # The dedicated gateway is the sole getUpdates consumer in containers.
       # dashboard-web keeps TELEGRAM_LISTENER_ENABLED=false, so this must be
       # enabled here or Telegram commands are silently never received.
@@ -98,7 +117,7 @@ services:
       CEPH_AI_DUAL_WORKSPACE: /var/lib/ceph-ai/dual-workspace
       PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       SINGLE_FULL_EXECUTOR_URL: http://full-executor:8787
-      SINGLE_FULL_EXECUTOR_TOKEN_FILE: /var/lib/ceph-ai/full-executor-secrets/token
+      SINGLE_FULL_EXECUTOR_TOKEN_FILE: /run/ceph-ai/credentials/single-full/token
     depends_on: [full-executor]
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('telegram-ai', stale_after_seconds=30)['healthy'])\""]
@@ -161,6 +180,7 @@ services:
     volumes:
       - /run/ceph-ai:/run/ceph-ai:rw
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      - /root/.ssh/id_ed25519:/run/ceph-ai/credentials/readonly/id_ed25519:ro
       # Diagnosis/remediation runs in this service too.  It must see the
       # exact same CLI binaries and account homes as the interactive AI
       # services, otherwise a valid Dashboard/Telegram login is unusable.
@@ -168,11 +188,17 @@ services:
       - /root/.codex/packages:/opt/codex-packages:ro
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+      - /var/lib/ceph-ai/full-executor-ssh:rw,noexec,nosuid,nodev,size=1m
+      - /var/lib/ceph-ai/full-executor-secrets:rw,noexec,nosuid,nodev,size=1m
+      - /var/lib/ceph-ai/full-executor-accounts:rw,noexec,nosuid,nodev,size=1m
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
-      SSH_KEY_PATH: /var/lib/ceph-ai/full-executor-ssh/id_ed25519
+      SSH_KEY_PATH: /run/ceph-ai/credentials/readonly/id_ed25519
+      CEPH_AI_SSH_IDENTITY_ROLE: read-only
       PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('watcher', stale_after_seconds=45)['healthy'])\""]
@@ -205,17 +231,27 @@ services:
     volumes:
       - /run/ceph-ai:/run/ceph-ai:rw
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      # The Worker is the typed mutation boundary for normal remediation and
+      # therefore receives a separate mutation identity, never the Dashboard
+      # read-only key.  Single Full keeps its own identity in full-executor.
+      - /var/lib/ceph-ai/full-executor-ssh/id_ed25519:/run/ceph-ai/credentials/mutation/id_ed25519:ro
       # Incident diagnosis executes here, so it needs the same shared
       # Codex/Claude CLI installation and OAuth homes as Dashboard/Telegram.
       - /root/.local:/opt/ai-tools:ro
       - /root/.codex/packages:/opt/codex-packages:ro
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+      - /var/lib/ceph-ai/full-executor-ssh:rw,noexec,nosuid,nodev,size=1m
+      - /var/lib/ceph-ai/full-executor-secrets:rw,noexec,nosuid,nodev,size=1m
+      - /var/lib/ceph-ai/full-executor-accounts:rw,noexec,nosuid,nodev,size=1m
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
-      SSH_KEY_PATH: /var/lib/ceph-ai/full-executor-ssh/id_ed25519
+      SSH_KEY_PATH: /run/ceph-ai/credentials/mutation/id_ed25519
+      CEPH_AI_SSH_IDENTITY_ROLE: mutation
       PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('worker', stale_after_seconds=45)['healthy'])\""]

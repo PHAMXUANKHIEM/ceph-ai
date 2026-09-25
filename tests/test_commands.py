@@ -836,6 +836,25 @@ def test_rbd_copy_command_requires_snapshot_and_other_pool():
         commands_module.get_command("rbd_copy_volume", params={**params, "dest_pool": "vms"})
 
 
+def test_rbd_move_command_verifies_copy_before_deleting_source():
+    params = {
+        "pool_name": "vms", "image": "vm-old", "dest_pool": "images",
+        "dest_image": "vm-new", "size_bytes": 1024, "delete_source": True,
+        "move_token": "move-token-20260925-01",
+        "checksum": "rbd-export-diff-sha256",
+    }
+    command = commands_module.get_command("rbd_move_volume", params=params)
+    assert "rbd cp --no-progress vms/vm-old images/vm-new" in command
+    assert "rbd export-diff vms/vm-old" in command
+    assert "rbd export-diff images/vm-new" in command
+    assert "rbd rm vms/vm-old" in command
+    assert command.index("source_sha256") < command.index("rbd rm vms/vm-old")
+    with pytest.raises(ExecutorError):
+        commands_module.get_command("rbd_move_volume", params={**params, "delete_source": False})
+    with pytest.raises(ExecutorError):
+        commands_module.get_command("rbd_move_volume", params={**params, "image": "volume-123"})
+
+
 def test_rbd_template_command_protects_snapshot_and_records_metadata():
     command = commands_module.get_command(
         "rbd_template_mark",
