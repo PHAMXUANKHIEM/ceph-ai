@@ -1,0 +1,18 @@
+{
+  "schema": "ceph-ai.postgresql-staging-rehearsal.v1",
+  "read_only_against_production": true,
+  "postgres_image": "postgres:18",
+  "target": "podman-postgres18-rehearsal-20260924-v2",
+  "commit_sha": "bc90f735ad34e02e2b638072ae165b52ceb245cf",
+  "revision_before": "BASELINE_EMPTY",
+  "revision_after": "m20260924verifiedoutcomes",
+  "backup_format": "postgresql-custom",
+  "backup_restore": "PASS",
+  "pg_restore_list": "PASS",
+  "restored_database_upgrade": "PASS",
+  "container_rollback_safety_gate": "PASS_REFUSED_WITHOUT_EXPLICIT_ACK",
+  "image_failure_before_after_migration": "NOT_RUN",
+  "database_rollback": "NOT_RUN",
+  "status": "PARTIAL_PASS",
+  "residual_risk": "No production-like data and no witnessed immutable-image rollback were available in this isolated rehearsal."
+}

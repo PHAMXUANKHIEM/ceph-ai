@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.settings import restart_worker
+from dashboard.cluster_scope import clear_cluster_selection_cache
 from dashboard.templating import make_templates
 from shared import db
 from shared.db import Base
@@ -365,6 +366,7 @@ async def create_cluster(
             )
         )
         session.commit()
+    clear_cluster_selection_cache()
 
     # Watcher's cluster supervisor discovers this row without a process
     # restart. Worker's scheduler still enumerates cluster rows at startup,
@@ -423,6 +425,7 @@ async def toggle_cluster_active(request: Request, cluster_id: str, user: str = D
             )
         target.is_active = not target.is_active
         session.commit()
+    clear_cluster_selection_cache()
 
     # Watcher sees the active flag on its next discovery/refresh tick. Only
     # Worker needs a restart because its scheduler still registers jobs at
@@ -503,6 +506,7 @@ async def update_cluster_connection(
         for field, value in values.items():
             setattr(target, field, value)
         session.commit()
+    clear_cluster_selection_cache()
     worker_result = await asyncio.to_thread(restart_worker)
     failed = ["Worker"] if not worker_result.get("restarted") else []
     message = "Đã test và cập nhật kết nối cluster."
@@ -633,6 +637,7 @@ async def delete_cluster(request: Request, cluster_id: str, user: str = Depends(
             counts = _purge_cluster_data(session, cluster_id)
             session.delete(target)
             session.commit()
+        clear_cluster_selection_cache()
     except (SQLAlchemyError, RuntimeError):
         logger.exception("delete_cluster: database purge failed for %s", cluster_id)
         return templates.TemplateResponse(
@@ -796,6 +801,7 @@ async def update_cluster_backup_config(
         )
         session.commit()
         cluster_name = cluster.name
+    clear_cluster_selection_cache()
 
     # Do not restart Watcher here -- backup config only affects Worker's own
     # scheduler (worker/backup/scheduler.py::build_scheduler()), while

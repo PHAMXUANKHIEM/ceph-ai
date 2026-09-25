@@ -46,6 +46,7 @@ from watcher.rgw_multisite_diagnosis import build_multisite_diagnosis
 from watcher.rgw_access_log import fetch_rgw_error_log, fetch_rgw_error_log_with
 from watcher.rgw_connectivity import probe_endpoint
 from watcher.rgw_audit_intelligence import build_rgw_audit_intelligence
+from watcher.rgw_public_posture import assess_public_access
 from watcher.rgw_access_log import (
     RgwLogError,
     fetch_bucket_access_log,
@@ -2531,6 +2532,65 @@ async def bucket_activity_api(request: Request, bucket: str, user: str = Depends
     except ObjectStorageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"bucket": bucket, "activity": activity}
+
+
+@router.get("/api/object-storage/buckets/{bucket}/public-posture")
+async def bucket_public_posture_api(request: Request, bucket: str, user: str = Depends(require_login)):
+    """Operator-triggered, bounded read of policy and ACL; no raw documents or keys leave the server."""
+    del user
+    if not _BUCKET_RE.fullmatch(bucket):
+        raise HTTPException(status_code=400, detail="Tên bucket không hợp lệ")
+    cluster = selected_cluster(request)
+
+    def inspect():
+        detail = _cached_detail(cluster, bucket)
+        if detail.get("loading") or detail.get("load_error") or not detail.get("owner") or not detail.get("host"):
+            return {"ready": False, "cluster_id": cluster.id, "bucket": bucket,
+                "status": "unknown", "evidence_gaps": [
+                "Chưa có metadata bucket hợp lệ để xác thực owner; thử lại sau khi đồng bộ."],
+                "read_only": True, "action_id": None}
+        configured = _configured_rgw_s3_credentials(cluster)
+        if configured is None:
+            return {"ready": False, "cluster_id": cluster.id, "bucket": bucket,
+                "status": "unknown", "evidence_gaps": [
+                "Chưa cấu hình S3 inventory credential cho cụm này; không tạo access key tạm để kiểm tra."],
+                "read_only": True, "action_id": None}
+        endpoint, access_key, secret_key = configured
+        client = boto3.client(
+            "s3", endpoint_url=endpoint, aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(signature_version="s3v4", s3={"addressing_style": "path"},
+                connect_timeout=RGW_S3_CONNECT_TIMEOUT_SECONDS, read_timeout=RGW_S3_READ_TIMEOUT_SECONDS,
+                retries={"max_attempts": 1, "mode": "standard"}),
+        )
+        policy = None
+        policy_available = False
+        try:
+            policy = client.get_bucket_policy(Bucket=bucket).get("Policy")
+            policy_available = True
+        except client.exceptions.ClientError as exc:
+            if str(exc.response.get("Error", {}).get("Code", "")) in {"NoSuchBucketPolicy", "NoSuchPolicy"}:
+                policy_available = True
+        acl = None
+        try:
+            acl = client.get_bucket_acl(Bucket=bucket)
+        except client.exceptions.ClientError:
+            pass
+        result = assess_public_access(policy, acl, policy_available=policy_available,
+                                      acl_available=isinstance(acl, dict))
+        return {"ready": True, "cluster_id": cluster.id, "bucket": bucket,
+                "checked_at": to_utc_iso(utc_now()), "source": "s3_api", **result}
+
+    try:
+        return await asyncio.to_thread(inspect)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    except Exception as exc:
+        logger.warning("RGW public posture read failed for cluster %s: %s", cluster.id, type(exc).__name__)
+        return {"ready": False, "cluster_id": cluster.id, "bucket": bucket,
+            "status": "unknown", "evidence_gaps": [
+            "Không đọc được Bucket Policy/ACL từ S3 endpoint; kiểm tra credential và kết nối."],
+            "read_only": True, "action_id": None}
 
 
 @router.get("/api/object-storage/buckets/{bucket}/objects")

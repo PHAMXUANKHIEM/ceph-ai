@@ -36,8 +36,10 @@ _METRICS = {
     "queue_wait_timeout_total": 0,
     "global_queue_wait_total": 0,
     "global_queue_wait_timeout_total": 0,
+    "duration_buckets": {str(bound): 0 for bound in (50, 100, 250, 500, 1000, 2000, 5000, 10000, 30000)},
     "recent": [],
 }
+_DURATION_BUCKETS = (50, 100, 250, 500, 1000, 2000, 5000, 10000, 30000)
 _GLOBAL_COMMAND_SEMAPHORE = threading.BoundedSemaphore(max(1, settings.ceph_max_concurrency))
 _CEPH_COMMAND_RE = re.compile(
     r"(?:^|[\s;&|])(?:sudo\s+)?(ceph|rbd|rados|radosgw-admin)\s+([A-Za-z0-9_.:-]+)"
@@ -56,6 +58,12 @@ def _command_label(command: str) -> str:
 def _record_metric(event: str, **fields: object) -> None:
     with _METRICS_LOCK:
         _METRICS[event] += 1
+        duration = fields.get("duration_ms")
+        if event == "command_success_total" and duration is not None:
+            for bound in _DURATION_BUCKETS:
+                if float(duration) <= bound:
+                    _METRICS["duration_buckets"][str(bound)] += 1
+                    break
         if fields:
             recent = _METRICS["recent"]
             item = {"event": event, **fields}
@@ -69,8 +77,18 @@ def _record_metric(event: str, **fields: object) -> None:
 def get_metrics() -> dict:
     """Return bounded runner diagnostics without connection credentials."""
     with _METRICS_LOCK:
+        total = sum(int(value) for value in _METRICS["duration_buckets"].values())
+        target = max(1, (total * 95 + 99) // 100) if total else 0
+        cumulative = 0
+        p95 = None
+        for bound in _DURATION_BUCKETS:
+            cumulative += int(_METRICS["duration_buckets"][str(bound)])
+            if target and cumulative >= target:
+                p95 = bound
+                break
         return {
             **{key: value for key, value in _METRICS.items() if key != "recent"},
+            "p95_duration_ms": p95,
             "recent": [dict(item) for item in _METRICS["recent"]],
         }
 

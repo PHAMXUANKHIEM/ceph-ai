@@ -43,6 +43,7 @@ from dashboard.routes import (
     capacity_forecast as capacity_forecast_routes,
     disk_risk as disk_risk_routes,
     event_timeline,
+    federated_iam,
     performance_rca as performance_rca_routes,
     log_intelligence as log_intelligence_routes,
     chat,
@@ -520,6 +521,7 @@ def create_app() -> FastAPI:
                     client_key,
                     limit=settings.dashboard_api_rate_limit,
                     window_seconds=settings.dashboard_api_rate_limit_window_seconds,
+                    reservation_size=settings.dashboard_api_rate_limit_reservation_size,
                 )
             except RateLimitStoreUnavailable:
                 return JSONResponse(
@@ -630,6 +632,7 @@ def create_app() -> FastAPI:
     application.include_router(capacity_forecast_routes.router)
     application.include_router(performance_rca_routes.router)
     application.include_router(event_timeline.router)
+    application.include_router(federated_iam.router)
     application.include_router(disk_risk_routes.router)
     application.include_router(log_intelligence_routes.router)
     application.include_router(clusters_routes.router)

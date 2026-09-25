@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Federated IAM RGW — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <style>
+    .iam-page { max-width: 1280px; margin: 0 auto; }
+    .iam-card { border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: 20px; background: #1e293b; }
+    .iam-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .iam-field { display: grid; gap: 7px; }
+    .iam-field label { color: #94a3b8; font-size: .82rem; }
+    .iam-field input, .iam-field select, .iam-field textarea { width: 100%; box-sizing: border-box; }
+    .iam-field textarea { min-height: 92px; font-family: var(--font-mono, monospace); }
+    .iam-full { grid-column: 1 / -1; }
+    .iam-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+    .iam-muted { color: #94a3b8; font-size: .84rem; }
+    .iam-status { display: inline-flex; padding: 3px 8px; border-radius: 999px; font-size: .72rem; font-weight: 700; }
+    .iam-status--VALID, .iam-status--APPLIED { color: #bbf7d0; background: rgba(34,197,94,.16); }
+    .iam-status--FAILED { color: #fecaca; background: rgba(239,68,68,.16); }
+    .iam-status--DRAFT, .iam-status--DISABLED { color: #cbd5e1; background: rgba(148,163,184,.16); }
+    .iam-status--REGISTERED { color: #bae6fd; background: rgba(14,165,233,.16); }
+    .iam-status--RECONCILED { color: #bbf7d0; background: rgba(34,197,94,.16); }
+    .iam-status--RECONCILE_FAILED, .iam-status--BLOCKED { color: #fecaca; background: rgba(239,68,68,.16); }
+    .iam-status--REQUESTED { color: #bae6fd; background: rgba(14,165,233,.16); }
+    .iam-status--ACTIVE { color: #bbf7d0; background: rgba(34,197,94,.16); }
+    .iam-status--EXPIRED, .iam-status--REVOKED { color: #cbd5e1; background: rgba(148,163,184,.16); }
+    .iam-row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .iam-table td { vertical-align: top; }
+    .iam-alert { margin: 14px 0; padding: 11px 14px; border-left: 3px solid #f59e0b; background: rgba(245,158,11,.08); color: #cbd5e1; }
+    @media (max-width: 800px) { .iam-grid { grid-template-columns: 1fr; } .iam-full { grid-column: auto; } }
+  </style>
+</head>
+<body>
+  {% include "_nav.html" %}
+  <main class="page iam-page">
+    <div class="page-header">
+      <div><p class="breadcrumb">Cài đặt › Federated IAM</p><h1>Federated IAM cho RGW</h1><p class="hint">Đăng ký và kiểm tra OIDC, LDAP hoặc Active Directory mà không lưu secret trực tiếp trong Ceph-AI.</p></div>
+    </div>
+    <div class="iam-alert">⚠️ Provider và role mapping cần Validate/Apply/Reconcile trước. STS chỉ cấp credential cho role mapping đã RECONCILED; policy simulator và access review sẽ triển khai tiếp.</div>
+    <section class="iam-card">
+      <div class="card-header"><div><h2>Thêm Identity Provider</h2><p class="iam-muted">Secret chỉ được tham chiếu bằng secret_ref, không nhập client secret/password vào form.</p></div></div>
+      <form id="iam-provider-form">
+        <div class="iam-grid">
+          <div class="iam-field"><label for="iam-name">Tên provider</label><input id="iam-name" required maxlength="128" placeholder="corp-oidc"></div>
+          <div class="iam-field"><label for="iam-type">Loại</label><select id="iam-type"><option value="oidc">OIDC</option><option value="ldap">LDAP</option><option value="ad">Active Directory</option></select></div>
+          <div class="iam-field"><label for="iam-issuer">Issuer URL (OIDC)</label><input id="iam-issuer" placeholder="https://sso.example.com/realms/ceph"></div>
+          <div class="iam-field"><label for="iam-endpoint">Endpoint (LDAP/AD hoặc discovery override)</label><input id="iam-endpoint" placeholder="ldaps://ad.example.com:636"></div>
+          <div class="iam-field"><label for="iam-audience">Audience (tuỳ chọn)</label><input id="iam-audience" maxlength="255" placeholder="ceph-rgw"></div>
+          <div class="iam-field"><label for="iam-secret-ref">Secret reference (tuỳ chọn)</label><input id="iam-secret-ref" maxlength="255" placeholder="env:CEPH_AI_LDAP_PASSWORD | file:/etc/ceph-ai-secrets/ldap.password | vault:secret/path#password"></div>
+          <div class="iam-field iam-full"><label for="iam-config">Mapping/TLS config JSON, không chứa secret</label><textarea id="iam-config" placeholder='{"bind_dn":"cn=svc,dc=example,dc=com","base_dn":"dc=example,dc=com","probe_username":"alice","tls_verify":true}'>{"tls_verify":true}</textarea><small class="iam-muted">LDAP/AD cần thêm bind_dn, base_dn và secret_ref dạng <code>env:VAR</code>, <code>file:/etc/ceph-ai-secrets/...</code> hoặc <code>vault:secret/path#field</code>.</small></div>
+        </div>
+        <div class="iam-actions"><button type="button" class="btn btn-secondary" id="iam-preview">Xem preview</button><button type="submit" class="btn btn-primary">Tạo provider</button></div>
+      </form>
+      <p id="iam-form-message" class="iam-muted" role="status"></p>
+    </section>
+    <section class="iam-card" style="margin-top:20px">
+      <div class="card-header"><div><h2>STS Temporary Credentials</h2><p class="iam-muted">Cấp credential tạm thời qua RGW STS cho role mapping đã RECONCILED. Secret chỉ hiển thị một lần và không được lưu trong Ceph-AI.</p></div></div>
+      <form id="iam-sts-form">
+        <div class="iam-grid">
+          <div class="iam-field"><label for="iam-sts-mapping">Role mapping</label><select id="iam-sts-mapping" required><option value="">Chọn mapping đã RECONCILED</option></select></div>
+          <div class="iam-field"><label for="iam-sts-session-name">Session name</label><input id="iam-sts-session-name" required maxlength="64" value="ceph-ai-session" placeholder="ceph-ai-session"></div>
+          <div class="iam-field"><label for="iam-sts-duration">TTL</label><select id="iam-sts-duration"><option value="900">15 phút</option><option value="3600" selected>1 giờ</option><option value="21600">6 giờ</option><option value="43200">12 giờ</option></select></div>
+          <div class="iam-field"><label for="iam-sts-tags">Session tags JSON</label><input id="iam-sts-tags" value="{}" placeholder='{"team":"platform"}'></div>
+          <div class="iam-field iam-full"><label for="iam-sts-token">Web identity token</label><textarea id="iam-sts-token" required autocomplete="off" placeholder="Dán OIDC web identity token; token không được lưu"></textarea></div>
+        </div>
+        <div class="iam-actions"><button type="button" class="btn btn-secondary" id="iam-sts-preview">Xem preview</button><button type="submit" class="btn btn-primary">Cấp temporary credentials</button></div>
+      </form>
+      <p id="iam-sts-message" class="iam-muted" role="status"></p>
+      <pre id="iam-sts-result" class="iam-muted" hidden></pre>
+      <div class="table-wrap"><table class="iam-table"><thead><tr><th>Session</th><th>Role</th><th>Trạng thái</th><th>Access key</th><th>Hết hạn</th><th>Thao tác</th></tr></thead><tbody id="iam-sts-rows"><tr><td colspan="6" class="iam-muted">Chưa có STS session.</td></tr></tbody></table></div>
+    </section>
+    <section class="iam-card" style="margin-top:20px">
+      <div class="card-header"><div><h2>Role Mapping</h2><p class="iam-muted">Preview claim/group → RGW policy. Register mới lưu mapping registry và chờ worker reconcile vào RGW.</p></div></div>
+      <form id="iam-mapping-form">
+        <div class="iam-grid">
+          <div class="iam-field"><label for="iam-mapping-name">Tên mapping</label><input id="iam-mapping-name" required maxlength="128" placeholder="engineering-readonly"></div>
+          <div class="iam-field"><label for="iam-mapping-provider">Identity Provider</label><select id="iam-mapping-provider" required>{% for provider in providers %}<option value="{{ provider.id }}">{{ provider.name }} ({{ provider.status }})</option>{% endfor %}</select></div>
+          <div class="iam-field"><label for="iam-mapping-source-type">Nguồn match</label><select id="iam-mapping-source-type"><option value="group">Group</option><option value="claim">Claim</option></select></div>
+          <div class="iam-field"><label for="iam-mapping-source-key">Claim/group key</label><input id="iam-mapping-source-key" value="groups" placeholder="groups hoặc roles"></div>
+          <div class="iam-field iam-full"><label for="iam-mapping-match">Giá trị match</label><input id="iam-mapping-match" required maxlength="255" placeholder="ceph-readonly"></div>
+          <div class="iam-field iam-full"><label for="iam-mapping-policy">RGW policy JSON</label><textarea id="iam-mapping-policy">{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::example/*"]}]}</textarea></div>
+        </div>
+        <div class="iam-actions"><button type="button" class="btn btn-secondary" id="iam-mapping-preview">Xem preview</button><button type="submit" class="btn btn-primary">Tạo mapping</button></div>
+      </form>
+      <p id="iam-mapping-message" class="iam-muted" role="status"></p>
+      <div class="table-wrap"><table class="iam-table"><thead><tr><th>Tên</th><th>Provider</th><th>Match</th><th>Policy SHA-256</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody id="iam-mapping-rows"><tr><td colspan="6" class="iam-muted">Chưa có mapping.</td></tr></tbody></table></div>
+    </section>
+    <section class="iam-card" style="margin-top:20px">
+      <div class="card-header"><div><h2>Provider registry</h2><p class="iam-muted">Chỉ provider Validate thành công mới được Apply. STS dùng provider OIDC đã Apply và role mapping đã Reconcile.</p></div></div>
+      <div class="table-wrap"><table class="iam-table"><thead><tr><th>Tên</th><th>Loại</th><th>Trạng thái</th><th>Secret</th><th>Kiểm tra lần cuối</th><th>Thao tác</th></tr></thead><tbody id="iam-provider-rows"><tr><td colspan="6" class="iam-muted">Đang tải...</td></tr></tbody></table></div>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const form = document.getElementById("iam-provider-form");
+      const rows = document.getElementById("iam-provider-rows");
+      const message = document.getElementById("iam-form-message");
+      let providers = {{ providers|tojson }};
+      let mappings = {{ mappings|tojson }};
+      let stsSessions = [];
+      const mappingForm = document.getElementById("iam-mapping-form");
+      const mappingRows = document.getElementById("iam-mapping-rows");
+      const mappingMessage = document.getElementById("iam-mapping-message");
+      const stsForm = document.getElementById("iam-sts-form");
+      const stsRows = document.getElementById("iam-sts-rows");
+      const stsMessage = document.getElementById("iam-sts-message");
+      const stsResult = document.getElementById("iam-sts-result");
+      const value = id => document.getElementById(id).value.trim();
+      const jsonConfig = () => {
+        try { return JSON.parse(value("iam-config") || "{}"); }
+        catch { throw new Error("Mapping/TLS config phải là JSON hợp lệ"); }
+      };
+      const payload = () => ({name: value("iam-name"), provider_type: value("iam-type"), issuer_url: value("iam-issuer"), endpoint_url: value("iam-endpoint"), audience: value("iam-audience"), secret_ref: value("iam-secret-ref"), config: jsonConfig()});
+      async function call(url, options = {}) {
+        const response = await fetch(url, {credentials: "same-origin", headers: {"Content-Type": "application/json", ...(options.headers || {})}, ...options});
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+        return body;
+      }
+      function render() {
+        rows.innerHTML = providers.length ? providers.map(p => `<tr><td><strong>${escapeHtml(p.name)}</strong><br><span class="iam-muted">${escapeHtml(p.last_error || "")}</span></td><td>${escapeHtml(p.provider_type)}</td><td><span class="iam-status iam-status--${escapeHtml(p.status)}">${escapeHtml(p.status)}</span></td><td>${p.secret_configured ? "Đã tham chiếu" : "Chưa cấu hình"}</td><td>${escapeHtml(p.last_checked_at || "—")}</td><td><div class="iam-row-actions"><button class="btn btn-secondary btn-sm" data-action="validate" data-id="${escapeHtml(p.id)}">Validate</button>${p.status === "VALID" ? `<button class="btn btn-primary btn-sm" data-action="apply" data-id="${escapeHtml(p.id)}">Apply</button>` : ""}${p.enabled ? `<button class="btn btn-danger btn-sm" data-action="disable" data-id="${escapeHtml(p.id)}">Tắt</button>` : ""}</div></td></tr>`).join("") : `<tr><td colspan="6" class="iam-muted">Chưa có provider.</td></tr>`;
+      }
+      function renderMappings() {
+        mappingRows.innerHTML = mappings.length ? mappings.map(m => `<tr><td><strong>${escapeHtml(m.name)}</strong><br><span class="iam-muted">${escapeHtml(m.last_reconcile_error || m.rgw_role_name || "")}</span></td><td>${escapeHtml(providers.find(p => p.id === m.provider_id)?.name || m.provider_id)}</td><td>${escapeHtml(m.source_type)}:${escapeHtml(m.source_key)} = ${escapeHtml(m.match_value)}</td><td><code>${escapeHtml(m.policy_sha256.slice(0, 16))}…</code></td><td><span class="iam-status iam-status--${escapeHtml(m.status)}">${escapeHtml(m.status)}</span><br><span class="iam-muted">Lần reconcile: ${escapeHtml(m.last_reconciled_at || "chưa chạy")}</span></td><td>${["DRAFT", "RECONCILE_FAILED", "BLOCKED"].includes(m.status) ? `<button class="btn btn-primary btn-sm" data-mapping-action="register" data-id="${escapeHtml(m.id)}">${m.status === "DRAFT" ? "Register" : "Retry"}</button>` : ""}</td></tr>`).join("") : `<tr><td colspan="6" class="iam-muted">Chưa có mapping.</td></tr>`;
+      }
+      function renderStsMappings() {
+        const select = document.getElementById("iam-sts-mapping");
+        const selected = select.value;
+        const options = mappings.filter(m => m.status === "RECONCILED" && m.enabled).map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)} (${escapeHtml(m.rgw_role_name || "")})</option>`).join("");
+        select.innerHTML = `<option value="">Chọn mapping đã RECONCILED</option>${options}`;
+        if (mappings.some(m => m.id === selected && m.status === "RECONCILED" && m.enabled)) select.value = selected;
+      }
+      function renderStsSessions() {
+        stsRows.innerHTML = stsSessions.length ? stsSessions.map(item => `<tr><td><strong>${escapeHtml(item.session_name)}</strong><br><span class="iam-muted">${escapeHtml(item.id)}</span></td><td>${escapeHtml(item.role_name)}</td><td><span class="iam-status iam-status--${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></td><td><code>${escapeHtml(item.access_key_id || "—")}</code></td><td>${escapeHtml(item.expires_at || "—")}</td><td>${["ACTIVE", "REQUESTED"].includes(item.status) ? `<button class="btn btn-danger btn-sm" data-sts-action="revoke" data-id="${escapeHtml(item.id)}">Revoke</button>` : "—"}</td></tr>`).join("") : `<tr><td colspan="6" class="iam-muted">Chưa có STS session.</td></tr>`;
+      }
+      const mappingPayload = () => ({name: value("iam-mapping-name"), provider_id: value("iam-mapping-provider"), source_type: value("iam-mapping-source-type"), source_key: value("iam-mapping-source-key"), match_value: value("iam-mapping-match"), policy: JSON.parse(value("iam-mapping-policy"))});
+      function escapeHtml(raw) { return String(raw ?? "").replace(/[&<>\"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+      async function refresh() { providers = (await call("/api/settings/federated-iam/providers")).items || []; mappings = (await call("/api/settings/federated-iam/mappings")).items || []; stsSessions = (await call("/api/settings/federated-iam/sts/sessions")).items || []; render(); renderMappings(); renderStsMappings(); renderStsSessions(); }
+      form.addEventListener("submit", async event => { event.preventDefault(); message.textContent = ""; try { await call("/api/settings/federated-iam/providers", {method: "POST", body: JSON.stringify(payload())}); message.textContent = "Đã tạo provider ở trạng thái DRAFT."; form.reset(); document.getElementById("iam-config").value = '{"tls_verify":true}'; await refresh(); } catch (error) { message.textContent = error.message; } });
+      document.getElementById("iam-preview").addEventListener("click", async () => { try { const result = await call("/api/settings/federated-iam/providers/preview", {method: "POST", body: JSON.stringify(payload())}); message.textContent = `Preview hợp lệ: ${result.provider.provider_type}; chưa lưu.`; } catch (error) { message.textContent = error.message; } });
+      mappingForm.addEventListener("submit", async event => { event.preventDefault(); mappingMessage.textContent = ""; try { await call("/api/settings/federated-iam/mappings", {method: "POST", body: JSON.stringify(mappingPayload())}); mappingMessage.textContent = "Đã tạo mapping ở trạng thái DRAFT."; await refresh(); } catch (error) { mappingMessage.textContent = error.message; } });
+      document.getElementById("iam-mapping-preview").addEventListener("click", async () => { try { const result = await call("/api/settings/federated-iam/mappings/preview", {method: "POST", body: JSON.stringify(mappingPayload())}); mappingMessage.textContent = `Preview hợp lệ: SHA-256 ${result.mapping.policy_sha256}; chưa lưu.`; } catch (error) { mappingMessage.textContent = error.message; } });
+      rows.addEventListener("click", async event => { const button = event.target.closest("button[data-action]"); if (!button) return; const id = button.dataset.id; const action = button.dataset.action; try { const body = action === "apply" ? {confirmation: providers.find(p => p.id === id)?.name || ""} : {}; await call(`/api/settings/federated-iam/providers/${id}/${action}`, {method: "POST", body: JSON.stringify(body)}); await refresh(); } catch (error) { message.textContent = error.message; } });
+      mappingRows.addEventListener("click", async event => { const button = event.target.closest("button[data-mapping-action]"); if (!button) return; const mapping = mappings.find(item => item.id === button.dataset.id); if (!mapping) return; try { await call(`/api/settings/federated-iam/mappings/${mapping.id}/register`, {method: "POST", body: JSON.stringify({confirmation: mapping.name})}); await refresh(); } catch (error) { mappingMessage.textContent = error.message; } });
+      const stsPayload = () => ({mapping_id: value("iam-sts-mapping"), session_name: value("iam-sts-session-name"), duration_seconds: Number(value("iam-sts-duration")), session_tags: JSON.parse(value("iam-sts-tags") || "{}"), web_identity_token: value("iam-sts-token")});
+      document.getElementById("iam-sts-preview").addEventListener("click", async () => { stsMessage.textContent = ""; try { const result = await call("/api/settings/federated-iam/sts/sessions/preview", {method: "POST", body: JSON.stringify(stsPayload())}); stsMessage.textContent = `Preview hợp lệ: ${result.session.role_name}, TTL ${result.session.duration_seconds}s. Chưa cấp credential.`; } catch (error) { stsMessage.textContent = error.message; } });
+      stsForm.addEventListener("submit", async event => { event.preventDefault(); stsMessage.textContent = ""; stsResult.hidden = true; try { const result = await call("/api/settings/federated-iam/sts/sessions", {method: "POST", body: JSON.stringify(stsPayload())}); stsMessage.textContent = result.warning; stsResult.textContent = JSON.stringify(result.credentials, null, 2); stsResult.hidden = false; document.getElementById("iam-sts-token").value = ""; await refresh(); } catch (error) { stsMessage.textContent = error.message; } });
+      stsRows.addEventListener("click", async event => { const button = event.target.closest("button[data-sts-action]"); if (!button || button.dataset.stsAction !== "revoke") return; const id = button.dataset.id; if (window.prompt("Nhập lại session id để revoke:") !== id) return; try { const result = await call(`/api/settings/federated-iam/sts/sessions/${id}/revoke`, {method: "POST", body: JSON.stringify({confirmation: id})}); stsMessage.textContent = result.warning; await refresh(); } catch (error) { stsMessage.textContent = error.message; } });
+      render();
+      renderMappings();
+      renderStsMappings();
+      renderStsSessions();
+    })();
+  </script>
+</body>
+</html>

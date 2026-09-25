@@ -3717,3 +3717,137 @@ class ChangeRiskAssessment(Base):
     assessment_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     acknowledged_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     analyzed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class RgwFederatedIdentityProvider(Base):
+    """Secret-free registry for external RGW identity providers.
+
+    Provider credentials are referenced by ``secret_ref`` and never stored in
+    this table.  ``config_json`` contains only non-sensitive mapping and TLS
+    posture, so list/detail/audit responses can safely expose it after
+    redaction.
+    """
+
+    __tablename__ = "rgw_federated_identity_providers"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_rgw_federated_identity_provider_name"),
+        Index("ix_rgw_federated_identity_provider_status", "status", "provider_type"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="DRAFT")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    issuer_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    endpoint_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audience: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    secret_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    config_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now,
+    )
+
+
+class RgwFederatedIdentityAudit(Base):
+    """Append-only audit for provider validation/apply/disable operations."""
+
+    __tablename__ = "rgw_federated_identity_audits"
+    __table_args__ = (
+        Index("ix_rgw_federated_identity_audit_provider_time", "provider_id", "created_at"),
+        Index("ix_rgw_federated_identity_audit_result", "result", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    provider_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("rgw_federated_identity_providers.id"), nullable=True,
+    )
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    result: Mapped[str] = mapped_column(String(24), nullable=False)
+    evidence_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class RgwFederatedRoleMapping(Base):
+    """Validated claim/group-to-RGW-policy mapping registry.
+
+    The registry is intentionally separate from provider credentials.  A
+    mapping becomes ``REGISTERED`` only after an explicit confirmation; the
+    Worker then reconciles it to the RGW role/policy store.
+    """
+
+    __tablename__ = "rgw_federated_role_mappings"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_rgw_federated_role_mapping_name"),
+        Index("ix_rgw_federated_role_mapping_provider_status", "provider_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    provider_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rgw_federated_identity_providers.id"), nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    match_value: Mapped[str] = mapped_column(String(255), nullable=False)
+    policy_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="DRAFT")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    rgw_role_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reconcile_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_reconcile_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now,
+    )
+
+
+class RgwFederatedStsSession(Base):
+    """Metadata for one RGW STS temporary-credential exchange.
+
+    Credential secrets are deliberately never persisted.  The caller receives
+    them once from the issue endpoint; this table keeps only the access-key id,
+    lifecycle state and non-sensitive audit metadata needed for expiry/revoke.
+    """
+
+    __tablename__ = "rgw_federated_sts_sessions"
+    __table_args__ = (
+        Index("ix_rgw_federated_sts_session_status_expiry", "status", "expires_at"),
+        Index("ix_rgw_federated_sts_session_provider_created", "provider_id", "created_at"),
+        Index("ix_rgw_federated_sts_session_mapping_created", "mapping_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    provider_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rgw_federated_identity_providers.id"), nullable=False,
+    )
+    mapping_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rgw_federated_role_mappings.id"), nullable=False,
+    )
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    role_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    session_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="REQUESTED")
+    duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    access_key_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, onupdate=utc_now,
+    )

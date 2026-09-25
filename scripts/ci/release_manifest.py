@@ -25,6 +25,7 @@ DEPENDENCY_FILES = (
     Path("pyproject.toml"),
     Path("poetry.lock"),
     Path("requirements.txt"),
+    Path("requirements-prod.lock"),
     Path("ceph-health-dashboard/package-lock.json"),
 )
 
@@ -51,6 +52,13 @@ def _git_value(*args: str) -> str:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
 
 
 def dependency_hashes() -> dict[str, str]:
@@ -102,6 +110,26 @@ def _release_evidence(artifacts: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _documentation_evidence(artifacts: Path) -> dict[str, Any]:
+    path = artifacts / "release" / "documentation-freshness.json"
+    if not path.is_file():
+        return {"status": "missing", "artifact": None}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid", "artifact": str(path.relative_to(ROOT))}
+    status = payload.get("status", "invalid") if isinstance(payload, dict) else "invalid"
+    try:
+        artifact_name = str(path.relative_to(ROOT))
+    except ValueError:
+        artifact_name = str(path)
+    return {
+        "status": status if status in {"passed", "failed"} else "invalid",
+        "artifact": artifact_name,
+        "errors": payload.get("errors", []) if isinstance(payload, dict) else ["invalid report"],
+    }
+
+
 def build_manifest(environment: str, artifacts: Path) -> dict[str, Any]:
     commit = _git_value("rev-parse", "HEAD")
     image_digest = _image_digest(artifacts)
@@ -111,6 +139,7 @@ def build_manifest(environment: str, artifacts: Path) -> dict[str, Any]:
     )
     migration = migration_heads()
     release_evidence = _release_evidence(artifacts)
+    documentation = _documentation_evidence(artifacts)
     release_status = release_evidence.get("status", {})
     production_decision = release_evidence.get("production_decision", {})
     return {
@@ -121,7 +150,7 @@ def build_manifest(environment: str, artifacts: Path) -> dict[str, Any]:
             "commit_sha": commit,
             "branch": _git_value("branch", "--show-current"),
             "worktree_clean": not bool(
-                _git_value("status", "--porcelain", "--untracked-files=no")
+                _git_value("status", "--porcelain")
             ),
         },
         "migration": migration,
@@ -145,10 +174,11 @@ def build_manifest(environment: str, artifacts: Path) -> dict[str, Any]:
             "pip_audit": release_status.get("pip_audit", {"status": "missing"}),
             "image_scan": release_status.get("image_scan", {"status": "missing"}),
             "sbom": release_status.get("sbom", {"status": "missing"}),
+            "documentation_freshness": documentation,
             "config_fingerprint": os.environ.get("CEPH_AI_CONFIG_FINGERPRINT", "").strip() or None,
             "rollback_artifact": os.environ.get("CEPH_AI_ROLLBACK_ARTIFACT", "").strip() or None,
             "artifact_files": sorted(
-                str(path.relative_to(ROOT)) for path in artifacts.rglob("*") if path.is_file()
+                _display_path(path) for path in artifacts.rglob("*") if path.is_file()
             ),
         },
         "production_approval": {

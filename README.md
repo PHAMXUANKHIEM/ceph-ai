@@ -1,5 +1,13 @@
 # Ceph AIOps
 
+Release and support posture are maintained in
+[`docs/production-release-runbook.md`](docs/production-release-runbook.md),
+the [capability matrix](docs/ceph-capability-matrix.md), and the strict
+readiness plan at
+[`Plan/incompleted/strict-production-readiness-closure-plan-2026-09-25.md`](Plan/incompleted/strict-production-readiness-closure-plan-2026-09-25.md).
+The repository is currently for internal use; see [`LICENSE`](LICENSE) before
+any distribution decision.
+
 Giám sát cụm Ceph tự động, chẩn đoán nguyên nhân bằng AI (qua một kết nối
 API AI — Claude, Codex/OpenAI, OpenRouter, hoặc 9router tự triển khai), tự
 động khắc phục sự cố an toàn (Safe Action) hoặc đề xuất chờ duyệt (Risky

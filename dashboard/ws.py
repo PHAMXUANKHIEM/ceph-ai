@@ -8,6 +8,7 @@ from threading import Lock
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, or_
 
+from config.settings import settings
 from dashboard.routes.auth import _session_is_valid
 from shared import db
 from shared.cluster_events import read_latest_event
@@ -141,6 +142,10 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
     missed event safe. The legacy incidents socket remains available for older
     dashboard clients.
     """
+    if not settings.dashboard_cluster_events_enabled:
+        await websocket.accept()
+        await websocket.close(code=1013)
+        return
     if not _session_is_valid(websocket.session) or websocket.session.get("product") == "vitastor":
         await websocket.accept()
         await websocket.close(code=WS_POLICY_VIOLATION)

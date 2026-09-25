@@ -8,6 +8,8 @@ from shared import db
 from shared.db import Base
 from shared.models import (
     Cluster,
+    ForecastModelPromotionAudit,
+    ForecastModelRegistry,
     NodeResourceForecastRun,
     OnlineLearnerAudit,
     OnlineLearnerCycleAudit,
@@ -102,6 +104,59 @@ def test_consumer_never_targets_active_model(monkeypatch):
 
     assert result is not None
     assert targets == ["shadow"]
+
+
+def test_consumer_targets_active_only_after_registry_promotion_audit(monkeypatch):
+    factory = _session(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_enabled", True)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_mode", "ACTIVE")
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_require_verified_label", False)
+    now = datetime.now(timezone.utc)
+    with factory() as session:
+        session.add(Cluster(
+            id="cluster-active", name="CS-LAB", ceph_mon_nodes="",
+            ssh_user="root", ssh_key_path="/tmp/key",
+        ))
+        session.add(WatcherHeartbeat(
+            id=1, cluster_id="cluster-active", success=True, mon_node="mon-1",
+            error_message=None, polled_at=now, consecutive_failures=0,
+            last_success_at=now,
+        ))
+        model = ForecastModelRegistry(
+            scope_type="NODE_RESOURCE", scope_key="cluster-active|node-1|cpu",
+            scope_schema="forecast-scope-v2", cluster_id="cluster-active",
+            entity_type="node", entity_id="node-1", host="node-1", metric="cpu",
+            horizon_hours=24, name="online-learner", version="river-mean-v1",
+            algorithm="river_mean", feature_schema="scalar-v1",
+            training_window_hours=24, status="ACTIVE",
+        )
+        session.add(model)
+        session.flush()
+        session.add(ForecastModelPromotionAudit(
+            candidate_model_id=model.id, event_type="PROMOTED", actor="operator",
+            reason="guarded promotion approved",
+        ))
+        session.commit()
+
+    targets = []
+    original = consumer_module.guarded_update
+
+    def capture_target(*args, **kwargs):
+        targets.append(kwargs.get("target"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(consumer_module, "guarded_update", capture_target)
+    result = consumer_module.consume_sample(
+        cluster_id="cluster-active", host="node-1", metric="cpu", value=42.0,
+        observed_at=now, sample_id="active-target", label=42.0,
+    )
+
+    assert result is not None
+    assert result.update_applied is True
+    assert targets == ["active"]
+    with factory() as session:
+        audit = session.query(OnlineLearnerAudit).filter_by(sample_id="active-target").one()
+        assert "target=active" in audit.runtime_reason
 
 
 def test_cycle_audit_records_backend_identity(monkeypatch):

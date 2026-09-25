@@ -1,6 +1,11 @@
 # Ceph AI — trạng thái bàn giao
 
-Cập nhật: **2026-08-21**. Tạm dừng phát triển AI sau commit `cddc03e` để
+> Snapshot lịch sử; trạng thái release hiện tại phải đối chiếu với
+> [`Plan/incompleted/strict-production-readiness-closure-plan-2026-09-25.md`](../Plan/incompleted/strict-production-readiness-closure-plan-2026-09-25.md),
+> [`docs/production-release-runbook.md`](production-release-runbook.md) và
+> [`docs/ceph-capability-matrix.md`](ceph-capability-matrix.md).
+
+Cập nhật snapshot: **2026-08-21**. Tạm dừng phát triển AI sau commit `cddc03e` để
 chuyển sang hạng mục khác. Tài liệu này là điểm bắt đầu khi quay lại làm tiếp.
 
 ## Phạm vi đã hoàn thành

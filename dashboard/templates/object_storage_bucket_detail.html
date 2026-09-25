@@ -29,6 +29,10 @@
       {% endif %}
     </section>
     {% if detail and not detail.loading and not detail.load_error %}
+    <section class="card" id="bucket-public-posture" data-bucket="{{ bucket }}" data-cluster="{{ selected_cluster.id }}">
+      <div class="card-header"><div><h2>Quyền truy cập public</h2><p class="hint">Đọc Bucket Policy và ACL khi yêu cầu. Kết quả chỉ phản ánh grant; chưa xác minh quyền truy cập hiệu lực.</p></div><button type="button" class="btn btn-ghost btn-sm" id="bucket-public-check">Kiểm tra</button></div>
+      <div class="card-body"><p id="bucket-public-status" role="status" class="hint">Chưa kiểm tra.</p><ul id="bucket-public-evidence"></ul></div>
+    </section>
     <section class="card" id="object-browser" data-bucket="{{ bucket }}" data-owner="{{ detail.owner }}" data-cluster="{{ selected_cluster.id }}">
       <div class="card-header"><div><h2>Object Browser</h2><p class="hint">Read-only từ bucket index RGW; mỗi trang tối đa 10 object, không tải toàn bộ bucket vào bộ nhớ.</p></div></div>
       <div class="card-body">

@@ -1,0 +1,52 @@
+{
+  "schema": "ceph-ai.incident-outbox-chaos.v1",
+  "timestamp": "2026-09-24T11:02:00Z",
+  "read_only_against_production": true,
+  "database": "isolated SQLite in-memory",
+  "fault_injection": {
+    "broker_failure_after_incident_commit": {
+      "result": "PASS",
+      "attempts": 2,
+      "backoff_observed": true,
+      "incident_preserved": true,
+      "final_delivery_state": "SENT"
+    },
+    "publisher_crash_after_publisher_confirmation": {
+      "result": "PASS",
+      "same_event_id_reclaimed": true,
+      "duplicate_publish_detected_and_recoverable": true,
+      "final_delivery_state": "SENT",
+      "attempts": 2
+    },
+    "consumer_crash_after_claim_and_side_effect": {
+      "result": "PASS",
+      "lease_reclaimed": true,
+      "event_idempotency_prevented_duplicate_mutation": true,
+      "final_consumer_state": "DONE",
+      "mutation_count": 1
+    },
+    "terminal_consumer_failure": {
+      "result": "PASS",
+      "dead_letter_reject": true,
+      "incident_state": "FAILED",
+      "telegram_failure_notification_count": 1,
+      "consumer_state": "PENDING_FOR_REDELIVERY_OR_RECONCILIATION"
+    }
+  },
+  "deterministic_test": {
+    "command": "pytest -q tests/test_incident_outbox.py tests/test_incident_outbox_chaos.py tests/test_publisher.py -m 'not live and not integration'",
+    "result": "11 passed, 1 deselected",
+    "warning_count": 1
+  },
+  "rabbitmq_topology_tests": {
+    "result": "PASS",
+    "evidence": "Existing isolated RabbitMQ integration run: 3 MQ/DLQ tests passed",
+    "note": "A second local container attempt was blocked by the host rootless runtime denying RabbitMQ .erlang.cookie access; the existing production RabbitMQ container was not touched."
+  },
+  "process_kill_and_broker_restart": {
+    "result": "NOT_RUN",
+    "reason": "Requires a dedicated staging broker/container runtime and an operator-witnessed restart window."
+  },
+  "status": "PARTIAL_PASS",
+  "residual_risk": "The deterministic lease/idempotency windows pass, but real process kill before/after publisher confirmation and broker restart recovery are not yet witnessed. No Ceph mutation, real Telegram delivery, or production database was used."
+}

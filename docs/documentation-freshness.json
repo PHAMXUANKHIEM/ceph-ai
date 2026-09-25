@@ -1,0 +1,13 @@
+{
+  "schema": "ceph-ai.documentation-freshness.v1",
+  "owner": "platform-operations",
+  "reviewed_at": "2026-09-25",
+  "expires_at": "2026-10-25",
+  "required_documents": [
+    "README.md",
+    "docs/CEPH_AI_HANDOFF.md",
+    "docs/production-release-runbook.md",
+    "docs/ceph-capability-matrix.md",
+    "Plan/incompleted/strict-production-readiness-closure-plan-2026-09-25.md"
+  ]
+}

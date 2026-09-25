@@ -225,6 +225,17 @@ threshold or model was reset.
 
 ### 4.2 HST and RRCF decision gate
 
+Implementation evidence (2026-09-24): `scripts/benchmark_hst_rrcf.py` now
+reports temporal warm-up/scored points, alert volume, alert rate, abstention
+rate and an explicit non-promotable decision. On the 72-point anonymized
+fixture, HST reached 100% recall but had 47.83% false-positive rate and 8.33%
+precision; RRCF reached 100% recall, 4.35% false-positive rate and 50%
+precision. RRCF is better on this fixture, but the dataset is below the
+240-point gate, so the artifact is `HOLD` and both detectors remain
+`SHADOW_ONLY`. The benchmark artifact is
+`docs/benchmark/hst-rrcf-2026-09-24.json`; tests cover the read-only and gate
+fields.
+
 - [ ] Keep HST shadow-only while its fixture benchmark has 47.83% false-positive
   rate and 8.33% precision.
 - [ ] Keep RRCF shadow-only despite better fixture results until the same
@@ -242,6 +253,18 @@ operator decision.
 
 ### 5.1 PostgreSQL migration, restore and rollback rehearsal
 
+Implementation evidence (2026-09-24): a disposable PostgreSQL 18 container
+was used as an explicitly isolated staging target. The backup-first rehearsal
+created a custom-format backup, validated it with `pg_restore --list`, and
+upgraded from `BASELINE_EMPTY` to `m20260924verifiedoutcomes`. The backup was
+restored into a second disposable database and upgraded again to the same
+head. The container rollback script correctly refused to run without the
+explicit compatible-schema acknowledgement. Evidence is recorded in
+`docs/benchmark/postgresql-staging-rehearsal-2026-09-24.json`. This is a
+`PARTIAL_PASS`: no production-like data, immutable image failure simulation,
+operator witness or database rollback was available, so release approval is
+still blocked.
+
 - [ ] Restore a production-like PostgreSQL backup into isolated staging.
 - [ ] Upgrade from the current migration head using the exact image digest.
 - [ ] Simulate image failure before and after migration; record recovery steps,
@@ -253,23 +276,48 @@ operator decision.
 
 ### 5.2 Incident Outbox chaos
 
-- [ ] Test broker failure immediately after Incident commit.
-- [ ] Kill publisher before and after RabbitMQ publisher confirmation.
-- [ ] Kill consumer during claim, processing and completion.
-- [ ] Verify retry/backoff, DLQ/reconciler behavior, idempotency and no duplicate
-  mutation or Telegram notification.
-- [ ] Record queue age, attempts, recovery time and final Incident state.
+- [~] Add deterministic fault-injection coverage for broker failure after the
+  Incident commit, publisher confirmation loss, consumer lease recovery and
+  terminal consumer failure.
+- [~] Verify retry/backoff, producer lease reclaim, consumer event-idempotency,
+  dead-letter rejection and single failure notification in an isolated DB.
+- [ ] Run a witnessed RabbitMQ/container restart and kill publisher before and
+  after real publisher confirmation.
+- [ ] Kill a real consumer during claim, processing and completion; verify
+  reconciler recovery and no duplicate mutation or Telegram notification.
+- [~] Record attempts, final Incident/consumer state and deterministic recovery
+  evidence in docs/benchmark/incident-outbox-chaos-2026-09-24.json.
+
+Implementation evidence (2026-09-24): The isolated fault-injection suite
+passes 11 tests. It confirms that an Incident committed before broker failure
+is retained and retried with backoff; an event accepted by the broker but not
+marked SENT is reclaimed with the same event ID; a consumer lease expires
+and reclaims safely; event-keyed side effects execute once; and terminal
+consumer failure rejects to the DLQ path while emitting one failure
+notification. Existing isolated RabbitMQ topology/DLQ tests also passed.
+The real process-kill and broker-restart rehearsal remains open because this
+run did not have a dedicated staging runtime and operator witness.
+
 
 ### 5.3 RBAC and cross-cluster execution
 
-- [ ] Build an action/capability/route matrix for read, preview, execute, admin
+- [~] Build an action/capability/route matrix for read, preview, execute, admin
   and destructive operations.
-- [ ] Test direct API, WebSocket, Worker and Dashboard paths with a user lacking
+- [~] Test direct API, WebSocket, Worker and Dashboard paths with a user lacking
   the capability.
-- [ ] Test changing cluster selection while holding stale evidence or an old
+- [~] Test changing cluster selection while holding stale evidence or an old
   target; the server must reject cross-cluster execution.
 - [ ] Verify the audit event identifies user, cluster, action, target, evidence
   fingerprint and decision.
+
+**Initial implementation evidence (2026-09-25):** The first route/action matrix
+is recorded in
+docs/rbac-cross-cluster-action-route-matrix-2026-09-25.md. The review confirms
+that authentication and broad admin guards exist, typed remediation carries
+cluster/evidence context. Both incidents and cluster-state WebSockets now reject
+a query cluster different from the session cluster. Remaining gaps include no
+user-to-cluster capability grant model, worker replay and a complete
+negative-test/audit contract. This item remains partial.
 
 ### 5.4 Credential separation
 
@@ -328,6 +376,7 @@ Release remains blocked until all of the following are true:
 | 2026-09-24 | Self-learning evidence | River v2: 0 verified outcomes, 0 scored outcomes; candidates remain shadow-only | Runtime report supplied by operator | Open |
 | 2026-09-24 | Forecast/anomaly evaluation | 324 comparisons; 21 drifted scopes; HST high false-positive fixture result; RRCF stronger but not production evidence | Review supplied by operator | Open |
 | 2026-09-24 | Production readiness | PostgreSQL, RabbitMQ chaos, RBAC, credential separation and witnessed rollback not yet accepted | Review limitations and blocker list | Open |
+| 2026-09-24 | Incident Outbox deterministic chaos | 11 tests passed; retry/backoff, producer lease reclaim, consumer idempotency and DLQ failure path pass; real process-kill/restart witness remains open | docs/benchmark/incident-outbox-chaos-2026-09-24.json | Partial |
 
 ## 9. Status rules
 

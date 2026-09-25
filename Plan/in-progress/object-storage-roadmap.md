@@ -25,6 +25,9 @@ tiếp biết chính xác trạng thái, bằng chứng kiểm thử và điểm
 
 ## Hiện trạng đã có
 
+- [~] **Public ACL/Policy exposure evidence (2026-09-25)**: trang chi tiết bucket có nút kiểm tra read-only qua S3 `GetBucketPolicy`/`GetBucketAcl`, dùng credential inventory đã cấu hình và không tạo access key tạm. Kết quả scoped theo cluster/bucket, phân biệt `public_grant`, `unknown` và `no_public_grant_observed`. Đây là grant evidence, không chứng minh quyền truy cập hiệu lực; cluster phụ chưa có credential inventory được trả `unknown`, không fallback sang cluster mặc định. Cần live acceptance trên nhiều Ceph release; không tự sửa ACL/policy.
+- [ ] **Unused access key**: audit RGW hiện lưu requester nhưng không lưu key ID nên không thể quy kết một key cụ thể là không dùng; không suy diễn từ tuổi key. Cần nguồn usage per-key và completeness/retention trước khi tạo finding.
+
 - [~] **0. Access-log và bucket stats nền tảng**
   - [~] Cấu hình RGW node/container theo cluster ở `/bucket-access-log` đã có
     mã; cần audit test/regression.

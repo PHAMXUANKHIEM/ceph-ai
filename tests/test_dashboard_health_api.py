@@ -1,4 +1,5 @@
 from dashboard.routes import incidents
+from dashboard import cluster_scope
 from shared import db
 from shared.cluster_snapshot import publish_snapshot
 from shared.models import Cluster
@@ -172,3 +173,66 @@ def test_new_critical_health_overrides_old_status_section(dashboard_client):
 
     assert body["health"] == "ERR"
     assert body["osds"] == {"up": 3, "total": 3}
+
+
+def test_cluster_resolution_collapses_concurrent_snapshot_reads(dashboard_client, monkeypatch):
+    calls = []
+    original = cluster_scope.list_active_clusters
+    monkeypatch.setattr(
+        cluster_scope,
+        "list_active_clusters",
+        lambda session: calls.append(1) or original(session),
+    )
+    cluster_scope.clear_cluster_selection_cache()
+
+    first_clusters, first = cluster_scope.resolve_cluster_selection("", "")
+    second_clusters, second = cluster_scope.resolve_cluster_selection(first.id, "")
+
+    assert first.id == second.id
+    assert [row.id for row in first_clusters] == [row.id for row in second_clusters]
+    assert calls == [1]
+
+
+def test_cluster_resolution_cache_has_explicit_write_invalidation(dashboard_client, monkeypatch):
+    calls = []
+    original = cluster_scope.list_active_clusters
+    monkeypatch.setattr(
+        cluster_scope,
+        "list_active_clusters",
+        lambda session: calls.append(1) or original(session),
+    )
+    cluster_scope.clear_cluster_selection_cache()
+
+    cluster_scope.resolve_cluster_selection("", "")
+    cluster_scope.clear_cluster_selection_cache()
+    cluster_scope.resolve_cluster_selection("", "")
+
+    assert calls == [1, 1]
+
+
+def test_realtime_dashboard_first_paint_skips_hidden_legacy_feeds(dashboard_client, monkeypatch):
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    cluster_id = _default_cluster_id()
+    publish_snapshot(cluster_id, {"health": {"status": "HEALTH_OK", "checks": {}}})
+    monkeypatch.setattr(incidents.settings, "dashboard_legacy_feed_enabled", False)
+    monkeypatch.setattr(
+        incidents,
+        "_fetch_dashboard_data",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("snapshot first paint must not load hidden legacy feeds")
+        ),
+    )
+    monkeypatch.setattr(
+        incidents.heartbeat,
+        "get_latest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("snapshot first paint must not query heartbeat")
+        ),
+    )
+
+    response = dashboard_client.get(f"/?cluster={cluster_id}")
+
+    assert response.status_code == 200
+    assert 'id="dashboard-bootstrap-data"' in response.text
+    assert "Incident Feed" not in response.text
+    assert "Audit Trail" not in response.text

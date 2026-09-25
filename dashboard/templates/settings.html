@@ -46,6 +46,7 @@
           <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Cụm Ceph</button>
           <button type="button" class="settings-nav-item {% if active_section == 'ceph-host-keys' %}active{% endif %}" data-section="ceph-host-keys">Khóa SSH node Ceph</button>
           {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">OpenStack</button>{% endif %}
+          {% if is_admin %}<a href="/settings/federated-iam" class="settings-nav-item">Federated IAM RGW</a>{% endif %}
         </div>
       </section>
       <section class="settings-nav-group" data-settings-group="maintenance">

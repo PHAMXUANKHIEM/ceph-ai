@@ -1,0 +1,72 @@
+{
+  "config": {
+    "height": 8,
+    "seed": 42,
+    "tree_size": 64,
+    "trees": 10,
+    "window": 128
+  },
+  "dataset_points": 72,
+  "dataset_split": {
+    "description": "warm-up points calibrate the threshold and are abstentions; later points are scored",
+    "method": "temporal_warmup",
+    "minimum_dataset_points": 240
+  },
+  "decision": {
+    "execution_mode": "SHADOW_ONLY",
+    "promotion_allowed": false,
+    "reasons": [
+      "dataset has 72 points; at least 240 are required",
+      "River HST false-positive rate exceeds 10%"
+    ],
+    "status": "HOLD"
+  },
+  "features": [
+    "value",
+    "delta"
+  ],
+  "production_dependency": false,
+  "results": [
+    {
+      "abstention_points": 36,
+      "abstention_rate": 0.5,
+      "alert_rate_on_scored_points": 1.0,
+      "bounded": true,
+      "cpu_time_ms": 2751.176,
+      "detector": "river_hst",
+      "evaluated": 72,
+      "event_recall": 1.0,
+      "false_positive_rate": 0.4782608695652174,
+      "mean_detection_delay_seconds": 0.0,
+      "peak_rss_delta_kib": 105192,
+      "precision": 0.08333333333333333,
+      "predicted_alerts": 36,
+      "recall": 1.0,
+      "scored_points": 36,
+      "threshold": 0.0,
+      "warmup_points": 36
+    },
+    {
+      "abstention_points": 36,
+      "abstention_rate": 0.5,
+      "alert_rate_on_scored_points": 0.16666666666666666,
+      "bounded": true,
+      "cpu_time_ms": 145.363,
+      "detector": "rrcf",
+      "evaluated": 72,
+      "event_recall": 1.0,
+      "false_positive_rate": 0.043478260869565216,
+      "mean_detection_delay_seconds": 0.0,
+      "peak_rss_delta_kib": 2152,
+      "precision": 0.5,
+      "predicted_alerts": 6,
+      "recall": 1.0,
+      "scored_points": 36,
+      "threshold": 4.270476190476191,
+      "warmup_points": 36
+    }
+  ],
+  "schema": "ceph-ai.hst-rrcf-benchmark.v1",
+  "side_effects": "read-only; no database, alert, notification, remediation or model-state writes",
+  "unavailable": {}
+}

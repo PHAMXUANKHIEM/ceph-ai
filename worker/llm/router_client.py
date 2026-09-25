@@ -3064,6 +3064,13 @@ def _process_approved_actions_once() -> None:
                 shadow.mae_delta, shadow.reason,
             )
     _reconcile_stuck_rbd_actions_once()
+    from worker import federated_iam
+    reconciled_federated_mappings = federated_iam.reconcile_registered_mappings_once(limit=10)
+    if reconciled_federated_mappings:
+        logger.info(
+            "reconciled %d federated IAM role mapping(s) into RGW",
+            reconciled_federated_mappings,
+        )
     _process_due_grace_actions_once()
     with db.SessionLocal() as session:
         approved_pks = [

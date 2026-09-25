@@ -254,10 +254,25 @@ jobs:
       group: ceph-ai-lab-deploy
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
       - uses: actions/download-artifact@v4
         with:
           name: quality-security-evidence-${{ github.sha }}
           path: deploy-artifacts
+
+      - name: Run read-only deployment preflight
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CEPH_AI_DEPLOY_DIR: ${{ vars.CEPH_AI_DEPLOY_DIR || '/root/ceph-ai' }}
+          CEPH_AI_PREFLIGHT_REPORT: ${{ runner.temp }}/ceph-ai-deploy-evidence/deploy-preflight.log
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$(dirname "$CEPH_AI_PREFLIGHT_REPORT")"
+          bash scripts/deploy/deploy_preflight.sh
 
       - name: Deploy pushed commit to the container stack
         env:
@@ -275,6 +290,14 @@ jobs:
           cd "$CEPH_AI_DEPLOY_DIR"
           test "$(git rev-parse --show-toplevel)" = "$CEPH_AI_DEPLOY_DIR"
           CEPH_AI_IMAGE="$image_ref" DEPLOY_REF="$DEPLOY_SHA" bash scripts/deploy/restart_container_stack.sh
+
+      - name: Upload deployment preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-preflight-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/ceph-ai-deploy-evidence/
+          if-no-files-found: warn
 
   release_gate:
     needs: [test, quality]
@@ -308,6 +331,11 @@ jobs:
 
       - name: Verify release evidence
         run: python scripts/ci/release_gate.py --require-ci-artifacts
+
+      - name: Verify documentation freshness
+        run: |
+          python scripts/ci/documentation_freshness.py \
+            --output artifacts/release/documentation-freshness.json
 
       - name: Bind release identity into a manifest
         env:

@@ -9,7 +9,7 @@
 
 | Hạng mục | Ưu tiên | Trạng thái hiện tại | Kết luận |
 |---|---:|---|---|
-| Federated IAM cho RGW | P0 | Chưa có | Cần xây mới |
+| Federated IAM cho RGW | P0 | Đang triển khai vertical slice | Provider/role mapping registry và Worker adapter đã có; live verification, STS và policy simulator còn thiếu |
 | RGW Multisite Operations | P0 | Một phần rất nhỏ | Mới có diagnosis/roadmap và placement; chưa có thao tác vận hành |
 | KMS/SSE Management | P0 | Chưa có | Policy action có tên liên quan nhưng chưa có quản trị SSE/KMS/Vault |
 | Hoàn thiện Object Lock | P1 | Một phần | Có đọc trạng thái và default retention; thiếu mutation theo object/version và audit WORM |
@@ -30,7 +30,7 @@
 - Có các policy action liên quan đến Object Lock như GetObjectRetention, PutObjectRetention, GetObjectLegalHold và PutObjectLegalHold, nhưng việc có tên action không đồng nghĩa với việc UI/API/worker đã triển khai.
 - Có bucket logging và pipeline cảnh báo nội bộ; đây không phải S3 Event Notification tới các broker bên ngoài.
 - Chưa có backend operation cho RGW realm/zonegroup/zone, peer, resync, failover/failback hoặc fencing.
-- Chưa có provider quản lý OIDC/LDAP/AD, STS temporary credentials hoặc role/policy mapping.
+- Đã có provider registry OIDC/LDAP/AD và role/policy mapping registry; STS, live directory bind và RGW verification vẫn đang triển khai.
 - Chưa có KMS/Vault/SSE configuration, key accessibility probe, rotation workflow hoặc encryption evidence.
 - Chưa có Helm chart sản phẩm với probes, PDB, NetworkPolicy, external PostgreSQL/RabbitMQ và secrets integration.
 - Chưa có catalog cho dataset/model/checkpoint hoặc Iceberg REST Catalog.
@@ -47,17 +47,33 @@ Quản lý danh tính bên ngoài và quyền truy cập RGW theo mô hình ente
 
 ### Phạm vi triển khai
 
-- [ ] Provider registry cho OIDC, LDAP và Active Directory.
-- [ ] Secret reference an toàn, không lưu client secret/password dạng plaintext trong config hoặc audit log.
+- [~] Provider registry cho OIDC, LDAP và Active Directory.
+- [x] Secret reference an toàn, không lưu client secret/password dạng plaintext trong config hoặc audit log (`env:`, allowlisted `file:` và Vault KV `vault:path#field`; Vault dùng HTTPS và fail-closed).
 - [ ] OIDC discovery/JWKS validation, issuer/audience/clock-skew validation và certificate trust configuration.
-- [ ] LDAP/AD connection test, bind test, group lookup và mapping user/group.
-- [ ] Role mapping từ claim/group sang RGW policy hoặc policy bundle.
-- [ ] STS temporary credentials: assume role, TTL, session tags, revoke/expire và audit.
+- [~] LDAP/AD connection test, bind test, group lookup và mapping user/group (adapter đã có; live directory/Vault resolver còn thiếu).
+- [~] Role mapping từ claim/group sang RGW policy hoặc policy bundle (đã có preview/registry và Worker adapter; cần live verification, LDAP/AD adapter và approval hoàn chỉnh).
+- [~] STS temporary credentials: assume role, TTL, session tags, revoke/expire và audit (đã có adapter/API/UI/registry; live RGW exchange và hard revoke còn chờ hạ tầng).
 - [ ] Policy simulator: kiểm tra allow/deny theo principal, action, resource và condition.
 - [ ] Phát hiện quyền dư thừa: policy không được dùng, action không cần thiết, wildcard nguy hiểm và role không có owner.
 - [ ] Preview trước khi apply mapping/policy.
 - [ ] Approval, idempotent worker action, audit event và rollback.
-- [ ] UI: Identity Providers, Role Mapping, Policy Simulator, Temporary Sessions và Access Review.
+- [~] UI: Identity Providers, Role Mapping registry và Temporary Sessions đã có; Policy Simulator và Access Review còn thiếu.
+
+### Tiến độ triển khai
+
+- [x] 2026-09-24 — Thêm registry provider OIDC/LDAP/AD với trạng thái DRAFT, VALID, APPLIED và DISABLED.
+- [x] 2026-09-24 — Lưu `secret_ref` thay vì plaintext secret; API/list/audit không trả secret hoặc client secret.
+- [x] 2026-09-24 — Có preview, create, validate, apply, disable API; apply yêu cầu xác nhận chính xác tên provider.
+- [x] 2026-09-24 — OIDC discovery kiểm tra issuer, audience/JWKS metadata và có audit evidence.
+- [~] 2026-09-24 — LDAP/AD mới kiểm tra transport endpoint; bind/group lookup và mapping claim/group chưa hoàn thành.
+- [~] 2026-09-25 — Thêm `ldap3` adapter: bind LDAP/AD, StartTLS/LDAPS certificate verification, user/group lookup, secret resolver `env:`/allowlisted `file:`/Vault KV `vault:path#field` và redaction; có negative tests. Live Vault/LDAP integration vẫn cần kiểm tra với hạ tầng thật.
+- [~] 2026-09-24 — Thêm Role Mapping preview với policy SHA-256, cảnh báo wildcard, tạo DRAFT và register có confirmation; register đưa mapping vào hàng đợi Worker.
+- [~] 2026-09-25 — Worker poller reconcile mapping `REGISTERED` qua `radosgw-admin` trên RGW node, tạo/update OIDC provider, role và role policy; có post-check policy, retry state và audit. Chưa chạy live vì server không có Ceph CLI/được cấu hình RGW node để thực thi thật.
+- [~] 2026-09-25 — Thêm STS adapter/API/UI: preview, AssumeRoleWithWebIdentity, TTL 15 phút–12 giờ, session tags, trạng thái ACTIVE/EXPIRED/REVOKED/FAILED, audit và session registry không lưu secret. Live RGW STS exchange và hard revoke vẫn cần hạ tầng thật.
+- [x] 2026-09-25 — Migration `m20260925federatediamsts` đã áp dụng trên database, tạo registry cho STS session và các index theo status/expiry/provider/mapping.
+- [ ] Live LDAP/AD bind/group lookup với directory thật, Vault resolver, STS temporary credentials, policy simulator và access review.
+- [ ] Approval workflow, worker async, idempotency đầy đủ và rollback cho toàn bộ IAM actions.
+- [x] 2026-09-24 — Migration `m20260924federatediam` đã được áp dụng trên database của server; test vertical slice 3/3 đạt.
 
 ### Contract/backend đề xuất
 
@@ -285,14 +301,14 @@ Không tự viết Iceberg engine. Tích hợp Apache Polaris, Project Nessie ho
 
 - [ ] Capability/action registry chung cho RGW, IAM, multisite, KMS, jobs và catalog.
 - [ ] Approval, idempotency, audit, evidence, retry/resume/cancel/reconciliation.
-- [ ] Secret reference và redaction framework.
+- [~] Secret reference và redaction framework (đã áp dụng cho provider registry IAM; cần dùng chung cho các capability còn lại).
 - [ ] Feature flag riêng cho từng capability; mặc định read-only với tính năng mới.
 - [ ] Contract test và failure-injection harness.
 - [ ] UI pattern chung: preview, diff, confirmation, progress và post-check.
 
 ### Wave 1 — P0 production foundation
 
-- [ ] Federated IAM.
+- [~] Federated IAM (đã có provider/role mapping registry, Worker reconcile adapter, LDAP/AD/Vault adapter và STS session slice; còn live verification, hard revoke, simulator và access review).
 - [ ] Multisite topology và safe operations.
 - [ ] KMS/SSE management.
 - [ ] Post-check, evidence và rollback cho cả ba nhóm.
@@ -341,4 +357,3 @@ Một mục chỉ được chuyển sang completed khi đồng thời có:
 6. Test thành công, thất bại, restart và partial failure.
 7. Documentation/runbook và migration/upgrade note.
 8. Feature flag hoặc capability gate được cấu hình đúng.
-

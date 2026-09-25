@@ -863,7 +863,9 @@ def _query_audit_entries(
         query = query.filter(AuditEntry.created_at >= since_dt)
     if until_dt is not None:
         query = query.filter(AuditEntry.created_at <= until_dt)
-    return query.order_by(AuditEntry.created_at.desc()).all()
+    # The dashboard only needs a bounded recent preview during first paint;
+    # the full history remains available from the dedicated audit view.
+    return query.order_by(AuditEntry.created_at.desc()).limit(100).all()
 
 
 def _fetch_dashboard_data(
@@ -883,6 +885,11 @@ def _fetch_dashboard_data(
     bool,
     bool,
 ]:
+    # The visible realtime overview is bootstrapped from the persistent
+    # snapshot. Keep the secondary server-rendered feeds bounded so an old
+    # history cannot block first paint or exhaust the DB pool when several
+    # tabs open together.
+    initial_feed_limit = 100
     with db.SessionLocal() as session:
         # Every cluster-owned feed is scoped to the current selection.
         # Pre-migration Incident
@@ -898,6 +905,7 @@ def _fetch_dashboard_data(
             session.query(Incident)
             .filter(incident_cluster_filter)
             .order_by(Incident.detected_at.desc())
+            .limit(initial_feed_limit)
             .all()
         )
         latest_heartbeat = heartbeat.get_latest(session, cluster_id)
@@ -1294,24 +1302,42 @@ async def index(
             max_stale_seconds=_DASHBOARD_HEALTH_MAX_STALE_SECONDS,
         )
         initial_health = _dashboard_health_snapshot_response(initial_snapshot, selected_cluster)
-        (
-            incidents,
-            latest_heartbeat,
-            pending_actions_with_incident,
-            audit_entries,
-            upgrade_blocks_other_actions,
-            backup_alert,
-            telegram_configured,
-            has_other_cluster_pending,
-        ) = _fetch_dashboard_data(
-            incident_id, since_dt, until_dt, selected_cluster.id, selected_cluster.is_default, cluster_names_by_id
-        )
+        if settings.dashboard_legacy_feed_enabled:
+            (
+                incidents,
+                latest_heartbeat,
+                pending_actions_with_incident,
+                audit_entries,
+                upgrade_blocks_other_actions,
+                backup_alert,
+                telegram_configured,
+                has_other_cluster_pending,
+            ) = _fetch_dashboard_data(
+                incident_id, since_dt, until_dt, selected_cluster.id, selected_cluster.is_default, cluster_names_by_id
+            )
+        else:
+            # The React overview is entirely snapshot-backed. Avoid querying
+            # the heartbeat table during first paint: the snapshot already
+            # carries freshness and the Watcher remains the only collector.
+            # This keeps simultaneous browser tabs off the database hot path.
+            latest_heartbeat = None
+            incidents = []
+            pending_actions_with_incident = []
+            audit_entries = []
+            upgrade_blocks_other_actions = False
+            backup_alert = None
+            telegram_configured = True
+            has_other_cluster_pending = False
         # Kept inside the same try as the fetch (Review Story 5.2) — these
         # derive directly from just-fetched DB data, so any failure here
         # (e.g. a malformed row) should surface the same friendly error,
         # not an unhandled 500 that a caller-facing except SQLAlchemyError
         # alone wouldn't catch.
-        stale = is_heartbeat_stale(latest_heartbeat)
+        stale = (
+            is_heartbeat_stale(latest_heartbeat)
+            if settings.dashboard_legacy_feed_enabled
+            else bool(initial_health.get("stale", True))
+        )
         status = compute_cluster_status(incidents, stale)
         # 2026-08-10 (multi-tenant remediation Phase 2): the "Chờ duyệt" card
         # used to hide the instant the 3 GLOBAL channels were configured —
@@ -1355,6 +1381,7 @@ async def index(
             "clusters": clusters,
             "selected_cluster": selected_cluster,
             "initial_health": initial_health,
+            "dashboard_legacy_feed_enabled": settings.dashboard_legacy_feed_enabled,
             "pending_actions": pending_actions_with_incident,
             "audit_entries": audit_entries,
             "filter_incident_id": incident_id,

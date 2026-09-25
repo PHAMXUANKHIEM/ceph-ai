@@ -36,7 +36,14 @@ export DATABASE_URL="$STAGING_DATABASE_URL"
 mkdir -p "$backup_dir" "$(dirname "$report_path")"
 umask 077
 
-before="$($repo_root/.venv/bin/alembic current 2>&1 | tail -n 1)"
+revision() {
+  # Keep stderr (Alembic logging) out of the evidence value.  An empty
+  # database has no alembic_version row and is represented explicitly.
+  "$repo_root/.venv/bin/alembic" current 2>/dev/null | awk 'NF {print $1; exit}'
+}
+
+before="$(revision)"
+before="${before:-BASELINE_EMPTY}"
 backup_output="$(DATABASE_URL="$STAGING_DATABASE_URL" bash scripts/deploy/backup_database_before_migration.sh "$backup_dir")"
 printf '%s\n' "$backup_output"
 backup_path="$(printf '%s\n' "$backup_output" | sed -n 's/^Created PostgreSQL backup: //p')"
@@ -46,9 +53,10 @@ pg_restore_bin="${PG_RESTORE_BIN:-$(command -v pg_restore || true)}"
 [ -x "$pg_restore_bin" ] || { echo "pg_restore is required to validate the backup" >&2; exit 2; }
 "$pg_restore_bin" --list "$backup_path" >/dev/null
 
-head="$($repo_root/.venv/bin/alembic heads | awk '/\(head\)/ {print $1; exit}')"
+head="$($repo_root/.venv/bin/alembic heads 2>/dev/null | awk '/\(head\)/ {print $1; exit}')"
 $repo_root/.venv/bin/alembic upgrade head
-after="$($repo_root/.venv/bin/alembic current 2>&1 | tail -n 1)"
+after="$(revision)"
+after="${after:-UNKNOWN_AFTER_MIGRATION}"
 
 checksum="$(sha256sum "$backup_path" | awk '{print $1}')"
 timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

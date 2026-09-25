@@ -13,13 +13,14 @@ from sqlalchemy import desc, select
 from config.settings import settings
 from shared import db
 from shared.clusters import get_default_cluster_id
-from shared.learning_runtime import evaluate
+from shared.learning_runtime import evaluate, resolve_update_target
 from shared.online_learning_controls import get_control
 from shared.models import OnlineLearnerAudit, OnlineLearnerCycleAudit
 from shared.online_learning import (
     BACKEND_NAME,
     BACKEND_VERSION,
     DEFAULT_FEATURE_SCHEMA,
+    MODEL_ALGORITHM,
     MODEL_VERSION,
     LearningCircuitBreaker,
     guarded_update,
@@ -168,6 +169,22 @@ def _consume_one(
                 runtime = evaluate(
                     session, effective_cluster_id, host=host, metric=metric,
                 )
+                target_decision = resolve_update_target(
+                    session,
+                    runtime,
+                    cluster_id=effective_cluster_id,
+                    host=host,
+                    metric=metric,
+                    algorithm=MODEL_ALGORITHM,
+                    model_version=MODEL_VERSION,
+                )
+                if not target_decision.allowed:
+                    runtime = replace(
+                        runtime,
+                        can_update_shadow=False,
+                        can_update_active=False,
+                        reason=f"{runtime.reason}; {target_decision.reason}",
+                    )
                 learner, _state = load_or_reset_state(
                     session,
                     cluster_id=effective_cluster_id,
@@ -202,7 +219,7 @@ def _consume_one(
                     learner,
                     ready_label.label_value,
                     runtime,
-                    target="shadow",
+                    target=target_decision.target,
                     quality_decision=quality,
                 )
                 if update.applied:
@@ -218,7 +235,10 @@ def _consume_one(
                     existing.quality_status = quality.status
                     existing.quality_reason = quality.reason
                     existing.runtime_mode = runtime.mode
-                    existing.runtime_reason = runtime.reason
+                    existing.runtime_reason = (
+                        f"{runtime.reason}; target={target_decision.target}; "
+                        f"target_reason={target_decision.reason}"
+                    )
                     existing.update_applied = True
                     mark_consumed(ready_label)
                     session.commit()
@@ -234,7 +254,10 @@ def _consume_one(
                     existing.quality_status = quality.status
                     existing.quality_reason = quality.reason
                     existing.runtime_mode = runtime.mode
-                    existing.runtime_reason = runtime.reason
+                    existing.runtime_reason = (
+                        f"{runtime.reason}; target={target_decision.target}; "
+                        f"target_reason={target_decision.reason}"
+                    )
                     session.commit()
                     return ConsumedSample(
                         sample_id=sample_id,
@@ -289,6 +312,22 @@ def _consume_one(
                 can_update_active=False,
                 reason="label poisoning guard is paused for the current rate-limit window",
             )
+        target_decision = resolve_update_target(
+            session,
+            runtime,
+            cluster_id=effective_cluster_id,
+            host=host,
+            metric=metric,
+            algorithm=MODEL_ALGORITHM,
+            model_version=MODEL_VERSION,
+        )
+        if not target_decision.allowed:
+            runtime = replace(
+                runtime,
+                can_update_shadow=False,
+                can_update_active=False,
+                reason=f"{runtime.reason}; {target_decision.reason}",
+            )
         learner, _state = load_or_reset_state(
             session,
             cluster_id=effective_cluster_id,
@@ -300,7 +339,7 @@ def _consume_one(
             learner,
             value,
             runtime,
-            target="shadow",
+            target=target_decision.target,
             quality_decision=quality,
         )
         if update.applied:
@@ -324,7 +363,10 @@ def _consume_one(
             quality_status=quality.status,
             quality_reason=quality.reason,
             runtime_mode=runtime.mode,
-            runtime_reason=runtime.reason,
+            runtime_reason=(
+                f"{runtime.reason}; target={target_decision.target}; "
+                f"target_reason={target_decision.reason}"
+            ),
             update_applied=update.applied,
             model_version=MODEL_VERSION,
             backend_name=backend.backend_name,

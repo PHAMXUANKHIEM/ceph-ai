@@ -22,6 +22,7 @@ from shared.realtime_observability import get_metrics as get_realtime_observabil
 from shared.retry import get_metrics as get_retry_metrics
 from shared.natural_language.nl_metrics import get_natural_language_metrics
 from dashboard.ws import get_metrics as get_websocket_metrics
+from shared.reliability import collect_reliability
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -127,6 +128,15 @@ def system_health():
     )
 
 
+@router.get("/api/system/reliability")
+def system_reliability(user: str = Depends(require_login)):
+    """Read-only SLO, queue, resource and runtime-owner diagnostics."""
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xem reliability diagnostics")
+    payload = collect_reliability()
+    return JSONResponse(payload, status_code=200 if payload["status"] == "ok" else 503)
+
+
 @router.get("/api/debug/ceph-latency")
 def ceph_latency_debug(user: str = Depends(require_login)):
     """Admin-only bounded SSH/command diagnostics; never exposes secrets."""
@@ -155,4 +165,5 @@ def ceph_latency_debug(user: str = Depends(require_login)):
         "event_bus": event_bus,
         "cache_storage": cache_storage,
         "operational_alerts": _operational_alerts(freshness, services, event_bus, cache_storage),
+        "reliability": collect_reliability(),
     }

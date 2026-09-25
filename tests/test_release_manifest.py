@@ -18,7 +18,7 @@ def test_manifest_binds_commit_dependencies_and_image(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "_git_value", lambda *args: {
         ("rev-parse", "HEAD"): "a" * 40,
         ("branch", "--show-current"): "main",
-        ("status", "--porcelain", "--untracked-files=no"): "",
+        ("status", "--porcelain"): "",
     }.get(args, ""))
     monkeypatch.setattr(module, "migration_heads", lambda: {
         "status": "passed", "heads": ["m20260923incidentmetrics"], "head_count": 1, "output": ""
@@ -68,3 +68,40 @@ def test_manifest_carries_release_gate_evidence_and_residual_risk(tmp_path, monk
     assert payload["evidence"]["config_fingerprint"] == "sha256:config"
     assert payload["evidence"]["rollback_artifact"] == "rollback.json"
     assert payload["production_approval"]["residual_risk"]
+
+
+def test_manifest_carries_documentation_freshness(tmp_path, monkeypatch):
+    module.ROOT = tmp_path
+    artifacts = tmp_path / "artifacts" / "release"
+    artifacts.mkdir(parents=True)
+    (artifacts / "documentation-freshness.json").write_text(json.dumps({
+        "status": "passed", "errors": [],
+    }), encoding="utf-8")
+    monkeypatch.setattr(module, "_git_value", lambda *args: "a" * 40)
+    monkeypatch.setattr(module, "migration_heads", lambda: {
+        "status": "passed", "heads": ["head"], "head_count": 1, "output": ""
+    })
+
+    payload = module.build_manifest("ci", tmp_path / "artifacts")
+
+    assert payload["evidence"]["documentation_freshness"]["status"] == "passed"
+
+
+def test_manifest_accepts_external_artifact_directory(tmp_path, monkeypatch):
+    module.ROOT = tmp_path / "repo"
+    module.ROOT.mkdir()
+    artifacts = tmp_path / "external-artifacts" / "release"
+    artifacts.mkdir(parents=True)
+    (artifacts / "documentation-freshness.json").write_text(json.dumps({
+        "status": "passed", "errors": [],
+    }), encoding="utf-8")
+    monkeypatch.setattr(module, "_git_value", lambda *args: "a" * 40)
+    monkeypatch.setattr(module, "migration_heads", lambda: {
+        "status": "passed", "heads": ["head"], "head_count": 1, "output": ""
+    })
+
+    payload = module.build_manifest("ci", tmp_path / "external-artifacts")
+
+    assert payload["evidence"]["documentation_freshness"]["artifact"].endswith(
+        "documentation-freshness.json"
+    )

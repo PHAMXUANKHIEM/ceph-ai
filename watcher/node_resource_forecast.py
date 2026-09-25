@@ -156,7 +156,9 @@ def _river_shadow_candidate(
         return None
     cluster_row = session.scalar(select(Cluster).where(Cluster.name == cluster))
     cluster_id = cluster_row.id if cluster_row is not None else None
-    runtime = evaluate_learning_runtime(session, cluster_id)
+    runtime = evaluate_learning_runtime(
+        session, cluster_id, host=host, metric=metric,
+    )
     if not runtime.can_observe:
         return None
     learner, state = load_or_reset_state(

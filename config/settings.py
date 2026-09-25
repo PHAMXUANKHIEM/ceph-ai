@@ -41,8 +41,22 @@ class Settings(BaseSettings):
     # Shared fixed-window limit for /api/* requests.
     dashboard_api_rate_limit: int = Field(default=120, ge=1, le=100000)
     dashboard_api_rate_limit_window_seconds: int = Field(default=60, ge=1, le=86400)
+    # Number of already-counted request slots reserved per PostgreSQL lock.
+    # This preserves the shared upper bound while avoiding lock contention
+    # when several dashboard tabs refresh at the same time.
+    dashboard_api_rate_limit_reservation_size: int = Field(default=10, ge=1, le=100)
     # Only configured direct proxy peers may supply X-Forwarded-* headers.
     dashboard_trusted_proxy_ips: str = ""
+    # Rollback flag for the pre-realtime, server-rendered Incident/Audit feed
+    # that remains in the Dashboard template for one release. Keep the code
+    # path available, but disable it in production: rendering thousands of
+    # historical rows delays the snapshot-backed first paint and scales with
+    # browser tab count. Incident/Audit data has dedicated pages.
+    dashboard_legacy_feed_enabled: bool = True
+    # Emergency rollback for the realtime invalidation transport. When off,
+    # clients fall back to their normal authenticated health polling without
+    # changing snapshot reads or RBAC checks.
+    dashboard_cluster_events_enabled: bool = True
 
     # SSH access to the Ceph cluster nodes (dedicated keypair, no passphrase
     # so the services can run unattended) — shared by BOTH Watcher (read-only

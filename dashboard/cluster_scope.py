@@ -1,5 +1,8 @@
 """Resolve the Ceph connection selected by the current dashboard session."""
 
+from threading import Lock
+from time import monotonic
+
 from fastapi import HTTPException, Request
 
 from shared import db
@@ -8,14 +11,58 @@ from shared.cluster_nodes import resolve_ssh_creds
 from shared.models import Cluster
 
 
+# Realtime pages resolve the same active cluster on every snapshot read. A
+# very short process-local cache collapses a burst from 1/5/10 browser tabs
+# into one database read without becoming a second source of cluster state.
+# The session factory identity is part of the cache ownership so test/runtime
+# database rebinding can never reuse objects loaded from another database.
+_CLUSTER_CACHE_TTL_SECONDS = 1.0
+_CLUSTER_CACHE_LOCK = Lock()
+_cluster_cache: tuple[int, float, tuple[Cluster, ...], str] | None = None
+
+
+def clear_cluster_selection_cache() -> None:
+    """Invalidate the bounded cluster-selection cache after cluster writes."""
+    global _cluster_cache
+    with _CLUSTER_CACHE_LOCK:
+        _cluster_cache = None
+
+
+def _active_clusters() -> tuple[list[Cluster], Cluster]:
+    global _cluster_cache
+    owner = id(db.SessionLocal)
+    now = monotonic()
+    cached = _cluster_cache
+    if cached is not None and cached[0] == owner and cached[1] > now:
+        clusters = list(cached[2])
+        default = next(cluster for cluster in clusters if cluster.id == cached[3])
+        return clusters, default
+
+    with _CLUSTER_CACHE_LOCK:
+        now = monotonic()
+        cached = _cluster_cache
+        if cached is not None and cached[0] == owner and cached[1] > now:
+            clusters = list(cached[2])
+            default = next(cluster for cluster in clusters if cluster.id == cached[3])
+            return clusters, default
+        with db.SessionLocal() as session:
+            default_cluster = ensure_default_cluster(session)
+            clusters = list_active_clusters(session)
+            session.expunge_all()
+        _cluster_cache = (
+            owner,
+            now + _CLUSTER_CACHE_TTL_SECONDS,
+            tuple(clusters),
+            default_cluster.id,
+        )
+        return list(clusters), default_cluster
+
+
 def resolve_cluster_selection(
     requested_cluster_id: str, session_cluster_id: str = ""
 ) -> tuple[list[Cluster], Cluster]:
     """Resolve active clusters without depending on any dashboard route."""
-    with db.SessionLocal() as session:
-        default_cluster = ensure_default_cluster(session)
-        clusters = list_active_clusters(session)
-        session.expunge_all()
+    clusters, default_cluster = _active_clusters()
     by_id = {cluster.id: cluster for cluster in clusters}
     selected = by_id.get(requested_cluster_id) if requested_cluster_id else None
     if selected is None and session_cluster_id:

@@ -129,6 +129,19 @@ def test_cluster_state_websocket_receives_scoped_event(
     assert after["cluster_state_disconnects_total"] >= before["cluster_state_disconnects_total"] + 1
 
 
+def test_cluster_state_websocket_feature_flag_forces_polling_fallback(
+    dashboard_client, default_cluster_id, monkeypatch
+):
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    monkeypatch.setattr(ws_module.settings, "dashboard_cluster_events_enabled", False)
+
+    with pytest.raises(Exception):
+        with dashboard_client.websocket_connect(
+            f"/ws/cluster-state?cluster_id={default_cluster_id}"
+        ) as websocket:
+            websocket.receive_json()
+
+
 def test_action_state_event_is_published_after_database_commit(
     dashboard_client, default_cluster_id, monkeypatch
 ):

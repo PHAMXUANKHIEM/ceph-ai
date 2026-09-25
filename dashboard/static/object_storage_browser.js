@@ -24,6 +24,37 @@
   }
   const root = document.getElementById("object-browser");
   if (!root) return;
+  const posture = document.getElementById("bucket-public-posture");
+  if (posture) {
+    const check = document.getElementById("bucket-public-check");
+    const output = document.getElementById("bucket-public-status");
+    const evidence = document.getElementById("bucket-public-evidence");
+    check.addEventListener("click", async function () {
+      check.disabled = true;
+      output.textContent = "Đang kiểm tra policy và ACL…";
+      evidence.replaceChildren();
+      try {
+        const url = "/api/object-storage/buckets/" + encodeURIComponent(posture.dataset.bucket) + "/public-posture?cluster=" + encodeURIComponent(posture.dataset.cluster);
+        const response = await fetch(url, {cache: "no-store"});
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || "Không đọc được policy/ACL");
+        if (!result.ready) { output.textContent = (result.evidence_gaps || ["Metadata chưa sẵn sàng."])[0]; return; }
+        if (String(result.cluster_id) !== String(posture.dataset.cluster)) throw new Error("Snapshot không thuộc cụm đang chọn");
+        output.textContent = result.status === "public_grant" ? "Phát hiện grant public hoặc authenticated-users; cần kiểm tra quyền hiệu lực." :
+          result.status === "unknown" ? "Chưa đủ bằng chứng để kết luận quyền public." : "Không thấy grant public trong policy/ACL đã đọc; chưa xác minh quyền hiệu lực.";
+        output.className = result.status === "public_grant" ? "warning" : "hint";
+        (result.evidence || []).forEach(function (item) {
+          const row = document.createElement("li");
+          row.textContent = item.source + " · " + item.scope + " · " + (item.action || item.permission || "—");
+          evidence.appendChild(row);
+        });
+        (result.evidence_gaps || []).forEach(function (gap) {
+          const row = document.createElement("li"); row.textContent = gap; evidence.appendChild(row);
+        });
+      } catch (error) { output.textContent = "Không kiểm tra được: " + error.message; }
+      finally { check.disabled = false; }
+    });
+  }
   const form = document.getElementById("object-browser-form");
   const rows = document.getElementById("object-browser-rows");
   const status = document.getElementById("object-browser-status");

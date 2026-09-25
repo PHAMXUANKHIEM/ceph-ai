@@ -16,6 +16,8 @@ from shared.time import utc_now
 
 from config.settings import settings
 from shared import heartbeat
+from shared.forecast_scope import SCOPE_SCHEMA
+from shared.models import ForecastModelPromotionAudit, ForecastModelRegistry
 
 AUDIT_ONLY = "AUDIT_ONLY"
 SHADOW_ONLY = "SHADOW_ONLY"
@@ -66,6 +68,105 @@ class LearningRuntimeDecision:
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class LearningTargetDecision:
+    """Resolve the learner target from durable promotion state.
+
+    ``shadow`` is the fail-closed default.  An ``active`` update is possible
+    only for an exact, dimensioned registry row that has been operator-
+    promoted and when the runtime gate itself is ACTIVE.  The online
+    consumer must treat ``allowed=False`` as a hard stop because its durable
+    state table is intentionally shared by the current learner version.
+    """
+
+    target: str
+    allowed: bool
+    registry_status: str | None
+    registry_model_id: str | None
+    reason: str
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def resolve_update_target(
+    session,
+    runtime: LearningRuntimeDecision,
+    *,
+    cluster_id: str | None,
+    host: str | None,
+    metric: str | None,
+    algorithm: str,
+    model_version: str,
+) -> LearningTargetDecision:
+    """Select ``shadow`` or ``active`` from exact registry state.
+
+    Legacy or incomplete registry rows are deliberately ignored.  A row is
+    exact only when all cluster/host/metric dimensions and the model identity
+    match; this prevents a promotion for one stream leaking into another.
+    """
+
+    fallback_reason = "no exact promoted registry model; defaulting to shadow"
+    if not runtime.enabled:
+        return LearningTargetDecision(
+            "shadow", False, None, None,
+            f"runtime gate blocks updates: {runtime.reason}",
+        )
+
+    rows = session.query(ForecastModelRegistry).filter(
+        ForecastModelRegistry.scope_type == "NODE_RESOURCE",
+        ForecastModelRegistry.scope_schema == SCOPE_SCHEMA,
+        ForecastModelRegistry.cluster_id == str(cluster_id or ""),
+        ForecastModelRegistry.entity_type == "node",
+        ForecastModelRegistry.entity_id == str(host or ""),
+        ForecastModelRegistry.host == str(host or ""),
+        ForecastModelRegistry.metric == str(metric or "").strip().lower(),
+        ForecastModelRegistry.algorithm == str(algorithm or "").strip(),
+        ForecastModelRegistry.version == str(model_version or "").strip(),
+    ).all()
+    exact_active = [row for row in rows if row.status == "ACTIVE"]
+    if len(exact_active) > 1:
+        return LearningTargetDecision(
+            "shadow", False, "ACTIVE", None,
+            "multiple exact ACTIVE registry rows; refusing to update",
+        )
+    active = exact_active[0] if exact_active else None
+    if active is not None:
+        promoted = session.query(ForecastModelPromotionAudit).filter_by(
+            candidate_model_id=active.id,
+            event_type="PROMOTED",
+        ).first()
+        if promoted is None:
+            return LearningTargetDecision(
+                "shadow", False, active.status, active.id,
+                "ACTIVE registry row has no operator promotion audit",
+            )
+        if not runtime.can_update_active:
+            return LearningTargetDecision(
+                "shadow", False, active.status, active.id,
+                "promoted model is active, but runtime mode is not ACTIVE",
+            )
+        return LearningTargetDecision(
+            "active", True, active.status, active.id,
+            "exact operator-promoted registry model selected",
+        )
+
+    if rows:
+        row = rows[0]
+        if row.status in {"BLOCKED", "RETIRED"}:
+            return LearningTargetDecision(
+                "shadow", False, row.status, row.id,
+                f"exact registry model is {row.status}; refusing to update",
+            )
+        fallback_reason = f"exact registry model is {row.status}; defaulting to shadow"
+    return LearningTargetDecision(
+        "shadow", bool(runtime.can_update_shadow),
+        rows[0].status if rows else None,
+        rows[0].id if rows else None,
+        fallback_reason if runtime.can_update_shadow else f"{fallback_reason}; runtime gate blocks shadow",
+    )
 
 
 def _blocked(mode: str, reason: str, *, checked_at: datetime | None = None,

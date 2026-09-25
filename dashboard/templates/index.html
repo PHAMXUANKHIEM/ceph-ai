@@ -34,6 +34,7 @@
          data-cluster-id="{{ selected_cluster.id if selected_cluster else '' }}"
          data-cluster-name="{{ selected_cluster.name if selected_cluster else '' }}"></div>
     <script id="dashboard-bootstrap-data" type="application/json">{{ initial_health|tojson }}</script>
+    {% if dashboard_legacy_feed_enabled %}
     <div hidden>
     <section class="connection-status {% if heartbeat_stale %}connection-lost{% else %}connection-ok{% endif %}">
       {% if heartbeat_stale %}
@@ -217,6 +218,7 @@
     </div>
     </div>
     </div>
+    {% endif %}
   </main>
 
   <aside class="chat-panel chat-panel-inline" id="chat-panel" data-dashboard-inline="true" data-context-cluster="{{ selected_cluster.name if selected_cluster else '' }}">

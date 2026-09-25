@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -8,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from shared.db import Base
 from shared.models import (
+    Cluster,
     NodeResourceForecastAlert,
     NodeResourceForecastRun,
     NodeResourceModelState,
@@ -478,6 +480,46 @@ def test_river_linear_v2_shadow_learns_only_verified_labels(monkeypatch):
     assert evidence["verified_outcomes"] == 3
     assert evidence["sample_count"] == 3
     assert evidence["prediction"] is not None
+
+
+def test_river_shadow_candidate_passes_full_runtime_scope(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    monkeypatch.setattr(forecast.settings, "online_learning_enabled", True)
+    monkeypatch.setattr(forecast.settings, "online_learning_min_verified_evidence", 1)
+    seen = []
+    monkeypatch.setattr(
+        forecast,
+        "evaluate_learning_runtime",
+        lambda session, cluster_id, *, host=None, metric=None: (
+            seen.append((cluster_id, host, metric))
+            or SimpleNamespace(can_observe=True)
+        ),
+    )
+
+    class Learner:
+        sample_count = 1
+
+        @staticmethod
+        def predict_one(*, fallback):
+            return fallback
+
+    monkeypatch.setattr(
+        forecast,
+        "load_or_reset_state",
+        lambda *args, **kwargs: (Learner(), None),
+    )
+    with factory() as session:
+        session.add(Cluster(
+            id="cluster-a", name="CS-LAB", ceph_mon_nodes="",
+            ssh_user="root", ssh_key_path="/tmp/key",
+        ))
+        session.commit()
+        result = forecast._river_shadow_candidate(
+            session, "CS-LAB", "node-1", "cpu", 42.0,
+        )
+
+    assert result is not None
+    assert seen == [("cluster-a", "node-1", "cpu")]
 
 
 def test_river_linear_v2_disabled_flag_skips_model_and_database():

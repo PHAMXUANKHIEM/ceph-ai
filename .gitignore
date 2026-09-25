@@ -42,3 +42,9 @@ test_runner_baselines/
 # Claude Code per-project account/session state (machine id, migration
 # flags) — tooling state, not source. Sibling of .codex-account/ above.
 .claude-account/
+
+# Historical UI staging/transfer trees are archived outside the repository;
+# do not let local review copies re-enter a release checkout.
+.codex-stage/
+transfer/
+oom

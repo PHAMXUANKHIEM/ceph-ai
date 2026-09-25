@@ -434,11 +434,11 @@ notification or remediation`; `promotion_audits=0`. Đây là bằng chứng can
   River chưa được coi là model active và chưa được phép ảnh hưởng trực tiếp tới
   notification/remediation. Đây là giới hạn an toàn hiện tại, không phải bằng
   chứng rằng hệ thống đã có self-learning production hoàn chỉnh.
-- [ ] Nối consumer với promotion decision và model registry thay vì để đường
+- [x] Nối consumer với promotion decision và model registry thay vì để đường
   cập nhật production bị cố định ở `target="shadow"`. Mặc định vẫn phải là
   `SHADOW_ONLY`; chỉ cho `target="active"` khi candidate đã qua đủ outcome,
   quality/drift/resource gate, operator approval và audit append-only.
-- [ ] Thêm test end-to-end cho ba trường hợp: shadow chỉ ghi shadow state;
+- [x] Thêm test end-to-end cho ba trường hợp: shadow chỉ ghi shadow state;
   candidate chưa được duyệt bị từ chối khi yêu cầu active; candidate đã được
   duyệt mới được cập nhật active state và có rollback evidence.
 - [ ] Rà soát toàn bộ call site của `shared.learning_runtime.evaluate()`.
@@ -462,6 +462,21 @@ Guarded rollback smoke test trên SQLite tạm đã tạo active/candidate, ghi
 evidence, request/approve và rollback thành công trong `13.4 ms`; production
 chưa có candidate được promote nên chưa đánh dấu rollback acceptance thật.
 
+### Runtime target boundary — 2026-09-25
+
+- `shared.learning_runtime.resolve_update_target()` đã nối consumer với
+  `ForecastModelRegistry` và `ForecastModelPromotionAudit`.
+- Target mặc định là `shadow`; registry legacy/thiếu dimension, candidate
+  chưa promote, model `BLOCKED/RETIRED`, thiếu promotion audit, runtime không ở
+  `ACTIVE`, hoặc scope sai đều bị chặn fail-closed.
+- Target `active` chỉ được trả về khi khớp đầy đủ `cluster_id + host + metric +
+  scope_schema + algorithm + model_version`, registry ở `ACTIVE`, có audit
+  `PROMOTED`, và runtime gate cho phép active.
+- Consumer ghi lại target và lý do target vào `runtime_reason`; không có thay
+  đổi production runtime hoặc bật `ACTIVE` trong bước này.
+- Regression suite: `53 passed` cho node forecast, learning runtime, consumer
+  và model registry; Ruff không có lỗi.
+
 ## 6.4 Execution wave hiện tại — không bao gồm CI
 
 Các mục dưới đây là phần còn thiếu để biến safety primitive thành một vòng
@@ -471,22 +486,27 @@ workflow và supply-chain reproducibility được giữ ở
 
 ### Work package A — Scope boundary của mọi caller
 
-- [ ] Audit toàn bộ call site của `shared.learning_runtime.evaluate()` và
+- [x] Audit toàn bộ call site của `shared.learning_runtime.evaluate()` và
   `evaluate_learning_runtime`.
-- [ ] Sửa `watcher/node_resource_forecast.py` để truyền đủ
+- [x] Sửa `watcher/node_resource_forecast.py` để truyền đủ
   `cluster_id + host + metric` ở cả đường update và đường tạo shadow candidate.
-- [ ] Khi canary bật, identity thiếu hoặc sai phải fail-closed; không được
+- [x] Khi canary bật, identity thiếu hoặc sai phải fail-closed; không được
   fallback sang cluster/host/metric mặc định.
-- [ ] Thêm regression test cho đúng scope, sai host, sai metric, thiếu scope và
+- [x] Thêm regression test cho đúng scope, sai host, sai metric, thiếu scope và
   dashboard/Watcher dùng cùng một quyết định runtime.
+
+Scope audit xác nhận `shared/canary.py` đã truyền đủ dimensions; Watcher đã
+được sửa ở nhánh River shadow candidate. Regression mới gọi đúng
+`cluster_id + host + metric` và kiểm tra host/metric sai không thể dùng nhầm
+runtime decision.
 
 ### Work package B — Shadow → candidate → active → rollback
 
-- [ ] Nối consumer với promotion decision và model registry thay vì hard-code
+- [x] Nối consumer với promotion decision và model registry thay vì hard-code
   `target="shadow"` ở đường cập nhật.
-- [ ] Giữ `SHADOW_ONLY` là mặc định; chỉ cho `target="active"` khi candidate có
+- [x] Giữ `SHADOW_ONLY` là mặc định; chỉ cho `target="active"` khi candidate có
   đủ outcome, quality/drift/resource gate, operator approval và audit.
-- [ ] Thêm E2E test: shadow chỉ ghi shadow state; candidate chưa duyệt bị từ
+- [x] Thêm E2E test: shadow chỉ ghi shadow state; candidate chưa duyệt bị từ
   chối khi yêu cầu active; candidate đã duyệt cập nhật active; rollback khôi
   phục champion và ghi evidence.
 - [ ] Bảo đảm candidate/active không được ảnh hưởng notification hoặc

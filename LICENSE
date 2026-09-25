@@ -1,0 +1,15 @@
+Ceph AI — Internal Use Notice
+
+Copyright (c) 2026 Ceph AI project contributors.
+
+This repository is provided for internal evaluation and operation of the Ceph
+AI service. No permission is granted to copy, modify, distribute, sublicense,
+or sell this software or its documentation outside the authorised project
+organisation.
+
+Before any external distribution, replace this notice with a licence approved
+by the project owner and record that decision in the release manifest.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.

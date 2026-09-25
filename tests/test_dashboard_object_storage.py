@@ -1757,3 +1757,65 @@ def test_presigned_download_supports_version_and_rejects_unsafe_upload_limits(da
                                       "ExpiresIn": 60})]
     assert bad_type.status_code == 400
     assert too_large.status_code == 400
+
+
+def test_public_posture_route_is_read_only_and_cluster_scoped(dashboard_client, default_cluster_id, monkeypatch):
+    monkeypatch.setattr(object_storage_route, "_cached_detail", lambda cluster, bucket: {
+        "name": bucket, "owner": "alice", "host": "10.20.1.90", "stats_available": True,
+    })
+    seen = []
+
+    class FakeS3:
+        def get_bucket_policy(self, **kwargs):
+            seen.append(("policy", kwargs))
+            return {"Policy": '{"Statement":[{"Effect":"Allow","Principal":"*","Action":"s3:GetObject"}]}'}
+
+        def get_bucket_acl(self, **kwargs):
+            seen.append(("acl", kwargs))
+            return {"Grants": []}
+
+    monkeypatch.setattr(object_storage_route, "_configured_rgw_s3_credentials", lambda cluster: (
+        "https://rgw.example.test", "inventory-access", "inventory-secret"))
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    monkeypatch.setattr(object_storage_route, "_temporary_key", lambda *args: (_ for _ in ()).throw(AssertionError("must not create key")))
+    _login(dashboard_client)
+    response = dashboard_client.get(
+        f"/api/object-storage/buckets/archive/public-posture?cluster={default_cluster_id}")
+    assert response.status_code == 200
+    assert response.json()["cluster_id"] == default_cluster_id
+    assert response.json()["status"] == "public_grant"
+    assert response.json()["action_id"] is None
+    assert seen == [("policy", {"Bucket": "archive"}), ("acl", {"Bucket": "archive"})]
+
+
+def test_public_posture_does_not_probe_without_verified_owner(dashboard_client, monkeypatch):
+    monkeypatch.setattr(object_storage_route, "_cached_detail", lambda cluster, bucket: {"loading": True})
+    monkeypatch.setattr(object_storage_route, "_configured_rgw_s3_credentials", lambda cluster: (_ for _ in ()).throw(AssertionError("must not probe")))
+    _login(dashboard_client)
+    response = dashboard_client.get("/api/object-storage/buckets/archive/public-posture")
+    assert response.status_code == 200
+    assert response.json()["ready"] is False
+    assert response.json()["status"] == "unknown"
+
+
+def test_public_posture_secondary_cluster_without_credentials_fails_closed(dashboard_client, monkeypatch):
+    with db.SessionLocal() as session:
+        cluster = Cluster(
+            name="rgw-posture-secondary", ceph_mon_nodes="10.99.0.10", ceph_rgw_nodes="10.99.0.90",
+            ssh_user="ceph2", ssh_key_path="/keys/ceph2", is_default=False, is_active=True,
+        )
+        session.add(cluster)
+        session.commit()
+        cluster_id = cluster.id
+    monkeypatch.setattr(object_storage_route, "_cached_detail", lambda cluster, bucket: {
+        "name": bucket, "owner": "secondary-owner", "host": "10.99.0.90", "stats_available": True,
+    })
+    monkeypatch.setattr(object_storage_route, "_configured_rgw_s3_credentials", lambda cluster: None)
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not probe")))
+    _login(dashboard_client)
+    response = dashboard_client.get(
+        f"/api/object-storage/buckets/archive/public-posture?cluster={cluster_id}")
+    assert response.status_code == 200
+    assert response.json()["ready"] is False
+    assert response.json()["status"] == "unknown"
+    assert "credential" in response.json()["evidence_gaps"][0]
