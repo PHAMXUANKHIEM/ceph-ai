@@ -468,4 +468,4 @@ def test_cluster_state_websocket_rejects_different_cluster_query(dashboard_clien
             connected = True
     except Exception:
         connected = False
-
+    assert not connected, "cluster-state websocket must reject a cluster outside the session scope"
