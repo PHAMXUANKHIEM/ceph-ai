@@ -243,7 +243,7 @@ jobs:
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           printf '%s@%s\n' "$registry_image" "$digest" > artifacts/registry-image-ref.txt
           printf 'name=%s\ndigest=%s\n' "$registry_image" "$digest" >> "$GITHUB_OUTPUT"
-          docker logout ghcr.io
+          # Stay logged in: the attestation below pushes to the same registry.
 
       - name: Attest build provenance for the pushed digest
         id: attest
@@ -276,6 +276,10 @@ jobs:
               "bundle_sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
           }, indent=2) + "\n", encoding="utf-8")
           PY
+
+      - name: Log out of GHCR
+        if: always() && steps.push.outcome != 'skipped'
+        run: docker logout ghcr.io || true
 
       - name: Surface quality gate evidence
         if: failure()
