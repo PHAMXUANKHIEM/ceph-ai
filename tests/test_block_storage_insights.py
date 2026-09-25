@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 import dashboard.routes.volumes as volumes_route
+from shared.time import utc_now
 from shared import db as db_module
 from shared.models import BackupJob, Cluster, VolumeDependencySnapshot, VolumeMetric
 from watcher.block_storage_insights import (
@@ -134,7 +135,10 @@ def test_inventory_insights_api_returns_evidence_and_coverage(dashboard_client, 
         session.add(VolumeMetric(
             cluster_id=cluster.id, pool="images", image="volume-a", iops=0,
             read_latency_ms=0, write_latency_ms=0, saturated=False,
-            polled_at=NOW - timedelta(days=1),
+            # The API evaluates its 7-day window against the real clock, so
+            # the sample must be relative to it (a fixed date expired on
+            # 2026-09-25 and failed CI run 36134454999).
+            polled_at=utc_now().replace(tzinfo=None) - timedelta(days=1),
         ))
         session.commit()
 
