@@ -48,6 +48,7 @@ from shared.models import (
     ActionStatus,
     AuditEntry,
     BackupJob,
+    Cluster,
     Incident,
     IncidentStatus,
     ObjectStorageAuditEntry,
@@ -322,7 +323,7 @@ def _cache_collected_at(cache_state: dict) -> str:
     return collected_at.isoformat().replace("+00:00", "Z")
 
 
-def _cluster_for_request(request: Request):
+def _cluster_for_request(request: Request) -> Cluster:
     cluster = selected_cluster(request)
     requested = request.query_params.get("cluster", "").strip()
     if requested and cluster.id != requested:
@@ -333,7 +334,7 @@ def _cluster_for_request(request: Request):
     return cluster
 
 
-def _allowed_pools_for_request(request: Request) -> tuple[object, set[str]]:
+def _allowed_pools_for_request(request: Request) -> tuple[Cluster, set[str]]:
     cluster = _cluster_for_request(request)
     return cluster, set(_rbd_pools_for_request(request))
 

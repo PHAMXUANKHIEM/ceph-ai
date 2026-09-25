@@ -15,7 +15,8 @@ import json
 import os
 import re
 import shutil
-import subprocess
+# Fixed tool argv built from validated arguments, no shell.
+import subprocess  # nosec B404
 import sys
 import time
 from datetime import datetime, timezone
@@ -60,7 +61,7 @@ def _command(name: str, override: str | None = None) -> str:
 
 def _run(command: list[str], *, env: dict[str, str], timeout: int) -> str:
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603
             command,
             cwd=ROOT,
             env=env,
@@ -85,13 +86,31 @@ def _write_report(path: Path, payload: dict) -> None:
     temporary.replace(path)
 
 
-def run_rehearsal(args: argparse.Namespace) -> dict:
+def _validated_ids(args: argparse.Namespace) -> tuple[str, str]:
     if args.confirm != CONFIRMATION:
         raise RehearsalError("staging confirmation token is incorrect")
     source_id = args.source_id.strip().lower()
     target_id = args.target_id.strip().lower()
     if not source_id or not target_id or target_id in PRODUCTION_IDS:
         raise RehearsalError("source and target IDs are required; target cannot be production")
+    return source_id, target_id
+
+
+def _critical_row_counts(psql: str, target_url: str, *, env: dict[str, str], timeout: int) -> dict[str, int]:
+    counts = {}
+    for table in CRITICAL_TABLES:
+        # Table names come from the CRITICAL_TABLES constant; the guard keeps
+        # the interpolated identifier provably plain.
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", table):
+            raise RehearsalError(f"invalid critical table name: {table!r}")
+        query = f"SELECT COUNT(*) FROM public.{table};"  # nosec B608
+        output = _run([psql, target_url, "-At", "-v", "ON_ERROR_STOP=1", "-c", query], env=env, timeout=timeout)
+        counts[table] = int(output.strip().splitlines()[-1])
+    return counts
+
+
+def run_rehearsal(args: argparse.Namespace) -> dict:
+    source_id, target_id = _validated_ids(args)
     source_host, source_db, source_port, source_identity = _safe_url(args.source_url)
     target_host, target_db, target_port, target_identity = _safe_url(args.target_url)
     if source_identity == target_identity:
@@ -150,16 +169,7 @@ def run_rehearsal(args: argparse.Namespace) -> dict:
         query = "SELECT current_database(), current_user;"
         identity = _run([psql, args.target_url, "-At", "-c", query], env=env, timeout=args.timeout)
         step("target_identity", "PASS", identity)
-        counts = {}
-        for table in CRITICAL_TABLES:
-            output = _run(
-                [psql, args.target_url, "-At", "-v", "ON_ERROR_STOP=1", "-c",
-                 f"SELECT COUNT(*) FROM public.{table};"],
-                env=env,
-                timeout=args.timeout,
-            )
-            counts[table] = int(output.strip().splitlines()[-1])
-        payload["critical_row_counts"] = counts
+        payload["critical_row_counts"] = _critical_row_counts(psql, args.target_url, env=env, timeout=args.timeout)
         step("critical_row_counts", "PASS")
         payload["status"] = "PASS"
     except RehearsalError as exc:

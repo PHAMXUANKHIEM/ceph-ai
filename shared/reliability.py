@@ -160,9 +160,10 @@ def _outbox_row(session, model, *, name: str, attempt_limit: int, lease_seconds:
     row = _queue_row(session, model, statuses=("PENDING", "PROCESSING"), name=name)
     now = utc_now()
     row["dead_total"] = int(session.query(func.count(model.id)).filter(model.status == "DEAD").scalar() or 0)
-    row["max_attempts"] = int(
+    max_attempts = int(
         session.query(func.max(model.attempts)).filter(model.status.in_(("PENDING", "PROCESSING"))).scalar() or 0
     )
+    row["max_attempts"] = max_attempts
     row["attempt_limit"] = attempt_limit
     row["overdue_retries"] = int(session.query(func.count(model.id)).filter(
         model.status == "PENDING",
@@ -173,7 +174,7 @@ def _outbox_row(session, model, *, name: str, attempt_limit: int, lease_seconds:
         model.status == "PROCESSING",
         model.claimed_at <= now - timedelta(seconds=lease_seconds),
     ).scalar() or 0)
-    row["retry_exhaustion"] = row["max_attempts"] >= max(1, attempt_limit - 2)
+    row["retry_exhaustion"] = max_attempts >= max(1, attempt_limit - 2)
     return row
 
 
@@ -225,6 +226,22 @@ def _observed_slo(api: dict, freshness: list[dict[str, object]], queues: list[di
     }
 
 
+def _queue_alerts(queue: dict) -> list[dict[str, object]]:
+    name = queue["name"]
+    alerts: list[dict[str, object]] = []
+    if queue["backlog_alert"]:
+        alerts.append({"code": "queue_backlog", "severity": "warning", "queue": name, "pending_total": queue["pending_total"], "oldest_age_seconds": queue["oldest_age_seconds"], "message": "Queue backlog hoặc queue age vượt ngưỡng."})
+    if queue.get("dead_total"):
+        alerts.append({"code": "outbox_dead_letters", "severity": "critical", "queue": name, "count": queue["dead_total"], "message": "Outbox có message DEAD sau khi hết số lần retry; cần xử lý thủ công."})
+    if queue.get("retry_exhaustion"):
+        alerts.append({"code": "outbox_retry_exhaustion", "severity": "warning", "queue": name, "max_attempts": queue["max_attempts"], "attempt_limit": queue["attempt_limit"], "message": "Outbox message sắp hết số lần retry."})
+    if queue.get("overdue_retries"):
+        alerts.append({"code": "outbox_overdue_retry", "severity": "warning", "queue": name, "count": queue["overdue_retries"], "message": "Retry đã đến hạn nhưng publisher chưa xử lý."})
+    if queue.get("stuck_claims"):
+        alerts.append({"code": "outbox_stuck_claim", "severity": "warning", "queue": name, "count": queue["stuck_claims"], "message": "Message PROCESSING quá lease; publisher có thể đã chết giữa chừng."})
+    return alerts
+
+
 def _alerts(freshness, services, queues, pool, deploys, collector) -> list[dict[str, object]]:
     alerts = []
     for row in freshness:
@@ -236,16 +253,7 @@ def _alerts(freshness, services, queues, pool, deploys, collector) -> list[dict[
         if value.get("observable") and value.get("healthy") is False:
             alerts.append({"code": "service_heartbeat_stale", "severity": "critical", "service": name, "message": f"{name} không có heartbeat hợp lệ."})
     for queue in queues:
-        if queue["backlog_alert"]:
-            alerts.append({"code": "queue_backlog", "severity": "warning", "queue": queue["name"], "pending_total": queue["pending_total"], "oldest_age_seconds": queue["oldest_age_seconds"], "message": "Queue backlog hoặc queue age vượt ngưỡng."})
-        if queue.get("dead_total"):
-            alerts.append({"code": "outbox_dead_letters", "severity": "critical", "queue": queue["name"], "count": queue["dead_total"], "message": "Outbox có message DEAD sau khi hết số lần retry; cần xử lý thủ công."})
-        if queue.get("retry_exhaustion"):
-            alerts.append({"code": "outbox_retry_exhaustion", "severity": "warning", "queue": queue["name"], "max_attempts": queue["max_attempts"], "attempt_limit": queue["attempt_limit"], "message": "Outbox message sắp hết số lần retry."})
-        if queue.get("overdue_retries"):
-            alerts.append({"code": "outbox_overdue_retry", "severity": "warning", "queue": queue["name"], "count": queue["overdue_retries"], "message": "Retry đã đến hạn nhưng publisher chưa xử lý."})
-        if queue.get("stuck_claims"):
-            alerts.append({"code": "outbox_stuck_claim", "severity": "warning", "queue": queue["name"], "count": queue["stuck_claims"], "message": "Message PROCESSING quá lease; publisher có thể đã chết giữa chừng."})
+        alerts.extend(_queue_alerts(queue))
     if pool.get("exhausted"):
         alerts.append({"code": "db_pool_exhaustion", "severity": "critical", "message": "DB pool đã dùng hết connection."})
     if deploys:

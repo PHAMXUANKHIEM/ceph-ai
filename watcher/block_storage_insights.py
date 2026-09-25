@@ -13,7 +13,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from shared.time import utc_now
 import json
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 from sqlalchemy import delete
 
@@ -62,8 +62,9 @@ def build_capacity_waste_summary(inventory_rows: Iterable[Mapping[str, object]])
         if not isinstance(row, Mapping):
             continue
         total += 1
-        raw_provisioned = row.get("provisioned_size", row.get("size"))
-        raw_used = row.get("used_size")
+        # Values come from Ceph JSON; int() below validates them.
+        raw_provisioned: Any = row.get("provisioned_size", row.get("size"))
+        raw_used: Any = row.get("used_size")
         try:
             p_bytes, u_bytes = int(raw_provisioned), int(raw_used)
             if p_bytes < 0 or u_bytes < 0:
@@ -95,7 +96,8 @@ def build_capacity_waste_summary(inventory_rows: Iterable[Mapping[str, object]])
 
 def owner_project_evidence(row: Mapping[str, object]) -> dict:
     """Return only explicit owner/project metadata; never infer it from image names."""
-    cinder = row.get("cinder") if isinstance(row.get("cinder"), Mapping) else {}
+    raw_cinder = row.get("cinder")
+    cinder: Mapping[str, object] = raw_cinder if isinstance(raw_cinder, Mapping) else {}
     project_id = row.get("project_id") or row.get("owner_project_id") or cinder.get("project_id")
     owner_id = row.get("owner_id") or row.get("user_id") or cinder.get("user_id")
     return {

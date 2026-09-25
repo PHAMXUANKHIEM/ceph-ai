@@ -79,17 +79,27 @@ def _snapshot(cluster_id: str | None = None, is_default_cluster: bool = True) ->
     return count, latest_updated, tuple(section_versions)
 
 
-@router.websocket("/ws/incidents")
-async def incidents_ws(websocket: WebSocket) -> None:
-    # SessionMiddleware populates websocket.session from the same signed
-    # cookie used by the HTTP routes (Starlette applies session middleware
-    # to the "websocket" scope too) — same require_login check as / , just
-    # not expressible as a FastAPI Depends on a websocket route.
-    if not _session_is_valid(websocket.session) or websocket.session.get("product") == "vitastor":
+async def _reject_socket(websocket: WebSocket, *, accept: bool, record: bool) -> None:
+    if record:
         _record_metric("cluster_state_policy_rejections_total")
-        await websocket.close(code=WS_POLICY_VIOLATION)
-        return
+    if accept:
+        await websocket.accept()
+    await websocket.close(code=WS_POLICY_VIOLATION)
 
+
+async def _authorize_cluster_socket(
+    websocket: WebSocket, *, accept_invalid_session: bool, count_every_rejection: bool,
+) -> tuple[str, bool] | None:
+    """Resolve the session's cluster and enforce read capability server-side.
+
+    Returns ``(cluster_id, is_default)`` or closes the socket with a policy
+    violation and returns ``None``. A ``?cluster=`` that differs from the
+    session's selection is always rejected and counted: a socket must never
+    stream another cluster's events.
+    """
+    if not _session_is_valid(websocket.session) or websocket.session.get("product") == "vitastor":
+        await _reject_socket(websocket, accept=accept_invalid_session, record=count_every_rejection)
+        return None
     with db.SessionLocal() as session:
         default_cluster = ensure_default_cluster(session)
         active = {cluster.id: cluster for cluster in list_active_clusters(session)}
@@ -99,16 +109,27 @@ async def incidents_ws(websocket: WebSocket) -> None:
     if not has_cluster_capability(
         str(websocket.session.get("user") or ""), selected_id, CAPABILITY_READ
     ):
-        _record_metric("cluster_state_policy_rejections_total")
-        await websocket.accept()
-        await websocket.close(code=WS_POLICY_VIOLATION)
-        return
+        await _reject_socket(websocket, accept=True, record=count_every_rejection)
+        return None
     requested_id = websocket.query_params.get("cluster_id") or websocket.query_params.get("cluster")
     if requested_id and requested_id != selected_id:
-        _record_metric("cluster_state_policy_rejections_total")
-        await websocket.accept()
-        await websocket.close(code=WS_POLICY_VIOLATION)
+        await _reject_socket(websocket, accept=True, record=True)
+        return None
+    return selected_id, selected_is_default
+
+
+@router.websocket("/ws/incidents")
+async def incidents_ws(websocket: WebSocket) -> None:
+    # SessionMiddleware populates websocket.session from the same signed
+    # cookie used by the HTTP routes (Starlette applies session middleware
+    # to the "websocket" scope too) — same require_login check as / , just
+    # not expressible as a FastAPI Depends on a websocket route.
+    authorized = await _authorize_cluster_socket(
+        websocket, accept_invalid_session=False, count_every_rejection=True,
+    )
+    if authorized is None:
         return
+    selected_id, selected_is_default = authorized
     await websocket.accept()
     last_seen = _snapshot(selected_id, selected_is_default)
     try:
@@ -141,6 +162,41 @@ async def incidents_ws(websocket: WebSocket) -> None:
         logger.exception("incidents_ws: unexpected error, closing connection")
 
 
+_OPTIONAL_EVENT_FIELDS = ("action_status", "action_state", "action_id", "request_id")
+
+
+def _cluster_state_message(current: dict, cluster_id: str) -> dict:
+    message = {
+        "event": current.get("event"),
+        "cluster_id": cluster_id,
+        "sections": current.get("sections", []),
+        "generation": current.get("generation"),
+        "collected_at": current.get("collected_at"),
+    }
+    message.update({key: current[key] for key in _OPTIONAL_EVENT_FIELDS if current.get(key)})
+    return message
+
+
+def _open_cluster_state_connection(websocket: WebSocket):
+    """Count the connection and bind a client-supplied request id if it is safe."""
+    _record_metric("cluster_state_connections_total")
+    _record_metric("cluster_state_connections_open")
+    if websocket.query_params.get("reconnect") == "1":
+        _record_metric("cluster_state_reconnect_total")
+    requested_request_id = websocket.query_params.get("request_id", "").strip()
+    if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", requested_request_id):
+        return set_request_id(requested_request_id)
+    return None
+
+
+def _record_event_metrics(event: object) -> None:
+    _record_metric("cluster_state_messages_total")
+    if event == "action_state_changed":
+        _record_metric("cluster_state_events_action_total")
+    elif event == "snapshot_changed":
+        _record_metric("cluster_state_events_snapshot_total")
+
+
 @router.websocket("/ws/cluster-state")
 async def cluster_state_ws(websocket: WebSocket) -> None:
     """Send cluster-scoped invalidation metadata over the shared event store.
@@ -154,39 +210,16 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
         await websocket.accept()
         await websocket.close(code=1013)
         return
-    if not _session_is_valid(websocket.session) or websocket.session.get("product") == "vitastor":
-        await websocket.accept()
-        await websocket.close(code=WS_POLICY_VIOLATION)
+    authorized = await _authorize_cluster_socket(
+        websocket, accept_invalid_session=True, count_every_rejection=False,
+    )
+    if authorized is None:
         return
-
-    with db.SessionLocal() as session:
-        default_cluster = ensure_default_cluster(session)
-        active = {cluster.id: cluster for cluster in list_active_clusters(session)}
-        selected = active.get(websocket.session.get("selected_cluster_id"), default_cluster)
-        selected_id = selected.id
-    if not has_cluster_capability(
-        str(websocket.session.get("user") or ""), selected_id, CAPABILITY_READ
-    ):
-        await websocket.accept()
-        await websocket.close(code=WS_POLICY_VIOLATION)
-        return
-    requested_id = websocket.query_params.get("cluster_id") or websocket.query_params.get("cluster")
-    if requested_id and requested_id != selected_id:
-        _record_metric("cluster_state_policy_rejections_total")
-        await websocket.accept()
-        await websocket.close(code=WS_POLICY_VIOLATION)
-        return
+    selected_id = authorized[0]
 
     await websocket.accept()
-    _record_metric("cluster_state_connections_total")
-    _record_metric("cluster_state_connections_open")
-    if websocket.query_params.get("reconnect") == "1":
-        _record_metric("cluster_state_reconnect_total")
+    request_token = _open_cluster_state_connection(websocket)
     connection_open = True
-    requested_request_id = websocket.query_params.get("request_id", "").strip()
-    request_token = None
-    if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", requested_request_id):
-        request_token = set_request_id(requested_request_id)
     last_event_id = None
     initial = read_latest_event(selected_id)
     if initial:
@@ -205,24 +238,8 @@ async def cluster_state_ws(websocket: WebSocket) -> None:
             if not current or current.get("generation") == last_event_id:
                 continue
             last_event_id = current.get("generation")
-            await websocket.send_json(
-                {
-                    "event": current.get("event"),
-                    "cluster_id": selected_id,
-                    "sections": current.get("sections", []),
-                    "generation": current.get("generation"),
-                    "collected_at": current.get("collected_at"),
-                    **({"action_status": current["action_status"]} if current.get("action_status") else {}),
-                    **({"action_state": current["action_state"]} if current.get("action_state") else {}),
-                    **({"action_id": current["action_id"]} if current.get("action_id") else {}),
-                    **({"request_id": current["request_id"]} if current.get("request_id") else {}),
-                }
-            )
-            _record_metric("cluster_state_messages_total")
-            if current.get("event") == "action_state_changed":
-                _record_metric("cluster_state_events_action_total")
-            elif current.get("event") == "snapshot_changed":
-                _record_metric("cluster_state_events_snapshot_total")
+            await websocket.send_json(_cluster_state_message(current, selected_id))
+            _record_event_metrics(current.get("event"))
     except WebSocketDisconnect:
         pass
     except Exception:
