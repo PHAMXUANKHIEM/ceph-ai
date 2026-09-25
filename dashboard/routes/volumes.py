@@ -44,7 +44,6 @@ from shared.cluster_nodes import resolve_ssh_creds
 from shared.rbd_trash_retention import trash_entry_ttl_status
 from shared.models import (
     Action,
-    ActionClassification,
     ActionStatus,
     AuditEntry,
     BackupJob,
@@ -57,7 +56,7 @@ from shared.models import (
     VolumePerfSweep,
     VolumeSnapshotPolicy,
 )
-from shared.volume_snapshot_policy import next_run_at, snapshot_name, validate_snapshot_policy
+from shared.volume_snapshot_policy import next_run_at, validate_snapshot_policy
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher.volume_monitor import ceph_code_for
