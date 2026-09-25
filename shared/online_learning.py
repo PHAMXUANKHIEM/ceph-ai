@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import hashlib
 import json
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -53,6 +54,17 @@ class BoundedLearningResult:
     reason: str
     elapsed_seconds: float
     cpu_time_seconds: float = 0.0
+
+
+logger = logging.getLogger(__name__)
+
+
+def _sample_label(value: Any) -> str:
+    """Identify a failing sample in logs without dumping its payload."""
+    if isinstance(value, dict):
+        keys = ("sample_id", "cluster_id", "host", "metric")
+        return " ".join(f"{key}={value.get(key)}" for key in keys if value.get(key) is not None) or "sample=<dict>"
+    return f"sample={type(value).__name__}"
 
 
 class LearningCircuitBreaker:
@@ -117,14 +129,21 @@ def run_bounded_updates(
         try:
             update(value)
         except Exception:
+            # Log the real cause (it used to be swallowed) and skip only this
+            # sample: one poisoned sample at the head of every batch must not
+            # stop all later samples from being learned.  Repeated failures
+            # still open the breaker and end the cycle.
+            logger.exception("online learning update failed (%s)", _sample_label(value))
             failed += 1
             circuit_breaker.record_failure(now=now)
             reason = "update_failed"
-            break
+            if not circuit_breaker.allow(now=now):
+                break
+            continue
         applied += 1
         circuit_breaker.record_success()
     else:
-        if processed >= max_samples:
+        if processed >= max_samples and reason == "completed":
             reason = "sample_budget_exhausted"
     elapsed = max(0.0, clock() - started)
     return BoundedLearningResult(

@@ -80,3 +80,60 @@ def test_guarded_update_never_learns_when_quality_gate_blocks():
     )
     assert result.applied is False
     assert learner.sample_count == 0
+
+
+def test_tracker_accepts_naive_database_timestamps():
+    # Audit rows are loaded from the DB as naive UTC; samples are aware.
+    from datetime import datetime, timedelta, timezone
+
+    from shared.online_learning_gate import (
+        OnlineLearningInputTracker,
+        OnlineLearningSample,
+        evaluate_sample,
+    )
+
+    now = datetime(2026, 9, 25, 9, 0, tzinfo=timezone.utc)
+    tracker = OnlineLearningInputTracker(last_observed_at=(now - timedelta(seconds=921)).replace(tzinfo=None))
+    decision = evaluate_sample(
+        OnlineLearningSample(value=12.5, observed_at=now, label=12.5, sample_id="s1"),
+        tracker,
+        now=now,
+        max_age_seconds=120,
+        max_forward_gap_seconds=1350,
+    )
+    assert decision.status == "READY_TO_LEARN"
+    tracker.remember("s2", (now + timedelta(seconds=5)).replace(tzinfo=None))
+    assert tracker.last_observed_at.tzinfo is not None
+
+
+def test_effective_gap_limit_follows_scan_cadence_unless_configured():
+    from types import SimpleNamespace
+
+    from shared.online_learning_gate import effective_max_gap_seconds
+
+    derived = SimpleNamespace(online_learning_sample_max_gap_seconds=None, node_health_scan_interval_seconds=900)
+    assert effective_max_gap_seconds(derived) == 1350.0
+    explicit = SimpleNamespace(online_learning_sample_max_gap_seconds=600, node_health_scan_interval_seconds=900)
+    assert effective_max_gap_seconds(explicit) == 600.0
+
+
+def test_normal_scan_jitter_is_accepted_but_a_missed_scan_is_a_gap():
+    from datetime import datetime, timedelta, timezone
+
+    from shared.online_learning_gate import (
+        OnlineLearningInputTracker,
+        OnlineLearningSample,
+        evaluate_sample,
+    )
+
+    now = datetime(2026, 9, 25, 9, 0, tzinfo=timezone.utc)
+
+    def decide(gap_seconds):
+        tracker = OnlineLearningInputTracker(last_observed_at=now - timedelta(seconds=gap_seconds))
+        return evaluate_sample(
+            OnlineLearningSample(value=10.0, observed_at=now, label=10.0, sample_id=f"g{gap_seconds}"),
+            tracker, now=now, max_age_seconds=120, max_forward_gap_seconds=1350,
+        )
+
+    assert decide(941).status == "READY_TO_LEARN"      # measured p90 jitter
+    assert decide(1800).status == "DATA_QUALITY"       # one scan missed

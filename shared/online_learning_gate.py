@@ -56,7 +56,15 @@ class OnlineLearningInputTracker:
     _seen_keys: set[str] = field(default_factory=set, init=False, repr=False)
     _seen_order: deque[str] = field(default_factory=deque, init=False, repr=False)
 
+    def __post_init__(self) -> None:
+        # Audit rows come back from the database as naive UTC while samples
+        # are normalised to aware UTC; comparing the two raised TypeError on
+        # every sample of a stream that already had history.
+        if self.last_observed_at is not None:
+            self.last_observed_at = _utc(self.last_observed_at)
+
     def remember(self, sample_key: str, observed_at: datetime) -> None:
+        observed_at = _utc(observed_at)
         if sample_key not in self._seen_keys:
             self._seen_keys.add(sample_key)
             self._seen_order.append(sample_key)
@@ -67,6 +75,17 @@ class OnlineLearningInputTracker:
 
     def has_seen(self, sample_key: str) -> bool:
         return sample_key in self._seen_keys
+
+
+GAP_CADENCE_FACTOR = 1.5
+
+
+def effective_max_gap_seconds(config) -> float:
+    """Configured sample gap limit, or 1.5 x the node scan cadence when unset."""
+    configured = getattr(config, "online_learning_sample_max_gap_seconds", None)
+    if configured:
+        return float(configured)
+    return float(config.node_health_scan_interval_seconds) * GAP_CADENCE_FACTOR
 
 
 def _utc(value: datetime) -> datetime:

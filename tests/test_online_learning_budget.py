@@ -48,3 +48,59 @@ def test_open_circuit_skips_cycle_without_calling_update():
     assert result.reason == "circuit_open"
     assert result.processed == result.applied == 0
     assert values == []
+
+
+def test_failing_sample_is_logged_and_skipped_without_blocking_the_batch(caplog):
+    learned = []
+
+    def update(sample):
+        if sample["sample_id"] == "bad":
+            raise ValueError("corrupt learner state")
+        learned.append(sample["sample_id"])
+
+    samples = [
+        {"sample_id": "bad", "host": "10.3.54.118", "metric": "cpu"},
+        {"sample_id": "s1", "host": "10.3.54.118", "metric": "cpu"},
+        {"sample_id": "s2", "host": "10.3.54.118", "metric": "ram"},
+    ]
+    with caplog.at_level("ERROR", logger="shared.online_learning"):
+        result = run_bounded_updates(
+            samples, update, max_samples=10, timeout_seconds=10,
+            circuit_breaker=LearningCircuitBreaker(failure_threshold=3),
+        )
+    assert learned == ["s1", "s2"]
+    assert (result.processed, result.applied, result.failed) == (3, 2, 1)
+    assert result.reason == "update_failed"
+    record = next(item for item in caplog.records if "online learning update failed" in item.getMessage())
+    assert "sample_id=bad host=10.3.54.118 metric=cpu" in record.getMessage()
+    assert record.exc_info and "corrupt learner state" in str(record.exc_info[1])
+
+
+def test_repeated_failures_still_open_the_breaker_and_end_the_cycle():
+    calls = []
+
+    def update(sample):
+        calls.append(sample)
+        raise RuntimeError("database unavailable")
+
+    breaker = LearningCircuitBreaker(failure_threshold=2, cooldown_seconds=60)
+    result = run_bounded_updates(
+        range(10), update, max_samples=10, timeout_seconds=10,
+        circuit_breaker=breaker, clock=lambda: 5.0,
+    )
+    assert calls == [0, 1]
+    assert (result.processed, result.failed, result.reason) == (2, 2, "update_failed")
+    assert not breaker.allow(now=6.0)
+
+
+def test_failure_on_the_last_budgeted_sample_keeps_the_failure_reason():
+    def update(sample):
+        if sample == 2:
+            raise RuntimeError("boom")
+
+    result = run_bounded_updates(
+        range(3), update, max_samples=3, timeout_seconds=10,
+        circuit_breaker=LearningCircuitBreaker(),
+    )
+    assert (result.processed, result.applied, result.failed) == (3, 2, 1)
+    assert result.reason == "update_failed"

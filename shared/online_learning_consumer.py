@@ -32,6 +32,7 @@ from shared.online_learning_gate import (
     OnlineLearningGateDecision,
     OnlineLearningInputTracker,
     OnlineLearningSample,
+    effective_max_gap_seconds,
     evaluate_sample,
 )
 from shared.forecast_flags import candidate_enabled
@@ -203,7 +204,7 @@ def _consume_one(
                     OnlineLearningInputTracker(),
                     now=_utc(existing.observed_at),
                     max_age_seconds=settings.online_learning_sample_max_age_seconds,
-                    max_forward_gap_seconds=settings.online_learning_sample_max_gap_seconds,
+                    max_forward_gap_seconds=effective_max_gap_seconds(settings),
                     require_label=True,
                     drift_reference=reference,
                     drift_absolute_threshold=settings.online_learning_drift_threshold_percent,
@@ -299,7 +300,7 @@ def _consume_one(
             tracker,
             now=datetime.now(timezone.utc),
             max_age_seconds=settings.online_learning_sample_max_age_seconds,
-            max_forward_gap_seconds=settings.online_learning_sample_max_gap_seconds,
+            max_forward_gap_seconds=effective_max_gap_seconds(settings),
             require_label=settings.online_learning_require_verified_label,
         )
         runtime = evaluate(

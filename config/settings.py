@@ -794,7 +794,11 @@ class Settings(BaseSettings):
         "candidate_d_isolation=true,river_mean=true,river_linear_v2=false"
     )
     online_learning_sample_max_age_seconds: int = Field(default=120, ge=15, le=86400)
-    online_learning_sample_max_gap_seconds: int = Field(default=900, ge=30, le=604800)
+    # Unset = 1.5 x node_health_scan_interval_seconds (the sample cadence):
+    # measured gaps are ~921s median / ~941s p90 for a 900s scan, so a limit
+    # equal to the cadence rejected almost every sample, while a missed scan
+    # (>= 2 x cadence) is still treated as a gap.
+    online_learning_sample_max_gap_seconds: int | None = Field(default=None, ge=30, le=604800)
     learning_job_min_interval_seconds: int = Field(default=300, ge=0, le=86400)
     learning_job_max_batch_size: int = Field(default=5000, ge=1, le=5000)
     learning_job_timeout_seconds: int = Field(default=60, ge=1, le=3600)

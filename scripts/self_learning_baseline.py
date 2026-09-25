@@ -24,6 +24,7 @@ from statistics import median
 from sqlalchemy import inspect, text
 
 from config.settings import settings
+from shared.online_learning_gate import effective_max_gap_seconds
 from shared.db import SessionLocal
 from shared.forecast_flags import candidate_flags_snapshot
 
@@ -113,7 +114,7 @@ def _sample_intervals(session, tables: set[str]) -> list[dict]:
         typical = median(intervals)
         span = max(0.0, (timestamps[-1] - timestamps[0]).total_seconds())
         expected = max(len(timestamps), int(span / typical) + 1) if typical else len(timestamps)
-        gaps = [value for value in intervals if value > float(settings.online_learning_sample_max_gap_seconds)]
+        gaps = [value for value in intervals if value > effective_max_gap_seconds(settings)]
         result.append({
             "scope": "|".join(scope),
             "samples": len(timestamps),
