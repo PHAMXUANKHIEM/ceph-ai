@@ -4,6 +4,8 @@ from threading import Lock
 from time import monotonic
 
 from fastapi import HTTPException, Request
+from sqlalchemy import event
+from sqlalchemy.orm import Session
 
 from shared import db
 from shared.clusters import ensure_default_cluster, list_active_clusters
@@ -27,6 +29,28 @@ def clear_cluster_selection_cache() -> None:
     global _cluster_cache
     with _CLUSTER_CACHE_LOCK:
         _cluster_cache = None
+
+
+@event.listens_for(Session, "after_flush")
+def _invalidate_on_cluster_write(session, _flush_context) -> None:
+    """Any Cluster insert/update/delete in this process drops the cache.
+
+    Routes call clear_cluster_selection_cache() explicitly, but a write from
+    anywhere else (CLI, background job, tests) would otherwise leave a
+    just-added cluster invisible for up to the TTL, and selection would fall
+    back to the default cluster instead of the one requested.
+    """
+    if any(isinstance(item, Cluster) for item in (*session.new, *session.dirty, *session.deleted)):
+        session.info["cluster_selection_dirty"] = True
+        clear_cluster_selection_cache()
+
+
+@event.listens_for(Session, "after_commit")
+def _invalidate_after_cluster_commit(session) -> None:
+    # A request between flush and commit may have re-cached the pre-commit
+    # rows from its own session; drop that too once the write is visible.
+    if session.info.pop("cluster_selection_dirty", False):
+        clear_cluster_selection_cache()
 
 
 def _active_clusters() -> tuple[list[Cluster], Cluster]:
