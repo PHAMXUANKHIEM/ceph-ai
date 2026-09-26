@@ -258,3 +258,34 @@ def test_realtime_dashboard_first_paint_skips_hidden_legacy_feeds(dashboard_clie
     assert 'id="dashboard-bootstrap-data"' in response.text
     assert "Incident Feed" not in response.text
     assert "Audit Trail" not in response.text
+
+
+def _card_values(status, **kwargs):
+    cluster = Cluster(
+        id="c1", name="lab", ceph_mon_nodes="10.0.0.1", ceph_mgr_nodes="", ceph_osd_nodes="",
+        ceph_rgw_nodes="", ceph_mon_hostnames="", ssh_user="root", ssh_key_path="/k",
+        ceph_exec_mode="docker", ceph_container_name="ceph-mon", is_default=True, is_active=True,
+    )
+    return incidents._dashboard_health_payload(status, cluster, **kwargs)
+
+
+def test_unreachable_cluster_reports_unknown_not_zero():
+    payload = _card_values({})
+    assert payload["mons"] == {"up": None, "total": None}
+    assert payload["metrics"]["bandwidth_bps"] is None
+    assert payload["metrics"]["iops"] is None
+    assert payload["placement_groups"] == "UNKNOWN"
+    assert payload["osds"] == {"up": None, "total": None}
+
+
+def test_known_values_and_an_idle_cluster_still_report_numbers():
+    payload = _card_values({
+        "monmap": {"num_mons": 3},
+        "quorum_names": ["a", "b"],
+        "pgmap": {"pgs_by_state": [{"state_name": "active+undersized", "count": 4}]},
+    })
+    assert payload["mons"] == {"up": 2, "total": 3}
+    # A real pgmap without rate keys means an idle cluster: zero, not unknown.
+    assert payload["metrics"]["bandwidth_bps"] == 0
+    assert payload["metrics"]["iops"] == 0
+    assert payload["placement_groups"] == "WARN"

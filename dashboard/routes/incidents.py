@@ -1059,11 +1059,16 @@ def _dashboard_health_payload(
     monmap = status.get("monmap") if isinstance(status.get("monmap"), dict) else {}
     pgmap = status.get("pgmap") if isinstance(status.get("pgmap"), dict) else {}
 
-    mons = monmap.get("mons") if isinstance(monmap.get("mons"), list) else []
-    mon_total = monmap.get("num_mons") if isinstance(monmap.get("num_mons"), int) else len(mons)
+    # Unknown must stay unknown: without a monmap/quorum the card shows "—",
+    # not "0/0", which reads as a total MON outage.
+    mons = monmap.get("mons") if isinstance(monmap.get("mons"), list) else None
+    mon_total = monmap.get("num_mons") if isinstance(monmap.get("num_mons"), int) else (
+        len(mons) if mons else None
+    )
     quorum = status.get("quorum_names")
     if not isinstance(quorum, list):
-        quorum = status.get("quorum") if isinstance(status.get("quorum"), list) else []
+        quorum = status.get("quorum") if isinstance(status.get("quorum"), list) else None
+    mons_up = len(quorum) if quorum is not None and mon_total is not None else None
 
     bytes_used = pgmap.get("bytes_used")
     bytes_total = pgmap.get("bytes_total")
@@ -1126,8 +1131,12 @@ def _dashboard_health_payload(
     write_bps = pgmap.get("write_bytes_sec")
     read_ops = pgmap.get("read_op_per_sec")
     write_ops = pgmap.get("write_op_per_sec")
-    bandwidth_bps = sum(value for value in (read_bps, write_bps) if isinstance(value, (int, float)))
-    iops = sum(value for value in (read_ops, write_ops) if isinstance(value, (int, float)))
+    rates = [value for value in (read_bps, write_bps) if isinstance(value, (int, float))]
+    ops = [value for value in (read_ops, write_ops) if isinstance(value, (int, float))]
+    # Ceph omits the rate keys when a cluster is idle, but only inside a
+    # real pgmap; with no pgmap at all the rate is unknown, not zero.
+    bandwidth_bps = sum(rates) if rates or pgmap else None
+    iops = sum(ops) if ops or pgmap else None
 
     osd_total = osdmap.get("num_osds")
     osd_up = osdmap.get("num_up_osds")
@@ -1141,7 +1150,7 @@ def _dashboard_health_payload(
     return {
         "health": health_value,
         "osds": {"up": osd_up, "total": osd_total},
-        "mons": {"up": len(quorum), "total": mon_total},
+        "mons": {"up": mons_up, "total": mon_total},
         "servers": {"online": len(online_hosts) if cluster_nodes is not None else None, "total": server_total},
         "utilization": {
             "percent": utilization,
@@ -1153,7 +1162,7 @@ def _dashboard_health_payload(
             "bandwidth_bps": bandwidth_bps,
             "iops": iops,
         },
-        "placement_groups": "OKAY" if pg_okay else "WARN",
+        "placement_groups": "OKAY" if pg_okay else ("WARN" if pg_states else "UNKNOWN"),
     }
 
 
