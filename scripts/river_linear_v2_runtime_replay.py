@@ -14,6 +14,7 @@ from pathlib import Path
 
 from config.settings import settings
 from shared.db import SessionLocal
+from shared.forecast_comparison import PairedCase, paired_comparison
 from shared.forecast_features import MetricPoint, build_features
 from shared.models import NodeResourceForecastRun, OnlineLearnerLabel
 from shared.river_linear_v2 import RiverLinearV2, VERIFIED_OUTCOMES
@@ -68,6 +69,7 @@ def _replay_scope(
     scores: list[float] = []
     baseline_scores: list[float] = []
     naive_scores: list[float] = []
+    paired: list[PairedCase] = []
     skipped_quality = skipped_schema = verified = 0
     quality_blockers: dict[str, int] = {}
     latest_evidence_at: datetime | None = None
@@ -131,6 +133,13 @@ def _replay_scope(
             prediction = model.predict_one(feature_set.features)
             if prediction is not None and math.isfinite(float(prediction)):
                 scores.append(float(prediction) - float(label.label_value))
+                if baseline_prediction is not None and math.isfinite(float(baseline_prediction)):
+                    paired.append(PairedCase(
+                        actual=float(label.label_value), champion=float(baseline_prediction),
+                        candidate=float(prediction),
+                        champion_low=getattr(row, "predicted_low", None),
+                        champion_high=getattr(row, "predicted_high", None),
+                    ))
         pending.append((label.verified_at, feature_set.features, label))
     status = (
         "TELEMETRY_UNAVAILABLE" if using_runtime_telemetry and not values else
@@ -157,6 +166,11 @@ def _replay_scope(
         "baseline_scored_outcomes": len(baseline_scores),
         "baseline_mae": round(sum(abs(value) for value in baseline_scores) / len(baseline_scores), 6) if baseline_scores else None,
         "baseline_rmse": round(math.sqrt(sum(value * value for value in baseline_scores) / len(baseline_scores)), 6) if baseline_scores else None,
+        # Temporal holdout: River v2 only learned from labels verified before
+        # each prediction; both models are scored on the same verified cases.
+        "paired_holdout": paired_comparison(
+            paired, threshold=float(settings.node_resource_forecast_trigger_threshold_percent),
+        ),
         "naive_baseline": "last_observed_value",
         "naive_scored_outcomes": len(naive_scores),
         "naive_mae": round(sum(abs(value) for value in naive_scores) / len(naive_scores), 6) if naive_scores else None,
