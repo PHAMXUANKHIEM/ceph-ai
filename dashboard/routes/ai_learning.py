@@ -377,6 +377,11 @@ def model_promotion_status(cluster_id: str, cluster_name: str) -> dict:
             "required_consecutive_evaluations": settings.forecast_promotion_required_evaluations,
             "max_false_positive_rate_increase": settings.forecast_promotion_max_false_positive_rate_increase,
         },
+        "counts": {
+            "eligible": sum(1 for item in output if (item.get("guard") or {}).get("allowed")),
+            "blocked": sum(1 for item in output if item.get("guard") and not item["guard"].get("allowed")),
+            "active": sum(1 for item in output if item.get("status") == "ACTIVE"),
+        },
         "models": output,
     }
 
@@ -1300,4 +1305,20 @@ async def ai_learning_page(request: Request, user: str = Depends(require_login))
         **learning_status(cluster.id, cluster.name),
         "large_omap_readiness": large_omap_readiness(cluster.id),
         "replay_options": _replay_options(cluster.id),
+    })
+
+
+@router.get("/ai-learning/models/{model_id}", response_class=HTMLResponse)
+async def ai_learning_model_detail(
+    request: Request, model_id: str, user: str = Depends(require_login),
+):
+    """Render bounded promotion evidence for one model outside the main table."""
+    clusters, cluster = cluster_selection(request)
+    report = model_promotion_status(cluster.id, cluster.name)
+    model = next((item for item in report["models"] if item["id"] == model_id), None)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy model trong cụm đang được chọn.")
+    return templates.TemplateResponse(request, "ai_learning_model_detail.html", {
+        "user": user, "clusters": clusters, "cluster": cluster,
+        "model": model, "policy": report["policy"],
     })

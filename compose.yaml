@@ -44,7 +44,7 @@ services:
       # Dashboard is read-only with respect to Ceph.  The full-executor key
       # and token directories are hidden by tmpfs below; only the dedicated
       # read-only identity is mounted into this container.
-      - /root/.ssh/id_ed25519:/run/ceph-ai/credentials/readonly/id_ed25519:ro
+      - /root/ceph-ai/dashboard-readonly-id_ed25519:/tmp/readonly-id_ed25519:ro
       # Mount the runtime directory rather than individual heartbeat files.
       # Heartbeats are atomically replaced; a single-file bind mount would
       # keep the old inode and make Dashboard report false stale alerts.
@@ -54,6 +54,9 @@ services:
       - /run/ceph-ai/container-restart.sock:/run/ceph-ai/container-restart.sock
       - /root/.local:/opt/ai-tools:ro
       - /root/.codex/packages:/opt/codex-packages:ro
+      # Keep executor account data hidden from the dashboard without forcing
+      # Podman to copy the real, large account store into a 1 MB tmpfs.
+      - /root/ceph-ai/dashboard-empty-full-executor-accounts:/var/lib/ceph-ai/full-executor-accounts:ro
       # OAuth state is data, not executable application source.
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
@@ -61,12 +64,11 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=128m
       - /var/lib/ceph-ai/full-executor-ssh:rw,noexec,nosuid,nodev,size=1m
       - /var/lib/ceph-ai/full-executor-secrets:rw,noexec,nosuid,nodev,size=1m
-      - /var/lib/ceph-ai/full-executor-accounts:rw,noexec,nosuid,nodev,size=1m
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
-      SSH_KEY_PATH: /run/ceph-ai/credentials/readonly/id_ed25519
+      SSH_KEY_PATH: /tmp/readonly-id_ed25519
       CEPH_AI_SSH_IDENTITY_ROLE: read-only
       TELEGRAM_LISTENER_ENABLED: "false"
       # The Dashboard's own Settings page (Codex/Claude account login,

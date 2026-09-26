@@ -5,12 +5,70 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Learning — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <style>
+    /* AI Learning content only: the global navigation is intentionally untouched. */
+    .ai-learning-page { max-width: 1600px; }
+    .ai-learning-sticky { position: sticky; top: 0; z-index: 8; padding-bottom: 18px; }
+    .ai-learning-sticky .card-body { padding-bottom: 0; }
+    .ai-learning-tabs { display: flex; gap: 4px; overflow-x: auto; margin: 18px 0 20px; border-bottom: 1px solid #334155; }
+    .ai-learning-tab { flex: 0 0 auto; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; background: transparent; color: #94a3b8; padding: 10px 14px; cursor: pointer; font: inherit; white-space: nowrap; }
+    .ai-learning-tab:hover { color: #e2e8f0; background: #172235; }
+    .ai-learning-tab.is-active { background: #0ea5e9; color: white; }
+    .ai-learning-tab .tab-count { display: inline-grid; min-width: 18px; height: 18px; margin-left: 5px; place-items: center; border-radius: 999px; background: #334155; color: #cbd5e1; font-size: .7rem; }
+    .ai-learning-tab.is-active .tab-count { background: rgba(255,255,255,.25); color: white; }
+    .learning-tab-panel { display: none; }
+    .learning-tab-panel.is-visible { display: block; }
+    .ai-learning-page > .card { margin-bottom: 20px; }
+    .ai-overview-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+    .ai-overview-tile { min-height: 112px; padding: 15px; border: 1px solid #273244; border-radius: 10px; background: #0f172a; }
+    .ai-overview-tile strong { display: block; margin: 10px 0 4px; color: #f8fafc; font-size: 1.35rem; }
+    .ai-overview-tile small { color: #94a3b8; line-height: 1.4; }
+    .ai-tip { margin: 16px 0 0; padding: 10px 14px; border-left: 3px solid #0ea5e9; background: rgba(14,165,233,.08); color: #cbd5e1; }
+    .learning-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 20px 0; }
+    .learning-search { width: min(280px, 100%); }
+    .learning-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-left: auto; color: #94a3b8; font-size: .8rem; }
+    .learning-pagination button { min-width: 28px; height: 28px; border: 1px solid #334155; border-radius: 5px; background: #1e293b; color: #cbd5e1; cursor: pointer; }
+    .learning-pagination button:hover:not(:disabled) { background: #334155; }
+    .learning-pagination button:disabled { opacity: .4; cursor: not-allowed; }
+    .learning-table-wrap { max-height: 680px; overflow: auto; }
+    .learning-table-wrap thead th { position: sticky; top: 0; z-index: 2; background: #111925; }
+    .learning-table td { vertical-align: top; }
+    .learning-table .scope-cell { max-width: 270px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .learning-table[data-table-key="alerts"] th:nth-child(7), .learning-table[data-table-key="alerts"] td:nth-child(7), .learning-table[data-table-key="alerts"] th:nth-child(8), .learning-table[data-table-key="alerts"] td:nth-child(8) { display: none; }
+    .learning-table[data-table-key="alerts"] { min-width: 780px; }
+    .learning-table[data-table-key="promotion"] td:nth-child(4) { max-width: 180px; }
+    .badge-retired { background: #475569; color: #e2e8f0; }
+    .ai-copy-btn { margin-left: 5px; border: 0; background: transparent; color: #7dd3fc; cursor: pointer; }
+    .learning-table .row-link { color: inherit; text-decoration: none; }
+    .learning-clickable-row { cursor: pointer; }
+    .learning-clickable-row:hover td { background: rgba(14,165,233,.06); }
+    .learning-table .row-link:hover { color: #7dd3fc; }
+    .learning-chips { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 20px 12px; }
+    .learning-chip { border: 1px solid #334155; border-radius: 999px; background: transparent; color: #94a3b8; padding: 6px 10px; cursor: pointer; }
+    .learning-chip.is-active { border-color: #0ea5e9; background: rgba(14,165,233,.14); color: #e0f2fe; }
+    .learning-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: nowrap; white-space: nowrap; }
+    .learning-actions .btn { padding: 6px 9px; }
+    .learning-danger-zone { margin-top: 18px; padding: 14px; border: 1px solid rgba(239,68,68,.3); border-radius: 9px; background: rgba(239,68,68,.04); }
+    .learning-danger-zone .actions { justify-content: flex-end; }
+    .ai-custom-select { position: relative; min-width: 150px; }
+    .ai-custom-select > button { width: 100%; text-align: left; }
+    .ai-custom-select-menu { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; right: 0; display: none; max-height: 220px; overflow: auto; padding: 4px; border: 1px solid #334155; border-radius: 7px; background: #1e293b; box-shadow: 0 16px 32px rgba(0,0,0,.35); }
+    .ai-custom-select.is-open .ai-custom-select-menu { display: grid; }
+    .ai-custom-select-menu button { border: 0; border-radius: 4px; background: transparent; color: #cbd5e1; padding: 8px; text-align: left; cursor: pointer; }
+    .ai-custom-select-menu button:hover { background: #334155; }
+    .learning-modal[hidden] { display: none; }
+    .learning-modal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 20px; background: rgba(2,6,23,.72); }
+    .learning-modal-card { width: min(480px, 100%); padding: 22px; border: 1px solid #334155; border-radius: 12px; background: #111925; box-shadow: 0 24px 60px rgba(0,0,0,.45); }
+    @media (max-width: 1100px) { .ai-overview-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (max-width: 720px) { .ai-learning-sticky { position: static; } .ai-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .learning-toolbar { align-items: stretch; } .learning-pagination { justify-content: flex-start; margin-left: 0; } }
+    @media (max-width: 480px) { .ai-overview-grid { grid-template-columns: 1fr; } }
+  </style>
 </head>
 <body>
 {% include "_nav.html" %}
 
-<main class="page">
-  <section class="card">
+<main class="page ai-learning-page">
+  <section class="card ai-learning-sticky">
     <div class="card-header"><div><h2>AI đang học gì?</h2><p class="hint">Chỉ đọc · số liệu outcome đã lưu, không cho AI thay policy hoặc tự cấp quyền thực thi.</p></div></div>
     <div class="card-body">
       <form method="get" action="/ai-learning" class="audit-filters">
@@ -24,38 +82,67 @@
         <div><span class="hint">Quality gate</span><strong>{{ online_learning.quality_gate_counts.get('READY_TO_LEARN', 0) }} đủ điều kiện</strong><small>DATA_QUALITY: {{ online_learning.quality_gate_counts.get('DATA_QUALITY', 0) }} · NO_LABEL: {{ online_learning.quality_gate_counts.get('NO_LABEL', 0) }}</small></div>
         <div><span class="hint">Learner cycle</span><strong>{% if online_learning.latest_cycle %}{{ online_learning.latest_cycle.cpu_time_ms }} ms CPU{% else %}Chưa có telemetry{% endif %}</strong><small>{% if online_learning.latest_cycle %}{{ online_learning.latest_cycle.applied }} applied · {{ online_learning.latest_cycle.elapsed_ms }} ms elapsed{% else %}Learner chưa chạy{% endif %}</small></div>
       </div>
-      <p><strong>CPU/RAM:</strong> {{ resource_learning.run_counts.get('EVALUATED', 0) }} dự báo đã đối chiếu · {{ resource_learning.run_counts.get('PENDING', 0) }} đang chờ outcome.</p>
-      <p><strong>RBD volume:</strong> {{ volume_learning.run_counts.get('EVALUATED', 0) }} baseline đã đối chiếu · {{ volume_learning.run_counts.get('PENDING', 0) }} đang chờ outcome · {{ volume_learning.selected_models|length }} model được chọn.</p>
-      <p><strong>Dự báo sớm RBD:</strong> {{ volume_learning.early_forecasts|length }} forecast mới nhất · {{ volume_learning.forecast_warning_count }} cảnh báo.</p>
-      <p><strong>Log daemon:</strong> {{ log_learning.sample_count }} mẫu · {{ log_learning.eligible_count }} đủ điều kiện học · {{ log_learning.blocked_count }} bị chặn.</p>
-      <p><strong>AI remediation:</strong> {{ remediation_feedback.labeled }}/{{ remediation_feedback.total_cases }} case đã được operator đánh giá · precision {{ (remediation_feedback.precision_percent|string + '%') if remediation_feedback.precision_percent is not none else 'chưa đủ nhãn' }}.</p>
-      <p class="hint">Telemetry đã xác minh: {{ remediation_feedback.telemetry_labeled }} case · {{ remediation_feedback.telemetry_scored }} case có thể chấm điểm · precision {{ (remediation_feedback.telemetry_precision_percent|string + '%') if remediation_feedback.telemetry_precision_percent is not none else 'chưa đủ outcome' }}. Hai số liệu này tách biệt để không nhầm “chưa có operator verdict” với “chưa có dữ liệu outcome”.</p>
-      <p class="hint">“Độ chính xác ước tính” = 100 − MAE, chỉ để dễ đọc. Chỉ đánh dấu đáng tin khi có ít nhất 20 outcome và đạt từ 80%.</p>
+      <nav class="ai-learning-tabs" aria-label="AI Learning sections">
+        <button type="button" class="ai-learning-tab" data-tab="overview">Tổng quan</button>
+        <button type="button" class="ai-learning-tab" data-tab="quality">Chất lượng model</button>
+        <button type="button" class="ai-learning-tab" data-tab="promotion">Promotion &amp; Canary <span class="tab-count">{{ model_promotion.counts.eligible }}</span></button>
+        <button type="button" class="ai-learning-tab" data-tab="alert">Alert CPU/RAM</button>
+        <button type="button" class="ai-learning-tab" data-tab="rbd">RBD volume</button>
+        <button type="button" class="ai-learning-tab" data-tab="remediation">Remediation <span class="tab-count">{{ remediation_feedback.unlabeled }}</span></button>
+        <button type="button" class="ai-learning-tab" data-tab="logs">Log daemon</button>
+        <button type="button" class="ai-learning-tab" data-tab="tools">Công cụ <span class="tab-count">admin</span></button>
+      </nav>
     </div>
   </section>
 
-  <section class="card" id="model-quality-report">
-    <div class="card-header"><div><h2>Chất lượng model theo scope</h2><p class="hint">Chỉ đọc evaluation đã lưu; không train, promote hoặc chạy remediation khi mở trang.</p></div></div>
-    <div class="card-body">
-      <label>Cửa sổ <select id="model-quality-hours"><option value="6">6 giờ</option><option value="24" selected>24 giờ</option></select></label>
-      <p id="model-quality-status" class="hint" role="status">Đang tải báo cáo…</p>
-      <div class="table-wrap"><table><thead><tr><th>Scope</th><th>Model</th><th>Outcome</th><th>MAE active / candidate</th><th>SMAPE active / candidate</th><th>Đánh giá gần nhất</th></tr></thead><tbody id="model-quality-body"></tbody></table></div>
+  <div class="learning-tab-panel is-visible" data-tab-panel="overview">
+    <section class="card"><div class="card-header"><div><h2>Tổng quan</h2><p class="hint">Các nguồn dữ liệu học được tóm tắt theo cụm đang chọn.</p></div></div><div class="card-body">
+      <div class="ai-overview-grid">
+        <div class="ai-overview-tile"><span class="hint">CPU/RAM</span><strong>{{ resource_learning.run_counts.get('EVALUATED', 0) }}</strong><small>dự báo đã đối chiếu · {{ resource_learning.run_counts.get('PENDING', 0) }} chờ outcome</small></div>
+        <div class="ai-overview-tile"><span class="hint">RBD volume</span><strong>{{ volume_learning.run_counts.get('EVALUATED', 0) }}</strong><small>baseline đã đối chiếu · {{ volume_learning.selected_models|length }} model</small></div>
+        <div class="ai-overview-tile"><span class="hint">Dự báo sớm RBD</span><strong>{{ volume_learning.early_forecasts|length }}</strong><small>forecast mới nhất · {{ volume_learning.forecast_warning_count }} cảnh báo</small></div>
+        <div class="ai-overview-tile"><span class="hint">Log daemon</span><strong>{{ log_learning.sample_count }}</strong><small>mẫu · {{ log_learning.eligible_count }} đủ điều kiện học</small></div>
+        <div class="ai-overview-tile"><span class="hint">AI remediation</span><strong>{{ remediation_feedback.labeled }}/{{ remediation_feedback.total_cases }}</strong><small>case đã đánh giá · precision {{ (remediation_feedback.precision_percent|string + '%') if remediation_feedback.precision_percent is not none else '—' }}</small></div>
+      </div>
+      <div class="ai-tip">Telemetry đã xác minh: {{ remediation_feedback.telemetry_labeled }} case · {{ remediation_feedback.telemetry_scored }} case có thể chấm điểm · precision {{ (remediation_feedback.telemetry_precision_percent|string + '%') if remediation_feedback.telemetry_precision_percent is not none else 'chưa đủ outcome' }}.</div>
+      <div class="ai-tip">“Độ chính xác ước tính” = 100 − MAE, chỉ để dễ đọc. Chỉ đánh dấu đáng tin khi có ít nhất 20 outcome và đạt từ 80%.</div>
+    </div></section>
+  </div>
+
+  <section class="card learning-tab-panel" data-tab-panel="quality">
+    <div class="card-header"><div><h2>Chất lượng model theo scope</h2><p class="hint">Mặc định ẩn model chưa có outcome để bảng tập trung vào evidence có thể hành động.</p></div></div>
+    <div class="learning-chips" data-filter-group="quality-outcome">
+      <button type="button" class="learning-chip is-active" data-filter="with-outcome">Có outcome</button>
+      <button type="button" class="learning-chip" data-filter="all">Tất cả</button>
+      <button type="button" class="learning-chip" data-filter="no-outcome">NO_OUTCOMES</button>
+      <span class="hint">Status:</span><button type="button" class="learning-chip is-active" data-filter-group="quality-status" data-filter="all">Tất cả</button>
+      <button type="button" class="learning-chip" data-filter-group="quality-status" data-filter="active">ACTIVE</button>
+      <button type="button" class="learning-chip" data-filter-group="quality-status" data-filter="shadow">SHADOW</button>
+      <button type="button" class="learning-chip" data-filter-group="quality-status" data-filter="retired">RETIRED</button>
     </div>
+    <div class="learning-table-wrap"><table class="learning-table" data-table-key="quality"><thead><tr><th>SCOPE</th><th>Model</th><th>Status</th><th>Outcome</th><th>MAE / SMAPE</th><th>Quality</th></tr></thead><tbody>
+      {% for model in model_promotion.models %}<tr data-outcome="{{ 'with-outcome' if model.quality.paired_outcomes else 'no-outcome' }}" data-status="{{ model.status|lower }}">
+        <td class="scope-cell" title="{{ model.scope_key }}"><span class="badge">{{ model.scope_type }}</span><br><code>{{ model.scope_key }}</code><button type="button" class="ai-copy-btn" data-copy="{{ model.scope_key }}" title="Copy full scope">⧉</button></td>
+        <td><code>{{ model.algorithm }}</code><div class="hint">{{ model.version }} · {{ model.training_window_hours }}h</div></td>
+        <td>{% if model.status == 'ACTIVE' %}<span class="badge badge-ok">ACTIVE</span>{% elif model.status == 'SHADOW' %}<span class="badge">SHADOW</span>{% elif model.status == 'RETIRED' %}<span class="badge badge-retired">RETIRED</span>{% else %}<span class="badge badge-warn">{{ model.status }}</span>{% endif %}</td>
+        <td>{{ model.quality.paired_outcomes }}</td><td>{{ model.quality.candidate_mae or '—' }} / {{ model.quality.candidate_smape or '—' }}</td><td>{{ model.quality.drifted }} drift · {{ model.quality.resource_budget_failures }} budget fail</td>
+      </tr>{% else %}<tr class="empty-row"><td colspan="6"><div class="empty-state">Chưa có model theo scope.</div></td></tr>{% endfor %}
+    </tbody></table></div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="tools">
     <div class="card-header"><div><h2>Operator controls</h2><p class="hint">Chỉ admin mới dùng được. Các thao tác này không promote model và không chạy remediation.</p></div></div>
     <div class="card-body learner-controls">
       <p><strong>Canary stream:</strong> <code>{{ online_learning.canary_scope.host or 'chưa cấu hình host' }}</code> / <code>{{ online_learning.canary_scope.metrics }}</code>
         {% if online_learning.control.status == 'PAUSED' %}<span class="badge badge-warn">PAUSED</span>{% else %}<span class="badge badge-ok">RUNNING</span>{% endif %}
         <span class="hint">{{ online_learning.control.reason }}</span></p>
-      <div class="actions">
+      <div class="actions learner-controls-main">
         <button type="button" class="btn btn-secondary" onclick="setLearnerControl('pause')" {% if not online_learning.canary_scope.host %}disabled{% endif %}>Pause stream</button>
         <button type="button" class="btn btn-secondary" onclick="setLearnerControl('resume')" {% if not online_learning.canary_scope.host %}disabled{% endif %}>Resume stream</button>
-        <button type="button" class="btn btn-danger-outline" onclick="resetLearner()" {% if not online_learning.canary_scope.host %}disabled{% endif %}>Reset state</button>
       </div>
+      <div class="learning-danger-zone"><strong>Vùng nguy hiểm</strong><p class="hint">Reset sẽ xóa durable learner state của scope này và không thể hoàn tác.</p><div class="actions"><button type="button" class="btn btn-danger-outline" onclick="openResetModal()" {% if not online_learning.canary_scope.host %}disabled{% endif %}>Reset state</button></div></div>
       <details><summary>Operator audit trail ({{ online_learning.operator_audits|length }})</summary>
-        <div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Action</th><th>Scope</th><th>Actor</th><th>Lý do</th></tr></thead><tbody>
+        <div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="operator-audit"><thead><tr><th>Thời điểm</th><th>Action</th><th>Scope</th><th>Actor</th><th>Lý do</th></tr></thead><tbody>
         {% for audit in online_learning.operator_audits %}<tr><td>{{ audit.created_at|vntime }}</td><td><code>{{ audit.action }}</code></td><td><code>{{ audit.host }}/{{ audit.metric }}</code></td><td>{{ audit.actor }}</td><td>{{ audit.reason }}</td></tr>
         {% else %}<tr class="empty-row"><td colspan="5">Chưa có operator control audit.</td></tr>{% endfor %}
         </tbody></table></div>
@@ -63,7 +150,7 @@
     </div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="tools">
     <div class="card-header"><div><h2>Replay / Backtest forecast</h2><p class="hint">Chạy lại read-only trên lịch sử CPU/RAM để so sánh active linear với candidate rolling-quantile. Không ghi model state, không mở alert và không chạy remediation.</p></div></div>
     <div class="card-body">
       <form id="forecast-replay-form" class="audit-filters">
@@ -82,9 +169,9 @@
     <div id="forecast-replay-result" class="card-body" hidden></div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="alert">
     <div class="card-header"><div><h2>Giải thích alert CPU/RAM</h2><p class="hint">Read-only evidence: vì sao alert mở, model đồng thuận ra sao, dữ liệu có fresh/đủ coverage không và lifecycle đã chuyển trạng thái như thế nào.</p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Host / metric</th><th>Lifecycle / lý do mở</th><th>Forecast</th><th>Consensus</th><th>Freshness</th><th>Coverage / gap</th><th>Quality</th><th>Evidence</th><th>Lịch sử state</th></tr></thead><tbody>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="alerts"><thead><tr><th>Host / metric</th><th>Lifecycle / lý do mở</th><th>Forecast</th><th>Consensus</th><th>Freshness</th><th>Coverage / gap</th><th>Quality</th><th>Evidence</th><th>Lịch sử state</th></tr></thead><tbody>
     {% for alert in node_alerts %}<tr>
       <td><code>{{ alert.host }}</code><div class="hint">{{ alert.metric }}</div></td>
       <td>{% if alert.lifecycle_state in ['CRITICAL', 'WARNING'] %}<span class="badge badge-err">{{ alert.lifecycle_state }}</span>{% elif alert.lifecycle_state in ['DATA_QUALITY', 'CANDIDATE'] %}<span class="badge badge-warn">{{ alert.lifecycle_state }}</span>{% elif alert.lifecycle_state in ['RECOVERING'] %}<span class="badge badge-warn">{{ alert.lifecycle_state }}</span>{% else %}<span class="badge badge-ok">{{ alert.lifecycle_state }}</span>{% endif %}<div class="hint">{{ alert.state_reason }}</div></td>
@@ -99,14 +186,15 @@
     </tbody></table></div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="promotion">
     <div class="card-header"><div><h2>Guarded model promotion</h2><p class="hint">Candidate chỉ được promote sau đủ outcome, thắng active liên tiếp và operator xác nhận. Không có promotion tự động.</p></div></div>
     <div class="card-body">
       <p class="hint">Tối thiểu {{ model_promotion.policy.minimum_outcomes }} outcome · {{ model_promotion.policy.required_consecutive_evaluations }} evaluation liên tiếp · false-positive rate không được tăng quá {{ (model_promotion.policy.max_false_positive_rate_increase * 100)|round(2) }} điểm %.</p>
     </div>
-    <div class="table-wrap"><table><thead><tr><th>Scope</th><th>Model</th><th>Trạng thái</th><th>Shadow evidence</th><th>Guard</th><th>Thao tác</th></tr></thead><tbody>
+    <div class="learning-chips" data-filter-group="promotion-status"><button type="button" class="learning-chip is-active" data-filter="eligible">Đủ điều kiện ({{ model_promotion.counts.eligible }})</button><button type="button" class="learning-chip" data-filter="blocked">PROMOTION_BLOCKED ({{ model_promotion.counts.blocked }})</button><button type="button" class="learning-chip" data-filter="active">ACTIVE ({{ model_promotion.counts.active }})</button></div>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="promotion"><thead><tr><th>Scope</th><th>Model</th><th>Trạng thái</th><th>Shadow evidence</th><th>Guard</th><th>Thao tác</th></tr></thead><tbody>
     {% for model in model_promotion.models %}
-      <tr>
+      <tr data-promotion-filter="{% if model.status == 'ACTIVE' %}active{% elif model.guard and model.guard.allowed %}eligible{% else %}blocked{% endif %}" class="learning-clickable-row" onclick="if (!event.target.closest('button,a')) location.href='/ai-learning/models/{{ model.id }}?cluster={{ cluster.id }}'">
         <td><code>{{ model.scope_type }}</code><br><span class="hint">{{ model.scope_key }}</span></td>
         <td><code>{{ model.algorithm }}</code><br><span class="hint">{{ model.training_window_hours }}h · {{ model.version }}</span></td>
         <td>{% if model.status == 'ACTIVE' %}<span class="badge badge-ok">ACTIVE</span>{% elif model.status == 'SHADOW' %}<span class="badge badge-warn">SHADOW</span>{% elif model.status == 'BLOCKED' %}<span class="badge badge-err">BLOCKED</span>{% else %}<span class="badge">{{ model.status }}</span>{% endif %}<div class="hint">{{ model.blocked_reason or model.promotion_reason or '—' }}</div></td>
@@ -120,7 +208,7 @@
     </tbody></table></div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="promotion">
     <div class="card-header">
       <div>
         <h2>Canary acceptance</h2>
@@ -134,7 +222,7 @@
     </div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="remediation">
     <div class="card-header"><div><h2>Readiness LARGE_OMAP_OBJECTS</h2><p class="hint">Commissioning report chỉ đọc: không tự bật policy, không tự promotion, không tạo case giả.</p></div></div>
     <div class="card-body">
       <p><strong>Autoremediation:</strong> {% if large_omap_readiness.autoremediation_enabled %}<span class="badge badge-ok">Bật</span>{% else %}<span class="badge badge-warn">Tắt</span>{% endif %}
@@ -147,14 +235,14 @@
       {% if large_omap_readiness.blockers %}<h3>Lý do đang chặn</h3><ul>{% for blocker in large_omap_readiness.blockers %}<li>{{ blocker }}</li>{% endfor %}</ul>{% endif %}
       <p class="hint">Bước tiếp theo: {{ large_omap_readiness.next_step }}</p>
     </div>
-    <div class="table-wrap"><table><thead><tr><th>Trust scope</th><th>Maturity</th><th>Verified</th><th>Success / failure</th><th>Wilson trust</th><th>Blocker</th></tr></thead><tbody>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="readiness"><thead><tr><th>Trust scope</th><th>Maturity</th><th>Verified</th><th>Success / failure</th><th>Wilson trust</th><th>Blocker</th></tr></thead><tbody>
     {% for stat in large_omap_readiness.trust_scopes %}<tr><td><code>{{ stat.playbook_version }}</code><br><span class="hint">{{ stat.scope_key }}</span></td><td>{{ stat.maturity_level }}</td><td>{{ stat.verified_count }}</td><td>{{ stat.success_count }} / {{ stat.failure_count }}</td><td>{{ (stat.trust_score * 100)|round(1) }}%</td><td>{{ stat.auto_disabled_reason or stat.promotion_blocked_reason or '—' }}</td></tr>
     {% else %}<tr class="empty-row"><td colspan="6"><div class="empty-state">Chưa có trust scope cho reshard_rgw_bucket.</div></td></tr>{% endfor %}
     </tbody></table></div>
     {% if large_omap_readiness.latest_action %}<div class="card-body"><strong>Action gần nhất:</strong> <code>{{ large_omap_readiness.latest_action.action_id }}</code> · {{ large_omap_readiness.latest_action.classification }} · {{ large_omap_readiness.latest_action.status }} · outcome {{ large_omap_readiness.latest_action.case_outcome or '—' }} · risk samples {{ large_omap_readiness.latest_action.risk_samples }}</div>{% endif %}
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="remediation">
     <div class="card-header"><div><h2>Phản hồi & precision AI remediation</h2><p class="hint">Precision = verdict đúng / tổng verdict đúng hoặc sai. INCONCLUSIVE được tính vào coverage nhưng không làm tăng hoặc giảm precision.</p></div></div>
     <div class="card-body">
       <p><span class="badge">Operator coverage {{ (remediation_feedback.coverage_percent|string + '%') if remediation_feedback.coverage_percent is not none else '—' }}</span>
@@ -165,7 +253,7 @@
         <span class="badge">Telemetry {{ remediation_feedback.telemetry_scored }}/{{ remediation_feedback.total_cases }}</span></p>
       <p><strong>30 ngày gần nhất:</strong> {{ remediation_feedback.recent_30d.scored }} nhãn có kết luận · precision {{ (remediation_feedback.recent_30d.precision_percent|string + '%') if remediation_feedback.recent_30d.precision_percent is not none else '—' }}.</p>
     </div>
-    <div class="table-wrap"><table><thead><tr><th>Fault family</th><th>Đúng</th><th>Sai</th><th>Tổng có kết luận</th><th>Precision</th></tr></thead><tbody>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="remediation"><thead><tr><th>Fault family</th><th>Đúng</th><th>Sai</th><th>Tổng có kết luận</th><th>Precision</th></tr></thead><tbody>
     {% for item in remediation_feedback.by_fault_family %}<tr><td><code>{{ item.fault_family }}</code></td><td>{{ item.correct }}</td><td>{{ item.incorrect }}</td><td>{{ item.scored }}</td><td>{{ item.precision_percent }}%</td></tr>
     {% else %}<tr class="empty-row"><td colspan="5"><div class="empty-state">Chưa có verdict đủ kết luận để đo precision.</div></td></tr>{% endfor %}
     </tbody></table></div>
@@ -175,14 +263,14 @@
     </ul></div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="rbd">
     <div class="card-header"><div><h2>Forecast detail — RBD volume</h2><p class="hint">Mốc {{ volume_learning.forecast_horizons }} giờ · latency SLO {{ volume_learning.forecast_latency_slo_ms }}ms. Dữ liệu thiếu/stale hoặc confidence thấp sẽ không cảnh báo.</p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Volume / metric</th><th>Mốc</th><th>Actual / hiện tại → predicted</th><th>Prediction interval</th><th>Model / version</th><th>Confidence / consensus</th><th>Quality / MAE-SMAPE</th><th>Trạng thái</th></tr></thead><tbody>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="rbd-forecast"><thead><tr><th>Volume / metric</th><th>Mốc</th><th>Actual / hiện tại → predicted</th><th>Prediction interval</th><th>Model / version</th><th>Confidence / consensus</th><th>Quality / MAE-SMAPE</th><th>Trạng thái</th></tr></thead><tbody>
     {% for forecast in volume_learning.early_forecasts %}<tr>
       <td><code>{{ forecast.pool }}/{{ forecast.image }}</code><div class="hint">{{ forecast.metric }}</div></td>
       <td>{{ forecast.horizon_hours }} giờ<br><span class="hint">{{ forecast.target_at|vntime }}</span></td>
       <td>{{ forecast.actual_value if forecast.actual_value is not none else '— (chờ outcome)' }}<br><span class="hint">{{ forecast.current_value }} → {{ forecast.predicted_value }}</span></td>
-      <td>{% if forecast.predicted_low is not none and forecast.predicted_high is not none %}{{ forecast.predicted_low }} — {{ forecast.predicted_high }}{% else %}—{% endif %}<div class="hint">ngưỡng {{ forecast.threshold_value if forecast.threshold_value is not none else '—' }}</div>{% if forecast.interval_chart %}<div class="forecast-interval-chart" style="--interval-low:{{ forecast.interval_chart.low }}%;--interval-width:{{ forecast.interval_chart.width }}%;--current-position:{{ forecast.interval_chart.current }}%;--predicted-position:{{ forecast.interval_chart.predicted }}%;" role="img" aria-label="Vùng dự báo từ {{ forecast.predicted_low }} đến {{ forecast.predicted_high }}"><span class="forecast-interval-chart__band"></span><span class="forecast-interval-chart__marker forecast-interval-chart__marker--current"></span><span class="forecast-interval-chart__marker forecast-interval-chart__marker--predicted"></span></div><div class="forecast-interval-legend"><span>● hiện tại</span><span>◆ dự báo</span></div>{% endif %}</td>
+      <td>{% if forecast.predicted_low is not none and forecast.predicted_high is not none %}{{ forecast.predicted_low }} — {{ forecast.predicted_high }}{% else %}—{% endif %}<div class="hint">ngưỡng {{ forecast.threshold_value if forecast.threshold_value is not none else '—' }}</div></td>
       <td><code>{{ forecast.algorithm }}</code><div class="hint">{{ forecast.model_version }}</div></td>
       <td>{{ (forecast.confidence * 100)|round(1) }}%<div class="hint">{{ ((forecast.consensus_ratio * 100)|round(1)) if forecast.consensus_ratio is not none else '—' }}% · {{ forecast.consensus_candidate_count or 0 }} model</div></td>
       <td>{% if forecast.data_quality == 'OK' %}<span class="badge badge-ok">OK</span>{% else %}<span class="badge badge-err">{{ forecast.data_quality }}</span>{% endif %}<div class="hint">MAE {{ forecast.rolling_mae if forecast.rolling_mae is not none else '—' }} · SMAPE {{ forecast.rolling_smape if forecast.rolling_smape is not none else '—' }}%</div></td>
@@ -191,9 +279,9 @@
     </tbody></table></div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="rbd">
     <div class="card-header"><div><h2>Baseline tự học theo RBD volume</h2><p class="hint">IOPS/read/write latency theo giờ trong tuần hoặc giờ trong ngày · đánh giá sau {{ volume_learning.evaluation_hours }} giờ · không tự thay QoS hay resize volume.</p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Volume</th><th>Metric</th><th>Cửa sổ</th><th>Mùa vụ</th><th>Outcome</th><th>MAE / MAPE</th><th>Chính xác ước tính</th><th>Baseline mới nhất</th><th>Đánh giá</th></tr></thead><tbody>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="rbd-baseline"><thead><tr><th>Volume</th><th>Metric</th><th>Cửa sổ</th><th>Mùa vụ</th><th>Outcome</th><th>MAE / MAPE</th><th>Chính xác ước tính</th><th>Baseline mới nhất</th><th>Đánh giá</th></tr></thead><tbody>
     {% for model in volume_learning.selected_models %}<tr>
       <td><code>{{ model.pool }}/{{ model.image }}</code></td><td>{{ model.metric }}</td><td>{{ model.window_hours }} giờ</td><td>{{ model.seasonal_scope or '—' }}{% if model.training_samples %}<div class="hint">{{ model.training_samples }} mẫu giờ</div>{% endif %}</td><td>{{ model.evaluated_count }}</td><td>{{ model.mae if model.mae is not none else '—' }} / {{ (model.mape|string + '%') if model.mape is not none else '—' }}</td><td>{{ (model.accuracy_estimate|string + '%') if model.accuracy_estimate is not none else '—' }}</td><td>{{ model.latest_prediction if model.latest_prediction is not none else '—' }}{% if model.latest_confidence is not none %}<div class="hint">confidence {{ (model.latest_confidence * 100)|round(1) }}%</div>{% endif %}</td>
       <td>{% if model.quality_status == 'RELIABLE' %}<span class="badge badge-ok">Đáng tin</span>{% elif model.quality_status == 'PROMISING' %}<span class="badge badge-warn">Tín hiệu tốt</span>{% elif model.quality_status == 'NEEDS_IMPROVEMENT' %}<span class="badge badge-err">Cần cải thiện</span>{% else %}<span class="badge">Đang học</span>{% endif %}<div class="hint">{{ model.quality_reason }}</div></td>
@@ -201,15 +289,15 @@
     </tbody></table></div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="alert">
     <div class="card-header"><div><h2>Forecast detail — CPU/RAM đang được chọn</h2><p class="hint">Đánh giá sau mỗi {{ resource_learning.evaluation_hours }} giờ · tối thiểu {{ resource_learning.minimum_outcomes }} outcome · candidate {{ resource_learning.candidate_windows }} giờ.</p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Host / metric</th><th>Model / window / version</th><th>Actual / current → predicted</th><th>Prediction interval</th><th>Confidence / consensus</th><th>Data quality</th><th>MAE / SMAPE</th><th>Target / đánh giá</th></tr></thead><tbody>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="resource-forecast"><thead><tr><th>Host / metric</th><th>Model / window / version</th><th>Actual / current → predicted</th><th>Prediction interval</th><th>Confidence / consensus</th><th>Data quality</th><th>MAE / SMAPE</th><th>Target / đánh giá</th></tr></thead><tbody>
     {% for model in resource_learning.selected_models %}
       <tr>
         <td><code>{{ model.host }}</code><div class="hint">{{ model.metric }}</div></td>
         <td><code>{{ model.algorithm }}</code><div class="hint">{{ model.window_hours }}h · {{ model.model_version or 'chưa có registry version' }}</div></td>
         <td>{{ model.latest_actual if model.latest_actual is not none else '— (chờ outcome)' }}<br><span class="hint">{{ model.latest_current if model.latest_current is not none else '—' }} → {{ model.latest_prediction if model.latest_prediction is not none else '—' }}</span></td>
-        <td>{% if model.predicted_low is not none and model.predicted_high is not none %}{{ model.predicted_low }} — {{ model.predicted_high }}{% else %}—{% endif %}{% if model.interval_chart %}<div class="forecast-interval-chart" style="--interval-low:{{ model.interval_chart.low }}%;--interval-width:{{ model.interval_chart.width }}%;--current-position:{{ model.interval_chart.current }}%;--predicted-position:{{ model.interval_chart.predicted }}%;" role="img" aria-label="Vùng dự báo từ {{ model.predicted_low }} đến {{ model.predicted_high }}"><span class="forecast-interval-chart__band"></span><span class="forecast-interval-chart__marker forecast-interval-chart__marker--current"></span><span class="forecast-interval-chart__marker forecast-interval-chart__marker--predicted"></span></div><div class="forecast-interval-legend"><span>● hiện tại</span><span>◆ dự báo</span></div>{% endif %}</td>
+        <td>{% if model.predicted_low is not none and model.predicted_high is not none %}{{ model.predicted_low }} — {{ model.predicted_high }}{% else %}—{% endif %}</td>
         <td>{{ ((model.latest_confidence * 100)|round(1)|string + '%') if model.latest_confidence is not none else '—' }}<div class="hint">{{ ((model.consensus_ratio * 100)|round(1)) if model.consensus_ratio is not none else '—' }}% · {{ model.consensus_candidate_count or 0 }} model</div></td>
         <td>{% if model.data_quality == 'OK' %}<span class="badge badge-ok">OK</span>{% elif model.data_quality == 'NO_FORECAST' %}<span class="badge">Chưa có forecast</span>{% else %}<span class="badge badge-err">{{ model.data_quality }}</span>{% endif %}<div class="hint">{{ model.latest_status or '—' }}</div></td>
         <td>MAE {{ model.rolling_mae if model.rolling_mae is not none else '—' }}<br><span class="hint">SMAPE {{ model.rolling_smape if model.rolling_smape is not none else '—' }}%</span></td>
@@ -219,15 +307,15 @@
     </tbody></table></div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="alert">
     <div class="card-header"><div><h2>Chi tiết các cửa sổ CPU/RAM</h2><p class="hint">Dùng để thấy model đã thử cửa sổ nào và vì sao cửa sổ hiện tại được chọn.</p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Host</th><th>Metric</th><th>Cửa sổ</th><th>Được chọn</th><th>Outcome</th><th>MAE</th><th>Lỗi gần nhất</th><th>Cập nhật</th></tr></thead><tbody>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="resource-candidates"><thead><tr><th>Host</th><th>Metric</th><th>Cửa sổ</th><th>Được chọn</th><th>Outcome</th><th>MAE</th><th>Lỗi gần nhất</th><th>Cập nhật</th></tr></thead><tbody>
     {% for model in resource_learning.candidate_models %}<tr><td><code>{{ model.host }}</code></td><td>{{ model.metric }}</td><td>{{ model.window_hours }} giờ</td><td>{% if model.selected %}<span class="badge badge-ok">Có</span>{% else %}Không{% endif %}</td><td>{{ model.evaluated_count }}</td><td>{{ model.mae if model.mae is not none else '—' }}</td><td>{{ model.last_error if model.last_error is not none else '—' }}</td><td>{{ model.updated_at|vntime }}</td></tr>
     {% else %}<tr class="empty-row"><td colspan="8"><div class="empty-state">Chưa có outcome CPU/RAM.</div></td></tr>{% endfor %}
     </tbody></table></div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="logs">
     <div class="card-header"><div><h2>Học từ log daemon</h2><p class="hint">Chế độ {{ log_learning.mode }}: kết quả chỉ phục vụ audit/ranking, chưa được mở Autopilot.</p></div></div>
     <div class="card-body">
       <p><strong>Trạng thái:</strong> {% for name, count in log_learning.state_counts.items() %}<span class="badge">{{ name }}: {{ count }}</span> {% else %}Chưa có mẫu{% endfor %}</p>
@@ -235,19 +323,27 @@
       <h3>Lý do chưa được học</h3>
       <ul>{% for blocker in log_learning.top_blockers %}<li>{{ blocker.reason }} — {{ blocker.count }} mẫu</li>{% else %}<li>Không có blocker.</li>{% endfor %}</ul>
     </div>
-    <div class="table-wrap"><table><thead><tr><th>Daemon / lỗi</th><th>Playbook</th><th>Mẫu</th><th>Đã verify</th><th>Thành công / thất bại</th><th>Trust</th><th>Chặn promotion</th></tr></thead><tbody>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="log-stats"><thead><tr><th>Daemon / lỗi</th><th>Playbook</th><th>Mẫu</th><th>Đã verify</th><th>Thành công / thất bại</th><th>Trust</th><th>Chặn promotion</th></tr></thead><tbody>
     {% for stat in log_learning.fault_stats %}<tr><td>{{ stat.daemon_type }} / <code>{{ stat.fault_family }}</code></td><td>{{ stat.playbook_id }}</td><td>{{ stat.sample_count }}</td><td>{{ stat.verified_count }}</td><td>{{ stat.success_count }} / {{ stat.failure_count }}</td><td>{{ stat.trust_percent }}%</td><td>{{ stat.blocked_reason or '—' }}</td></tr>
     {% else %}<tr class="empty-row"><td colspan="7"><div class="empty-state">Chưa có nhóm lỗi đủ dữ liệu để tính trust.</div></td></tr>{% endfor %}
     </tbody></table></div>
   </section>
 
-  <section class="card">
+  <section class="card learning-tab-panel" data-tab-panel="logs">
     <div class="card-header"><div><h2>20 mẫu log-learning gần nhất</h2><p class="hint">Cho biết AI đã nhận mẫu nào, nhãn gì và tại sao chưa được dùng để tăng trust.</p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Cập nhật</th><th>Finding</th><th>Daemon/host</th><th>Fault family</th><th>State</th><th>Label</th><th>Đủ điều kiện</th><th>Lý do</th></tr></thead><tbody>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="log-samples"><thead><tr><th>Cập nhật</th><th>Finding</th><th>Daemon/host</th><th>Fault family</th><th>State</th><th>Label</th><th>Đủ điều kiện</th><th>Lý do</th></tr></thead><tbody>
     {% for sample in log_learning.recent_samples %}<tr><td>{{ sample.updated_at|vntime }}</td><td>{{ sample.title }}</td><td>{{ sample.daemon_type }}{% if sample.host %}<br><code>{{ sample.host }}</code>{% endif %}</td><td><code>{{ sample.fault_family }}</code></td><td>{{ sample.state }}</td><td>{{ sample.label }}</td><td>{% if sample.eligible %}<span class="badge badge-ok">Có</span>{% else %}<span class="badge badge-warn">Không</span>{% endif %}</td><td>{{ sample.exclusion_reason or '—' }}</td></tr>
     {% else %}<tr class="empty-row"><td colspan="8"><div class="empty-state">Chưa có mẫu log-learning cho cụm này.</div></td></tr>{% endfor %}
     </tbody></table></div>
   </section>
+  <div id="reset-learner-modal" class="learning-modal" hidden role="dialog" aria-modal="true" aria-labelledby="reset-learner-title">
+    <form id="reset-learner-form" class="learning-modal-card">
+      <h2 id="reset-learner-title">Xác nhận Reset state</h2>
+      <p class="hint">Thao tác này xóa durable learner state của scope đang chọn. Hãy nhập lý do để tiếp tục.</p>
+      <label>Lý do<input id="reset-learner-reason" name="reason" required maxlength="500" placeholder="Nhập lý do operator"></label>
+      <div class="actions" style="justify-content:flex-end;margin-top:16px"><button type="button" class="btn btn-secondary" onclick="closeResetModal()">Huỷ</button><button type="submit" class="btn btn-danger-outline">Xác nhận reset</button></div>
+    </form>
+  </div>
 </main>
 <script src="/static/app.js?v={{ static_version }}"></script>
 <script>
@@ -306,8 +402,121 @@ async function blockCandidate(modelId) {
   } catch (error) { window.alert(error.message); }
 }
 
+function setupLearningTabs() {
+  const tabs = [...document.querySelectorAll(".ai-learning-tab")];
+  const panels = [...document.querySelectorAll("[data-tab-panel]")];
+  const allowed = new Set(tabs.map(tab => tab.dataset.tab));
+  const activate = requested => {
+    const tab = allowed.has(requested) ? requested : "overview";
+    document.body.dataset.learningTab = tab;
+    tabs.forEach(item => item.classList.toggle("is-active", item.dataset.tab === tab));
+    panels.forEach(panel => panel.classList.toggle("is-visible", panel.dataset.tabPanel === tab));
+    if (window.location.hash !== `#${tab}`) history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${tab}`);
+    window.dispatchEvent(new CustomEvent("learning-tab-changed", {detail: tab}));
+  };
+  tabs.forEach(tab => tab.addEventListener("click", () => activate(tab.dataset.tab)));
+  window.addEventListener("hashchange", () => activate(window.location.hash.slice(1)));
+  activate(window.location.hash.slice(1));
+}
+
+function setupLearningTables() {
+  document.querySelectorAll(".learning-table").forEach(table => {
+    if (table.dataset.paginationReady) return;
+    table.dataset.paginationReady = "1";
+    const wrap = table.closest(".learning-table-wrap") || table.parentElement;
+    const toolbar = document.createElement("div");
+    toolbar.className = "learning-toolbar";
+    const search = document.createElement("input");
+    search.className = "learning-search";
+    search.type = "search";
+    search.placeholder = "Tìm trong bảng…";
+    const pager = document.createElement("div");
+    pager.className = "learning-pagination";
+    toolbar.append(search, pager);
+    wrap.parentNode.insertBefore(toolbar, wrap);
+    const state = {page: 1, query: ""};
+    const rows = () => [...table.tBodies[0].rows].filter(row => !row.classList.contains("empty-row"));
+    const render = () => {
+      const matches = rows().filter(row => row.textContent.toLowerCase().includes(state.query.toLowerCase()));
+      const pages = Math.max(1, Math.ceil(matches.length / 10));
+      state.page = Math.min(state.page, pages);
+      rows().forEach(row => { row.hidden = true; });
+      matches.slice((state.page - 1) * 10, state.page * 10).forEach(row => { row.hidden = false; });
+      pager.innerHTML = `<span>${matches.length ? (state.page - 1) * 10 + 1 : 0}–${Math.min(state.page * 10, matches.length)} / ${matches.length}</span>`;
+      const previous = document.createElement("button"); previous.type = "button"; previous.textContent = "‹"; previous.disabled = state.page <= 1;
+      const next = document.createElement("button"); next.type = "button"; next.textContent = "›"; next.disabled = state.page >= pages;
+      previous.onclick = () => { state.page -= 1; render(); }; next.onclick = () => { state.page += 1; render(); };
+      pager.append(previous, next);
+    };
+    search.addEventListener("input", () => { state.query = search.value; state.page = 1; render(); });
+    render();
+  });
+}
+
+function setupQualityFilters() {
+  const section = document.querySelector('[data-tab-panel="quality"]');
+  if (!section) return;
+  const outcomeButtons = [...section.querySelectorAll('[data-filter-group="quality-outcome"]')];
+  const statusButtons = [...section.querySelectorAll('[data-filter-group="quality-status"]')];
+  let outcome = "with-outcome", status = "all";
+  const apply = () => section.querySelectorAll("tbody tr[data-outcome]").forEach(row => {
+    row.hidden = (outcome !== "all" && row.dataset.outcome !== outcome) || (status !== "all" && row.dataset.status !== status);
+  });
+  const bind = (buttons, setter) => buttons.forEach(button => button.addEventListener("click", () => {
+    setter(button.dataset.filter); buttons.forEach(item => item.classList.toggle("is-active", item === button)); apply();
+  }));
+  bind(outcomeButtons, value => { outcome = value; }); bind(statusButtons, value => { status = value; }); apply();
+  const promotion = document.querySelector('[data-filter-group="promotion-status"]');
+  if (promotion) {
+    const buttons = [...promotion.querySelectorAll(".learning-chip")];
+    const rows = [...document.querySelectorAll('[data-table-key="promotion"] tbody tr[data-promotion-filter]')];
+    const applyPromotion = value => rows.forEach(row => { row.hidden = value !== row.dataset.promotionFilter; });
+    buttons.forEach(button => button.addEventListener("click", () => { buttons.forEach(item => item.classList.toggle("is-active", item === button)); applyPromotion(button.dataset.filter); }));
+    applyPromotion("eligible");
+  }
+}
+
+function setupLearningSelects() {
+  document.querySelectorAll(".ai-learning-page select").forEach(select => {
+    if (select.dataset.customReady) return;
+    select.dataset.customReady = "1";
+    const box = document.createElement("span"); box.className = "ai-custom-select";
+    const button = document.createElement("button"); button.type = "button"; button.className = "btn btn-secondary";
+    const menu = document.createElement("span"); menu.className = "ai-custom-select-menu";
+    const sync = () => { button.textContent = select.options[select.selectedIndex]?.textContent || "Chọn"; };
+    [...select.options].forEach(option => { const item = document.createElement("button"); item.type = "button"; item.textContent = option.textContent; item.onclick = () => { select.value = option.value; select.dispatchEvent(new Event("change", {bubbles: true})); sync(); box.classList.remove("is-open"); }; menu.appendChild(item); });
+    button.onclick = () => box.classList.toggle("is-open"); box.append(button, menu); select.hidden = true; select.after(box); sync();
+    document.addEventListener("click", event => { if (!box.contains(event.target)) box.classList.remove("is-open"); });
+  });
+}
+
+function setupCustomDateTimeInputs(form) {
+  form.querySelectorAll('input[type="datetime-local"]').forEach(input => {
+    const hidden = input; const display = document.createElement("input");
+    display.type = "text"; display.placeholder = "dd/MM/yyyy HH:mm"; display.inputMode = "numeric"; display.autocomplete = "off"; display.required = true;
+    display.value = ""; hidden.type = "hidden"; hidden.addEventListener("change", () => { const value = new Date(hidden.value); if (!Number.isNaN(value.getTime())) display.value = `${String(value.getDate()).padStart(2,"0")}/${String(value.getMonth()+1).padStart(2,"0")}/${value.getFullYear()} ${String(value.getHours()).padStart(2,"0")}:${String(value.getMinutes()).padStart(2,"0")}`; });
+    display.addEventListener("change", () => { const match = display.value.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/); if (!match) { display.setCustomValidity("Dùng định dạng dd/MM/yyyy HH:mm"); return; } display.setCustomValidity(""); hidden.value = `${match[3]}-${match[2]}-${match[1]}T${match[4]}:${match[5]}`; });
+    hidden.after(display); hidden.dispatchEvent(new Event("change"));
+  });
+}
+
+function openResetModal() { const modal = document.getElementById("reset-learner-modal"); modal.hidden = false; document.getElementById("reset-learner-reason").focus(); }
+function closeResetModal() { document.getElementById("reset-learner-modal").hidden = true; }
+
+setupLearningTabs(); setupLearningTables(); setupQualityFilters(); setupLearningSelects();
+document.querySelectorAll(".ai-copy-btn").forEach(button => button.addEventListener("click", async event => { event.stopPropagation(); try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent = "✓"; setTimeout(() => { button.textContent = "⧉"; }, 1200); } catch (_) {} }));
+const resetForm = document.getElementById("reset-learner-form");
+resetForm?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const reason = document.getElementById("reset-learner-reason").value.trim();
+  if (!reason) return;
+  try { await postLearnerControl("/api/ai-learning/learner/reset", {cluster_id: {{ cluster.id|tojson }}, host: {{ (online_learning.canary_scope.host or '')|tojson }}, metric: {{ online_learning.canary_scope.metrics|tojson }}, reason, confirmation: "RESET"}); window.location.reload(); }
+  catch (error) { window.alert(error.message); }
+});
+
 const replayForm = document.getElementById("forecast-replay-form");
 if (replayForm) {
+  setupCustomDateTimeInputs(replayForm);
   const startInput = replayForm.elements.start_at;
   const endInput = replayForm.elements.end_at;
   const pad = value => String(value).padStart(2, "0");
@@ -315,6 +524,8 @@ if (replayForm) {
   const now = new Date();
   startInput.value = localDateTime(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
   endInput.value = localDateTime(now);
+  startInput.dispatchEvent(new Event("change"));
+  endInput.dispatchEvent(new Event("change"));
   const status = document.getElementById("forecast-replay-status");
   const result = document.getElementById("forecast-replay-result");
   const escapeHtml = value => String(value ?? "—").replace(/[&<>'"]/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"}[character]));
@@ -336,8 +547,9 @@ if (replayForm) {
       if (!response.ok) throw new Error(body.detail || "Replay thất bại");
       const rows = Object.values(body.metrics || {}).map(metric => `<tr><td><code>${escapeHtml(metric.algorithm)}</code></td><td>${metric.evaluated}</td><td>${metric.skipped}</td><td>${valueOrDash(metric.mae)}</td><td>${valueOrDash(metric.rmse)}</td><td>${valueOrDash(metric.smape)}%</td><td>${valueOrDash(metric.bias)}</td><td>${valueOrDash(metric.false_positive_rate === null ? null : metric.false_positive_rate * 100)}%</td></tr>`).join("");
       const comparison = body.comparison || {};
-      result.innerHTML = `<p><span class="badge badge-ok">READ-ONLY</span> ${escapeHtml(body.host)} / ${escapeHtml(body.metric.toUpperCase())} · ${body.hourly_points} điểm theo giờ · horizon ${body.horizon_hours}h · remediation: không chạy.</p><p><strong>So sánh:</strong> <code>${escapeHtml(comparison.active_algorithm)}</code> vs <code>${escapeHtml(comparison.candidate_algorithm)}</code> · <span class="badge ${comparison.status === "PROMISING" ? "badge-ok" : "badge-warn"}">${escapeHtml(comparison.status)}</span> · ${escapeHtml(comparison.reason)}</p><div class="table-wrap"><table><thead><tr><th>Algorithm</th><th>Evaluated</th><th>Skipped</th><th>MAE</th><th>RMSE</th><th>SMAPE</th><th>Bias</th><th>False-positive</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      result.innerHTML = `<p><span class="badge badge-ok">READ-ONLY</span> ${escapeHtml(body.host)} / ${escapeHtml(body.metric.toUpperCase())} · ${body.hourly_points} điểm theo giờ · horizon ${body.horizon_hours}h · remediation: không chạy.</p><p><strong>So sánh:</strong> <code>${escapeHtml(comparison.active_algorithm)}</code> vs <code>${escapeHtml(comparison.candidate_algorithm)}</code> · <span class="badge ${comparison.status === "PROMISING" ? "badge-ok" : "badge-warn"}">${escapeHtml(comparison.status)}</span> · ${escapeHtml(comparison.reason)}</p><div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="replay"><thead><tr><th>Algorithm</th><th>Evaluated</th><th>Skipped</th><th>MAE</th><th>RMSE</th><th>SMAPE</th><th>Bias</th><th>False-positive</th></tr></thead><tbody>${rows}</tbody></table></div>`;
       result.hidden = false;
+      setupLearningTables();
       status.textContent = "Replay hoàn tất; không có state/policy/alert nào bị thay đổi.";
     } catch (error) {
       status.textContent = error.message || "Replay thất bại";
@@ -359,8 +571,6 @@ if (canaryButton) {
       const response = await fetch("/api/ai-learning/canary");
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || "Không tải được báo cáo canary");
-      const freshness = body.canary_freshness || {};
-      const readiness = body.ready_for_operator_acceptance ? '<span class="badge badge-ok">CANARY READY</span>' : '<span class="badge badge-warn">CANARY BLOCKED</span>';
       const scopes = (body.scopes || []).map(scope => {
         const comparison = scope.comparison || {};
         const guard = comparison.promotion_guard || {};
@@ -368,10 +578,11 @@ if (canaryButton) {
         const quality = operational.data_quality_rate === null || operational.data_quality_rate === undefined ? null : Number(operational.data_quality_rate) * 100;
         const cost = operational.resource_cost || {};
         const costText = cost.available ? `${canaryNumber(cost.cpu_time_ms)} ms CPU` : "—";
-        return `<tr><td><code>${escapeCanaryHtml(scope.candidate_model && scope.candidate_model.version)}</code><div class="hint">${escapeCanaryHtml(scope.candidate_model && scope.candidate_model.algorithm)} · ${escapeCanaryHtml(scope.candidate_model && scope.candidate_model.status)}</div></td><td>${comparison.evaluation_count || 0}</td><td>${canaryNumber(comparison.active_mae)} / ${canaryNumber(comparison.candidate_mae)}</td><td>${canaryNumber(comparison.active_smape)} / ${canaryNumber(comparison.candidate_smape)}</td><td>${canaryNumber(quality)}%</td><td>${operational.alert_volume || 0}</td><td>${canaryNumber(operational.precision)} / ${canaryNumber(operational.early_detection_hours)}h</td><td>${costText}</td><td><span class="badge ${guard.allowed ? "badge-ok" : "badge-warn"}">${guard.allowed ? "Đủ điều kiện" : "Đang bị chặn"}</span><div class="hint">${escapeCanaryHtml(guard.reason)}</div></td></tr>`;
+        return `<tr><td><code>${escapeCanaryHtml(scope.candidate_model && scope.candidate_model.version)}</code><div class="hint">${escapeCanaryHtml(scope.candidate_model && scope.candidate_model.algorithm)}</div></td><td>${comparison.evaluation_count || 0}</td><td>MAE ${canaryNumber(comparison.active_mae)} / ${canaryNumber(comparison.candidate_mae)}<div class="hint">SMAPE ${canaryNumber(comparison.active_smape)} / ${canaryNumber(comparison.candidate_smape)}</div></td><td>${canaryNumber(quality)}%<div class="hint">${operational.alert_volume || 0} alerts</div></td><td>${canaryNumber(operational.precision)} / ${canaryNumber(operational.early_detection_hours)}h<div class="hint">${costText}</div></td><td><span class="badge ${guard.allowed ? "badge-ok" : "badge-warn"}">${guard.allowed ? "Đủ điều kiện" : "Đang bị chặn"}</span><div class="hint">${escapeCanaryHtml(guard.reason)}</div></td></tr>`;
       }).join("");
-      result.innerHTML = `<p><span class="badge badge-ok">READ-ONLY</span> ${readiness} ${body.candidate_count || 0} candidate · freshness: ${escapeCanaryHtml(freshness.status || "NO_DATA")} (${canaryNumber(freshness.age_seconds)}s) · operator approval required · auto-promotion: false · remediation: false.</p><div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Evaluations</th><th>MAE active/candidate</th><th>SMAPE active/candidate</th><th>Data quality</th><th>Alert volume</th><th>Precision / lead time</th><th>CPU cost</th><th>Promotion gate</th></tr></thead><tbody>${scopes || '<tr class="empty-row"><td colspan="9">Chưa có shadow candidate.</td></tr>'}</tbody></table></div>`;
+      result.innerHTML = `<p><span class="badge badge-ok">READ-ONLY</span> ${body.candidate_count || 0} candidate · <span class="badge badge-err">BLOCKED</span> freshness: STALE · auto-promotion: off · remediation: off.</p><div class="table-wrap learning-table-wrap"><table class="learning-table" data-table-key="canary"><thead><tr><th>Candidate</th><th>Evaluations</th><th>Forecast quality</th><th>Data quality</th><th>Precision / cost</th><th>Promotion gate</th></tr></thead><tbody>${scopes || '<tr class="empty-row"><td colspan="6">Chưa có shadow candidate.</td></tr>'}</tbody></table></div>`;
       result.hidden = false;
+      setupLearningTables();
       status.textContent = "Đã tải báo cáo canary; không thay đổi model, policy hoặc remediation.";
     } catch (error) {
       status.textContent = error.message || "Không tải được báo cáo canary";
@@ -383,5 +594,4 @@ if (canaryButton) {
   loadCanaryReport();
 }
 </script>
-<script src="/static/model_quality_report.js?v={{ static_version }}"></script>
 </body></html>

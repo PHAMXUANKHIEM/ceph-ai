@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Model detail — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <style>
+    .ai-model-detail { max-width: 1100px; }
+    .ai-model-detail .evidence-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+    .ai-model-detail .evidence { padding:16px; border:1px solid #273244; border-radius:10px; background:#0f172a; }
+    .ai-model-detail .evidence strong { display:block; margin-top:7px; color:#f8fafc; font-size:1.25rem; }
+    .ai-model-detail .detail-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+    @media (max-width:720px) { .ai-model-detail .evidence-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  </style>
+</head>
+<body>
+{% include "_nav.html" %}
+<main class="page ai-model-detail">
+  <section class="card">
+    <div class="card-header detail-toolbar"><div><p class="hint">AI Learning / Promotion detail</p><h1>{{ model.scope_type }} · {{ model.scope_key }}</h1><p class="hint">{{ cluster.name }} · {{ model.algorithm }} · {{ model.version }}</p></div><a class="btn btn-secondary" href="/ai-learning?cluster={{ cluster.id }}#promotion">← Quay lại Promotion</a></div>
+    <div class="card-body">
+      <p>{% if model.status == 'ACTIVE' %}<span class="badge badge-ok">ACTIVE</span>{% elif model.status == 'SHADOW' %}<span class="badge">SHADOW</span>{% else %}<span class="badge badge-warn">{{ model.status }}</span>{% endif %} {% if model.guard and model.guard.allowed %}<span class="badge badge-ok">Đủ điều kiện</span>{% elif model.guard %}<span class="badge badge-err">{{ model.guard.status }}</span>{% endif %}</p>
+      <div class="evidence-grid">
+        <div class="evidence"><span class="hint">Evaluation</span><strong>{{ model.evaluation_count }}</strong><small>mốc đã ghi nhận</small></div>
+        <div class="evidence"><span class="hint">Paired outcomes</span><strong>{{ model.quality.paired_outcomes }}</strong><small>outcome đối chiếu</small></div>
+        <div class="evidence"><span class="hint">Candidate MAE</span><strong>{{ model.quality.candidate_mae or '—' }}</strong><small>MAE trung bình</small></div>
+        <div class="evidence"><span class="hint">Candidate SMAPE</span><strong>{{ model.quality.candidate_smape or '—' }}</strong><small>SMAPE trung bình</small></div>
+      </div>
+    </div>
+  </section>
+  <section class="card"><div class="card-header"><div><h2>Guard detail</h2><p class="hint">Các điều kiện promotion được hiển thị đầy đủ ở trang riêng, không làm phình bảng tổng quan.</p></div></div><div class="card-body"><p><strong>Trạng thái:</strong> {{ model.guard.status if model.guard else 'Chưa đánh giá' }}</p><p><strong>Lý do:</strong> {{ model.guard.reason if model.guard else model.blocked_reason or model.promotion_reason or '—' }}</p><p><strong>Drift:</strong> {{ model.quality.drifted }} · <strong>Budget failures:</strong> {{ model.quality.resource_budget_failures }}</p><p class="hint">Policy: {{ policy.minimum_outcomes }} outcome · {{ policy.required_consecutive_evaluations }} evaluation liên tiếp · false-positive tăng tối đa {{ (policy.max_false_positive_rate_increase * 100)|round(2) }} điểm %.</p></div></section>
+  <section class="card"><div class="card-header"><div><h2>Audit gần đây</h2><p class="hint">Operator action chỉ được thực hiện qua approval/policy hiện có.</p></div></div><div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Event</th><th>Actor</th><th>Reason</th></tr></thead><tbody>{% for audit in model.recent_audits %}<tr><td>{{ audit.created_at|vntime }}</td><td><code>{{ audit.event_type }}</code></td><td>{{ audit.actor }}</td><td>{{ audit.reason }}</td></tr>{% else %}<tr><td colspan="4"><div class="empty-state">Chưa có audit promotion.</div></td></tr>{% endfor %}</tbody></table></div></section>
+</main>
+</body>
+</html>
