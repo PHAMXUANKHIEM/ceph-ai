@@ -4,6 +4,10 @@ This runbook is the operator-facing companion to the strict production
 readiness plan. It applies to a release candidate built from one immutable
 source SHA and one image digest.
 
+> **Availability:** single node, no HA. See the availability model in
+> [`operations/reliability-slo.md`](operations/reliability-slo.md) before
+> promising recovery times to anyone.
+
 ## Release identity
 
 Before a release, generate the manifest and documentation report:
