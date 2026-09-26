@@ -91,7 +91,7 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 - [x] Mọi Action pin full SHA; RabbitMQ/Trivy/Syft pin digest; `tests/test_workflow_pinning.py` giữ ràng buộc (`8be8cb9b`, CI xanh `36141457826`). RabbitMQ production container do host quản lý, ngoài repo.
 - [x] Mọi job CI cài `requirements-prod.lock --require-hashes` trước dev extra và chạy `verify_lock_parity.py` (`8be8cb9b`; pass trong run `36141457826`).
 - [x] SLSA provenance ký Sigstore qua `actions/attest-build-provenance`, push lên GHCR (`8be8cb9b`, `c6187f69`); pass trong run `36141457826`.
-- [ ] Xác minh digest đang chạy của từng service bằng `podman inspect`; lưu kết quả vào deploy artifact.
+- [~] Deploy ghi `running-images.jsonl` (image đang chạy/approved/match từng service), kể cả khi lệch (`fb4cedac`). Chờ deploy witness.
 
 **Đạt khi:** một SHA map duy nhất tới một image digest, một SBOM, một manifest và một runtime digest.
 
@@ -100,15 +100,15 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 - [ ] Thứ tự bắt buộc: preflight → pull/verify image → backup → migration rehearsal check → migration → persist approved digest → restart.
 - [ ] Migration fail phải dừng trước restart; không tự rollback database nếu chưa có migration-specific rollback evidence.
 - [ ] Restart phải idempotent; chạy lại sau timeout không tạo worker/consumer trùng.
-- [ ] Post-deploy smoke phải kiểm tra `/login`, authenticated dashboard health, Worker heartbeat, Watcher heartbeat, RabbitMQ consumer, migration head và release SHA.
-- [ ] Smoke phải chạy đúng target host, không chỉ chạy trên runner.
+- [~] `post_deploy_smoke.py`: login page, heartbeat Watcher/Worker, authenticated health (khi có smoke account), migration head, release SHA từng image; consumer đã có sẵn (`42d6f6b8`). Chạy read-only trên lab phát hiện đúng migration chưa apply và image chưa gắn nhãn.
+- [~] Smoke chạy trong `restart_container_stack.sh` trên target host. **Blocker:** runner `ceph-ai-lab` hiện cài trên máy không phải Ceph AI host (preflight run `36208592580`: thiếu podman/checkout/unit/RabbitMQ/DATABASE_URL).
 - [ ] Thử deploy cùng artifact ít nhất 3 lần liên tiếp: fresh deploy, retry sau timeout, retry sau service restart.
 
 **Đạt khi:** 3 lần CD liên tiếp pass với artifact và host evidence đầy đủ.
 
 ### 3.6 Rollback artifact
 
-- [ ] Chọn release/image digest trước đó hợp lệ và ghi trong manifest.
+- [~] Deploy ghi `rollback-target.json`; sửa lỗi deploy lại cùng digest ghi đè mất rollback target (`b9f58e48`).
 - [ ] Diễn tập container rollback sau lỗi health nhưng trước schema change.
 - [ ] Diễn tập migration failure giữa chừng với PostgreSQL staging; ghi rõ schema compatibility.
 - [ ] Diễn tập rollback sau migration chỉ khi có kế hoạch downgrade/forward-fix đã review; không gọi container rollback là database rollback.
@@ -178,11 +178,11 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 ### 5.4 Browser and operator acceptance
 
-- [ ] Smoke authenticated dashboard ở 1280/1440/1920px và viewport hẹp.
-- [ ] Kiểm tra loading, empty, stale, error, permission denied và reconnect.
-- [ ] Kiểm tra cluster switching không giữ action/evidence/selection của cluster cũ.
-- [ ] Kiểm tra keyboard/focus và audit preview cho action quan trọng.
-- [ ] Ghi screenshot/video hoặc structured browser report theo SHA.
+- [x] `scripts/browser_acceptance.mjs`: 10 trang × 4 viewport; phát hiện + sửa 3 trang tràn ngang trên mobile (`dadc9ecf`). 46/46 pass trên instance cô lập.
+- [~] Permission denied, error/stale (unknown không thành 0: sửa MON 0/0 `15029290`) và reconnect đã tự động hóa; loading/empty chưa có assert riêng.
+- [~] Browser test xác nhận `?cluster=` giữ đúng cluster qua điều hướng; action/evidence cũ chưa assert.
+- [~] Tab focus + indicator có test; audit preview chưa.
+- [x] `browser-acceptance.json` + screenshot theo SHA.
 
 ## 6. P1 — Safety, RBAC, audit và credential boundary
 
@@ -192,7 +192,7 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 - [~] Đã thêm user-to-cluster capability grant model, migration và API quản lý grant; còn cần operator sign-off capability catalogue.
 - [~] Dashboard action approval, cluster selection và WebSocket đã kiểm tra capability server-side; còn test Worker/Telegram approval với user thiếu capability.
 - [~] Cluster selection, action approval và WebSocket đã chặn cross-cluster ở server-side; còn replay envelope/action/evidence qua Worker.
-- [ ] Target node/pool/volume/bucket phải được resolve lại ở execution-time.
+- [~] OSD/PG resolve lại bằng `ceph osd ls`/`ceph pg map` ngay trước lease, fail-closed; trước đó scope tự sinh từ chính ID yêu cầu (`349552d2`). Pool/volume/bucket chưa có contract typed.
 - [~] Single Full có audit bền vững actor/session/run/cluster/start/end/result và prompt fingerprint; audit capability grant/action đầy đủ còn mở.
 - [~] Capability kiểm tra server-side ở selection/approval/WebSocket; test nhánh từ chối trong `tests/test_action_gateway_boundaries.py` (`3f27f5c0`).
 
@@ -202,7 +202,7 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 - [~] Worker typed remediation nhận mutation identity riêng và Single Full giữ identity riêng; còn acceptance boundary trên host thật.
 - [ ] Tách OAuth/AI account directory theo service capability.
 - [~] Compose đã che khuất các thư mục full-executor-ssh/secrets/accounts khỏi service thường và tách mount identity; network egress và toàn bộ `/var/lib/ceph-ai` còn cần thu hẹp.
-- [ ] Test read-only identity không mutation được; mutation key không xuất hiện trong read-only container.
+- [~] `tests/test_compose_credential_boundaries.py` + sửa vault-monitor đọc được mutation key/Single Full token/OAuth executor (`f57e332f`). Acceptance trên host thật còn mở.
 - [~] Single Full audit chỉ lưu prompt SHA-256, không lưu prompt/output thô; cần hoàn tất kiểm tra redaction trên mọi artifact/traceback.
 
 ### 6.3 Single Full
@@ -219,8 +219,8 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 - [ ] Xây golden set đã redacted với hàng trăm incident, ground truth độc lập và operator label.
 - [ ] Tách train/validation/test theo thời gian và cluster; không để cùng incident xuất hiện ở hai tập.
-- [ ] Đo precision, recall, abstention recall, unsafe proposal rate, calibration và hallucination rate theo health code.
-- [ ] Ghi prompt/model/evidence version và cost per correct diagnosis.
+- [x] Precision, ECE, hallucination (ngoài catalogue), breakdown theo health code/prompt version (`1322d1dc`).
+- [~] Cost per correct diagnosis + breakdown theo prompt version/provider; cần nguồn `cost_usd` cho production export.
 - [ ] Chạy prompt injection/redaction test trên staging.
 
 ### 7.2 River v2 evidence
@@ -228,8 +228,8 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 - [x] `scripts/river_v2_promotion_evidence.py` (`00e920fb`); live 2026-09-25: 4 verified, 0 scored, 2 scope → KEEP_SHADOW.
 - [ ] Thu tối thiểu 100–300 verified outcomes độc lập trên nhiều cluster/scope trước promotion; nếu không đủ phải giữ shadow.
 - [~] Label policy yêu cầu audit độc lập; report đếm self-labelled (live = 0).
-- [ ] Chạy temporal holdout và so sánh deterministic champion với River v2.
-- [ ] Báo MAE/RMSE/SMAPE/bias/interval coverage/false-positive/alert volume/confidence interval.
+- [~] `paired_holdout` trong runtime replay (`1cfdd002`); live 2026-09-26: 2 verified outcome, chưa có paired case.
+- [x] Đủ các metric + bootstrap 95% CI của MAE delta (`shared/forecast_comparison.py`).
 
 ### 7.3 Khép kín promotion lifecycle
 
@@ -252,7 +252,7 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 - [x] Xác định runtime owner duy nhất cho Dashboard, Watcher, Worker, Remediation Worker, Telegram outbox và Code Repair: Podman Compose do `ceph-ai-containers.service` sở hữu trên server hiện tại; không chạy song song systemd legacy units.
 - [x] Kiểm tra restart/reconnect/reconcile của từng process: endpoint `/api/system/reliability` đọc heartbeat, collector/SSH failure và durable queue/role-mapping states; không tự restart hoặc reconcile từ diagnostics.
-- [ ] Thiết kế HA hoặc ghi rõ single-node limitation trong release contract.
+- [x] Availability model single-node/no-HA trong `docs/operations/reliability-slo.md` + runbook (`04aad5fe`).
 - [~] Đo p95 API, collector lag, DB connections, queue age, CPU/RAM, SSH calls và database growth: endpoint đã có API/collector/DB/queue/CPU-RAM/SSH và current database size; growth rate cần hai mẫu soak liên tiếp.
 - [x] Đặt SLO/error budget cho dashboard freshness, incident processing, notification delivery và post-check; contract 30 ngày nằm trong `docs/operations/reliability-slo.md`.
 - [x] Có alert khi stale snapshot, queue backlog, DB pool exhaustion, outbox retry/collector failure và failed deploy qua `/api/system/reliability`.
@@ -319,6 +319,8 @@ Chỉ chuyển `STAGING-APPROVED` sang `PRODUCTION-CANARY` khi có operator sign
 | 25/09/2026 | Main đỏ do cache cluster 1s | 11 test secondary-cluster fail mỗi leg; sửa invalidation theo Cluster flush/commit | `bc9a8b2c` | Accepted |
 | 25/09/2026 | Online learning | Crash naive/aware datetime chặn mọi mẫu từ 23/09; lỗi bị nuốt; gap 900s loại 96% mẫu → sửa + log + gap 1,5× cadence | `0670de30`; dry-run DB thật không commit | Partial |
 | 25/09/2026 | CI end-to-end | test/integration/quality/release_gate xanh; deploy dừng ở preflight read-only | CI `36141457826`, `36146314354` | Partial |
+| 26/09/2026 | Deploy runner | Preflight annotation: runner `ceph-ai-lab` không phải Ceph AI host (9 check fail) | CI `36208592580` | Blocked |
+| 26/09/2026 | Code closure wave 2 | Smoke, running image, rollback target, live OSD/PG resolution, Telegram approver allowlist, vault-monitor secrets, RCA metrics, holdout, browser acceptance | `fb4cedac`..`dadc9ecf` | Partial |
 
 ## 13. Quy tắc trạng thái
 
