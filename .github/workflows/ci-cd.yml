@@ -379,6 +379,7 @@ jobs:
             cd "$CEPH_AI_DEPLOY_DIR"
             test "$(git rev-parse --show-toplevel)" = "$CEPH_AI_DEPLOY_DIR"
             CEPH_AI_DEPLOY_EVENT_LOG="$DEPLOY_EVIDENCE_DIR/deploy-phases.log" \
+              CEPH_AI_DEPLOY_RUNNING_IMAGES="$DEPLOY_EVIDENCE_DIR/running-images.jsonl" \
               CEPH_AI_IMAGE="$image_ref" DEPLOY_REF="$DEPLOY_SHA" \
               bash scripts/deploy/restart_container_stack.sh
           } > >(python3 "$GITHUB_WORKSPACE/scripts/deploy/redact_deploy_output.py" | tee "$DEPLOY_EVIDENCE_DIR/deploy-stdout.log") \
@@ -395,7 +396,8 @@ jobs:
             printf 'finished_at=%s\n' "$finished_at"
             printf 'exit_code=%s\n' "$deploy_exit"
           } > "$DEPLOY_EVIDENCE_DIR/deploy-result.env"
-          chmod 0640 "$DEPLOY_EVIDENCE_DIR"/deploy-*.log "$DEPLOY_EVIDENCE_DIR/deploy-result.env" 2>/dev/null || true
+          chmod 0640 "$DEPLOY_EVIDENCE_DIR"/deploy-*.log "$DEPLOY_EVIDENCE_DIR/deploy-result.env" \
+            "$DEPLOY_EVIDENCE_DIR/running-images.jsonl" 2>/dev/null || true
           exit "$deploy_exit"
 
       - name: Upload deployment evidence

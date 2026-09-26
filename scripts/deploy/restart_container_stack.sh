@@ -13,6 +13,8 @@ DEPLOY_IMAGE="${CEPH_AI_IMAGE:-}"
 IMAGE_REF_FILE=/var/lib/ceph-ai/release-artifacts/current-image-ref
 PREVIOUS_IMAGE_REF_FILE=/var/lib/ceph-ai/release-artifacts/previous-image-ref
 DEPLOY_EVENT_LOG="${CEPH_AI_DEPLOY_EVENT_LOG:-}"
+# One JSON line per service with the image it is actually running (plan 3.4).
+DEPLOY_RUNNING_IMAGES="${CEPH_AI_DEPLOY_RUNNING_IMAGES:-}"
 CURRENT_DEPLOY_PHASE="startup"
 
 record_deploy_event() {
@@ -208,6 +210,13 @@ finish_phase
 start_phase consumer
 for service in "${SERVICES[@]}"; do
   running_image_id="$(podman inspect "ceph-ai_${service}_1" --format '{{.Image}}')"
+  if [ -n "$DEPLOY_RUNNING_IMAGES" ]; then
+    # Recorded before the comparison so a mismatch is evidence too.
+    running_image_name="$(podman inspect "ceph-ai_${service}_1" --format '{{.ImageName}}' 2>/dev/null || true)"
+    printf '{"service":"%s","container":"ceph-ai_%s_1","running_image_id":"%s","running_image_name":"%s","approved_image_id":"%s","approved_ref":"%s","matches":%s}\n' \
+      "$service" "$service" "$running_image_id" "$running_image_name" "$approved_image_id" "$DEPLOY_IMAGE" \
+      "$([ "$running_image_id" = "$approved_image_id" ] && echo true || echo false)" >> "$DEPLOY_RUNNING_IMAGES"
+  fi
   if [ "$running_image_id" != "$approved_image_id" ]; then
     echo "ERROR: running container $service is not using the approved registry artifact" >&2
     echo "expected=$approved_image_id actual=$running_image_id" >&2
