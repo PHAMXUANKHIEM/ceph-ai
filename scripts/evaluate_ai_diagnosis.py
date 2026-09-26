@@ -6,7 +6,17 @@ import argparse
 import json
 from pathlib import Path
 
-from shared.ai_evaluation import evaluate
+from shared.ai_evaluation import evaluate, evaluate_by
+
+POLICY_PATH = Path(__file__).resolve().parents[1] / "worker" / "policy" / "action_policy.yaml"
+
+
+def action_catalogue(path: Path = POLICY_PATH) -> frozenset[str]:
+    """The playbook action catalogue; proposals outside it are hallucinations."""
+    import yaml
+
+    policy = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return frozenset(policy["action_ids"])
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -43,7 +53,7 @@ def _verified_rows(limit: int) -> tuple[list[dict], list[dict]]:
             should_act = True if verdict == "CORRECT" else False if verdict in {"FALSE_POSITIVE", "UNSAFE"} else None
             diagnosis_correct = True if verdict == "CORRECT" else False if verdict == "FALSE_POSITIVE" else None
             rows.append({
-                "id": case.id, "fault_family": case.fault_family,
+                "id": case.id, "fault_family": case.fault_family, "health_code": case.fault_family,
                 "expected_action_id": action.action_id if should_act is True else None,
                 "should_act": should_act, "diagnosis_correct": diagnosis_correct,
                 "outcome": case.outcome, "operator_verdict": verdict,
@@ -65,6 +75,7 @@ def export_verified(path: Path, limit: int) -> int:
 
 def _production_report(limit: int) -> dict:
     golden, predictions = _verified_rows(limit)
+    catalogue = action_catalogue()
     providers = sorted({row.get("model_provider") or "unknown" for row in golden})
     by_provider = {}
     for provider in providers:
@@ -72,16 +83,22 @@ def _production_report(limit: int) -> dict:
         by_provider[provider] = evaluate(
             [row for row in golden if row["id"] in ids],
             [row for row in predictions if row["id"] in ids],
+            known_action_ids=catalogue,
         ).as_dict()
     ai_ids = {
         row["id"] for row in golden
         if (row.get("model_provider") or "unknown") not in {"deterministic-controller", "unknown"}
     }
-    ai_report = evaluate(
-        [row for row in golden if row["id"] in ai_ids],
-        [row for row in predictions if row["id"] in ai_ids],
-    ).as_dict()
-    return {"ai_only": ai_report, "by_provider": by_provider, "note": "null metrics mean operator labels are unavailable"}
+    ai_golden = [row for row in golden if row["id"] in ai_ids]
+    ai_predictions = [row for row in predictions if row["id"] in ai_ids]
+    ai_report = evaluate(ai_golden, ai_predictions, known_action_ids=catalogue).as_dict()
+    return {
+        "ai_only": ai_report,
+        "by_provider": by_provider,
+        "by_health_code": evaluate_by(ai_golden, ai_predictions, "health_code", known_action_ids=catalogue),
+        "by_prompt_version": evaluate_by(ai_golden, ai_predictions, "prompt_version", known_action_ids=catalogue),
+        "note": "null metrics mean operator labels are unavailable",
+    }
 
 
 def main() -> int:
@@ -91,13 +108,20 @@ def main() -> int:
     export.add_argument("output", type=Path); export.add_argument("--limit", type=int, default=1000)
     score = sub.add_parser("score")
     score.add_argument("golden", type=Path); score.add_argument("predictions", type=Path)
+    score.add_argument("--group-by", help="golden field to break the report down by, e.g. health_code")
+    score.add_argument("--no-catalogue", action="store_true", help="do not score hallucinated action ids")
     production = sub.add_parser("production-report")
     production.add_argument("--limit", type=int, default=1000)
     args = parser.parse_args()
     if args.command == "export-verified":
         print(json.dumps({"exported": export_verified(args.output, args.limit), "output": str(args.output)}))
     elif args.command == "score":
-        print(json.dumps(evaluate(_read_jsonl(args.golden), _read_jsonl(args.predictions)).as_dict(), sort_keys=True))
+        golden, predictions = _read_jsonl(args.golden), _read_jsonl(args.predictions)
+        catalogue = None if args.no_catalogue else action_catalogue()
+        report = {"overall": evaluate(golden, predictions, known_action_ids=catalogue).as_dict()}
+        if args.group_by:
+            report[f"by_{args.group_by}"] = evaluate_by(golden, predictions, args.group_by, known_action_ids=catalogue)
+        print(json.dumps(report, sort_keys=True))
     else:
         print(json.dumps(_production_report(args.limit), sort_keys=True))
     return 0
