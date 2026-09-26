@@ -17,6 +17,8 @@ DEPLOY_EVENT_LOG="${CEPH_AI_DEPLOY_EVENT_LOG:-}"
 DEPLOY_RUNNING_IMAGES="${CEPH_AI_DEPLOY_RUNNING_IMAGES:-}"
 # Rollback target selected by this deploy (plan 3.6).
 DEPLOY_ROLLBACK_RECORD="${CEPH_AI_DEPLOY_ROLLBACK_RECORD:-}"
+# Post-deploy smoke report (plan 3.5).
+DEPLOY_SMOKE_REPORT="${CEPH_AI_DEPLOY_SMOKE_REPORT:-}"
 CURRENT_DEPLOY_PHASE="startup"
 
 record_deploy_event() {
@@ -251,7 +253,13 @@ fi
 finish_phase
 
 start_phase smoke
-curl -fsS --max-time 10 http://127.0.0.1:8000/login >/dev/null
+# Runs on the target host: login page, Watcher/Worker heartbeats, the
+# authenticated dashboard health (when a smoke account is configured), the
+# database migration head and the release SHA of every service image.
+CEPH_AI_ENV_FILE="${CEPH_AI_ENV_FILE:-/var/lib/ceph-ai/config/.env}" \
+  "$REPO_DIR/.venv/bin/python" "$REPO_DIR/scripts/deploy/post_deploy_smoke.py" \
+  --expected-sha "$(git rev-parse HEAD)" \
+  ${DEPLOY_SMOKE_REPORT:+--output "$DEPLOY_SMOKE_REPORT"}
 # Code Repair continues as a separate host-owned process, without container
 # source mounts. Its unit explicitly disables auto-push/deploy/promotion until
 # candidates have their own scanned-artifact pipeline.

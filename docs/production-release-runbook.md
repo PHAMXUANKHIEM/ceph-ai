@@ -57,6 +57,22 @@ The report is evidence for review, not a production approval. Run failure
 injection with `--inject-failure before_restore`, `after_restore`,
 `before_migration` or `after_migration` only against the disposable target.
 
+## Post-deploy smoke
+
+`scripts/deploy/post_deploy_smoke.py` runs on the target host at the end of
+every deploy and writes `deploy-evidence/post-deploy-smoke.json`. It fails the
+deploy when the login page, the Watcher/Worker heartbeats, the database
+migration head or the release SHA of any service image is wrong.
+
+The authenticated dashboard check is `SKIPPED` until a dedicated low-privilege
+smoke account exists. Create one in the Dashboard, then store it on the target
+host (never in Git or in CI secrets that reach GitHub-hosted runners):
+
+```text
+install -m 0600 /dev/null /var/lib/ceph-ai/config/smoke-credentials
+printf 'smoke-user:<password>\n' > /var/lib/ceph-ai/config/smoke-credentials
+```
+
 ## Rollback
 
 Container rollback and database rollback are separate operations. A failed

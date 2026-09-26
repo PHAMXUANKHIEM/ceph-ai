@@ -381,6 +381,7 @@ jobs:
             CEPH_AI_DEPLOY_EVENT_LOG="$DEPLOY_EVIDENCE_DIR/deploy-phases.log" \
               CEPH_AI_DEPLOY_RUNNING_IMAGES="$DEPLOY_EVIDENCE_DIR/running-images.jsonl" \
               CEPH_AI_DEPLOY_ROLLBACK_RECORD="$DEPLOY_EVIDENCE_DIR/rollback-target.json" \
+              CEPH_AI_DEPLOY_SMOKE_REPORT="$DEPLOY_EVIDENCE_DIR/post-deploy-smoke.json" \
               CEPH_AI_IMAGE="$image_ref" DEPLOY_REF="$DEPLOY_SHA" \
               bash scripts/deploy/restart_container_stack.sh
           } > >(python3 "$GITHUB_WORKSPACE/scripts/deploy/redact_deploy_output.py" | tee "$DEPLOY_EVIDENCE_DIR/deploy-stdout.log") \
