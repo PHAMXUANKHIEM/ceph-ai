@@ -55,8 +55,8 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 - [~] Workflow đã capture deploy stdout/stderr qua streaming redactor, exit code, host, `DEPLOY_SHA`, immutable image ref và timestamp bằng `if: always()`; cần CI failure witness để acceptance.
 - [~] Đã có marker `preflight`, `checkout`, `runtime_setup`, `registry_pull`, `migration`, `restart`, `health`, `consumer`, `smoke` và terminal result; marker `rollback` còn nằm ngoài deploy flow và chưa hoàn thiện.
 - [~] Preflight ghi tên command thiếu; artifact ghi phase/exit code. Việc ghi `PATH` đã sanitize và failure injection trên self-hosted runner còn thiếu.
-- [~] Workflow tạo artifact `deploy-evidence-<sha>`; chưa liên kết artifact vào release manifest.
-- [ ] Kiểm tra run `36086871922` và run mới bằng artifact/log; không ghi nguyên nhân “dirty worktree” nếu chưa có log trực tiếp chứng minh.
+- [~] Workflow tạo artifact `deploy-evidence-<sha>`; release manifest ghi `evidence.deploy_evidence_artifact` (`8be8cb9b`). Failed preflight check được xuất thành annotation công khai vì log self-hosted cần quyền admin (`576f8c5b`).
+- [~] Run `36141457826`/`36146314354` lần đầu tới deploy và dừng ở preflight read-only (không mutation). Đã sửa 2 check không thể pass: registry probe dùng `--fail` với GHCR trả 401, và backup dir lệch với backup script (`7b67a78e`). Nguyên nhân còn lại trên runner chờ annotation của run `36208592580`.
 
 **Đạt khi:** một deploy fail có thể xác định phase và nguyên nhân từ artifact mà không cần SSH thủ công vào runner.
 
@@ -86,11 +86,11 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 ### 3.4 Immutable artifact và supply chain
 
-- [ ] Build một lần, push một image, deploy đúng GHCR digest đã scan; không build lại trên host.
-- [ ] Ghi source SHA, image digest, base image digest, dependency lock hash, migration head, SBOM và scanner metadata trong manifest.
-- [ ] Pin GitHub Actions bằng full commit SHA; pin RabbitMQ và các sidecar image bằng digest.
-- [ ] Đồng nhất dependency install giữa quality image, release gate và runtime image; không để release gate cài một bộ khác production.
-- [ ] Thêm signing/provenance tối thiểu bằng cosign/SLSA hoặc ghi rõ blocker nếu registry chưa hỗ trợ.
+- [~] Quality job build/scan/push một image; deploy chỉ nhận `ghcr.io/...@sha256` từ artifact. Chờ deploy pass để có witness.
+- [x] Manifest ghi source SHA, image digest, base image digest, lock hash, migration head, SBOM/scan sha256 + tool version, provenance (`8be8cb9b`); release_gate pass trong run `36141457826`.
+- [x] Mọi Action pin full SHA; RabbitMQ/Trivy/Syft pin digest; `tests/test_workflow_pinning.py` giữ ràng buộc (`8be8cb9b`, CI xanh `36141457826`). RabbitMQ production container do host quản lý, ngoài repo.
+- [x] Mọi job CI cài `requirements-prod.lock --require-hashes` trước dev extra và chạy `verify_lock_parity.py` (`8be8cb9b`; pass trong run `36141457826`).
+- [x] SLSA provenance ký Sigstore qua `actions/attest-build-provenance`, push lên GHCR (`8be8cb9b`, `c6187f69`); pass trong run `36141457826`.
 - [ ] Xác minh digest đang chạy của từng service bằng `podman inspect`; lưu kết quả vào deploy artifact.
 
 **Đạt khi:** một SHA map duy nhất tới một image digest, một SBOM, một manifest và một runtime digest.
@@ -124,7 +124,7 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 - [~] Dựng PostgreSQL staging gần production về version, extension, collation, pool và credential mode: đã thêm restore-rehearsal tooling và strict target guards; chưa có staging witness mới.
 - [~] Restore backup thực tế vào database mới; xác minh row counts, migration head, checksum và các bảng critical: script `scripts/deploy/postgresql_restore_rehearsal.py` đã thực hiện flow này khi được cấp PostgreSQL staging.
 - [~] Chạy migration từ một revision cũ có dữ liệu; inject failure trước/sau từng phase chính: đã có failure-injection phases trong script, chưa chạy acceptance trên database thật.
-- [ ] Kiểm tra backup trước migration bị thiếu/quyền sai thì deploy dừng.
+- [~] `verify_migration_backup.py` chặn migration nếu backup thiếu/rỗng/cũ/symlink/quyền rộng/không đọc được bằng `pg_restore --list` (`709b1f55`); backup production mới nhất pass. Chờ deploy witness.
 - [ ] Xác minh restore không cần database production đang chạy.
 - [ ] Đo RPO/RTO và lưu report JSON + log + operator witness.
 
@@ -135,7 +135,7 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 - [ ] Restart RabbitMQ và xác minh retry/backoff/reconciliation/DLQ.
 - [ ] Kill Worker giữa claim, mutation, post-check và mark terminal.
 - [ ] Xác minh mỗi Incident cuối cùng được xử lý đúng một lần; redelivery không tạo mutation hoặc Telegram trùng.
-- [ ] Kiểm tra queue age, oldest pending, max attempts và alert khi backlog quá hạn.
+- [~] `/api/system/reliability` có dead-letter (critical), max attempts/retry exhaustion, overdue retry, stuck claim; DEAD không còn làm backlog alert treo mãi (`a2f874ef`). Chờ chaos witness.
 
 ### 4.3 Backup/DR thật
 
@@ -150,31 +150,31 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 ### 5.1 Coverage gate
 
-- [ ] Thêm `pytest-cov` vào dependency/toolchain được lock.
-- [ ] Xuất XML và HTML coverage theo SHA, Python version và test command.
-- [ ] Tạo baseline coverage release hiện tại trước khi đặt threshold.
-- [ ] Gate không được giảm total line/branch coverage so với baseline.
-- [ ] Đặt threshold tối thiểu sau khi có baseline; critical path gồm auth/session, cluster scope, action gateway, migration wrapper, outbox và deploy preflight.
-- [ ] Critical path đạt tối thiểu 90% line/branch theo metric đã chốt; test skip không tính là pass.
-- [ ] Upload report ngay cả khi gate fail.
+- [x] `pytest-cov==7.1.0`, `coverage==7.16.1` trong dev extra (`41e1314a`).
+- [x] Test matrix xuất XML/HTML coverage theo Python version; upload `if: always()` (CI `36141457826`).
+- [x] Baseline đo trên 4.332 test: 74,72% line / 63,02% branch; floor = đo − 1,0 điểm (`57f6e3fa`).
+- [x] `coverage_gate.py` chặn giảm total và từng critical group; release gate bắt buộc (`41e1314a`, pass CI `36141457826`).
+- [~] 6 critical group có floor riêng; deploy preflight là bash nên đo gián tiếp qua test hành vi.
+- [~] Chỉ `action_gateway` đạt (99,7/99,1); `--enforce-critical-target` chưa bật. Skip được báo cáo riêng, không tính coverage.
+- [x] Report ghi trước exit status; bước upload `if: always()`.
 
 ### 5.2 Static-analysis debt
 
-- [ ] Chạy full-tree Ruff, mypy, Bandit/F821/F811 và complexity trên clean runner.
-- [ ] Xuất inventory legacy findings theo file/rule/owner.
-- [ ] Giữ rule “không thêm lỗi mới” trong ngắn hạn nhưng bổ sung burn-down target theo release.
-- [ ] Ưu tiên security, auth, executor, migration, worker và deploy script trước UI legacy.
-- [ ] Không dùng baseline để che lỗi mới ở critical path.
-- [ ] Ghi số lỗi trước/sau vào release artifact.
+- [x] `static_analysis_inventory.py` chạy full-tree trong quality job (`41e1314a`, pass CI `36141457826`).
+- [x] `static-analysis-inventory.json`/`-findings.json` theo file/rule/owner/tier.
+- [x] Budget chỉ được hạ; burn-down target rc-2026-10 (−25%) và rc-2026-11 (−50%) cho critical tier.
+- [x] Critical tier = security/auth/executor/migration/worker/deploy, có ceiling riêng.
+- [x] Code mới vượt budget được sửa, không re-record (`dc3812ad`: mypy 968→828, complexity/bandit về ceiling).
+- [x] Release evidence ghi `static_analysis.before/after`.
 
 ### 5.3 Live read-only acceptance
 
-- [ ] Tạo workflow manual có environment protection và safety window.
+- [x] `.github/workflows/live-readonly-acceptance.yml`: dispatch-only, environment `live-readonly`, safety window UTC (`54674c19`). Cần tạo environment + reviewer trên GitHub.
 - [ ] Chạy health, inventory, pool/PG/CRUSH, RBD/RGW read-only trên ít nhất hai Ceph version và hai cluster/scope.
-- [ ] Kiểm tra stale/error/unknown không bị biến thành số 0.
-- [ ] Ghi SSH call count, timeout, collector lag, p95 API latency và raw command exit code đã redact.
-- [ ] Không chạy mutation/destructive action trong wave live read-only.
-- [ ] Tách live artifact khỏi fixture artifact.
+- [~] Probe cố ý với pool không tồn tại phải trả lỗi, không phải 0 image; chưa chạy live.
+- [~] Report ghi SSH call/p95/timeout/exit/latency, API p95 tùy chọn; collector lag lấy từ `/api/system/reliability`. Chưa chạy live.
+- [x] Allowlist probe + chặn mutation verb ở tầng SSH transport, có test (`54674c19`).
+- [x] Artifact riêng `live-readonly-evidence-<sha>-<attempt>`.
 
 ### 5.4 Browser and operator acceptance
 
@@ -194,7 +194,7 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 - [~] Cluster selection, action approval và WebSocket đã chặn cross-cluster ở server-side; còn replay envelope/action/evidence qua Worker.
 - [ ] Target node/pool/volume/bucket phải được resolve lại ở execution-time.
 - [~] Single Full có audit bền vững actor/session/run/cluster/start/end/result và prompt fingerprint; audit capability grant/action đầy đủ còn mở.
-- [ ] Không dùng UI ẩn nút thay cho authorization.
+- [~] Capability kiểm tra server-side ở selection/approval/WebSocket; test nhánh từ chối trong `tests/test_action_gateway_boundaries.py` (`3f27f5c0`).
 
 ### 6.2 Credential separation
 
@@ -225,18 +225,18 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 ### 7.2 River v2 evidence
 
-- [ ] Xác minh runtime count theo scope: verified outcomes, scored outcomes, rejected/stale outcomes, sample age và data quality.
+- [x] `scripts/river_v2_promotion_evidence.py` (`00e920fb`); live 2026-09-25: 4 verified, 0 scored, 2 scope → KEEP_SHADOW.
 - [ ] Thu tối thiểu 100–300 verified outcomes độc lập trên nhiều cluster/scope trước promotion; nếu không đủ phải giữ shadow.
-- [ ] Không tạo label từ forecast do chính candidate tạo nếu chưa có outcome độc lập.
+- [~] Label policy yêu cầu audit độc lập; report đếm self-labelled (live = 0).
 - [ ] Chạy temporal holdout và so sánh deterministic champion với River v2.
 - [ ] Báo MAE/RMSE/SMAPE/bias/interval coverage/false-positive/alert volume/confidence interval.
 
 ### 7.3 Khép kín promotion lifecycle
 
-- [ ] Sửa các consumer path còn gán cứng `target="shadow"` nếu đó là đường runtime cần đọc model active.
+- [x] Không còn path gán cứng: consumer dùng `resolve_update_target` (exact ACTIVE registry + PROMOTED audit).
 - [ ] Chứng minh end-to-end: shadow → candidate → quality gate → operator approval → active → health regression → rollback.
 - [ ] Mỗi scope/horizon phải có model version và registry state nhất quán.
-- [ ] Active model phải được đọc từ registry đã approve, không bootstrap ngầm từ default.
+- [~] Bootstrap chỉ nhận deterministic champion, từ chối `river_*`, ghi audit `BASELINE_REGISTERED` (`addeb568`). 21 scope `seasonal_median:168h` ACTIVE từ bootstrap trước đó chưa có audit.
 - [ ] Rollback candidate/active trên staging bằng simulated regression; ghi audit và khôi phục champion.
 - [ ] Soak active canary tối thiểu 7–14 ngày, theo dõi CPU, DB latency, queue lag và alert volume.
 - [ ] Giữ `online_learning_enabled=false`, `AUDIT_ONLY` và các candidate shadow-only cho đến khi toàn bộ gate trên pass.
@@ -289,7 +289,7 @@ Mỗi RC phải có một thư mục artifact chứa:
 
 Chỉ chuyển `NO-GO` sang `STAGING-APPROVED` khi:
 
-- [ ] CI test 3.11/3.12, integration, quality, release gate pass.
+- [x] CI test 3.11/3.12, integration, quality, release gate pass (run `36141457826`, `36146314354`).
 - [ ] Deploy preflight và deploy pass trên checkout sạch.
 - [ ] Post-deploy authenticated smoke pass.
 - [ ] CD pass ít nhất 3 lần liên tiếp.
@@ -314,6 +314,11 @@ Chỉ chuyển `STAGING-APPROVED` sang `PRODUCTION-CANARY` khi có operator sign
 | 25/09/2026 | CD deploy | Run trước quality/release pass nhưng deploy fail; run mới chưa tới CD tại thời điểm lập kế hoạch | Actions run `36086871922`, `36089126816` | Open |
 | 25/09/2026 | Deploy preflight code/test | Thêm preflight read-only, report luôn được upload và negative tests; chưa dùng kết quả này để tuyên bố host/deploy accepted | `tests/test_deploy_preflight.py` 11 passed; deploy regression chạy cục bộ | Partial |
 | 25/09/2026 | Deploy failure evidence code/test | Thêm phase log, metadata kết quả, stdout/stderr streaming redaction và artifact `if: always()`; chưa có deploy fail/pass witness thật | Deploy/preflight regression `13 passed`; YAML/Python/Bash syntax đạt | Partial |
+| 25/09/2026 | Coverage + static-analysis gate | Gate/budget chạy trong CI, release gate bắt buộc | `41e1314a`, `57f6e3fa`, CI `36141457826` | Partial |
+| 25/09/2026 | Supply chain | Pin SHA/digest, prod lock parity, SLSA provenance, manifest mở rộng | `8be8cb9b`, `c6187f69`, CI `36141457826` | Partial |
+| 25/09/2026 | Main đỏ do cache cluster 1s | 11 test secondary-cluster fail mỗi leg; sửa invalidation theo Cluster flush/commit | `bc9a8b2c` | Accepted |
+| 25/09/2026 | Online learning | Crash naive/aware datetime chặn mọi mẫu từ 23/09; lỗi bị nuốt; gap 900s loại 96% mẫu → sửa + log + gap 1,5× cadence | `0670de30`; dry-run DB thật không commit | Partial |
+| 25/09/2026 | CI end-to-end | test/integration/quality/release_gate xanh; deploy dừng ở preflight read-only | CI `36141457826`, `36146314354` | Partial |
 
 ## 13. Quy tắc trạng thái
 
