@@ -73,6 +73,26 @@ install -m 0600 /dev/null /var/lib/ceph-ai/config/smoke-credentials
 printf 'smoke-user:<password>\n' > /var/lib/ceph-ai/config/smoke-credentials
 ```
 
+## Browser acceptance
+
+`scripts/browser_acceptance.mjs` opens real Chromium pages (1280/1440/1920 px
+and a 390 px phone) after logging in through the form, and checks HTTP status,
+JavaScript errors and horizontal overflow on the main pages, anonymous access
+being sent to `/login`, unknown data not rendered as `0/0`, `?cluster=`
+switching, recovery after going offline, and keyboard focus. It writes
+`browser-acceptance.json` and one screenshot per page and viewport to
+`OUT_DIR/<sha>/`. It only reads; it never submits an action.
+
+```text
+BASE_URL=http://127.0.0.1:8000 DASHBOARD_PASSWORD=<operator password> \
+SECOND_CLUSTER_ID=<id of a non-default cluster> GIT_SHA=$(git rev-parse --short HEAD) \
+PLAYWRIGHT_MODULE=ceph-health-dashboard/node_modules/playwright/index.mjs \
+/opt/ceph-ai-node20/bin/node scripts/browser_acceptance.mjs
+```
+
+Run it against an instance whose Ceph is unreachable as well, so the
+unknown/stale rendering is exercised.
+
 ## Rollback
 
 Container rollback and database rollback are separate operations. A failed
