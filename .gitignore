@@ -48,3 +48,15 @@ test_runner_baselines/
 .codex-stage/
 transfer/
 oom
+
+# Private keys and local credential material must never reach the (public)
+# repository, even when a host-local compose file mounts them from here.
+dashboard-readonly-id_ed25519
+*id_ed25519
+*id_ed25519.pub
+*id_rsa
+*.pem
+*.key
+dashboard-empty-full-executor-accounts/
+# Local backups/copies made during manual edits are not source.
+backups/

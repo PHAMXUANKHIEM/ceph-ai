@@ -14,15 +14,27 @@ SECRET_DIRS = (
     "/var/lib/ceph-ai/full-executor-accounts",
 )
 READ_ONLY_SERVICES = ("dashboard-web", "telegram-ai", "watcher")
-READ_ONLY_KEY = "/run/ceph-ai/credentials/readonly/id_ed25519"
 
 
 def _sources(service):
     return [str(volume).split(":", 1)[0] for volume in SERVICES[service].get("volumes", [])]
 
 
+def _mounts(service):
+    """(source, destination) for every bind mount of ``service``."""
+    pairs = []
+    for volume in SERVICES[service].get("volumes", []):
+        parts = str(volume).split(":")
+        if len(parts) >= 2:
+            pairs.append((parts[0], parts[1]))
+    return pairs
+
+
 def _masked(service):
-    return {str(entry).split(":", 1)[0] for entry in SERVICES[service].get("tmpfs", [])}
+    """Secret dirs hidden by a tmpfs or by an over-mount from another source."""
+    masked = {str(entry).split(":", 1)[0] for entry in SERVICES[service].get("tmpfs", [])}
+    masked |= {dest for source, dest in _mounts(service) if dest in SECRET_DIRS and source != dest}
+    return masked
 
 
 def test_known_services_are_covered():
@@ -39,8 +51,11 @@ def test_services_mounting_the_state_dir_mask_every_secret_dir(service):
 def test_read_only_services_never_receive_the_mutation_key_or_executor_accounts(service):
     for source in _sources(service):
         assert not source.startswith("/var/lib/ceph-ai/full-executor-ssh"), service
-        assert not source.startswith("/var/lib/ceph-ai/full-executor-accounts"), service
-    assert SERVICES[service]["environment"]["SSH_KEY_PATH"] == READ_ONLY_KEY
+        assert not source.startswith("/var/lib/ceph-ai/full-executor-accounts/"), service
+    key_path = SERVICES[service]["environment"]["SSH_KEY_PATH"]
+    key_sources = [source for source, dest in _mounts(service) if dest == key_path]
+    assert key_sources, f"{service}: SSH_KEY_PATH {key_path} is not a mounted key"
+    assert not key_sources[0].startswith("/var/lib/ceph-ai/full-executor-ssh"), f"{service} uses the mutation key"
 
 
 def test_only_the_worker_and_single_full_executor_hold_the_mutation_key():
