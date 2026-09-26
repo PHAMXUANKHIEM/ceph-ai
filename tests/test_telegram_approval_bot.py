@@ -730,3 +730,44 @@ def test_telegram_update_offset_is_persisted_without_storing_the_token(monkeypat
     assert bot._load_update_offset("123:super-secret-token") == 42
     assert "super-secret-token" not in offset_file.read_text()
     assert bot._load_update_offset("different-token") is None
+
+
+# --- per-person approval allowlist (plan 6.1) -------------------------------
+
+
+def _decide(monkeypatch, allowed_ids, *, sender_id=42):
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="123:ABC", chat_id="-100999")
+    monkeypatch.setattr(bot.settings, "telegram_approval_user_ids", allowed_ids, raising=False)
+    action_id = _pending_action(f"inc-allow-{sender_id}-{len(allowed_ids)}")
+    answers = []
+    monkeypatch.setattr(bot, "edit_telegram_message", lambda *_args: None)
+    monkeypatch.setattr(bot, "answer_telegram_callback", lambda _t, _cb, text=None: answers.append(text))
+    query = _callback_query(action_id, "approve")
+    query["from"]["id"] = sender_id
+    bot._handle_callback_query(query, "123:ABC")
+    with db_module.SessionLocal() as session:
+        return session.get(Action, action_id).status, answers
+
+
+def test_sender_outside_the_approval_allowlist_cannot_decide(dashboard_client, monkeypatch):
+    status, answers = _decide(monkeypatch, "1001,1002", sender_id=42)
+    assert status == ActionStatus.PENDING_APPROVAL.value  # untouched
+    assert answers == ["Không có quyền duyệt"]
+
+
+def test_listed_sender_can_decide(dashboard_client, monkeypatch):
+    status, answers = _decide(monkeypatch, "1001, 42", sender_id=42)
+    assert status == ActionStatus.APPROVED.value
+    assert answers == ["Đã duyệt"]
+
+
+def test_malformed_approval_allowlist_blocks_every_decision(dashboard_client, monkeypatch):
+    status, answers = _decide(monkeypatch, "42,@alice", sender_id=42)
+    assert status == ActionStatus.PENDING_APPROVAL.value  # untouched
+    assert answers == ["Không có quyền duyệt"]
+
+
+def test_empty_approval_allowlist_keeps_chat_level_trust(dashboard_client, monkeypatch):
+    status, _answers = _decide(monkeypatch, "", sender_id=42)
+    assert status == ActionStatus.APPROVED.value

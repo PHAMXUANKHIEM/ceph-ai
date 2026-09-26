@@ -663,6 +663,11 @@ class Settings(BaseSettings):
     # Separate, mandatory allow-list for the unrestricted Telegram
     # /single-full mode. Empty means the mode is disabled for everyone.
     telegram_chatbox_full_access_user_ids: str = ""
+    # Optional per-person gate for approval buttons (Duyệt/Từ chối/Hủy).
+    # Empty keeps the chat-level trust model; when set, only these numeric
+    # Telegram user IDs may decide an action, and a malformed list blocks
+    # every decision.
+    telegram_approval_user_ids: str = ""
     # Deprecated compatibility field. Each Ceph-AI installation is local-only;
     # Telegram routing never opens another deployment's database, even if an
     # old environment file still contains this setting.

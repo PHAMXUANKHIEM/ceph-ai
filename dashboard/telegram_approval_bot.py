@@ -577,6 +577,28 @@ def _actor_for(callback_query: dict) -> str:
     return f"telegram:{username or user_id or 'unknown'}"
 
 
+def _approval_user_ids() -> set[str] | None:
+    """Configured approver IDs; empty = chat-level trust, ``None`` = malformed."""
+    raw = str(getattr(settings, "telegram_approval_user_ids", "") or "").strip()
+    if not raw:
+        return set()
+    values = {item.strip() for item in raw.split(",") if item.strip()}
+    if not values or any(not item.isdigit() for item in values):
+        return None
+    return values
+
+
+def _sender_may_decide(callback_query: dict) -> bool:
+    """Per-person approval gate, checked by numeric ID (usernames can change)."""
+    allowed = _approval_user_ids()
+    if allowed is None:
+        return False
+    if not allowed:
+        return True
+    sender_id = str((callback_query.get("from") or {}).get("id") or "")
+    return sender_id in allowed
+
+
 def _database_url_for_approval_callback(data: str) -> str | None:
     """Find the source DB that owns an approval callback's Action."""
     action_id = ""
@@ -673,6 +695,20 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
         if callback_id:
             try:
                 answer_telegram_callback(bot_token, callback_id, "Không có quyền")
+            except TelegramSendError:
+                pass
+        return
+
+    if not _sender_may_decide(callback_query):
+        logger.warning(
+            "telegram_approval_bot: ignoring decision from sender id=%s not in TELEGRAM_APPROVAL_USER_IDS "
+            "for action_id=%s",
+            (callback_query.get("from") or {}).get("id"),
+            action_id,
+        )
+        if callback_id:
+            try:
+                answer_telegram_callback(bot_token, callback_id, "Không có quyền duyệt")
             except TelegramSendError:
                 pass
         return
