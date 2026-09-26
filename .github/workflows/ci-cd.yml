@@ -341,9 +341,21 @@ jobs:
           CEPH_AI_DEPLOY_DIR: ${{ vars.CEPH_AI_DEPLOY_DIR || '/root/ceph-ai' }}
           CEPH_AI_PREFLIGHT_REPORT: ${{ runner.temp }}/ceph-ai-deploy-evidence/deploy-preflight.log
         run: |
-          set -euo pipefail
+          set -uo pipefail
           install -d -m 0700 "$(dirname "$CEPH_AI_PREFLIGHT_REPORT")"
-          bash scripts/deploy/deploy_preflight.sh
+          console="$(dirname "$CEPH_AI_PREFLIGHT_REPORT")/deploy-preflight-console.log"
+          rc=0
+          bash scripts/deploy/deploy_preflight.sh 2>&1 | tee "$console" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            # Job logs need repository admin rights; annotations do not.
+            # The preflight output is secret-free by design (no DATABASE_URL
+            # or credentials), so every failed check is surfaced as one.
+            grep -h 'status=FAIL' "$console" | sort -u | while IFS= read -r line; do
+              echo "::error title=deploy preflight::$line"
+            done
+            grep -q 'status=FAIL' "$console" || echo "::error title=deploy preflight::exited $rc without a FAIL line"
+          fi
+          exit "$rc"
 
       - name: Deploy pushed commit to the container stack
         env:
