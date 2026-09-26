@@ -83,16 +83,23 @@ def isolated_db(monkeypatch):
     # Legacy execution-path fixtures predate model confidence. Tests dedicated
     # to the confidence contract below set a production-like threshold.
     monkeypatch.setattr(settings, "ai_min_diagnosis_confidence", 0.0)
-    monkeypatch.setattr(
-        router_client, "run_ceph_json_command_with",
-        lambda *_args, **_kwargs: ("mon-a", {
-            "health": {"status": "HEALTH_OK"}, "monmap": {"num_mons": 1},
-            "quorum_names": ["mon-a"], "pgmap": {
-                "pgs_by_state": [{"state_name": "active+clean", "count": 1}],
-            },
-        }),
-    )
+    monkeypatch.setattr(router_client, "run_ceph_json_command_with", _fake_ceph_json)
     yield engine
+
+
+def _fake_ceph_json(*args, **_kwargs):
+    """Healthy status, plus the live OSD/PG lookups made before execution."""
+    command = args[-1]
+    if command == "ceph osd ls":
+        return "mon-a", list(range(16))
+    if command.startswith("ceph pg map "):
+        return "mon-a", {"pgid": command.rsplit(" ", 1)[1], "up": [0, 1], "acting": [0, 1]}
+    return "mon-a", {
+        "health": {"status": "HEALTH_OK"}, "monmap": {"num_mons": 1},
+        "quorum_names": ["mon-a"], "pgmap": {
+            "pgs_by_state": [{"state_name": "active+clean", "count": 1}],
+        },
+    }
 
 
 def _create_incident(incident_id: str, *, dedupe_key: str | None = None) -> None:

@@ -1538,6 +1538,42 @@ def _typed_action_target_ids(
     )
 
 
+_PG_ID_RE = re.compile(r"^[0-9]+\.[0-9a-f]+$")
+
+
+def _cluster_read_connection(cluster: Cluster) -> tuple:
+    return (
+        [value.strip() for value in (cluster.ceph_mon_nodes or "").split(",") if value.strip()],
+        cluster.ceph_container_name, cluster.ssh_user, cluster.ssh_key_path, cluster.ceph_exec_mode,
+    )
+
+
+def _live_osd_ids(connection: tuple) -> set[str]:
+    """Current OSD ids as both ``3`` and ``osd.3`` (callers use either form)."""
+    _host, payload = run_ceph_json_command_with(*connection, "ceph osd ls")
+    if not isinstance(payload, list):
+        raise CephQueryError("ceph osd ls did not return a list")
+    ids = {str(int(value)) for value in payload}
+    return ids | {f"osd.{value}" for value in ids}
+
+
+def _live_pg_ids(connection: tuple, requested: list[str]) -> set[str]:
+    """Requested PGs that ``ceph pg map`` confirms exist right now."""
+    live: set[str] = set()
+    for pg_id in requested:
+        if not _PG_ID_RE.fullmatch(pg_id):
+            continue  # never interpolated into a command; rejected by scope
+        try:
+            _host, payload = run_ceph_json_command_with(*connection, f"ceph pg map {pg_id}")
+        except CephQueryError as exc:
+            if "ENOENT" in str(exc) or "does not exist" in str(exc):
+                continue
+            raise
+        if isinstance(payload, dict) and str(payload.get("pgid")) == pg_id:
+            live.add(pg_id)
+    return live
+
+
 def _authorize_typed_action_before_lease(
     *, cluster: Cluster, action: Action, action_id: str,
     target_nodes: list[str], action_params: dict | None,
@@ -1573,11 +1609,25 @@ def _authorize_typed_action_before_lease(
     )
     if not target_ids:
         raise ActionContractError("action contract không có target id cụ thể")
+    # Resolve OSD/PG targets against the live cluster at execution time.
+    # Building the scope from the requested IDs themselves would accept any
+    # ID, including one that no longer exists or belongs to another cluster.
+    live_osds: set[str] = set()
+    live_pgs: set[str] = set()
+    if target_type in {"osd", "pg"}:
+        connection = _cluster_read_connection(cluster)
+        try:
+            if target_type == "osd":
+                live_osds = _live_osd_ids(connection)
+            else:
+                live_pgs = _live_pg_ids(connection, target_ids)
+        except CephQueryError as exc:
+            raise ActionContractError(f"không resolve được {target_type} target trên cluster: {exc}") from exc
     scope = TargetScope(
         cluster_id=cluster.id,
         nodes={row["host"] for row in configured_nodes(cluster)},
-        osds=set(target_ids) if target_type == "osd" else set(),
-        pgs=set(target_ids) if target_type == "pg" else set(),
+        osds=live_osds,
+        pgs=live_pgs,
     )
     gateway = TypedActionGateway(
         allowed_action_ids={action_id},
