@@ -1541,14 +1541,20 @@ def _typed_action_target_ids(
 _PG_ID_RE = re.compile(r"^[0-9]+\.[0-9a-f]+$")
 
 
-def _cluster_read_connection(cluster: Cluster) -> tuple:
+# (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode), the
+# positional prefix of run_ceph_json_command_with.
+CephConnection = tuple[list[str], str, str, str, str]
+
+
+def _cluster_read_connection(cluster: Cluster) -> CephConnection:
     return (
         [value.strip() for value in (cluster.ceph_mon_nodes or "").split(",") if value.strip()],
-        cluster.ceph_container_name, cluster.ssh_user, cluster.ssh_key_path, cluster.ceph_exec_mode,
+        str(cluster.ceph_container_name or ""), str(cluster.ssh_user or ""),
+        str(cluster.ssh_key_path or ""), str(cluster.ceph_exec_mode or ""),
     )
 
 
-def _live_osd_ids(connection: tuple) -> set[str]:
+def _live_osd_ids(connection: CephConnection) -> set[str]:
     """Current OSD ids as both ``3`` and ``osd.3`` (callers use either form)."""
     _host, payload = run_ceph_json_command_with(*connection, "ceph osd ls")
     if not isinstance(payload, list):
@@ -1557,7 +1563,7 @@ def _live_osd_ids(connection: tuple) -> set[str]:
     return ids | {f"osd.{value}" for value in ids}
 
 
-def _live_pg_ids(connection: tuple, requested: list[str]) -> set[str]:
+def _live_pg_ids(connection: CephConnection, requested: list[str]) -> set[str]:
     """Requested PGs that ``ceph pg map`` confirms exist right now."""
     live: set[str] = set()
     for pg_id in requested:
