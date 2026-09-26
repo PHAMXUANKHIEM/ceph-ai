@@ -15,6 +15,8 @@ PREVIOUS_IMAGE_REF_FILE=/var/lib/ceph-ai/release-artifacts/previous-image-ref
 DEPLOY_EVENT_LOG="${CEPH_AI_DEPLOY_EVENT_LOG:-}"
 # One JSON line per service with the image it is actually running (plan 3.4).
 DEPLOY_RUNNING_IMAGES="${CEPH_AI_DEPLOY_RUNNING_IMAGES:-}"
+# Rollback target selected by this deploy (plan 3.6).
+DEPLOY_ROLLBACK_RECORD="${CEPH_AI_DEPLOY_ROLLBACK_RECORD:-}"
 CURRENT_DEPLOY_PHASE="startup"
 
 record_deploy_event() {
@@ -168,13 +170,32 @@ finish_phase
 # must reuse it. Preserve the previous digest for explicit, schema-compatible
 # container rollback rather than rebuilding the old checkout.
 install -d -m 0750 "$(dirname "$IMAGE_REF_FILE")"
+current_image_ref=""
 if [ -s "$IMAGE_REF_FILE" ]; then
+  current_image_ref="$(< "$IMAGE_REF_FILE")"
+fi
+# Rotate only when the release changes: a retry of the same artifact must not
+# overwrite the real rollback target with the digest being redeployed.
+if [ -n "$current_image_ref" ] && [ "$current_image_ref" != "$DEPLOY_IMAGE" ]; then
   cp -a "$IMAGE_REF_FILE" "$PREVIOUS_IMAGE_REF_FILE"
 fi
 image_ref_tmp="$(mktemp "${IMAGE_REF_FILE}.XXXXXX")"
 printf '%s\n' "$DEPLOY_IMAGE" > "$image_ref_tmp"
 chmod 0640 "$image_ref_tmp"
 mv -f "$image_ref_tmp" "$IMAGE_REF_FILE"
+if [ -n "$DEPLOY_ROLLBACK_RECORD" ]; then
+  rollback_ref=""
+  if [ -s "$PREVIOUS_IMAGE_REF_FILE" ]; then
+    rollback_ref="$(< "$PREVIOUS_IMAGE_REF_FILE")"
+  fi
+  rollback_valid=false
+  if [[ "$rollback_ref" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]] && [ "$rollback_ref" != "$DEPLOY_IMAGE" ]; then
+    rollback_valid=true
+  fi
+  printf '{"deploy_ref":"%s","rollback_ref":"%s","rollback_ref_valid":%s,"rollback_scope":"container-only; database schema is not rolled back"}\n' \
+    "$DEPLOY_IMAGE" "$rollback_ref" "$rollback_valid" > "$DEPLOY_ROLLBACK_RECORD"
+fi
+# end of release reference persistence
 
 # The container service's launcher disables conflicting legacy service units
 # and force-recreates the Python processes from the immutable image.
