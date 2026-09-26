@@ -119,29 +119,6 @@ def test_preflight_writes_a_bounded_report_on_failure(tmp_path):
     assert "check=summary detail=1-checks-failed" in report.read_text()
 
 
-def test_deploy_workflow_runs_preflight_before_registry_login_and_rollout():
-    workflow = WORKFLOW.read_text()
-    deploy_job = workflow[workflow.index("  deploy:"):workflow.index("  release_gate:")]
-    preflight = deploy_job.index("bash scripts/deploy/deploy_preflight.sh")
-    registry_login = deploy_job.index("podman login ghcr.io")
-    rollout = deploy_job.index("bash scripts/deploy/restart_container_stack.sh")
-    assert preflight < registry_login < rollout
-    assert "if: always()" in deploy_job
-    assert "deploy-evidence-${{ github.sha }}" in deploy_job
-
-
-def test_deploy_workflow_captures_failure_evidence_even_when_rollout_fails():
-    workflow = WORKFLOW.read_text()
-    deploy_job = workflow[workflow.index("  deploy:"):workflow.index("  release_gate:")]
-    for field in ("deploy_sha", "image_ref", "target_host", "started_at", "finished_at", "exit_code"):
-        assert f"printf '{field}=%s" in deploy_job
-    assert "deploy-stdout.log" in deploy_job
-    assert "deploy-stderr.log" in deploy_job
-    assert "deploy-phases.log" in deploy_job
-    assert "if: always()" in deploy_job
-    assert 'exit "$deploy_exit"' in deploy_job
-
-
 def test_rollout_script_emits_required_phase_markers_and_failure_exit_code():
     rollout = (ROOT / "scripts/deploy/restart_container_stack.sh").read_text()
     phases = ["checkout", "runtime_setup", "registry_pull", "migration", "restart", "health", "consumer", "smoke"]
@@ -165,12 +142,6 @@ def test_deploy_output_redactor_removes_common_secret_forms():
                    "ghp_1234567890abcdefghijkl", "AKIA1234567890ABCDEF", "top-secret"):
         assert secret not in result.stdout
     assert result.stdout.count("[REDACTED]") >= 7
-
-
-def test_deploy_workflow_redacts_console_and_artifact_streams():
-    workflow = WORKFLOW.read_text()
-    deploy_job = workflow[workflow.index("  deploy:"):workflow.index("  release_gate:")]
-    assert deploy_job.count('python3 "$GITHUB_WORKSPACE/scripts/deploy/redact_deploy_output.py"') == 2
 
 
 def test_registry_answering_401_counts_as_reachable(tmp_path):

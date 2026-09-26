@@ -44,7 +44,6 @@ def test_release_pushes_scanned_artifact_and_deploys_digest_only():
     )
     assert "registry-image-ref.txt" in workflow
     assert "packages: write" in workflow
-    assert "packages: read" in workflow
     deploy = (ROOT / "scripts/deploy/restart_container_stack.sh").read_text(encoding="utf-8")
     assert 'podman pull "$DEPLOY_IMAGE"' in deploy
     assert 'podman-compose build' not in deploy

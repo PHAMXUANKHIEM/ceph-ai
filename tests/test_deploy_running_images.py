@@ -60,8 +60,3 @@ def test_a_mismatched_service_is_recorded_before_the_deploy_fails(tmp_path):
     assert lines[-1]["service"] == "worker"
     assert lines[-1]["running_image_id"] == "stale-id"
     assert lines[-1]["matches"] is False
-
-
-def test_workflow_collects_the_running_images_file():
-    workflow = (ROOT / ".github/workflows/ci-cd.yml").read_text(encoding="utf-8")
-    assert 'CEPH_AI_DEPLOY_RUNNING_IMAGES="$DEPLOY_EVIDENCE_DIR/running-images.jsonl"' in workflow

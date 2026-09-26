@@ -33,3 +33,13 @@ def test_service_and_tool_images_are_pinned_by_digest():
             if not re.search(r"@sha256:[0-9a-f]{64}$", reference):
                 unpinned.append(f"{workflow.name}: {reference}")
     assert unpinned == []
+
+
+def test_no_job_targets_the_retired_ceph_ai_lab_runner():
+    # 2026-09-26: the runner labelled ceph-ai-lab is not the Ceph AI host
+    # (its deploy preflight found no podman, checkout, units or broker), so
+    # the deploy and live jobs were removed. Deploy runs on the host itself
+    # with scripts/deploy/restart_container_stack.sh until a runner is
+    # installed there.
+    for workflow in WORKFLOWS:
+        assert "ceph-ai-lab" not in workflow.read_text(encoding="utf-8"), workflow.name

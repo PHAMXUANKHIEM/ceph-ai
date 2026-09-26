@@ -116,5 +116,3 @@ def test_deploy_script_runs_the_full_smoke_on_the_target_host():
     smoke = script.index("start_phase smoke")
     assert script.index('scripts/deploy/post_deploy_smoke.py"', smoke) < script.index("finish_phase", smoke)
     assert '--expected-sha "$(git rev-parse HEAD)"' in script
-    workflow = (root / ".github/workflows/ci-cd.yml").read_text(encoding="utf-8")
-    assert 'CEPH_AI_DEPLOY_SMOKE_REPORT="$DEPLOY_EVIDENCE_DIR/post-deploy-smoke.json"' in workflow
