@@ -771,3 +771,160 @@ def test_malformed_approval_allowlist_blocks_every_decision(dashboard_client, mo
 def test_empty_approval_allowlist_keeps_chat_level_trust(dashboard_client, monkeypatch):
     status, _answers = _decide(monkeypatch, "", sender_id=42)
     assert status == ActionStatus.APPROVED.value
+
+
+# --- one-tap diagnosis verdicts (autonomy plan WP2.1) -----------------------
+
+
+def _with_case(action_pk: str) -> None:
+    from shared.models import RemediationCase
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        session.add(RemediationCase(
+            incident_id=action.incident_id, action_id=action_pk, fault_family="OSD_DOWN",
+            evidence_fingerprint="e" * 64, prompt_version="v1", classification="RISKY",
+            autonomy_decision="APPROVAL_REQUIRED",
+        ))
+        session.commit()
+
+
+def _case(action_pk: str):
+    from shared.models import RemediationCase
+
+    with db_module.SessionLocal() as session:
+        return session.query(RemediationCase).filter_by(action_id=action_pk).one()
+
+
+def _verdict_env(monkeypatch):
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="123:ABC", chat_id="-100999")
+    monkeypatch.setattr(bot.settings, "telegram_approval_user_ids", "", raising=False)
+    edits = {"plain": [], "keyboard": []}
+    answers = []
+    monkeypatch.setattr(bot, "edit_telegram_message",
+                        lambda _t, _c, msg_id, text: edits["plain"].append((msg_id, text)))
+    monkeypatch.setattr(bot, "edit_telegram_message_with_keyboard",
+                        lambda _t, _c, msg_id, text, buttons: edits["keyboard"].append((text, buttons)))
+    monkeypatch.setattr(bot, "answer_telegram_callback", lambda _t, _cb, text=None: answers.append(text))
+    return edits, answers
+
+
+def _press(action_pk: str, code: str, *, sender_id=42, chat_id="-100999"):
+    ref = bot.telegram_federation.qualify_reference(action_pk)
+    query = {
+        "id": "cb", "data": f"{bot.VERDICT_CALLBACK_PREFIX}{ref}:{code}",
+        "from": {"id": sender_id, "username": "opuser"},
+        "message": {"message_id": 777, "chat": {"id": chat_id}},
+    }
+    bot._handle_callback_query(query, "123:ABC")
+
+
+def test_decision_asks_for_a_verdict_when_the_case_has_none(dashboard_client, monkeypatch):
+    edits, _answers = _verdict_env(monkeypatch)
+    with_case = _pending_action("inc-verdict-ask")
+    _with_case(with_case)
+    bot._handle_callback_query(_callback_query(with_case, "reject"), "123:ABC")
+    assert edits["plain"] == []
+    text, buttons = edits["keyboard"][0]
+    assert "Chẩn đoán của AI có đúng không?" in text
+    assert [label for label, _data in buttons] == ["✅ Đúng", "❌ Sai", "⚠️ Nguy hiểm", "🤷 Chưa rõ"]
+    assert all(len(data.encode()) <= 64 for _label, data in buttons + bot._verdict_reason_keyboard(with_case))
+
+    without_case = _pending_action("inc-verdict-none")
+    bot._handle_callback_query(_callback_query(without_case, "reject"), "123:ABC")
+    assert len(edits["plain"]) == 1
+
+
+def test_correct_verdict_is_recorded_with_actor_and_audit(dashboard_client, monkeypatch):
+    from shared.models import IncidentTimelineEvent
+
+    edits, answers = _verdict_env(monkeypatch)
+    action_pk = _pending_action("inc-verdict-ok")
+    _with_case(action_pk)
+    _press(action_pk, "C")
+    case = _case(action_pk)
+    assert (case.operator_verdict, case.operator_verdict_by) == ("CORRECT", "telegram:opuser")
+    assert answers == ["Đã ghi nhận đánh giá"]
+    assert "Chẩn đoán/xử lý đúng" in edits["plain"][0][1]
+    with db_module.SessionLocal() as session:
+        event = session.query(IncidentTimelineEvent).filter_by(
+            action_id=action_pk, event_type="remediation_case_verdict_updated"
+        ).one()
+        assert json.loads(event.evidence_json)["verdict"] == "CORRECT"
+
+
+def test_wrong_verdict_asks_for_a_reason_before_recording(dashboard_client, monkeypatch):
+    edits, _answers = _verdict_env(monkeypatch)
+    action_pk = _pending_action("inc-verdict-wrong")
+    _with_case(action_pk)
+    _press(action_pk, bot.VERDICT_REASONS_CODE)
+    assert _case(action_pk).operator_verdict is None
+    _text, buttons = edits["keyboard"][-1]
+    assert [label for label, _data in buttons] == ["Cảnh báo sai", "Sai nguyên nhân", "Không cần làm", "Không hiệu quả"]
+    _press(action_pk, "F2")
+    case = _case(action_pk)
+    assert case.operator_verdict == "FALSE_POSITIVE"
+    assert case.operator_note == "Chẩn đoán sai nguyên nhân (Telegram)"
+
+
+def test_unsafe_verdict_is_one_tap_with_a_note(dashboard_client, monkeypatch):
+    _verdict_env(monkeypatch)
+    action_pk = _pending_action("inc-verdict-unsafe")
+    _with_case(action_pk)
+    _press(action_pk, "U")
+    case = _case(action_pk)
+    assert case.operator_verdict == "UNSAFE" and len(case.operator_note) >= 5
+
+
+def test_verdicts_follow_the_approval_trust_model(dashboard_client, monkeypatch):
+    _verdict_env(monkeypatch)
+    action_pk = _pending_action("inc-verdict-trust")
+    _with_case(action_pk)
+    _press(action_pk, "C", chat_id="-100000")          # chat not covering this cluster
+    assert _case(action_pk).operator_verdict is None
+    monkeypatch.setattr(bot.settings, "telegram_approval_user_ids", "1001", raising=False)
+    _press(action_pk, "C", sender_id=42)                # sender not on the allowlist
+    assert _case(action_pk).operator_verdict is None
+    _press(action_pk, "C", sender_id=1001)
+    assert _case(action_pk).operator_verdict == "CORRECT"
+
+
+def test_unknown_verdict_code_is_ignored(dashboard_client, monkeypatch):
+    _verdict_env(monkeypatch)
+    action_pk = _pending_action("inc-verdict-bad")
+    _with_case(action_pk)
+    _press(action_pk, "ZZ")
+    assert _case(action_pk).operator_verdict is None
+
+
+def test_record_verdict_validates_like_the_dashboard():
+    import pytest
+    from shared import remediation_cases
+    from shared.models import RemediationCase
+
+    case = RemediationCase(incident_id="i", action_id="a")
+    with pytest.raises(ValueError, match="ghi chú"):
+        remediation_cases.record_verdict(None, case, verdict="UNSAFE", note="", actor="x")
+    with pytest.raises(ValueError, match="không hợp lệ"):
+        remediation_cases.record_verdict(None, case, verdict="MAYBE", note="", actor="x")
+
+
+def test_long_telegram_actor_fits_the_audit_column(dashboard_client, monkeypatch):
+    from shared.models import AuditEntry
+
+    _verdict_env(monkeypatch)
+    action_pk = _pending_action("inc-verdict-long")
+    _with_case(action_pk)
+    ref = bot.telegram_federation.qualify_reference(action_pk)
+    bot._handle_callback_query({
+        "id": "cb", "data": f"{bot.VERDICT_CALLBACK_PREFIX}{ref}:C",
+        "from": {"id": 42, "username": "u" * 32},
+        "message": {"message_id": 1, "chat": {"id": "-100999"}},
+    }, "123:ABC")
+    with db_module.SessionLocal() as session:
+        entry = session.query(AuditEntry).filter_by(
+            action_id=action_pk, event_type="remediation_case_verdict_updated"
+        ).one()
+        assert len(entry.actor) <= 32
+

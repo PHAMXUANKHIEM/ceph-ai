@@ -203,6 +203,28 @@ def edit_telegram_message(bot_token: str, chat_id: str, message_id: int, text: s
     _call_telegram_api(bot_token, "editMessageText", payload, timeout=TELEGRAM_TIMEOUT_SECONDS)
 
 
+def edit_telegram_message_with_keyboard(
+    bot_token: str, chat_id: str, message_id: int, text: str, buttons: list[tuple[str, str]]
+) -> None:
+    """Replace a message's text and its inline keyboard with ``buttons``.
+
+    Used when a decision leads to a follow-up question (the verdict prompt
+    after Duyệt/Từ chối); ``edit_telegram_message`` keeps clearing the
+    keyboard for the plain "decision recorded" case.
+    """
+    if not bot_token or not chat_id:
+        raise TelegramSendError("Chưa cấu hình Telegram bot token / chat id")
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": sanitize_telegram_text(text),
+        "reply_markup": {
+            "inline_keyboard": [[{"text": label, "callback_data": data} for label, data in buttons]]
+        },
+    }
+    _call_telegram_api(bot_token, "editMessageText", payload, timeout=TELEGRAM_TIMEOUT_SECONDS)
+
+
 def get_telegram_updates(
     bot_token: str,
     offset: int | None,

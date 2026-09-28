@@ -109,13 +109,15 @@ from dashboard.routes.actions import (
     reject_action_core,
 )
 from shared import db
+from shared import remediation_cases as case_memory
 from shared.clusters import get_default_cluster_id
-from shared.models import Action, ActionStatus, Cluster, Incident
+from shared.models import Action, ActionStatus, Cluster, Incident, RemediationCase
 from shared import telegram_federation
 from shared.telegram_client import (
     TelegramSendError,
     answer_telegram_callback,
     edit_telegram_message,
+    edit_telegram_message_with_keyboard,
     get_telegram_updates,
     set_telegram_commands,
     send_telegram_message_with_keyboard,
@@ -127,6 +129,19 @@ APPROVE_CALLBACK_PREFIX = "approve:"
 REJECT_CALLBACK_PREFIX = "reject:"
 POOL_APP_CALLBACK_PREFIX = "poolapp:"
 CANCEL_GRACE_CALLBACK_PREFIX = "cancelgrace:"
+# Autonomy plan WP2.1: one-tap operator verdicts on the AI diagnosis.
+VERDICT_CALLBACK_PREFIX = "v:"
+# code -> (verdict, note); "X" opens the reason choices for a wrong diagnosis.
+VERDICT_CODES: dict[str, tuple[str, str]] = {
+    "C": ("CORRECT", ""),
+    "U": ("UNSAFE", "Operator đánh dấu hành động có thể gây hại (Telegram)"),
+    "I": ("INCONCLUSIVE", ""),
+    "F1": ("FALSE_POSITIVE", "Cảnh báo sai (Telegram)"),
+    "F2": ("FALSE_POSITIVE", "Chẩn đoán sai nguyên nhân (Telegram)"),
+    "F3": ("FALSE_POSITIVE", "Hành động không cần thiết (Telegram)"),
+    "E1": ("INEFFECTIVE", "Không khắc phục được (Telegram)"),
+}
+VERDICT_REASONS_CODE = "X"
 # Telegram holds the getUpdates HTTP connection open for up to this long
 # waiting for a new update — this IS each listener thread's own pacing, no
 # separate sleep needed between iterations while updates keep arriving.
@@ -393,6 +408,100 @@ def _keyboard_for(action_id: str) -> list[tuple[str, str]]:
     ]
 
 
+def _verdict_keyboard(action_id: str) -> list[tuple[str, str]]:
+    action_ref = telegram_federation.qualify_reference(action_id)
+    return [
+        ("✅ Đúng", f"{VERDICT_CALLBACK_PREFIX}{action_ref}:C"),
+        ("❌ Sai", f"{VERDICT_CALLBACK_PREFIX}{action_ref}:{VERDICT_REASONS_CODE}"),
+        ("⚠️ Nguy hiểm", f"{VERDICT_CALLBACK_PREFIX}{action_ref}:U"),
+        ("🤷 Chưa rõ", f"{VERDICT_CALLBACK_PREFIX}{action_ref}:I"),
+    ]
+
+
+def _verdict_reason_keyboard(action_id: str) -> list[tuple[str, str]]:
+    action_ref = telegram_federation.qualify_reference(action_id)
+    return [
+        ("Cảnh báo sai", f"{VERDICT_CALLBACK_PREFIX}{action_ref}:F1"),
+        ("Sai nguyên nhân", f"{VERDICT_CALLBACK_PREFIX}{action_ref}:F2"),
+        ("Không cần làm", f"{VERDICT_CALLBACK_PREFIX}{action_ref}:F3"),
+        ("Không hiệu quả", f"{VERDICT_CALLBACK_PREFIX}{action_ref}:E1"),
+    ]
+
+
+def _split_verdict_callback(data: str) -> tuple[str, str]:
+    """``v:<action ref>:<code>`` -> (action ref, code); the ref may contain ':'."""
+    action_ref, separator, code = data[len(VERDICT_CALLBACK_PREFIX):].rpartition(":")
+    return (action_ref, code) if separator else ("", "")
+
+
+def _case_awaiting_verdict(action_id: str) -> bool:
+    with db.SessionLocal() as session:
+        case = session.query(RemediationCase).filter_by(action_id=action_id).one_or_none()
+        return case is not None and case.operator_verdict is None
+
+
+def _handle_verdict(action_id: str, code: str, actor: str, *, bot_token: str, chat_id: str,
+                    message_id, callback_id) -> None:
+    """Apply one verdict button press; the chat/sender checks already passed."""
+    def answer(text: str) -> None:
+        if callback_id:
+            try:
+                answer_telegram_callback(bot_token, callback_id, text)
+            except TelegramSendError:
+                pass
+
+    if code == VERDICT_REASONS_CODE:
+        answer("Chọn lý do")
+        if message_id is not None:
+            with db.SessionLocal() as session:
+                action = session.get(Action, action_id)
+                incident = session.get(Incident, action.incident_id) if action else None
+                text = _action_message_text(action, incident, session) if action else f"Action ID: {action_id}"
+            try:
+                edit_telegram_message_with_keyboard(
+                    bot_token, chat_id, message_id, text + "\n\n❌ Vì sao chẩn đoán này sai?",
+                    _verdict_reason_keyboard(action_id),
+                )
+            except TelegramSendError:
+                logger.exception("telegram_approval_bot: could not show verdict reasons")
+        return
+    verdict, note = VERDICT_CODES[code]
+    with db.SessionLocal() as session:
+        case = session.query(RemediationCase).filter_by(action_id=action_id).one_or_none()
+        if case is None:
+            answer("Không tìm thấy case để đánh giá")
+            return
+        case_memory.record_verdict(session, case, verdict=verdict, note=note, actor=actor)
+        action = session.get(Action, action_id)
+        incident = session.get(Incident, action.incident_id) if action else None
+        text = _action_message_text(action, incident, session) if action else f"Action ID: {action_id}"
+        session.commit()
+    answer("Đã ghi nhận đánh giá")
+    if message_id is not None:
+        label = case_memory.CASE_VERDICTS.get(verdict, verdict)
+        try:
+            edit_telegram_message(
+                bot_token, chat_id, message_id,
+                text + f"\n\n📝 Đánh giá chẩn đoán: {label}" + (f" — {note}" if note else "") + f" ({actor})",
+            )
+        except TelegramSendError:
+            logger.exception("telegram_approval_bot: could not show recorded verdict")
+
+
+def _edit_after_decision(bot_token: str, chat_id: str, message_id, action_id: str, text: str) -> None:
+    """Show the decision and, while the case has no verdict, ask for one."""
+    try:
+        if _case_awaiting_verdict(action_id):
+            edit_telegram_message_with_keyboard(
+                bot_token, chat_id, message_id, text + "\n\nChẩn đoán của AI có đúng không?",
+                _verdict_keyboard(action_id),
+            )
+        else:
+            edit_telegram_message(bot_token, chat_id, message_id, text)
+    except TelegramSendError:
+        logger.exception("telegram_approval_bot: failed to edit message %s after decision", message_id)
+
+
 def _pool_application_params(action: Action, incident: Incident | None) -> dict:
     """Return choice parameters for both new and legacy pool warnings."""
     try:
@@ -612,6 +721,8 @@ def _database_url_for_approval_callback(data: str) -> str | None:
         action_id = data[len(REJECT_CALLBACK_PREFIX):]
     elif data.startswith(CANCEL_GRACE_CALLBACK_PREFIX):
         action_id = data[len(CANCEL_GRACE_CALLBACK_PREFIX):]
+    elif data.startswith(VERDICT_CALLBACK_PREFIX):
+        action_id = _split_verdict_callback(data)[0]
     if not action_id:
         return None
     return telegram_federation.database_url_for_action_reference(action_id)
@@ -621,6 +732,8 @@ def _approval_action_reference(data: str) -> str:
     if data.startswith(POOL_APP_CALLBACK_PREFIX):
         _pool, separator, action_ref = data[len(POOL_APP_CALLBACK_PREFIX):].partition(":")
         return action_ref if separator else ""
+    if data.startswith(VERDICT_CALLBACK_PREFIX):
+        return _split_verdict_callback(data)[0]
     for prefix in (
         APPROVE_CALLBACK_PREFIX,
         REJECT_CALLBACK_PREFIX,
@@ -643,7 +756,14 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
     incoming_chat_id = str((message.get("chat") or {}).get("id", ""))
 
     selected_pool_app = None
-    if data.startswith(POOL_APP_CALLBACK_PREFIX):
+    verdict_code: str | None = None
+    if data.startswith(VERDICT_CALLBACK_PREFIX):
+        action_id, verdict_code = _split_verdict_callback(data)
+        if not action_id or (verdict_code not in VERDICT_CODES and verdict_code != VERDICT_REASONS_CODE):
+            logger.warning("telegram_approval_bot: invalid verdict callback=%r", data)
+            return
+        core_fn = None
+    elif data.startswith(POOL_APP_CALLBACK_PREFIX):
         remainder = data[len(POOL_APP_CALLBACK_PREFIX):]
         selected_pool_app, separator, action_id = remainder.partition(":")
         if not separator or selected_pool_app not in {"rbd", "cephfs", "rgw"}:
@@ -714,6 +834,12 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
         return
 
     actor = _actor_for(callback_query)
+    if verdict_code is not None:
+        _handle_verdict(
+            action_id, verdict_code, actor, bot_token=bot_token, chat_id=incoming_chat_id,
+            message_id=message_id, callback_id=callback_id,
+        )
+        return
     try:
         if selected_pool_app is not None:
             with db.SessionLocal() as session:
@@ -765,10 +891,7 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
                 base_text = _action_message_text(action, incident, session)
             else:
                 base_text = f"Action ID: {action_id}"
-        try:
-            edit_telegram_message(bot_token, incoming_chat_id, message_id, base_text + edit_suffix)
-        except TelegramSendError:
-            logger.exception("telegram_approval_bot: failed to edit message %s after decision", message_id)
+        _edit_after_decision(bot_token, incoming_chat_id, message_id, action_id, base_text + edit_suffix)
 
 
 _UPDATE_OFFSET_FILE = Path("/var/lib/ceph-ai/telegram-state/telegram-update-offsets.json")

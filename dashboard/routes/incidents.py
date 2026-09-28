@@ -26,6 +26,7 @@ from dashboard.templating import make_templates
 from dashboard.vntime import format_vn
 from shared import audit, change_risk, db, heartbeat
 from shared import incident_postmortem, trust_engine
+from shared import remediation_cases as case_memory
 from shared.unified_event_timeline import merge_event_sources
 from shared.root_cause_chain import build_root_cause_chain
 from dashboard import alert_center
@@ -61,13 +62,7 @@ _DASHBOARD_HEALTH_STALE_SECONDS = 180
 _DASHBOARD_HEALTH_MAX_STALE_SECONDS = DEFAULT_MAX_STALE_SECONDS
 _DASHBOARD_HEALTH_REFRESH_LOCKS: dict[str, threading.Lock] = {}
 _DASHBOARD_HEALTH_REFRESH_LOCKS_GUARD = threading.Lock()
-CASE_VERDICTS = {
-    "CORRECT": "Chẩn đoán/xử lý đúng",
-    "FALSE_POSITIVE": "Cảnh báo sai",
-    "UNSAFE": "Hành động không an toàn",
-    "INEFFECTIVE": "Không khắc phục được",
-    "INCONCLUSIVE": "Chưa đủ bằng chứng",
-}
+CASE_VERDICTS = case_memory.CASE_VERDICTS
 ALERT_MUTE_HOURS = (1, 6, 24)
 
 
@@ -600,14 +595,6 @@ async def update_remediation_case_verdict(
 ):
     if not auth.is_admin_user(user):
         raise HTTPException(status_code=403, detail="Chỉ admin được ghi verdict học máy")
-    verdict = verdict.strip().upper()
-    note = note.strip()
-    if verdict not in CASE_VERDICTS:
-        raise HTTPException(status_code=400, detail="Operator verdict không hợp lệ")
-    if verdict not in {"CORRECT", "INCONCLUSIVE"} and len(note) < 5:
-        raise HTTPException(status_code=400, detail="Verdict sai/không an toàn cần ghi chú ít nhất 5 ký tự")
-    if len(note) > 2000:
-        raise HTTPException(status_code=400, detail="Ghi chú tối đa 2000 ký tự")
     _clusters, selected_cluster = _resolve_selected_cluster(
         "", request.session.get("selected_cluster_id", ""), request=request
     )
@@ -618,14 +605,11 @@ async def update_remediation_case_verdict(
         case = session.query(RemediationCase).filter_by(id=case_id, incident_id=incident_id).one_or_none()
         if case is None:
             raise HTTPException(status_code=404, detail="Không tìm thấy Remediation Case")
-        case.operator_verdict = verdict
-        case.operator_note = note or None
-        case.operator_verdict_by = user
-        case.operator_verdict_at = utc_now()
-        audit.record(
-            session, incident_id=incident_id, action_id=case.action_id,
-            event_type=audit.EVENT_REMEDIATION_CASE_VERDICT_UPDATED, actor=user,
-        )
+        try:
+            case_memory.record_verdict(session, case, verdict=verdict, note=note, actor=user)
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         session.commit()
     return RedirectResponse(f"/incidents/{incident_id}/timeline", status_code=303)
 

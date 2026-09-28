@@ -134,14 +134,14 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 **Hiện trạng:** endpoint `POST /incidents/{id}/cases/{case_id}/verdict` (`dashboard/routes/incidents.py:592`) yêu cầu Dashboard; verdict xấu cần ghi chú ≥ 5 ký tự → không ai dùng.
 
-- [ ] Callback mới trong `dashboard/telegram_approval_bot.py`: prefix `verdict:<case_id>:<VERDICT>[:<reason_code>]` (giữ trong giới hạn 64 byte callback_data của Telegram — dùng mã ngắn: `v:<case8>:C`, map lại qua DB).
-- [ ] Bàn phím dưới tin nhắn chẩn đoán/incident:
+- [x] Callback `v:<action ref>:<code>` trong `dashboard/telegram_approval_bot.py` (≤ 64 byte, có test); mã C/X/U/I + lý do F1/F2/F3/E1.
+- [x] Sau mỗi Duyệt/Từ chối, tin nhắn hỏi "Chẩn đoán của AI có đúng không?" (khi case chưa có verdict):
   - hàng 1: `✅ Đúng` `❌ Sai` `⚠️ Nguy hiểm` `🤷 Chưa rõ`,
   - khi bấm `❌`/`⚠️`: sửa tin nhắn hiển thị **lý do chọn sẵn** (đáp ứng yêu cầu ghi chú): "Cảnh báo sai", "Chẩn đoán sai nguyên nhân", "Hành động không cần thiết", "Hành động có thể gây hại", "Không khắc phục được" → map sang `FALSE_POSITIVE`/`INEFFECTIVE`/`UNSAFE` + `operator_note` = lý do.
-- [ ] Tái dùng kiểm soát người được phép (`TELEGRAM_APPROVAL_USER_IDS`, `_sender_may_decide`) + chat trust hiện có; ghi `operator_verdict_by = telegram:<id>`.
-- [ ] Idempotent: verdict mới ghi đè có audit `EVENT_REMEDIATION_CASE_VERDICT_UPDATED` với giá trị cũ/mới; không cho verdict case của cluster khác.
-- [ ] Refactor phần ghi verdict thành hàm dùng chung `shared/remediation_cases.record_verdict(...)` cho cả Dashboard và Telegram.
-- [ ] Test: mọi nút, lý do bắt buộc cho verdict xấu, người ngoài allowlist bị chặn, callback_data ≤ 64 byte, cross-cluster bị chặn, audit.
+- [x] Tái dùng chat trust theo cluster + `TELEGRAM_APPROVAL_USER_IDS`; `operator_verdict_by = telegram:<username|id>`.
+- [x] Ghi đè có audit (verdict mới/cũ, note, actor đầy đủ trong evidence; actor audit cắt 32 ký tự vì cột VARCHAR(32)).
+- [x] `shared/remediation_cases.record_verdict` dùng chung Dashboard + Telegram (validation giống nhau).
+- [x] Test: nút + lý do, ≤ 64 byte, chat/cluster không tin cậy và người ngoài allowlist bị chặn, mã lạ bị bỏ qua, audit, actor dài (8 test mới).
 
 **Nghiệm thu:** ≥ 30 verdict/tuần trong 2 tuần đầu (đo WP0).
 **Ước lượng:** 1,5 ngày.
@@ -341,6 +341,8 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 26/09/2026 | Lập plan | Baseline §1 đo trên DB production (read-only) | Bảng §1 | Recorded |
 | 28/09/2026 | WP0 KPI | Script + API + thẻ KPI; baseline 6.817 incident, reopen 38,3%, placeholder 97,5%, 0 verdict | `docs/benchmark/autonomy-kpi-baseline-2026-09-28.json` | Accepted |
 | 28/09/2026 | WP1.1 NODE_UNREACHABLE | Hysteresis 3 lần OK + giữ mở khi flapping (≥3 incident/giờ, ổn định 1 giờ mới đóng), 1 cảnh báo chập chờn; replay 1.992 → 231 (−88,4%) | `tests/test_node_health_monitor.py` 22 passed | Partial (chờ deploy đo thật) |
+| 28/09/2026 | WP2.1 Verdict Telegram | Hỏi verdict sau mỗi quyết định, lý do chọn sẵn, hàm ghi dùng chung, audit | `tests/test_telegram_approval_bot.py` 47 passed | Partial (chờ deploy, đo ≥ 30 verdict/tuần) |
+| 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 
 ## 13. Quy tắc trạng thái
 

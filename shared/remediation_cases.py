@@ -328,3 +328,50 @@ def scrub_existing_case_memory(session) -> int:
             changed += 1
     session.commit()
     return changed
+
+
+# Operator verdict vocabulary, shared by the Dashboard and Telegram
+# (autonomy plan WP2.1). A verdict other than CORRECT/INCONCLUSIVE must say
+# why, so the learning loop can tell a false alarm from an unsafe action.
+CASE_VERDICTS = {
+    "CORRECT": "Chẩn đoán/xử lý đúng",
+    "FALSE_POSITIVE": "Cảnh báo sai",
+    "UNSAFE": "Hành động không an toàn",
+    "INEFFECTIVE": "Không khắc phục được",
+    "INCONCLUSIVE": "Chưa đủ bằng chứng",
+}
+NOTE_REQUIRED_MIN_CHARS = 5
+NOTE_MAX_CHARS = 2000
+
+
+def record_verdict(session, case: RemediationCase, *, verdict: str, note: str, actor: str,
+                   now: datetime | None = None) -> str | None:
+    """Store an operator verdict on ``case`` and audit it; returns the previous one.
+
+    Raises ``ValueError`` for an unknown verdict, a missing note on a negative
+    verdict or an oversized note. Does not commit.
+    """
+    from shared import audit
+    from shared.time import utc_now
+
+    verdict = str(verdict or "").strip().upper()
+    note = str(note or "").strip()
+    if verdict not in CASE_VERDICTS:
+        raise ValueError("Operator verdict không hợp lệ")
+    if verdict not in {"CORRECT", "INCONCLUSIVE"} and len(note) < NOTE_REQUIRED_MIN_CHARS:
+        raise ValueError("Verdict sai/không an toàn cần ghi chú ít nhất 5 ký tự")
+    if len(note) > NOTE_MAX_CHARS:
+        raise ValueError("Ghi chú tối đa 2000 ký tự")
+    previous = case.operator_verdict
+    case.operator_verdict = verdict
+    case.operator_note = note or None
+    case.operator_verdict_by = str(actor)[:64]
+    case.operator_verdict_at = now or utc_now()
+    audit.record(
+        # audit_entries.actor is VARCHAR(32); "telegram:<32-char username>"
+        # would fail the commit on PostgreSQL. The full actor is in the evidence.
+        session, incident_id=case.incident_id, action_id=case.action_id,
+        event_type=audit.EVENT_REMEDIATION_CASE_VERDICT_UPDATED, actor=str(actor)[:32],
+        evidence={"verdict": verdict, "previous_verdict": previous, "note": note or None, "actor": actor},
+    )
+    return previous
