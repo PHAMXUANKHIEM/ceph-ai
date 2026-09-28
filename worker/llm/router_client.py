@@ -15,7 +15,7 @@ import yaml
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
-from shared import alert_lifecycle, audit, change_risk, db, incident_events, log_learning, remediation_cases, trust_engine
+from shared import alert_lifecycle, audit, change_risk, db, decision_log, incident_events, log_learning, remediation_cases, trust_engine
 from shared.autopilot_guardrails import (
     AutopilotMode,
     cluster_configured_mode,
@@ -889,6 +889,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 "diagnosis_confidence": 1.0,
             }
     triage_decided = False
+    evidence = None
     if not deterministic_omap:
         # Autonomy plan WP3.4: read-only evidence first; a confident rule
         # conclusion replaces the LLM call, otherwise the LLM sees the evidence.
@@ -1399,6 +1400,16 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 change_risk.attach_summary(action, risk)
                 trust_engine.record_shadow_decision(
                     session, case=remediation_case, action=action,
+                )
+                # Autonomy plan WP6.1: log the decision for off-policy learning.
+                decision_log.record(
+                    session, incident=incident, case=remediation_case, chosen_action=action_id,
+                    chosen_by=(
+                        "rules" if triage_decided
+                        else "deterministic" if deterministic_code or deterministic_omap
+                        else "llm"
+                    ),
+                    envelope=payload, triage=evidence.triage if evidence is not None else None,
                 )
                 session.commit()
             except IntegrityError:

@@ -283,14 +283,14 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ### WP6.1 Decision log phục vụ học off-policy
 
-- [ ] Bảng `autonomy_decisions(id, case_id, context_features_json, candidate_actions_json, chosen_action, chosen_by{policy,operator}, propensity, policy_version, outcome, reward, created_at)` + migration.
-- [ ] Ghi mọi quyết định hiện tại (kể cả đề xuất bị từ chối) với propensity: rule-based → 1.0 cho action được chọn; khi có exploration → xác suất thật.
-- [ ] Feature: fault family, severity, evidence tóm tắt (WP3), số OSD/host ảnh hưởng, trạng thái cluster (degraded %, recovery), giờ trong ngày, lịch sử playbook (trust score), device class.
+- [x] Bảng `autonomy_decisions(id, case_id, incident_id, cluster_id, fault_family, context_json, candidates_json, chosen_action, chosen_by{rules,llm,deterministic}, propensity, policy_version, created_at)` + migration `m20260928autonomydecisions`. **Đổi hướng:** không lưu `outcome/reward` — `shared/decision_log.reward_for` tính lúc báo cáo từ verdict operator (ưu tiên) rồi outcome đã verify, để reward không bao giờ cũ. Bắt đầu ghi **trước** điều kiện ≥ 200 nhãn để dữ liệu tích luỹ sẵn; phần học (WP6.3) vẫn chờ đủ nhãn.
+- [x] Worker ghi mọi đề xuất mới trong cùng transaction tạo Action/RemediationCase (kể cả đề xuất sau này bị từ chối — verdict/outcome gắn qua case), nguồn quyết định `rules`/`llm`/`deterministic`, propensity 1.0 (chưa có exploration).
+- [x] Feature có cấu trúc, không văn bản tự do/IP: fault family, severity, trạng thái cluster, số node ảnh hưởng, giờ UTC, độ tin chẩn đoán, trust score + số mẫu shadow, classification, kết luận + độ tin triage (WP3.4). **Chưa có:** degraded %, recovery, device class.
 
 ### WP6.2 Đánh giá off-policy (OPE)
 
-- [ ] `shared/off_policy_evaluation.py`: IPS, SNIPS, Doubly Robust + bootstrap CI; `scripts/ope_report.py`.
-- [ ] Test trên dữ liệu tổng hợp có đáp án biết trước.
+- [x] `shared/off_policy_evaluation.py`: IPS, SNIPS, Doubly Robust, bootstrap CI (percentile), effective sample size và **support** (tỉ lệ log mà policy đích đặt xác suất > 0 lên action đã log); `scripts/ope_report.py` (chỉ đọc) báo cáo và cảnh báo khi toàn bộ propensity = 1.0 (chỉ đánh giá được chính policy đang chạy).
+- [x] Test trên bandit tổng hợp có giá trị thật tính tay (0,85): IPS/SNIPS nằm trong CI, DR chính xác với reward model đúng và tự sửa khi reward model sai; log tất định → support 0, không đưa ra con số (`tests/test_off_policy_evaluation.py`, `tests/test_decision_log.py`).
 
 ### WP6.3 Chính sách "tự làm hay gọi người" (execute vs escalate)
 
@@ -392,6 +392,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | Review — release_gate | `release_gate` nay cần `integration` thành công. Còn lại: image vẫn được build/push trong job `quality` trước khi integration xong | workflow | Partial |
 | 28/09/2026 | Review — artifact CS-LAB | `scripts/evidence_smoke.py` (chỉ đọc, không lưu output lệnh, che IP) → `docs/benchmark/evidence-smoke-2026-09-28.json`: 5 runbook, 19/19 collector ok, lượt dài nhất 16,7 s; triage: TRANSIENT, RECOVERED×2, UNKNOWN×2 | artifact | Done |
 | 28/09/2026 | Review — chưa làm được bằng code | Deploy canary + đo KPI ≥ 7 ngày; ≥ 100 verdict; deploy/live workflow trên runner đúng; PostgreSQL/RabbitMQ/rollback/soak/DR; HA | — | Chờ vận hành |
+| 28/09/2026 | WP6.1–6.2 Decision log + OPE | Worker ghi quyết định (nguồn, context có cấu trúc, propensity) cho mọi case mới; IPS/SNIPS/DR + CI + support; báo cáo chỉ đọc. Học/exploration (WP6.3) vẫn chờ ≥ 200 nhãn | 17 test mới, 212 passed | Done (chờ deploy + migrate) |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 

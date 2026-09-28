@@ -4059,3 +4059,34 @@ def test_low_confidence_rule_falls_back_to_the_llm(isolated_db, monkeypatch):
     gate = asyncio.run(evidence_gate.prepare("x", "OSD_LATENCY_HIGH:1"))
     assert gate.triage.conclusion == "RECOVERED" and gate.triage.confidence < settings.triage_min_confidence
     assert gate.decided is False and "[E1] ceph_osd_perf" in gate.prompt_block
+
+
+def test_every_new_case_logs_a_decision_with_its_source(isolated_db, monkeypatch):
+    from shared.models import AutonomyDecision
+
+    _gate_on(monkeypatch, [_evidence_row("ceph_time_sync", SKEWED)])
+
+    async def must_not_call(user_content):
+        raise AssertionError("rules decided")
+
+    monkeypatch.setattr(router_client, "_call_router", must_not_call)
+    _create_incident("decision-rules")
+    asyncio.run(router_client.diagnose_incident("decision-rules", dict(ENVELOPE, incident_id="decision-rules")))
+
+    monkeypatch.setattr(settings, "investigation_enabled", False)
+
+    async def llm(user_content):
+        return {"diagnosis_text": "skew", "action_id": "resync_ntp", "rationale": "ntp"}
+
+    monkeypatch.setattr(router_client, "_call_router", llm)
+    with db_module.SessionLocal() as session:
+        session.get(Incident, "decision-rules").status = IncidentStatus.RESOLVED.value
+        session.commit()
+    _create_incident("decision-llm")
+    asyncio.run(router_client.diagnose_incident("decision-llm", dict(ENVELOPE, incident_id="decision-llm")))
+    with db_module.SessionLocal() as session:
+        rows = {row.incident_id: row for row in session.query(AutonomyDecision)}
+        assert rows["decision-rules"].chosen_by == "rules"
+        assert json.loads(rows["decision-rules"].context_json)["triage_conclusion"] == "MON_SKEWED"
+        assert rows["decision-llm"].chosen_by == "llm"
+        assert all(row.propensity == 1.0 and row.chosen_action == "resync_ntp" for row in rows.values())

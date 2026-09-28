@@ -792,6 +792,33 @@ class IncidentEvidence(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
+class AutonomyDecision(Base):
+    """One logged remediation decision for off-policy learning (autonomy
+    plan WP6.1). Written when the Worker creates an Action/RemediationCase:
+    structured context features only (no free text), the chosen action, who
+    chose it and with what probability. Rewards are derived later from the
+    case's operator verdict and verified outcome (shared/decision_log.py),
+    so they never go stale here."""
+
+    __tablename__ = "autonomy_decisions"
+    __table_args__ = (
+        Index("ix_autonomy_decisions_family_created", "fault_family", "created_at"),
+        UniqueConstraint("case_id", name="uq_autonomy_decisions_case"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    case_id: Mapped[str] = mapped_column(String(36), ForeignKey("remediation_cases.id"), nullable=False)
+    incident_id: Mapped[str] = mapped_column(String(36), ForeignKey("incidents.id"), nullable=False)
+    cluster_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    fault_family: Mapped[str] = mapped_column(String(64), nullable=False)
+    context_json: Mapped[str] = mapped_column(Text, nullable=False)
+    candidates_json: Mapped[str] = mapped_column(Text, nullable=False)
+    chosen_action: Mapped[str] = mapped_column(String(64), nullable=False)
+    chosen_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    propensity: Mapped[float] = mapped_column(Float, nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
 class ObjectStorageAuditEntry(Base):
     """Audit trail for direct RGW mutations that have no Incident parent."""
 
