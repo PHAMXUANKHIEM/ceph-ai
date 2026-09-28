@@ -251,12 +251,15 @@ class EvidenceRunner:
 
 
 class SshTransport:
-    """Production transport over the cluster's read-only SSH identity."""
+    """Production transport over the cluster's read-only SSH identity.
+    ``cluster=None`` means the default cluster configured in ``settings``."""
 
-    def __init__(self, cluster):
+    def __init__(self, cluster=None):
+        from config.settings import settings
         from shared.cluster_nodes import resolve_ssh_creds
 
-        self.mon_nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]
+        mon_nodes = cluster.ceph_mon_nodes if cluster is not None else settings.ceph_mon_nodes
+        self.mon_nodes = [node.strip() for node in str(mon_nodes or "").split(",") if node.strip()]
         self.ssh_user, self.ssh_key_path, self.exec_mode, self.container_name = resolve_ssh_creds(cluster)
 
     def ceph(self, command: str, timeout: int) -> Any:

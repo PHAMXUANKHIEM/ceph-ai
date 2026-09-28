@@ -7086,3 +7086,6 @@ body:not(.dashboard-page-shell) .chat-fab,
 .ceph-feature-ok { color: var(--success, #2e7d32); font-weight: 600; }
 .ceph-feature-warn { color: var(--warning, #b26a00); font-weight: 600; }
 .ceph-feature-info, .ceph-feature-unavailable { color: var(--muted); }
+.evidence-row { margin: 6px 0; }
+.evidence-row summary { cursor: pointer; }
+.evidence-output { max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: .75rem; }

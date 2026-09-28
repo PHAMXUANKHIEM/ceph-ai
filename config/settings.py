@@ -406,6 +406,13 @@ class Settings(BaseSettings):
     verdict_nudge_enabled: bool = True
     verdict_nudge_hour: int = Field(default=9, ge=0, le=23)
     verdict_nudge_limit: int = Field(default=5, ge=1, le=20)
+    # Autonomy plan WP3.3: collect read-only evidence (runbooks in
+    # worker/policy/investigation_runbooks.yaml) for newly opened incidents,
+    # in a background thread so it never delays incident detection.
+    investigation_enabled: bool = True
+    investigation_scan_interval_seconds: int = Field(default=60, ge=30, le=3600)
+    investigation_max_age_minutes: int = Field(default=30, ge=5, le=1440)
+    investigation_incidents_per_scan: int = Field(default=2, ge=1, le=10)
 
     # Vitastor is a separate product workspace, so its chat connection must
     # not silently inherit or overwrite the Ceph AI provider configuration.

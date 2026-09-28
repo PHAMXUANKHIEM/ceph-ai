@@ -771,6 +771,27 @@ class IncidentTimelineEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
+class IncidentEvidence(Base):
+    """Read-only evidence collected for an Incident before diagnosis
+    (autonomy plan WP3.3, shared/evidence_collectors.py). One row per
+    collector run, including refused/skipped ones, so "was this incident
+    investigated" is simply "does it have rows"."""
+
+    __tablename__ = "incident_evidence"
+    __table_args__ = (Index("ix_incident_evidence_incident", "incident_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    incident_id: Mapped[str] = mapped_column(String(36), ForeignKey("incidents.id"), nullable=False)
+    runbook: Mapped[str] = mapped_column(String(64), nullable=False)
+    collector_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    target: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    command: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
 class ObjectStorageAuditEntry(Base):
     """Audit trail for direct RGW mutations that have no Incident parent."""
 

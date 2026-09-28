@@ -227,9 +227,11 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ### WP3.3 Chạy tự động khi incident mở
 
-- [ ] Hook trong Watcher/Worker: incident mới (không phải FLAPPING lặp) → chạy runbook → lưu `incident_evidence(incident_id, collector_id, status, output_redacted, started_at, duration_ms)` + migration.
-- [ ] Hiển thị evidence trên timeline incident và Telegram (tóm tắt 3 dòng).
-- [ ] Test end-to-end với client Ceph/SSH giả.
+- [x] Chạy tự động: **đổi hướng** — thay vì móc vào >10 chỗ tạo incident, `watcher/investigation_scanner.py` là một scan phụ của Watcher (thread riêng, không chặn phát hiện): mỗi 60 s lấy ≤ 2 incident đang mở, ≤ 30 phút tuổi, chưa có evidence → chạy runbook → lưu `incident_evidence(incident_id, runbook, collector_id, target, status, command, output_redacted, truncated, duration_ms, created_at)` + migration `m20260928incidentevidence` + sự kiện timeline `evidence_collected`. Incident lặp của host FLAPPING được đánh dấu `skipped_flapping`, không SSH; một fault family/cluster chỉ chạy 1 lần/10 phút (cơn bão cùng loại chỉ tốn 1 lượt). Cấu hình: `INVESTIGATION_ENABLED`, `INVESTIGATION_SCAN_INTERVAL_SECONDS`, `INVESTIGATION_MAX_AGE_MINUTES`, `INVESTIGATION_INCIDENTS_PER_SCAN`.
+- [x] Hiển thị evidence trên timeline incident (tóm tắt 3 dòng + từng collector, output đã redact).
+- [ ] Tóm tắt 3 dòng trên Telegram (`incident_evidence.summary_lines` đã sẵn) — chưa gắn vào tin nhắn.
+- [ ] Cluster quan sát (không mặc định): chưa chạy — loop của chúng không có scan phụ.
+- [x] Test end-to-end với transport giả (`tests/test_investigation_scanner.py`, 8 passed) + trang timeline.
 
 ### WP3.4 Chẩn đoán xác định trước LLM
 
@@ -378,6 +380,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP4 Tính năng Ceph (chỉ đọc) | Card Disk Risk: devicehealth, diskprediction_local, pg_autoscaler, balancer + SMART; phân biệt smartctl lỗi; action bật module hoãn (đĩa ảo) | 14 passed | Partial (chờ deploy; action + ingest định kỳ còn lại) |
 | 28/09/2026 | WP3.1 Evidence collectors | 15 collector chỉ đọc, chặn lệnh ghi 2 lớp, ngân sách/breaker/cooldown; thử thật 11/11 ok | 28 passed | Done (chưa gắn vào incident — WP3.3) |
 | 28/09/2026 | WP3.2 Runbook điều tra | 12 runbook + default, validator đồng bộ với registry; chạy thật OSD_LATENCY_HIGH 5/5 ok trong 37 s | 22 passed | Done |
+| 28/09/2026 | WP3.3 Tự thu evidence khi incident mở | Scan phụ nền, bảng incident_evidence + migration, hiển thị timeline; Telegram + cluster quan sát còn lại | 8 passed (135 cùng watcher/migrations) | Partial (chờ deploy + migrate) |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 

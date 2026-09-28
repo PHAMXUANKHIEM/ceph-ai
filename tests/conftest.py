@@ -152,6 +152,8 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     # tests offline and deterministic; forecast-focused tests opt in explicitly.
     monkeypatch.setattr(settings, "node_resource_forecast_enabled", False, raising=False)
     monkeypatch.setattr(settings, "node_resource_live_ingest_enabled", False, raising=False)
+    # Evidence collection (WP3.3) would SSH to the fake MON nodes above.
+    monkeypatch.setattr(settings, "investigation_enabled", False, raising=False)
     monkeypatch.setattr(settings, "ssh_key_path", str(test_ssh_key_path))
 
     # Code Repair persists cursors, locks, nightly state, and capability-

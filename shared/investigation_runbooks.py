@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from shared.autonomy_kpi import fault_family
 from shared.evidence_collectors import CEPH, COLLECTORS, HOST, PARAMETER_PATTERNS, EvidenceRequest

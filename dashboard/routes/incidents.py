@@ -27,6 +27,7 @@ from dashboard.templating import make_templates
 from dashboard.vntime import format_vn
 from shared import audit, change_risk, db, heartbeat
 from shared import incident_postmortem, trust_engine
+from shared import incident_evidence
 from shared import remediation_cases as case_memory
 from shared.unified_event_timeline import merge_event_sources
 from shared.root_cause_chain import build_root_cause_chain
@@ -626,6 +627,7 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
             ).all()
         }
         rca_evidence = _rca_evidence(incident.signal_evidence_json)
+        evidence_rows = incident_evidence.for_incident(session, incident_id)
     return templates.TemplateResponse(request, "incident_timeline.html", {
         "user": user, "is_admin": auth.is_admin_user(user), "clusters": clusters,
         "selected_cluster": selected_cluster, "incident": incident, "timeline": timeline,
@@ -636,6 +638,8 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
         "shadow_comparison": trust_engine.shadow_comparison,
         "grace_action_ids": grace_action_ids,
         "rca_evidence": rca_evidence,
+        "evidence_rows": evidence_rows,
+        "evidence_summary": incident_evidence.summary_lines(evidence_rows),
         "incident_target": _rgw_incident_target(incident),
     })
 

@@ -27,6 +27,7 @@ from watcher import (
     crush_structure_monitor,
     database_capacity_monitor,
     device_health_monitor,
+    investigation_scanner,
     log_intel,
     node_health_monitor,
     osd_latency_monitor,
@@ -938,6 +939,7 @@ def run(
     last_node_reachability_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_bluestore_omap_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_osd_latency_scan_at: Optional[datetime] = initial_auxiliary_scan_at
+    last_investigation_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_crush_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     # Host telemetry feeds the Node Monitoring time-series and needs a much
     # shorter cadence than the CRUSH/RCA scans. Keep it independent so a
@@ -1378,6 +1380,25 @@ def run(
                 f"osd-latency-{cluster_id or 'default'}", scan_osd_latency,
             )
             last_osd_latency_scan_at = now
+
+        # Autonomy plan WP3.3: read-only evidence for newly opened incidents,
+        # in its own thread (a runbook can take ~40 s of SSH round trips) so
+        # detection above never waits for it.
+        if (
+            last_investigation_scan_at is None
+            or (now - last_investigation_scan_at).total_seconds()
+            >= settings.investigation_scan_interval_seconds
+        ):
+            def scan_investigations() -> None:
+                try:
+                    investigation_scanner.scan_default_cluster(cluster_id)
+                except Exception:
+                    logger.exception("run: investigation scan failed")
+
+            run_auxiliary_scan(
+                f"investigation-{cluster_id or 'default'}", scan_investigations,
+            )
+            last_investigation_scan_at = now
 
         # 2026-08-07 (Epic 12, Story 12.1 + 12.2): CRUSH structure + OSD
         # distribution scan, plus Skew detection off that same data — own

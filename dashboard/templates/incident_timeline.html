@@ -76,6 +76,21 @@
         {% endif %}
       </div>
     </section>
+    <section class="card" id="incident-evidence">
+      <div class="card-header"><div><h2>Bằng chứng tự động (chỉ đọc)</h2><p class="hint">Thu theo runbook trước khi chẩn đoán; không lệnh nào thay đổi cluster.</p></div></div>
+      <div class="card-body">
+      {% if evidence_rows %}
+        {% for line in evidence_summary %}<p class="hint">{{ line }}</p>{% endfor %}
+        {% for row in evidence_rows %}
+        <details class="evidence-row">
+          <summary><code>{{ row.collector_id }}</code> · {{ row.target }} · <strong>{{ row.status }}</strong>{% if row.duration_ms %} · {{ row.duration_ms }} ms{% endif %}{% if row.truncated %} · đã cắt bớt{% endif %}</summary>
+          {% if row.command %}<p class="hint"><code>{{ row.command }}</code></p>{% endif %}
+          {% if row.output_redacted %}<pre class="evidence-output">{{ row.output_redacted }}</pre>{% endif %}
+        </details>
+        {% endfor %}
+      {% else %}<p class="empty-state">Chưa thu bằng chứng cho incident này.</p>{% endif %}
+      </div>
+    </section>
     <section class="card">
       <div class="card-header"><div><h2>Remediation Case Memory</h2><p class="hint">Đánh giá của operator được lưu cùng Case và Audit, không tự thay đổi autonomy.</p></div></div>
       <div class="card-body">
