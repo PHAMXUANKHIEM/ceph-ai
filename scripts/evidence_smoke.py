@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -28,6 +28,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ssh-key", help="read-only SSH key path on this host (overrides the stored path)")
     parser.add_argument("--code", action="append", help="incident code to investigate (repeatable)")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--git-sha", default=os.environ.get("GIT_SHA", "unknown"),
+                        help="commit recorded in the artifact (default: $GIT_SHA)")
     args = parser.parse_args(argv)
 
     from shared import db, deterministic_triage, evidence_collectors as ec, investigation_runbooks as ir
@@ -63,10 +65,9 @@ def main(argv: list[str] | None = None) -> int:
             "triage": {"conclusion": triage.conclusion, "confidence": triage.confidence,
                        "action_id": triage.action_id, "summary": triage.summary},
         })
-    sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     report = {
         "schema": "ceph-ai.evidence-smoke.v1",
-        "git_sha": sha,
+        "git_sha": args.git_sha,
         "cluster_name": cluster.name,
         "read_only": True,
         "output_stored": False,
