@@ -58,16 +58,16 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 **Mục tiêu:** một lệnh duy nhất trả toàn bộ KPI §2 theo tuần, theo cluster, theo fault family — đọc-only.
 
-- [ ] Tạo `scripts/autonomy_kpi_report.py` (read-only, SQL portable SQLite/PostgreSQL, output JSON + text):
+- [x] Tạo `scripts/autonomy_kpi_report.py` + `shared/autonomy_kpi.py` (read-only, ORM portable, chỉ đọc cột cần — 1,9s trên production) (`WP0 commit`):
   - incident/tuần theo `ceph_code` (chuẩn hóa `NODE_UNREACHABLE:*`, `OSD_LATENCY_HIGH:*` về family),
   - tỉ lệ incident "tái mở" (cùng code/host mở lại < 30 phút sau khi RESOLVED),
   - phân bố `actions.action_id`, tỉ lệ `investigate_manually`,
   - verdict/tuần theo loại, độ trễ verdict (detected → verdict),
   - evidence coverage (sau WP3), FRR (sau WP6),
   - `--since`, `--cluster`, `--weeks N`.
-- [ ] Test `tests/test_autonomy_kpi_report.py` với SQLite in-memory: chuẩn hóa family, tái mở, tỉ lệ, tuần rỗng.
-- [ ] Endpoint read-only `GET /api/ai-learning/autonomy-kpi` (admin) dùng chung hàm; thẻ KPI trên trang `/ai-learning` (template `dashboard/templates/ai_learning.html`).
-- [ ] Chạy baseline, lưu `docs/benchmark/autonomy-kpi-baseline-<date>.json`, ghi vào §12.
+- [x] `tests/test_autonomy_kpi.py`: family, tái mở cùng code/khác host/ngoài cửa sổ, tỉ lệ placeholder, verdict + median, lọc cluster + legacy NULL, cửa sổ rỗng trả null, API admin.
+- [x] `GET /api/ai-learning/autonomy-kpi?days=` (admin, theo cluster đang chọn, gồm dòng legacy NULL của cluster mặc định); thẻ KPI ở tab Tổng quan (`dashboard/static/autonomy_kpi.js`).
+- [x] Baseline `docs/benchmark/autonomy-kpi-baseline-2026-09-28.json`: 6.817 incident/30 ngày (~1.591/tuần), **38,3% mở lại < 30 phút**, `investigate_manually` 97,5%, 0/4.155 verdict.
 
 **Nghiệm thu:** script chạy trên DB production < 30s, số liệu khớp bảng §1 (sai lệch < 1%).
 **Ước lượng:** 0,5–1 ngày.
@@ -339,6 +339,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | Ngày | Hạng mục | Kết quả | Evidence | Trạng thái |
 |---|---|---|---|---|
 | 26/09/2026 | Lập plan | Baseline §1 đo trên DB production (read-only) | Bảng §1 | Recorded |
+| 28/09/2026 | WP0 KPI | Script + API + thẻ KPI; baseline 6.817 incident, reopen 38,3%, placeholder 97,5%, 0 verdict | `docs/benchmark/autonomy-kpi-baseline-2026-09-28.json` | Accepted |
 
 ## 13. Quy tắc trạng thái
 

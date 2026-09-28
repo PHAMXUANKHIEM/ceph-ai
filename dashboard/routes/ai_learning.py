@@ -17,6 +17,7 @@ from dashboard.cluster_scope import cluster_selection
 from dashboard.routes.auth import is_admin_user, require_login
 from dashboard.templating import make_templates
 from shared import (
+    autonomy_kpi,
     canary,
     db,
     forecast_feedback,
@@ -964,6 +965,21 @@ async def model_quality_report_api(request: Request, hours: int = 24,
         return model_quality_report.quality_report(cluster.id, hours=hours)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/ai-learning/autonomy-kpi")
+async def autonomy_kpi_api(request: Request, days: int = 30, user: str = Depends(require_login)):
+    """Read-only autonomy KPIs (autonomy plan WP0) for the selected cluster."""
+    _require_admin(user)
+    if not 1 <= days <= 180:
+        raise HTTPException(status_code=400, detail="days phải trong khoảng 1–180")
+    _clusters, cluster = cluster_selection(request)
+    with db.SessionLocal() as session:
+        report = autonomy_kpi.collect(
+            session, days=days, cluster_id=cluster.id, include_unscoped=bool(cluster.is_default),
+        )
+        session.rollback()
+    return report
 
 
 @router.get("/api/ai-learning/canary")
