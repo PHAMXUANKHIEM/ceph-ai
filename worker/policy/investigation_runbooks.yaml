@@ -1,0 +1,159 @@
+# Read-only investigation runbooks (autonomy plan WP3.2).
+#
+# For each fault family (the part of `ceph_code` before ":"), the evidence
+# to collect before any diagnosis, the questions that evidence answers and
+# how to read it.  Collector ids must exist in shared/evidence_collectors.py;
+# shared/investigation_runbooks.py validates this file and turns a runbook
+# into evidence requests for one incident.
+#
+# `host:` says where a HOST collector runs: `mon` (the first MON) or
+# `incident_host` (the host named by the incident).  `params:` values may
+# use the incident context: {host}, {osd_id}, {devid}.  A collector whose
+# context is missing is skipped for that incident, never guessed.
+#
+# Keep at most 8 ceph collectors per runbook: each takes 3-5 s through
+# `cephadm shell` and one run has a 60 s budget.
+version: 1
+default:
+  description: Ảnh chụp chung khi chưa có runbook riêng cho mã lỗi.
+  collectors:
+    - ceph_health_detail
+    - ceph_osd_tree
+    - ceph_crash_ls_new
+  questions:
+    - Cluster đang có những health check nào cùng lúc?
+    - Có daemon crash mới không?
+
+runbooks:
+  NODE_UNREACHABLE:
+    description: Host không trả lời Watcher.
+    collectors:
+      - {id: mon_ping, host: mon, params: {target: "{host}"}}
+      - {id: host_uptime, host: incident_host}
+      - ceph_osd_tree
+      - ceph_health_detail
+    questions:
+      - MON có ping được host không?
+      - SSH vào host có được không (host_uptime ok hay lỗi)?
+      - OSD trên host còn up không?
+    conclusions:
+      - {when: "ping ok, ssh lỗi", then: "sshd/firewall trên host; kiểm tra dịch vụ SSH, không reboot"}
+      - {when: "ping lỗi, OSD trên host down", then: "host down; kiểm tra IPMI/nguồn"}
+      - {when: "ping lỗi, OSD trên host vẫn up", then: "mạng quản trị lỗi, data plane ổn; không reboot"}
+      - {when: "uptime vừa reset", then: "host vừa khởi động lại; theo dõi, không hành động"}
+
+  OSD_DOWN:
+    description: Một hoặc nhiều OSD down.
+    collectors:
+      - ceph_osd_tree
+      - ceph_health_detail
+      - ceph_crash_ls_new
+      - {id: ceph_osd_metadata, params: {osd_id: "{osd_id}"}}
+      - ceph_device_ls
+    questions:
+      - OSD nào down, cùng host hay rải rác?
+      - Daemon có crash không (crash ls-new)?
+      - Thiết bị của OSD có dấu hiệu hỏng không?
+    conclusions:
+      - {when: "nhiều OSD down cùng một host", then: "lỗi ở mức host/mạng, xem NODE_UNREACHABLE"}
+      - {when: "một OSD down và có crash mới", then: "daemon crash; xem crash trước khi restart"}
+
+  OSD_LATENCY_HIGH:
+    description: Commit/apply latency của OSD vượt ngưỡng.
+    collectors:
+      - ceph_osd_perf
+      - {id: ceph_osd_slow_ops, params: {osd_id: "{osd_id}"}}
+      - {id: ceph_osd_metadata, params: {osd_id: "{osd_id}"}}
+      - ceph_osd_df
+      - ceph_pg_dump_stuck
+    questions:
+      - Chỉ một OSD chậm hay nhiều OSD cùng host?
+      - Slow op tập trung ở loại op nào?
+      - OSD có đầy hoặc đang recovery/backfill không?
+    conclusions:
+      - {when: "một OSD chậm, các OSD khác bình thường", then: "nghi đĩa; xem device health"}
+      - {when: "mọi OSD cùng host chậm", then: "nghi host (CPU/RAM/mạng)"}
+      - {when: "đang backfill/recovery", then: "tải tạm thời; theo dõi, không restart"}
+
+  BLUESTORE_SLOW_OP_ALERT:
+    description: BlueStore báo slow operation.
+    collectors:
+      - ceph_health_detail
+      - ceph_osd_perf
+      - {id: ceph_osd_slow_ops, params: {osd_id: "{osd_id}"}}
+      - ceph_device_ls
+    questions:
+      - OSD nào báo slow op, có trùng OSD latency cao không?
+
+  SLOW_OPS:
+    description: Request bị chậm trên OSD/MON.
+    collectors:
+      - ceph_health_detail
+      - ceph_osd_perf
+      - {id: ceph_osd_slow_ops, params: {osd_id: "{osd_id}"}}
+      - ceph_pg_dump_stuck
+    questions:
+      - Slow op nằm ở OSD nào và kéo dài bao lâu?
+
+  MON_CLOCK_SKEW:
+    description: Giờ giữa các MON lệch nhau.
+    collectors:
+      - ceph_time_sync
+      - ceph_health_detail
+      - {id: host_uptime, host: incident_host}
+    questions:
+      - MON nào lệch và lệch bao nhiêu?
+    conclusions:
+      - {when: "một MON lệch", then: "đồng bộ NTP trên MON đó (resync_ntp, cần duyệt)"}
+
+  PG_DEGRADED:
+    description: PG thiếu bản sao.
+    collectors:
+      - ceph_health_detail
+      - ceph_pg_dump_stuck
+      - ceph_osd_tree
+      - ceph_osd_df
+    questions:
+      - PG degraded do OSD down hay do đang recovery?
+      - Có PG stuck không?
+
+  POOL_NEARFULL:
+    description: Pool gần đầy.
+    collectors:
+      - ceph_health_detail
+      - ceph_osd_df
+    questions:
+      - OSD nào đầy nhất, phân bố có lệch không?
+
+  LARGE_OMAP_OBJECTS:
+    description: Object có omap lớn (thường là index bucket RGW).
+    collectors:
+      - ceph_health_detail
+      - ceph_pg_dump_stuck
+    questions:
+      - Pool nào chứa object omap lớn?
+
+  DEVICE_HEALTH:
+    description: Ceph dự đoán thiết bị sắp hỏng.
+    collectors:
+      - ceph_device_ls
+      - {id: ceph_device_health, params: {devid: "{devid}"}}
+      - ceph_osd_tree
+    questions:
+      - Thiết bị gắn với OSD nào, dự đoán còn bao lâu?
+
+  CRUSH_SKEW_USE:
+    description: Mức dùng giữa các OSD lệch nhiều.
+    collectors:
+      - ceph_osd_df
+      - ceph_osd_tree
+    questions:
+      - OSD nào lệch nhất so với trung bình?
+
+  CRUSH_SKEW_PG:
+    description: Số PG giữa các OSD lệch nhiều.
+    collectors:
+      - ceph_osd_df
+      - ceph_osd_tree
+    questions:
+      - OSD nào có số PG lệch nhất?

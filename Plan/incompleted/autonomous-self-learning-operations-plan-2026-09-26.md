@@ -219,9 +219,11 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ### WP3.2 Runbook điều tra dạng dữ liệu
 
-- [ ] `worker/policy/investigation_runbooks.yaml`: theo `fault_family`/code → danh sách collector + câu hỏi chẩn đoán + tiêu chí kết luận (giống cách HolmesGPT dùng runbook).
-- [ ] Viết runbook cho top code: `NODE_UNREACHABLE`, `BLUESTORE_SLOW_OP_ALERT`, `OSD_LATENCY_HIGH`, `OSD_DOWN`, `MON_CLOCK_SKEW`, `PG_DEGRADED`, `POOL_NEARFULL`, `LARGE_OMAP_OBJECTS`, `DEVICE_HEALTH`, `SLOW_OPS`.
-- [ ] Validator schema + test (mọi collector trong runbook phải tồn tại trong registry).
+- [x] `worker/policy/investigation_runbooks.yaml`: theo fault family → danh sách collector (+ chỗ chạy `mon`/`incident_host`, tham số từ ngữ cảnh `{host}`/`{osd_id}`/`{devid}`) + câu hỏi chẩn đoán + tiêu chí kết luận (`when`/`then`, đầu vào cho WP3.4); có runbook `default` cho mã lỗi mới.
+- [x] Runbook cho top code: `NODE_UNREACHABLE`, `BLUESTORE_SLOW_OP_ALERT`, `OSD_LATENCY_HIGH`, `OSD_DOWN`, `MON_CLOCK_SKEW`, `PG_DEGRADED`, `POOL_NEARFULL`, `LARGE_OMAP_OBJECTS`, `DEVICE_HEALTH`, `SLOW_OPS`, thêm `CRUSH_SKEW_USE`/`CRUSH_SKEW_PG` (WP1.4).
+- [x] Validator + test (`shared/investigation_runbooks.py`, `tests/test_investigation_runbooks.py`, 22 passed): collector phải có trong registry, HOST cần `host`, CEPH không được có `host`, tham số khớp đúng collector, chỉ dùng ngữ cảnh cho phép, ≤ 8 lệnh ceph/runbook; ngữ cảnh lấy từ hậu tố mã lỗi và được kiểm tra regex; thiếu ngữ cảnh thì **bỏ qua có ghi lý do**, không đoán.
+
+**Kết quả 28/09/2026 (CS-LAB, chỉ đọc):** runbook `OSD_LATENCY_HIGH:1` cho incident thật: 5/5 collector ok, 37 s (`osd df` 14 s). Ngân sách 60 s đủ nhưng sát — WP3.3 nên chạy nền, không chặn luồng tạo incident.
 
 ### WP3.3 Chạy tự động khi incident mở
 
@@ -375,6 +377,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP2.4 Verdict trên Alert Center | Cột verdict + nút một chạm + lọc chưa nhãn; check trình duyệt | 5 passed | Done (chờ deploy) |
 | 28/09/2026 | WP4 Tính năng Ceph (chỉ đọc) | Card Disk Risk: devicehealth, diskprediction_local, pg_autoscaler, balancer + SMART; phân biệt smartctl lỗi; action bật module hoãn (đĩa ảo) | 14 passed | Partial (chờ deploy; action + ingest định kỳ còn lại) |
 | 28/09/2026 | WP3.1 Evidence collectors | 15 collector chỉ đọc, chặn lệnh ghi 2 lớp, ngân sách/breaker/cooldown; thử thật 11/11 ok | 28 passed | Done (chưa gắn vào incident — WP3.3) |
+| 28/09/2026 | WP3.2 Runbook điều tra | 12 runbook + default, validator đồng bộ với registry; chạy thật OSD_LATENCY_HIGH 5/5 ok trong 37 s | 22 passed | Done |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 
