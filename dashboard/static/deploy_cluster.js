@@ -1,404 +1,203 @@
 (function () {
   var form = document.getElementById("deploy-form");
   var initialStateEl = document.getElementById("deploy-initial-state");
-  if (!initialStateEl) {
-    return; // not on /deploy-cluster
-  }
+  if (!initialStateEl) return;
 
   var initialState = JSON.parse(initialStateEl.textContent || "{}");
   var notYetSupported = initialState.not_yet_supported_methods || [];
-
   var POLL_INTERVAL_MS = 2500;
   var TERMINAL_STATUSES = ["EXECUTED", "FAILED"];
-
-  var STATUS_GLYPH = { pending: "⏳", running: "🔄", done: "✅", failed: "❌" };
-
-  // Hidden-until-needed SSH host-key-mismatch recovery control (moved off
-  // the always-visible Settings-page form — see deploy_cluster.py's
-  // /deploy-cluster/forget-host-key docstring for why): paramiko raises
-  // this exact wording (BadHostKeyException.__str__) when a node's SSH
-  // host key changed (e.g. its OS was reinstalled) and cluster_deploy.py's
-  // _phase_ssh_check wraps it unchanged into the step's error message —
-  // "Host key for server '<ip>' does not match: got '...', expected
-  // '...'". Only match on that, not on every SSH failure (a plain refused/
-  // timed-out connection needs a different fix, not this button).
+  var STATUS_GLYPH = { pending: "⏸", running: "⏳", done: "✅", failed: "❌" };
   var HOST_KEY_MISMATCH_RE = /Host key for server .* does not match/;
 
+  function escapeHtml(value) {
+    var div = document.createElement("div");
+    div.textContent = String(value == null ? "" : value);
+    return div.innerHTML;
+  }
   function pad2(n) { return String(n).padStart(2, "0"); }
   function nowClock() {
     var d = new Date();
     return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
   }
+  function stepClock(step) {
+    return step.status === "running" ? nowClock() : (step.finished_at_display || step.started_at_display || "");
+  }
 
-  // --- Node table -----------------------------------------------------
+  /* Wizard ------------------------------------------------------------ */
+  var currentStep = 1;
+  var stepPanels = document.querySelectorAll("[data-step]");
+  var stepNav = document.querySelectorAll("[data-step-nav]");
+  var prevBtn = document.getElementById("df-prev-step");
+  var nextBtn = document.getElementById("df-next-step");
+  var submitBtn = document.getElementById("df-submit");
+  var footerStep = document.getElementById("df-footer-step");
+  var errorEl = document.getElementById("df-error");
 
-  var nodeRowsEl = document.getElementById("node-rows");
+  function showStep(step) {
+    currentStep = Math.max(1, Math.min(3, step));
+    Array.prototype.forEach.call(stepPanels, function (panel) {
+      var active = Number(panel.getAttribute("data-step")) === currentStep;
+      panel.hidden = !active;
+      panel.classList.toggle("is-active", active);
+    });
+    Array.prototype.forEach.call(stepNav, function (nav) {
+      var number = Number(nav.getAttribute("data-step-nav"));
+      nav.classList.toggle("is-active", number === currentStep);
+      nav.classList.toggle("is-complete", number < currentStep);
+    });
+    if (prevBtn) prevBtn.disabled = currentStep === 1;
+    if (nextBtn) nextBtn.hidden = currentStep === 3;
+    if (submitBtn) submitBtn.hidden = currentStep !== 3;
+    if (footerStep) footerStep.textContent = "Bước " + currentStep + " / 3";
+  }
+  function validateCurrentStep() {
+    if (currentStep !== 1 || !form) return true;
+    var version = document.getElementById("df-version");
+    if (version && !version.checkValidity()) { version.reportValidity(); return false; }
+    return true;
+  }
+  if (nextBtn) nextBtn.addEventListener("click", function () { if (validateCurrentStep()) showStep(currentStep + 1); });
+  if (prevBtn) prevBtn.addEventListener("click", function () { showStep(currentStep - 1); });
+  Array.prototype.forEach.call(stepNav, function (nav) {
+    nav.addEventListener("click", function () {
+      var target = Number(nav.getAttribute("data-step-nav"));
+      if (target > currentStep && !validateCurrentStep()) return;
+      showStep(target);
+    });
+  });
+  showStep(1);
+
+  /* Nodes ------------------------------------------------------------- */
+  var nodeCardsEl = document.getElementById("node-rows");
   var addNodeBtn = document.getElementById("df-add-node");
-  var nodeRowCount = 0;
-
-  function addNodeRow(ip) {
-    if (!nodeRowsEl) return;
-    nodeRowCount += 1;
-    var row = document.createElement("tr");
-    row.innerHTML =
-      '<td><input type="text" class="node-ip" placeholder="10.20.1.112" value="' + (ip || "") + '"></td>' +
-      '<td><input type="checkbox" class="node-role" value="mon"></td>' +
-      '<td><input type="checkbox" class="node-role" value="mgr"></td>' +
-      '<td><input type="checkbox" class="node-role node-role-osd" value="osd"></td>' +
-      '<td><input type="checkbox" class="node-role" value="mds"></td>' +
-      '<td><input type="checkbox" class="node-role" value="rgw"></td>' +
-      '<td><input type="text" class="node-osd-disk" placeholder="/dev/vdc, /dev/vdd" disabled></td>' +
-      '<td><button type="button" class="btn btn-sm btn-ghost node-remove">×</button></td>';
-    row.querySelector(".node-remove").addEventListener("click", function () {
-      row.remove();
-    });
-    var osdCheckbox = row.querySelector(".node-role-osd");
-    var osdDiskInput = row.querySelector(".node-osd-disk");
-    osdCheckbox.addEventListener("change", function () {
-      osdDiskInput.disabled = !osdCheckbox.checked;
-      if (!osdCheckbox.checked) osdDiskInput.value = "";
-    });
-    nodeRowsEl.appendChild(row);
+  var nodeCountEl = document.getElementById("df-node-count");
+  var nodeNumber = 0;
+  function makeRole(role, icon, label) {
+    var wrapper = document.createElement("label");
+    wrapper.className = "node-role-toggle";
+    var input = document.createElement("input"); input.type = "checkbox"; input.className = "node-role"; input.value = role;
+    var text = document.createElement("span"); text.innerHTML = '<b>' + escapeHtml(icon) + '</b><strong>' + escapeHtml(label) + '</strong><i></i>';
+    wrapper.appendChild(input); wrapper.appendChild(text);
+    return wrapper;
   }
-
-  if (addNodeBtn) {
-    addNodeBtn.addEventListener("click", function () { addNodeRow(); });
+  function updateNodeCount() {
+    var count = nodeCardsEl ? nodeCardsEl.querySelectorAll(".node-card").length : 0;
+    if (nodeCountEl) nodeCountEl.textContent = count + " node" + (count === 1 ? "" : "s");
   }
-  if (nodeRowsEl && nodeRowsEl.children.length === 0) {
-    addNodeRow();
-    addNodeRow();
-    addNodeRow();
+  function addNodeCard(ip) {
+    if (!nodeCardsEl) return;
+    nodeNumber += 1;
+    var card = document.createElement("article"); card.className = "node-card";
+    var header = document.createElement("div"); header.className = "node-card-header"; header.innerHTML = '<span class="node-card-number">NODE ' + String(nodeNumber).padStart(2, "0") + '</span>';
+    var remove = document.createElement("button"); remove.type = "button"; remove.className = "node-remove"; remove.title = "Xóa node"; remove.setAttribute("aria-label", "Xóa node"); remove.textContent = "🗑️";
+    header.appendChild(remove); card.appendChild(header);
+    var ipLabel = document.createElement("label"); ipLabel.className = "node-ip-field"; ipLabel.appendChild(document.createTextNode("IP address"));
+    var ipInput = document.createElement("input"); ipInput.type = "text"; ipInput.className = "node-ip"; ipInput.placeholder = "10.20.1.112"; ipInput.value = ip || ""; ipInput.autocomplete = "off";
+    ipLabel.appendChild(ipInput); card.appendChild(ipLabel);
+    var roles = document.createElement("div"); roles.className = "node-role-list";
+    [["mon", "◉", "MON"], ["mgr", "◆", "MGR"], ["osd", "◈", "OSD"]].forEach(function (item) { roles.appendChild(makeRole(item[0], item[1], item[2])); });
+    card.appendChild(roles);
+    var diskField = document.createElement("label"); diskField.className = "node-disk-field"; diskField.hidden = true;
+    var diskLabel = document.createElement("span"); diskLabel.innerHTML = 'OSD Disks <button type="button" class="field-info" title="Nhập một hoặc nhiều thiết bị, phân tách bằng dấu phẩy">ⓘ</button>';
+    var diskInput = document.createElement("input"); diskInput.type = "text"; diskInput.className = "node-osd-disk"; diskInput.placeholder = "/dev/vdb, /dev/vdc";
+    diskField.appendChild(diskLabel); diskField.appendChild(diskInput); card.appendChild(diskField);
+    var osdCheckbox = card.querySelector('input[value="osd"]');
+    osdCheckbox.addEventListener("change", function () { diskField.hidden = !osdCheckbox.checked; if (!osdCheckbox.checked) diskInput.value = ""; });
+    remove.addEventListener("click", function () { card.remove(); updateNodeCount(); });
+    nodeCardsEl.appendChild(card); updateNodeCount();
   }
-
+  if (addNodeBtn) addNodeBtn.addEventListener("click", function () { addNodeCard(); });
+  if (nodeCardsEl && !nodeCardsEl.children.length) { addNodeCard(); addNodeCard(); addNodeCard(); }
   function collectNodes() {
-    if (!nodeRowsEl) return [];
     var nodes = [];
-    Array.prototype.forEach.call(nodeRowsEl.querySelectorAll("tr"), function (row) {
-      var ip = row.querySelector(".node-ip").value.trim();
-      if (!ip) return;
-      var roles = [];
-      Array.prototype.forEach.call(row.querySelectorAll(".node-role:checked"), function (cb) {
-        roles.push(cb.value);
-      });
+    if (!nodeCardsEl) return nodes;
+    Array.prototype.forEach.call(nodeCardsEl.querySelectorAll(".node-card"), function (card) {
+      var ip = card.querySelector(".node-ip").value.trim(); if (!ip) return;
+      var roles = []; Array.prototype.forEach.call(card.querySelectorAll(".node-role:checked"), function (cb) { roles.push(cb.value); });
       var node = { ip: ip, roles: roles };
-      if (roles.indexOf("osd") !== -1) {
-        var diskInput = row.querySelector(".node-osd-disk");
-        var rawDisks = diskInput ? diskInput.value.trim() : "";
-        // Comma-separated so one node can carry multiple OSD disks (vd
-        // "/dev/vdc, /dev/vdd") — split, trim, drop empties from stray
-        // commas/whitespace.
-        node.osd_disks = rawDisks
-          ? rawDisks.split(",").map(function (d) { return d.trim(); }).filter(function (d) { return d.length > 0; })
-          : [];
-      }
+      if (roles.indexOf("osd") !== -1) { var disks = card.querySelector(".node-osd-disk").value.trim(); node.osd_disks = disks ? disks.split(",").map(function (d) { return d.trim(); }).filter(Boolean) : []; }
       nodes.push(node);
     });
     return nodes;
   }
 
-  // --- Method radio -> rpm-path field + not-yet-supported note --------
-
+  /* Version and method ----------------------------------------------- */
   var rpmPathLabel = document.getElementById("df-rpm-path-label");
-  var errorEl = document.getElementById("df-error");
-
-  function currentMethod() {
-    var checked = document.querySelector('input[name="method"]:checked');
-    return checked ? checked.value : "cephadm";
-  }
-
-  function onMethodChange() {
-    var method = currentMethod();
-    if (rpmPathLabel) rpmPathLabel.hidden = method !== "rpm-local";
-  }
-
-  Array.prototype.forEach.call(document.querySelectorAll('input[name="method"]'), function (radio) {
-    radio.addEventListener("change", onMethodChange);
-  });
-  onMethodChange();
-
-  // --- Version picker: chọn dòng release rồi chọn phiên bản -------------
-  // Two dependent <select>s that just FILL df-version (the real, still
-  // directly-editable text input the form submits) — same "convenience
-  // filler, never the only way in" role the old flat version-chip buttons
-  // had, now organized by release line (nautilus/octopus/.../reef/...)
-  // instead of one flat hardcoded list of 4.
-
   var versionInput = document.getElementById("df-version");
   var codenameSelect = document.getElementById("df-codename");
   var versionSelect = document.getElementById("df-version-select");
   var versionsByCodenameEl = document.getElementById("versions-by-codename-data");
-
+  function currentMethod() { var checked = document.querySelector('input[name="method"]:checked'); return checked ? checked.value : "cephadm"; }
+  function onMethodChange() {
+    var method = currentMethod(); if (rpmPathLabel) rpmPathLabel.hidden = method !== "rpm-local";
+    Array.prototype.forEach.call(document.querySelectorAll(".deploy-method-card"), function (card) { card.classList.toggle("is-selected", !!card.querySelector("input:checked")); });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('input[name="method"]'), function (radio) { radio.addEventListener("change", onMethodChange); }); onMethodChange();
   if (codenameSelect && versionSelect && versionsByCodenameEl) {
     var versionsByCodename = JSON.parse(versionsByCodenameEl.textContent || "{}");
-
     codenameSelect.addEventListener("change", function () {
-      var versions = versionsByCodename[codenameSelect.value] || [];
-      versionSelect.innerHTML = "";
-      if (!codenameSelect.value || versions.length === 0) {
-        versionSelect.disabled = true;
-        var placeholder = document.createElement("option");
-        placeholder.value = "";
-        placeholder.textContent = "— Chọn dòng release trước —";
-        versionSelect.appendChild(placeholder);
-        return;
-      }
-      versionSelect.disabled = false;
-      // Newest point release of the line first — that's almost always
-      // what an operator deploying/upgrading actually wants.
-      for (var i = versions.length - 1; i >= 0; i--) {
-        var option = document.createElement("option");
-        option.value = versions[i];
-        option.textContent = versions[i];
-        versionSelect.appendChild(option);
-      }
-      if (versionInput) versionInput.value = versions[versions.length - 1];
+      var versions = versionsByCodename[codenameSelect.value] || []; versionSelect.innerHTML = ""; versionSelect.disabled = !codenameSelect.value || !versions.length;
+      if (!versions.length) { var empty = document.createElement("option"); empty.textContent = "— Chọn dòng release trước —"; versionSelect.appendChild(empty); return; }
+      for (var i = versions.length - 1; i >= 0; i -= 1) { var option = document.createElement("option"); option.value = versions[i]; option.textContent = versions[i]; versionSelect.appendChild(option); }
+      versionInput.value = versions[versions.length - 1];
     });
-
-    versionSelect.addEventListener("change", function () {
-      if (versionInput && versionSelect.value) versionInput.value = versionSelect.value;
-    });
+    versionSelect.addEventListener("change", function () { if (versionSelect.value) versionInput.value = versionSelect.value; });
   }
 
-  // --- Propose submit ---------------------------------------------------
+  /* Submit ------------------------------------------------------------ */
+  if (form) form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    if (currentStep !== 3) { showStep(currentStep + 1); return; }
+    if (errorEl) { errorEl.hidden = true; errorEl.textContent = ""; }
+    var method = currentMethod();
+    if (notYetSupported.indexOf(method) !== -1) { if (errorEl) { errorEl.textContent = "Phương thức này chưa được hỗ trợ tự động — chọn cephadm."; errorEl.hidden = false; } return; }
+    var payload = { version: versionInput ? versionInput.value.trim() : "", method: method, rpm_path: document.getElementById("df-rpm-path") ? document.getElementById("df-rpm-path").value.trim() : "", nodes: collectNodes(), public_network: document.getElementById("df-public-network").value.trim(), cluster_network: document.getElementById("df-cluster-network").value.trim(), osd_pool_default_size: parseInt(document.getElementById("df-pool-size").value, 10) || 3, osd_pool_default_min_size: parseInt(document.getElementById("df-pool-min-size").value, 10) || 2 };
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.innerHTML = '<span class="deploy-spinner"></span> Đang cài đặt...'; }
+    fetch("/deploy-cluster/propose", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }).then(function (response) { if (!response.ok) return response.json().then(function (data) { throw new Error(data.detail || "HTTP " + response.status); }); return response.json(); }).then(function () { window.location.reload(); }).catch(function (err) { if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = "<span>▶</span> Bắt đầu cài đặt"; } if (errorEl) { errorEl.textContent = err.message || "Không tạo được đề xuất dựng cụm"; errorEl.hidden = false; } });
+  });
 
-  if (form) {
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      if (errorEl) { errorEl.hidden = true; errorEl.textContent = ""; }
-
-      var method = currentMethod();
-      if (notYetSupported.indexOf(method) !== -1) {
-        if (errorEl) {
-          errorEl.textContent = "Phương thức này chưa được hỗ trợ tự động — chọn cephadm.";
-          errorEl.hidden = false;
-        }
-        return;
-      }
-
-      var payload = {
-        version: versionInput ? versionInput.value.trim() : "",
-        method: method,
-        rpm_path: document.getElementById("df-rpm-path") ? document.getElementById("df-rpm-path").value.trim() : "",
-        nodes: collectNodes(),
-        public_network: document.getElementById("df-public-network").value.trim(),
-        cluster_network: document.getElementById("df-cluster-network").value.trim(),
-        osd_pool_default_size: parseInt(document.getElementById("df-pool-size").value, 10) || 3,
-        osd_pool_default_min_size: parseInt(document.getElementById("df-pool-min-size").value, 10) || 2
-      };
-
-      fetch("/deploy-cluster/propose", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      })
-        .then(function (response) {
-          if (!response.ok) {
-            return response.json().then(function (data) {
-              throw new Error(data.detail || "HTTP " + response.status);
-            });
-          }
-          return response.json();
-        })
-        .then(function () {
-          window.location.reload();
-        })
-        .catch(function (err) {
-          if (errorEl) {
-            errorEl.textContent = err.message || "Không tạo được đề xuất dựng cụm";
-            errorEl.hidden = false;
-          }
-        });
-    });
-  }
-
-  // --- Progress polling + terminal log rendering -------------------------
-
+  /* Log --------------------------------------------------------------- */
   var logBox = document.getElementById("df-log-box");
   var progressBarFill = document.getElementById("df-progress-bar-fill");
   var progressBar = document.getElementById("df-progress-bar");
   var progressLabel = document.getElementById("df-progress-label");
+  var progressStep = document.getElementById("df-progress-step");
   var logTitle = document.getElementById("df-log-title");
   var clearBtn = document.getElementById("df-log-clear");
   var copyBtn = document.getElementById("df-log-copy");
-
+  function renderForgetHostKeyControl(container, host) {
+    var row = document.createElement("div"); row.className = "deploy-log-host-action"; row.textContent = "SSH host key của " + host + " đã thay đổi. ";
+    if (!initialState.is_admin) { row.appendChild(document.createTextNode("Cần tài khoản admin để xoá key cũ.")); container.appendChild(row); return; }
+    var button = document.createElement("button"); button.type = "button"; button.className = "btn btn-sm"; button.textContent = "Xoá SSH host key cũ";
+    button.addEventListener("click", function () { button.disabled = true; button.textContent = "Đang xoá..."; fetch("/deploy-cluster/forget-host-key", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host: host }) }).then(function (response) { return response.json().then(function (data) { return { ok: response.ok, data: data }; }); }).then(function (result) { row.textContent = result.data.message || (result.ok ? "Đã xử lý." : "Có lỗi xảy ra, thử lại."); }).catch(function () { button.disabled = false; button.textContent = "Xoá SSH host key cũ"; }); });
+    row.appendChild(button); container.appendChild(row);
+  }
   function renderProgress(status, progress) {
-    if (!logBox) return; // PENDING_APPROVAL view has no log box (shows the plan instead)
-
-    if (!progress || !progress.length) {
-      return;
-    }
-
-    logBox.innerHTML = "";
-    var runningStep = null;
+    if (!logBox || !progress || !progress.length) return;
+    logBox.innerHTML = ""; var runningStep = null; var failedStep = null;
     progress.forEach(function (step) {
-      var glyph = STATUS_GLYPH[step.status] || "•";
-      var line = document.createElement("p");
-      line.className = "deploy-log-line status-" + step.status;
-      // 2026-07-28 fix: this used to be nowClock() unconditionally, which
-      // rewrote EVERY line's timestamp to the browser's current clock on
-      // every single poll tick (renderProgress rebuilds the whole log box
-      // from scratch each time) — a step that had already finished kept
-      // showing a drifting "now" instead of freezing at when it actually
-      // finished. finished_at_display/started_at_display are computed
-      // server-side (dashboard/routes/deploy_cluster.py) from the step's
-      // own real, frozen timestamps — only the step CURRENTLY running still
-      // ticks live (there is no "finished" moment for it yet to freeze at).
-      var clockText = step.status === "running"
-        ? nowClock()
-        : (step.status === "done" || step.status === "failed") ? step.finished_at_display : null;
-      var timeSpan = clockText ? "<span class=\"deploy-log-time\">[" + clockText + "]</span> " : "";
-      line.innerHTML = timeSpan + glyph + " " + escapeHtml(step.label || step.step);
-      if (step.message) {
-        line.innerHTML += " — " + escapeHtml(step.message);
-      }
-      logBox.appendChild(line);
-      if (step.hosts && step.hosts.length) {
-        step.hosts.forEach(function (h) {
-          var hostGlyph = STATUS_GLYPH[h.status] || "•";
-          var hostLine = document.createElement("p");
-          hostLine.className = "deploy-log-line status-" + h.status;
-          hostLine.style.marginLeft = "1.5em";
-          hostLine.innerHTML = hostGlyph + " " + escapeHtml(h.host) + (h.message ? " — " + escapeHtml(h.message) : "");
-          logBox.appendChild(hostLine);
-        });
-      }
-      if (step.status === "failed" && step.message && HOST_KEY_MISMATCH_RE.test(step.message)) {
-        var failedHost = (step.hosts || []).filter(function (h) { return h.status === "failed"; })[0];
-        if (failedHost) renderForgetHostKeyControl(failedHost.host);
-      }
-      if (step.status === "running") runningStep = step;
+      var details = document.createElement("details"); details.className = "deploy-log-section status-" + (step.status || "pending"); if (step.status === "running" || step.status === "failed") details.open = true;
+      var summary = document.createElement("summary"); var time = stepClock(step); summary.innerHTML = '<span class="deploy-log-status-icon">' + (STATUS_GLYPH[step.status] || "⏸") + '</span><strong>' + escapeHtml(step.label || step.step) + '</strong><time>' + escapeHtml(time) + '</time><span class="deploy-log-chevron">⌄</span>'; details.appendChild(summary);
+      var detail = document.createElement("div"); detail.className = "deploy-log-detail";
+      if (step.message) { var message = document.createElement("p"); message.textContent = step.message; detail.appendChild(message); }
+      (step.hosts || []).forEach(function (host) { var hostLine = document.createElement("div"); hostLine.className = "deploy-log-host status-" + (host.status || "pending"); hostLine.innerHTML = '<span>' + (STATUS_GLYPH[host.status] || "⏸") + '</span><strong>' + escapeHtml(host.host) + '</strong>' + (host.message ? '<em>' + escapeHtml(host.message) + '</em>' : ''); detail.appendChild(hostLine); });
+      if (step.status === "failed" && step.message && HOST_KEY_MISMATCH_RE.test(step.message)) { var failedHost = (step.hosts || []).filter(function (host) { return host.status === "failed"; })[0]; if (failedHost) renderForgetHostKeyControl(detail, failedHost.host); }
+      if (!detail.children.length) { var empty = document.createElement("p"); empty.className = "hint"; empty.textContent = step.status === "pending" ? "Chưa bắt đầu" : "Đã hoàn tất"; detail.appendChild(empty); }
+      details.appendChild(detail); logBox.appendChild(details); if (step.status === "running") runningStep = step; if (step.status === "failed" && !failedStep) failedStep = step;
     });
-    logBox.scrollTop = logBox.scrollHeight;
-
-    var lastDone = progress.filter(function (s) { return s.status === "done"; }).pop();
-    var pct = runningStep ? runningStep.pct : (lastDone ? lastDone.pct : 0);
-    var failedStep = progress.filter(function (s) { return s.status === "failed"; })[0];
-    if (failedStep) pct = failedStep.pct;
-
-    if (progressBarFill) {
-      progressBarFill.style.width = pct + "%";
-      progressBarFill.classList.toggle("is-active", !!runningStep);
-    }
+    var lastDone = progress.filter(function (s) { return s.status === "done"; }).pop(); var pct = runningStep ? runningStep.pct : (failedStep ? failedStep.pct : lastDone ? lastDone.pct : 0);
+    if (progressBarFill) { progressBarFill.style.width = pct + "%"; progressBarFill.classList.toggle("is-active", !!runningStep); }
     if (progressBar) progressBar.setAttribute("aria-valuenow", String(pct));
-    if (progressLabel) {
-      if (failedStep) {
-        progressLabel.textContent = pct + "% — Lỗi ở bước: " + (failedStep.label || failedStep.step);
-      } else if (runningStep) {
-        progressLabel.textContent = pct + "% — " + (runningStep.label || runningStep.step);
-      } else {
-        progressLabel.textContent = pct + "%";
-      }
-    }
-    if (logTitle) {
-      if (status === "EXECUTED") logTitle.textContent = "✅ Hoàn tất";
-      else if (status === "FAILED") logTitle.textContent = "❌ Thất bại";
-      else if (status === "APPROVED") logTitle.textContent = "● ĐANG CÀI ĐẶT...";
-    }
+    if (progressLabel) progressLabel.textContent = pct + "%" + (failedStep ? " — Lỗi ở bước: " + (failedStep.label || failedStep.step) : runningStep ? " — " + (runningStep.label || runningStep.step) : pct === 100 ? " — Hoàn tất" : "");
+    if (progressStep) progressStep.textContent = runningStep ? (runningStep.label || runningStep.step) : failedStep ? "Cần xử lý lỗi" : pct === 100 ? "Hoàn tất" : "Sẵn sàng";
+    if (logTitle) logTitle.textContent = status === "EXECUTED" ? "Hoàn tất" : status === "FAILED" ? "Thất bại" : status === "APPROVED" ? "Đang cài đặt" : "Nhật ký tiến trình";
   }
-
-  function escapeHtml(text) {
-    var div = document.createElement("div");
-    div.textContent = String(text == null ? "" : text);
-    return div.innerHTML;
-  }
-
-  function renderForgetHostKeyControl(host) {
-    var box = document.createElement("p");
-    box.className = "deploy-log-line status-failed";
-    box.style.marginLeft = "1.5em";
-    box.appendChild(document.createTextNode(
-      "⚠ Node " + host + " có SSH host key mới (thường do cài lại OS). "
-    ));
-
-    if (!initialState.is_admin) {
-      box.appendChild(document.createTextNode(
-        "Cần tài khoản admin để xoá host key cũ — liên hệ admin."
-      ));
-      logBox.appendChild(box);
-      return;
-    }
-
-    var btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn btn-sm";
-    btn.textContent = "Xoá SSH host key cũ của " + host;
-    btn.addEventListener("click", function () {
-      btn.disabled = true;
-      btn.textContent = "Đang xoá...";
-      fetch("/deploy-cluster/forget-host-key", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host: host })
-      })
-        .then(function (response) {
-          return response.json().then(function (data) {
-            return { ok: response.ok, data: data };
-          });
-        })
-        .then(function (result) {
-          var resultLine = document.createElement("p");
-          resultLine.style.marginLeft = "1.5em";
-          resultLine.className = "deploy-log-line status-" + (result.ok && result.data.success ? "done" : "failed");
-          resultLine.textContent = result.data && result.data.message
-            ? result.data.message
-            : (result.ok ? "Đã xử lý." : "Có lỗi xảy ra, thử lại.");
-          box.parentNode.insertBefore(resultLine, box.nextSibling);
-          btn.remove();
-        })
-        .catch(function () {
-          btn.disabled = false;
-          btn.textContent = "Xoá SSH host key cũ của " + host;
-        });
-    });
-    box.appendChild(btn);
-    logBox.appendChild(box);
-  }
-
   var pollTimer = null;
-
-  function pollOnce() {
-    fetch("/deploy-cluster/progress", { credentials: "same-origin" })
-      .then(function (response) {
-        if (!response.ok) throw new Error("HTTP " + response.status);
-        return response.json();
-      })
-      .then(function (data) {
-        renderProgress(data.status, data.progress);
-        if (data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1) {
-          if (pollTimer) clearInterval(pollTimer);
-          window.location.reload();
-        }
-      })
-      .catch(function () {
-        // Transient network hiccup — next tick retries; no need to surface
-        // this as a hard error the way a propose validation failure is.
-      });
-  }
-
-  if (logBox) {
-    renderProgress(initialState.status, initialState.progress);
-    // Only poll (and auto-reload on completion) while a deploy is actually
-    // in-flight (APPROVED — Worker picked it up, running now). Viewing an
-    // already-resolved last_action's log (EXECUTED/FAILED, no pending
-    // Action at all) must render once and stop — polling that case would
-    // immediately see a terminal status again and reload the page forever.
-    if (initialState.status === "APPROVED") {
-      pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
-      pollOnce();
-    }
-  }
-
-  if (clearBtn && logBox) {
-    clearBtn.addEventListener("click", function () { logBox.innerHTML = ""; });
-  }
-  if (copyBtn && logBox) {
-    copyBtn.addEventListener("click", function () {
-      var text = logBox.innerText || logBox.textContent || "";
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text);
-      }
-    });
-  }
+  function pollOnce() { fetch("/deploy-cluster/progress", { credentials: "same-origin" }).then(function (response) { if (!response.ok) throw new Error("HTTP " + response.status); return response.json(); }).then(function (data) { renderProgress(data.status, data.progress); if (data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1) { if (pollTimer) clearInterval(pollTimer); window.location.reload(); } }).catch(function () {}); }
+  if (logBox) { renderProgress(initialState.status, initialState.progress); if (initialState.status === "APPROVED") { pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS); pollOnce(); } }
+  if (clearBtn && logBox) clearBtn.addEventListener("click", function () { logBox.innerHTML = ""; });
+  if (copyBtn && logBox) copyBtn.addEventListener("click", function () { var content = logBox.innerText || logBox.textContent || ""; if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(content); });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-open-log]"), function (button) { button.addEventListener("click", function () { var panel = document.getElementById("deploy-log-panel"); if (window.matchMedia && window.matchMedia("(max-width: 900px)").matches) document.body.classList.add("deploy-log-drawer-open"); else if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" }); }); });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-close-log]"), function (button) { button.addEventListener("click", function () { document.body.classList.remove("deploy-log-drawer-open"); }); });
 })();

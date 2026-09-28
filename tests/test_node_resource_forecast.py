@@ -5,7 +5,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from shared.db import Base
-from shared.models import NodeResourceForecastAlert, NodeResourceForecastRun, NodeResourceModelState
+from shared.models import (
+    NodeResourceForecastAlert,
+    NodeResourceForecastRun,
+    NodeResourceDriftState,
+    NodeResourceModelState,
+    NodeResourceQualityState,
+)
 from watcher import node_resource_forecast as forecast
 
 
@@ -93,6 +99,8 @@ def _learning_db(monkeypatch):
 
 def test_adaptive_forecast_persists_candidates_and_selects_longest_during_warmup(monkeypatch):
     factory = _learning_db(monkeypatch)
+    monkeypatch.setattr(forecast.settings, "node_health_scan_interval_seconds", 3600)
+    monkeypatch.setattr(forecast.settings, "node_resource_quality_max_gap_seconds", 7200)
     monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_samples", 6)
     monkeypatch.setattr(forecast.settings, "node_resource_learning_candidate_hours", "24,72")
     monkeypatch.setattr(forecast.settings, "node_resource_learning_evaluation_hours", 24)
@@ -110,6 +118,8 @@ def test_adaptive_forecast_persists_candidates_and_selects_longest_during_warmup
 
 def test_adaptive_forecast_evaluates_due_run_and_updates_mae(monkeypatch):
     factory = _learning_db(monkeypatch)
+    monkeypatch.setattr(forecast.settings, "node_health_scan_interval_seconds", 3600)
+    monkeypatch.setattr(forecast.settings, "node_resource_quality_max_gap_seconds", 7200)
     monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_samples", 6)
     monkeypatch.setattr(forecast.settings, "node_resource_learning_candidate_hours", "24")
     monkeypatch.setattr(forecast.settings, "node_resource_learning_evaluation_hours", 1)
@@ -135,6 +145,67 @@ def test_adaptive_forecast_evaluates_due_run_and_updates_mae(monkeypatch):
         assert run.actual_percent == samples[-1][1]
         assert state.evaluated_count == 1
         assert state.mean_absolute_error == run.absolute_error
+
+
+def test_adaptive_forecast_skips_stale_history(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    monkeypatch.setattr(forecast.settings, "node_health_scan_interval_seconds", 900)
+    monkeypatch.setattr(forecast.settings, "node_resource_quality_max_gap_seconds", 1800)
+    monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_samples", 6)
+    samples = [(ts, value, value / 2) for ts, value in _points(count=80, slope=.1)]
+    stale_now = samples[-1][0] + timedelta(seconds=1801)
+    monkeypatch.setattr(forecast, "fetch_samples", lambda cluster, host, now=None: samples)
+
+    assert forecast.adaptive_forecast("CS-LAB", "node-1", now=stale_now) == {}
+
+    with factory() as session:
+        assert session.query(NodeResourceForecastRun).count() == 0
+        quality = session.query(NodeResourceQualityState).order_by(NodeResourceQualityState.metric).all()
+        assert [(row.metric, row.status) for row in quality] == [
+            ("cpu", "STALE"),
+            ("ram", "STALE"),
+        ]
+
+
+def test_adwin_window_uses_newest_512_evaluated_runs(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    origin = datetime(2026, 8, 1)
+    with factory() as session:
+        for index in range(600):
+            session.add(NodeResourceForecastRun(
+                cluster_name="CS-LAB", host="node-1", metric="cpu", algorithm="linear",
+                window_hours=24, predicted_at=origin + timedelta(hours=index),
+                target_at=origin + timedelta(hours=index), current_percent=50,
+                predicted_percent=50, confidence=0.8, actual_percent=float(index),
+                absolute_error=float(index),
+                status="EVALUATED", idempotency_key=f"replay-{index}",
+                evaluated_at=origin + timedelta(hours=index),
+            ))
+        session.commit()
+        rows = forecast._recent_evaluated_runs(session, "CS-LAB", "node-1", "cpu")
+
+    assert len(rows) == 512
+    assert rows[0].actual_percent == 88
+    assert rows[-1].actual_percent == 599
+
+
+def test_corrupt_adwin_state_resets_but_fails_closed_for_current_cycle(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    with factory() as session:
+        row = NodeResourceDriftState(
+            cluster_name="CS-LAB", host="node-1", metric="cpu",
+            detector_version="adwin-policy-v1", schema_version=1,
+            state_json="{not-json}", status="DRIFT", reason="old state",
+        )
+        session.add(row)
+        session.commit()
+        decision = forecast._update_drift_state(session, "CS-LAB", "node-1", "cpu")
+        session.commit()
+
+        assert decision.status == "INSUFFICIENT_DATA"
+        assert decision.promotion_blocked is True
+        assert row.state_json != "{not-json}"
+        assert row.reason.startswith("ADWIN state reset")
 
 
 def test_sync_forecast_alerts_sends_once_then_resolves_after_risk_clears(monkeypatch):

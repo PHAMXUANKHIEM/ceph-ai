@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from config.settings import settings
 from shared import db
+from shared.metric_quality import assess_metric_quality
 from shared.models import CephCapacitySample, Cluster
 from watcher.capacity_evidence import _cluster_stats, _osd_stats, _pool_stats, _query
 
@@ -21,6 +22,19 @@ class Forecast:
     history_days: float
     thresholds: dict[str, str | None]
     additional_bytes_at_95: int
+
+
+def _capacity_quality(rows: list[CephCapacitySample], now: datetime):
+    return assess_metric_quality(
+        [row.captured_at for row in rows],
+        now=now,
+        max_age_seconds=max(120, settings.capacity_forecast_scan_interval_seconds * 2),
+        minimum_samples=settings.capacity_forecast_min_samples,
+        expected_interval_seconds=max(1, settings.capacity_forecast_scan_interval_seconds),
+        minimum_coverage_ratio=settings.capacity_forecast_quality_min_coverage_ratio,
+        maximum_gap_seconds=settings.capacity_forecast_quality_max_gap_seconds,
+        minimum_history_seconds=settings.capacity_forecast_min_history_days * 86400,
+    )
 
 
 def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: datetime | None = None) -> int:
@@ -49,6 +63,9 @@ def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: d
 
 
 def _forecast(rows: list[CephCapacitySample], now: datetime) -> Forecast | None:
+    quality = _capacity_quality(rows, now)
+    if not quality.usable:
+        return None
     if len(rows) < settings.capacity_forecast_min_samples:
         return None
     origin = rows[0].captured_at

@@ -1,6 +1,55 @@
+import os
+import subprocess
+import sys
+
 import pytest
 
 from shared import env_config
+
+
+def test_configured_env_path_prefers_container_shared_file(tmp_path, monkeypatch):
+    shared_file = tmp_path / "config" / ".env"
+    monkeypatch.setenv("CEPH_AI_ENV_FILE", str(shared_file))
+
+    assert env_config._configured_env_path() == shared_file
+
+
+def test_configured_env_path_falls_back_to_checkout_env(monkeypatch):
+    monkeypatch.delenv("CEPH_AI_ENV_FILE", raising=False)
+
+    assert env_config._configured_env_path() == env_config._LOCAL_ENV_PATH
+
+
+def test_settings_loads_the_same_runtime_env_file_that_writer_uses(tmp_path):
+    env_file = tmp_path / "shared" / ".env"
+    env_file.parent.mkdir()
+    env_file.write_text(
+        "ROUTER_API_KEY=test-key\n"
+        "ROUTER_BASE_URL=http://router.example.test:20128\n"
+        "ROUTER_MODEL=test-model\n"
+        "ROUTER_ENABLED=true\n"
+    )
+    process_env = os.environ.copy()
+    process_env["CEPH_AI_ENV_FILE"] = str(env_file)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from config.settings import settings; "
+                "print(settings.router_base_url); "
+                "print(settings.router_model); "
+                "print(settings.router_enabled)"
+            ),
+        ],
+        cwd=str(env_config._LOCAL_ENV_PATH.parent),
+        env=process_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.splitlines() == ["http://router.example.test:20128", "test-model", "True"]
 
 
 def test_apply_env_updates_rejects_newline_in_value():

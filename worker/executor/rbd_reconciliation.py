@@ -10,6 +10,7 @@ RBD_RECONCILED_ACTION_IDS = frozenset({
     "rbd_create_volume",
     "rbd_resize_volume",
     "rbd_rename_volume",
+    "rbd_set_qos",
     "rbd_trash_move_volume",
     "rbd_trash_restore_volume",
     "rbd_trash_purge_all",
@@ -52,6 +53,30 @@ def reconcile(action_id: str, params: dict, output: str) -> None:
             raise ExecutorError("RBD post-check did not find the expected destination image")
         return
 
+    if action_id == "rbd_set_qos":
+        if not isinstance(payload, (dict, list)):
+            raise ExecutorError("RBD QoS post-check returned an unexpected payload")
+        rows = payload.get("entries", payload) if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            raise ExecutorError("RBD QoS post-check returned no configuration entries")
+        actual = {
+            str(row.get("name") or row.get("key")): str(row.get("value"))
+            for row in rows if isinstance(row, dict)
+        }
+        expected = {
+            key: str(value)
+            for field, key in {
+                "iops_limit": "rbd_qos_iops_limit",
+                "bps_limit": "rbd_qos_bps_limit",
+                "iops_burst": "rbd_qos_iops_burst",
+                "bps_burst": "rbd_qos_bps_burst",
+            }.items()
+            if (value := params.get(field)) not in (None, 0)
+        }
+        if any(actual.get(key) != value for key, value in expected.items()):
+            raise ExecutorError("RBD QoS post-check does not match the approved limits")
+        return
+
     if not isinstance(payload, list):
         raise ExecutorError("RBD trash post-check returned an unexpected payload")
     if action_id == "rbd_trash_move_volume":
@@ -85,6 +110,8 @@ def reconciliation_command(
     pool = shlex.quote(params["pool_name"])
     if action_id == "rbd_rename_volume":
         command = f"rbd info {pool}/{shlex.quote(params['new_image'])} --format json"
+    elif action_id == "rbd_set_qos":
+        command = f"rbd config image list {pool}/{shlex.quote(params['image'])} --format json"
     elif action_id in {"rbd_create_volume", "rbd_resize_volume", "rbd_trash_restore_volume"}:
         command = f"rbd info {pool}/{shlex.quote(params['image'])} --format json"
     else:

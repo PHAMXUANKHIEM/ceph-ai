@@ -81,6 +81,16 @@ def test_bucket_feature_tabs_only_show_the_selected_panel():
     assert 'document.querySelectorAll("[data-bucket-tab]")' in source
     assert "panel.hidden = panel.id !== tab.dataset.bucketTab" in source
     assert 'item.setAttribute("aria-selected", String(active))' in source
+    assert "/api/object-storage/buckets/delete-all/preview" in source
+    assert "/api/object-storage/buckets/delete-all/execute" in source
+    assert "/api/object-storage/buckets/delete-all?cluster=" not in source
+
+
+def test_bulk_delete_dialog_requires_preview_confirmation():
+    template = open("dashboard/templates/object_storage_buckets.html", encoding="utf-8").read()
+    assert 'id="bucket-delete-all-dialog"' in template
+    assert 'id="bucket-delete-all-confirmation"' in template
+    assert 'id="bucket-delete-all-execute"' in template
 
 
 def test_lifecycle_and_policy_use_option_builders_instead_of_raw_json():
@@ -559,27 +569,94 @@ def test_non_admin_cannot_call_any_bucket_write_api(dashboard_client):
     ]
 
 
-def test_admin_delete_all_buckets_purges_objects_without_approval(dashboard_client, monkeypatch):
+def test_admin_delete_all_buckets_requires_preview_hash_and_confirmation(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     monkeypatch.setattr(object_storage_route, "fetch_bucket_list",
                         lambda host: ["archive", "images"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats",
+                        lambda host, name: _stats(owner="owner-" + name, size=10, objects=2))
     purged = []
     monkeypatch.setattr(object_storage_route, "purge_bucket",
                         lambda host, bucket: purged.append((host, bucket)))
     _login(dashboard_client)
 
-    response = dashboard_client.post("/api/object-storage/buckets/delete-all")
+    legacy = dashboard_client.post("/api/object-storage/buckets/delete-all", json={})
+    assert legacy.status_code == 410
+    assert purged == []
+
+    preview = dashboard_client.post("/api/object-storage/buckets/delete-all/preview", json={})
+    assert preview.status_code == 200
+    preview_body = preview.json()
+    assert preview_body["bucket_count"] == 2
+    assert preview_body["object_count"] == 4
+    assert len(preview_body["inventory_hash"]) == 64
+
+    missing_confirmation = dashboard_client.post(
+        "/api/object-storage/buckets/delete-all/execute",
+        json={
+            "inventory_hash": preview_body["inventory_hash"],
+            "bucket_count": preview_body["bucket_count"],
+            "object_count": preview_body["object_count"],
+            "size_bytes": preview_body["size_bytes"],
+        },
+    )
+    assert missing_confirmation.status_code == 400
+    assert purged == []
+
+    response = dashboard_client.post(
+        "/api/object-storage/buckets/delete-all/execute",
+        json={
+            "inventory_hash": preview_body["inventory_hash"],
+            "bucket_count": preview_body["bucket_count"],
+            "object_count": preview_body["object_count"],
+            "size_bytes": preview_body["size_bytes"],
+            "confirmation": preview_body["confirmation_required"],
+        },
+    )
 
     assert response.status_code == 200
     assert response.json()["deleted_count"] == 2
     assert response.json()["deleted_buckets"] == ["archive", "images"]
     assert purged == [("10.20.1.90", "archive"), ("10.20.1.90", "images")]
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, response.json()["request_id"])
+        assert audit is not None
+        assert audit.action == "delete_all"
+        assert audit.result == "succeeded"
+        assert preview_body["inventory_hash"] in audit.preview
+
+
+def test_delete_all_rejects_stale_inventory_without_purging(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    inventories = iter([["archive", "images"], ["archive", "new-bucket"]])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: next(inventories))
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats",
+                        lambda host, name: _stats(owner="owner-" + name, size=10, objects=1))
+    purged = []
+    monkeypatch.setattr(object_storage_route, "purge_bucket",
+                        lambda host, bucket: purged.append((host, bucket)))
+    _login(dashboard_client)
+
+    preview = dashboard_client.post("/api/object-storage/buckets/delete-all/preview", json={}).json()
+    response = dashboard_client.post("/api/object-storage/buckets/delete-all/execute", json={
+        "inventory_hash": preview["inventory_hash"],
+        "bucket_count": preview["bucket_count"],
+        "object_count": preview["object_count"],
+        "size_bytes": preview["size_bytes"],
+        "confirmation": preview["confirmation_required"],
+    })
+
+    assert response.status_code == 409
+    assert "Inventory đã thay đổi" in response.json()["detail"]
+    assert purged == []
 
 
 def test_delete_all_stops_and_reports_partial_failure(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     monkeypatch.setattr(object_storage_route, "fetch_bucket_list",
                         lambda host: ["a-bucket", "b-bucket", "c-bucket"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats",
+                        lambda host, name: _stats(owner="owner-" + name, size=10, objects=1))
     purged = []
     def purge(host, bucket):
         purged.append(bucket)
@@ -588,11 +665,24 @@ def test_delete_all_stops_and_reports_partial_failure(dashboard_client, monkeypa
     monkeypatch.setattr(object_storage_route, "purge_bucket", purge)
     _login(dashboard_client)
 
-    response = dashboard_client.post("/api/object-storage/buckets/delete-all")
+    preview = dashboard_client.post("/api/object-storage/buckets/delete-all/preview", json={})
+    assert preview.status_code == 200
+    preview_body = preview.json()
+    response = dashboard_client.post("/api/object-storage/buckets/delete-all/execute", json={
+        "inventory_hash": preview_body["inventory_hash"],
+        "bucket_count": preview_body["bucket_count"],
+        "object_count": preview_body["object_count"],
+        "size_bytes": preview_body["size_bytes"],
+        "confirmation": preview_body["confirmation_required"],
+    })
 
     assert response.status_code == 502
     assert "Đã xóa 1/3 bucket" in response.json()["detail"]
     assert purged == ["a-bucket", "b-bucket"]
+    with db.SessionLocal() as session:
+        audit = session.query(ObjectStorageAuditEntry).filter_by(action="delete_all").one()
+        assert audit.result == "failed"
+        assert audit.completed_at is not None
 
 
 def test_bucket_operation_families_reject_free_form_actions(dashboard_client):

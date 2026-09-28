@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import ipaddress
 import json
 import logging
+import math
 import re
 from datetime import datetime, timedelta
 
@@ -13,8 +14,11 @@ from sqlalchemy import or_
 from config.settings import settings
 from dashboard import volume_perf_analysis
 from dashboard.cinder_discovery import (
+    build_boot_dependency_report,
+    cinder_volume_id_from_image,
     discover_cinder_snapshots,
     discover_cinder_volume,
+    discover_cinder_volumes,
     reconcile_cinder_attachment,
 )
 from dashboard.cluster_scope import cluster_connection, cluster_selection, selected_cluster
@@ -36,6 +40,7 @@ from shared.models import (
     VolumePerfSweep,
 )
 from watcher import ceph_client
+from watcher.block_storage_insights import build_inventory_insights
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher.volume_monitor import ceph_code_for
 from worker.executor import commands as executor_commands
@@ -54,6 +59,16 @@ logger = logging.getLogger(__name__)
 # plotted time-series is bounded.
 _DEFAULT_HISTORY_HOURS = 6
 _MAX_HISTORY_HOURS = 168
+_MAX_INVENTORY_INSIGHT_IMAGES = 50
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    """Return a nearest-rank percentile without inventing values."""
+    finite = sorted(float(value) for value in values if value is not None)
+    if not finite:
+        return None
+    index = max(0, min(len(finite) - 1, math.ceil(len(finite) * percentile) - 1))
+    return finite[index]
 
 
 def _pool_names_from_detail(payload: dict | list) -> list[str]:
@@ -137,6 +152,7 @@ RBD_TRASH_PURGE_ALL_CEPH_CODE = "RBD_TRASH_PURGE_ALL"
 RBD_VOLUME_CREATE_CEPH_CODE = "RBD_VOLUME_CREATE"
 RBD_VOLUME_RESIZE_CEPH_CODE = "RBD_VOLUME_RESIZE"
 RBD_VOLUME_RENAME_CEPH_CODE = "RBD_VOLUME_RENAME"
+RBD_VOLUME_QOS_CEPH_CODE = "RBD_VOLUME_QOS"
 RBD_VOLUME_TRASH_MOVE_CEPH_CODE = "RBD_VOLUME_TRASH_MOVE"
 RBD_VOLUME_TRASH_RESTORE_CEPH_CODE = "RBD_VOLUME_TRASH_RESTORE"
 CINDER_VOLUME_ATTACH_CEPH_CODE = "CINDER_VOLUME_ATTACH"
@@ -168,7 +184,7 @@ _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 _RBD_VOLUME_MUTATION_ACTION_IDS = (
     "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume",
-    "rbd_trash_move_volume", "rbd_trash_restore_volume",
+    "rbd_trash_move_volume", "rbd_trash_restore_volume", "rbd_set_qos",
     "cinder_attach_volume", "cinder_detach_volume",
     "cinder_create_snapshot",
 )
@@ -575,6 +591,293 @@ async def volume_inventory_api(
     }
 
 
+@router.get("/api/volumes/{pool}/cinder-mapping")
+async def cinder_mapping_api(
+    request: Request, pool: str, user: str = Depends(require_login)
+):
+    """Return an admin-only, two-way RBD/Cinder mapping report.
+
+    Cinder is the source of truth for images following ``volume-<UUID>``.
+    An RBD image missing from Cinder is reported as an orphan and is never
+    given a direct-RBD mutation route. The exact attach/detach/snapshot
+    endpoints still perform their own per-volume Cinder verification.
+    """
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        rbd_rows = (
+            ceph_client.query_rbd_inventory(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        logger.warning("cinder_mapping_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}") from exc
+
+    cinder_result = await asyncio.to_thread(discover_cinder_volumes, cluster)
+    if cinder_result.get("status") != "ok" or not cinder_result.get("verified"):
+        raise HTTPException(
+            status_code=502,
+            detail="Không đọc được inventory Cinder: " + str(cinder_result.get("error") or "unknown"),
+        )
+
+    rbd_by_name = {
+        str(row.get("name")): row
+        for row in rbd_rows
+        if isinstance(row, dict) and row.get("name")
+    }
+    rbd_by_lookup = {name.casefold(): row for name, row in rbd_by_name.items()}
+    cinder_items = [item for item in cinder_result.get("items", []) if isinstance(item, dict)]
+    scoped_cinder_items = []
+    for item in cinder_items:
+        backend_host = str(item.get("backend_host") or "")
+        # Cinder commonly reports ``host@backend#pool``. Do not report a
+        # volume from another backend as missing in the selected RBD pool.
+        if "#" in backend_host:
+            backend_pool = backend_host.rsplit("#", 1)[1].strip()
+            if backend_pool and backend_pool.casefold() != pool.casefold():
+                continue
+        scoped_cinder_items.append(item)
+    cinder_items = scoped_cinder_items
+    cinder_by_id = {
+        str(item.get("volume_id")).lower(): item
+        for item in cinder_items
+        if item.get("volume_id")
+    }
+    items: list[dict] = []
+    mapped = 0
+    cinder_without_rbd = 0
+    rbd_without_cinder = 0
+    not_cinder_image = 0
+
+    for cinder in cinder_items:
+        volume_id = str(cinder.get("volume_id") or "")
+        image_name = "volume-" + volume_id
+        rbd = rbd_by_lookup.get(image_name.casefold())
+        if rbd is None:
+            cinder_without_rbd += 1
+            items.append({
+                "mapping_status": "cinder_without_rbd",
+                "source_of_truth": "openstack_cinder",
+                "mutation_route": "cinder",
+                "volume_id": volume_id,
+                "image": image_name,
+                "project_id": cinder.get("project_id"),
+                "name": cinder.get("name"),
+                "volume_status": cinder.get("volume_status"),
+                "attachments": cinder.get("attachments") or [],
+                "attachment_summary": cinder.get("attachment_summary"),
+            })
+            continue
+        mapped += 1
+        items.append({
+            "mapping_status": "mapped",
+            "source_of_truth": "openstack_cinder",
+            "mutation_route": "cinder",
+            "volume_id": volume_id,
+            "image": image_name,
+            "project_id": cinder.get("project_id"),
+            "name": cinder.get("name"),
+            "volume_status": cinder.get("volume_status"),
+            "size_gib": cinder.get("size_gib"),
+            "volume_type": cinder.get("volume_type"),
+            "bootable": cinder.get("bootable"),
+            "multiattach": cinder.get("multiattach"),
+            "attachments": cinder.get("attachments") or [],
+            "attachment_summary": cinder.get("attachment_summary"),
+            "rbd_provisioned_size": rbd.get("provisioned_size"),
+            "rbd_used_size": rbd.get("used_size"),
+            "rbd_snapshot_count": rbd.get("snapshot_count"),
+        })
+
+    for image_name, rbd in rbd_by_name.items():
+        volume_id = cinder_volume_id_from_image(image_name)
+        if not volume_id:
+            not_cinder_image += 1
+            items.append({
+                "mapping_status": "not_cinder_managed",
+                "source_of_truth": "rbd",
+                "mutation_route": "rbd_policy",
+                "image": image_name,
+                "rbd_provisioned_size": rbd.get("provisioned_size"),
+                "rbd_used_size": rbd.get("used_size"),
+                "rbd_snapshot_count": rbd.get("snapshot_count"),
+            })
+        elif volume_id.lower() not in cinder_by_id:
+            rbd_without_cinder += 1
+            items.append({
+                "mapping_status": "rbd_without_cinder",
+                "source_of_truth": "unknown",
+                "mutation_route": "blocked",
+                "volume_id": volume_id,
+                "image": image_name,
+                "rbd_provisioned_size": rbd.get("provisioned_size"),
+                "rbd_used_size": rbd.get("used_size"),
+                "rbd_snapshot_count": rbd.get("snapshot_count"),
+                "blocked_reason": "Không tìm thấy volume tương ứng trong Cinder; cần operator review.",
+            })
+
+    return {
+        "cluster_id": cluster.id,
+        "pool": pool,
+        "source_of_truth": "openstack_cinder",
+        "items": items,
+        "summary": {
+            "total_rbd": len(rbd_by_name),
+            "total_cinder": len(cinder_items),
+            "mapped": mapped,
+            "cinder_without_rbd": cinder_without_rbd,
+            "rbd_without_cinder": rbd_without_cinder,
+            "not_cinder_image": not_cinder_image,
+        },
+        "read_only": True,
+        "collected_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@router.get("/api/volumes/{pool}/inventory-insights")
+async def volume_inventory_insights_api(
+    request: Request, pool: str, user: str = Depends(require_login)
+):
+    """Return bounded, read-only inventory findings for the selected cluster.
+
+    This first AI Block Storage slice is deliberately deterministic: it uses
+    Ceph inventory/watcher/lock evidence and persisted I/O history, but does
+    not call an LLM, create an Action, or execute a mutation. Missing evidence
+    is surfaced as ``INSUFFICIENT_EVIDENCE``.
+    """
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+
+    try:
+        inventory = (
+            ceph_client.query_rbd_inventory(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        logger.warning(
+            "volume_inventory_insights_api: cluster=%s pool=%s: %s", cluster.id, pool, exc
+        )
+        raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}") from exc
+
+    bounded = [row for row in inventory if isinstance(row, dict)][: _MAX_INVENTORY_INSIGHT_IMAGES]
+    enriched: list[dict] = []
+    attachment_errors = 0
+    for raw in bounded:
+        row = {**raw, "pool": pool}
+        image = str(row.get("name") or "")
+        try:
+            detail = (
+                ceph_client.query_rbd_image_detail(pool, image)
+                if cluster.is_default
+                else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+            )
+            partial_errors = detail.get("partial_errors") if isinstance(detail, dict) else {}
+            partial_errors = partial_errors if isinstance(partial_errors, dict) else {}
+            watchers = detail.get("watchers") if isinstance(detail, dict) else None
+            locks = detail.get("locks") if isinstance(detail, dict) else None
+            snapshots = detail.get("snapshots") if isinstance(detail, dict) else None
+            children = detail.get("children") if isinstance(detail, dict) else None
+            if partial_errors.get("watchers") or partial_errors.get("locks"):
+                attachment_errors += 1
+                row.update({"attachment_state": "unknown", "watcher_count": None, "lock_count": None})
+            else:
+                watcher_count = len(watchers) if isinstance(watchers, list) else 0
+                lock_count = len(locks) if isinstance(locks, list) else 0
+                row.update({
+                    "attachment_state": "attached" if watcher_count or lock_count else "idle",
+                    "watcher_count": watcher_count,
+                    "lock_count": lock_count,
+                })
+            row.update({
+                "snapshot_evidence": not bool(partial_errors.get("snapshots")),
+                "clone_evidence": not bool(partial_errors.get("children")),
+                "has_parent": bool(detail.get("parent")) if isinstance(detail, dict) else False,
+            })
+            if isinstance(snapshots, list):
+                row["snapshot_count"] = len(snapshots)
+            if isinstance(children, list):
+                row["clone_child_count"] = len(children)
+            else:
+                row["clone_child_count"] = None
+        except CephQueryError:
+            attachment_errors += 1
+            row.update({
+                "attachment_state": "unknown", "watcher_count": None, "lock_count": None,
+                "snapshot_evidence": False, "clone_evidence": False,
+                "clone_child_count": None,
+            })
+        enriched.append(row)
+
+    since = datetime.utcnow() - timedelta(days=7)
+    metric_rows: dict[tuple[str, str], list[dict]] = {}
+    backup_rows: dict[tuple[str, str], list[dict]] = {}
+    image_names = [str(row.get("name")) for row in bounded if row.get("name")]
+    with db.SessionLocal() as session:
+        history = session.query(VolumeMetric).filter(
+            VolumeMetric.pool == pool,
+            _cluster_row_filter(VolumeMetric.cluster_id, cluster),
+            VolumeMetric.polled_at >= since,
+        ).order_by(VolumeMetric.polled_at.asc()).all()
+        backups = session.query(BackupJob).filter(
+            BackupJob.pool == pool,
+            BackupJob.image.in_(image_names) if image_names else False,
+            _cluster_row_filter(BackupJob.cluster_id, cluster),
+            BackupJob.job_type.in_(("full", "incremental")),
+            BackupJob.created_at >= since - timedelta(days=30),
+        ).order_by(BackupJob.created_at.asc()).all()
+    for row in history:
+        metric_rows.setdefault((row.pool, row.image), []).append({
+            "iops": row.iops,
+            "polled_at": row.polled_at,
+        })
+    for row in backups:
+        backup_rows.setdefault((row.pool, row.image), []).append({
+            "status": row.status,
+            "created_at": row.created_at,
+            "finished_at": row.finished_at,
+        })
+
+    insights = build_inventory_insights(
+        enriched, metric_rows, backup_rows=backup_rows, now=datetime.utcnow(), history_days=7,
+    )
+    evidence_gaps = []
+    if len(inventory) > len(bounded):
+        evidence_gaps.append(
+            f"Inventory bị giới hạn {len(bounded)}/{len(inventory)} image để bảo vệ latency"
+        )
+    if attachment_errors:
+        evidence_gaps.append(f"Không đọc đủ watcher/lock của {attachment_errors} image")
+    evidence_gaps.extend([
+        "Owner/project Cinder chưa được đưa vào insight này",
+        "Backup artifact ngoài target chưa được xác minh trong insight này",
+    ])
+    return {
+        "cluster_id": cluster.id,
+        "pool": pool,
+        "history_days": 7,
+        "insights": insights,
+        "summary": {
+            "total": len(insights),
+            "stale_unattached": sum(item["kind"] == "STALE_UNATTACHED" for item in insights),
+            "insufficient_evidence": sum(item["kind"] == "INSUFFICIENT_EVIDENCE" for item in insights),
+        },
+        "coverage": {
+            "owner_project": False,
+            "backup_recency": True,
+            "attachment_evidence": attachment_errors == 0,
+        },
+        "evidence_gaps": evidence_gaps,
+        "read_only": True,
+        "action_id": None,
+        "collected_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
 @router.get("/api/volumes/{pool}/inventory-overview")
 async def volume_inventory_overview_api(
     request: Request, pool: str, user: str = Depends(require_login)
@@ -944,6 +1247,76 @@ async def propose_volume_rename(
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
 
 
+@router.get("/api/volumes/{pool}/inventory/{image}/qos")
+async def volume_qos_api(request: Request, pool: str, image: str, user: str = Depends(require_login)):
+    """Read per-image QoS without guessing unsupported backend fields."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools or not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=404, detail="Volume hoặc Pool không hợp lệ")
+    try:
+        qos = (
+            ceph_client.query_rbd_image_qos(pool, image)
+            if cluster.is_default
+            else ceph_client.query_rbd_image_qos_with(pool, image, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        logger.warning("volume_qos_api: cluster=%s pool=%s image=%s: %s", cluster.id, pool, image, exc)
+        raise HTTPException(status_code=502, detail="Không đọc được QoS từ RBD") from exc
+    return {"cluster_id": cluster.id, "pool": pool, "image": image, "qos": qos}
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/qos")
+async def propose_volume_qos(request: Request, pool: str, image: str, user: str = Depends(require_login)):
+    """Preview and approval-gate a closed set of RBD QoS image settings."""
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools or not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=404, detail="Volume hoặc Pool không hợp lệ")
+    try:
+        body = await request.json()
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Dữ liệu QoS không hợp lệ")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Dữ liệu QoS không hợp lệ")
+    fields = ("iops_limit", "bps_limit", "iops_burst", "bps_burst")
+    qos: dict[str, int | None] = {}
+    for field in fields:
+        if field not in body:
+            continue
+        value = body[field]
+        if value is None:
+            qos[field] = 0
+        elif isinstance(value, bool) or not isinstance(value, int) or not (0 <= value <= 10**15):
+            raise HTTPException(status_code=400, detail=f"QoS {field} phải là số nguyên từ 0 đến 10^15 hoặc null")
+        else:
+            qos[field] = value
+    if not qos:
+        raise HTTPException(status_code=400, detail="Phải gửi ít nhất một giới hạn QoS")
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id="rbd_set_qos", user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image, **qos},
+    )
+    if replay:
+        return replay
+    try:
+        detail = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default
+            else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+        if not detail:
+            raise CephQueryError("Volume không tồn tại")
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight QoS: {exc}") from exc
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image, action_id="rbd_set_qos",
+        ceph_code=RBD_VOLUME_QOS_CEPH_CODE, user=user, extra_params=qos,
+        idempotency_key=idempotency_key,
+        rationale=f"Thay đổi QoS Volume {pool}/{image}; mọi giới hạn sẽ được hậu kiểm từ RBD",
+    )
+    return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL", "qos": qos}, status_code=201)
+
+
 @router.post("/api/volumes/{pool}/inventory/{image}/trash")
 async def propose_volume_trash_move(
     request: Request, pool: str, image: str, user: str = Depends(require_login)
@@ -1070,6 +1443,9 @@ async def volume_inventory_detail_api(
         if cinder.get("status") == "managed" and cinder.get("verified")
         else {"status": "not_applicable", "items": [], "count": 0}
     )
+    detail["boot_dependency"] = build_boot_dependency_report(
+        cinder, detail["cinder_snapshots"], [], None
+    )
     reconciliation = reconcile_cinder_attachment(
         cinder, detail.get("watchers") or [], detail.get("locks") or []
     )
@@ -1080,7 +1456,7 @@ async def volume_inventory_detail_api(
         summary["cinder_verified"] = True
         summary["consumer_count"] = len(cinder.get("attachments") or [])
         summary["mutation_supported"] = False
-        summary["blocked_reason"] = "Attach/detach qua Cinder chưa được bật."
+        summary["blocked_reason"] = "Attach/detach phải đi qua Cinder và approval; không dùng rbd map/unmap."
     if not reconciliation.get("safe"):
         detail.setdefault("attachment_summary", {})["mutation_supported"] = False
         detail["attachment_summary"]["blocked_reason"] = reconciliation.get("reason") or "Attachment chưa đối soát an toàn."
@@ -1277,10 +1653,27 @@ async def volume_history_api(
                 "iops": row.iops,
                 "read_latency_ms": row.read_latency_ms,
                 "write_latency_ms": row.write_latency_ms,
+                "read_bytes_per_sec": row.read_bytes_per_sec,
+                "write_bytes_per_sec": row.write_bytes_per_sec,
+                "throughput_bytes_per_sec": row.throughput_bytes_per_sec,
+                "queue_depth": row.queue_depth,
                 "saturated": row.saturated,
             }
             for row in rows
         ]
+
+        latest = rows[-1] if rows else None
+        read_latencies = [row.read_latency_ms for row in rows]
+        write_latencies = [row.write_latency_ms for row in rows]
+        metric_summary = {
+            "sample_count": len(rows),
+            "read_latency_p95_ms": _percentile(read_latencies, 0.95),
+            "write_latency_p95_ms": _percentile(write_latencies, 0.95),
+            "throughput_bytes_per_sec": latest.throughput_bytes_per_sec if latest else None,
+            "queue_depth": latest.queue_depth if latest else None,
+            "queue_depth_available": any(row.queue_depth is not None for row in rows),
+            "last_sample_at": latest.polled_at.isoformat() + "Z" if latest else None,
+        }
 
         def _peak(field: str) -> dict | None:
             row = (
@@ -1317,7 +1710,44 @@ async def volume_history_api(
         "hours": hours,
         "samples": samples,
         "peak": peak,
+        "summary": metric_summary,
+        "capacity": {"used_bytes": None, "provisioned_bytes": None, "error": None},
         "saturated": saturated_now,
+    }
+
+
+@router.get("/api/volumes/{pool}/{image}/capacity")
+async def volume_capacity_api(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Return current logical/used bytes from authoritative ``rbd du``.
+
+    Capacity is intentionally a separate best-effort request. A slow or
+    temporarily unavailable ``rbd du`` must never delay or hide the persisted
+    performance history chart, which is served by the history endpoint above.
+    """
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        inventory = (
+            ceph_client.query_rbd_inventory(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        logger.warning("volume_capacity_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
+        raise HTTPException(status_code=502, detail="Không lấy được capacity live từ RBD") from exc
+    matching = next((item for item in inventory if item.get("name") == image), None)
+    if matching is None:
+        raise HTTPException(status_code=404, detail="Volume không còn trong inventory RBD")
+    return {
+        "cluster_id": cluster.id,
+        "pool": pool,
+        "image": image,
+        "used_bytes": matching.get("used_size"),
+        "provisioned_bytes": matching.get("provisioned_size"),
+        "collected_at": datetime.utcnow().isoformat() + "Z",
     }
 
 

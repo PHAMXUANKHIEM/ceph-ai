@@ -32,6 +32,7 @@ from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 # không thể xác minh bằng cách đối chiếu ở đó — xem module ấy.
 from watcher.ceph_code_families import is_monitor_owned
 from shared.router_client import build_router_client
+from shared.ai_telemetry import ai_invocation
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.telegram_alerts import (
@@ -399,10 +400,18 @@ async def _call_router(user_content: str) -> dict:
             + "\n\nBạn BẮT BUỘC gọi tool report_diagnosis đúng một lần; không trả kết quả chỉ bằng văn bản.\n\n"
             + user_content
         )
-        try:
-            await codex_app_server.run_turn(prompt, [_tool_schema()], capture, timeout=ROUTER_TIMEOUT_SECONDS)
-        except CodexAppServerError as exc:
-            raise RouterDiagnosisError(f"Codex call failed: {exc}") from exc
+        with ai_invocation(
+            feature="incident_diagnosis",
+            provider="codex",
+            model=settings.codex_chat_model or "default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                await codex_app_server.run_turn(prompt, [_tool_schema()], capture, timeout=ROUTER_TIMEOUT_SECONDS)
+            except CodexAppServerError as exc:
+                raise RouterDiagnosisError(f"Codex call failed: {exc}") from exc
+            telemetry.set_response(output_text=json.dumps(captured, ensure_ascii=False))
         return captured
 
     if settings.claude_chat_enabled:
@@ -415,35 +424,51 @@ async def _call_router(user_content: str) -> dict:
             + "\n\n"
             + user_content
         )
-        try:
-            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
-            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
-            result = json.loads(clean)
-        except (ClaudeCLIError, json.JSONDecodeError) as exc:
-            raise RouterDiagnosisError(f"Claude call failed: {exc}") from exc
+        with ai_invocation(
+            feature="incident_diagnosis",
+            provider="claude",
+            model=settings.claude_chat_model or "default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+                clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
+                result = json.loads(clean)
+            except (ClaudeCLIError, json.JSONDecodeError) as exc:
+                raise RouterDiagnosisError(f"Claude call failed: {exc}") from exc
+            telemetry.set_response(output_text=raw)
         return result
 
     client = _get_client()
-    try:
-        async with client.chat.completions.stream(
-            model=settings.router_model,
-            max_tokens=MAX_TOKENS,
-            tools=[_tool_schema()],
-            tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            # httpx.Timeout(...), NOT a bare float — verified directly
-            # against a real running 9router: passing a plain float here
-            # silently truncated the streamed response on a .stream() call
-            # specifically (no error raised, just a cut-off answer).
-            # httpx.Timeout(...) does not have this problem.
-            timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
-        ) as stream:
-            completion = await stream.get_final_completion()
-    except Exception as exc:
-        raise RouterDiagnosisError(f"Router call failed: {exc}") from exc
+    with ai_invocation(
+        feature="incident_diagnosis",
+        provider=settings.router_provider or "router",
+        model=settings.router_model or "unknown",
+        input_chars=len(SYSTEM_PROMPT) + len(user_content),
+        max_output_tokens=MAX_TOKENS,
+    ) as telemetry:
+        try:
+            async with client.chat.completions.stream(
+                model=settings.router_model,
+                max_tokens=MAX_TOKENS,
+                tools=[_tool_schema()],
+                tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                # httpx.Timeout(...), NOT a bare float — verified directly
+                # against a real running 9router: passing a plain float here
+                # silently truncated the streamed response on a .stream() call
+                # specifically (no error raised, just a cut-off answer).
+                # httpx.Timeout(...) does not have this problem.
+                timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
+            ) as stream:
+                completion = await stream.get_final_completion()
+        except Exception as exc:
+            raise RouterDiagnosisError(f"Router call failed: {exc}") from exc
+        telemetry.set_response(completion)
 
     choice = completion.choices[0]
     if choice.finish_reason == "length":

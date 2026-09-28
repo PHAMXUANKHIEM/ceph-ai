@@ -24,6 +24,19 @@ def test_reconcile_rename_and_restore_require_destination_name():
         reconcile("rbd_rename_volume", {"new_image": "other"}, '{"name":"vm-new"}')
 
 
+def test_qos_reconciliation_requires_approved_limits():
+    reconcile(
+        "rbd_set_qos",
+        {"iops_limit": 5000, "bps_limit": 1048576},
+        '[{"name":"rbd_qos_iops_limit","value":"5000"},{"name":"rbd_qos_bps_limit","value":"1048576"}]',
+    )
+    with pytest.raises(ExecutorError, match="QoS post-check"):
+        reconcile(
+            "rbd_set_qos", {"iops_limit": 5000},
+            '[{"name":"rbd_qos_iops_limit","value":"4000"}]',
+        )
+
+
 def test_reconcile_trash_move_and_purge_verify_membership():
     trash = json.dumps([{"id": "id-1", "name": "vm-old"}, {"id": "keep", "name": "other"}])
 
@@ -47,8 +60,12 @@ def test_reconciliation_command_is_read_only_and_validated():
     trash_command = reconciliation_command(
         "rbd_trash_purge_all", {"pool_name": "vms", "trash_ids": ["id-1"]}
     )
+    qos_command = reconciliation_command(
+        "rbd_set_qos", {"pool_name": "vms", "image": "vm-01", "iops_limit": 5000}
+    )
 
     assert command == "rbd info vms/vm-01 --format json"
     assert trash_command == "rbd trash ls vms --format json"
+    assert qos_command == "rbd config image list vms/vm-01 --format json"
     assert "resize" not in command
     assert " rm " not in trash_command

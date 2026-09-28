@@ -10,7 +10,22 @@ from pathlib import Path
 # cluster's connection config without importing a Dashboard route module
 # (Worker must never import from dashboard/ — AD-3's layering applies the
 # same direction to this as it does to SSH execution itself).
-ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+_LOCAL_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+
+def _configured_env_path() -> Path:
+    """Return the shared runtime env file when the app is containerized.
+
+    Compose mounts the host-owned configuration at the path advertised by
+    ``CEPH_AI_ENV_FILE``.  Keeping the fallback local makes this helper safe
+    for development and tests, while ensuring Settings writes reach the same
+    file that the next container start will load.
+    """
+    configured = os.environ.get("CEPH_AI_ENV_FILE", "").strip()
+    return Path(configured) if configured else _LOCAL_ENV_PATH
+
+
+ENV_PATH = _configured_env_path()
 
 # config/settings.py field name -> .env variable name, for every field the
 # "Cấu hình cụm" form on the Settings page edits. Moved here (alongside

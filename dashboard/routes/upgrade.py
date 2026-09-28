@@ -18,6 +18,7 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn
 from shared import audit, db
+from shared.ai_telemetry import ai_invocation
 from shared.ceph_releases import (
     EL_FAMILY_OS_IDS,
     codename_for_version,
@@ -321,16 +322,24 @@ async def _summarize_upgrade_procedure(raw_text: str) -> str:
 
     content = raw_text[:MAX_PROCEDURE_TEXT_CHARS_FOR_AI]
     try:
-        async with client.chat.completions.stream(
-            model=settings.router_model,
-            max_tokens=PROCEDURE_SUMMARY_MAX_TOKENS,
-            messages=[
-                {"role": "system", "content": _PROCEDURE_SUMMARY_SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
-            timeout=httpx.Timeout(PROCEDURE_SUMMARY_ROUTER_TIMEOUT_SECONDS),
-        ) as stream:
-            completion = await stream.get_final_completion()
+        with ai_invocation(
+            feature="upgrade_procedure_summary",
+            provider=settings.router_provider or "router",
+            model=settings.router_model or "unknown",
+            input_chars=len(_PROCEDURE_SUMMARY_SYSTEM_PROMPT) + len(content),
+            max_output_tokens=PROCEDURE_SUMMARY_MAX_TOKENS,
+        ) as telemetry:
+            async with client.chat.completions.stream(
+                model=settings.router_model,
+                max_tokens=PROCEDURE_SUMMARY_MAX_TOKENS,
+                messages=[
+                    {"role": "system", "content": _PROCEDURE_SUMMARY_SYSTEM_PROMPT},
+                    {"role": "user", "content": content},
+                ],
+                timeout=httpx.Timeout(PROCEDURE_SUMMARY_ROUTER_TIMEOUT_SECONDS),
+            ) as stream:
+                completion = await stream.get_final_completion()
+            telemetry.set_response(completion)
     except AuthenticationError as exc:
         raise UpgradeProcedureSummaryError(
             f"Model {settings.router_model!r} hoặc API key không hợp lệ trên 9router: "

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Unified Event Timeline — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar"><div class="topbar-inner">
+    <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+    <nav class="main-nav">
+      <a href="/" class="nav-link">Dashboard</a>
+      <a href="/log-intelligence" class="nav-link">Log Intelligence</a>
+      <a href="/event-timeline" class="nav-link active">Event Timeline</a>
+      <a href="/settings" class="nav-link">Settings</a>
+      {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+    </nav>
+    <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button type="submit" class="btn btn-ghost btn-sm">Logout</button></form>
+  </div></header>
+  <main class="page unified-timeline-page">
+    <div class="page-heading-row">
+      <div><p class="eyebrow">PHASE 6.1 · READ-ONLY EVIDENCE</p><h1>Unified Event Timeline</h1><p class="hint">Health transition, log finding, proposal, approval, command và post-check trong cùng một trục thời gian.</p></div>
+      <span class="cluster-context">{{ selected_cluster.name }}</span>
+    </div>
+    <section class="card timeline-filter-card">
+      <form method="get" action="/event-timeline" class="timeline-filter-form">
+        {% if clusters|length > 1 %}<label><span>Cụm</span><select name="cluster">{% for cluster in clusters %}<option value="{{ cluster.id }}" {{ "selected" if cluster.id == selected_cluster.id else "" }}>{{ cluster.name }}{% if cluster.is_default %} (mặc định){% endif %}</option>{% endfor %}</select></label>{% endif %}
+        <label><span>Từ (UTC)</span><input type="datetime-local" name="since" value="{{ since }}"></label>
+        <label><span>Đến (UTC)</span><input type="datetime-local" name="until" value="{{ until }}"></label>
+        <label><span>Số event</span><input type="number" name="limit" min="1" max="500" value="{{ limit }}"></label>
+        <button class="btn btn-primary" type="submit">Lọc timeline</button>
+      </form>
+      <p class="hint">Mặc định hiển thị 24 giờ gần nhất. Dữ liệu được đọc lại từ các bảng evidence hiện có; không có thao tác nào chạy xuống cụm.</p>
+    </section>
+    <section class="card">
+      <div class="card-header"><div><h2>{{ events|length }} event · {{ selected_cluster.name }}</h2><p class="hint">Mỗi dòng có source ID và evidence để truy ngược về nguồn.</p></div><a class="btn btn-ghost btn-sm" href="/api/event-timeline">Mở JSON API</a></div>
+      <div class="card-body">
+        {% if not events %}<div class="empty-state"><span class="empty-icon">◷</span><h3>Chưa có event trong khoảng đã chọn</h3><p>Thử mở rộng khoảng thời gian hoặc chạy Watcher/log intelligence để tạo evidence.</p></div>
+        {% else %}<div class="unified-event-list">
+          {% for event in events %}<article class="unified-event unified-event-{{ event.severity|lower }}">
+            <div class="unified-event-marker"></div><div class="unified-event-main">
+              <div class="unified-event-top"><span class="unified-event-kind">{{ event.kind|replace('_', ' ') }}</span><span class="badge badge-{{ 'err' if event.severity == 'CRITICAL' else 'warn' if event.severity == 'WARNING' else 'ok' if event.severity == 'INFO' else 'neutral' }}">{{ event.severity }}</span><time datetime="{{ event.at }}">{{ event.at|replace('T', ' ') }}</time></div>
+              <h3>{{ event.summary }}</h3><p class="hint">{{ event.source }} · {{ event.actor }}{% if event.status %} · {{ event.status }}{% endif %}</p>
+              <details><summary>Evidence · {{ event.source_id }}</summary><pre>{{ event.evidence|tojson(indent=2) }}</pre></details>
+            </div>
+          </article>{% endfor %}
+        </div>{% endif %}
+      </div>
+    </section>
+  </main>
+</body>
+</html>

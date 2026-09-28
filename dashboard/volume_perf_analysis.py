@@ -26,6 +26,7 @@ import re
 import httpx
 
 from config.settings import settings
+from shared.ai_telemetry import ai_invocation
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
@@ -150,12 +151,20 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
               "không trả kết luận chỉ bằng văn bản.\n\n"
             + _build_user_content(sweep)
         )
-        try:
-            await codex_app_server.run_turn(
-                prompt, [_tool_schema()], capture_conclusion, timeout=ROUTER_TIMEOUT_SECONDS
-            )
-        except CodexAppServerError as exc:
-            raise VolumePerfAnalysisError(f"Codex: {exc}") from exc
+        with ai_invocation(
+            feature="volume_perf_analysis",
+            provider="codex",
+            model="default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                await codex_app_server.run_turn(
+                    prompt, [_tool_schema()], capture_conclusion, timeout=ROUTER_TIMEOUT_SECONDS
+                )
+            except CodexAppServerError as exc:
+                raise VolumePerfAnalysisError(f"Codex: {exc}") from exc
+            telemetry.set_response(output_text=json.dumps(captured, ensure_ascii=False))
         if not _REQUIRED_FIELDS.issubset(captured):
             raise VolumePerfAnalysisError(f"Codex thiếu trường bắt buộc: {captured!r}")
         return captured
@@ -169,14 +178,22 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
               "conclusion_vi (string), caveats_vi (string).\n\n"
             + _build_user_content(sweep)
         )
-        try:
-            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
-            clean = raw.strip()
-            if clean.startswith("```"):
-                clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean, flags=re.IGNORECASE)
-            result = json.loads(clean)
-        except (ClaudeCLIError, json.JSONDecodeError) as exc:
-            raise VolumePerfAnalysisError(f"Claude: {exc}") from exc
+        with ai_invocation(
+            feature="volume_perf_analysis",
+            provider="claude",
+            model=settings.claude_chat_model or "default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+                clean = raw.strip()
+                if clean.startswith("```"):
+                    clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean, flags=re.IGNORECASE)
+                result = json.loads(clean)
+            except (ClaudeCLIError, json.JSONDecodeError) as exc:
+                raise VolumePerfAnalysisError(f"Claude: {exc}") from exc
+            telemetry.set_response(output_text=raw)
         if not _REQUIRED_FIELDS.issubset(result):
             raise VolumePerfAnalysisError(f"Claude thiếu trường bắt buộc: {result!r}")
         return result
@@ -186,24 +203,30 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
     except RouterNotConfiguredError as exc:
         raise VolumePerfAnalysisError(str(exc)) from exc
 
-    try:
-        async with client.chat.completions.stream(
-            model=settings.router_model,
-            max_tokens=MAX_TOKENS,
-            tools=[_tool_schema()],
-            tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": _build_user_content(sweep)},
-            ],
-            # httpx.Timeout(...), not a bare float — worker/llm/router_client.py's
-            # own _call_router found a bare float silently truncates a
-            # .stream() call against the real 9router.
-            timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
-        ) as stream:
-            completion = await stream.get_final_completion()
-    except Exception as exc:
-        raise VolumePerfAnalysisError(readable_exception_message(exc)) from exc
+    user_content = _build_user_content(sweep)
+    with ai_invocation(
+        feature="volume_perf_analysis",
+        provider=settings.router_provider or "router",
+        model=settings.router_model or "unknown",
+        input_chars=len(SYSTEM_PROMPT) + len(user_content) + len(json.dumps(_tool_schema(), ensure_ascii=False)),
+        max_output_tokens=MAX_TOKENS,
+    ) as telemetry:
+        try:
+            async with client.chat.completions.stream(
+                model=settings.router_model,
+                max_tokens=MAX_TOKENS,
+                tools=[_tool_schema()],
+                tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
+            ) as stream:
+                completion = await stream.get_final_completion()
+        except Exception as exc:
+            raise VolumePerfAnalysisError(readable_exception_message(exc)) from exc
+        telemetry.set_response(completion)
 
     choice = completion.choices[0]
     if choice.finish_reason == "length":

@@ -77,6 +77,89 @@ def test_discover_cinder_volume_distinguishes_missing_cinder_record(monkeypatch)
     assert result == {"status": "not_found", "verified": True, "volume_id": VOLUME_ID}
 
 
+def test_discover_cinder_volumes_normalizes_all_projects_without_credentials(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        cinder_discovery, "resolve_ssh_creds",
+        lambda cluster: ("root", "/tmp/id_ed25519", "none", ""),
+    )
+
+    def fake_execute(host, command, user=None, key_path=None):
+        calls.append((host, command, user, key_path))
+        return json.dumps([
+            {
+                "ID": VOLUME_ID,
+                "Name": "database",
+                "Status": "in-use",
+                "Project ID": "project-1",
+                "Size": 20,
+                "Type": "fast",
+                "Attached to": "server-1 on compute-1 /dev/vdb",
+            },
+        ])
+
+    monkeypatch.setattr(cinder_discovery, "execute_command", fake_execute)
+    result = cinder_discovery.discover_cinder_volumes(_cluster())
+
+    assert result["status"] == "ok"
+    assert result["verified"] is True
+    assert result["count"] == 1
+    assert result["items"][0]["project_id"] == "project-1"
+    assert result["items"][0]["attachment_summary"] == "server-1 on compute-1 /dev/vdb"
+    assert "openstack volume list --all-projects --long -f json" in calls[0][1]
+    assert "/tmp/id_ed25519" not in calls[0][1]
+
+
+def test_discover_cinder_volumes_fails_closed_on_backend_error(monkeypatch):
+    monkeypatch.setattr(
+        cinder_discovery, "resolve_ssh_creds",
+        lambda cluster: ("root", "/tmp/id_ed25519", "none", ""),
+    )
+    monkeypatch.setattr(
+        cinder_discovery, "execute_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ExecutorError("Cinder timeout")),
+    )
+
+    result = cinder_discovery.discover_cinder_volumes(_cluster())
+
+    assert result["status"] == "error"
+    assert result["verified"] is False
+    assert result["items"] == []
+    assert "timeout" in result["error"]
+
+
+def test_boot_dependency_report_protects_boot_volume_when_evidence_is_partial():
+    result = cinder_discovery.build_boot_dependency_report(
+        {
+            "status": "managed", "verified": True, "volume_id": VOLUME_ID,
+            "bootable": True, "attachments": [{"instance_id": "server-1"}],
+        },
+        {"status": "error", "items": []},
+        [{"status": "not_found", "server_id": "server-1"}],
+        None,
+    )
+
+    assert result["status"] == "partial"
+    assert result["guards"]["protect_boot_volume"] is True
+    assert result["guards"]["direct_delete_supported"] is False
+    assert result["mutation_supported"] is False
+    assert any("Glance" in gap for gap in result["evidence_gaps"])
+    assert any("Cinder snapshots" in gap for gap in result["evidence_gaps"])
+
+
+def test_attachment_remediation_never_removes_locks_directly():
+    result = cinder_discovery.build_attachment_remediation(
+        {"status": "managed", "verified": True},
+        [{"client": "client.1"}],
+        [{"locker_id": "client.1"}],
+        {"status": "stale_attachment", "safe": False},
+    )
+
+    assert result["posture"] == "REVIEW_BEFORE_DETACH"
+    assert result["automatic_remediation"] is False
+    assert result["direct_lock_removal_supported"] is False
+
+
 def test_discover_cinder_snapshots_normalizes_inventory(monkeypatch):
     calls = []
     monkeypatch.setattr(

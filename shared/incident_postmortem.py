@@ -9,6 +9,7 @@ from datetime import datetime
 import httpx
 
 from config.settings import settings
+from shared.ai_telemetry import ai_invocation
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared import db
@@ -117,32 +118,57 @@ async def _call_model(payload: dict) -> dict:
                 return "Tool không được phép", False
             captured.update(arguments)
             return "Đã ghi postmortem", True
-        try:
-            await codex_app_server.run_turn(system + "\nCall the tool exactly once.\n" + user, [schema], capture,
-                                            timeout=TIMEOUT_SECONDS)
-        except CodexAppServerError as exc:
-            raise PostmortemError(f"Codex call failed: {exc}") from exc
+        prompt = system + "\nCall the tool exactly once.\n" + user
+        with ai_invocation(
+            feature="incident_postmortem",
+            provider="codex",
+            model="default",
+            input_chars=len(prompt) + len(json.dumps(schema, ensure_ascii=False)),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                await codex_app_server.run_turn(prompt, [schema], capture, timeout=TIMEOUT_SECONDS)
+            except CodexAppServerError as exc:
+                raise PostmortemError(f"Codex call failed: {exc}") from exc
+            telemetry.set_response(output_text=json.dumps(captured, ensure_ascii=False))
         return captured
     if settings.claude_chat_enabled:
-        try:
-            raw = await run_claude_prompt(
-                system + "\nReturn only JSON matching this schema:\n" +
-                json.dumps(schema["function"]["parameters"], ensure_ascii=False) + "\n" + user,
-                timeout=TIMEOUT_SECONDS,
-            )
-            return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I))
-        except (ClaudeCLIError, json.JSONDecodeError) as exc:
-            raise PostmortemError(f"Claude call failed: {exc}") from exc
-    client = build_router_client(settings.router_api_key, settings.router_base_url)
-    try:
-        completion = await client.chat.completions.create(
-            model=settings.router_model, max_tokens=MAX_TOKENS, tools=[schema],
-            tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            timeout=httpx.Timeout(TIMEOUT_SECONDS),
+        prompt = (
+            system + "\nReturn only JSON matching this schema:\n" +
+            json.dumps(schema["function"]["parameters"], ensure_ascii=False) + "\n" + user
         )
-    except Exception as exc:
-        raise PostmortemError(f"Router call failed: {str(exc) or type(exc).__name__}") from exc
+        with ai_invocation(
+            feature="incident_postmortem",
+            provider="claude",
+            model="default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                raw = await run_claude_prompt(prompt, timeout=TIMEOUT_SECONDS)
+                result = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I))
+            except (ClaudeCLIError, json.JSONDecodeError) as exc:
+                raise PostmortemError(f"Claude call failed: {exc}") from exc
+            telemetry.set_response(output_text=raw)
+            return result
+    client = build_router_client(settings.router_api_key, settings.router_base_url)
+    with ai_invocation(
+        feature="incident_postmortem",
+        provider=settings.router_provider or "router",
+        model=settings.router_model or "unknown",
+        input_chars=len(system) + len(user) + len(json.dumps(schema, ensure_ascii=False)),
+        max_output_tokens=MAX_TOKENS,
+    ) as telemetry:
+        try:
+            completion = await client.chat.completions.create(
+                model=settings.router_model, max_tokens=MAX_TOKENS, tools=[schema],
+                tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                timeout=httpx.Timeout(TIMEOUT_SECONDS),
+            )
+        except Exception as exc:
+            raise PostmortemError(f"Router call failed: {str(exc) or type(exc).__name__}") from exc
+        telemetry.set_response(completion)
     for call in completion.choices[0].message.tool_calls or []:
         if call.function.name == TOOL_NAME:
             return json.loads(call.function.arguments or "{}")

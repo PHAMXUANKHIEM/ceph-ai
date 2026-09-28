@@ -459,6 +459,33 @@ def test_server_log_api_returns_empty_list_for_missing_log_file(dashboard_client
     assert response.json()["lines"] == []
 
 
+def test_ai_cost_api_returns_bounded_content_free_summary(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    monkeypatch.setattr(
+        maintenance_route,
+        "ai_cost_summary",
+        lambda hours: {"calls": 2, "errors": 0, "input_tokens": 10, "output_tokens": 5,
+                        "estimated_cost_usd": 0.12, "groups": []},
+    )
+
+    response = dashboard_client.get("/api/settings/ai-cost?period_hours=99999")
+
+    assert response.status_code == 200
+    assert response.json()["period_hours"] == 24 * 31
+    assert response.json()["calls"] == 2
+    assert response.json()["projection"]["estimated_monthly_usd"] == 0.12 * 24 / (24 * 31) * 30
+    assert "prompt" not in response.text.lower()
+
+
+def test_ai_cost_api_requires_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.get("/api/settings/ai-cost")
+
+    assert response.status_code == 403
+
+
 def test_tail_log_lines_caps_at_max_lines(tmp_path):
     log_path = tmp_path / "big.log"
     log_path.write_text("".join(f"line {i}\n" for i in range(maintenance_route.MAX_SERVER_LOG_LINES + 50)))

@@ -12,13 +12,29 @@
   var codexModelSelect = document.getElementById("codex-model-select");
   var codexModelSaveBtn = document.getElementById("codex-model-save-btn");
   var codexModelResult = document.getElementById("codex-model-result");
+  var codexModelSyncStatus = document.getElementById("codex-model-sync-status");
   var codexLimitPanel = document.getElementById("codex-limit-panel");
   var codexPollTimer = null;
 
+  function parseApiResponse(response) {
+    return response.text().then(function (raw) {
+      var data = null;
+      try { data = raw ? JSON.parse(raw) : {}; } catch (error) {
+        var fallback = raw && raw.trim() ? raw.trim().slice(0, 180) : "Không có nội dung lỗi";
+        throw new Error("Server trả về lỗi HTTP " + response.status + ": " + fallback);
+      }
+      if (!response.ok) throw new Error(data.detail || data.message || "HTTP " + response.status);
+      return data;
+    });
+  }
+
   function codexRequest(url, options) {
     return fetch(url, Object.assign({ credentials: "same-origin" }, options || {})).then(function (response) {
-      if (!response.ok) return response.json().then(function (data) { throw new Error(data.detail || "HTTP " + response.status); });
-      return response.json();
+      if (response.redirected && response.url.indexOf("/login") !== -1) {
+        window.location.reload();
+        throw new Error("unauthenticated");
+      }
+      return parseApiResponse(response);
     });
   }
 
@@ -39,6 +55,11 @@
       if (codexLoginBtn) codexLoginBtn.hidden = true;
       if (codexLogoutBtn) codexLogoutBtn.hidden = false;
       renderAccountModels(codexModelPanel, codexModelSelect, data.models || [], data.model, true);
+      if (codexModelSyncStatus) {
+        codexModelSyncStatus.textContent = data.models_synced
+          ? "Đã tự động đồng bộ " + (data.model_count || (data.models || []).length) + " model từ tài khoản Codex."
+          : "Chưa đồng bộ catalog model.";
+      }
       renderAiLimits(codexLimitPanel, data.limits || []);
       if (codexFlow) codexFlow.hidden = true;
     } else {
@@ -47,6 +68,7 @@
       if (codexLoginBtn) codexLoginBtn.hidden = false;
       if (codexLogoutBtn) codexLogoutBtn.hidden = true;
       if (codexModelPanel) codexModelPanel.hidden = true;
+      if (codexModelSyncStatus) codexModelSyncStatus.textContent = "";
       if (codexLimitPanel) codexLimitPanel.hidden = true;
     }
   }
@@ -416,14 +438,7 @@
 
     fetch("/settings/9router/verify", { method: "POST", credentials: "same-origin", body: body })
       .then(handleAuthRedirect)
-      .then(function (response) {
-        if (!response.ok) {
-          return response.json().then(function (data) {
-            throw new Error(data.detail || "HTTP " + response.status);
-          });
-        }
-        return response.json();
-      })
+      .then(parseApiResponse)
       .then(function (data) {
         if (!data.valid) {
           showResult(false, data.message || "Kết nối thất bại");
@@ -444,7 +459,16 @@
       })
       .catch(function (err) {
         if (err.message === "unauthenticated") return;
-        showResult(false, "Không thể kết nối " + (baseUrl || providerLabel) + " — kiểm tra host/port");
+        // Keep the backend's actionable response (missing config, 401/403,
+        // DNS failure, timeout, unsupported endpoint) instead of replacing
+        // every failure with the misleading host/port message.  A network
+        // failure still gets a concise provider-specific fallback.
+        showResult(
+          false,
+          err && err.message
+            ? err.message
+            : "Không thể kết nối " + (baseUrl || providerLabel) + " — kiểm tra host/port"
+        );
       })
       .finally(function () {
         verifyBtn.disabled = false;
@@ -461,11 +485,8 @@
     });
   }
 
-  // Kết nối Database: "Kiểm tra kết nối" is a side-effect-free SELECT 1
-  // probe (no migration, no .env write — see /settings/database/test in
-  // dashboard/routes/settings.py) so an operator can try a few
-  // host/port/credential combos before the real "Lưu & chuyển database"
-  // submit, which does migrate + restart everything.
+  // Kết nối Database: side-effect-free probe, custom input controls, and
+  // guarded actions. The server remains the source of truth for validation.
   var dbTestBtn = document.getElementById("db-test-btn");
   if (dbTestBtn) {
     var dbHostInput = document.getElementById("db-host-input");
@@ -474,15 +495,20 @@
     var dbUsernameInput = document.getElementById("db-username-input");
     var dbPasswordInput = document.getElementById("db-password-input");
     var dbUrlInput = document.getElementById("db-url-input");
+    var dbSslModeInput = document.getElementById("db-ssl-mode-input");
+    var dbSslLabel = document.getElementById("db-ssl-label");
+    var dbSslMenu = document.getElementById("db-ssl-menu");
+    var dbSslTrigger = document.querySelector("#db-ssl-select .db-select-trigger");
+    var dbConnectTimeoutInput = document.getElementById("db-connect-timeout");
+    var dbPasswordToggle = document.getElementById("db-password-toggle");
     var dbResultEl = document.getElementById("db-test-result");
+    var dbStatusChip = document.getElementById("db-status-chip");
+    var dbStatusText = document.getElementById("db-status-text");
+    var dbStatusMeta = document.getElementById("db-status-meta");
+    var dbCopyBtn = document.getElementById("db-copy-btn");
 
-    // Two input modes for the same underlying DATABASE_URL — "Nhập từng
-    // trường" (5 separate inputs) or "Nhập Database URL" (one pasted
-    // connection string, see _resolve_database_url in
-    // dashboard/routes/settings.py, which prefers the raw URL whenever
-    // it's non-blank). Only toggles which group is VISIBLE — the server
-    // decides which one actually applies, so submitting with the "wrong"
-    // group hidden-but-filled from a previous edit still behaves correctly.
+    // Two input modes for the same underlying DATABASE_URL. Disabled hidden
+    // controls prevent browser required-field validation from blocking URL mode.
     var dbModeRadios = Array.prototype.slice.call(document.querySelectorAll('input[name="db_input_mode"]'));
     var dbModeFields = Array.prototype.slice.call(document.querySelectorAll("[data-db-modes]"));
     if (dbModeRadios.length) {
@@ -491,11 +517,72 @@
         var mode = checked ? checked.value : "fields";
         dbModeFields.forEach(function (field) {
           field.hidden = field.getAttribute("data-db-modes") !== mode;
+          Array.prototype.slice.call(field.querySelectorAll("input, textarea, select, button")).forEach(function (control) {
+            if (control.type !== "button") control.disabled = field.hidden;
+          });
         });
       };
       dbModeRadios.forEach(function (r) { r.addEventListener("change", applyDbModeVisibility); });
       applyDbModeVisibility();
     }
+
+    if (dbSslTrigger && dbSslMenu && dbSslModeInput) {
+      dbSslTrigger.addEventListener("click", function () {
+        var open = dbSslMenu.hidden;
+        dbSslMenu.hidden = !open;
+        dbSslTrigger.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+      Array.prototype.slice.call(dbSslMenu.querySelectorAll("[data-ssl-mode]")).forEach(function (option) {
+        option.addEventListener("click", function () {
+          dbSslModeInput.value = option.getAttribute("data-ssl-mode");
+          dbSslLabel.textContent = dbSslModeInput.value;
+          Array.prototype.slice.call(dbSslMenu.querySelectorAll("[data-ssl-mode]")).forEach(function (item) { item.classList.toggle("is-selected", item === option); });
+          dbSslMenu.hidden = true;
+          dbSslTrigger.setAttribute("aria-expanded", "false");
+        });
+      });
+      document.addEventListener("click", function (event) {
+        if (!event.target.closest("#db-ssl-select")) { dbSslMenu.hidden = true; dbSslTrigger.setAttribute("aria-expanded", "false"); }
+      });
+    }
+
+    if (dbPasswordToggle && dbPasswordInput) {
+      dbPasswordToggle.addEventListener("click", function () {
+        var visible = dbPasswordInput.type === "text";
+        dbPasswordInput.type = visible ? "password" : "text";
+        dbPasswordToggle.setAttribute("aria-label", visible ? "Hiện mật khẩu" : "Ẩn mật khẩu");
+      });
+    }
+
+    if (dbCopyBtn) {
+      dbCopyBtn.addEventListener("click", function () {
+        var value = document.getElementById("db-connection-value").textContent.trim();
+        var copied = function () {
+          dbCopyBtn.classList.add("is-copied"); dbCopyBtn.textContent = "✓ Đã copy!";
+          setTimeout(function () { dbCopyBtn.classList.remove("is-copied"); dbCopyBtn.textContent = "▣ Copy"; }, 2000);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(value).then(copied).catch(function () { fallbackCopy(value); });
+        else fallbackCopy(value);
+        function fallbackCopy(text) { var area = document.createElement("textarea"); area.value = text; document.body.appendChild(area); area.select(); try { document.execCommand("copy"); copied(); } finally { area.remove(); } }
+      });
+    }
+
+    function refreshDatabaseStatus() {
+      if (!dbStatusChip) return;
+      dbStatusChip.className = "db-status-chip is-pending";
+      dbStatusText.textContent = "Đang kiểm tra";
+      dbStatusMeta.textContent = "...";
+      fetch("/api/settings/database/status", { credentials: "same-origin" })
+        .then(handleAuthRedirect).then(function (response) { if (!response.ok) throw new Error("HTTP " + response.status); return response.json(); })
+        .then(function (data) {
+          var connected = !!data.connected;
+          dbStatusChip.className = "db-status-chip " + (connected ? "is-ok" : "is-error");
+          dbStatusText.textContent = connected ? "Đang kết nối" : "Mất kết nối";
+          dbStatusMeta.textContent = connected && data.latency_ms != null ? "~" + data.latency_ms + "ms" : (data.message || "Kiểm tra thất bại");
+        }).catch(function () { dbStatusChip.className = "db-status-chip is-error"; dbStatusText.textContent = "Mất kết nối"; dbStatusMeta.textContent = "Không kiểm tra được"; });
+    }
+    refreshDatabaseStatus();
+    setInterval(refreshDatabaseStatus, 30000);
 
     dbTestBtn.addEventListener("click", function () {
       dbTestBtn.disabled = true;
@@ -509,6 +596,8 @@
       body.set("db_name", dbNameInput.value.trim());
       body.set("db_username", dbUsernameInput.value.trim());
       body.set("db_password", dbPasswordInput.value);
+      body.set("db_ssl_mode", dbSslModeInput ? dbSslModeInput.value : "prefer");
+      body.set("db_connect_timeout", dbConnectTimeoutInput ? dbConnectTimeoutInput.value : "5");
       body.set("database_url_raw", dbUrlInput.value.trim());
 
       fetch("/settings/database/test", { method: "POST", credentials: "same-origin", body: body })
@@ -540,16 +629,6 @@
       }
     });
 
-    // "Lưu & chuyển database" is a single blocking POST that runs all 5
-    // steps documented in settings_save_database (test connection ->
-    // migration -> write .env -> restart Worker/Watcher -> restart
-    // Dashboard itself) before the browser gets ANY response back, so
-    // there's no live per-step signal to poll from the server. This just
-    // gives the operator a sense of progress for the (multi-second) wait —
-    // it's a time-estimated animation, not a real backend-reported percent,
-    // and deliberately caps below 100% since only the server's actual
-    // response (a fresh settings.html on error, or restarting.html on
-    // success) means the operation is actually done.
     var dbForm = document.getElementById("database-form");
     var dbSaveBtn = document.getElementById("db-save-btn");
     var dbProgressEl = document.getElementById("db-migrate-progress");
@@ -568,9 +647,7 @@
       var DB_MIGRATE_CAP = 97;
 
       dbForm.addEventListener("submit", function (event) {
-        if (event.defaultPrevented) {
-          return; // the existing confirm() onsubmit handler already vetoed this submit
-        }
+        if (event.defaultPrevented) return; // inline confirmation was cancelled
         dbSaveBtn.disabled = true;
         if (dbTestBtn) dbTestBtn.disabled = true;
         dbProgressEl.hidden = false;
@@ -603,6 +680,13 @@
         }, 400);
       });
     }
+
+    var dbResetForm = document.getElementById("db-reset-form");
+    var dbResetBtn = document.getElementById("db-reset-btn");
+    if (dbResetForm && dbResetBtn) dbResetForm.addEventListener("submit", function (event) { if (event.defaultPrevented) return; dbResetBtn.disabled = true; dbResetBtn.textContent = "Đang reset..."; });
+    var dbMigrateForm = document.getElementById("db-migrate-form");
+    var dbMigrateBtn = document.getElementById("db-migrate-btn");
+    if (dbMigrateForm && dbMigrateBtn) dbMigrateForm.addEventListener("submit", function (event) { if (event.defaultPrevented) return; dbMigrateBtn.disabled = true; dbMigrateBtn.textContent = "Đang chạy migration..."; });
   }
 
   // OpenStack settings only contain node addresses; this verifies the
@@ -704,6 +788,57 @@
     transportSelect.addEventListener("change", applyTransportVisibility);
     applyTransportVisibility();
   });
+
+  // Compact Settings navigation: grouped horizontal tabs replace the former
+  // second sidebar while retaining hash deep-links and mobile picker support.
+  var compactSettingsItems = Array.prototype.slice.call(document.querySelectorAll(".settings-tab-item[data-section]"));
+  var compactSettingsPanels = Array.prototype.slice.call(document.querySelectorAll(".settings-panel"));
+  var compactSettingsGroups = Array.prototype.slice.call(document.querySelectorAll(".settings-tab-group"));
+  var compactSettingsSubgroups = Array.prototype.slice.call(document.querySelectorAll(".settings-tab-subgroup"));
+  var compactSettingsBreadcrumbGroup = document.getElementById("settings-breadcrumb-group");
+  var compactSettingsBreadcrumbCurrent = document.getElementById("settings-breadcrumb-current");
+  var compactSettingsSelect = document.getElementById("settings-mobile-select");
+  var compactActiveSection = document.querySelector(".settings-page") ? document.querySelector(".settings-page").getAttribute("data-active-section") : "";
+  var compactItemLabel = function (item) { return item.textContent.trim(); };
+  var compactSelectOptions = function () {
+    if (!compactSettingsSelect) return;
+    compactSettingsItems.forEach(function (item) { var option = document.createElement("option"); option.value = item.getAttribute("data-section"); option.textContent = compactItemLabel(item); compactSettingsSelect.appendChild(option); });
+    compactSettingsSelect.value = compactActiveSection;
+  };
+  var compactShowSettingsSection = function (section, clickedItem) {
+    if (!section) return;
+    compactSettingsPanels.forEach(function (panel) { panel.hidden = panel.getAttribute("data-panel") !== section; });
+    compactSettingsItems.forEach(function (item) { item.classList.toggle("active", item === clickedItem || item.getAttribute("data-section") === section); });
+    var active = clickedItem || compactSettingsItems.filter(function (item) { return item.getAttribute("data-section") === section; })[0];
+    if (active) {
+      var group = active.closest(".settings-tab-subgroup");
+      compactSettingsSubgroups.forEach(function (subgroup) { subgroup.hidden = subgroup !== group; });
+      compactSettingsGroups.forEach(function (button) { button.classList.toggle("active", group && button.getAttribute("data-tab-group") === group.getAttribute("data-tab-panel")); });
+      if (compactSettingsBreadcrumbCurrent) compactSettingsBreadcrumbCurrent.textContent = compactItemLabel(active);
+      if (compactSettingsBreadcrumbGroup && group) compactSettingsBreadcrumbGroup.textContent = (compactSettingsGroups.filter(function (button) { return button.getAttribute("data-tab-group") === group.getAttribute("data-tab-panel"); })[0] || {}).textContent || "Cài đặt";
+      if (compactSettingsSelect) compactSettingsSelect.value = section;
+    }
+  };
+  if (compactSettingsItems.length && compactSettingsPanels.length) {
+    compactSelectOptions();
+    var compactInitialItem = compactSettingsItems.filter(function (item) { return item.getAttribute("data-section") === compactActiveSection; })[0] || compactSettingsItems[0];
+    compactShowSettingsSection(compactActiveSection || compactInitialItem.getAttribute("data-section"), compactInitialItem);
+    compactSettingsItems.forEach(function (item) { item.addEventListener("click", function () { compactShowSettingsSection(item.getAttribute("data-section"), item); window.history.replaceState(null, "", "#" + item.getAttribute("data-section")); }); });
+    compactSettingsGroups.forEach(function (groupButton) { groupButton.addEventListener("click", function () { var group = compactSettingsSubgroups.filter(function (subgroup) { return subgroup.getAttribute("data-tab-panel") === groupButton.getAttribute("data-tab-group"); })[0]; if (group) { var isOpen = !group.hidden; compactSettingsSubgroups.forEach(function (subgroup) { subgroup.hidden = subgroup !== group || isOpen; }); } }); });
+    if (compactSettingsSelect) compactSettingsSelect.addEventListener("change", function () { compactShowSettingsSection(compactSettingsSelect.value); });
+    window.addEventListener("hashchange", function () { var hash = window.location.hash.replace(/^#/, ""); if (compactSettingsItems.some(function (item) { return item.getAttribute("data-section") === hash; })) compactShowSettingsSection(hash); });
+  }
+
+  var settingsContainerBanner = document.getElementById("settings-container-banner");
+  var settingsContainerExpand = document.getElementById("settings-container-banner-expand");
+  var settingsContainerGuide = document.getElementById("settings-container-mode-guide");
+  var settingsContainerDismiss = document.getElementById("settings-container-banner-dismiss");
+  if (settingsContainerBanner && settingsContainerDismiss) {
+    var bannerKey = "ceph-ai:container-mode-banner-dismissed:" + (settingsContainerBanner.getAttribute("data-banner-version") || "current");
+    try { settingsContainerBanner.hidden = localStorage.getItem(bannerKey) === "1"; } catch (e) { /* ignore */ }
+    settingsContainerDismiss.addEventListener("click", function () { settingsContainerBanner.hidden = true; try { localStorage.setItem(bannerKey, "1"); } catch (e) { /* ignore */ } });
+    if (settingsContainerExpand && settingsContainerGuide) settingsContainerExpand.addEventListener("click", function () { var open = settingsContainerGuide.hidden; settingsContainerGuide.hidden = !open; settingsContainerExpand.textContent = open ? "Thu gọn" : "Xem chi tiết"; });
+  }
 
   // Settings sidebar (2026-07-24) — one section-panel visible at a time.
   // The server already picks which panel starts visible (settings.py's
@@ -826,6 +961,77 @@
       form.submit();
     });
   }
+})();
+
+// --- AI Cost: content-free usage dashboard ---------------------------------
+(function () {
+  var panel = document.getElementById("ai-cost-panel");
+  if (!panel) return;
+  var period = document.getElementById("ai-cost-period");
+  var refresh = document.getElementById("ai-cost-refresh");
+  var status = document.getElementById("ai-cost-status");
+  var rows = document.getElementById("ai-cost-rows");
+  var summary = document.getElementById("ai-cost-summary");
+
+  function number(value) { return Number(value || 0).toLocaleString("vi-VN"); }
+  function money(value) { return Number(value || 0).toLocaleString("vi-VN", { minimumFractionDigits: 4, maximumFractionDigits: 4 }) + " USD"; }
+  function cell(row, value) { var td = document.createElement("td"); td.textContent = value; row.appendChild(td); }
+
+  function load() {
+    var hours = Math.max(1, Math.min(744, Number(period.value || 24)));
+    period.value = hours;
+    refresh.disabled = true;
+    status.textContent = "Đang tải...";
+    fetch("/api/settings/ai-cost?period_hours=" + encodeURIComponent(hours), { credentials: "same-origin" })
+      .then(function (response) {
+        if (response.redirected && response.url.indexOf("/login") !== -1) {
+          window.location.reload();
+          throw new Error("unauthenticated");
+        }
+        if (!response.ok) return response.json().then(function (data) { throw new Error(data.detail || "HTTP " + response.status); });
+        return response.json();
+      })
+      .then(function (data) {
+        var metrics = {
+          calls: number(data.calls),
+          errors: number(data.errors),
+          tokens: number(data.input_tokens) + " / " + number(data.output_tokens),
+          cost: money(data.estimated_cost_usd),
+          projection: money(data.projection && data.projection.estimated_daily_usd) + " / " + money(data.projection && data.projection.estimated_monthly_usd),
+        };
+        Object.keys(metrics).forEach(function (key) {
+          var target = summary.querySelector('[data-metric="' + key + '"]');
+          if (target) target.textContent = metrics[key];
+        });
+        rows.textContent = "";
+        var groups = data.groups || [];
+        if (!groups.length) {
+          var empty = document.createElement("tr");
+          cell(empty, "Chưa có dữ liệu trong khoảng thời gian này.");
+          empty.firstChild.colSpan = 7;
+          rows.appendChild(empty);
+        }
+        groups.forEach(function (group) {
+          var row = document.createElement("tr");
+          cell(row, group.feature || "—");
+          cell(row, group.provider || "—");
+          cell(row, group.model || "—");
+          cell(row, number(group.calls));
+          cell(row, number(group.errors));
+          cell(row, number(group.input_tokens) + " / " + number(group.output_tokens));
+          cell(row, money(group.estimated_cost_usd));
+          rows.appendChild(row);
+        });
+        status.textContent = "Đã cập nhật · " + hours + " giờ gần nhất";
+      })
+      .catch(function (error) {
+        if (error.message !== "unauthenticated") status.textContent = "Không tải được: " + error.message;
+      })
+      .finally(function () { refresh.disabled = false; });
+  }
+
+  refresh.addEventListener("click", load);
+  load();
 })();
 
 // AI Action Policy: search and filters run locally so looking up an action

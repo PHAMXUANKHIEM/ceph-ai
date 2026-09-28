@@ -235,7 +235,22 @@ cross-restore và cluster inactive bị từ chối.
 - Gắn nhãn `crash-consistent` hoặc `application-consistent` vào BackupJob.
 - Cảnh báo nếu policy yêu cầu application consistency nhưng hook thất bại.
 
-### 7.3 Capacity planning `[ ]`
+### 7.3 Application hook execution hardening — ưu tiên P0 `[ ]`
+
+- [ ] Không nhận command/argv tùy ý từ Dashboard hoặc policy do admin sửa.
+- [ ] Thay command tự do bằng `hook_id` allowlist cố định; mỗi hook trỏ tới
+  script root-owned, quyền ghi giới hạn và checksum/signature được kiểm tra.
+- [ ] Từ chối `/bin/sh`, `/bin/bash`, `-c`, `--command` và mọi shell
+  interpreter; `shell=False` không đủ nếu argv vẫn gọi được shell.
+- [ ] Giữ environment allowlist, timeout, output redaction, audit và fail-closed
+  khi hook không hợp lệ hoặc checksum thay đổi.
+- [ ] Test unknown hook, shell injection, path traversal, checksum mismatch,
+  timeout, secret redaction và restart giữa hook.
+
+**Blocker:** chưa đóng mục 7.3 thì application-consistent backup không được
+coi là production-safe, kể cả khi freeze/thaw hoặc pre/post hook functional.
+
+### 7.4 Capacity planning `[ ]`
 
 - Dung lượng backup theo cluster/pool/image/target.
 - Tốc độ tăng trưởng ngày/tuần/tháng.
@@ -244,7 +259,7 @@ cross-restore và cluster inactive bị từ chối.
 - Cảnh báo trước khi chạy nếu nguồn/temp/target thiếu capacity.
 - Hiển thị compression/dedup ratio nếu backend cung cấp dữ liệu đáng tin cậy.
 
-### 7.4 Alert lifecycle `[ ]`
+### 7.5 Alert lifecycle `[ ]`
 
 - Dedup và cooldown theo cluster/resource/kind.
 - Trạng thái `OPEN`, `ACKNOWLEDGED`, `RESOLVED`.
@@ -253,7 +268,7 @@ cross-restore và cluster inactive bị từ chối.
 - Deep-link tới job/recovery point.
 - Escalation khi critical không được acknowledge trong thời gian cấu hình.
 
-### 7.5 Credential và ransomware resilience `[ ]`
+### 7.6 Credential và ransomware resilience `[ ]`
 
 - Kiểm tra credential source và target tách biệt.
 - Hỗ trợ rotation không làm gián đoạn job đang chạy.

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stream — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/ceph-health/style.css?v={{ static_version }}">
+</head>
+<body>
+  {% include "_nav.html" %}
+  <div class="app-body">
+  <main class="page installation-stream-page">
+    <script id="installation-stream-bootstrap" type="application/json">{{ installation_profile|tojson }}</script>
+    <div id="installation-stream-root" aria-live="polite"></div>
+  </main>
+  </div>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+  <script type="module" src="/static/ceph-health/app.js?v={{ static_version }}"></script>
+</body>
+</html>

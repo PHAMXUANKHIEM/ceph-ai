@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from config.settings import settings
+from shared.ai_telemetry import ai_invocation
 from dashboard.chat_client import with_romantic_address
 from dashboard.routes.chat import (
     CHAT_WIDGET_HISTORY_LIMIT,
@@ -528,13 +529,44 @@ async def post_message(request: Request, user: str = Depends(require_vitastor_lo
             prompt = f"{system_prompt}\n\nLịch sử:\n{transcript}\n\nuser: {text}\nassistant:"
             if settings.vitastor_codex_chat_enabled:
                 async def no_tools(_name, _arguments): return "Tool không khả dụng trong chat Vitastor", False
-                result = await codex_app_server.run_turn(prompt, [], no_tools)
+                with ai_invocation(
+                    feature="vitastor_chat",
+                    provider="codex",
+                    model="default",
+                    input_chars=len(prompt),
+                    max_output_tokens=2048,
+                    actor=actor,
+                ) as telemetry:
+                    result = await codex_app_server.run_turn(prompt, [], no_tools)
+                    telemetry.set_response(output_text=str(result.get("reply_text") or ""))
                 answer = result.get("reply_text") or "Codex không trả về nội dung."
             elif settings.vitastor_claude_chat_enabled:
-                answer = await run_claude_prompt(prompt)
+                with ai_invocation(
+                    feature="vitastor_chat",
+                    provider="claude",
+                    model="default",
+                    input_chars=len(prompt),
+                    max_output_tokens=2048,
+                    actor=actor,
+                ) as telemetry:
+                    answer = await run_claude_prompt(prompt)
+                    telemetry.set_response(output_text=answer)
             else:
                 client = build_router_client(settings.vitastor_router_api_key, settings.vitastor_router_base_url)
-                response = await client.chat.completions.create(model=settings.vitastor_router_model, messages=[{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": text}])
+                with ai_invocation(
+                    feature="vitastor_chat",
+                    provider=settings.vitastor_router_provider or "router",
+                    model=settings.vitastor_router_model or "unknown",
+                    input_chars=len(prompt),
+                    max_output_tokens=2048,
+                    actor=actor,
+                ) as telemetry:
+                    response = await client.chat.completions.create(
+                        model=settings.vitastor_router_model,
+                        max_tokens=2048,
+                        messages=[{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": text}],
+                    )
+                    telemetry.set_response(response)
                 answer = response.choices[0].message.content or "AI không trả về nội dung."
         except Exception as exc:
             answer = f"Không thể gọi AI: {readable_exception_message(exc)}"

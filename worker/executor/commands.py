@@ -188,6 +188,13 @@ _TRASH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # can never be interpreted as a CLI option.
 _RBD_IMAGE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _RBD_SIZE_MIB_RANGE = (1, 64 * 1024 * 1024)
+_RBD_QOS_VALUE_RANGE = (0, 10**15)
+_RBD_QOS_KEYS = {
+    "iops_limit": "rbd_qos_iops_limit",
+    "bps_limit": "rbd_qos_bps_limit",
+    "iops_burst": "rbd_qos_iops_burst",
+    "bps_burst": "rbd_qos_bps_burst",
+}
 
 
 def _require_trash_id(params: dict) -> str:
@@ -410,6 +417,32 @@ def _rbd_rename_volume_command(params: dict) -> str:
     return f"rbd mv {source} {destination} && rbd info {destination} --format json"
 
 
+def _rbd_set_qos_command(params: dict) -> str:
+    """Set only the approved per-image QoS keys, then list them for verify."""
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    spec = shlex.quote(f"{pool}/{image}")
+    clauses: list[str] = []
+    provided = 0
+    for field, key in _RBD_QOS_KEYS.items():
+        value = params.get(field)
+        if value is None:
+            continue
+        provided += 1
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ExecutorError(f"invalid {field}: {value!r} (must be an integer or null)")
+        if not (_RBD_QOS_VALUE_RANGE[0] <= value <= _RBD_QOS_VALUE_RANGE[1]):
+            raise ExecutorError(f"{field} out of allowed range [0, {_RBD_QOS_VALUE_RANGE[1]}]")
+        if value == 0:
+            clauses.append(f"rbd config image unset {spec} {key}")
+        else:
+            clauses.append(f"rbd config image set {spec} {key} {value}")
+    if not provided:
+        raise ExecutorError("at least one QoS field must be provided")
+    clauses.append(f"rbd config image list {spec} --format json")
+    return " && ".join(clauses)
+
+
 def _rbd_trash_move_volume_command(params: dict) -> str:
     pool = _require_pool_name(params)
     image = _require_rbd_image(params)
@@ -526,6 +559,7 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "rbd_create_volume": _rbd_create_volume_command,
     "rbd_resize_volume": _rbd_resize_volume_command,
     "rbd_rename_volume": _rbd_rename_volume_command,
+    "rbd_set_qos": _rbd_set_qos_command,
     "rbd_trash_move_volume": _rbd_trash_move_volume_command,
     "rbd_trash_restore_volume": _rbd_trash_restore_volume_command,
     "rbd_trash_purge_all": _rbd_trash_purge_all_command,
@@ -558,6 +592,7 @@ _CEPH_RUNTIME_ACTION_IDS = frozenset({
     "rbd_create_volume",
     "rbd_resize_volume",
     "rbd_rename_volume",
+    "rbd_set_qos",
     "rbd_trash_move_volume",
     "rbd_trash_restore_volume",
     "rbd_trash_purge_all",

@@ -201,6 +201,10 @@ def check_volumes(cluster: Cluster | None = None, cluster_id: str | None = None)
                     "iops": sample["iops"],
                     "read_latency_ms": sample["read_latency_ms"],
                     "write_latency_ms": sample["write_latency_ms"],
+                    "read_bytes_per_sec": sample.get("read_bytes_per_sec", 0.0),
+                    "write_bytes_per_sec": sample.get("write_bytes_per_sec", 0.0),
+                    "throughput_bytes_per_sec": sample.get("throughput_bytes_per_sec", 0.0),
+                    "queue_depth": sample.get("queue_depth"),
                     "saturated": is_saturated_now,
                 }
             )
@@ -244,6 +248,10 @@ def persist_last_poll_metrics(cluster_id: str | None = None) -> None:
                 iops=sample["iops"],
                 read_latency_ms=sample["read_latency_ms"],
                 write_latency_ms=sample["write_latency_ms"],
+                read_bytes_per_sec=sample.get("read_bytes_per_sec", 0.0),
+                write_bytes_per_sec=sample.get("write_bytes_per_sec", 0.0),
+                throughput_bytes_per_sec=sample.get("throughput_bytes_per_sec", 0.0),
+                queue_depth=sample.get("queue_depth"),
                 saturated=sample["saturated"],
                 polled_at=polled_at,
             )

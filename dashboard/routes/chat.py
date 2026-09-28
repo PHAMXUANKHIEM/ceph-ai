@@ -20,6 +20,7 @@ from dashboard.cluster_scope import selected_cluster
 from dashboard.vntime import to_utc_iso
 from shared import audit, db
 from shared.ai_limits import normalize_rate_limits
+from shared.ai_telemetry import AIBudgetExceeded
 from shared.claude_cli import ClaudeCLIError, claude_status
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.cluster_nodes import configured_nodes
@@ -448,7 +449,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
 
     try:
         result = await run_chat_turn(history, text, user, cluster)
-    except ChatTurnError as exc:
+    except (ChatTurnError, AIBudgetExceeded) as exc:
         logger.warning("post_chat_message: %s", exc)
         ai_name = auth.chat_ai_name(user)
         female_address = auth.chat_female_address(user)

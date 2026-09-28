@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import settings as app_settings
+from shared.ai_telemetry import ai_invocation
 from shared.telegram_alerts import send_code_repair_alert
 
 
@@ -349,18 +350,32 @@ def _run_agent(
         model=model,
         mode=mode,
     )
-    ai = _run(
-        command,
-        cwd=worktree,
-        timeout=config.timeout_seconds,
-        input_text=prompt if selected_provider == "codex" else None,
-        check=False,
-    )
-    if ai.returncode != 0:
-        raise RepairError(f"{selected_provider} {mode} failed ({ai.returncode}):\n{ai.stdout[-6000:]}")
-    response = ai.stdout.strip()
-    if not response:
-        raise RepairError(f"{selected_provider} {mode} returned no response")
+    _, inline_model = _provider_and_inline_model(provider)
+    model_name = model.strip() or inline_model or "cli-default"
+    # The CLI path is still an AI provider call.  Keep it in the same
+    # content-free ledger as API-backed calls so planner/implementer/reviewer
+    # usage is visible and budgeted consistently.  The prompt is counted but
+    # never persisted by ai_invocation.
+    with ai_invocation(
+        feature="code_repair",
+        provider=selected_provider,
+        model=model_name,
+        input_text=prompt,
+        max_output_tokens=8192,
+    ) as telemetry:
+        ai = _run(
+            command,
+            cwd=worktree,
+            timeout=config.timeout_seconds,
+            input_text=prompt if selected_provider == "codex" else None,
+            check=False,
+        )
+        telemetry.set_response(output_text=ai.stdout)
+        if ai.returncode != 0:
+            raise RepairError(f"{selected_provider} {mode} failed ({ai.returncode}):\n{ai.stdout[-6000:]}")
+        response = ai.stdout.strip()
+        if not response:
+            raise RepairError(f"{selected_provider} {mode} returned no response")
     return selected_provider, response
 
 

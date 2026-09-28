@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import shlex
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, TypedDict
 
 import paramiko
@@ -216,6 +217,10 @@ class VolumeIoSample(TypedDict):
     iops: float
     read_latency_ms: float
     write_latency_ms: float
+    read_bytes_per_sec: float
+    write_bytes_per_sec: float
+    throughput_bytes_per_sec: float
+    queue_depth: float | None
 
 
 class RbdInventoryEntry(TypedDict):
@@ -328,25 +333,55 @@ def _normalize_rbd_image_detail(
     }
 
 
+def _query_rbd_optional_sections(
+    query: Callable[[str], tuple[str, dict | list]],
+    sections: tuple[tuple[str, str], ...],
+) -> tuple[dict[str, dict | list], dict[str, str]]:
+    """Run independent image-detail queries concurrently.
+
+    ``rbd info`` remains the required first query. The remaining commands
+    are independent, and running them serially made one page load pay the
+    SSH/cephadm startup cost four times. Each optional section keeps its
+    existing fail-soft behaviour so one unsupported command does not hide
+    the other metadata.
+    """
+    values: dict[str, dict | list] = {}
+    errors: dict[str, str] = {}
+
+    def load(item: tuple[str, str]) -> tuple[str, dict | list, str | None]:
+        section, command = item
+        try:
+            return section, query(command)[1], None
+        except CephQueryError as exc:
+            return section, [], str(exc)
+
+    with ThreadPoolExecutor(
+        max_workers=min(4, max(1, len(sections))),
+        thread_name_prefix="rbd-detail",
+    ) as executor:
+        for section, value, error in executor.map(load, sections):
+            values[section] = value
+            if error:
+                errors[section] = error
+    return values, errors
+
+
 def query_rbd_image_detail(pool: str, image: str) -> dict:
     spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
     info = run_ceph_json_command(f"rbd info {spec}")[1]
-    errors: dict[str, str] = {}
-
-    def optional(section: str, command: str) -> dict | list:
-        try:
-            return run_ceph_json_command(command)[1]
-        except CephQueryError as exc:
-            errors[section] = str(exc)
-            return []
-
-    locks = optional("locks", f"rbd lock list {spec}")
+    sections, errors = _query_rbd_optional_sections(
+        run_ceph_json_command,
+        (
+            ("locks", f"rbd lock list {spec}"),
+            ("snapshots", f"rbd snap ls {spec}"),
+            ("watchers", f"rbd status {spec}"),
+            ("children", f"rbd children {spec}"),
+        ),
+    )
     return _normalize_rbd_image_detail(
         pool, image, info,
-        optional("snapshots", f"rbd snap ls {spec}"),
-        optional("watchers", f"rbd status {spec}"),
-        optional("children", f"rbd children {spec}"),
-        errors, locks,
+        sections["snapshots"], sections["watchers"], sections["children"],
+        errors, sections["locks"],
     )
 
 
@@ -357,23 +392,66 @@ def query_rbd_image_detail_with(
     spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
     connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
     info = run_ceph_json_command_with(*connection, f"rbd info {spec}")[1]
-    errors: dict[str, str] = {}
-
-    def optional(section: str, command: str) -> dict | list:
-        try:
-            return run_ceph_json_command_with(*connection, command)[1]
-        except CephQueryError as exc:
-            errors[section] = str(exc)
-            return []
-
-    locks = optional("locks", f"rbd lock list {spec}")
+    sections, errors = _query_rbd_optional_sections(
+        lambda command: run_ceph_json_command_with(*connection, command),
+        (
+            ("locks", f"rbd lock list {spec}"),
+            ("snapshots", f"rbd snap ls {spec}"),
+            ("watchers", f"rbd status {spec}"),
+            ("children", f"rbd children {spec}"),
+        ),
+    )
     return _normalize_rbd_image_detail(
         pool, image, info,
-        optional("snapshots", f"rbd snap ls {spec}"),
-        optional("watchers", f"rbd status {spec}"),
-        optional("children", f"rbd children {spec}"),
-        errors, locks,
+        sections["snapshots"], sections["watchers"], sections["children"],
+        errors, sections["locks"],
     )
+
+
+RBD_QOS_KEYS = (
+    "rbd_qos_iops_limit",
+    "rbd_qos_bps_limit",
+    "rbd_qos_iops_burst",
+    "rbd_qos_bps_burst",
+)
+
+
+def _normalize_rbd_qos(payload: dict | list) -> dict[str, int | None]:
+    rows = payload.get("entries", payload.get("configs", [])) if isinstance(payload, dict) else payload
+    result: dict[str, int | None] = {key: None for key in RBD_QOS_KEYS}
+    if isinstance(rows, dict):
+        rows = [{"name": key, "value": value} for key, value in rows.items()]
+    if not isinstance(rows, list):
+        return result
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("name") or row.get("key") or "")
+        if key not in result:
+            continue
+        try:
+            result[key] = int(row.get("value"))
+        except (TypeError, ValueError):
+            result[key] = None
+    return result
+
+
+def query_rbd_image_qos(pool: str, image: str) -> dict[str, int | None]:
+    spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
+    _, payload = run_ceph_json_command(f"rbd config image list {spec} --format json")
+    return _normalize_rbd_qos(payload)
+
+
+def query_rbd_image_qos_with(
+    pool: str, image: str, mon_nodes: list[str], container_name: str,
+    ssh_user: str, ssh_key_path: str, exec_mode: str,
+) -> dict[str, int | None]:
+    spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
+    _, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd config image list {spec} --format json",
+    )
+    return _normalize_rbd_qos(payload)
 
 
 _GLOBAL_CAPACITY_HEALTH_CHECKS = {
@@ -526,17 +604,43 @@ def _normalize_rbd_iostat(pool: str, payload: dict | list) -> list[VolumeIoSampl
             continue
         read_ops = _as_float(entry.get("read_ops") or entry.get("read_iops"))
         write_ops = _as_float(entry.get("write_ops") or entry.get("write_iops"))
+        read_bytes = _as_float(
+            entry.get("read_bytes")
+            or entry.get("read_bytes_per_sec")
+            or entry.get("read_bps")
+            or entry.get("rd_bytes")
+        )
+        write_bytes = _as_float(
+            entry.get("write_bytes")
+            or entry.get("write_bytes_per_sec")
+            or entry.get("write_bps")
+            or entry.get("wr_bytes")
+        )
         read_latency_ms = _rbd_latency_ms(entry, "read_latency_ms", "read_latency")
         write_latency_ms = _rbd_latency_ms(entry, "write_latency_ms", "write_latency")
-        samples.append(
-            VolumeIoSample(
-                pool=pool,
-                image=image,
-                iops=read_ops + write_ops,
-                read_latency_ms=read_latency_ms,
-                write_latency_ms=write_latency_ms,
-            )
-        )
+        sample: VolumeIoSample = {
+            "pool": pool,
+            "image": image,
+            "iops": read_ops + write_ops,
+            "read_latency_ms": read_latency_ms,
+            "write_latency_ms": write_latency_ms,
+        }
+        # Older rbd_support payloads do not expose byte-rate/queue counters.
+        # Keep the historical response shape for those payloads; consumers use
+        # ``get`` and persist the unavailable dimensions as explicit zero/NULL.
+        if any(key in entry for key in (
+            "read_bytes", "read_bytes_per_sec", "read_bps", "rd_bytes",
+            "write_bytes", "write_bytes_per_sec", "write_bps", "wr_bytes",
+        )):
+            sample.update({
+                "read_bytes_per_sec": read_bytes,
+                "write_bytes_per_sec": write_bytes,
+                "throughput_bytes_per_sec": read_bytes + write_bytes,
+            })
+        if "queue_depth" in entry:
+            raw_queue_depth = entry.get("queue_depth")
+            sample["queue_depth"] = None if raw_queue_depth is None else _as_float(raw_queue_depth)
+        samples.append(sample)
     return samples
 
 

@@ -25,6 +25,13 @@ def test_build_router_client_uses_bearer_auth_header():
     assert client.api_key == "sk-router-key"
 
 
+def test_build_router_client_has_bounded_timeout_and_no_sdk_retries():
+    client = build_router_client("sk-router-key", "http://localhost:20128")
+
+    assert client.timeout == 10.0
+    assert client.max_retries == 0
+
+
 def test_build_router_client_raises_when_base_url_is_blank():
     # No direct-to-vendor fallback, by policy — a blank base_url is a
     # configuration error to fail loudly on, not a signal to silently call

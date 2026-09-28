@@ -1,3 +1,5 @@
+import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Exposed as module-level constants (not just inline defaults) so other code
@@ -8,7 +10,16 @@ DEFAULT_SESSION_SECRET_KEY = "dev-only-insecure-secret-change-me"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="forbid")
+    # Container deployments pass the shared, host-mounted configuration file
+    # through CEPH_AI_ENV_FILE.  Falling back to .env keeps local development
+    # and tests unchanged.  This must be resolved before Settings is created;
+    # otherwise Pydantic reads the image-local /app/.env while Compose injects
+    # values from /var/lib/ceph-ai/config/.env, so settings written by the
+    # Dashboard disappear on the next container restart.
+    model_config = SettingsConfigDict(
+        env_file=os.environ.get("CEPH_AI_ENV_FILE") or ".env",
+        extra="forbid",
+    )
 
     database_url: str = "sqlite:///./ceph_aiops.db"
     rabbitmq_url: str = "amqp://guest:guest@localhost/"
@@ -227,6 +238,23 @@ class Settings(BaseSettings):
     # "auto" leaves the effort choice to the selected model/Claude Code.
     claude_chat_effort: str = "auto"
 
+    # AI usage telemetry and budget guard.  Telemetry is content-free: prompt
+    # and response bodies are never persisted.  A zero budget means
+    # "unlimited" so existing deployments keep their current behaviour until
+    # an operator explicitly configures a limit.
+    ai_telemetry_enabled: bool = True
+    ai_budget_daily_usd: float = 0.0
+    ai_budget_monthly_usd: float = 0.0
+    ai_budget_hard_limit: bool = False
+    ai_cost_input_usd_per_million_tokens: float = 0.0
+    ai_cost_output_usd_per_million_tokens: float = 0.0
+    ai_cost_estimate_chars_per_token: int = 4
+    # Chat history is bounded by content size as well as message count.  This
+    # prevents one pasted Ceph log or long AI answer from being replayed on
+    # every subsequent turn.
+    ai_chat_history_max_chars: int = 8_000
+    ai_chat_history_max_messages: int = 20
+
     # AI Code Repair supervisor (worker/code_repair.py). These settings are
     # intentionally separate from incident-diagnosis/Chat-with-AI: planner
     # reviews and designs the fix, while implementer edits the isolated
@@ -421,6 +449,12 @@ class Settings(BaseSettings):
     node_resource_forecast_horizon_hours: int = 168
     node_resource_forecast_min_samples: int = 24
     node_resource_forecast_min_confidence: float = 0.5
+    # Shared metric-quality gate for the Loki-backed CPU/RAM history. The
+    # expected interval follows the node-health scan cadence; a stream may
+    # be old enough to pass the current freshness check while still having a
+    # meaningful gap, so coverage and maximum-gap checks are separate.
+    node_resource_quality_min_coverage_ratio: float = 0.8
+    node_resource_quality_max_gap_seconds: int = 1800
     # Candidate history windows are evaluated against their later outcomes.
     # The lowest-MAE candidate with enough evaluated runs is selected per
     # cluster/host/metric; until then the longest available window wins.
@@ -428,6 +462,32 @@ class Settings(BaseSettings):
     node_resource_learning_min_outcomes: int = 3
     node_resource_learning_candidate_hours: str = "24,72,168,720"
     node_resource_forecast_alert_cooldown_seconds: int = 86400
+    # ADWIN is bounded and persisted per cluster/host/metric.  A longer clear
+    # hysteresis than the enter path prevents one clean sample from clearing a
+    # real drift; warm-up keeps a just-recovered stream out of promotion.
+    node_resource_adwin_enabled: bool = True
+    node_resource_adwin_delta: float = 0.002
+    node_resource_adwin_min_samples: int = 10
+    node_resource_adwin_window_size: int = 512
+    node_resource_drift_clear_consecutive: int = 3
+    node_resource_drift_warmup_samples: int = 5
+    # Phase 6 paired evaluation/promotion defaults.  Promotion remains
+    # disabled unless the operator explicitly enables the guarded path.
+    forecast_promotion_enabled: bool = False
+    forecast_promotion_min_samples: int = 30
+    forecast_promotion_min_evaluation_streak: int = 3
+    forecast_promotion_min_quality_ratio: float = 0.95
+    forecast_promotion_min_interval_coverage: float = 0.90
+    forecast_promotion_min_recall: float = 0.90
+    forecast_promotion_max_delay_seconds: float = 3600.0
+    forecast_promotion_max_mae_regression: float = 0.0
+    forecast_promotion_max_rmse_regression: float = 0.0
+    forecast_promotion_max_smape_regression: float = 0.0
+    forecast_promotion_max_p95_regression: float = 0.0
+    forecast_promotion_max_bias_abs: float = float("inf")
+    forecast_promotion_max_recall_regression: float = 0.0
+    forecast_promotion_max_delay_regression: float = 0.0
+    forecast_promotion_evidence_ttl_hours: int = 72
 
     # watcher/osd_latency_monitor.py's own scan cadence — much SHORTER than
     # device_health/node_health above because `ceph osd perf` is a single
@@ -460,6 +520,8 @@ class Settings(BaseSettings):
     capacity_forecast_min_samples: int = 30
     capacity_forecast_horizon_days: int = 365
     capacity_forecast_min_confidence: float = 0.5
+    capacity_forecast_quality_min_coverage_ratio: float = 0.8
+    capacity_forecast_quality_max_gap_seconds: int = 7200
 
     # watcher/database_capacity_monitor.py's own cadence -- deliberately
     # much slower than every other scan above: this app's own DB size

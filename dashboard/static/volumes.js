@@ -11,6 +11,7 @@
   // the Watcher's own default poll interval closely enough without being
   // tied to its exact configured value.
   var REFRESH_INTERVAL_MS = 15000;
+  var CAPACITY_REFRESH_INTERVAL_MS = 60000;
 
   var searchForm = document.getElementById("volume-search-form");
   var searchInput = document.getElementById("volume-search-input");
@@ -18,6 +19,7 @@
   var suggestionsEl = document.getElementById("volume-suggestions");
   var emptyState = document.getElementById("volume-chart-empty");
   var chartStack = document.getElementById("volume-chart-stack");
+  var summaryEl = document.getElementById("volume-performance-summary");
   var spinner = document.getElementById("header-spinner");
   var errorFooter = document.getElementById("volumes-error-footer");
   var errorTimestamp = document.getElementById("volumes-error-timestamp");
@@ -54,6 +56,33 @@
   function formatValue(cfg, v) {
     if (v == null) return "—";
     return cfg.unit === "ms" ? v.toFixed(2) : v.toFixed(1);
+  }
+
+  function updateCapacitySummary(data) {
+    if (!summaryEl) return;
+    var field = summaryEl.querySelector('[data-field="capacity"]');
+    if (!field) return;
+    if (!data || data.used_bytes == null || data.provisioned_bytes == null) {
+      field.textContent = "—";
+      return;
+    }
+    field.textContent = formatBytes(data.used_bytes) + " / " + formatBytes(data.provisioned_bytes);
+  }
+
+  function fetchCapacity() {
+    fetch("/api/volumes/" + encodeURIComponent(pool) + "/" + encodeURIComponent(App.currentImage) + "/capacity", { credentials: "same-origin" })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(updateCapacitySummary)
+      .catch(function () { updateCapacitySummary(null); });
+  }
+
+  function formatBytes(value) {
+    if (value == null || !isFinite(value)) return "—";
+    var size = Math.max(0, Number(value));
+    var units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    var index = 0;
+    while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
+    return (index === 0 ? Math.round(size) : size.toFixed(1)) + " " + units[index];
   }
 
   /* ---------- build DOM for the 3 stacked metric sections (once) ---------- */
@@ -123,11 +152,13 @@
     hoverIndex: null,
     hoverSection: null,
     pollTimer: null,
+    capacityTimer: null,
     lastErrorAt: null
   };
 
   function selectImage(image) {
     if (App.pollTimer) { clearInterval(App.pollTimer); App.pollTimer = null; }
+    if (App.capacityTimer) { clearInterval(App.capacityTimer); App.capacityTimer = null; }
     App.currentImage = image;
     App.hoverIndex = null;
     App.hoverSection = null;
@@ -136,7 +167,9 @@
     METRICS.forEach(function (cfg) { sections[cfg.key].hasDrawnOnce = false; });
     renderSuggestions(searchInput.value);
     fetchHistory();
+    fetchCapacity();
     App.pollTimer = setInterval(fetchHistory, REFRESH_INTERVAL_MS);
+    App.capacityTimer = setInterval(fetchCapacity, CAPACITY_REFRESH_INTERVAL_MS);
   }
 
   // 2026-07-29: the search box's <datalist> alone turned out to be too
@@ -221,6 +254,30 @@
     App.peak = data.peak || {};
     App.saturatedNow = !!data.saturated;
 
+    var summary = data.summary || {};
+    var capacity = data.capacity || {};
+    if (summaryEl) {
+      summaryEl.hidden = false;
+      var readP95 = summaryEl.querySelector('[data-field="read-latency-p95"]');
+      var writeP95 = summaryEl.querySelector('[data-field="write-latency-p95"]');
+      var throughput = summaryEl.querySelector('[data-field="throughput"]');
+      var queue = summaryEl.querySelector('[data-field="queue-depth"]');
+      var capacityField = summaryEl.querySelector('[data-field="capacity"]');
+      var freshness = summaryEl.querySelector('[data-field="freshness"]');
+      readP95.textContent = summary.read_latency_p95_ms == null ? "—" : Number(summary.read_latency_p95_ms).toFixed(2) + " ms";
+      writeP95.textContent = summary.write_latency_p95_ms == null ? "—" : Number(summary.write_latency_p95_ms).toFixed(2) + " ms";
+      throughput.textContent = summary.throughput_bytes_per_sec == null ? "—" : formatBytes(summary.throughput_bytes_per_sec) + "/s";
+      queue.textContent = summary.queue_depth_available ? Number(summary.queue_depth).toFixed(1) : "N/A";
+      capacityField.textContent = capacity.used_bytes == null || capacity.provisioned_bytes == null
+        ? "Đang lấy…" : formatBytes(capacity.used_bytes) + " / " + formatBytes(capacity.provisioned_bytes);
+      if (summary.last_sample_at) {
+        var age = Math.max(0, (Date.now() - new Date(summary.last_sample_at).getTime()) / 1000);
+        freshness.textContent = age > 120 ? "Cũ · " + Math.round(age) + "s" : Math.round(age) + "s trước";
+        freshness.className = age > 120 ? "is-stale" : "is-fresh";
+      } else {
+        freshness.textContent = "—";
+      }
+    }
     drawAllCharts(true);
   }
 

@@ -20,6 +20,23 @@ phê duyệt, post-check và audit.
 - Mỗi mục hoàn thành phải cập nhật ngày, commit và kết quả kiểm thử trong nhật ký.
 - Không đánh dấu hoàn thành chỉ vì đã có giao diện, prompt hoặc dữ liệu giả.
 
+## Ghi chú đánh giá mới nhất — `ddc4de7`
+
+Phần AI/ML đã mở rộng với feature engineering chống leakage, ADWIN, robust
+multivariate evidence, model scope, offline evaluator, MLflow/Alibi boundary,
+contextual bandit sandbox, remediation state machine và rollback planner.
+Tuy nhiên, các module dưới đây chỉ được coi là **experimental** nếu hiện mới
+được gọi từ test/evaluator/script, chưa có runtime caller và acceptance evidence:
+
+`alibi_detect_boundary`, `bandit_sandbox`, `mlflow_registry_adapter`,
+`controlled_action_contract`, `delayed_feedback_evaluator`,
+`remediation_state_machine`, `rollback_planner`, `time_series_pipeline`.
+
+Không chuyển các mục này sang `[x]` chỉ vì module hoặc test đã tồn tại. Production
+capability cần có scope, dữ liệu thật, observability, failure behavior,
+approval/rollback boundary và kiểm thử end-to-end. Quyết định release theo
+snapshot này vẫn là **NO-GO**.
+
 ## 3. Nguyên tắc bắt buộc
 
 ### 3.1 Evidence và giới hạn AI
@@ -217,7 +234,7 @@ thay đổi PG, CRUSH hoặc dữ liệu.
 > - [x] **L6 — Kiểm thử đầu-cuối + runbook** (2026-08-19, `docs/runbook-log-intelligence.md`).
 > - [ ] L5 adapter Loki chạy thật (chờ hạ tầng đội RCA)
 
-- [ ] **6.1 Unified event timeline**
+- [~] **6.1 Unified event timeline**
   - Hợp nhất health transition, metric anomaly, alert, proposal, approval, command,
     post-check và operator event theo cluster/time.
 - [ ] **6.2 Correlation và root-cause chain**
@@ -337,6 +354,7 @@ Một tính năng chỉ được coi là hoàn thành khi đáp ứng đủ:
 
 | Ngày | Hạng mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---|---|---|---|---|
+| 2026-09-21 | Pha 6 / 6.1 Unified Event Timeline — vertical slice read-only | Một phần | Thêm `shared/unified_timeline.py::build_unified_timeline` và Dashboard/API `/event-timeline`, `/api/event-timeline`: gom Incident health transition, LogFinding anomaly/alert, LogIngestRun completeness, Action proposal + exact `executed_at` command, IncidentTimeline post-check/lifecycle, Audit operator event và ObjectStorage RGW audit theo cluster/time. Legacy `Incident.cluster_id=NULL` chỉ được quy về default cluster; audit đã mirror vào `IncidentTimelineEvent` được khử trùng lặp; evidence chỉ trả structured provenance đã redact, không trả raw log/command. Không thêm bảng hay đường thực thi hành động. Chưa đánh dấu hoàn thành: cần tiếp tục với late-event backfill/clock-skew coverage rộng hơn, correlation/root-cause chain (6.2), Loki adapter thật (L5) và export/review (6.4). | `pytest tests/test_unified_timeline.py` (4/4) + `pytest tests/test_dashboard_log_intelligence.py tests/test_dashboard_health_api.py tests/test_dashboard_status.py` (41/41) + `py_compile` sạch | Chờ commit |
 | 2026-08-17 | Khởi tạo roadmap | Hoàn thành | Tổng hợp riêng các năng lực AI chưa triển khai và thứ tự phát hành | Review tài liệu | Chờ commit |
 | 2026-08-17 | 0.1 Cluster capability inventory | Hoàn thành | Thêm bảng `cluster_capability_inventory` (migration `6b5e22967d5f`) + enum `CapabilityStatus`; collector `watcher/capability_inventory.py::scan_and_store` chạy theo cadence riêng (`capability_inventory_scan_interval_seconds`, mặc định 300s) trong cả 2 vòng lặp Watcher (cụm mặc định + cụm quan sát thêm), tái dùng `ceph_client.summarize_cluster_versions`/`summarize_versions_payload` đã có sẵn cho phần mixed-version; deployment mode lấy từ `cluster.ceph_exec_mode` (chưa tự dò `ceph orch`, để dành Pha 0.2+ nếu cần). Dashboard `/clusters` hiển thị version/trạng thái mới nhất mỗi cụm. | `pytest tests/test_capability_inventory.py` (9/9 pass) + toàn bộ suite `pytest -q` (2170 passed, 3 fail KHÔNG liên quan — `test_mq.py`/`test_dashboard_pools.py`, tái hiện y hệt trên `main` chưa sửa, do thiếu RabbitMQ broker thật trong môi trường) + `alembic upgrade heads` áp thành công vào Postgres dev thật | Chờ commit |
 | 2026-08-17 | 0.2 Capability matrix có nguồn kiểm chứng (hạ tầng) | Một phần | Thêm bảng `capability_matrix_entries` + `capability_matrix_changes` (migration `18f374b79a75`, lịch sử append-only, không upsert); `shared/capability_matrix.py::check_capability(command_id, ceph_major)` fail-closed đúng đặc tả (không có entry -> `UNKNOWN`, có entry nhưng không phủ version -> `UNSUPPORTED_VERSION`, có entry phủ version -> `SUPPORTED` kèm cờ `is_stale` theo `capability_matrix_max_age_days`, mặc định 180 ngày); trang admin `/capability-matrix` (`dashboard/routes/capability_matrix.py`) cho thêm/deprecate entry, `verified_by` luôn lấy từ user admin đang đăng nhập (không thể giả qua form), bắt buộc Doc URL dạng http(s), lưu lịch sử thay đổi. **Cố ý CHƯA seed dữ liệu thật** — bảng khởi tạo rỗng nên mọi capability check hiện tại trả `UNKNOWN` (đúng theo "fail closed" của roadmap), vì AI không tự xác minh tài liệu Ceph chính thức rồi tự nhận là "người duyệt" thay cho operator; cần operator tự kiểm tra docs.ceph.com/download.ceph.com và nhập entry qua trang admin. Đây là lý do đánh dấu `[~]` chứ không phải `[x]`. | `pytest tests/test_capability_matrix.py` (10/10 pass) + `pytest tests/test_dashboard_capability_matrix.py` (5/5 pass) + `alembic upgrade heads` áp thành công vào Postgres dev thật | Chờ commit |

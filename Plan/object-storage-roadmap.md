@@ -184,6 +184,36 @@ thể gọi API ghi dù cố gửi request trực tiếp.
     mutation trên cluster phụ đúng RGW/SSH/container và audit thất bại khi RGW
     từ chối purge trước khi gọi DeleteBucket.
 
+### 3.7 Bulk bucket deletion hardening — ưu tiên P0 `[ ]`
+
+- [ ] **Không cho phép endpoint legacy xóa toàn bộ bucket thực thi trực tiếp**.
+  Snapshot review `ddc4de7` vẫn cho thấy endpoint
+  `/api/object-storage/buckets/delete-all` chỉ kiểm tra admin rồi gọi purge.
+  Đây là blocker phát hành, dù endpoint có thể không được hiển thị trên UI.
+- [x] Chuyển thao tác sang flow hai bước `preview → execute`; preview trả
+  cluster, hash inventory, số bucket/object và dung lượng logic. Execute từ
+  chối nếu inventory hash, số bucket, object hoặc dung lượng đã thay đổi.
+- [x] Bắt buộc xác nhận dạng
+  `DELETE-ALL:<cluster-name>:<bucket-count>`; không nhận boolean đơn giản như
+  `confirmed=true`. Giữ kiểm tra admin, CSRF và cluster scope ở server-side.
+- [ ] Bắt buộc nhập chính xác cluster và câu xác nhận ở UI/API; token có TTL.
+- [ ] Bắt buộc approval hai người hoặc grace period cho production; mặc định
+  production phải bị chặn nếu chưa có policy approval.
+- [x] Mọi lần bắt đầu, thành công, thất bại hoặc dừng giữa chừng đều có audit
+  request ID và số lượng inventory/đã xử lý phù hợp.
+- [x] Xóa đường gọi JavaScript cũ hoặc nối nó vào preview/execute mới; UI có
+  dialog xác nhận hiển thị rõ tính không thể hoàn tác.
+- [x] UI hiển thị inventory hash, số bucket/object/dung lượng và trạng thái
+  recheck trước khi purge.
+- [x] Thêm regression test chứng minh POST trực tiếp không làm purge, preview
+  mismatch bị từ chối, confirmation sai bị từ chối, inventory thay đổi bị từ
+  chối và partial failure được audit chính xác.
+- [ ] Chạy lại toàn bộ Object Storage regression sau khi khôi phục template
+  `_nav.html`; hiện 5 test trang HTML bị chặn bởi file thiếu trong worktree.
+
+**Blocker:** mục 3.7 chưa hoàn thành thì không được đánh dấu Object Storage
+đạt release production, kể cả khi các flow xóa từng bucket đã có confirmation.
+
 **Hoàn thành khi:** mọi thay đổi có preview/audit, và thao tác xóa không thể xảy
 ra chỉ bằng một click hoặc qua request thiếu capability.
 
@@ -307,6 +337,8 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | Bucket Logging delivery | Đang làm | Thêm flow cấu hình tự chọn native/compatibility, persistence/checkpoint, worker delivery 5 phút, preview/confirmation/audit và UI. Native dùng PutBucketLogging từ Tentacle 20; compatibility ghi JSONL từ Beast log trên Ceph 14–19. | Targeted logging regression: 56 passed; Alembic một head `e5a7b9c2d401`; chạy full regression trước commit. | Chưa commit; cần kiểm chứng với RGW thật và policy của target bucket. |
 | 2026-08-17 | 4.2 | Hoàn thành | Thêm Object Detail read-only cho metadata, tags, version ID, retention và legal hold; owner/cluster validation, temporary-key cleanup và capability gate Octopus 15 cho Tagging/Object Lock. | Full Object Storage + migration regression: 120 tests passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 4.3 upload/download qua presigned URL. |
 | 2026-08-17 | 4.3 | Hoàn thành | Thêm preview/execute presigned upload/download, URL tối đa 15 phút, upload POST policy giới hạn type/size, version-aware download, admin RBAC, confirmation và secret-free audit. File đi trực tiếp client↔RGW, không proxy Dashboard. | Full Object Storage + migration regression: 122 tests passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 4.4 delete/restore object version. |
+| 2026-09-21 | 3.7 / review | Đang xử lý | Đã vô hiệu hóa purge trực tiếp của endpoint legacy; thêm `delete-all/preview` và `delete-all/execute` với inventory hash, count/size recheck, confirmation token, audit và dialog UI. | 6 test mục tiêu pass; Python/JS/Jinja kiểm tra pass. Full Object Storage đạt 98 test, còn 5 test HTML bị chặn vì worktree thiếu `_nav.html`. | Còn quyết định approval hai người/grace period và chạy lại full regression sau khi khôi phục template dùng chung. |
+| 2026-09-21 | 3.7 / reassessment `ddc4de7` | Blocker mở lại | Review snapshot vẫn quan sát thấy `delete-all` có thể purge trực tiếp và frontend gọi API không có approval mạnh. | Chưa dùng snapshot này để đóng release gate; cần re-verify endpoint thực tế, preview/TTL token, cluster confirmation, two-person approval/grace period và audit bất biến. | Giữ P0 `[ ]` cho tới khi code và evidence cùng commit được kiểm tra lại. |
 
 ## Ghi chú bàn giao
 

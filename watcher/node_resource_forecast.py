@@ -11,18 +11,37 @@ import json
 import logging
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from shared import db
-from shared.models import NodeResourceForecastAlert, NodeResourceForecastRun, NodeResourceModelState
+from shared.adwin_policy import (
+    ADWIN_POLICY_VERSION,
+    MAX_REPLAY_SAMPLES,
+    AdwinPolicy,
+    DriftDecision,
+    DriftSample,
+)
+from shared.metric_quality import MetricQuality, assess_metric_quality
+from shared.models import (
+    NodeResourceForecastAlert,
+    NodeResourceForecastRun,
+    NodeResourceDriftState,
+    NodeResourceModelState,
+    NodeResourceQualityState,
+)
 from shared.telegram_alerts import send_node_forecast_alert
 
 logger = logging.getLogger(__name__)
 JOB = "ceph-ai-node-metrics"
+_ADWIN_CACHE: dict[tuple[str, str, str], tuple[str, AdwinPolicy]] = {}
+
+
+def _adwin_window_size() -> int:
+    return min(MAX_REPLAY_SAMPLES, max(32, settings.node_resource_adwin_window_size))
 
 
 @dataclass(frozen=True)
@@ -37,10 +56,80 @@ class ResourceForecast:
     window_hours: float
     algorithm: str = "linear"
     training_window_hours: int | None = None
+    # Plain ``forecast()`` is a read-only compatibility helper.  The adaptive
+    # path replaces these defaults with the persisted ADWIN decision before a
+    # forecast can reach alerting or promotion.
+    drift_status: str = "OK"
+    drift_score: float = 0.0
+    drift_reason: str = ""
+    confidence_multiplier: float = 1.0
+    promotion_blocked: bool = False
 
 
 class NodeResourceLokiError(Exception):
     """The current CPU/RAM observation is absent, stale, or unreadable."""
+
+
+def _resource_quality(
+    samples: list[tuple[datetime, float, float]],
+    *,
+    now: datetime | None = None,
+) -> dict[str, MetricQuality]:
+    """Return one shared quality result for CPU and RAM history."""
+
+    timestamps = [row[0] for row in samples]
+    common = {
+        "now": now,
+        "max_age_seconds": max(120, settings.node_health_scan_interval_seconds * 2),
+        "minimum_samples": settings.node_resource_forecast_min_samples,
+        "expected_interval_seconds": max(1, settings.node_health_scan_interval_seconds),
+        "minimum_coverage_ratio": settings.node_resource_quality_min_coverage_ratio,
+        "maximum_gap_seconds": settings.node_resource_quality_max_gap_seconds,
+        # _linear_forecast() also requires six hours of span. Keeping the
+        # quality contract aligned with that lower bound avoids classifying a
+        # short but dense burst as valid forecast history.
+        "minimum_history_seconds": 6 * 60 * 60,
+    }
+    return {
+        metric: assess_metric_quality(timestamps, **common)
+        for metric in ("cpu", "ram")
+    }
+
+
+def _persist_quality_state(
+    session,
+    cluster: str,
+    host: str,
+    metric: str,
+    quality: MetricQuality,
+    *,
+    checked_at: datetime,
+) -> None:
+    """Upsert the quality decision before any forecast candidate is made."""
+
+    row = session.query(NodeResourceQualityState).filter_by(
+        cluster_name=cluster, host=host, metric=metric,
+    ).one_or_none()
+    latest = quality.latest_observed_at
+    latest_naive = latest.astimezone(timezone.utc).replace(tzinfo=None) if latest else None
+    values = {
+        "status": quality.status,
+        "latest_observed_at": latest_naive,
+        "age_seconds": quality.age_seconds,
+        "sample_count": quality.sample_count,
+        "history_seconds": quality.history_seconds,
+        "coverage_ratio": quality.coverage_ratio,
+        "longest_gap_seconds": quality.longest_gap_seconds,
+        "reason": quality.reason,
+        "checked_at": checked_at,
+    }
+    if row is None:
+        session.add(NodeResourceQualityState(
+            cluster_name=cluster, host=host, metric=metric, **values,
+        ))
+        return
+    for name, value in values.items():
+        setattr(row, name, value)
 
 
 def _headers() -> dict[str, str]:
@@ -229,6 +318,135 @@ def _evaluate_due(session, cluster: str, host: str, metric: str,
         state.last_absolute_error = error
 
 
+def _recent_evaluated_runs(session, cluster: str, host: str, metric: str):
+    """Return the newest bounded ADWIN window in chronological order.
+
+    The order of the query is intentional: ``DESC + LIMIT 512`` selects the
+    latest evidence, and reversing in Python makes River consume it in time
+    order.  Querying ascending and limiting first would silently keep the
+    oldest 512 rows forever on a long-lived stream.
+    """
+
+    rows = (
+        session.query(NodeResourceForecastRun)
+        .filter_by(cluster_name=cluster, host=host, metric=metric, status="EVALUATED")
+        .filter(NodeResourceForecastRun.evaluated_at.isnot(None))
+        .filter(NodeResourceForecastRun.actual_percent.isnot(None))
+        .filter(NodeResourceForecastRun.absolute_error.isnot(None))
+        .order_by(NodeResourceForecastRun.evaluated_at.desc(), NodeResourceForecastRun.id.desc())
+        .limit(_adwin_window_size())
+        .all()
+    )
+    return list(reversed(rows))
+
+
+def _drift_sample(run: NodeResourceForecastRun) -> DriftSample:
+    return DriftSample(
+        evaluated_at=run.evaluated_at,
+        metric_value=run.actual_percent,
+        residual=run.actual_percent - run.predicted_percent,
+        mae=run.absolute_error,
+    )
+
+
+def _update_drift_state(
+    session,
+    cluster: str,
+    host: str,
+    metric: str,
+) -> DriftDecision:
+    """Apply only new evaluated runs to the scoped, durable ADWIN policy."""
+
+    rows = _recent_evaluated_runs(session, cluster, host, metric)
+    row = session.query(NodeResourceDriftState).filter_by(
+        cluster_name=cluster,
+        host=host,
+        metric=metric,
+        detector_version=ADWIN_POLICY_VERSION,
+    ).one_or_none()
+    cache_key = (cluster, host, metric)
+    if row is not None:
+        cached = _ADWIN_CACHE.get(cache_key)
+        try:
+            if cached is not None and cached[0] == row.state_json:
+                policy = cached[1]
+            else:
+                policy = AdwinPolicy.from_json(row.state_json)
+                _ADWIN_CACHE[cache_key] = (row.state_json, policy)
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            # Corrupt state never gets silently repaired inside a promotion
+            # decision.  Reset the durable state, but fail closed for this
+            # cycle; the next cycle must rebuild evidence from the bounded
+            # window instead of allowing a fresh model to promote immediately.
+            policy = AdwinPolicy(
+                delta=settings.node_resource_adwin_delta,
+                min_samples=settings.node_resource_adwin_min_samples,
+                clear_consecutive=settings.node_resource_drift_clear_consecutive,
+                warmup_samples=settings.node_resource_drift_warmup_samples,
+                max_samples=_adwin_window_size(),
+            )
+            row.state_json = policy.to_json()
+            row.last_evaluated_at = None
+            row.status = "INSUFFICIENT_DATA"
+            row.drift_score = 0.0
+            row.confidence_multiplier = 1.0
+            row.promotion_blocked = True
+            row.reason = "ADWIN state reset after checksum/schema failure; evidence required"
+            _ADWIN_CACHE.pop(cache_key, None)
+            return DriftDecision(
+                status="INSUFFICIENT_DATA",
+                promotion_blocked=True,
+                reason="ADWIN state reset after checksum/schema failure; evidence required",
+            )
+        cursor = row.last_evaluated_at
+        new_rows = [item for item in rows if cursor is None or item.evaluated_at > cursor]
+        if not new_rows:
+            return policy.decision()
+    else:
+        policy = AdwinPolicy(
+            delta=settings.node_resource_adwin_delta,
+            min_samples=settings.node_resource_adwin_min_samples,
+            clear_consecutive=settings.node_resource_drift_clear_consecutive,
+            warmup_samples=settings.node_resource_drift_warmup_samples,
+            max_samples=_adwin_window_size(),
+        )
+        _ADWIN_CACHE.pop(cache_key, None)
+        new_rows = rows
+
+    decision = policy.decision()
+    for item in new_rows:
+        decision = policy.update(_drift_sample(item))
+
+    if row is None:
+        state_json = policy.to_json()
+        row = NodeResourceDriftState(
+            cluster_name=cluster,
+            host=host,
+            metric=metric,
+            detector_version=ADWIN_POLICY_VERSION,
+            schema_version=1,
+            state_json=state_json,
+            last_evaluated_at=new_rows[-1].evaluated_at if new_rows else None,
+            status=decision.status,
+            drift_score=decision.drift_score,
+            confidence_multiplier=decision.confidence_multiplier,
+            promotion_blocked=decision.promotion_blocked,
+            reason=decision.reason,
+        )
+        session.add(row)
+    else:
+        state_json = policy.to_json()
+        row.state_json = state_json
+        row.last_evaluated_at = new_rows[-1].evaluated_at if new_rows else row.last_evaluated_at
+        row.status = decision.status
+        row.drift_score = decision.drift_score
+        row.confidence_multiplier = decision.confidence_multiplier
+        row.promotion_blocked = decision.promotion_blocked
+        row.reason = decision.reason
+    _ADWIN_CACHE[cache_key] = (state_json, policy)
+    return decision
+
+
 def _selected_window(session, cluster: str, host: str, metric: str,
                      available: list[int]) -> int:
     states = session.query(NodeResourceModelState).filter_by(
@@ -246,7 +464,8 @@ def _selected_window(session, cluster: str, host: str, metric: str,
 
 
 def _record_candidates(session, cluster: str, host: str, metric: str,
-                       candidates: dict[int, ResourceForecast], now_naive: datetime) -> None:
+                       candidates: dict[int, ResourceForecast], now_naive: datetime,
+                       drift: DriftDecision) -> None:
     horizon = max(1, settings.node_resource_learning_evaluation_hours)
     bucket = now_naive.replace(minute=0, second=0, microsecond=0)
     for window, prediction in candidates.items():
@@ -260,7 +479,13 @@ def _record_candidates(session, cluster: str, host: str, metric: str,
             target_at=now_naive + timedelta(hours=horizon),
             current_percent=prediction.current_percent,
             predicted_percent=prediction.predicted_percent,
-            confidence=prediction.confidence, status="PENDING", idempotency_key=key,
+            confidence=prediction.confidence * drift.confidence_multiplier,
+            drift_status=drift.status,
+            drift_score=drift.drift_score,
+            drift_reason=drift.reason,
+            confidence_multiplier=drift.confidence_multiplier,
+            promotion_blocked=drift.promotion_blocked,
+            status="PENDING", idempotency_key=key,
         ))
 
 
@@ -282,11 +507,38 @@ def adaptive_forecast(
     if observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=timezone.utc)
     now_naive = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
+    quality = _resource_quality(samples, now=now)
     result: dict[str, ResourceForecast] = {}
     with db.SessionLocal() as session:
         for index, metric in ((1, "cpu"), (2, "ram")):
+            metric_quality = quality[metric]
+            _persist_quality_state(
+                session,
+                cluster,
+                host,
+                metric,
+                metric_quality,
+                checked_at=datetime.utcnow(),
+            )
+            if not metric_quality.usable:
+                logger.warning(
+                    "node forecast: skipping %s for %s because quality=%s: %s",
+                    metric,
+                    host,
+                    metric_quality.status,
+                    metric_quality.reason,
+                )
+                continue
             points = [(row[0], row[index]) for row in samples]
             _evaluate_due(session, cluster, host, metric, points[-1][1], now_naive)
+            if settings.node_resource_adwin_enabled:
+                drift = _update_drift_state(session, cluster, host, metric)
+            else:
+                drift = DriftDecision(
+                    status="DISABLED",
+                    promotion_blocked=True,
+                    reason="ADWIN drift policy is disabled by configuration",
+                )
             candidates: dict[int, ResourceForecast] = {}
             for window in _candidate_windows():
                 windowed = _window_points(points, window)
@@ -299,7 +551,7 @@ def adaptive_forecast(
                     candidates[window] = prediction
             if not candidates:
                 continue
-            _record_candidates(session, cluster, host, metric, candidates, now_naive)
+            _record_candidates(session, cluster, host, metric, candidates, now_naive, drift)
             selected = _selected_window(session, cluster, host, metric, list(candidates))
             operational = _linear_forecast(
                 _window_points(points, selected), metric,
@@ -307,7 +559,16 @@ def adaptive_forecast(
                 training_window_hours=selected,
             )
             if operational is not None:
-                result[metric] = operational
+                result[metric] = replace(
+                    operational,
+                    confidence=max(0.0, min(1.0,
+                        operational.confidence * drift.confidence_multiplier)),
+                    drift_status=drift.status,
+                    drift_score=drift.drift_score,
+                    drift_reason=drift.reason,
+                    confidence_multiplier=drift.confidence_multiplier,
+                    promotion_blocked=drift.promotion_blocked,
+                )
         try:
             session.commit()
         except IntegrityError:
@@ -330,6 +591,7 @@ def forecast(cluster: str, host: str, *, now: datetime | None = None) -> dict[st
 def risky_forecasts(values: dict[str, ResourceForecast]) -> list[ResourceForecast]:
     """Return credible threshold crossings inside the configured horizon."""
     return [value for value in values.values()
+            if value.drift_status not in {"DRIFT", "METRIC_DRIFT", "WARMUP", "INSUFFICIENT_DATA", "DISABLED"}
             if value.hours_to_90 is not None
             and value.hours_to_90 <= settings.node_resource_forecast_horizon_hours
             and value.confidence >= settings.node_resource_forecast_min_confidence

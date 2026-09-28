@@ -562,6 +562,19 @@ def test_post_chat_message_claude_error_is_saved_not_500(dashboard_client, monke
     assert "boom" in response.json()["assistant_message"]["content"]
 
 
+def test_post_chat_message_budget_limit_is_saved_not_500(dashboard_client, monkeypatch):
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
+        raise chat_module.AIBudgetExceeded("Đã đạt ngân sách AI trong ngày")
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", fake_run_chat_turn)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/chat/messages", json={"content": "health?"})
+
+    assert response.status_code == 200
+    assert "ngân sách AI" in response.json()["assistant_message"]["content"]
+
+
 def test_post_chat_message_persists_and_returns_tools_used(dashboard_client, monkeypatch):
     async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         return {

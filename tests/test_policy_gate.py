@@ -103,6 +103,7 @@ def test_management_action_ids_loaded_from_policy_yaml():
         "rbd_create_volume",
         "rbd_resize_volume",
         "rbd_rename_volume",
+        "rbd_set_qos",
         "rbd_trash_move_volume",
         "rbd_trash_restore_volume",
             "rbd_trash_purge_all",

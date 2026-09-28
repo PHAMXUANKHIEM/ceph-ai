@@ -48,14 +48,15 @@
     <nav class="settings-sidebar">
       {% if is_admin %}
       <section class="settings-nav-group" data-settings-group="system">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['restart-controls', 'action-policy', 'database', 'server-log'] else 'false' }}">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['restart-controls', 'action-policy', 'database', 'server-log', 'ai-cost'] else 'false' }}">
           <span>Hệ thống</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
-        <div class="settings-nav-group-items" {% if active_section not in ['restart-controls', 'action-policy', 'database', 'server-log'] %}hidden{% endif %}>
+        <div class="settings-nav-group-items" {% if active_section not in ['restart-controls', 'action-policy', 'database', 'server-log', 'ai-cost'] %}hidden{% endif %}>
           <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">System Processes</button>
           <button type="button" class="settings-nav-item {% if active_section == 'action-policy' %}active{% endif %}" data-section="action-policy">AI Action Policy</button>
           <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Database Connection</button>
           <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Server Logs</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'ai-cost' %}active{% endif %}" data-section="ai-cost">AI Cost</button>
         </div>
       </section>
       <section class="settings-nav-group" data-settings-group="storage">
@@ -659,6 +660,40 @@
     </section>
     {% endif %}
 
+    {% if is_admin %}
+    <section class="card settings-panel" data-panel="ai-cost" {% if active_section != 'ai-cost' %}hidden{% endif %}>
+      <div class="settings-panel-header card-header">
+        <div class="settings-panel-title">
+          <span class="settings-panel-icon" aria-hidden="true">$</span>
+          <div><h2>AI Cost</h2><p>Usage tổng hợp, không lưu prompt hoặc response.</p></div>
+        </div>
+        <span class="settings-scope-badge">Admin · read-only</span>
+      </div>
+      <div class="card-body" id="ai-cost-panel">
+        <div class="ai-cost-toolbar">
+          <label>Khoảng thời gian (giờ)
+            <input id="ai-cost-period" type="number" min="1" max="744" value="24">
+          </label>
+          <button type="button" class="btn btn-primary btn-sm" id="ai-cost-refresh">Làm mới</button>
+          <span class="hint" id="ai-cost-status" role="status">Chưa tải dữ liệu.</span>
+        </div>
+        <div class="ai-cost-summary" id="ai-cost-summary" aria-live="polite">
+          <div><span>Lượt gọi</span><strong data-metric="calls">—</strong></div>
+          <div><span>Lỗi</span><strong data-metric="errors">—</strong></div>
+          <div><span>Token vào / ra</span><strong data-metric="tokens">—</strong></div>
+          <div><span>Chi phí ước tính</span><strong data-metric="cost">—</strong></div>
+          <div><span>Dự phóng ngày / tháng</span><strong data-metric="projection">—</strong></div>
+        </div>
+        <div class="table-wrap ai-cost-table-wrap">
+          <table>
+            <thead><tr><th>Feature</th><th>Provider</th><th>Model</th><th>Calls</th><th>Errors</th><th>Tokens</th><th>Cost</th></tr></thead>
+            <tbody id="ai-cost-rows"><tr><td colspan="7" class="muted">Chưa có dữ liệu.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
     <section class="card settings-panel" data-panel="router" {% if active_section != 'router' %}hidden{% endif %}>
       <div class="card-header"><h2>Kết nối AI</h2></div>
       <div class="card-body">
@@ -696,6 +731,7 @@
             <label>Model Codex
               <select id="codex-model-select"></select>
             </label>
+            <p id="codex-model-sync-status" class="hint" aria-live="polite"></p>
             <div class="ai-test-row">
               <button type="button" class="btn btn-primary btn-sm" id="codex-model-save-btn">Lưu model</button>
               <span id="codex-model-result" class="ai-test-result" hidden></span>

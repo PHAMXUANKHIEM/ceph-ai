@@ -737,6 +737,39 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class AIInvocation(Base):
+    """Content-free ledger entry for one logical provider invocation.
+
+    The ledger deliberately stores counts and metadata only.  Prompt text,
+    model output, API keys and evidence are never persisted here.  Rows with
+    ``status=RESERVED`` are included by the budget guard so concurrent calls
+    cannot all spend the same remaining budget before their responses arrive.
+    """
+
+    __tablename__ = "ai_invocations"
+    __table_args__ = (
+        Index("ix_ai_invocations_created_feature", "created_at", "feature"),
+        Index("ix_ai_invocations_created_status", "created_at", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    feature: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False, default="unknown")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="RESERVED")
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_estimated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
+    actor: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class UpgradeProcedureDocument(Base):
     """Singleton (id always 1, upserted) — the operator's own upgrade
     runbook for THIS cluster, uploaded via the Upgrade Cluster page
@@ -1232,6 +1265,12 @@ class VolumeMetric(Base):
     iops: Mapped[float] = mapped_column(Float, nullable=False)
     read_latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
     write_latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    read_bytes_per_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    write_bytes_per_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    throughput_bytes_per_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    queue_depth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    used_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    provisioned_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     saturated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
@@ -2188,12 +2227,185 @@ class NodeResourceForecastRun(Base):
     current_percent: Mapped[float] = mapped_column(Float, nullable=False)
     predicted_percent: Mapped[float] = mapped_column(Float, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    drift_status: Mapped[str] = mapped_column(String(32), nullable=False, default="INSUFFICIENT_DATA")
+    drift_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    drift_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    promotion_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     actual_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING", index=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class NodeResourceDriftState(Base):
+    """Durable ADWIN state for one cluster/host/metric/model scope."""
+
+    __tablename__ = "node_resource_drift_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_name", "host", "metric", "detector_version",
+            name="uq_node_resource_drift_identity",
+        ),
+        Index("ix_node_resource_drift_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    metric: Mapped[str] = mapped_column(String(8), nullable=False)
+    detector_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    state_json: Mapped[str] = mapped_column(Text, nullable=False)
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    drift_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    confidence_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    promotion_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ForecastEvaluationEvidence(Base):
+    """Immutable paired champion/challenger evaluation evidence."""
+
+    __tablename__ = "forecast_evaluation_evidence"
+    __table_args__ = (
+        Index("ix_forecast_evidence_scope", "cluster_name", "host", "metric", "horizon_hours"),
+        Index("ix_forecast_evidence_expiry", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    horizon_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    champion_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    challenger_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    input_window_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    input_window_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    target_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    target_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    paired_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    quality_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    quality_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    metrics_json: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class ForecastModelRegistry(Base):
+    """Versioned model state for one host/metric/horizon scope."""
+
+    __tablename__ = "forecast_model_registry"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_name", "host", "metric", "horizon_hours", "version",
+            name="uq_forecast_model_scope_version",
+        ),
+        Index(
+            "uq_forecast_model_one_active",
+            "cluster_name", "host", "metric", "horizon_hours",
+            unique=True,
+            sqlite_where=text("status = 'ACTIVE'"),
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
+        Index("ix_forecast_model_active_scope", "cluster_name", "host", "metric", "horizon_hours", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    horizon_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    version: Mapped[str] = mapped_column(String(128), nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="SHADOW")
+    model_state_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    previous_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_health_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class ForecastPromotionApproval(Base):
+    """One-time operator approval bound to exact evidence and scope."""
+
+    __tablename__ = "forecast_promotion_approvals"
+    __table_args__ = (
+        Index("ix_forecast_approval_scope_status", "cluster_name", "host", "metric", "status"),
+        Index("ix_forecast_approval_expiry", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    evidence_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    horizon_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    approved_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="APPROVED")
+
+
+class ForecastPromotionAudit(Base):
+    """Append-only promotion/rollback history."""
+
+    __tablename__ = "forecast_promotion_audits"
+    __table_args__ = (
+        Index("ix_forecast_promotion_audit_scope", "cluster_name", "host", "metric", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    horizon_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    from_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    to_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    evidence_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class NodeResourceQualityState(Base):
+    """Latest quality decision for one Loki-backed node metric stream."""
+
+    __tablename__ = "node_resource_quality_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_name", "host", "metric",
+            name="uq_node_resource_quality_identity",
+        ),
+        Index("ix_node_resource_quality_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    metric: Mapped[str] = mapped_column(String(8), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    latest_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    age_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    history_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    coverage_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    longest_gap_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class NodeResourceModelState(Base):

@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from config.settings import settings as app_settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.settings import (
@@ -17,6 +18,7 @@ from dashboard.routes.settings import (
 )
 from dashboard.templating import make_templates
 from shared import db
+from shared.ai_telemetry import summary as ai_cost_summary
 from shared.models import (
     Action,
     AuditEntry,
@@ -331,3 +333,33 @@ async def server_log_api(name: str, filter: str = "", user: str = Depends(requir
         raise HTTPException(status_code=404, detail="Không rõ log nào được yêu cầu")
     lines = _tail_log_lines(LOG_PATHS[name], filter)
     return {"name": name, "filter": filter, "lines": lines}
+
+
+@router.get("/api/settings/ai-cost")
+async def ai_cost_api(period_hours: int = 24, user: str = Depends(require_login)):
+    """Return content-free AI usage for the admin cost panel.
+
+    The endpoint deliberately exposes aggregate counts, tokens and estimated
+    cost only.  Prompts, responses, credentials and evidence are never stored
+    in or returned from the AI ledger.  Bound the requested window so an
+    accidental dashboard query cannot scan unbounded history.
+    """
+    _require_admin_privilege(user)
+    bounded_hours = max(1, min(int(period_hours), 24 * 31))
+    report = ai_cost_summary(bounded_hours)
+    observed_cost = float(report.get("estimated_cost_usd") or 0.0)
+    daily_projection = observed_cost * 24 / bounded_hours
+    return {
+        "period_hours": bounded_hours,
+        "budget": {
+            "daily_usd": float(app_settings.ai_budget_daily_usd),
+            "monthly_usd": float(app_settings.ai_budget_monthly_usd),
+            "hard_limit": bool(app_settings.ai_budget_hard_limit),
+        },
+        "projection": {
+            "estimated_daily_usd": daily_projection,
+            "estimated_monthly_usd": daily_projection * 30,
+            "method": "linearized from observed content-free ledger cost",
+        },
+        **report,
+    }

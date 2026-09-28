@@ -19,10 +19,13 @@ _OPENSTACK_UUID_RE = re.compile(
 
 
 def _field(payload: dict, *names: str):
-    lowered = {str(key).lower(): value for key, value in payload.items()}
+    def canonical(value) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+
+    lowered = {canonical(key): value for key, value in payload.items()}
     for name in names:
-        if name.lower() in lowered:
-            return lowered[name.lower()]
+        if canonical(name) in lowered:
+            return lowered[canonical(name)]
     return None
 
 
@@ -50,20 +53,200 @@ def normalize_cinder_volume(payload: dict, expected_id: str) -> dict:
     if volume_id.lower() != expected_id.lower():
         raise ValueError("Cinder trả về volume ID không khớp RBD image")
     attachments = _normalize_attachments(_field(payload, "attachments"))
+    attached_to = _field(payload, "attached_to", "attached")
     return {
         "status": "managed",
         "verified": True,
         "volume_id": volume_id,
         "name": _field(payload, "name"),
-        "project_id": _field(payload, "project_id", "os-vol-tenant-attr:tenant_id"),
+        "project_id": _field(
+            payload, "project_id", "project", "os-vol-tenant-attr:tenant_id"
+        ),
         "volume_status": _field(payload, "status"),
         "size_gib": _field(payload, "size"),
         "volume_type": _field(payload, "type"),
         "availability_zone": _field(payload, "availability_zone"),
-        "backend_host": _field(payload, "os-vol-host-attr:host"),
+        "backend_host": _field(payload, "os-vol-host-attr:host", "host"),
         "bootable": _field(payload, "bootable"),
+        "image_metadata": _field(payload, "image_metadata", "image metadata"),
         "multiattach": _as_bool(_field(payload, "multiattach")),
         "attachments": attachments,
+        # ``volume list --long`` often exposes only a human-readable
+        # ``Attached to`` column. Keep it as evidence without pretending it
+        # is a structured Nova attachment ID.
+        "attachment_summary": attached_to if attached_to not in (None, "", "-") else None,
+    }
+
+
+def cinder_volume_id_from_image(image: str) -> str | None:
+    """Return the Cinder UUID from the conventional ``volume-<uuid>`` name."""
+    match = _CINDER_IMAGE_RE.fullmatch(str(image or ""))
+    return match.group("id") if match else None
+
+
+def normalize_cinder_volume_list(payload: list | dict) -> list[dict]:
+    """Normalize an ``openstack volume list`` response without trusting names.
+
+    Invalid rows are ignored. The caller treats the live Cinder response as
+    read-only inventory; mutation remains blocked unless a later per-volume
+    ``volume show`` verifies the exact UUID and attachment state.
+    """
+    rows = payload.get("volumes") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        raise ValueError("Cinder volume CLI không trả về JSON array")
+    items = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        volume_id = str(_field(row, "id") or "")
+        if not _OPENSTACK_UUID_RE.fullmatch(volume_id):
+            continue
+        try:
+            items.append(normalize_cinder_volume(row, volume_id))
+        except ValueError:
+            continue
+    return items
+
+
+def discover_cinder_volumes(cluster) -> dict:
+    """Discover all Cinder volumes for an admin-scoped mapping report.
+
+    This is intentionally a read-only, fail-closed inventory call. The
+    ``--all-projects`` result must never be shown to a non-admin, and callers
+    must not use this list alone to mutate a volume: exact operations still
+    perform the existing per-volume ``volume show`` and attachment checks.
+    """
+    controllers = [item.strip() for item in cluster.openstack_controller_nodes.split(",") if item.strip()]
+    openrc_path = (cluster.openstack_openrc_path or "").strip()
+    if not controllers or not openrc_path:
+        return {
+            "status": "not_configured", "verified": False, "items": [], "count": 0,
+            "error": "Chưa cấu hình OpenStack Controller và openrc cho cluster.",
+        }
+    command = "sh -c " + shlex.quote(
+        f". {shlex.quote(openrc_path)} >/dev/null 2>&1 && "
+        "openstack volume list --all-projects --long -f json"
+    )
+    ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+    try:
+        payload = json.loads(
+            execute_command(controllers[0], command, user=ssh_user, key_path=ssh_key_path)
+        )
+        items = normalize_cinder_volume_list(payload)
+        return {"status": "ok", "verified": True, "items": items, "count": len(items)}
+    except (ExecutorError, json.JSONDecodeError, ValueError) as exc:
+        return {"status": "error", "verified": False, "items": [], "count": 0, "error": str(exc)}
+
+
+def build_cinder_mapping_row(image: str, image_detail: dict, cinder: dict) -> dict:
+    """Build a conservative per-image mapping row for callers outside the UI.
+
+    The helper is intentionally deterministic and never infers ownership from
+    an image name alone. A Cinder/API error becomes insufficient evidence and
+    disables mutations instead of turning a control-plane outage into an
+    orphan/delete recommendation.
+    """
+    if not isinstance(cinder, dict) or cinder.get("status") != "managed" or not cinder.get("verified"):
+        return {
+            "image": image,
+            "pool": image_detail.get("pool") if isinstance(image_detail, dict) else None,
+            "mapping_status": "insufficient_evidence",
+            "source_of_truth": "unknown",
+            "mutation_supported": False,
+            "reason": (cinder or {}).get("error") if isinstance(cinder, dict) else "Cinder response không hợp lệ",
+            "read_only": True,
+        }
+    volume_id = str(cinder.get("volume_id") or "")
+    expected_id = cinder_volume_id_from_image(image)
+    exact = bool(expected_id and volume_id.lower() == expected_id.lower())
+    return {
+        "image": image,
+        "pool": image_detail.get("pool") if isinstance(image_detail, dict) else None,
+        "volume_id": volume_id,
+        "mapping_status": "mapped" if exact else "mismatch",
+        "source_of_truth": "openstack_cinder" if exact else "unknown",
+        "mutation_supported": False,
+        "attachments": cinder.get("attachments") or [],
+        "read_only": True,
+        "reason": None if exact else "Cinder volume ID không khớp tên RBD image.",
+    }
+
+
+def build_boot_dependency_report(
+    cinder: dict,
+    cinder_snapshots: dict,
+    servers: list,
+    glance: dict | None,
+) -> dict:
+    """Summarize boot-volume dependencies without guessing missing evidence."""
+    if not isinstance(cinder, dict) or cinder.get("status") != "managed" or not cinder.get("verified"):
+        return {
+            "status": "not_applicable",
+            "boot_volume": {"bootable": None, "source": "unknown"},
+            "servers": [],
+            "guards": {"protect_boot_volume": False, "direct_delete_supported": False},
+            "evidence_gaps": [],
+            "read_only": True,
+            "mutation_supported": False,
+        }
+
+    bootable = _as_bool(cinder.get("bootable"))
+    boot_volume = {
+        "bootable": bootable,
+        "source": "bootable_volume" if bootable else "data_volume",
+        "volume_id": cinder.get("volume_id"),
+        "image_metadata": cinder.get("image_metadata"),
+    }
+    evidence_gaps: list[str] = []
+    normalized_servers = [item for item in servers if isinstance(item, dict)]
+    if bootable:
+        if not isinstance(glance, dict) or glance.get("status") != "ok":
+            evidence_gaps.append("Glance image dependency chưa xác minh được")
+        if not isinstance(cinder_snapshots, dict) or cinder_snapshots.get("status") != "ok":
+            evidence_gaps.append("Cinder snapshots chưa xác minh được")
+        for server in normalized_servers:
+            if server.get("status") == "not_found":
+                evidence_gaps.append(
+                    "Nova consumer không còn tồn tại: " + str(server.get("server_id") or "unknown")
+                )
+
+    return {
+        "status": "partial" if evidence_gaps else "ok",
+        "boot_volume": boot_volume,
+        "servers": normalized_servers,
+        "glance": glance if isinstance(glance, dict) else {"status": "unknown"},
+        "cinder_snapshots": cinder_snapshots if isinstance(cinder_snapshots, dict) else {"status": "unknown"},
+        "guards": {
+            "protect_boot_volume": bootable,
+            "direct_delete_supported": False,
+        },
+        "evidence_gaps": evidence_gaps,
+        "read_only": True,
+        "mutation_supported": False,
+    }
+
+
+def build_attachment_remediation(
+    cinder: dict, watchers: list, locks: list, reconciliation: dict
+) -> dict:
+    """Describe a review posture; never recommend direct lock removal."""
+    status = (reconciliation or {}).get("status")
+    if status == "healthy":
+        posture = "HEALTHY"
+    elif status == "stale_attachment":
+        posture = "REVIEW_BEFORE_DETACH"
+    else:
+        posture = "REVIEW_BEFORE_ACTION"
+    return {
+        "posture": posture,
+        "automatic_remediation": False,
+        "direct_lock_removal_supported": False,
+        "read_only": True,
+        "evidence": {
+            "watcher_count": len(watchers) if isinstance(watchers, list) else 0,
+            "lock_count": len(locks) if isinstance(locks, list) else 0,
+            "reconciliation": reconciliation or {},
+        },
     }
 
 

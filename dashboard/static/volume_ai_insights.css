@@ -1,0 +1,38 @@
+.volume-ai-insights {
+  margin: 1rem 0 1.25rem;
+  padding: 1rem;
+  border: 1px solid var(--border-color, #d8dee9);
+  border-radius: 12px;
+  background: var(--surface-muted, #f8fafc);
+}
+
+.volume-ai-insights-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.volume-ai-insights-heading h3 {
+  margin: .2rem 0 0;
+}
+
+.volume-ai-insights-list {
+  display: grid;
+  gap: .65rem;
+}
+
+.volume-ai-insight-item {
+  padding: .75rem;
+  border: 1px solid var(--border-color, #d8dee9);
+  border-radius: 9px;
+  background: var(--surface, #fff);
+}
+
+.volume-ai-insight-item p {
+  margin: .35rem 0;
+}
+
+.volume-ai-insight-item small {
+  color: var(--text-muted, #64748b);
+}

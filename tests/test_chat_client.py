@@ -15,6 +15,28 @@ AN_OSD_HOST = "10.20.1.83"
 UNCONFIGURED_HOST = "9.9.9.9"
 
 
+def test_pack_chat_history_bounds_by_characters_and_keeps_newest_context():
+    history = [
+        {"role": "user", "content": "old evidence " * 20},
+        {"role": "assistant", "content": "recent answer"},
+    ]
+
+    packed = chat_client.pack_chat_history(history, max_chars=80)
+
+    assert sum(len(message["content"]) for message in packed) <= 80
+    assert packed[-1] == {"role": "assistant", "content": "recent answer"}
+    assert "đã được rút gọn" in packed[0]["content"]
+
+
+def test_tool_cache_key_is_stable_for_same_arguments():
+    assert chat_client._tool_cache_key("get_df", {"x": 1}) == chat_client._tool_cache_key(
+        "get_df", {"x": 1}
+    )
+    assert chat_client._tool_cache_key("get_df", {"x": 1}) != chat_client._tool_cache_key(
+        "get_df", {"x": 2}
+    )
+
+
 class _FakeFunctionCall:
     def __init__(self, name: str, arguments: str):
         self.name = name

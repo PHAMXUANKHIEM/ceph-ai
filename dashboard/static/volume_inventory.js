@@ -23,6 +23,15 @@
   var overview = document.getElementById("volume-pool-overview");
   var overviewError = document.getElementById("volume-pool-overview-error");
   var healthChecks = document.getElementById("volume-pool-health-checks");
+  var insightsStatus = document.getElementById("volume-ai-insights-status");
+  var insightsGaps = document.getElementById("volume-ai-insights-gaps");
+  var insightsList = document.getElementById("volume-ai-insights-list");
+  var cinderMappingPanel = document.getElementById("volume-cinder-mapping");
+  var cinderMappingRefresh = document.getElementById("volume-cinder-mapping-refresh");
+  var cinderMappingStatus = document.getElementById("volume-cinder-mapping-status");
+  var cinderMappingSummary = document.getElementById("volume-cinder-mapping-summary");
+  var cinderMappingTable = document.getElementById("volume-cinder-mapping-table-wrap");
+  var cinderMappingBody = document.getElementById("volume-cinder-mapping-body");
   var state = { page: 1, pages: 1, loading: false };
   var PAGE_SIZE = 10;
 
@@ -190,6 +199,23 @@
       detail.appendChild(reconcileReason);
     }
     var cinder = data.cinder || {};
+    var bootDependency = data.boot_dependency || {};
+    if (bootDependency.status && bootDependency.status !== "not_applicable") {
+      var bootGuard = document.createElement("p");
+      bootGuard.className = bootDependency.status === "ok" ? "hint" : "error";
+      bootGuard.textContent = "Boot dependency: " +
+        (bootDependency.boot_volume && bootDependency.boot_volume.bootable ? "boot volume" : "data volume") +
+        " · Bảo vệ xoá trực tiếp: " +
+        (bootDependency.guards && bootDependency.guards.protect_boot_volume ? "bật" : "không áp dụng") +
+        " · Mutation: " + (bootDependency.mutation_supported ? "cho phép" : "read-only");
+      detail.appendChild(bootGuard);
+      (bootDependency.evidence_gaps || []).forEach(function (gap) {
+        var gapText = document.createElement("p");
+        gapText.className = "error";
+        gapText.textContent = "Boot evidence: " + gap;
+        detail.appendChild(gapText);
+      });
+    }
     if (cinder.status === "managed") {
       var cinderSummary = document.createElement("p");
       cinderSummary.className = "hint";
@@ -376,6 +402,63 @@
       });
       detail.appendChild(renameForm);
 
+      var qosSection = document.createElement("section");
+      qosSection.className = "volume-qos-editor";
+      var qosTitle = document.createElement("h3");
+      qosTitle.textContent = "QoS của Volume";
+      qosSection.appendChild(qosTitle);
+      var qosStatus = document.createElement("p");
+      qosStatus.className = "hint";
+      qosStatus.textContent = "Đang đọc giới hạn RBD…";
+      qosSection.appendChild(qosStatus);
+      var qosForm = document.createElement("form");
+      qosForm.className = "audit-filters";
+      var qosFields = [
+        ["iops_limit", "IOPS limit"], ["bps_limit", "Throughput limit (B/s)"],
+        ["iops_burst", "IOPS burst"], ["bps_burst", "Throughput burst (B/s)"]
+      ];
+      var qosInputs = {};
+      qosFields.forEach(function (field) {
+        var label = document.createElement("label");
+        label.textContent = field[1];
+        var input = document.createElement("input");
+        input.type = "number";
+        input.min = "0";
+        input.max = "1000000000000000";
+        input.placeholder = "Không đổi · 0 để bỏ giới hạn";
+        label.appendChild(input);
+        qosForm.appendChild(label);
+        qosInputs[field[0]] = input;
+      });
+      var qosSubmit = document.createElement("button");
+      qosSubmit.type = "submit";
+      qosSubmit.className = "btn btn-primary btn-sm";
+      qosSubmit.textContent = "Đề xuất thay đổi QoS";
+      qosForm.appendChild(qosSubmit);
+      qosForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var payload = {};
+        var changed = false;
+        qosFields.forEach(function (field) {
+          var raw = qosInputs[field[0]].value.trim();
+          if (raw !== "") { payload[field[0]] = Number(raw); changed = true; }
+        });
+        if (!changed) { qosStatus.textContent = "Hãy nhập ít nhất một giới hạn QoS."; return; }
+        proposeMutation(
+          "/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(data.name) + "/qos",
+          payload, qosSubmit
+        );
+      });
+      qosSection.appendChild(qosForm);
+      detail.appendChild(qosSection);
+      requestJson("/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(data.name) + "/qos")
+        .then(function (response) {
+          var qos = response.qos || {};
+          qosStatus.textContent = "Hiện tại: IOPS " + (qos.rbd_qos_iops_limit == null ? "không giới hạn" : qos.rbd_qos_iops_limit) +
+            " · Throughput " + (qos.rbd_qos_bps_limit == null ? "không giới hạn" : bytes(qos.rbd_qos_bps_limit) + "/s");
+        })
+        .catch(function () { qosStatus.textContent = "Không đọc được QoS; backend có thể chưa hỗ trợ cấu hình image QoS."; });
+
       var trashButton = document.createElement("button");
       trashButton.type = "button";
       trashButton.className = "btn btn-reject btn-sm";
@@ -432,6 +515,128 @@
       });
   }
 
+  function renderInsights(data) {
+    if (!insightsList) return;
+    insightsList.innerHTML = "";
+    var items = data.insights || [];
+    if (!items.length) {
+      var empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "Chưa có cảnh báo inventory từ evidence hiện có.";
+      insightsList.appendChild(empty);
+    }
+    items.forEach(function (item) {
+      var card = document.createElement("article");
+      card.className = "volume-ai-insight-item";
+      var title = document.createElement("strong");
+      title.textContent = item.kind + " · " + item.image;
+      card.appendChild(title);
+      var reason = document.createElement("p");
+      reason.textContent = item.reason || "Không có lý do";
+      card.appendChild(reason);
+      var recommendation = document.createElement("p");
+      recommendation.className = "hint";
+      recommendation.textContent = "Đề xuất: " + (item.recommendation || "review evidence");
+      card.appendChild(recommendation);
+      var meta = document.createElement("small");
+      meta.textContent = "Confidence: " + (item.confidence == null ? "—" : item.confidence) +
+        " · Read-only · Evidence hết hạn: " + (item.evidence_expires_at || "—");
+      card.appendChild(meta);
+      insightsList.appendChild(card);
+    });
+    if (insightsStatus) {
+      insightsStatus.textContent = String(data.summary && data.summary.total || 0) +
+        " insight · chỉ đọc";
+    }
+    if (insightsGaps) {
+      var gaps = data.evidence_gaps || [];
+      insightsGaps.textContent = gaps.length ? "Giới hạn evidence: " + gaps.join(" · ") : "";
+      insightsGaps.hidden = !gaps.length;
+    }
+  }
+
+  function loadInsights() {
+    if (!insightsList) return;
+    requestJson("/api/volumes/" + encodeURIComponent(pool) + "/inventory-insights")
+      .then(renderInsights)
+      .catch(function (exc) {
+        if (exc.message === "unauthenticated") return;
+        insightsStatus.textContent = "Không lấy được insight";
+        insightsList.innerHTML = "";
+        var errorItem = document.createElement("p");
+        errorItem.className = "error";
+        errorItem.textContent = exc.message;
+        insightsList.appendChild(errorItem);
+      });
+  }
+
+  function renderCinderMapping(data) {
+    if (!cinderMappingSummary || !cinderMappingBody) return;
+    var summary = data.summary || {};
+    cinderMappingSummary.innerHTML = "";
+    [
+      ["Mapped", summary.mapped],
+      ["Cinder không có RBD", summary.cinder_without_rbd],
+      ["RBD không có Cinder", summary.rbd_without_cinder],
+      ["RBD native", summary.not_cinder_image]
+    ].forEach(function (entry) {
+      var item = document.createElement("div");
+      item.className = "summary-item";
+      var label = document.createElement("span");
+      label.textContent = entry[0];
+      var value = document.createElement("strong");
+      value.textContent = String(entry[1] == null ? 0 : entry[1]);
+      item.appendChild(label);
+      item.appendChild(value);
+      cinderMappingSummary.appendChild(item);
+    });
+    cinderMappingSummary.hidden = false;
+    cinderMappingBody.innerHTML = "";
+    (data.items || []).forEach(function (item) {
+      var row = document.createElement("tr");
+      var status = item.mapping_status || "unknown";
+      row.className = "cinder-mapping-row cinder-mapping-" + status.replace(/[^a-z0-9_-]/gi, "-");
+      cell(row, item.image || "—");
+      cell(row, [item.name || item.volume_id, item.project_id ? "Project " + item.project_id : ""]
+        .filter(Boolean).join(" · ") || "—");
+      var attachmentText = (item.attachments || []).map(function (attachment) {
+        return [attachment.instance_id, attachment.host, attachment.device].filter(Boolean).join(" · ");
+      }).filter(Boolean).join("; ") || item.attachment_summary || "—";
+      cell(row, attachmentText);
+      var statusCell = cell(row, "");
+      var badge = document.createElement("span");
+      badge.className = "cinder-mapping-badge";
+      badge.textContent = {
+        mapped: "Đã map",
+        cinder_without_rbd: "Thiếu RBD",
+        rbd_without_cinder: "Orphan RBD",
+        not_cinder_managed: "RBD native"
+      }[status] || status;
+      statusCell.appendChild(badge);
+      cell(row, (item.source_of_truth || "unknown") + " / " + (item.mutation_route || "blocked"));
+      cinderMappingBody.appendChild(row);
+    });
+    cinderMappingTable.hidden = false;
+    cinderMappingStatus.textContent = "Đã đối soát " + Number(summary.total_rbd || 0) +
+      " RBD image với " + Number(summary.total_cinder || 0) + " Cinder volume · " +
+      new Date(data.collected_at).toLocaleString("vi-VN");
+  }
+
+  function loadCinderMapping() {
+    if (!cinderMappingPanel || !cinderMappingRefresh) return;
+    cinderMappingRefresh.disabled = true;
+    cinderMappingStatus.textContent = "Đang đọc inventory Cinder và RBD…";
+    cinderMappingSummary.hidden = true;
+    cinderMappingTable.hidden = true;
+    requestJson("/api/volumes/" + encodeURIComponent(pool) + "/cinder-mapping")
+      .then(renderCinderMapping)
+      .catch(function (exc) {
+        if (exc.message === "unauthenticated") return;
+        cinderMappingStatus.textContent = "Không đối soát được Cinder: " + exc.message;
+      })
+      .finally(function () { cinderMappingRefresh.disabled = false; });
+  }
+
   function proposeMutation(url, payload, button) {
     button.disabled = true;
     var idempotencyKey = (window.crypto && window.crypto.randomUUID)
@@ -474,7 +679,9 @@
   }
   prev.addEventListener("click", function () { if (state.page > 1) { state.page -= 1; loadInventory(); } });
   next.addEventListener("click", function () { if (state.page < state.pages) { state.page += 1; loadInventory(); } });
+  if (cinderMappingRefresh) cinderMappingRefresh.addEventListener("click", loadCinderMapping);
   loadOverview();
+  loadInsights();
   loadInventory();
   if (selectedImage) loadDetail(selectedImage);
 }());

@@ -21,7 +21,7 @@ ràng buộc R5 của plan.
 
 import json
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from dashboard.routes import auth
@@ -33,6 +33,8 @@ from shared.models import (
     LogFinding,
     LogFindingStatus,
     LogIngestRun,
+    LogLearningSample,
+    LogFaultStat,
     LogPattern,
     LogPatternTriageLabel,
 )
@@ -41,9 +43,11 @@ from watcher.log_analysis import ceph_code_for, resolve_pattern_templates
 router = APIRouter()
 templates = make_templates()
 
-MAX_RUNS = 10
-MAX_FINDINGS = 50
-MAX_PATTERNS = 100
+RUNS_PAGE_SIZE = 8
+LEARNING_PAGE_SIZE = 10
+RGW_PAGE_SIZE = 8
+FINDINGS_PAGE_SIZE = 8
+PATTERNS_PAGE_SIZE = 20
 
 
 def _require_admin_privilege(user: str) -> None:
@@ -57,26 +61,55 @@ def _require_admin_privilege(user: str) -> None:
         )
 
 
-def _context(user: str, *, message: str | None = None, error: str | None = None) -> dict:
+def _safe_page(value: int) -> int:
+    return max(1, min(int(value), 10_000))
+
+
+def _paginate(query, page: int, page_size: int):
+    total = query.order_by(None).count()
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = min(_safe_page(page), pages)
+    rows = query.offset((page - 1) * page_size).limit(page_size).all()
+    return rows, {"page": page, "pages": pages, "total": total, "page_size": page_size}
+
+
+def _context(
+    user: str,
+    *,
+    runs_page: int = 1,
+    learning_page: int = 1,
+    rgw_page: int = 1,
+    findings_page: int = 1,
+    patterns_page: int = 1,
+    message: str | None = None,
+    error: str | None = None,
+) -> dict:
     with db.SessionLocal() as session:
-        runs = (
-            session.query(LogIngestRun)
-            .order_by(LogIngestRun.created_at.desc())
-            .limit(MAX_RUNS)
-            .all()
+        runs, runs_pagination = _paginate(
+            session.query(LogIngestRun).order_by(LogIngestRun.created_at.desc()),
+            runs_page, RUNS_PAGE_SIZE,
         )
-        findings = (
-            session.query(LogFinding)
-            .order_by(LogFinding.created_at.desc())
-            .limit(MAX_FINDINGS)
-            .all()
+        findings_query = session.query(LogFinding).order_by(LogFinding.created_at.desc())
+        findings, findings_pagination = _paginate(findings_query, findings_page, FINDINGS_PAGE_SIZE)
+        patterns, patterns_pagination = _paginate(
+            session.query(LogPattern).order_by(LogPattern.last_seen_at.desc()),
+            patterns_page, PATTERNS_PAGE_SIZE,
         )
-        patterns = (
-            session.query(LogPattern)
-            .order_by(LogPattern.last_seen_at.desc())
-            .limit(MAX_PATTERNS)
-            .all()
+        learning_samples, learning_pagination = _paginate(
+            session.query(LogLearningSample).order_by(LogLearningSample.updated_at.desc()),
+            learning_page, LEARNING_PAGE_SIZE,
         )
+        rgw_findings, rgw_pagination = _paginate(
+            session.query(LogFinding).filter(
+                LogFinding.affected_daemons_json.like('%"rgw"%')
+            ).order_by(LogFinding.created_at.desc()),
+            rgw_page, RGW_PAGE_SIZE,
+        )
+        run_status_counts = {
+            status: session.query(LogIngestRun).filter(LogIngestRun.status == status).count()
+            for status in ("OK", "PARTIAL", "FAILED")
+        }
+        learning_stats = session.query(LogFaultStat).all()
         correlated_ids = {finding.correlated_incident_id for finding in findings if finding.correlated_incident_id}
         correlated_incidents = {
             incident.id: incident
@@ -102,6 +135,24 @@ def _context(user: str, *, message: str | None = None, error: str | None = None)
                 "is_rgw": "rgw" in daemon_types,
             })
 
+        learning_rows = []
+        for sample in learning_samples:
+            stat = next(
+                (
+                    row for row in learning_stats
+                    if row.cluster_id == sample.cluster_id
+                    and row.daemon_type == sample.daemon_type
+                    and row.fault_family == sample.fault_family
+                    and row.playbook_id == (sample.recommended_playbook_id or "observation_only")
+                ),
+                None,
+            )
+            learning_rows.append({
+                "row": sample,
+                "stat": stat,
+                "gate": "audit-only · shadow · commission not enabled",
+            })
+
         # Tách các đối tượng ra khỏi session trước khi nó đóng: template
         # chỉ đọc thuộc tính đã nạp, không lazy-load thêm.
         session.expunge_all()
@@ -110,9 +161,25 @@ def _context(user: str, *, message: str | None = None, error: str | None = None)
         "user": user,
         "is_admin": auth.is_admin_user(user),
         "runs": runs,
+        "runs_pagination": runs_pagination,
+        "run_status_counts": run_status_counts,
+        "learning_rows": learning_rows,
+        "learning_pagination": learning_pagination,
         "finding_rows": finding_rows,
-        "rgw_finding_rows": [item for item in finding_rows if item["is_rgw"]],
+        "rgw_finding_rows": [{"row": row, "is_rgw": True} for row in rgw_findings],
+        "rgw_pagination": rgw_pagination,
+        "findings_pagination": findings_pagination,
         "patterns": patterns,
+        "patterns_pagination": patterns_pagination,
+        "summary": {
+            "findings": findings_query.order_by(None).count(),
+            "open_findings": session.query(LogFinding).filter(
+                LogFinding.status == LogFindingStatus.OPEN.value
+            ).count(),
+            "unknown_patterns": session.query(LogPattern).filter(
+                LogPattern.triage_label == LogPatternTriageLabel.UNKNOWN.value
+            ).count(),
+        },
         "open_status": LogFindingStatus.OPEN.value,
         "acknowledged_status": LogFindingStatus.ACKNOWLEDGED.value,
         "resolved_status": LogFindingStatus.RESOLVED.value,
@@ -122,8 +189,27 @@ def _context(user: str, *, message: str | None = None, error: str | None = None)
 
 
 @router.get("/log-intelligence", response_class=HTMLResponse)
-async def log_intelligence_page(request: Request, user: str = Depends(require_login)):
-    return templates.TemplateResponse(request, "log_intelligence.html", _context(user))
+async def log_intelligence_page(
+    request: Request,
+    runs_page: int = Query(1, ge=1),
+    learning_page: int = Query(1, ge=1),
+    rgw_page: int = Query(1, ge=1),
+    findings_page: int = Query(1, ge=1),
+    patterns_page: int = Query(1, ge=1),
+    user: str = Depends(require_login),
+):
+    return templates.TemplateResponse(
+        request,
+        "log_intelligence.html",
+        _context(
+            user,
+            runs_page=runs_page,
+            learning_page=learning_page,
+            rgw_page=rgw_page,
+            findings_page=findings_page,
+            patterns_page=patterns_page,
+        ),
+    )
 
 
 @router.post("/log-intelligence/findings/{finding_id}/acknowledge")
@@ -142,6 +228,24 @@ async def acknowledge_finding(finding_id: str, user: str = Depends(require_login
         if finding.status == LogFindingStatus.OPEN.value:
             finding.status = LogFindingStatus.ACKNOWLEDGED.value
             session.commit()
+    return RedirectResponse("/log-intelligence", status_code=303)
+
+@router.post("/log-intelligence/patterns/bulk-label")
+async def bulk_label_patterns(
+    pattern_ids: list[str] = Form(default=[]),
+    label: str = Form(""),
+    user: str = Depends(require_login),
+):
+    """Apply one triage label to selected patterns in a single admin action."""
+    _require_admin_privilege(user)
+    valid = {item.value for item in LogPatternTriageLabel}
+    if label not in valid or not pattern_ids:
+        return RedirectResponse("/log-intelligence?error=bulk-label", status_code=303)
+    with db.SessionLocal() as session:
+        rows = session.query(LogPattern).filter(LogPattern.id.in_(pattern_ids)).all()
+        for pattern in rows:
+            pattern.triage_label = label
+        session.commit()
     return RedirectResponse("/log-intelligence", status_code=303)
 
 

@@ -1,0 +1,7 @@
+{% if pager.pages > 1 %}
+<nav class="logintel-pager" aria-label="Phân trang">
+  {% if pager.page > 1 %}<a class="btn btn-ghost btn-sm" href="/log-intelligence?{{ pager_key }}={{ pager.page - 1 }}">← Trước</a>{% else %}<span></span>{% endif %}
+  <span>Trang {{ pager.page }} / {{ pager.pages }} · {{ pager.total }} dòng</span>
+  {% if pager.page < pager.pages %}<a class="btn btn-ghost btn-sm" href="/log-intelligence?{{ pager_key }}={{ pager.page + 1 }}">Sau →</a>{% else %}<span></span>{% endif %}
+</nav>
+{% endif %}

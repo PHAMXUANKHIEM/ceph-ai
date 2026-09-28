@@ -1550,6 +1550,25 @@ async def openstack_vm_ssh_test(
     }
 
 
+def _normalise_codex_models(catalog: list[dict]) -> list[dict]:
+    """Return a stable, de-duplicated model catalog for the Settings UI."""
+    models: list[dict] = []
+    seen: set[str] = set()
+    for item in catalog:
+        model_id = str(item.get("model") or item.get("id") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        models.append({
+            "id": model_id,
+            "label": str(item.get("displayName") or item.get("name") or model_id),
+            "version": item.get("version"),
+            "is_default": bool(item.get("isDefault")),
+            "is_hidden": bool(item.get("isHidden") or item.get("hidden")),
+        })
+    return models
+
+
 @router.get("/settings/codex/status")
 async def settings_codex_status(user: str = Depends(require_login)):
     executable = codex_executable()
@@ -1558,11 +1577,15 @@ async def settings_codex_status(user: str = Depends(require_login)):
     try:
         await refresh_app_server_after_cli_login()
         account = await codex_app_server.account()
-        model_catalog = await codex_app_server.models() if account else []
+        # The status poll runs immediately after device login completes. A
+        # live catalog fetch here automatically picks up every model enabled
+        # for the newly authenticated account without another user action.
+        model_catalog = await codex_app_server.models(include_hidden=True) if account else []
         limits = normalize_rate_limits(await codex_app_server.rate_limits()) if account else []
     except CodexAppServerError as exc:
         return {"installed": True, "authenticated": False, "enabled": settings.codex_chat_enabled, "error": str(exc)}
     authenticated = bool(account)
+    models = _normalise_codex_models(model_catalog)
     return {
         "installed": True,
         "authenticated": authenticated,
@@ -1570,10 +1593,9 @@ async def settings_codex_status(user: str = Depends(require_login)):
         "email": account.get("email"),
         "plan_type": account.get("planType") or account.get("plan_type"),
         "model": settings.codex_chat_model,
-        "models": [
-            {"id": item.get("model") or item.get("id"), "label": item.get("displayName") or item.get("model") or item.get("id"), "is_default": bool(item.get("isDefault"))}
-            for item in model_catalog if item.get("model") or item.get("id")
-        ],
+        "models": models,
+        "models_synced": bool(account),
+        "model_count": len(models),
         "limits": limits,
     }
 
@@ -1585,12 +1607,12 @@ async def settings_codex_model(model: str = Form(""), user: str = Depends(requir
     try:
         if not await codex_app_server.account():
             raise HTTPException(status_code=409, detail="Cần đăng nhập Codex trước khi chọn model")
-        catalog = await codex_app_server.models()
+        catalog = await codex_app_server.models(include_hidden=True)
     except HTTPException:
         raise
     except CodexAppServerError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    available = {item.get("model") or item.get("id") for item in catalog}
+    available = {item["id"] for item in _normalise_codex_models(catalog)}
     if submitted and submitted not in available:
         raise HTTPException(status_code=400, detail="Model Codex không khả dụng với tài khoản này")
     _update_env_file(CODEX_CHAT_MODEL_ENV_NAME, submitted)
@@ -1793,7 +1815,14 @@ async def settings_verify_router(
             status_code=400, detail=f"Cần nhập Base URL ({provider_label}) trước khi kiểm tra kết nối"
         )
 
-    is_valid, message, models = await verify_router_connection(submitted_key, submitted_base_url)
+    try:
+        is_valid, message, models = await verify_router_connection(submitted_key, submitted_base_url)
+    except Exception as exc:
+        logger.exception("settings_verify_router: unexpected verification failure")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Không thể kiểm tra AI API: {readable_exception_message(exc)}",
+        ) from exc
     return {"valid": is_valid, "message": message, "models": models}
 
 

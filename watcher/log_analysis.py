@@ -41,6 +41,7 @@ import httpx
 
 from config.settings import settings
 from shared import db, log_learning
+from shared.ai_telemetry import ai_invocation
 from shared.incident_actions import cancel_pending_actions
 from shared.cluster_nodes import configured_nodes
 from shared import audit
@@ -380,12 +381,20 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
             + f"\n\nBạn BẮT BUỘC gọi tool {TOOL_NAME} đúng một lần; không trả kết quả chỉ bằng văn bản.\n\n"
             + user_content
         )
-        try:
-            await codex_app_server.run_turn(
-                prompt, [schema], capture, timeout=ROUTER_TIMEOUT_SECONDS
-            )
-        except CodexAppServerError as exc:
-            raise LogAnalysisError(f"Codex call failed: {exc}") from exc
+        with ai_invocation(
+            feature="log_analysis",
+            provider="codex",
+            model="default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                await codex_app_server.run_turn(
+                    prompt, [schema], capture, timeout=ROUTER_TIMEOUT_SECONDS
+                )
+            except CodexAppServerError as exc:
+                raise LogAnalysisError(f"Codex call failed: {exc}") from exc
+            telemetry.set_response(output_text=json.dumps(captured, ensure_ascii=False))
         return captured
 
     if settings.claude_chat_enabled:
@@ -397,29 +406,46 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
             + "\n\n"
             + user_content
         )
-        try:
-            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
-            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
-            return json.loads(clean)
-        except (ClaudeCLIError, json.JSONDecodeError) as exc:
-            raise LogAnalysisError(f"Claude call failed: {exc}") from exc
+        with ai_invocation(
+            feature="log_analysis",
+            provider="claude",
+            model=settings.claude_chat_model or "default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+                clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
+                result = json.loads(clean)
+            except (ClaudeCLIError, json.JSONDecodeError) as exc:
+                raise LogAnalysisError(f"Claude call failed: {exc}") from exc
+            telemetry.set_response(output_text=raw)
+            return result
 
     client = build_router_client(settings.router_api_key, settings.router_base_url)
-    try:
-        async with client.chat.completions.stream(
-            model=settings.router_model,
-            max_tokens=MAX_TOKENS,
-            tools=[schema],
-            tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
-        ) as stream:
-            completion = await stream.get_final_completion()
-    except Exception as exc:
-        raise LogAnalysisError(f"Router call failed: {exc}") from exc
+    with ai_invocation(
+        feature="log_analysis",
+        provider=settings.router_provider or "router",
+        model=settings.router_model or "unknown",
+        input_chars=len(SYSTEM_PROMPT) + len(user_content) + len(json.dumps(schema, ensure_ascii=False)),
+        max_output_tokens=MAX_TOKENS,
+    ) as telemetry:
+        try:
+            async with client.chat.completions.stream(
+                model=settings.router_model,
+                max_tokens=MAX_TOKENS,
+                tools=[schema],
+                tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
+            ) as stream:
+                completion = await stream.get_final_completion()
+        except Exception as exc:
+            raise LogAnalysisError(f"Router call failed: {exc}") from exc
+        telemetry.set_response(completion)
 
     choice = completion.choices[0]
     if choice.finish_reason == "length":

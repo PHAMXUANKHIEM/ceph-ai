@@ -26,6 +26,7 @@
             <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
             <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
             <a href="/log-intelligence" class="nav-dropdown-item active">Log Intelligence</a>
+            <a href="/event-timeline" class="nav-dropdown-item">Event Timeline</a>
           </div>
         </div>
         <div class="nav-dropdown">
@@ -48,229 +49,84 @@
   </header>
 
 
-  <main class="page">
+  <main class="page log-intelligence-page">
     {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
     {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
 
-    <section class="card">
-      <div class="card-header"><h2>Trạng thái thu thập log</h2></div>
+    <section class="logintel-summary-bar" aria-label="Tổng quan Log Intelligence">
+      <div><span>OK</span><strong class="logintel-ok">{{ run_status_counts.OK }}</strong></div>
+      <div><span>PARTIAL</span><strong class="logintel-partial">{{ run_status_counts.PARTIAL }}</strong></div>
+      <div><span>FAILED</span><strong class="logintel-failed">{{ run_status_counts.FAILED }}</strong></div>
+      <div><span>Phát hiện</span><strong>{{ summary.findings }}</strong></div>
+      <div><span>Đang mở</span><strong>{{ summary.open_findings }}</strong></div>
+      <div><span>Chưa gắn nhãn</span><strong>{{ summary.unknown_patterns }}</strong></div>
+    </section>
+
+    <section class="card logintel-card">
+      <div class="card-header logintel-card-header"><div><span class="logintel-eyebrow">L0 · EVIDENCE COVERAGE</span><h2>Trạng thái thu thập log</h2></div><span class="logintel-section-count">{{ runs_pagination.total }} lần quét</span></div>
       <div class="card-body">
-        <p class="muted">
-          Mọi kết luận bên dưới chỉ đáng tin bằng đúng độ đầy đủ của dữ liệu sinh ra nó.
-          <strong>PARTIAL</strong> nghĩa là có node không đọc được log trong cửa sổ đó — AI được
-          báo trước điều này và không được phép kết luận với độ tin cậy cao.
-        </p>
-        {% if not runs %}
-          <p class="muted">Chưa có lần quét nào. Bật <code>log_intel_enabled</code> trong cấu hình để bắt đầu.</p>
-        {% else %}
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Thời điểm</th><th>Cửa sổ</th><th>Nguồn</th><th>Trạng thái</th>
-                <th>Node</th><th>Dòng log</th><th>Mẫu</th><th>Mẫu mới</th><th>Gắn cờ</th><th>Lỗi</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for run in runs %}
-              <tr>
-                <td>{{ run.created_at.strftime('%d/%m %H:%M') }}</td>
-                <td>{{ run.window_start.strftime('%H:%M') }}–{{ run.window_end.strftime('%H:%M') }}</td>
-                <td>{{ run.source }}</td>
-                <td>
-                  {% if run.status == 'OK' %}<span class="badge badge-ok">OK</span>
-                  {% elif run.status == 'PARTIAL' %}<span class="badge badge-warn">PARTIAL</span>
-                  {% else %}<span class="badge badge-err">FAILED</span>{% endif %}
-                </td>
-                <td>{{ run.hosts_scanned - run.hosts_failed }}/{{ run.hosts_scanned }}</td>
-                <td>{{ run.lines_scanned }}</td>
-                <td>{{ run.patterns_seen }}</td>
-                <td>{{ run.patterns_new }}</td>
-                <td>{% if run.patterns_flagged is none %}—{% else %}{{ run.patterns_flagged }}{% endif %}</td>
-                <td class="muted">{{ (run.error_message or '')[:120] }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% endif %}
+        <p class="muted logintel-intro">PARTIAL nghĩa là có node không đọc được log; mọi kết luận AI bên dưới phải hạ độ tin cậy theo độ đầy đủ này.</p>
+        {% if not runs %}<p class="muted">Chưa có lần quét nào. Bật <code>log_intel_enabled</code> trong cấu hình để bắt đầu.</p>
+        {% else %}<div class="table-wrap logintel-table-wrap"><table class="logintel-table"><thead><tr><th>Thời điểm</th><th>Cửa sổ</th><th>Nguồn</th><th>Trạng thái</th><th>Node</th><th>Dòng log</th><th>Mẫu</th><th>Mới</th><th>Gắn cờ</th><th>Lỗi</th></tr></thead><tbody>
+          {% for run in runs %}<tr><td class="nowrap">{{ run.created_at.strftime('%d/%m %H:%M') }}</td><td class="nowrap">{{ run.window_start.strftime('%H:%M') }}–{{ run.window_end.strftime('%H:%M') }}</td><td>{{ run.source }}</td><td>{% if run.status == 'OK' %}<span class="badge badge-ok">OK</span>{% elif run.status == 'PARTIAL' %}<span class="badge badge-warn">PARTIAL</span>{% else %}<span class="badge badge-err">FAILED</span>{% endif %}</td><td class="nowrap">{{ run.hosts_scanned - run.hosts_failed }}/{{ run.hosts_scanned }}</td><td>{{ run.lines_scanned }}</td><td>{{ run.patterns_seen }}</td><td>{{ run.patterns_new }}</td><td>{{ run.patterns_flagged if run.patterns_flagged is not none else '—' }}</td><td class="logintel-error-cell" title="{{ run.error_message or '' }}">{{ (run.error_message or '—')[:90] }}</td></tr>{% endfor %}
+        </tbody></table></div>{% endif %}
+        {% set pager = runs_pagination %}{% set pager_key = 'runs_page' %}{% include "_logintel_pager.html" with context %}
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-header"><h2>🌐 Cảnh báo RGW — AI phân tích</h2></div>
-      <div class="card-body">
-        <p class="muted">
-          Các bất thường từ log RADOS Gateway được AI phân tích nguyên nhân, mức độ và hướng kiểm tra.
-          Lệnh đề xuất chỉ để người vận hành xem xét; hệ thống không tự chạy lệnh lên RGW.
-        </p>
-        {% if not rgw_finding_rows %}
-          <p class="muted">Chưa có cảnh báo RGW nào.</p>
-        {% else %}
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Thời điểm</th><th>Mức độ</th><th>Phân tích AI</th><th>Trạng thái</th></tr></thead>
-            <tbody>
-              {% for item in rgw_finding_rows %}
-              {% set f = item.row %}
-              <tr>
-                <td>{{ f.created_at.strftime('%d/%m %H:%M') }}</td>
-                <td>{% if f.severity == 'CRITICAL' %}<span class="badge badge-err">CRITICAL</span>{% elif f.severity == 'WARNING' %}<span class="badge badge-warn">WARNING</span>{% else %}<span class="badge">{{ f.severity }}</span>{% endif %}</td>
-                <td><strong>{{ f.title or '(không tiêu đề)' }}</strong>{% if f.summary %}<div class="muted">{{ f.summary }}</div>{% endif %}</td>
-                <td>{% if f.status == resolved_status %}<span class="badge badge-ok">Đã hết</span>{% elif f.status == acknowledged_status %}<span class="badge">Đã ghi nhận</span>{% else %}<span class="badge badge-warn">Đang mở</span>{% endif %}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% endif %}
+    <section class="card logintel-card">
+      <div class="card-header logintel-card-header"><div><span class="logintel-eyebrow">L2 · AUDIT PROJECTION</span><h2>AI Learning từ log daemon</h2></div><span class="logintel-section-count">{{ learning_pagination.total }} mẫu</span></div>
+      <div class="card-body"><p class="muted logintel-intro">Learning chỉ là audit/shadow projection. Chưa có commission hoặc tự động đưa playbook vào vận hành.</p>
+        {% if not learning_rows %}<p class="muted">Chưa có mẫu learning.</p>{% else %}<div class="table-wrap logintel-table-wrap"><table class="logintel-table"><thead><tr><th>Daemon / host</th><th>Fault family</th><th>Playbook</th><th>State</th><th>Verified</th><th>Wilson</th><th>Gate</th></tr></thead><tbody>
+          {% for item in learning_rows %}{% set s = item.row %}{% set stat = item.stat %}<tr><td><strong>{{ s.daemon_type }}</strong>{% if s.daemon_id %} · {{ s.daemon_id }}{% endif %}<small>{{ s.host or '—' }}</small></td><td>{{ s.fault_family }}</td><td><code>{{ s.recommended_playbook_id or 'investigate_manually' }}</code></td><td><span class="badge {% if s.state == 'VERIFIED_SUCCESS' %}badge-ok{% elif s.state in ['INSUFFICIENT_EVIDENCE', 'REGRESSED', 'FALSE_POSITIVE'] %}badge-warn{% endif %}">{{ s.state }}</span></td><td>{{ 'YES' if s.eligible_for_learning else 'NO' }}</td><td>{{ '%.3f'|format(stat.trust_score) if stat else '0.000' }}</td><td class="logintel-gate">{{ item.gate }}</td></tr>{% endfor %}
+        </tbody></table></div>{% endif %}
+        {% set pager = learning_pagination %}{% set pager_key = 'learning_page' %}{% include "_logintel_pager.html" with context %}
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-header"><h2>Phát hiện từ log</h2></div>
-      <div class="card-body">
-        <p class="muted">
-          Đây là <strong>giả thuyết của AI</strong> đọc từ log, không phải phép đo. Mỗi phát hiện
-          luôn kèm bằng chứng gốc để bạn tự đánh giá. Phát hiện tự chuyển sang
-          <em>RESOLVED</em> khi các mẫu log của nó ngừng xuất hiện.
-        </p>
-        {% if not finding_rows %}
-          <p class="muted">Chưa có phát hiện nào.</p>
-        {% else %}
-        {% for item in finding_rows %}
-        {% set f = item.row %}
-        <div class="table-wrap" style="margin-bottom:1rem">
-          <table>
-            <tbody>
-              <tr>
-                <th style="width:14rem">Phát hiện</th>
-                <td>
-                  <strong>{{ f.title or '(không tiêu đề)' }}</strong>
-                  {% if f.severity == 'CRITICAL' %}<span class="badge badge-err">CRITICAL</span>
-                  {% elif f.severity == 'WARNING' %}<span class="badge badge-warn">WARNING</span>
-                  {% else %}<span class="badge">{{ f.severity }}</span>{% endif %}
-                  <span class="badge">{{ f.verdict }}</span>
-                  <span class="badge">Tin cậy: {{ f.confidence }}</span>
-                  {% if f.status == resolved_status %}<span class="badge badge-ok">Đã hết</span>
-                  {% elif f.status == acknowledged_status %}<span class="badge">Đã ghi nhận</span>
-                  {% else %}<span class="badge badge-warn">Đang mở</span>{% endif %}
-                </td>
-              </tr>
-              {% if f.summary %}<tr><th>Tóm tắt</th><td>{{ f.summary }}</td></tr>{% endif %}
-              {% if f.root_cause_hypothesis %}<tr><th>Nguyên nhân nghi ngờ</th><td>{{ f.root_cause_hypothesis }}</td></tr>{% endif %}
-              {% if item.correlated_incident %}
-              <tr>
-                <th>Incident tương quan</th>
-                <td>
-                  <a href="/?incident_id={{ item.correlated_incident.id }}"><code>{{ item.correlated_incident.ceph_code }}</code></a>
-                  <span class="badge">{{ item.correlated_incident.status }}</span>
-                  <span class="muted">· {{ f.fault_family }} · do server đối chiếu</span>
-                </td>
-              </tr>
-              {% endif %}
-              {% if f.correlation_evidence_json %}
-              <tr>
-                <th>Evidence metric/disk</th>
-                <td><code>{{ f.correlation_evidence_json }}</code></td>
-              </tr>
-              {% endif %}
-              <tr>
-                <th>Bằng chứng (mẫu log thật)</th>
-                <td>
-                  {% if item.evidence %}
-                    {% for template in item.evidence %}<div><code>{{ template }}</code></div>{% endfor %}
-                  {% else %}<span class="muted">Không trích dẫn được mẫu nào.</span>{% endif %}
-                </td>
-              </tr>
-              {% if f.recommended_action_id %}
-              <tr>
-                <th>Đề xuất</th>
-                <td><code>{{ f.recommended_action_id }}</code>
-                  <span class="muted">— đã tạo đề xuất chờ Duyệt ({{ item.ceph_code }}); không có gì tự chạy.</span></td>
-              </tr>
-              {% endif %}
-              {% if f.validation_notes %}
-              <tr>
-                <th>Hệ thống đã chỉnh câu trả lời của AI</th>
-                <td class="muted">{{ f.validation_notes }}</td>
-              </tr>
-              {% endif %}
-              <tr>
-                <th>Nguồn gốc</th>
-                <td class="muted">
-                  {{ f.created_at.strftime('%d/%m/%Y %H:%M') }} · model {{ f.model_name or '?' }} · prompt {{ f.prompt_version or '?' }}
-                </td>
-              </tr>
-              {% if f.status == open_status %}
-              <tr>
-                <th></th>
-                <td>
-                  <form method="post" action="/log-intelligence/findings/{{ f.id }}/acknowledge">
-                    <button type="submit" class="btn btn-ghost btn-sm">Đã ghi nhận</button>
-                  </form>
-                </td>
-              </tr>
-              {% endif %}
-            </tbody>
-          </table>
-        </div>
-        {% endfor %}
-        {% endif %}
+    <section class="card logintel-card">
+      <div class="card-header logintel-card-header"><div><span class="logintel-eyebrow">L3 · RGW</span><h2>🌐 Cảnh báo RGW — AI phân tích</h2></div><span class="logintel-section-count">{{ rgw_pagination.total }} cảnh báo</span></div>
+      <div class="card-body"><p class="muted logintel-intro">AI chỉ đưa ra giả thuyết và hướng kiểm tra; không tự chạy lệnh lên RGW.</p>
+        {% if not rgw_finding_rows %}<p class="muted">Chưa có cảnh báo RGW nào.</p>{% else %}<div class="table-wrap logintel-table-wrap"><table class="logintel-table"><thead><tr><th>Thời điểm</th><th>Mức độ</th><th>Phân tích AI</th><th>Trạng thái</th></tr></thead><tbody>
+          {% for item in rgw_finding_rows %}{% set f = item.row %}<tr><td class="nowrap">{{ f.created_at.strftime('%d/%m %H:%M') }}</td><td>{% if f.severity == 'CRITICAL' %}<span class="badge badge-err">CRITICAL</span>{% elif f.severity == 'WARNING' %}<span class="badge badge-warn">WARNING</span>{% else %}<span class="badge">{{ f.severity or 'INFO' }}</span>{% endif %}</td><td><strong>{{ f.title or '(không tiêu đề)' }}</strong><div class="logintel-clamp">{{ f.summary or 'Chưa có tóm tắt.' }}</div></td><td>{% if f.status == resolved_status %}<span class="badge badge-ok">Đã hết</span>{% elif f.status == acknowledged_status %}<span class="badge">Đã ghi nhận</span>{% else %}<span class="badge badge-warn">Đang mở</span>{% endif %}</td></tr>{% endfor %}
+        </tbody></table></div>{% endif %}
+        {% set pager = rgw_pagination %}{% set pager_key = 'rgw_page' %}{% include "_logintel_pager.html" with context %}
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-header"><h2>Mẫu log</h2></div>
-      <div class="card-body">
-        <p class="muted">
-          Gắn <strong>BENIGN</strong> cho mẫu nhiễu để tầng phân loại bỏ qua nó vĩnh viễn —
-          đây là cách tắt nhiễu mà không cần sửa code hay đổi ngưỡng.
-          <strong>NOTABLE</strong> thì ngược lại: luôn nổi lên kể cả khi tần suất bình thường.
-        </p>
-        {% if not patterns %}
-          <p class="muted">Chưa có mẫu log nào.</p>
-        {% else %}
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Mẫu</th><th>Daemon</th><th>Mức</th><th>Số lần</th><th>Lần cuối</th><th>Nhãn</th>{% if is_admin %}<th></th>{% endif %}</tr>
-            </thead>
-            <tbody>
-              {% for p in patterns %}
-              <tr>
-                <td><code>{{ p.template[:160] }}</code></td>
-                <td>{{ p.daemon_type }}</td>
-                <td>{{ p.severity if p.severity is not none else '—' }}</td>
-                <td>{{ p.total_count }}</td>
-                <td>{{ p.last_seen_at.strftime('%d/%m %H:%M') }}</td>
-                <td>
-                  {% if p.triage_label == 'BENIGN' %}<span class="badge">BENIGN</span>
-                  {% elif p.triage_label == 'NOTABLE' %}<span class="badge badge-warn">NOTABLE</span>
-                  {% else %}<span class="muted">—</span>{% endif %}
-                </td>
-                {% if is_admin %}
-                <td>
-                  <form method="post" action="/log-intelligence/patterns/{{ p.id }}/label" style="display:flex;gap:.25rem">
-                    <select name="label">
-                      <option value="UNKNOWN" {% if p.triage_label == 'UNKNOWN' %}selected{% endif %}>UNKNOWN</option>
-                      <option value="BENIGN" {% if p.triage_label == 'BENIGN' %}selected{% endif %}>BENIGN</option>
-                      <option value="NOTABLE" {% if p.triage_label == 'NOTABLE' %}selected{% endif %}>NOTABLE</option>
-                    </select>
-                    <button type="submit" class="btn btn-ghost btn-sm">Lưu</button>
-                  </form>
-                </td>
-                {% endif %}
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% endif %}
+    <section class="card logintel-card">
+      <div class="card-header logintel-card-header"><div><span class="logintel-eyebrow">L2 · HYPOTHESES</span><h2>Phát hiện từ log</h2></div><span class="logintel-section-count">{{ findings_pagination.total }} phát hiện</span></div>
+      <div class="card-body"><p class="muted logintel-intro">Đây là giả thuyết của AI, không phải phép đo. Mở từng dòng để xem evidence và nguồn gốc.</p>
+        {% if not finding_rows %}<p class="muted">Chưa có phát hiện nào.</p>{% else %}<div class="logintel-findings-list">
+        {% for item in finding_rows %}{% set f = item.row %}<details class="logintel-finding"><summary><span class="logintel-finding-title">{{ f.title or '(không tiêu đề)' }}</span>{% if f.severity == 'CRITICAL' %}<span class="badge badge-err">CRITICAL</span>{% elif f.severity == 'WARNING' %}<span class="badge badge-warn">WARNING</span>{% else %}<span class="badge">{{ f.severity or 'INFO' }}</span>{% endif %}<span class="badge">{{ f.verdict }}</span><span class="badge">Tin cậy: {{ f.confidence or '—' }}</span>{% if f.status == resolved_status %}<span class="badge badge-ok">Đã hết</span>{% elif f.status == acknowledged_status %}<span class="badge">Đã ghi nhận</span>{% else %}<span class="badge badge-warn">Đang mở</span>{% endif %}<time>{{ f.created_at.strftime('%d/%m/%Y %H:%M') }}</time></summary><div class="logintel-finding-body">
+          {% if f.summary %}<div><label>Tóm tắt</label><p>{{ f.summary }}</p></div>{% endif %}{% if f.root_cause_hypothesis %}<div><label>Nguyên nhân nghi ngờ</label><p>{{ f.root_cause_hypothesis }}</p></div>{% endif %}{% if item.correlated_incident %}<div><label>Incident tương quan</label><p><a href="/?incident_id={{ item.correlated_incident.id }}"><code>{{ item.correlated_incident.ceph_code }}</code></a> <span class="badge">{{ item.correlated_incident.status }}</span> <span class="muted">· {{ f.fault_family }} · do server đối chiếu</span></p></div>{% endif %}{% if f.correlation_evidence_json %}<div><label>Evidence metric/disk</label><p><code>{{ f.correlation_evidence_json }}</code></p></div>{% endif %}<div><label>Bằng chứng (mẫu log thật)</label>{% if item.evidence %}{% for template in item.evidence %}<code class="logintel-evidence">{{ template }}</code>{% endfor %}{% else %}<p class="muted">Không trích dẫn được mẫu nào.</p>{% endif %}</div>{% if f.recommended_action_id %}<div><label>Đề xuất</label><p><code>{{ f.recommended_action_id }}</code> <span class="muted">— chờ Duyệt; không có gì tự chạy.</span></p></div>{% endif %}{% if f.validation_notes %}<div><label>Hệ thống đã chỉnh câu trả lời AI</label><p class="muted">{{ f.validation_notes }}</p></div>{% endif %}<div><label>Nguồn gốc</label><p class="muted">model {{ f.model_name or '?' }} · prompt {{ f.prompt_version or '?' }}</p></div>{% if f.status == open_status %}<form method="post" action="/log-intelligence/findings/{{ f.id }}/acknowledge"><button type="submit" class="btn btn-ghost btn-sm">Đã ghi nhận</button></form>{% endif %}
+        </div></details>{% endfor %}</div>{% endif %}
+        {% set pager = findings_pagination %}{% set pager_key = 'findings_page' %}{% include "_logintel_pager.html" with context %}
+      </div>
+    </section>
+
+    <section class="card logintel-card">
+      <div class="card-header logintel-card-header"><div><span class="logintel-eyebrow">L1 · TRIAGE CATALOGUE</span><h2>Mẫu log</h2></div><span class="logintel-section-count">{{ patterns_pagination.total }} mẫu</span></div>
+      <div class="card-body"><p class="muted logintel-intro">Chọn nhiều mẫu rồi gắn nhãn một lần. BENIGN làm tầng triage bỏ qua mẫu nhiễu; NOTABLE luôn được nổi lên.</p>
+        {% if not patterns %}<p class="muted">Chưa có mẫu log nào.</p>{% else %}{% if is_admin %}<form method="post" action="/log-intelligence/patterns/bulk-label" id="logintel-bulk-form" class="logintel-bulk-label"><label><input type="checkbox" id="logintel-select-all"> Chọn tất cả trang này</label><select name="label" required><option value="">Chọn nhãn…</option><option value="UNKNOWN">UNKNOWN</option><option value="BENIGN">BENIGN</option><option value="NOTABLE">NOTABLE</option></select><button type="submit" class="btn btn-primary btn-sm">Lưu nhãn đã chọn</button></form>{% endif %}<div class="table-wrap logintel-table-wrap"><table class="logintel-table"><thead><tr><th></th><th>Mẫu</th><th>Daemon</th><th>Mức</th><th>Số lần</th><th>Lần cuối</th><th>Nhãn</th></tr></thead><tbody>
+          {% for p in patterns %}<tr><td>{% if is_admin %}<input class="logintel-pattern-check" type="checkbox" name="pattern_ids" value="{{ p.id }}" form="logintel-bulk-form">{% endif %}</td><td><code class="logintel-pattern">{{ p.template[:160] }}</code></td><td>{{ p.daemon_type }}</td><td>{{ p.severity if p.severity is not none else '—' }}</td><td>{{ p.total_count }}</td><td class="nowrap">{{ p.last_seen_at.strftime('%d/%m %H:%M') }}</td><td>{% if p.triage_label == 'BENIGN' %}<span class="badge">BENIGN</span>{% elif p.triage_label == 'NOTABLE' %}<span class="badge badge-warn">NOTABLE</span>{% else %}<span class="badge badge-muted">UNKNOWN</span>{% endif %}</td></tr>{% endfor %}
+        </tbody></table></div>{% endif %}
+        {% set pager = patterns_pagination %}{% set pager_key = 'patterns_page' %}{% include "_logintel_pager.html" with context %}
       </div>
     </section>
   </main>
 
   <script src="/static/app.js?v={{ static_version }}"></script>
+  <script>
+    (function () {
+      var selectAll = document.getElementById("logintel-select-all");
+      if (!selectAll) return;
+      var checks = function () { return Array.prototype.slice.call(document.querySelectorAll(".logintel-pattern-check")); };
+      selectAll.addEventListener("change", function () { checks().forEach(function (item) { item.checked = selectAll.checked; }); });
+      checks().forEach(function (item) { item.addEventListener("change", function () {
+        selectAll.checked = checks().length > 0 && checks().every(function (check) { return check.checked; });
+      }); });
+    }());
+  </script>
 </body>
 </html>

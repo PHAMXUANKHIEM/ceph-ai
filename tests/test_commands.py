@@ -768,6 +768,30 @@ def test_rbd_rename_volume_command_validates_both_names_and_post_checks_destinat
         )
 
 
+def test_rbd_set_qos_command_is_closed_and_post_checks_configuration():
+    command = commands_module.get_command(
+        "rbd_set_qos",
+        params={
+            "pool_name": "vms", "image": "vm-01",
+            "iops_limit": 5000, "bps_limit": 1048576, "iops_burst": 6000,
+        },
+    )
+    assert "rbd config image set vms/vm-01 rbd_qos_iops_limit 5000" in command
+    assert "rbd config image set vms/vm-01 rbd_qos_bps_limit 1048576" in command
+    assert "rbd config image list vms/vm-01 --format json" in command
+    assert "rbd_qos_bps_burst" not in command
+
+
+@pytest.mark.parametrize("params", [
+    {"pool_name": "vms", "image": "vm-01"},
+    {"pool_name": "vms", "image": "vm-01", "iops_limit": -1},
+    {"pool_name": "vms", "image": "vm-01", "iops_limit": True},
+])
+def test_rbd_set_qos_command_rejects_invalid_or_empty_limits(params):
+    with pytest.raises(ExecutorError):
+        commands_module.get_command("rbd_set_qos", params=params)
+
+
 def test_rbd_trash_move_and_restore_commands_are_guarded_and_post_checked():
     move = commands_module.get_command(
         "rbd_trash_move_volume", params={"pool_name": "vms", "image": "vm-old"}

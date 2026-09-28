@@ -181,9 +181,9 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
           </table>
         </div>
 
-        <footer className="flex flex-col gap-4 border-t border-slate-200 px-5 py-4 text-sm lg:flex-row lg:items-center lg:justify-between">
+        <footer className="relative flex flex-col gap-4 border-t border-slate-200 px-5 py-4 text-sm lg:flex-row lg:items-center lg:justify-between">
           <div>{selected && <button type="button" onClick={() => setSelected("")} className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-slate-600 transition hover:bg-slate-200">1 selected <X size={14} /></button>}</div>
-          <div className="flex flex-wrap items-center justify-center gap-3 text-slate-600">
+          <div className="pools-pagination-controls flex flex-wrap items-center justify-center gap-3 text-slate-600 lg:absolute lg:left-1/2 lg:top-1/2 lg:-translate-x-1/2 lg:-translate-y-1/2">
             <span>Page</span><input value={currentPage} readOnly aria-label="Page number" className="h-8 w-10 rounded border border-slate-200 bg-white text-center outline-none focus:border-violet-400" /><span>of {totalPages}</span>
             <label className="ml-2 inline-flex items-center gap-2">Rows per page:<select value={POOLS_PER_PAGE} disabled aria-label="Rows per page" className="h-8 rounded border border-slate-200 bg-white px-2 outline-none"><option value={POOLS_PER_PAGE}>{POOLS_PER_PAGE}</option></select></label>
             <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={currentPage === 1} aria-label="Previous page" className="grid h-8 w-8 place-items-center rounded border border-slate-200 text-slate-600 disabled:cursor-not-allowed disabled:text-slate-300"><ChevronLeft size={16} /></button>

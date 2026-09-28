@@ -1,3 +1,15 @@
+function bucketHighlightJSON(value) {
+  var raw = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  var escaped = raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return escaped.replace(/("(?:\\.|[^"\\])*"\s*:)|("(?:\\.|[^"\\])*")|\b(true|false|null)\b|\b(-?\d+(?:\.\d+)?)\b/g, function (match, key, string, literal, number) {
+    if (key) return '<span class="json-key">' + key.slice(0, -1) + '</span>:';
+    if (string) return '<span class="json-string">' + match + '</span>';
+    if (literal) return '<span class="json-literal">' + match + '</span>';
+    if (number) return '<span class="json-number">' + match + '</span>';
+    return match;
+  });
+}
+
 (function () {
   var tabs = Array.prototype.slice.call(document.querySelectorAll("[data-bucket-tab]"));
   if (!tabs.length) return;
@@ -28,17 +40,147 @@
 })();
 
 (function () {
-  var button = document.getElementById("bucket-delete-all");
-  if (!button) return;
-  var status = document.getElementById("bucket-delete-all-status");
-  button.addEventListener("click", function () {
-    button.disabled = true;
-    status.textContent = "Đang purge object và xóa tất cả bucket...";
-    fetch("/api/object-storage/buckets/delete-all?cluster=" + encodeURIComponent(button.dataset.cluster), {method: "POST"})
-      .then(function (response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); })
-      .then(function (data) { status.textContent = "Đã xóa " + data.deleted_count + " bucket. Request ID: " + data.request_id; window.location.reload(); })
-      .catch(function (error) { status.textContent = "Lỗi: " + error.message; button.disabled = false; });
+  var drawer = document.getElementById("bucket-action-drawer");
+  var backdrop = document.getElementById("bucket-action-backdrop");
+  if (!drawer || !backdrop) return;
+  var title = document.getElementById("bucket-drawer-title");
+  var context = document.getElementById("bucket-drawer-context");
+  var nav = document.getElementById("bucket-action-nav");
+  var previousFocus = null;
+  var labels = {governance: "Quota & Retention", "user-settings": "User Quota & Capability", lifecycle: "Lifecycle Policy", policy: "Bucket Policy & ACL", delete: "Xóa bucket"};
+  var page = document.querySelector(".bucket-page");
+  function configuredEndpoint() { return page.dataset.rgwEndpoint || (page.dataset.rgwHost ? "http://" + page.dataset.rgwHost + ":7480" : ""); }
+
+  function value(id, next) {
+    var control = document.getElementById(id);
+    if (control) control.value = next || "";
+  }
+  function fillBucket(data) {
+    ["governance", "lifecycle", "policy", "delete"].forEach(function (kind) {
+      value("bucket-" + kind + "-name", data.name);
+      value("bucket-" + kind + "-owner", data.owner);
+      value("bucket-" + kind + "-endpoint", configuredEndpoint());
+    });
+    value("s3-setting-uid", data.owner);
+    value("s3-setting-quota-scope", "bucket");
+    var deleteAction = document.getElementById("bucket-delete-action");
+    if (deleteAction) deleteAction.value = Number(data.objects || 0) > 0 ? "purge_delete" : "delete_empty";
+  }
+  function showPanel(kind) {
+    document.querySelectorAll("[data-action-panel]").forEach(function (panel) { panel.hidden = panel.dataset.actionPanel !== kind; });
+    document.querySelectorAll("[data-drawer-action]").forEach(function (button) { button.classList.toggle("is-active", button.dataset.drawerAction === kind); });
+    title.textContent = labels[kind] || "Bucket action";
+    nav.hidden = kind === "create";
+    if (kind === "governance") document.getElementById("bucket-governance-action").dispatchEvent(new Event("change"));
+    if (kind === "lifecycle") document.getElementById("bucket-lifecycle-action").dispatchEvent(new Event("change"));
+    if (kind === "policy") document.getElementById("bucket-policy-action").dispatchEvent(new Event("change"));
+  }
+  function open(kind, data) {
+    previousFocus = document.activeElement;
+    if (data) {
+      fillBucket(data);
+      context.textContent = data.name + " · owner " + (data.owner || "chưa có metadata");
+    } else {
+      context.textContent = "Cấu hình được áp dụng cho cụm đang chọn.";
+    }
+    value("bucket-create-endpoint", configuredEndpoint());
+    backdrop.hidden = false; drawer.hidden = false; drawer.setAttribute("aria-hidden", "false");
+    document.body.classList.add("bucket-drawer-open");
+    window.dispatchEvent(new Event("bucket-drawer-context"));
+    showPanel(kind);
+    var focusTarget = kind === "create" ? document.getElementById("bucket-create-name") : drawer.querySelector("[data-action-panel='" + kind + "'] input");
+    if (focusTarget) window.setTimeout(function () { focusTarget.focus(); }, 0);
+  }
+  function close() {
+    backdrop.hidden = true; drawer.hidden = true; drawer.setAttribute("aria-hidden", "true"); document.body.classList.remove("bucket-drawer-open");
+    if (previousFocus && previousFocus.focus) previousFocus.focus();
+  }
+  document.querySelectorAll("[data-bucket-action]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      if (button.dataset.bucketAction === "create") return open("create");
+      if (button.dataset.bucketAction === "menu") return open("governance", {name: button.dataset.bucketName, owner: button.dataset.bucketOwner, objects: button.dataset.bucketObjects});
+    });
   });
+  nav.querySelectorAll("[data-drawer-action]").forEach(function (button) { button.addEventListener("click", function () { showPanel(button.dataset.drawerAction); }); });
+  document.querySelectorAll("[data-preview-form]").forEach(function (button) { button.addEventListener("click", function () { var form = document.getElementById(button.dataset.previewForm); if (form.requestSubmit) form.requestSubmit(); else form.dispatchEvent(new Event("submit", {cancelable: true})); }); });
+  document.querySelectorAll("[data-close-bucket-drawer]").forEach(function (button) { button.addEventListener("click", close); });
+  backdrop.addEventListener("click", close);
+  document.addEventListener("keydown", function (event) { if (event.key === "Escape" && !drawer.hidden) close(); });
+})();
+
+(function () {
+  var button = document.getElementById("bucket-delete-all");
+  var dialog = document.getElementById("bucket-delete-all-dialog");
+  if (!button || !dialog) return;
+  var form = document.getElementById("bucket-delete-all-form");
+  var preview = document.getElementById("bucket-delete-all-preview");
+  var summary = document.getElementById("bucket-delete-all-summary");
+  var inventory = document.getElementById("bucket-delete-all-inventory");
+  var confirmation = document.getElementById("bucket-delete-all-confirmation");
+  var execute = document.getElementById("bucket-delete-all-execute");
+  var status = document.getElementById("bucket-delete-all-status");
+  var state = null;
+  function parse(response) {
+    return response.ok ? response.json() : response.json().then(function (body) {
+      throw new Error(body.detail || "Thao tác thất bại");
+    });
+  }
+  function reset() {
+    state = null;
+    preview.hidden = true;
+    summary.textContent = "";
+    inventory.textContent = "";
+    confirmation.value = "";
+    execute.disabled = true;
+  }
+  function close() {
+    reset();
+    if (dialog.open) dialog.close();
+  }
+  button.addEventListener("click", function () {
+    reset();
+    status.textContent = "Đang lấy inventory và tạo preview…";
+    dialog.showModal();
+    fetch("/api/object-storage/buckets/delete-all/preview?cluster=" + encodeURIComponent(button.dataset.cluster), {method: "POST"})
+      .then(parse)
+      .then(function (data) {
+        state = data;
+        summary.textContent = "Cụm " + data.cluster_name + " · " + data.bucket_count + " bucket · " + data.object_count + " object · " + data.size_bytes + " bytes";
+        inventory.textContent = "Inventory hash: " + data.inventory_hash + "\nBucket mẫu: " + (data.sample_buckets || []).join(", ") + (data.sample_truncated ? " …" : "");
+        preview.hidden = false;
+        if (!data.allowed) {
+          status.textContent = data.blocked_reason || "Không thể thực thi.";
+          return;
+        }
+        status.textContent = "Nhập chính xác: " + data.confirmation_required;
+        confirmation.focus();
+      })
+      .catch(function (error) { status.textContent = "Lỗi preview: " + error.message; });
+  });
+  confirmation.addEventListener("input", function () {
+    execute.disabled = !state || !state.allowed || confirmation.value !== state.confirmation_required;
+  });
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    if (!state || !state.allowed || confirmation.value !== state.confirmation_required) return;
+    execute.disabled = true;
+    status.textContent = "Đang kiểm tra lại inventory trước khi purge…";
+    fetch("/api/object-storage/buckets/delete-all/execute?cluster=" + encodeURIComponent(button.dataset.cluster), {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
+        inventory_hash: state.inventory_hash,
+        bucket_count: state.bucket_count,
+        object_count: state.object_count,
+        size_bytes: state.size_bytes,
+        confirmation: confirmation.value
+      })
+    })
+      .then(parse)
+      .then(function (data) { status.textContent = "Đã xóa " + data.deleted_count + " bucket. Request ID: " + data.request_id; window.setTimeout(function () { window.location.reload(); }, 500); })
+      .catch(function (error) { status.textContent = "Lỗi: " + error.message; execute.disabled = false; });
+  });
+  document.getElementById("bucket-delete-all-close").addEventListener("click", close);
+  document.getElementById("bucket-delete-all-cancel").addEventListener("click", close);
+  dialog.addEventListener("cancel", function (event) { event.preventDefault(); close(); });
 })();
 
 (function () {
@@ -96,6 +238,7 @@
   var execute = document.getElementById("bucket-delete-execute");
   var status = document.getElementById("bucket-delete-status");
   var approved = null;
+  window.addEventListener("bucket-drawer-context", function () { approved = null; preview.hidden = true; confirmation.value = ""; status.textContent = ""; });
   function payload() { return {action: document.getElementById("bucket-delete-action").value, bucket: document.getElementById("bucket-delete-name").value.trim(), owner: document.getElementById("bucket-delete-owner").value.trim(), endpoint: document.getElementById("bucket-delete-endpoint").value.trim()}; }
   function endpoint(kind) { return "/api/object-storage/buckets/delete/" + kind + "?cluster=" + encodeURIComponent(form.dataset.cluster); }
   function parse(response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); }
@@ -134,6 +277,7 @@
   var execute = document.getElementById("bucket-policy-execute");
   var status = document.getElementById("bucket-policy-status");
   var approved = null;
+  window.addEventListener("bucket-drawer-context", function () { approved = null; preview.hidden = true; confirmation.value = ""; status.textContent = ""; });
   function ready() { return Boolean(action.value && bucket.value.trim() && owner.value.trim() && gateway.value.trim() && gateway.checkValidity()); }
   function buildPolicy() {
     var bucketArn = "arn:aws:s3:::" + bucket.value.trim();
@@ -147,7 +291,7 @@
     policyLabel.hidden = !baseReady || action.value !== "policy_put";
     aclLabel.hidden = !baseReady || action.value !== "acl_set";
     submit.hidden = !baseReady;
-    if (baseReady && action.value === "policy_put") generated.textContent = JSON.stringify(buildPolicy(), null, 2);
+    if (baseReady && action.value === "policy_put") generated.innerHTML = bucketHighlightJSON(JSON.stringify(buildPolicy(), null, 2));
     preview.hidden = true; approved = null;
   }
   function payload() {
@@ -184,11 +328,12 @@
   var execute = document.getElementById("bucket-create-execute");
   var status = document.getElementById("bucket-create-status");
   var approved = null;
+  window.addEventListener("bucket-drawer-context", function () { approved = null; preview.hidden = true; confirmation.value = ""; status.textContent = ""; });
   function payload() { return {
     name: document.getElementById("bucket-create-name").value.trim(),
     owner: document.getElementById("bucket-create-owner").value.trim(),
     endpoint: document.getElementById("bucket-create-endpoint").value.trim(),
-    api_name: document.getElementById("bucket-create-api-name").value.trim(),
+    api_name: document.getElementById("bucket-create-placement").value.trim() ? document.getElementById("bucket-create-api-name").value.trim() : "",
     placement: document.getElementById("bucket-create-placement").value.trim(),
     object_lock: document.getElementById("bucket-create-object-lock").checked
   }; }
@@ -228,6 +373,7 @@
   var execute = document.getElementById("bucket-lifecycle-execute");
   var status = document.getElementById("bucket-lifecycle-status");
   var approved = null;
+  window.addEventListener("bucket-drawer-context", function () { approved = null; preview.hidden = true; confirmation.value = ""; status.textContent = ""; });
   function baseReady() { return Boolean(action.value && bucket.value.trim() && owner.value.trim() && gateway.value.trim() && gateway.checkValidity()); }
   function buildRules() {
     return Array.prototype.slice.call(ruleList.querySelectorAll(".bucket-lifecycle-rule")).map(function (row) {
@@ -243,7 +389,7 @@
     rulesLabel.hidden = !ready || action.value !== "lifecycle_put";
     rulesLabel.querySelectorAll("input, select, button").forEach(function (control) { control.disabled = rulesLabel.hidden; });
     submit.hidden = !ready;
-    if (!rulesLabel.hidden) generated.textContent = JSON.stringify(buildRules(), null, 2);
+    if (!rulesLabel.hidden) generated.innerHTML = bucketHighlightJSON(JSON.stringify(buildRules(), null, 2));
     preview.hidden = true; approved = null;
   }
   function addRule() {
@@ -290,26 +436,43 @@
   var confirmation = document.getElementById("bucket-governance-confirmation");
   var execute = document.getElementById("bucket-governance-execute");
   var status = document.getElementById("bucket-governance-status");
+  var unlimitedSize = document.getElementById("bucket-governance-unlimited-size");
+  var unlimitedObjects = document.getElementById("bucket-governance-unlimited-objects");
+  var sizeInput = document.getElementById("bucket-governance-size");
+  var objectsInput = document.getElementById("bucket-governance-objects");
   var approved = null;
+  window.addEventListener("bucket-drawer-context", function () { approved = null; preview.hidden = true; confirmation.value = ""; status.textContent = ""; });
   function isS3() { return action.value.indexOf("versioning_") === 0 || action.value === "retention_set"; }
   function refreshFields() {
     document.querySelectorAll("[data-governance-s3]").forEach(function (item) { item.hidden = !isS3(); });
     document.querySelectorAll("[data-governance-quota]").forEach(function (item) { item.hidden = action.value !== "quota_set"; });
     document.querySelectorAll("[data-governance-retention]").forEach(function (item) { item.hidden = action.value !== "retention_set"; });
+    sizeInput.disabled = unlimitedSize.checked || action.value !== "quota_set";
+    objectsInput.disabled = unlimitedObjects.checked || action.value !== "quota_set";
+    sizeInput.required = !unlimitedSize.checked && action.value === "quota_set";
+    objectsInput.required = !unlimitedObjects.checked && action.value === "quota_set";
+    document.getElementById("governance-action-help").textContent = {
+      quota_set: "Nhập một hoặc cả hai giới hạn; bật “Không giới hạn” cho phần không cần giới hạn.",
+      quota_enable: "Bật quota hiện tại của bucket.", quota_disable: "Tắt quota; dữ liệu hiện tại không bị xóa.",
+      versioning_enable: "Bật lưu version cho object mới.", versioning_suspend: "Tạm dừng tạo version mới; version cũ vẫn giữ nguyên.",
+      retention_set: "Đặt thời hạn mặc định cho object mới trong bucket có Object Lock."
+    }[action.value] || "Chọn thao tác cần áp dụng cho bucket này.";
   }
   function payload() { return {
     action: action.value,
     bucket: document.getElementById("bucket-governance-name").value.trim(),
     owner: document.getElementById("bucket-governance-owner").value.trim(),
     endpoint: document.getElementById("bucket-governance-endpoint").value.trim(),
-    max_size_bytes: document.getElementById("bucket-governance-size").value,
-    max_objects: document.getElementById("bucket-governance-objects").value,
+    max_size_bytes: unlimitedSize.checked ? "-1" : sizeInput.value,
+    max_objects: unlimitedObjects.checked ? "-1" : objectsInput.value,
     mode: document.getElementById("bucket-governance-mode").value,
     days: document.getElementById("bucket-governance-days").value
   }; }
   function endpoint(kind) { return "/api/object-storage/buckets/governance/" + kind + "?cluster=" + encodeURIComponent(form.dataset.cluster); }
   function parse(response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); }
   action.addEventListener("change", function () { approved = null; preview.hidden = true; refreshFields(); });
+  unlimitedSize.addEventListener("change", refreshFields);
+  unlimitedObjects.addEventListener("change", refreshFields);
   form.addEventListener("submit", function (event) {
     event.preventDefault(); approved = null; preview.hidden = true; execute.disabled = true; status.textContent = "Đang kiểm tra capability và bucket...";
     var body = payload();

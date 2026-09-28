@@ -649,6 +649,93 @@ def test_history_api_returns_none_peak_when_volume_never_seen(dashboard_client, 
     assert body["peak"] == {"iops": None, "read_latency_ms": None, "write_latency_ms": None}
 
 
+def test_history_api_returns_extended_performance_summary(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        session.add_all([
+            VolumeMetric(
+                pool="vms", image="disk-1", iops=100, read_latency_ms=1,
+                write_latency_ms=2, read_bytes_per_sec=4096,
+                write_bytes_per_sec=2048, throughput_bytes_per_sec=6144,
+                queue_depth=2, polled_at=now - timedelta(minutes=2),
+            ),
+            VolumeMetric(
+                pool="vms", image="disk-1", iops=120, read_latency_ms=4,
+                write_latency_ms=3, read_bytes_per_sec=8192,
+                write_bytes_per_sec=4096, throughput_bytes_per_sec=12288,
+                queue_depth=3, polled_at=now,
+            ),
+        ])
+        session.commit()
+
+    response = dashboard_client.get("/api/volumes/vms/disk-1/history")
+
+    assert response.status_code == 200
+    summary = response.json()["summary"]
+    assert summary["sample_count"] == 2
+    assert summary["read_latency_p95_ms"] == 4
+    assert summary["write_latency_p95_ms"] == 3
+    assert summary["throughput_bytes_per_sec"] == 12288
+    assert summary["queue_depth"] == 3
+    assert summary["queue_depth_available"] is True
+
+
+def test_capacity_api_reads_current_rbd_du_inventory(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_inventory",
+        lambda pool: [{"name": "disk-1", "used_size": 512, "provisioned_size": 1024}],
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/disk-1/capacity")
+
+    assert response.status_code == 200
+    assert response.json()["used_bytes"] == 512
+    assert response.json()["provisioned_bytes"] == 1024
+
+
+def test_qos_api_reads_current_image_limits(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_image_qos",
+        lambda pool, image: {"rbd_qos_iops_limit": 5000, "rbd_qos_bps_limit": None},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/inventory/disk-1/qos")
+
+    assert response.status_code == 200
+    assert response.json()["qos"]["rbd_qos_iops_limit"] == 5000
+
+
+def test_qos_proposal_is_risky_and_approval_gated(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_image_detail",
+        lambda pool, image: {"name": image, "watchers": []},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/api/volumes/vms/inventory/disk-1/qos",
+        json={"iops_limit": 5000, "bps_limit": 1048576},
+        headers={"Idempotency-Key": "qos-disk-1-001"},
+    )
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(action_id="rbd_set_qos").one()
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert action.classification == "RISKY"
+        assert "rbd config image set" in action.proposed_command
+
+
 # --- "Đo hiệu năng tối đa" load sweep (2026-07-29) -----------------------
 
 
@@ -1500,6 +1587,60 @@ def test_volume_inventory_defaults_to_ten_rows_and_rejects_larger_pages(dashboar
     assert len(first_page.json()["items"]) == 10
     assert first_page.json()["pages"] == 2
     assert oversized.status_code == 422
+
+
+def test_cinder_mapping_reports_two_way_orphans_and_source_of_truth(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    mapped_id = "12345678-1234-4123-8123-1234567890ab"
+    missing_rbd_id = "22345678-1234-4123-8123-1234567890ab"
+    orphan_id = "32345678-1234-4123-8123-1234567890ab"
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_inventory",
+        lambda pool: [
+            {"name": f"volume-{mapped_id}", "provisioned_size": 20, "used_size": 8, "snapshot_count": 1},
+            {"name": f"volume-{orphan_id}", "provisioned_size": 10, "used_size": 2, "snapshot_count": 0},
+            {"name": "custom-image", "provisioned_size": 5, "used_size": 1, "snapshot_count": 0},
+        ],
+    )
+    monkeypatch.setattr(
+        volumes_route,
+        "discover_cinder_volumes",
+        lambda cluster: {
+            "status": "ok", "verified": True,
+            "items": [
+                {"volume_id": mapped_id, "project_id": "project-1", "name": "db",
+                 "volume_status": "in-use", "attachments": [{"instance_id": "server-1"}]},
+                {"volume_id": missing_rbd_id, "project_id": "project-2", "name": "lost",
+                 "volume_status": "available", "attachments": []},
+            ],
+        },
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/cinder-mapping")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source_of_truth"] == "openstack_cinder"
+    assert payload["summary"] == {
+        "total_rbd": 3, "total_cinder": 2, "mapped": 1,
+        "cinder_without_rbd": 1, "rbd_without_cinder": 1, "not_cinder_image": 1,
+    }
+    statuses = {item["mapping_status"] for item in payload["items"]}
+    assert statuses == {"mapped", "cinder_without_rbd", "rbd_without_cinder", "not_cinder_managed"}
+    orphan = next(item for item in payload["items"] if item["mapping_status"] == "rbd_without_cinder")
+    assert orphan["mutation_route"] == "blocked"
+
+
+def test_cinder_mapping_is_not_available_to_non_admin(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _create_user("operator", "operator-password", is_admin=False)
+    _login_as(dashboard_client, "operator", "operator-password")
+
+    response = dashboard_client.get("/api/volumes/vms/cinder-mapping")
+
+    assert response.status_code == 403
 
 
 def test_volume_inventory_api_uses_selected_secondary_cluster(dashboard_client, monkeypatch):

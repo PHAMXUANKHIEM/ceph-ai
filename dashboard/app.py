@@ -24,6 +24,8 @@ from dashboard.routes import (
     capability_matrix as capability_matrix_routes,
     capacity_forecast as capacity_forecast_routes,
     disk_risk as disk_risk_routes,
+    event_timeline as event_timeline_routes,
+    installation_stream as installation_stream_routes,
     log_intelligence as log_intelligence_routes,
     chat,
     clusters as clusters_routes,
@@ -165,6 +167,8 @@ def create_app() -> FastAPI:
     application.include_router(capability_matrix_routes.router)
     application.include_router(capacity_forecast_routes.router)
     application.include_router(disk_risk_routes.router)
+    application.include_router(event_timeline_routes.router)
+    application.include_router(installation_stream_routes.router)
     application.include_router(log_intelligence_routes.router)
     application.include_router(clusters_routes.router)
     application.include_router(vitastor.router)

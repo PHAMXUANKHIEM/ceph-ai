@@ -1,4 +1,30 @@
 (function () {
+  // Attach one safe correlation ID to every same-origin XHR/fetch made by
+  // legacy pages. React consumers set the same header explicitly, while this
+  // fallback covers the server-rendered pages and action forms that still use
+  // small fetch helpers.
+  if (!window.CephRequestContext && window.fetch) {
+    var nativeFetch = window.fetch.bind(window);
+    var nextRequestId = function () {
+      return (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID()
+        : "browser-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
+    };
+    window.CephRequestContext = { next: nextRequestId };
+    window.fetch = function (input, init) {
+      var request = input instanceof Request ? input : null;
+      var target = request ? request.url : String(input || "");
+      var sameOrigin = target.indexOf(window.location.origin) === 0 || target.charAt(0) === "/";
+      if (!sameOrigin) return nativeFetch(input, init);
+      var headers = new Headers(request ? request.headers : (init && init.headers));
+      if (!headers.has("X-Request-ID")) headers.set("X-Request-ID", nextRequestId());
+      var nextInit = Object.assign({}, init || {}, { headers: headers });
+      return nativeFetch(input, nextInit);
+    };
+  }
+})();
+
+(function () {
   // Client-side column sort for any data table on the page (Incident Feed,
   // Audit Trail) — purely a display convenience over the rows the server
   // already rendered, no re-fetch. Skips the single "empty state" row
@@ -45,6 +71,123 @@
 })();
 
 (function () {
+  // One cluster-state socket is shared by legacy snapshot pages.  Pages still
+  // keep their bounded HTTP fallback, but a healthy socket stops those timers
+  // and turns committed snapshot invalidations into targeted reads.
+  if (window.CephClusterState) return;
+  var sessions = Object.create(null);
+
+  function announce(clusterId, connected) {
+    window.dispatchEvent(new CustomEvent("ceph-cluster-state-connection", {
+      detail: { clusterId: clusterId, connected: connected }
+    }));
+  }
+
+  function getSession(clusterId) {
+    var session = sessions[clusterId];
+    if (session) return session;
+    session = sessions[clusterId] = {
+      callbacks: [], socket: null, reconnectTimer: null, attempt: 0,
+      connected: false, stopped: false
+    };
+    session.connect = function () {
+      if (session.stopped || session.socket || document.hidden) return;
+      var protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      session.socket = new WebSocket(protocol + "//" + window.location.host + "/ws/cluster-state?cluster_id=" + encodeURIComponent(clusterId) + "&reconnect=" + (session.attempt > 0 ? "1" : "0"));
+      session.socket.onopen = function () {
+        session.attempt = 0;
+        session.connected = true;
+        announce(clusterId, true);
+      };
+      session.socket.onmessage = function (message) {
+        try {
+          var payload = JSON.parse(message.data);
+          if (!payload.event || (payload.cluster_id && payload.cluster_id !== clusterId)) return;
+          // Keep one transport fan-out for every legacy page. Consumers that
+          // do not own the action may ignore it, but no page needs a second
+          // socket or a private action polling loop.
+          window.dispatchEvent(new CustomEvent("ceph-cluster-state-event", { detail: payload }));
+          if (payload.event === "action_state_changed") {
+            window.dispatchEvent(new CustomEvent("ceph-action-state-changed", { detail: payload }));
+          }
+          session.callbacks.slice().forEach(function (callback) { callback(payload); });
+        } catch (_) {
+          // HTTP fallback remains authoritative when an event is malformed.
+        }
+      };
+      session.socket.onclose = function () {
+        session.socket = null;
+        if (session.connected) announce(clusterId, false);
+        session.connected = false;
+        if (!session.stopped && !document.hidden) {
+          var delay = Math.min(30000, 1000 * Math.pow(2, Math.min(session.attempt++, 5)));
+          session.reconnectTimer = window.setTimeout(session.connect, delay);
+        }
+      };
+      session.socket.onerror = function () { if (session.socket) session.socket.close(); };
+    };
+    return session;
+  }
+
+  window.CephClusterState = {
+    subscribe: function (clusterId, callback) {
+      if (!clusterId || typeof callback !== "function") return function () {};
+      var session = getSession(clusterId);
+      session.callbacks.push(callback);
+      session.stopped = false;
+      session.connect();
+      return function () {
+        session.callbacks = session.callbacks.filter(function (item) { return item !== callback; });
+        if (session.callbacks.length) return;
+        session.stopped = true;
+        if (session.reconnectTimer) window.clearTimeout(session.reconnectTimer);
+        if (session.socket) session.socket.close();
+        delete sessions[clusterId];
+      };
+    }
+  };
+
+  // Adapter for legacy snapshot pages outside the React dashboard shell.
+  // Keep the last good snapshot visible, but make a failed post-check clear.
+  window.CephClusterStateFeedback = {
+    handle: function (element, event, section, label) {
+      if (!element || !event) return false;
+      if (event.event === "action_state_changed") {
+        var state = event.action_state || event.action_status || "updated";
+        var action = event.action_id ? " (action " + event.action_id + ")" : "";
+        element.textContent = "⟳ Action" + action + ": " + state + ".";
+        element.hidden = false;
+        return true;
+      }
+      var sections = Array.isArray(event.sections) ? event.sections : [];
+      if (sections.length && sections.indexOf(section) === -1) return false;
+      if (event.event === "snapshot_refresh_failed") {
+        var action = event.action_id ? " (action " + event.action_id + ")" : "";
+        element.textContent = "⚠ Không xác nhận được thay đổi " + label + action + ". Đang giữ dữ liệu snapshot gần nhất.";
+        element.hidden = false;
+        return true;
+      }
+      if (event.event === "snapshot_changed") {
+        element.hidden = true;
+        element.textContent = "";
+      }
+      return true;
+    }
+  };
+
+  document.addEventListener("visibilitychange", function () {
+    Object.keys(sessions).forEach(function (clusterId) {
+      var session = sessions[clusterId];
+      if (document.hidden) {
+        if (session.socket) session.socket.close();
+      } else if (!session.socket) {
+        session.connect();
+      }
+    });
+  });
+})();
+
+(function () {
   // Shared application shell.  The server-rendered navigation remains the
   // source of truth; this layer only enriches it with a responsive menu,
   // compact product identity and page context so every route gets the same
@@ -52,6 +195,7 @@
   var topbar = document.querySelector(".topbar");
   var main = document.querySelector("main.page");
   if (!topbar || !main) return;
+  var mainNav = topbar.querySelector(".main-nav");
 
   document.body.classList.add("app-shell");
 
@@ -92,6 +236,10 @@
   menuButton.className = "shell-menu-toggle";
   menuButton.setAttribute("aria-label", "Mở menu điều hướng");
   menuButton.setAttribute("aria-expanded", "false");
+  if (mainNav) {
+    mainNav.id = mainNav.id || "main-navigation";
+    menuButton.setAttribute("aria-controls", mainNav.id);
+  }
   menuButton.innerHTML = "<span></span><span></span><span></span>";
   topbar.querySelector(".topbar-inner").insertBefore(menuButton, topbar.querySelector(".main-nav"));
 
@@ -111,32 +259,64 @@
     account.parentNode.insertBefore(status, account);
   }
 
+  function getDrawerFocusables() {
+    if (!mainNav) return [];
+    return Array.from(mainNav.querySelectorAll("a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex=\"-1\"])")).filter(function (element) {
+      return element.getClientRects().length > 0;
+    });
+  }
+
   function setMenu(open) {
     document.body.classList.toggle("nav-open", open);
     menuButton.setAttribute("aria-expanded", open ? "true" : "false");
     menuButton.setAttribute("aria-label", open ? "Đóng menu điều hướng" : "Mở menu điều hướng");
+    if (!open && window.innerWidth <= 1023 && document.activeElement && mainNav && mainNav.contains(document.activeElement)) {
+      menuButton.focus();
+    }
+    if (open && window.innerWidth <= 1023) {
+      window.requestAnimationFrame(function () {
+        var first = getDrawerFocusables()[0];
+        if (first) first.focus();
+      });
+    }
   }
   menuButton.addEventListener("click", function () {
     setMenu(!document.body.classList.contains("nav-open"));
   });
   document.addEventListener("keydown", function (event) {
-    if (event.key === "Escape") setMenu(false);
+    if (!document.body.classList.contains("nav-open") || window.innerWidth > 1023) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setMenu(false);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    var focusables = getDrawerFocusables();
+    if (!focusables.length) return;
+    var first = focusables[0];
+    var last = focusables[focusables.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   });
   window.addEventListener("resize", function () {
-    if (window.innerWidth >= 1024) setMenu(false);
+    if (window.innerWidth >= 1024 && document.body.classList.contains("nav-open")) setMenu(false);
   });
 
   var iconByPath = {
-    "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/volume-performance": "⌁", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
+    "/": "⌁", "/nodes": "◫", "/stream": "⇢", "/volume-performance": "⌁", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
-    "/backups": "□", "/restore-cluster": "↶", "/object-storage/buckets": "◫", "/object-storage/users": "♙",
-    "/object-storage/user-settings": "⚙", "/bucket-access-log": "≡", "/pgs": "∷",
-    "/openstack/auth-pool": "◈", "/openstack/auth-user/create": "+"
+    "/backups": "□", "/cinder-backups": "▣", "/restore-cluster": "↶", "/object-storage/buckets": "◫", "/object-storage/users": "♙",
+    "/bucket-access-log": "≡", "/pgs": "∷",
+    "/openstack/auth-pool": "◈", "/openstack/auth-user/create": "+", "/openstack/config-dump": "▤"
   };
 
-  var mainNav = topbar.querySelector(".main-nav");
   if (mainNav) {
     var linksByPath = {};
     mainNav.querySelectorAll("a").forEach(function (link) {
@@ -168,6 +348,7 @@
       ["/patch", "Patch Ceph"],
       ["/convert-cluster", "Convert to Cephadm"],
       ["/backups", "Backup"],
+      ["/cinder-backups", "Cinder Volume Backups"],
       ["/restore-cluster", "Restore Cluster"],
       ["/settings", "Settings"]
     ].forEach(function (entry) { ensureSharedLink(entry[0], entry[1]); });
@@ -213,18 +394,6 @@
       s3UsersLink.textContent = "S3 Users";
       linksByPath["/object-storage/users"] = s3UsersLink;
     }
-    var objectStorageAdmin = Boolean(
-      linksByPath["/users"] || linksByPath["/clusters"] ||
-      document.getElementById("s3-user-action-form") ||
-      window.location.pathname === "/object-storage/user-settings"
-    );
-    if (!linksByPath["/object-storage/user-settings"] && objectStorageAdmin) {
-      var s3SettingsLink = document.createElement("a");
-      s3SettingsLink.href = "/object-storage/user-settings";
-      s3SettingsLink.className = window.location.pathname === s3SettingsLink.pathname ? "nav-link active" : "nav-link";
-      s3SettingsLink.textContent = "Quota & Capabilities";
-      linksByPath["/object-storage/user-settings"] = s3SettingsLink;
-    }
     if (linksByPath["/openstack/auth-pool"] && !linksByPath["/openstack/auth-user/create"]) {
       var createAuthLink = document.createElement("a");
       createAuthLink.href = "/openstack/auth-user/create";
@@ -232,18 +401,18 @@
       createAuthLink.textContent = "Create Auth User";
       linksByPath["/openstack/auth-user/create"] = createAuthLink;
     }
-
     // Information architecture for Ceph operators. Keep permission-aware
     // links from the server (admin-only destinations may not exist), then
     // regroup only those that were actually rendered.
     var navGroups = [
-      { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] },
+      { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map", "/stream"] },
       { label: "Pool", paths: ["/pools", "/pgs"] },
-      { label: "Object Storage", paths: ["/object-storage/buckets", "/object-storage/users", "/object-storage/user-settings", "/bucket-access-log"] },
+      { label: "Object Storage", paths: ["/object-storage/buckets", "/object-storage/users", "/bucket-access-log"] },
       { label: "Block Storage", paths: ["/block-storage", "/volume-performance", "/trash"] },
-      { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
+      { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/config-dump", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
-      { label: "Backup", paths: ["/backups", "/restore-cluster"] },
+      { label: "AI & Intelligence", paths: ["/ai-learning", "/log-intelligence", "/runbooks", "/alerts", "/synthetic-incidents"] },
+      { label: "Backup", paths: ["/backups", "/cinder-backups", "/restore-cluster"] },
       { label: "Users & Notifications", paths: ["/telegram-alerts", "/users"] },
       { label: "System Administration", paths: ["/settings", "/clusters"] }
     ];
@@ -268,7 +437,7 @@
       available.forEach(function (path) {
         var link = linksByPath[path];
         if (link.classList.contains("nav-dropdown-item-active")) link.classList.add("active");
-        if (window.location.pathname === path) link.classList.add("active");
+        if (window.location.pathname === path || (path === "/block-storage" && window.location.pathname.indexOf("/volumes/") === 0)) link.classList.add("active");
         link.classList.remove("nav-dropdown-item", "nav-dropdown-item-active");
         link.classList.add("nav-link");
         if (path === "/block-storage") link.textContent = "Overview";
@@ -304,13 +473,28 @@
   }
 
   topbar.querySelectorAll(".main-nav a").forEach(function (link) {
-    if (link.querySelector(".nav-icon")) return;
     var path = new URL(link.href, window.location.origin).pathname;
+    var labelText = Array.from(link.childNodes)
+      .filter(function (node) { return node.nodeType === Node.TEXT_NODE; })
+      .map(function (node) { return node.textContent; })
+      .join(" ")
+      .trim();
+    if (!labelText) labelText = link.getAttribute("aria-label") || path;
+    var initial = link.getAttribute("data-initial");
+    if (!initial) {
+      initial = iconByPath[path] || labelText.split(/\s+/).map(function (word) { return word.charAt(0); }).join("").slice(0, 2);
+      link.setAttribute("data-initial", initial || "·");
+    }
     var icon = document.createElement("span");
     icon.className = "nav-icon";
     icon.setAttribute("aria-hidden", "true");
     icon.textContent = iconByPath[path] || "·";
-    link.insertBefore(icon, link.firstChild);
+    var label = document.createElement("span");
+    label.className = "nav-link-label";
+    label.textContent = labelText;
+    link.setAttribute("aria-label", labelText);
+    link.removeAttribute("title");
+    link.replaceChildren(icon, label);
   });
 })();
 
@@ -370,7 +554,7 @@
 })();
 
 (function () {
-  // "Tự động mở tab này khi có Risky Action mới" checkbox (Dashboard home
+  // "Tự động mở khi có yêu cầu duyệt mới" checkbox (Dashboard home
   // page only, 2026-07-28). dashboard/routes/incidents.py::index always
   // defaults active_tab to "pending" on a plain GET / — combined with the
   // Incident/Action changes system-wide (not just ones the operator is
@@ -438,7 +622,7 @@
 })();
 
 (function () {
-  // "Chờ duyệt — Risky Action" card (Dashboard home page only): pure
+  // "Chờ duyệt" card (Dashboard home page only): pure
   // in localStorage so it survives normal navigation and manual refreshes.
   var STORAGE_KEY = "pendingActionsCollapsed";
   var toggleBtn = document.getElementById("pending-actions-toggle");

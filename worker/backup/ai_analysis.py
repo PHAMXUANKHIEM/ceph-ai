@@ -19,6 +19,7 @@ import httpx
 
 from config.settings import settings
 from shared import db
+from shared.ai_telemetry import ai_invocation
 from shared.models import BackupAnomaly, BackupJob
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
@@ -120,10 +121,18 @@ async def _call_router(user_content: str) -> dict:
             + f"\n\nBạn BẮT BUỘC gọi tool {TOOL_NAME} đúng một lần; không trả kết quả chỉ bằng văn bản.\n\n"
             + user_content
         )
-        try:
-            await codex_app_server.run_turn(prompt, [schema], capture, timeout=ROUTER_TIMEOUT_SECONDS)
-        except CodexAppServerError as exc:
-            raise AIAnalysisError(f"Codex call failed: {exc}") from exc
+        with ai_invocation(
+            feature="backup_analysis",
+            provider="codex",
+            model="default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                await codex_app_server.run_turn(prompt, [schema], capture, timeout=ROUTER_TIMEOUT_SECONDS)
+            except CodexAppServerError as exc:
+                raise AIAnalysisError(f"Codex call failed: {exc}") from exc
+            telemetry.set_response(output_text=json.dumps(captured, ensure_ascii=False))
         return captured
 
     if settings.claude_chat_enabled:
@@ -134,29 +143,46 @@ async def _call_router(user_content: str) -> dict:
             + "\n\n"
             + user_content
         )
-        try:
-            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
-            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
-            return json.loads(clean)
-        except (ClaudeCLIError, json.JSONDecodeError) as exc:
-            raise AIAnalysisError(f"Claude call failed: {exc}") from exc
+        with ai_invocation(
+            feature="backup_analysis",
+            provider="claude",
+            model=settings.claude_chat_model or "default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+                clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
+                result = json.loads(clean)
+            except (ClaudeCLIError, json.JSONDecodeError) as exc:
+                raise AIAnalysisError(f"Claude call failed: {exc}") from exc
+            telemetry.set_response(output_text=raw)
+            return result
 
     client = _get_client()
-    try:
-        async with client.chat.completions.stream(
-            model=settings.router_model,
-            max_tokens=MAX_TOKENS,
-            tools=[schema],
-            tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
-        ) as stream:
-            completion = await stream.get_final_completion()
-    except Exception as exc:
-        raise AIAnalysisError(f"Router call failed: {exc}") from exc
+    with ai_invocation(
+        feature="backup_analysis",
+        provider=settings.router_provider or "router",
+        model=settings.router_model or "unknown",
+        input_chars=len(SYSTEM_PROMPT) + len(user_content) + len(json.dumps(schema, ensure_ascii=False)),
+        max_output_tokens=MAX_TOKENS,
+    ) as telemetry:
+        try:
+            async with client.chat.completions.stream(
+                model=settings.router_model,
+                max_tokens=MAX_TOKENS,
+                tools=[schema],
+                tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
+            ) as stream:
+                completion = await stream.get_final_completion()
+        except Exception as exc:
+            raise AIAnalysisError(f"Router call failed: {exc}") from exc
+        telemetry.set_response(completion)
 
     choice = completion.choices[0]
     if choice.finish_reason == "length":
@@ -205,40 +231,64 @@ async def _call_digest_router(user_content: str) -> str:
         async def reject_tools(tool_name: str, arguments: dict) -> tuple[str, bool]:
             return f"Digest không cho phép tool: {tool_name}", False
 
-        try:
-            result = await codex_app_server.run_turn(
-                prompt, [], reject_tools, timeout=ROUTER_TIMEOUT_SECONDS
-            )
-        except CodexAppServerError as exc:
-            raise AIAnalysisError(f"Digest Codex call failed: {exc}") from exc
+        with ai_invocation(
+            feature="backup_digest",
+            provider="codex",
+            model="default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                result = await codex_app_server.run_turn(
+                    prompt, [], reject_tools, timeout=ROUTER_TIMEOUT_SECONDS
+                )
+            except CodexAppServerError as exc:
+                raise AIAnalysisError(f"Digest Codex call failed: {exc}") from exc
+            telemetry.set_response(output_text=str(result.get("reply_text") or ""))
         content = str(result.get("reply_text") or "").strip()
         if not content:
             raise AIAnalysisError("Digest Codex response had no content")
         return content
 
     if settings.claude_chat_enabled:
-        try:
-            content = (await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)).strip()
-        except ClaudeCLIError as exc:
-            raise AIAnalysisError(f"Digest Claude call failed: {exc}") from exc
+        with ai_invocation(
+            feature="backup_digest",
+            provider="claude",
+            model=settings.claude_chat_model or "default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+        ) as telemetry:
+            try:
+                content = (await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)).strip()
+            except ClaudeCLIError as exc:
+                raise AIAnalysisError(f"Digest Claude call failed: {exc}") from exc
+            telemetry.set_response(output_text=content)
         if not content:
             raise AIAnalysisError("Digest Claude response had no content")
         return content
 
     client = _get_client()
-    try:
-        async with client.chat.completions.stream(
-            model=settings.router_model,
-            max_tokens=MAX_TOKENS,
-            messages=[
-                {"role": "system", "content": DIGEST_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
-        ) as stream:
-            completion = await stream.get_final_completion()
-    except Exception as exc:
-        raise AIAnalysisError(f"Digest router call failed: {exc}") from exc
+    with ai_invocation(
+        feature="backup_digest",
+        provider=settings.router_provider or "router",
+        model=settings.router_model or "unknown",
+        input_chars=len(DIGEST_SYSTEM_PROMPT) + len(user_content),
+        max_output_tokens=MAX_TOKENS,
+    ) as telemetry:
+        try:
+            async with client.chat.completions.stream(
+                model=settings.router_model,
+                max_tokens=MAX_TOKENS,
+                messages=[
+                    {"role": "system", "content": DIGEST_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
+            ) as stream:
+                completion = await stream.get_final_completion()
+        except Exception as exc:
+            raise AIAnalysisError(f"Digest router call failed: {exc}") from exc
+        telemetry.set_response(completion)
     content = (completion.choices[0].message.content or "").strip()
     if not content:
         raise AIAnalysisError("Digest router response had no content")

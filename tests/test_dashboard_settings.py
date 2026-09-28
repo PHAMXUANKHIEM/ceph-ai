@@ -63,6 +63,8 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert 'id="action-policy-source-filter"' in response.text
     assert 'id="action-policy-pagination"' in response.text
     assert 'id="action-policy-page-previous"' in response.text
+    assert 'data-section="ai-cost"' in response.text
+    assert 'id="ai-cost-panel"' in response.text
     assert 'id="action-policy-page-next"' in response.text
 
 
@@ -104,7 +106,13 @@ def test_codex_status_and_model_selection_use_live_catalog(dashboard_client, mon
         return [
             {"id": "model-1", "model": "gpt-codex-1", "displayName": "Codex One", "isDefault": True},
             {"id": "model-2", "model": "gpt-codex-2", "displayName": "Codex Two", "isDefault": False},
+            {"id": "model-2", "model": "gpt-codex-2", "displayName": "Duplicate", "isDefault": False},
+            {"id": "hidden-1", "model": "gpt-codex-hidden", "displayName": "Hidden Codex", "isHidden": True},
         ]
+
+    async def models_with_options(*, include_hidden=True):
+        assert include_hidden is True
+        return await fake_models()
 
     async def fake_rate_limits():
         return {"rateLimits": {"primary": {"usedPercent": 86}, "secondary": {"usedPercent": 40}}}
@@ -112,7 +120,7 @@ def test_codex_status_and_model_selection_use_live_catalog(dashboard_client, mon
     monkeypatch.setattr(settings_route, "codex_executable", lambda: "/tmp/codex")
     monkeypatch.setattr(settings_route, "refresh_app_server_after_cli_login", fake_account)
     monkeypatch.setattr(settings_route.codex_app_server, "account", fake_account)
-    monkeypatch.setattr(settings_route.codex_app_server, "models", fake_models)
+    monkeypatch.setattr(settings_route.codex_app_server, "models", models_with_options)
     monkeypatch.setattr(settings_route.codex_app_server, "rate_limits", fake_rate_limits)
     monkeypatch.setattr(settings, "codex_chat_model", "")
     _login(dashboard_client)
@@ -120,8 +128,11 @@ def test_codex_status_and_model_selection_use_live_catalog(dashboard_client, mon
     status = dashboard_client.get("/settings/codex/status")
     assert status.status_code == 200
     assert status.json()["models"][0] == {
-        "id": "gpt-codex-1", "label": "Codex One", "is_default": True
+        "id": "gpt-codex-1", "label": "Codex One", "version": None,
+        "is_default": True, "is_hidden": False,
     }
+    assert status.json()["model_count"] == 3
+    assert status.json()["models"][-1]["is_hidden"] is True
     assert status.json()["limits"][0]["remaining_percent"] == 14
 
     saved = dashboard_client.post("/settings/codex/model", data={"model": "gpt-codex-2"})
@@ -1689,6 +1700,7 @@ def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client):
     assert "Playbook Registry" not in response.text
     assert "Phân loại hành động AI" not in response.text
     assert 'action="/settings/autopilot/action-policy"' not in response.text
+    assert 'id="ai-cost-panel"' not in response.text
 
 
 def test_restart_worker_route_rejects_non_admin(dashboard_client):
@@ -2461,6 +2473,24 @@ def test_post_settings_9router_verify_reports_invalid_key_with_reason(dashboard_
 
     assert response.status_code == 200
     assert response.json() == {"valid": False, "message": "API key không hợp lệ", "models": None}
+
+
+def test_post_settings_9router_verify_converts_unexpected_failure_to_json_error(
+    dashboard_client, monkeypatch
+):
+    async def failing_verify(api_key, base_url):
+        raise RuntimeError("router process crashed")
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", failing_verify)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/9router/verify",
+        data={"router_api_key": "sk-test", "router_base_url": "http://router"},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Không thể kiểm tra AI API: router process crashed"}
 
 
 def test_post_settings_9router_verify_never_saves_anything(dashboard_client, monkeypatch, tmp_path):

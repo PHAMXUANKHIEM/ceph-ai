@@ -15,6 +15,7 @@ from shared import db
 from shared.incident_postmortem import build_timeline
 from shared.models import CephCapacitySample, Incident
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
+from shared.ai_telemetry import ai_invocation
 from watcher.capacity_forecast import forecasts as capacity_forecasts
 from watcher.capacity_failure_simulation import simulate as capacity_failure_simulation
 from watcher.disk_failure_prediction import predict as disk_failure_prediction
@@ -114,6 +115,42 @@ _FOLLOW_UP_RE = re.compile(
 )
 
 
+def pack_chat_history(history: list[dict] | None, *, max_chars: int | None = None) -> list[dict]:
+    """Keep recent chat context under a deterministic character ceiling.
+
+    Message count alone is not a useful cost bound: a single pasted journal or
+    model answer can be larger than the whole intended context.  Walk backward
+    so the newest context wins, preserve message role/content shape, and mark a
+    truncated oldest message explicitly so the model does not mistake an
+    incomplete log for a complete observation.
+    """
+    configured_limit = max(1, int(max_chars or getattr(settings, "ai_chat_history_max_chars", 8_000)))
+    configured_messages = max(1, int(getattr(settings, "ai_chat_history_max_messages", MAX_HISTORY_MESSAGES)))
+    candidates = list(history or [])[-min(MAX_HISTORY_MESSAGES, configured_messages):]
+    selected: list[dict] = []
+    remaining = configured_limit
+    for message in reversed(candidates):
+        role = str(message.get("role") or "user")
+        content = str(message.get("content") or "")
+        if remaining <= 0:
+            break
+        if len(content) <= remaining:
+            selected.append({"role": role, "content": content})
+            remaining -= len(content)
+            continue
+        # Keep the tail of the oldest message that still fits.  A marker is
+        # part of the budget and makes the loss of context explicit.
+        marker = "[Lịch sử cũ đã được rút gọn để giới hạn chi phí/context]\n"
+        if remaining <= len(marker):
+            break
+        selected.append({
+            "role": role,
+            "content": marker + content[-(remaining - len(marker)):],
+        })
+        break
+    return list(reversed(selected))
+
+
 def is_ceph_scoped(user_text: str, history: list[dict] | None = None) -> bool:
     if _CEPH_SCOPE_RE.search(user_text or ""):
         return True
@@ -168,6 +205,8 @@ def system_prompt(
     )
     prompt_rules = (
     "- Trả lời bằng tiếng Việt, ngắn gọn và chính xác\n"
+    "- Ưu tiên cấu trúc: Kết luận → Bằng chứng → Đề xuất tiếp theo; câu hỏi đơn giản chỉ cần 1–3 câu. "
+    "Không lặp lại dữ liệu hoặc mô tả dài khi operator không yêu cầu.\n"
     "- Khi hỏi lịch sử sự cố, nguyên nhân, trước/sau hoặc xu hướng dung lượng: dùng tool evidence tương ứng. "
     "Ứng dụng tự gắn mục Nguồn đã kiểm chứng; không được bịa source ID/thời điểm và không tự viết "
     "một mục Nguồn riêng trong nội dung trả lời để tránh hiển thị trùng.\n"
@@ -725,6 +764,49 @@ def _get_client() -> AsyncOpenAI:
     return build_router_client(settings.router_api_key, settings.router_base_url)
 
 
+async def _run_router_completion(client, *, messages, tools, actor: str, cluster=None):
+    """Run one chat provider round with content-free telemetry and budget."""
+    with ai_invocation(
+        feature="ceph_chat",
+        provider=settings.router_provider or "router",
+        model=settings.router_model or "unknown",
+        input_chars=sum(len(str(message.get("content") or "")) for message in messages)
+        + len(json.dumps(tools, ensure_ascii=False)),
+        max_output_tokens=MAX_TOKENS,
+        actor=actor,
+        cluster_id=getattr(cluster, "id", None),
+    ) as telemetry:
+        try:
+            async with client.chat.completions.stream(
+                model=settings.router_model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.1,
+                max_tokens=MAX_TOKENS,
+                timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
+            ) as stream:
+                completion = await stream.get_final_completion()
+        except AuthenticationError as exc:
+            raise ChatTurnError(
+                f"Model {settings.router_model!r} hoặc API key không hợp lệ trên 9router: "
+                f"{readable_exception_message(exc)}"
+            ) from exc
+        except APIConnectionError as exc:
+            raise ChatTurnError(
+                f"Không thể kết nối 9router ({settings.router_base_url}). Kiểm tra host/port."
+            ) from exc
+        except APIError as exc:
+            raise ChatTurnError(
+                f"Model {settings.router_model!r} không khả dụng trên 9router: "
+                f"{readable_exception_message(exc)}"
+            ) from exc
+        except Exception as exc:
+            raise ChatTurnError(f"Không thể kết nối 9router: {readable_exception_message(exc)}") from exc
+        telemetry.set_response(completion)
+        return completion
+
+
 def _run_tool(name: str, args: dict, actor: str | None = None, cluster=None) -> tuple[str, bool]:
     """Returns (result_text, is_error). Never raises — ChatToolError and any
     unexpected exception are both turned into an error result string, same
@@ -780,6 +862,16 @@ def _run_tool(name: str, args: dict, actor: str | None = None, cluster=None) -> 
     return result_text[:limit], is_error
 
 
+def _tool_cache_key(name: str, args: dict, cluster=None) -> str:
+    """Build a stable per-turn key for read-only tool results."""
+    return json.dumps(
+        {"cluster": getattr(cluster, "id", None), "name": name, "args": args},
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+
+
 async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster=None) -> dict:
     """Runs one chat turn: sends `user_text` (plus prior `history`) to
     9router (OpenAI-compatible /v1/chat/completions), executing any
@@ -815,16 +907,17 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
         ceph_restricted=ceph_restricted, ai_name=ai_name, female_address=female_address,
         cluster_name=getattr(cluster, "name", None),
     )
+    packed_history = pack_chat_history(history)
 
     if settings.codex_chat_enabled:
-        result = await _run_codex_chat_turn(history, user_text, actor_system_prompt, actor, cluster)
+        result = await _run_codex_chat_turn(packed_history, user_text, actor_system_prompt, actor, cluster)
         result["reply_text"] = with_romantic_address(
             _append_citation_footer(result["reply_text"], result.pop("citations", [])),
             ai_name, female_address,
         )
         return result
     if settings.claude_chat_enabled:
-        result = await _run_claude_chat_turn(history, user_text, actor_system_prompt, actor, cluster)
+        result = await _run_claude_chat_turn(packed_history, user_text, actor_system_prompt, actor, cluster)
         result["reply_text"] = with_romantic_address(
             _append_citation_footer(result["reply_text"], result.pop("citations", [])),
             ai_name, female_address,
@@ -837,7 +930,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
         raise ChatTurnError(str(exc)) from exc
 
     messages = [{"role": "system", "content": actor_system_prompt}]
-    for m in history[-MAX_HISTORY_MESSAGES:]:
+    for m in packed_history:
         messages.append({"role": m["role"], "content": m["content"]})
     messages.append({"role": "user", "content": user_text})
 
@@ -847,41 +940,12 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
     proposal: dict | None = None
     tools_used: list[str] = []
     citations: list[dict] = []
+    tool_cache: dict[str, tuple[str, bool]] = {}
 
     for _ in range(MAX_TOOL_ITERATIONS):
-        try:
-            # 9router (verified live) always responds with an SSE stream
-            # regardless of whether streaming was requested —
-            # client.chat.completions.stream() + get_final_completion()
-            # reassembles the exact same ChatCompletion shape a plain call
-            # would return, and works unchanged against a real non-
-            # streaming-only OpenAI-compatible endpoint too.
-            async with client.chat.completions.stream(
-                model=settings.router_model,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                temperature=0.1,
-                max_tokens=MAX_TOKENS,
-                # httpx.Timeout(...), NOT a bare float — verified directly
-                # against a real running 9router: passing a plain float
-                # here silently truncated the streamed response (got back
-                # "Hiện" instead of the full sentence, no error raised) on
-                # a .stream() call specifically. httpx.Timeout(...) does
-                # not have this problem.
-                timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
-            ) as stream:
-                completion = await stream.get_final_completion()
-        except AuthenticationError as exc:
-            raise ChatTurnError(f"Model {settings.router_model!r} hoặc API key không hợp lệ trên 9router: {readable_exception_message(exc)}") from exc
-        except APIConnectionError as exc:
-            raise ChatTurnError(
-                f"Không thể kết nối 9router ({settings.router_base_url}). Kiểm tra host/port."
-            ) from exc
-        except APIError as exc:
-            raise ChatTurnError(f"Model {settings.router_model!r} không khả dụng trên 9router: {readable_exception_message(exc)}") from exc
-        except Exception as exc:
-            raise ChatTurnError(f"Không thể kết nối 9router: {readable_exception_message(exc)}") from exc
+        completion = await _run_router_completion(
+            client, messages=messages, tools=tools, actor=actor, cluster=cluster
+        )
 
         choice = completion.choices[0]
         msg = choice.message
@@ -930,7 +994,14 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
                 args = json.loads(call.function.arguments or "{}")
             except (TypeError, ValueError):
                 args = {}
-            result_text, is_error = _run_tool(call.function.name, args, actor, cluster)
+            cache_key = _tool_cache_key(call.function.name, args, cluster)
+            if call.function.name in {TOOL_PROPOSE_ACTION, TOOL_PROPOSE_NODE_COMMAND}:
+                result_text, is_error = _run_tool(call.function.name, args, actor, cluster)
+            elif cache_key in tool_cache:
+                result_text, is_error = tool_cache[cache_key]
+            else:
+                result_text, is_error = _run_tool(call.function.name, args, actor, cluster)
+                tool_cache[cache_key] = (result_text, is_error)
             if not is_error:
                 tools_used.append(call.function.name)
                 citations.extend(_citations_from_result(result_text))
@@ -968,6 +1039,7 @@ async def _run_codex_chat_turn(
     proposal: dict | None = None
     tools_used: list[str] = []
     citations: list[dict] = []
+    tool_cache: dict[str, tuple[str, bool]] = {}
 
     async def handle_tool(name: str, args: dict) -> tuple[str, bool]:
         nonlocal proposal
@@ -983,18 +1055,33 @@ async def _run_codex_chat_turn(
                 return "Đề xuất đã tạo và đang chờ operator xác nhận trên giao diện.", True
             except (ChatToolError, TypeError, ValueError) as exc:
                 return f"Đề xuất không hợp lệ: {exc}", False
-        text, is_error = _run_tool(name, args, actor, cluster)
+        cache_key = _tool_cache_key(name, args, cluster)
+        if cache_key in tool_cache:
+            text, is_error = tool_cache[cache_key]
+        else:
+            text, is_error = _run_tool(name, args, actor, cluster)
+            tool_cache[cache_key] = (text, is_error)
         if not is_error:
             tools_used.append(name)
             citations.extend(_citations_from_result(text))
         return text, not is_error
 
-    try:
-        result = await codex_app_server.run_turn(
-            prompt, _tool_schemas(is_admin=auth.is_admin_user(actor), cluster=cluster), handle_tool
-        )
-    except CodexAppServerError as exc:
-        raise ChatTurnError(f"Codex: {exc}") from exc
+    with ai_invocation(
+        feature="ceph_chat",
+        provider="codex",
+        model=settings.codex_chat_model or "default",
+        input_chars=len(prompt) + len(json.dumps(_tool_schemas(is_admin=auth.is_admin_user(actor), cluster=cluster), ensure_ascii=False)),
+        max_output_tokens=MAX_TOKENS,
+        actor=actor,
+        cluster_id=getattr(cluster, "id", None),
+    ) as telemetry:
+        try:
+            result = await codex_app_server.run_turn(
+                prompt, _tool_schemas(is_admin=auth.is_admin_user(actor), cluster=cluster), handle_tool
+            )
+        except CodexAppServerError as exc:
+            raise ChatTurnError(f"Codex: {exc}") from exc
+        telemetry.set_response(output_text=str(result.get("reply_text") or ""))
     response = {"reply_text": result["reply_text"], "proposal": proposal, "tools_used": tools_used}
     if citations:
         response["citations"] = citations
@@ -1036,6 +1123,7 @@ async def _run_claude_chat_turn(
     tools_used: list[str] = []
     citations: list[dict] = []
     proposal: dict | None = None
+    tool_cache: dict[str, tuple[str, bool]] = {}
     base_prompt = (
         actor_system_prompt
         + "\n\nBạn có các tool ceph-ai dưới đây. Claude CLI không chạy tool trực tiếp; "
@@ -1051,10 +1139,20 @@ async def _run_claude_chat_turn(
     for _ in range(MAX_TOOL_ITERATIONS):
         prompt = base_prompt + ("\n\nKết quả các bước trước:\n" + "\n".join(exchange) if exchange else "")
         prompt += "\n\nChỉ trả về JSON object theo contract:"
-        try:
-            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
-        except ClaudeCLIError as exc:
-            raise ChatTurnError(f"Claude: {exc}") from exc
+        with ai_invocation(
+            feature="ceph_chat",
+            provider="claude",
+            model=settings.claude_chat_model or "default",
+            input_chars=len(prompt),
+            max_output_tokens=MAX_TOKENS,
+            actor=actor,
+            cluster_id=getattr(cluster, "id", None),
+        ) as telemetry:
+            try:
+                raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+            except ClaudeCLIError as exc:
+                raise ChatTurnError(f"Claude: {exc}") from exc
+            telemetry.set_response(output_text=raw)
         envelope = _parse_claude_tool_envelope(raw)
         if envelope is None:
             response = {
@@ -1101,7 +1199,12 @@ async def _run_claude_chat_turn(
             if citations:
                 response["citations"] = citations
             return response
-        result_text, is_error = _run_tool(name, args, actor, cluster)
+        cache_key = _tool_cache_key(name, args, cluster)
+        if cache_key in tool_cache:
+            result_text, is_error = tool_cache[cache_key]
+        else:
+            result_text, is_error = _run_tool(name, args, actor, cluster)
+            tool_cache[cache_key] = (result_text, is_error)
         if not is_error:
             tools_used.append(name)
             citations.extend(_citations_from_result(result_text))

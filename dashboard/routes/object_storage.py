@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -787,11 +788,49 @@ def _execute_delete_bucket(cluster, payload: dict) -> None:
     _with_owner_s3(cluster, payload, execute)
 
 
-def _delete_all_buckets(cluster) -> list[str]:
+def _bulk_bucket_inventory(cluster) -> dict:
+    """Build a fail-closed inventory used by the bulk-delete preview.
+
+    Bucket names alone are not enough evidence for a destructive operation:
+    an object can be added, removed or replaced between preview and execute.
+    Include the current object count and logical size in a canonical hash, then
+    force execute to collect the same inventory again before it can purge.
+    """
     hosts = _rgw_hosts(cluster)
     if not hosts:
         raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
-    host, buckets = _list_from_first_reachable_rgw(cluster, hosts)
+    host, bucket_names = _list_from_first_reachable_rgw(cluster, hosts)
+    buckets = []
+    names = {item.strip() for item in bucket_names if isinstance(item, str) and item.strip()}
+    for name in sorted(names, key=str.casefold):
+        row = _bucket_summary(cluster, host, name)
+        if not row.get("stats_available"):
+            reason = row.get("stats_error") or "RGW không trả về metadata đầy đủ"
+            raise ObjectStorageError(f"Không thể xác minh metadata bucket {name}: {reason}")
+        try:
+            object_count = max(0, int(row.get("num_objects") or 0))
+            size_bytes = max(0, int(row.get("size_bytes") or 0))
+        except (TypeError, ValueError) as exc:
+            raise ObjectStorageError(f"Metadata bucket {name} có số liệu không hợp lệ") from exc
+        buckets.append({"name": name, "object_count": object_count, "size_bytes": size_bytes})
+    canonical = json.dumps(buckets, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "host": host,
+        "buckets": buckets,
+        "bucket_count": len(buckets),
+        "object_count": sum(item["object_count"] for item in buckets),
+        "size_bytes": sum(item["size_bytes"] for item in buckets),
+        "inventory_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+
+
+def _delete_all_buckets(cluster, *, host: str | None = None, buckets: list[str] | None = None) -> list[str]:
+    hosts = _rgw_hosts(cluster)
+    if not hosts:
+        raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
+    if host is None or buckets is None:
+        host, names = _list_from_first_reachable_rgw(cluster, hosts)
+        buckets = sorted({item.strip() for item in names if isinstance(item, str) and item.strip()}, key=str.casefold)
     for bucket in buckets:
         try:
             if cluster.is_default:
@@ -804,7 +843,7 @@ def _delete_all_buckets(cluster) -> list[str]:
             raise ObjectStorageError(
                 f"Đã xóa {buckets.index(bucket)}/{len(buckets)} bucket; dừng tại {bucket}: {_safe_error(exc)}"
             ) from exc
-    return buckets
+    return list(buckets)
 
 
 def _format_bytes(value: object) -> str:
@@ -819,6 +858,16 @@ def _format_bytes(value: object) -> str:
             return f"{amount:.0f} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
         amount /= 1024
     return "—"
+
+
+def _default_s3_endpoint(host: str) -> str:
+    """Build the S3 endpoint from the configured RGW node.
+
+    The dashboard's RGW deployment flow uses port 7480 as its default. Keep
+    this value in the page context so bucket actions do not make the operator
+    retype the same endpoint in every form.
+    """
+    return f"http://{host}:7480"
 
 
 def _rgw_hosts(cluster) -> list[str]:
@@ -961,6 +1010,8 @@ def _inventory(
             rows = list(executor.map(lambda name: _bucket_summary(cluster, host, name), page_names))
     return {
         "host": host,
+        "rgw_endpoint": _default_s3_endpoint(host),
+        "zonegroup_api_name": "default",
         "items": rows,
         "query": query.strip(),
         "owner": owner.strip(),
@@ -1529,23 +1580,85 @@ async def bucket_delete_execute(request: Request, user: str = Depends(require_lo
     return {"ok": True, "action": payload["action"], "bucket": payload["bucket"], "request_id": audit_id}
 
 
-@router.post("/api/object-storage/buckets/delete-all")
-async def bucket_delete_all(request: Request, user: str = Depends(require_login)):
-    """Immediately purge every bucket in the selected cluster; no approval flow."""
+@router.post("/api/object-storage/buckets/delete-all/preview")
+async def bucket_delete_all_preview(request: Request, user: str = Depends(require_login)):
+    """Return a fresh, hashable inventory before any bulk deletion."""
     if not auth.is_admin_user(user):
         raise HTTPException(status_code=403, detail="Chỉ admin được xóa tất cả bucket")
     cluster = selected_cluster(request)
-    payload = {"action": "delete_all", "bucket": "*"}
     try:
-        audit_id = await asyncio.to_thread(
-            _start_governance_audit, cluster.id, user, payload,
-            "Purge toàn bộ object/version và xóa tất cả bucket trên cluster",
-        )
+        inventory = await asyncio.to_thread(_bulk_bucket_inventory, cluster)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    bucket_count = inventory["bucket_count"]
+    allowed = bucket_count > 0
+    return {
+        "action": "delete_all",
+        "cluster_id": cluster.id,
+        "cluster_name": cluster.name,
+        "risk": "critical",
+        "allowed": allowed,
+        "blocked_reason": None if allowed else "Cluster không có bucket để xóa.",
+        "confirmation_required": f"DELETE-ALL:{cluster.name}:{bucket_count}",
+        "inventory_hash": inventory["inventory_hash"],
+        "bucket_count": bucket_count,
+        "object_count": inventory["object_count"],
+        "size_bytes": inventory["size_bytes"],
+        "sample_buckets": [item["name"] for item in inventory["buckets"][:20]],
+        "sample_truncated": bucket_count > 20,
+    }
+
+
+@router.post("/api/object-storage/buckets/delete-all/execute")
+async def bucket_delete_all_execute(request: Request, user: str = Depends(require_login)):
+    """Purge all buckets only after confirmation and an unchanged recheck."""
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xóa tất cả bucket")
+    body = await request.json()
+    inventory_hash = str(body.get("inventory_hash") or "").strip().lower()
+    try:
+        expected_bucket_count = int(body.get("bucket_count"))
+        expected_object_count = int(body.get("object_count"))
+        expected_size_bytes = int(body.get("size_bytes"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Thiếu hoặc sai inventory snapshot; cần preview lại") from exc
+    if not re.fullmatch(r"[0-9a-f]{64}", inventory_hash):
+        raise HTTPException(status_code=400, detail="Inventory hash không hợp lệ; cần preview lại")
+    cluster = selected_cluster(request)
+    expected_confirmation = f"DELETE-ALL:{cluster.name}:{expected_bucket_count}"
+    if str(body.get("confirmation") or "") != expected_confirmation:
+        raise HTTPException(status_code=400, detail=f"Nhập chính xác {expected_confirmation} để xác nhận")
+    try:
+        current = await asyncio.to_thread(_bulk_bucket_inventory, cluster)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    if expected_bucket_count <= 0 or current["bucket_count"] == 0:
+        raise HTTPException(status_code=409, detail="Cluster hiện không còn bucket để xóa")
+    if (
+        current["inventory_hash"] != inventory_hash
+        or current["bucket_count"] != expected_bucket_count
+        or current["object_count"] != expected_object_count
+        or current["size_bytes"] != expected_size_bytes
+    ):
+        raise HTTPException(status_code=409, detail="Inventory đã thay đổi; cần tạo preview mới trước khi xóa")
+    payload = {"action": "delete_all", "bucket": "*"}
+    preview = (
+        f"Purge toàn bộ bucket cluster={cluster.name} buckets={current['bucket_count']} "
+        f"objects={current['object_count']} size_bytes={current['size_bytes']} "
+        f"inventory_hash={current['inventory_hash']}"
+    )
+    try:
+        audit_id = await asyncio.to_thread(_start_governance_audit, cluster.id, user, payload, preview)
     except Exception as exc:
         logger.exception("cannot persist delete-all bucket audit entry")
         raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
     try:
-        deleted = await asyncio.to_thread(_delete_all_buckets, cluster)
+        deleted = await asyncio.to_thread(
+            _delete_all_buckets,
+            cluster,
+            host=current["host"],
+            buckets=[item["name"] for item in current["buckets"]],
+        )
     except ObjectStorageError as exc:
         safe_error = _safe_error(exc)
         await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
@@ -1554,6 +1667,18 @@ async def bucket_delete_all(request: Request, user: str = Depends(require_login)
     await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
     return {"ok": True, "action": "delete_all", "deleted_count": len(deleted),
             "deleted_buckets": deleted, "request_id": audit_id}
+
+
+@router.post("/api/object-storage/buckets/delete-all")
+async def bucket_delete_all_legacy(request: Request, user: str = Depends(require_login)):
+    """Reject the former one-step destructive endpoint instead of purging."""
+    del request
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xóa tất cả bucket")
+    raise HTTPException(
+        status_code=410,
+        detail="Endpoint cũ đã bị vô hiệu hóa. Hãy gọi preview rồi execute với confirmation và inventory hash.",
+    )
 
 
 @router.get("/api/object-storage/buckets/{bucket}")
@@ -1691,7 +1816,9 @@ async def bucket_inventory_page(
     order: SortOrder = "asc",
 ):
     clusters, cluster = cluster_selection(request)
-    inventory = {"items": [], "query": query.strip(), "page": page, "page_count": 1, "total": 0}
+    inventory = {"items": [], "query": query.strip(), "owner": owner.strip(), "quota": quota,
+                 "usage": usage, "sort": sort, "order": order, "page": page, "page_count": 1,
+                 "total": 0, "rgw_endpoint": "", "zonegroup_api_name": "default"}
     error = None
     try:
         inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page, owner, quota, usage, sort, order)

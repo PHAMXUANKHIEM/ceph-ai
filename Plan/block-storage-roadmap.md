@@ -338,10 +338,21 @@ job copy đã chạy, và mỗi failover/failback có runbook cùng audit đầy
 
 - [~] **5.1 Metric volume/pool**: IOPS read/write, throughput, latency percentile,
   queue depth, used/provisioned bytes và sampling freshness.
+  - [~] `VolumeMetric` và API history đã có throughput read/write, tổng throughput,
+    p95 read/write latency, freshness và capacity endpoint live từ `rbd du`.
+    `queue_depth` chỉ hiển thị khi `rbd_support` thực sự trả counter; nếu Ceph
+    không cung cấp thì trả `N/A`, không suy diễn từ IOPS.
+  - [ ] Chưa hoàn thiện collector capacity theo chu kỳ, pool-level aggregation,
+    SLO/stale alert và live acceptance trên nhiều Ceph release.
 - [~] **5.2 Dashboard lịch sử**: range/zoom, top consumer, so sánh baseline và
   liên kết sự kiện deploy/resize/snapshot với biến động hiệu năng.
-- [ ] **5.3 QoS policy**: IOPS/throughput limit và burst nếu backend hỗ trợ;
+- [~] **5.3 QoS policy**: IOPS/throughput limit và burst nếu backend hỗ trợ;
   preview tác động, template theo workload và rollback cấu hình.
+  - [~] Đã có inventory QoS image, form/API chỉnh 4 key allowlist
+    (`rbd_qos_iops_limit`, `rbd_qos_bps_limit`, burst tương ứng), validate range,
+    action RISKY qua Worker, idempotency và post-check `rbd config image list`.
+  - [ ] Chưa có template theo workload, lưu snapshot cấu hình trước thay đổi và
+    nút rollback tự động; backend không hỗ trợ phải tiếp tục fail-closed.
 - [ ] **5.4 Capacity forecasting**: dự báo mốc 80/90/95%, thin-provisioning risk,
   replica/EC overhead và failure-domain reserve.
 - [~] **5.5 Benchmark an toàn**
@@ -377,11 +388,27 @@ force-unlock/delete pool chỉ từ một tín hiệu quan sát.
 
 ### 7. Tích hợp OpenStack Cinder và giao thức — ưu tiên P1/P2
 
-- [ ] **7.1 OpenStack Cinder mapping**
-  - Hiển thị project/volume/attachment/instance, đối soát orphan hai chiều và
-    giữ OpenStack là source of truth cho tài nguyên do Cinder quản lý.
-- [ ] **7.2 Boot-from-volume và image service**
-  - Hiển thị dependency Glance/Cinder/VM, bảo vệ volume boot và snapshot đang dùng.
+- [~] **7.1 OpenStack Cinder mapping**
+  - [x] Thêm inventory Cinder read-only qua Controller (`openstack volume list
+    --all-projects --long -f json`) và chuẩn hóa project/volume/status/attachment
+    evidence; không đưa credential vào command output.
+  - [x] Thêm API admin-only `/api/volumes/{pool}/cinder-mapping` để đối soát hai
+    chiều RBD ↔ Cinder, phân loại `mapped`, `cinder_without_rbd`,
+    `rbd_without_cinder` và `not_cinder_managed`; orphan RBD có mutation route
+    `blocked`.
+  - [x] Thêm panel UI đối soát trong Volume Inventory; mọi attach/detach/snapshot
+    tiếp tục xác minh per-volume và đi qua Cinder/approval, không có `rbd map/unmap`.
+  - [ ] Bổ sung live acceptance với nhiều Cinder/Nova release, eventual
+    consistency, deleted consumer và tenant-isolation matrix; chưa được coi là
+    hoàn thành cho tới khi có bằng chứng trên OpenStack thật.
+- [~] **7.2 Boot-from-volume và image service**
+  - [x] Thêm boot dependency report read-only từ Cinder volume, Cinder snapshot
+    evidence và attachment/consumer evidence; boot volume được đánh dấu bảo vệ
+    và không hỗ trợ direct delete.
+  - [x] Khi Glance/snapshot/consumer evidence thiếu hoặc lỗi, trả `partial` và
+    giữ mutation read-only thay vì suy đoán volume có thể xoá.
+  - [ ] Bổ sung truy vấn live Glance/Nova per dependency, hiển thị image/server
+    metadata đầy đủ và nghiệm thu boot-from-volume trên nhiều release.
 - [ ] **7.3 Multipath/NVMe-oF/iSCSI** nếu sản phẩm hỗ trợ gateway
   - Inventory gateway/path/session, health và controlled reconnect/failover.
 - [ ] **7.4 API/CLI/IaC contract**
@@ -395,8 +422,11 @@ luôn đi qua source of truth tương ứng và không làm lệch metadata.
 
 ### 8. AI Diagnosis và Automation an toàn — ưu tiên P2
 
-- [ ] **8.1 AI inventory insight**: stale/unattached volume, snapshot quá hạn,
-  clone chain sâu, backup trễ và capacity waste với evidence cụ thể.
+- [~] **8.1 AI inventory insight**: đã có vertical slice read-only cho
+  stale/unattached volume dựa trên RBD inventory, watcher/lock và I/O history;
+  thiếu evidence trả `INSUFFICIENT_EVIDENCE`, recommendation có TTL và không tạo
+  Action. Đã bổ sung cảnh báo snapshot/clone dependency và backup protection gap;
+  còn owner/project mapping và capacity-waste aggregation.
 - [ ] **8.2 Chẩn đoán hiệu năng**: tương quan volume/pool/OSD/host, phân biệt
   contention, capacity pressure và lỗi consumer; hiển thị confidence.
 - [ ] **8.3 Recommendation có mô phỏng** cho resize, QoS, flatten, retention và
@@ -493,6 +523,11 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | BS-03 Cinder Multi-attach Guard | Hoàn thành code | Tách form attach/detach; cho attach thêm volume `in-use` chỉ khi Cinder trả `multiattach=true`, reconciliation `healthy` và Nova server đích chưa có attachment. Volume exclusive hoặc server trùng bị chặn server-side trước khi tạo Action. | Nhóm Cinder Volume API `6 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn nghiệm thu live OpenStack; force-detach chưa triển khai để tránh bypass trạng thái consumer. |
 | 2026-08-17 | BS-04 Cinder Snapshot Inventory | Đang làm | Volume Detail đọc snapshot bằng OpenStack CLI trên Controller, scope theo exact Cinder volume ID; chuẩn hóa ID/tên/status/size/created-at. Snapshot query lỗi degrade độc lập và không làm mất volume/attachment metadata. | Cinder discovery `11 passed`; Volume Detail `2 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo create snapshot crash-consistent qua Cinder với approval, idempotency và post-check. |
 | 2026-08-17 | BS-04 Cinder Snapshot Create | Hoàn thành code | Form/API tạo snapshot crash-consistent chỉ khi Cinder/Ceph reconciliation `healthy`; preflight inventory chặn tên trùng. Action RISKY chờ approval, idempotency exact intent, target Controller; volume `in-use` dùng `--force` rõ trong preview. Worker list lại snapshot và fail nếu thiếu hoặc status lỗi. | Command `2 passed`; policy `4 passed`; post-check `5 passed`; Volume API/detail `3 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo delete snapshot qua Cinder với dependency/status guard và post-check. |
+| 2026-09-21 | Phase 8.1 AI inventory insight | Đang làm | Thêm `watcher/block_storage_insights.py` và API read-only `/api/volumes/{pool}/inventory-insights`; phân loại `STALE_UNATTACHED` chỉ khi có zero-I/O history, attachment idle và watcher/lock đều bằng 0. Thiếu evidence trả `INSUFFICIENT_EVIDENCE`; UI hiển thị snapshot/clone dependency, backup protection gap, recommendation advisory, evidence expiry và coverage gaps. Không gọi LLM, không tạo Action, không thực thi mutation. | `.venv/bin/pytest -q tests/test_block_storage_insights.py tests/test_dashboard_volumes.py`: `116 passed`; compileall, `node --check dashboard/static/volume_inventory.js` và `git diff --check` đạt; còn live Ceph acceptance. | Tiếp theo bổ sung owner/project mapping và capacity-waste aggregation; sau đó mới mở performance diagnosis. |
+| 2026-09-25 | BS-06 / 5.1 Performance metrics | Đang làm | Mở rộng parser `rbd perf image iostat` để giữ throughput read/write và queue-depth optional; lưu thêm các trường vào `VolumeMetric`. API history trả p95 latency, throughput hiện tại, sample count và trạng thái queue; thêm API capacity riêng đọc authoritative `rbd du` để không làm chậm biểu đồ. UI hiển thị throughput, p95, queue availability, used/provisioned và freshness. Không bịa queue depth khi Ceph không trả counter. | `.venv/bin/pytest -q tests/test_ceph_client.py tests/test_volume_monitor.py tests/test_dashboard_volumes.py tests/test_migrations.py`: `233 passed`; `py_compile`, `git diff --check` đạt; migration head `f2b3c4d5e6f7`. | Còn collector capacity theo chu kỳ, pool aggregate, stale/SLO alert, QoS và live acceptance trên Ceph release matrix. |
+| 2026-09-25 | BS-06 / 5.3 QoS policy | Đang làm | Thêm đọc QoS image qua `rbd config image list`; thêm command builder đóng cho 4 key QoS, hỗ trợ `0` để unset, preview và post-check; API GET/POST scoped theo cluster/pool/image; UI hiển thị giới hạn hiện tại và form đề xuất thay đổi. Action luôn RISKY, cần approval, idempotency và không thực thi trực tiếp từ trình duyệt. | `391 passed` ở nhóm command/reconciliation/Ceph client/dashboard/policy; `py_compile`, `node --check dashboard/static/volume_inventory.js`, `git diff --check` đạt. | Còn QoS template, before-state snapshot/rollback, live Ceph capability matrix và pool-level capacity/SLO. |
+| 2026-09-25 | 7.1 Cinder mapping | Đang làm | Thêm discovery inventory Cinder qua Controller, normalize project/status/attachment evidence và API admin-only đối soát hai chiều RBD ↔ Cinder. UI có nút đối soát, summary và bảng mapping; `rbd_without_cinder` bị khóa mutation, tài nguyên Cinder tiếp tục đi qua source of truth/approval hiện có. | `tests/test_cinder_discovery.py`: `15 passed`; route mapping chạy riêng: `2 passed`; `py_compile`, `node --check dashboard/static/volume_inventory.js`, `git diff --check` đạt. Khi ghép toàn file Volume vẫn có lỗi fixture SQLite lifespan không ổn định ở setup. | Còn live OpenStack acceptance, deleted consumer, multi-attach/eventual-consistency và tenant-isolation matrix; chưa đóng 7.1. |
+| 2026-09-25 | 7.2 Boot dependency guard | Đang làm | Thêm report read-only cho boot-from-volume: bảo vệ boot volume, giữ direct delete bị khóa, và chuyển Glance/Cinder snapshot/Nova consumer thiếu evidence thành `partial`; Volume Detail hiển thị guard/evidence gap. | Cinder discovery/boot helper mới: `2 passed`; `py_compile`, `node --check dashboard/static/volume_inventory.js`, `git diff --check` đạt. | Còn truy vấn live Glance/Nova và nghiệm thu boot volume trên nhiều release. |
 
 ## Ghi chú bàn giao
 

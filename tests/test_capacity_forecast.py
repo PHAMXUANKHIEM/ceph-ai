@@ -12,13 +12,20 @@ def _rows(count=31, slope=1.0):
     ) for i in range(count)]
 
 
+def _daily_quality(monkeypatch):
+    monkeypatch.setattr(subject.settings, "capacity_forecast_scan_interval_seconds", 86400)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_quality_max_gap_seconds", 172800)
+
+
 def test_forecast_requires_minimum_history(monkeypatch):
+    _daily_quality(monkeypatch)
     monkeypatch.setattr(subject.settings, "capacity_forecast_min_samples", 30)
     monkeypatch.setattr(subject.settings, "capacity_forecast_min_history_days", 30)
     assert subject._forecast(_rows(30), datetime(2026, 2, 1)) is None
 
 
 def test_forecast_returns_cited_threshold_dates_and_capacity(monkeypatch):
+    _daily_quality(monkeypatch)
     monkeypatch.setattr(subject.settings, "capacity_forecast_min_samples", 30)
     monkeypatch.setattr(subject.settings, "capacity_forecast_min_history_days", 30)
     monkeypatch.setattr(subject.settings, "capacity_forecast_min_confidence", .5)
@@ -32,11 +39,35 @@ def test_forecast_returns_cited_threshold_dates_and_capacity(monkeypatch):
 
 
 def test_flat_growth_does_not_invent_threshold_date(monkeypatch):
+    _daily_quality(monkeypatch)
     monkeypatch.setattr(subject.settings, "capacity_forecast_min_samples", 30)
     monkeypatch.setattr(subject.settings, "capacity_forecast_min_history_days", 30)
     result = subject._forecast(_rows(slope=0), datetime(2026, 1, 31))
     assert result is not None
     assert result.thresholds == {"80": None, "90": None, "95": None}
+
+
+def test_forecast_rejects_a_large_history_gap(monkeypatch):
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_samples", 4)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_history_days", 1)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_scan_interval_seconds", 86400)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_quality_max_gap_seconds", 172800)
+    rows = _rows(4)
+    rows[2].captured_at = rows[1].captured_at + timedelta(seconds=172801)
+    rows[3].captured_at = rows[2].captured_at + timedelta(days=1)
+
+    assert subject._forecast(rows, rows[-1].captured_at) is None
+
+
+def test_forecast_rejects_stale_capacity_series(monkeypatch):
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_samples", 4)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_min_history_days", 1)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_scan_interval_seconds", 86400)
+    monkeypatch.setattr(subject.settings, "capacity_forecast_quality_max_gap_seconds", 172800)
+    rows = _rows(4)
+    now = rows[-1].captured_at + timedelta(seconds=172801)
+
+    assert subject._forecast(rows, now) is None
 
 
 def test_collect_stores_cluster_all_pools_and_all_osds(dashboard_client, default_cluster_id, monkeypatch):

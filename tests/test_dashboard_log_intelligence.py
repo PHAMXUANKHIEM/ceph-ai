@@ -220,6 +220,42 @@ def test_label_rejects_unknown_value(dashboard_client, seeded):
         )
 
 
+def test_bulk_label_patterns_updates_selected_rows_once(dashboard_client, seeded):
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/log-intelligence/patterns/bulk-label",
+        data={"pattern_ids": [seeded["pattern_id"]], "label": "BENIGN"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    with db.SessionLocal() as session:
+        assert session.get(LogPattern, seeded["pattern_id"]).triage_label == (
+            LogPatternTriageLabel.BENIGN.value
+        )
+
+
+def test_page_paginates_large_finding_dataset(dashboard_client, seeded):
+    with db.SessionLocal() as session:
+        for index in range(9):
+            session.add(LogFinding(
+                cluster_id=seeded["cluster_id"], ingest_run_id=session.get(
+                    LogFinding, seeded["finding_id"]
+                ).ingest_run_id,
+                verdict="FINDING", severity="INFO", confidence="LOW",
+                title=f"Finding {index}", summary="summary", dedupe_key=f"page-{index}",
+                status=LogFindingStatus.OPEN.value,
+            ))
+        session.commit()
+    _login(dashboard_client)
+    response = dashboard_client.get("/log-intelligence")
+    assert response.status_code == 200
+    assert "Trang 1 / 2" in response.text
+    assert response.text.count('class="logintel-finding-title"') == 8
+    second_page = dashboard_client.get("/log-intelligence?findings_page=2")
+    assert "Trang 2 / 2" in second_page.text
+    assert second_page.text.count('class="logintel-finding-title"') == 2
+
+
 def test_acknowledge_unknown_finding_is_404(dashboard_client):
     _login(dashboard_client)
     response = dashboard_client.post("/log-intelligence/findings/khong-co/acknowledge")

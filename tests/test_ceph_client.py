@@ -1149,6 +1149,46 @@ def test_query_rbd_iostat_parses_dict_with_images_key(fake_ssh, monkeypatch):
     assert samples[0]["iops"] == 15.0
 
 
+def test_query_rbd_iostat_preserves_throughput_and_optional_queue_depth(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": [{
+            "image": "disk-2",
+            "read_ops": 10,
+            "write_ops": 5,
+            "read_bytes": 4096,
+            "write_bytes": 2048,
+            "read_latency_ms": 0.5,
+            "write_latency_ms": 0.2,
+            "queue_depth": 2,
+        }]
+    }
+
+    sample = query_rbd_iostat("vms")[0]
+
+    assert sample["read_bytes_per_sec"] == 4096.0
+    assert sample["write_bytes_per_sec"] == 2048.0
+    assert sample["throughput_bytes_per_sec"] == 6144.0
+    assert sample["queue_depth"] == 2.0
+
+
+def test_query_rbd_image_qos_normalizes_known_keys(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": {
+            "entries": [
+                {"name": "rbd_qos_iops_limit", "value": "5000"},
+                {"name": "unrelated_setting", "value": "1"},
+            ]
+        }
+    }
+
+    qos = ceph_client.query_rbd_image_qos("vms", "disk-1")
+
+    assert qos["rbd_qos_iops_limit"] == 5000
+    assert qos["rbd_qos_bps_limit"] is None
+
+
 def test_query_rbd_iostat_converts_native_latency_nanoseconds_to_milliseconds(
     fake_ssh, monkeypatch
 ):
