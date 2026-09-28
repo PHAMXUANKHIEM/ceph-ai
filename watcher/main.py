@@ -44,7 +44,7 @@ from watcher import (
 )
 from watcher.bluestore_omap_monitor import BLUESTORE_OMAP_PREFIX
 from watcher.ceph_client import CephQueryError, query_cluster_health, query_cluster_health_with
-from watcher.crush_skew_monitor import CRUSH_SKEW_PG_PREFIX, CRUSH_SKEW_USE_PREFIX
+from watcher.crush_skew_monitor import is_crush_skew_code
 from watcher.database_capacity_monitor import DATABASE_SIZE_HIGH_PREFIX
 from watcher.device_health_monitor import DEVICE_HEALTH_EVACUATE_PREFIX
 from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
@@ -516,9 +516,7 @@ def _resolve_recovered_incidents(
                 # `ceph health detail`, so generic health reconciliation must
                 # not resolve them or cancel a Telegram approval proposal.
                 continue
-            if incident.ceph_code.startswith(CRUSH_SKEW_USE_PREFIX) or incident.ceph_code.startswith(
-                CRUSH_SKEW_PG_PREFIX
-            ):
+            if is_crush_skew_code(incident.ceph_code):
                 # 2026-08-07 (Epic 12 Story 12.2, AD-32 — CRITICAL, found
                 # independently by 2 reviewers during Architecture, before
                 # any code existed): same reasoning as every guard above —

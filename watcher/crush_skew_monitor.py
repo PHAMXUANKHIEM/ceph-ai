@@ -58,6 +58,21 @@ from worker.policy import gate
 
 CRUSH_SKEW_USE_PREFIX = "CRUSH_SKEW_USE:"
 CRUSH_SKEW_PG_PREFIX = "CRUSH_SKEW_PG:"
+# Autonomy plan WP1.4: one Incident per signal family (per cluster)
+# instead of one per OSD/host. Skewed entities live in the Incident's
+# evidence. In 7 days the per-entity codes produced 369 incidents for 66
+# distinct skew episodes (12 codes for one rebalance). The per-entity
+# prefixes above stay for the streak keys and for legacy open incidents.
+CRUSH_SKEW_USE_CODE = "CRUSH_SKEW_USE"
+CRUSH_SKEW_PG_CODE = "CRUSH_SKEW_PG"
+_FAMILY_CODE_BY_SIGNAL = {"USE": CRUSH_SKEW_USE_CODE, "PG": CRUSH_SKEW_PG_CODE}
+_FAMILY_PREFIXES = {CRUSH_SKEW_USE_CODE: CRUSH_SKEW_USE_PREFIX, CRUSH_SKEW_PG_CODE: CRUSH_SKEW_PG_PREFIX}
+
+
+def is_crush_skew_code(ceph_code: str | None) -> bool:
+    """Aggregate family code or a legacy per-entity code."""
+    code = str(ceph_code or "")
+    return code in _FAMILY_PREFIXES or code.startswith((CRUSH_SKEW_USE_PREFIX, CRUSH_SKEW_PG_PREFIX))
 
 # No automated remediation exists for "this OSD/Host is carrying more data
 # than its Weight implies" (could be a legitimate in-progress rebalance, a
@@ -403,6 +418,82 @@ def _entity_label_for_alert(detail: dict) -> str:
     return f"host {detail['entity_id']}"
 
 
+def _group_by_family(current: dict[str, dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for detail in current.values():
+        family = _FAMILY_CODE_BY_SIGNAL.get(detail["signal"])
+        if family:
+            grouped.setdefault(family, []).append(detail)
+    for entities in grouped.values():
+        entities.sort(key=lambda item: -abs(item["skew"]))
+    return grouped
+
+
+def _entity_summary(detail: dict) -> dict:
+    return {
+        "entity_type": detail["entity_type"],
+        "entity_id": detail["entity_id"],
+        "skew": detail["skew"],
+        "consecutive_scans": detail.get("consecutive_scans"),
+    }
+
+
+def _family_rationale(entities: list[dict]) -> str:
+    head = f"{len(entities)} entity lệch tải so với Weight. Lệch nhiều nhất:\n"
+    lines = [f"• {_rationale_for(detail)}" for detail in entities[:3]]
+    more = f"\n(+{len(entities) - 3} entity khác trong evidence)" if len(entities) > 3 else ""
+    return head + "\n".join(lines) + more
+
+
+def _refresh_family_evidence(incident: Incident, entities: list[dict]) -> None:
+    incident.log_excerpt = _family_rationale(entities)
+    incident.signal_evidence_json = json.dumps(
+        {"source": "crush_skew", "entities": [_entity_summary(item) for item in entities]},
+        sort_keys=True,
+    )
+
+
+def _open_family_incident(session, family: str, entities: list[dict]) -> list[str]:
+    rationale = _family_rationale(entities)
+    incident = Incident(
+        ceph_code=family,
+        status=IncidentStatus.PENDING_APPROVAL.value,
+        detected_at=utc_now(),
+        log_excerpt=rationale,
+    )
+    _refresh_family_evidence(incident, entities)
+    session.add(incident)
+    session.flush()  # assigns incident.id, needed by the Action FK below
+    action = Action(
+        incident_id=incident.id,
+        action_id=SKEW_ACTION_ID,
+        classification=gate.classify_action(SKEW_ACTION_ID).value,
+        status=ActionStatus.PENDING_APPROVAL.value,
+        rationale=rationale,
+        # investigate_manually has no Command and no automated target.
+        target_nodes=json.dumps([]),
+        action_params=json.dumps({
+            "signal": entities[0]["signal"],
+            "entities": [_entity_summary(item) for item in entities],
+        }),
+    )
+    session.add(action)
+    session.flush()
+    audit.record(
+        session, incident_id=incident.id, action_id=action.id,
+        event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL, actor=audit.ACTOR_SYSTEM,
+    )
+    if alert_lifecycle.inherit_active_mute(session, incident):
+        return []
+    labels = ", ".join(_entity_label_for_alert(item) for item in entities[:5])
+    if len(entities) > 5:
+        labels += f" (+{len(entities) - 5})"
+    return [telegram_outbox.enqueue_crush_skew_alert(
+        session, incident_id=incident.id, signal=entities[0]["signal"],
+        entity_label=labels, message=rationale,
+    )]
+
+
 def create_or_resolve_crush_skew_incidents(
     current: dict[str, dict],
     still_over_threshold: set[str] | None = None,
@@ -442,79 +533,42 @@ def create_or_resolve_crush_skew_incidents(
 
     Mặc định None giữ nguyên hành vi cũ cho mọi caller chưa cập nhật."""
     pending_event_ids = []
+    grouped = _group_by_family(current)
+    still_over_families = {
+        family for family, prefix in _FAMILY_PREFIXES.items()
+        if any(code.startswith(prefix) for code in (still_over_threshold or set()))
+    }
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
             .filter(
                 Incident.ceph_code.like(f"{CRUSH_SKEW_USE_PREFIX}%")
                 | Incident.ceph_code.like(f"{CRUSH_SKEW_PG_PREFIX}%")
+                | Incident.ceph_code.in_(tuple(_FAMILY_PREFIXES))
             )
             .filter(Incident.status.in_(_RECOVERABLE_STATUSES))
             .all()
         )
-        open_codes = {incident.ceph_code for incident in open_incidents}
-
-        still_over = still_over_threshold or set()
+        open_by_family = {}
         for incident in open_incidents:
-            if incident.ceph_code not in current and incident.ceph_code not in still_over:
+            if incident.ceph_code in _FAMILY_PREFIXES:
+                open_by_family[incident.ceph_code] = incident
+            else:
+                # Legacy per-entity incident: superseded by the family one.
                 incident.status = IncidentStatus.RESOLVED.value
                 cancel_pending_actions(session, incident.id)
 
-        for ceph_code, detail in current.items():
-            if ceph_code in open_codes:
-                continue  # already has an open Incident — don't duplicate/re-alert
+        for family, incident in open_by_family.items():
+            if family in grouped:
+                _refresh_family_evidence(incident, grouped[family])
+            elif family not in still_over_families:
+                incident.status = IncidentStatus.RESOLVED.value
+                cancel_pending_actions(session, incident.id)
 
-            rationale = _rationale_for(detail)
-            incident = Incident(
-                ceph_code=ceph_code,
-                status=IncidentStatus.PENDING_APPROVAL.value,
-                detected_at=utc_now(),
-                log_excerpt=rationale,
-            )
-            session.add(incident)
-            session.flush()  # assigns incident.id, needed by the Action FK below
-
-            action = Action(
-                incident_id=incident.id,
-                action_id=SKEW_ACTION_ID,
-                classification=gate.classify_action(SKEW_ACTION_ID).value,
-                status=ActionStatus.PENDING_APPROVAL.value,
-                rationale=rationale,
-                # No automated target -- investigate_manually has no
-                # Command regardless (has_command() is False for it, same
-                # as osd_latency_monitor.py/node_health_monitor.py's
-                # identical comment).
-                target_nodes=json.dumps([]),
-                action_params=json.dumps(
-                    {
-                        "entity_type": detail["entity_type"],
-                        "entity_id": detail["entity_id"],
-                        "signal": detail["signal"],
-                        "skew": detail["skew"],
-                    }
-                ),
-            )
-            session.add(action)
-            session.flush()
-
-            audit.record(
-                session,
-                incident_id=incident.id,
-                action_id=action.id,
-                event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
-                actor=audit.ACTOR_SYSTEM,
-            )
-
-            if not alert_lifecycle.inherit_active_mute(session, incident):
-                pending_event_ids.append(
-                    telegram_outbox.enqueue_crush_skew_alert(
-                        session,
-                        incident_id=incident.id,
-                        signal=detail["signal"],
-                        entity_label=_entity_label_for_alert(detail),
-                        message=rationale,
-                    )
-                )
+        for family, entities in grouped.items():
+            if family in open_by_family:
+                continue  # already open: evidence refreshed above, no re-alert
+            pending_event_ids.extend(_open_family_incident(session, family, entities))
         session.commit()
     telegram_outbox.dispatch_due(
         limit=len(pending_event_ids),

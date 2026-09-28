@@ -258,7 +258,7 @@ def test_create_or_resolve_creates_incident_and_investigate_manually_action(isol
     csk.create_or_resolve_crush_skew_incidents(current)
 
     with db_module.SessionLocal() as session:
-        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").one()
+        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE").one()
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
         assert "osd.3" in incident.log_excerpt
 
@@ -279,7 +279,7 @@ def test_create_or_resolve_does_not_duplicate_an_already_open_incident(isolated_
     csk.create_or_resolve_crush_skew_incidents(current)
 
     with db_module.SessionLocal() as session:
-        count = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").count()
+        count = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE").count()
         assert count == 1
 
 
@@ -292,7 +292,7 @@ def test_create_or_resolve_resolves_when_signal_drops_out_of_current(isolated_db
     csk.create_or_resolve_crush_skew_incidents({})
 
     with db_module.SessionLocal() as session:
-        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").one()
+        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE").one()
         assert incident.status == IncidentStatus.RESOLVED.value
 
 
@@ -320,7 +320,7 @@ def test_create_or_resolve_recreates_immediately_after_manual_rejection(isolated
     csk.create_or_resolve_crush_skew_incidents(current)
 
     with db_module.SessionLocal() as session:
-        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").one()
+        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE").one()
         incident.status = IncidentStatus.REJECTED.value
         session.commit()
         old_id = incident.id
@@ -328,7 +328,7 @@ def test_create_or_resolve_recreates_immediately_after_manual_rejection(isolated
     csk.create_or_resolve_crush_skew_incidents(current)  # still flagged next scan
 
     with db_module.SessionLocal() as session:
-        incidents = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").all()
+        incidents = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE").all()
         assert len(incidents) == 2
         new_ones = [i for i in incidents if i.id != old_id]
         assert len(new_ones) == 1
@@ -374,7 +374,7 @@ def test_create_or_resolve_host_entity_uses_host_label(isolated_db, monkeypatch)
 
     assert calls[0][1] == "host hostA"
     with db_module.SessionLocal() as session:
-        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:hostA").one()
+        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE").one()
         assert "host hostA" in incident.log_excerpt
 
 
@@ -394,7 +394,7 @@ def test_still_over_threshold_keeps_incident_open_while_streak_rebuilds(isolated
     csk.create_or_resolve_crush_skew_incidents({}, {"CRUSH_SKEW_USE:3"})
 
     with db_module.SessionLocal() as session:
-        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").one()
+        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE").one()
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
 
 
@@ -410,7 +410,7 @@ def test_restart_cycle_does_not_create_a_duplicate_incident(isolated_db):
     )
 
     with db_module.SessionLocal() as session:
-        incidents = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").all()
+        incidents = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE").all()
         assert len(incidents) == 1
         assert incidents[0].status == IncidentStatus.PENDING_APPROVAL.value
 
@@ -423,7 +423,7 @@ def test_genuinely_recovered_entity_still_resolves(isolated_db):
     csk.create_or_resolve_crush_skew_incidents({}, set())
 
     with db_module.SessionLocal() as session:
-        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").one()
+        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE").one()
         assert incident.status == IncidentStatus.RESOLVED.value
 
 
@@ -435,7 +435,7 @@ def test_resolving_an_incident_cancels_its_pending_action(isolated_db):
     csk.create_or_resolve_crush_skew_incidents({})
 
     with db_module.SessionLocal() as session:
-        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").one()
+        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE").one()
         action = session.query(Action).filter_by(incident_id=incident.id).one()
         assert action.status == ActionStatus.REJECTED.value
 
@@ -457,3 +457,67 @@ def test_check_crush_skew_fills_still_over_threshold_before_streak_is_met(isolat
 
     assert flagged == {}  # streak mới 1/3
     assert "CRUSH_SKEW_USE:0" in still_over
+
+
+# --- WP1.4: one incident per signal family (autonomy plan) -------------------
+
+
+def test_skewed_entities_share_one_family_incident(isolated_db, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        csk, "send_crush_skew_alert", lambda signal, entity_label, message: calls.append(entity_label)
+    )
+    current = {
+        "CRUSH_SKEW_PG:1": _detail(entity_id=1, signal="PG", skew=0.6),
+        "CRUSH_SKEW_PG:5": _detail(entity_id=5, signal="PG", skew=-0.9),
+        "CRUSH_SKEW_PG:hostA": _detail(entity_type="host", entity_id="hostA", signal="PG", skew=0.7),
+        "CRUSH_SKEW_USE:3": _detail(entity_id=3, signal="USE"),
+    }
+    csk.create_or_resolve_crush_skew_incidents(current)
+    with db_module.SessionLocal() as session:
+        pg = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_PG").one()
+        entities = json.loads(pg.signal_evidence_json)["entities"]
+        assert [item["entity_id"] for item in entities] == [5, "hostA", 1]   # sorted by |skew|
+        assert session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE").count() == 1
+        assert session.query(Incident).filter(Incident.ceph_code.like("CRUSH_SKEW_PG:%")).count() == 0
+        action = session.query(Action).filter_by(incident_id=pg.id).one()
+        assert len(json.loads(action.action_params)["entities"]) == 3
+    assert sorted(calls) == sorted(["osd.5, host hostA, osd.1", "osd.3"])
+
+
+def test_entity_set_changes_refresh_evidence_without_a_new_incident(isolated_db, monkeypatch):
+    calls = []
+    monkeypatch.setattr(csk, "send_crush_skew_alert", lambda *args: calls.append(args))
+    csk.create_or_resolve_crush_skew_incidents({"CRUSH_SKEW_PG:1": _detail(entity_id=1, signal="PG")})
+    csk.create_or_resolve_crush_skew_incidents({
+        "CRUSH_SKEW_PG:1": _detail(entity_id=1, signal="PG"),
+        "CRUSH_SKEW_PG:7": _detail(entity_id=7, signal="PG", skew=0.95),
+    })
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_PG").one()
+        assert [item["entity_id"] for item in json.loads(incident.signal_evidence_json)["entities"]] == [7, 1]
+    assert len(calls) == 1
+
+
+def test_legacy_per_entity_incidents_are_superseded(isolated_db):
+    with db_module.SessionLocal() as session:
+        legacy = Incident(ceph_code="CRUSH_SKEW_PG:1", status=IncidentStatus.PENDING_APPROVAL.value,
+                          detected_at=datetime.utcnow())
+        session.add(legacy)
+        session.commit()
+        legacy_id = legacy.id
+    csk.create_or_resolve_crush_skew_incidents({"CRUSH_SKEW_PG:1": _detail(entity_id=1, signal="PG")})
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, legacy_id).status == IncidentStatus.RESOLVED.value
+        assert session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_PG").one().status == \
+            IncidentStatus.PENDING_APPROVAL.value
+
+
+def test_family_codes_are_monitor_owned_and_not_resolved_by_health_polls():
+    from watcher.ceph_code_families import is_monitor_owned
+
+    for code in ("CRUSH_SKEW_PG", "CRUSH_SKEW_USE", "CRUSH_SKEW_PG:1"):
+        assert csk.is_crush_skew_code(code)
+        assert is_monitor_owned(code)
+    assert not csk.is_crush_skew_code("CRUSH_SKEW")
+

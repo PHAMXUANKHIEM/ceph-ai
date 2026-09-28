@@ -24,7 +24,12 @@ Incident tự đóng một cách khó hiểu.
 from __future__ import annotations
 
 from watcher.bluestore_omap_monitor import BLUESTORE_OMAP_PREFIX
-from watcher.crush_skew_monitor import CRUSH_SKEW_PG_PREFIX, CRUSH_SKEW_USE_PREFIX
+from watcher.crush_skew_monitor import (
+    CRUSH_SKEW_PG_CODE,
+    CRUSH_SKEW_PG_PREFIX,
+    CRUSH_SKEW_USE_CODE,
+    CRUSH_SKEW_USE_PREFIX,
+)
 from watcher.database_capacity_monitor import DATABASE_SIZE_HIGH_PREFIX
 from watcher.device_health_monitor import DEVICE_HEALTH_EVACUATE_PREFIX
 from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
@@ -36,7 +41,11 @@ from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 CHAT_REQUEST_CEPH_CODE = "CHAT_REQUEST"
 CLUSTER_UPGRADE_CEPH_CODE = "CLUSTER_UPGRADE"
 
-_EXACT_CODES = (CHAT_REQUEST_CEPH_CODE, CLUSTER_UPGRADE_CEPH_CODE, DATABASE_SIZE_HIGH_PREFIX)
+_EXACT_CODES = (
+    CHAT_REQUEST_CEPH_CODE, CLUSTER_UPGRADE_CEPH_CODE, DATABASE_SIZE_HIGH_PREFIX,
+    # Autonomy plan WP1.4: one CRUSH skew Incident per signal family.
+    CRUSH_SKEW_USE_CODE, CRUSH_SKEW_PG_CODE,
+)
 
 _PREFIXES = (
     VOLUME_SATURATED_PREFIX,

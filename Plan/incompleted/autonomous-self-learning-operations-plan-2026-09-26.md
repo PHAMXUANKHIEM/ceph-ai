@@ -128,9 +128,9 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 **Dữ liệu 7 ngày:** 274 `CRUSH_SKEW_PG` + 95 `CRUSH_SKEW_USE`, tách thành 12 mã (theo OSD và host~class), sống 5–30 phút, cách nhau hàng giờ — là sự kiện thật (rebalance) bị chẻ nhỏ. Hysteresis chỉ giảm ≤ 45% và làm trễ 25 phút → không phù hợp.
 
-- [ ] Một incident `CRUSH_SKEW` mỗi cluster: các OSD/host~class lệch là **entity trong evidence** (danh sách + mức lệch), không phải mã riêng (`watcher/crush_skew_monitor.py`).
-- [ ] Cập nhật evidence khi tập entity đổi; đóng khi không còn entity lệch qua N scan.
-- [ ] Replay 7 ngày ước lượng số incident còn lại; test gom/tách/đóng.
+- [x] Một incident `CRUSH_SKEW_PG` / `CRUSH_SKEW_USE` mỗi tín hiệu (không hậu tố entity); entity lệch nằm trong evidence + `action_params`, sắp theo |skew|; incident cũ theo entity được đóng khi chuyển sang dạng gom.
+- [x] Cập nhật evidence khi tập entity đổi (không cảnh báo lại); đóng khi không entity nào còn lệch (giữ `still_over_threshold` qua restart). `watcher/main.py` + `ceph_code_families.py` nhận mã gom.
+- [x] Replay 7 ngày: PG 274 → 47, USE 95 → 19 (**−82%**); test `tests/test_crush_skew_monitor.py` (29 passed).
 
 ### WP1.3 `OSD_LATENCY_HIGH:N` và health check tái mở
 
@@ -358,6 +358,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP1.1 NODE_UNREACHABLE | Hysteresis 3 lần OK + giữ mở khi flapping (≥3 incident/giờ, ổn định 1 giờ mới đóng), 1 cảnh báo chập chờn; replay 1.992 → 231 (−88,4%) | `tests/test_node_health_monitor.py` 22 passed | Partial (chờ deploy đo thật) |
 | 28/09/2026 | WP2.1 Verdict Telegram | Hỏi verdict sau mỗi quyết định, lý do chọn sẵn, hàm ghi dùng chung, audit | `tests/test_telegram_approval_bot.py` 47 passed | Partial (chờ deploy, đo ≥ 30 verdict/tuần) |
 | 28/09/2026 | WP1.2 điều chỉnh | BlueStore = bão lịch sử 06/09 (đã chặn); OSD latency mở 4/đóng 3 scan, replay 256 → 48 (−81%); thêm WP1.4 gom CRUSH skew | `tests/test_osd_latency_monitor.py` 16 passed | Partial (chờ deploy) |
+| 28/09/2026 | WP1.4 CRUSH skew | 1 incident/tín hiệu thay vì 1/entity; replay 369 → 66 (−82%) | `tests/test_crush_skew_monitor.py` 29 passed | Partial (chờ deploy) |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 
 ## 13. Quy tắc trạng thái
