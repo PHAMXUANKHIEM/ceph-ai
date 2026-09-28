@@ -368,10 +368,8 @@ def record_verdict(session, case: RemediationCase, *, verdict: str, note: str, a
     case.operator_verdict_by = str(actor)[:64]
     case.operator_verdict_at = now or utc_now()
     audit.record(
-        # audit_entries.actor is VARCHAR(32); "telegram:<32-char username>"
-        # would fail the commit on PostgreSQL. The full actor is in the evidence.
         session, incident_id=case.incident_id, action_id=case.action_id,
-        event_type=audit.EVENT_REMEDIATION_CASE_VERDICT_UPDATED, actor=str(actor)[:32],
-        evidence={"verdict": verdict, "previous_verdict": previous, "note": note or None, "actor": actor},
+        event_type=audit.EVENT_REMEDIATION_CASE_VERDICT_UPDATED, actor=actor,
+        evidence={"verdict": verdict, "previous_verdict": previous, "note": note or None},
     )
     return previous

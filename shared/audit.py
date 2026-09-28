@@ -138,7 +138,9 @@ def record(
             incident_id=incident_id,
             action_id=action_id,
             event_type=event_type,
-            actor=actor,
+            # VARCHAR(32): a "telegram:<32-char username>" actor would fail
+            # the commit on PostgreSQL. incident_events keeps the full value.
+            actor=str(actor or "")[:incident_events.ACTOR_MAX_CHARS],
         )
     )
     incident_events.record(

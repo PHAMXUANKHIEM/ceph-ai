@@ -928,3 +928,19 @@ def test_long_telegram_actor_fits_the_audit_column(dashboard_client, monkeypatch
         ).one()
         assert len(entry.actor) <= 32
 
+
+
+def test_long_telegram_actor_on_approval_fits_the_audit_columns(dashboard_client, monkeypatch):
+    # Pre-existing path: Duyệt with a 32-character username used to write a
+    # 41-character actor into VARCHAR(32) columns (fatal on PostgreSQL).
+    from shared.models import AuditEntry, IncidentTimelineEvent
+
+    _verdict_env(monkeypatch)
+    action_pk = _pending_action("inc-approve-long")
+    bot._handle_callback_query(_callback_query(action_pk, "approve", username="u" * 32), "123:ABC")
+    with db_module.SessionLocal() as session:
+        entries = session.query(AuditEntry).filter_by(action_id=action_pk).all()
+        events = session.query(IncidentTimelineEvent).filter_by(action_id=action_pk).all()
+        assert entries and all(len(entry.actor) <= 32 for entry in entries)
+        assert events and all(len(event.actor) <= 32 for event in events)
+        assert any("u" * 32 in (event.evidence_json or "") for event in events)
