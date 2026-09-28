@@ -1,7 +1,9 @@
 import asyncio
+import ipaddress
 import json
 import logging
 import re
+import uuid
 from datetime import datetime, timedelta
 from shared.time import utc_now
 
@@ -38,14 +40,21 @@ CLUSTER_DEPLOY_CEPH_CODE = "CLUSTER_DEPLOY"
 DEPLOY_CEPHADM_ACTION_ID = "deploy_cluster_cephadm"
 DEPLOY_CEPH_DEPLOY_ACTION_ID = "deploy_cluster_ceph_deploy"
 DEPLOY_RPM_LOCAL_ACTION_ID = "deploy_cluster_rpm_local"
+DEPLOY_DOCKER_MANUAL_ACTION_ID = "deploy_cluster_docker_manual"
 CLUSTER_DEPLOY_ACTION_IDS = frozenset(
-    {DEPLOY_CEPHADM_ACTION_ID, DEPLOY_CEPH_DEPLOY_ACTION_ID, DEPLOY_RPM_LOCAL_ACTION_ID}
+    {
+        DEPLOY_CEPHADM_ACTION_ID,
+        DEPLOY_CEPH_DEPLOY_ACTION_ID,
+        DEPLOY_RPM_LOCAL_ACTION_ID,
+        DEPLOY_DOCKER_MANUAL_ACTION_ID,
+    }
 )
 
 _METHOD_TO_ACTION_ID = {
     "cephadm": DEPLOY_CEPHADM_ACTION_ID,
     "ceph-deploy": DEPLOY_CEPH_DEPLOY_ACTION_ID,
     "rpm-local": DEPLOY_RPM_LOCAL_ACTION_ID,
+    "docker-manual": DEPLOY_DOCKER_MANUAL_ACTION_ID,
 }
 # Story 8.1 wired up cephadm, Story 8.2 added ceph-deploy, Story 8.3 added
 # rpm-local — all 3 methods now have a real phase sequence in
@@ -117,6 +126,9 @@ def _reconcile_stale_deploy_incidents(session) -> None:
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 _RPM_PATH_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
+_CLUSTER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
+_DOCKER_IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$")
+_NAMESPACE_PATH_RE = re.compile(r"^/(?:etc|var/lib)/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _VALID_ROLES = ("mon", "mgr", "osd", "mds", "rgw")
 
 
@@ -230,7 +242,13 @@ này (giống lưu ý Story 7.1 đã nêu cho luồng nâng cấp bằng gói c�
 tiên nên được operator theo dõi sát, không nên để chạy không giám sát."""
 
 
-def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: str | None = None) -> str:
+def _deploy_plan_text(
+    method: str,
+    version: str,
+    nodes: list[dict],
+    rpm_path: str | None = None,
+    docker_profile: dict | None = None,
+) -> str:
     mon = [n["ip"] for n in nodes if "mon" in n["roles"]]
     mgr = [n["ip"] for n in nodes if "mgr" in n["roles"]]
     # Per-node disk LIST (vd node1 /dev/vdc + /dev/vdd, node2 /dev/vdb) shown
@@ -249,6 +267,23 @@ def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: st
     rgw_note = (
         f" (kèm {len(rgw)} node RGW)" if rgw else " (không có node RGW — bỏ qua bước tạo RGW)"
     )
+
+    if method == "docker-manual":
+        profile = docker_profile or {}
+        return (
+            f"Dựng bổ sung cụm Ceph kiểu B bằng Docker thủ công, Ceph {version}, "
+            f"image {profile.get('image_reference', '?')}, tên {profile.get('cluster_name', '?')}; "
+            f"FSID {profile.get('fsid', '?')} trên {len(nodes)} node.\n"
+            f"Config/data: {profile.get('config_dir', '?')} / {profile.get('data_dir', '?')}; "
+            f"MON ports v1/v2: {profile.get('mon_v1_port', '?')}/{profile.get('mon_v2_port', '?')}.\n"
+            f"Public/cluster network: {profile.get('public_network', '?')} / "
+            f"{profile.get('cluster_network', '?')}.\n{node_summary}\n\n"
+            "Preflight sẽ kiểm tra namespace, container, MON port và từng đĩa OSD; nếu phát hiện "
+            "xung đột hoặc trạng thái không xác định thì dừng. Nếu đạt: khởi tạo MON, chờ quorum, "
+            "tạo MGR rồi tạo OSD trên đúng thiết bị đã khai báo. Cụm này dùng config/data và "
+            "container riêng; không thay thế cấu hình cụm đơn hiện tại. Tạo OSD ghi lên đĩa thật "
+            "và chỉ được thực hiện sau khi action này được duyệt."
+        )
 
     if method == "cephadm":
         return (
@@ -479,6 +514,13 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
     nodes, nodes_error = _validate_nodes(body.get("nodes"))
     if nodes_error:
         raise HTTPException(status_code=400, detail=nodes_error)
+    if method == "docker-manual" and any(
+        role in (node.get("roles") or []) for node in nodes for role in ("mds", "rgw")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Docker thủ công hiện chỉ hỗ trợ vai trò MON, MGR và OSD",
+        )
 
     rpm_path = str(body.get("rpm_path", "")).strip()
     if method == "rpm-local" and not _RPM_PATH_RE.match(rpm_path):
@@ -486,8 +528,60 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
             status_code=400, detail="Đường dẫn thư mục RPM không hợp lệ (vd /opt/ceph-rpms)"
         )
 
+    docker_profile = None
+    if method == "docker-manual":
+        cluster_name = str(body.get("cluster_name", "cephB")).strip()
+        config_dir = str(body.get("config_dir", f"/etc/{cluster_name}")).strip()
+        data_dir = str(body.get("data_dir", f"/var/lib/{cluster_name}")).strip()
+        image_reference = str(body.get("image_reference", "ceph/ceph:v15")).strip()
+        try:
+            mon_v1_port = int(body.get("mon_v1_port", 6790))
+            mon_v2_port = int(body.get("mon_v2_port", 3301))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Cổng MON phải là số nguyên")
+        if not _CLUSTER_NAME_RE.fullmatch(cluster_name):
+            raise HTTPException(status_code=400, detail="Tên cluster không hợp lệ")
+        if (
+            not _NAMESPACE_PATH_RE.fullmatch(config_dir)
+            or not config_dir.startswith("/etc/")
+            or config_dir == "/etc/ceph"
+        ):
+            raise HTTPException(status_code=400, detail="Config directory phải là thư mục riêng dưới /etc")
+        if (
+            not _NAMESPACE_PATH_RE.fullmatch(data_dir)
+            or not data_dir.startswith("/var/lib/")
+            or data_dir == "/var/lib/ceph"
+        ):
+            raise HTTPException(status_code=400, detail="Data directory phải là thư mục riêng dưới /var/lib")
+        if not _DOCKER_IMAGE_RE.fullmatch(image_reference):
+            raise HTTPException(status_code=400, detail="Image reference Docker không hợp lệ")
+        if any(port < 1 or port > 65535 for port in (mon_v1_port, mon_v2_port)):
+            raise HTTPException(status_code=400, detail="Cổng MON phải nằm trong khoảng 1–65535")
+        if mon_v1_port == mon_v2_port:
+            raise HTTPException(status_code=400, detail="Cổng MON v1 và v2 phải khác nhau")
+        docker_profile = {
+            "cluster_name": cluster_name,
+            "config_dir": config_dir,
+            "data_dir": data_dir,
+            "image_reference": image_reference,
+            "mon_v1_port": mon_v1_port,
+            "mon_v2_port": mon_v2_port,
+            "deployment_id": str(uuid.uuid4()),
+            "fsid": str(uuid.uuid4()),
+        }
+
     public_network = str(body.get("public_network", "")).strip()
     cluster_network = str(body.get("cluster_network", "")).strip() or public_network
+    if method == "docker-manual":
+        if not public_network:
+            raise HTTPException(status_code=400, detail="Cần khai báo Public Network dạng CIDR")
+        try:
+            public_network = str(ipaddress.ip_network(public_network, strict=False))
+            cluster_network = str(ipaddress.ip_network(cluster_network, strict=False))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Public/Cluster Network phải là CIDR hợp lệ") from exc
+        docker_profile["public_network"] = public_network
+        docker_profile["cluster_network"] = cluster_network
 
     try:
         osd_pool_default_size = int(body.get("osd_pool_default_size", 3))
@@ -496,6 +590,11 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
         raise HTTPException(
             status_code=400, detail="osd_pool_default_size/osd_pool_default_min_size phải là số nguyên"
         )
+    if method == "docker-manual" and (
+        not 1 <= osd_pool_default_size <= 10
+        or not 1 <= osd_pool_default_min_size <= osd_pool_default_size
+    ):
+        raise HTTPException(status_code=400, detail="Replica size/min-size không hợp lệ")
 
     action_params = {
         "version": version,
@@ -506,6 +605,8 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
         "osd_pool_default_size": osd_pool_default_size,
         "osd_pool_default_min_size": osd_pool_default_min_size,
     }
+    if docker_profile:
+        action_params.update(docker_profile)
     if method == "rpm-local":
         action_params["rpm_path"] = rpm_path
     action_params["_cluster_config_fingerprint"] = env_config.current_cluster_config_fingerprint()
@@ -537,6 +638,7 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
                 f"Đề xuất dựng cụm Ceph mới ({method}, {version}) bởi {user} — {len(nodes)} node"
             ),
             detected_at=utc_now(),
+            cluster_id=get_default_cluster_id(session) if docker_profile else None,
         )
         session.add(incident)
         try:
@@ -554,7 +656,7 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
             action_id=action_id,
             classification=gate.classify_action(action_id).value,  # always RISKY (AD-5)
             status=ActionStatus.PENDING_APPROVAL.value,
-            rationale=_deploy_plan_text(method, version, nodes, rpm_path),
+            rationale=_deploy_plan_text(method, version, nodes, rpm_path, docker_profile),
             target_nodes=json.dumps(target_nodes),
             action_params=json.dumps(action_params),
             proposed_command=preview_command,

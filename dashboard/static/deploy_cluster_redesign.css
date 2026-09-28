@@ -240,12 +240,28 @@
 .deploy-cluster-page .deploy-log-line.status-done { color: #86efac; }
 .deploy-cluster-page .deploy-log-time { color: #64748b; margin-right: 3px; }
 
+.deploy-docker-profile {
+  margin: 12px 0 16px;
+  padding: 14px;
+  border: 1px solid rgba(34,211,238,.28);
+  border-radius: 9px;
+  background: rgba(8,145,178,.055);
+}
+.deploy-docker-profile[hidden] { display: none !important; }
+.deploy-docker-profile h3 { margin: 0 0 12px; color: #e2e8f0; font-size: .86rem; }
+.deploy-docker-profile .deploy-field-grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
+.deploy-docker-profile > .hint { margin: 10px 0 0; }
+@media (max-width: 900px) {
+  .deploy-docker-profile .deploy-field-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+
 @media (max-width: 1100px) {
   .deploy-cluster-page .deploy-cluster-grid { grid-template-columns: 1fr; }
   .deploy-cluster-page .deploy-log-card { order: 2; }
 }
 @media (max-width: 680px) {
   .deploy-field-grid { grid-template-columns: 1fr; }
+  .deploy-docker-profile .deploy-field-grid { grid-template-columns: 1fr; }
   .deploy-submit-bar { margin-left: -14px; margin-right: -14px; padding-left: 14px; padding-right: 14px; }
   .deploy-submit-bar .btn-primary { padding-left: 18px; padding-right: 18px; }
   .deploy-last-action-card .card-header,

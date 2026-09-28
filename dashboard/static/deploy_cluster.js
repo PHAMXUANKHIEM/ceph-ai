@@ -182,6 +182,7 @@
   // --- Method radio -> rpm-path field + not-yet-supported note --------
 
   var rpmPathLabel = document.getElementById("df-rpm-path-label");
+  var dockerProfile = document.getElementById("df-docker-profile");
   var errorEl = document.getElementById("df-error");
 
   function currentMethod() {
@@ -192,6 +193,7 @@
   function onMethodChange() {
     var method = currentMethod();
     if (rpmPathLabel) rpmPathLabel.hidden = method !== "rpm-local";
+    if (dockerProfile) dockerProfile.hidden = method !== "docker-manual";
   }
 
   Array.prototype.forEach.call(document.querySelectorAll('input[name="method"]'), function (radio) {
@@ -283,6 +285,14 @@
         osd_pool_default_size: parseInt(document.getElementById("df-pool-size").value, 10) || 3,
         osd_pool_default_min_size: parseInt(document.getElementById("df-pool-min-size").value, 10) || 2
       };
+      if (method === "docker-manual") {
+        payload.cluster_name = document.getElementById("df-cluster-name").value.trim();
+        payload.image_reference = document.getElementById("df-image-reference").value.trim();
+        payload.config_dir = document.getElementById("df-config-dir").value.trim();
+        payload.data_dir = document.getElementById("df-data-dir").value.trim();
+        payload.mon_v1_port = document.getElementById("df-mon-v1-port").value;
+        payload.mon_v2_port = document.getElementById("df-mon-v2-port").value;
+      }
 
       fetch("/deploy-cluster/propose", {
         method: "POST",
@@ -320,6 +330,12 @@
         radio.checked = radio.value === (params.method || "cephadm");
       });
       if (document.getElementById("df-rpm-path")) document.getElementById("df-rpm-path").value = params.rpm_path || "";
+      if (document.getElementById("df-cluster-name")) document.getElementById("df-cluster-name").value = params.cluster_name || "cephB";
+      if (document.getElementById("df-image-reference")) document.getElementById("df-image-reference").value = params.image_reference || "ceph/ceph:v15";
+      if (document.getElementById("df-config-dir")) document.getElementById("df-config-dir").value = params.config_dir || "/etc/cephB";
+      if (document.getElementById("df-data-dir")) document.getElementById("df-data-dir").value = params.data_dir || "/var/lib/cephB";
+      if (document.getElementById("df-mon-v1-port")) document.getElementById("df-mon-v1-port").value = params.mon_v1_port || 6790;
+      if (document.getElementById("df-mon-v2-port")) document.getElementById("df-mon-v2-port").value = params.mon_v2_port || 3301;
       if (document.getElementById("df-public-network")) document.getElementById("df-public-network").value = params.public_network || "";
       if (document.getElementById("df-cluster-network")) document.getElementById("df-cluster-network").value = params.cluster_network || "";
       onMethodChange();
