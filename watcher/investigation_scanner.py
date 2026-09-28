@@ -89,8 +89,9 @@ def investigate(session_factory, transport, runner: EvidenceRunner, *, cluster_i
         results = runner.run(plan.requests)
         with session_factory() as session:
             summary = incident_evidence.store(session, row.id, plan, results)
+            triage = incident_evidence.record_triage(session, row.id, row.ceph_code)
             session.commit()
-        done.append({"incident_id": row.id, **summary})
+        done.append({"incident_id": row.id, **summary, "triage": triage.conclusion})
     return done
 
 

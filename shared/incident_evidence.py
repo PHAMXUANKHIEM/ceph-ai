@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from shared import incident_events
+from shared import deterministic_triage, incident_events
+from shared.deterministic_triage import Triage
 from shared.evidence_collectors import OK, EvidenceResult
 from shared.investigation_runbooks import InvestigationPlan
 from shared.models import IncidentEvidence
 
 EVENT_COLLECTED = "evidence_collected"
+EVENT_TRIAGED = "triage_concluded"
 SKIPPED_CONTEXT = "skipped_context"
 SKIPPED_FLAPPING = "skipped_flapping"
 
@@ -35,6 +37,17 @@ def store(session, incident_id: str, plan: InvestigationPlan, results: list[Evid
     incident_events.record(session, incident_id=incident_id, event_type=EVENT_COLLECTED, actor="watcher",
                            evidence=summary)
     return summary
+
+
+def record_triage(session, incident_id: str, ceph_code: str | None) -> Triage:
+    """Apply the deterministic rules (WP3.4) to the stored evidence and put
+    the conclusion on the timeline; UNKNOWN is recorded too, so coverage of
+    the rules can be measured."""
+    session.flush()
+    result = deterministic_triage.triage(ceph_code, for_incident(session, incident_id))
+    incident_events.record(session, incident_id=incident_id, event_type=EVENT_TRIAGED, actor="watcher",
+                           evidence=result.as_dict())
+    return result
 
 
 def mark_flapping(session, incident_id: str) -> None:

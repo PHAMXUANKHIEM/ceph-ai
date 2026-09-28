@@ -57,14 +57,17 @@ def test_new_incident_gets_runbook_evidence_and_a_timeline_event():
     transport = FakeTransport()
     done = _run(factory, transport)
     assert done[0]["incident_id"] == incident_id and done[0]["runbook"] == "NODE_UNREACHABLE"
+    assert done[0]["triage"] == "TRANSIENT"
     assert "10.3.53.1:ping -c 3 -W 1 10.3.53.9" in transport.calls
     assert "10.3.53.9:uptime" in transport.calls
     with factory() as session:
         rows = incident_evidence.for_incident(session, incident_id)
         assert {row.collector_id for row in rows} >= {"mon_ping", "host_uptime", "ceph_osd_tree"}
         assert all(row.status == OK for row in rows)
-        event = session.query(IncidentTimelineEvent).filter_by(incident_id=incident_id).one()
-        assert event.event_type == incident_evidence.EVENT_COLLECTED
+        events = {e.event_type: e for e in session.query(IncidentTimelineEvent).filter_by(incident_id=incident_id)}
+        assert set(events) == {incident_evidence.EVENT_COLLECTED, incident_evidence.EVENT_TRIAGED}
+        # The fake host answers SSH, so the rules conclude the outage was transient.
+        assert json.loads(events[incident_evidence.EVENT_TRIAGED].evidence_json)["conclusion"] == "TRANSIENT"
         assert incident_evidence.summary_lines(rows)[0].startswith("Bằng chứng (NODE_UNREACHABLE)")
     # Investigated once: the next tick finds nothing to do.
     assert _run(factory, transport, runner=EvidenceRunner(transport)) == []
@@ -152,3 +155,5 @@ def test_timeline_page_shows_collected_evidence(dashboard_client):
     assert "Bằng chứng (OSD_LATENCY_HIGH): 1/2 collector thành công" in page.text
     assert "ceph_osd_df=timeout" in page.text
     assert "commit_latency_ms" in page.text
+    # Only one OSD's perf row is stored, so the rules cannot compare and say so.
+    assert "Chẩn đoán theo luật" in page.text and 'data-conclusion="UNKNOWN"' in page.text

@@ -235,13 +235,14 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ### WP3.4 Chẩn đoán xác định trước LLM
 
-- [ ] `shared/deterministic_triage.py`: luật cho top code dựa trên evidence, ví dụ `NODE_UNREACHABLE`:
-  - ping OK + SSH fail → "sshd/firewall", đề xuất kiểm tra dịch vụ SSH,
-  - ping fail + OSD trên host down → "host down", đề xuất kiểm tra IPMI/nguồn,
-  - ping fail + OSD vẫn up → "mạng quản trị lỗi, data plane ổn", **không** đề xuất reboot.
-- [ ] LLM chỉ được gọi khi triage trả `UNKNOWN`; prompt chứa evidence thật + verified case (`shared/case_retrieval.py`).
-- [ ] LLM phải trích evidence cho mỗi khẳng định; không có evidence → abstain (đo bằng `ai_evaluation` hallucination rate).
-- [ ] Test luật + test prompt không gọi LLM khi triage đủ.
+- [x] `shared/deterministic_triage.py`: luật đọc evidence WP3.3, mỗi kết luận có trích dẫn evidence và độ tin; thiếu/mơ hồ → `UNKNOWN`, không đoán; không bao giờ tự đề xuất reboot:
+  - `NODE_UNREACHABLE`: SSH ok → `TRANSIENT` hoặc `HOST_RECENTLY_REBOOTED` (uptime ≤ 15 phút); ping ok + SSH lỗi → `SSH_UNAVAILABLE` (kiểm tra sshd/firewall); ping lỗi + có OSD down → `HOST_DOWN` (IPMI/nguồn); ping lỗi + mọi OSD up → `MGMT_NETWORK` (**không** reboot).
+  - `OSD_LATENCY_HIGH`: ≥ 50% OSD ≥ 100 ms → `CLUSTER_WIDE_LOAD`; OSD đích ≥ 3× trung vị → `SINGLE_OSD_OUTLIER` (xem SMART trước khi restart); còn lại → `RECOVERED`.
+  - `MON_CLOCK_SKEW`: nêu MON lệch + action `resync_ntp` (cần duyệt; test kiểm tra action có trong `action_policy.yaml`).
+- [x] Scanner WP3.3 ghi kết luận vào timeline (`triage_concluded`, cả `UNKNOWN` để đo độ phủ); trang timeline hiển thị kết luận + khuyến nghị.
+- [ ] LLM chỉ được gọi khi triage trả `UNKNOWN`; prompt chứa evidence thật + verified case — **chưa làm**: cần sửa `worker/llm/`, chờ phiên song song commit xong để tránh xung đột.
+- [ ] LLM phải trích evidence cho mỗi khẳng định; không có evidence → abstain.
+- [x] Test luật (`tests/test_deterministic_triage.py`, 24 passed) + scanner/timeline. Chạy trên evidence thật CS-LAB: `NODE_UNREACHABLE`→`TRANSIENT`, `OSD_LATENCY_HIGH:1`→`RECOVERED`, `MON_CLOCK_SKEW`→`RECOVERED`, khớp trạng thái thực.
 
 **Nghiệm thu WP3:** ≥ 90% incident top-10 code có evidence trong ≤ 2 phút; `investigate_manually` ≤ 40%; không có lệnh ghi nào trong audit của collector.
 **Ước lượng:** 5–7 ngày.
@@ -381,6 +382,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP3.1 Evidence collectors | 15 collector chỉ đọc, chặn lệnh ghi 2 lớp, ngân sách/breaker/cooldown; thử thật 11/11 ok | 28 passed | Done (chưa gắn vào incident — WP3.3) |
 | 28/09/2026 | WP3.2 Runbook điều tra | 12 runbook + default, validator đồng bộ với registry; chạy thật OSD_LATENCY_HIGH 5/5 ok trong 37 s | 22 passed | Done |
 | 28/09/2026 | WP3.3 Tự thu evidence khi incident mở | Scan phụ nền, bảng incident_evidence + migration, hiển thị timeline; Telegram + cluster quan sát còn lại | 8 passed (135 cùng watcher/migrations) | Partial (chờ deploy + migrate) |
+| 28/09/2026 | WP3.4 Chẩn đoán theo luật | 3 family, trích dẫn evidence, UNKNOWN khi thiếu; ghi timeline; chưa gắn cổng LLM | 24 passed | Partial |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 

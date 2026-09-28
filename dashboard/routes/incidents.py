@@ -27,7 +27,7 @@ from dashboard.templating import make_templates
 from dashboard.vntime import format_vn
 from shared import audit, change_risk, db, heartbeat
 from shared import incident_postmortem, trust_engine
-from shared import incident_evidence
+from shared import deterministic_triage, incident_evidence
 from shared import remediation_cases as case_memory
 from shared.unified_event_timeline import merge_event_sources
 from shared.root_cause_chain import build_root_cause_chain
@@ -640,6 +640,7 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
         "rca_evidence": rca_evidence,
         "evidence_rows": evidence_rows,
         "evidence_summary": incident_evidence.summary_lines(evidence_rows),
+        "triage": deterministic_triage.triage(incident.ceph_code, evidence_rows) if evidence_rows else None,
         "incident_target": _rgw_incident_target(incident),
     })
 
