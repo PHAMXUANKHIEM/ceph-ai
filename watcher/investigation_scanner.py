@@ -100,7 +100,7 @@ def scan_default_cluster(cluster_id: str | None) -> list[dict]:
     from config.settings import settings
     from shared import db
 
-    if not settings.investigation_enabled:
+    if not incident_evidence.investigation_allowed(cluster_id):
         return []
     transport = SshTransport(None)
     if not transport.mon_nodes:

@@ -314,8 +314,12 @@ jobs:
           if-no-files-found: warn
 
   release_gate:
-    needs: [test, quality]
-    if: always() && needs.test.result == 'success' && needs.quality.result == 'success'
+    # Release evidence requires the MQ integration suite as well: a release
+    # must never be recorded while integration is failing or still running.
+    needs: [test, quality, integration]
+    if: >-
+      always() && needs.test.result == 'success' && needs.quality.result == 'success'
+      && needs.integration.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

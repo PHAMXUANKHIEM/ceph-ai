@@ -28,8 +28,10 @@ def test_each_labeling_function():
     assert al.label_case(_facts(outcome="EXECUTION_FAILED", executed=True)).label == "INEFFECTIVE"
     assert al.label_case(_facts(reopened_after_execution=True, executed=True)).label == "INEFFECTIVE"
     self_resolved = _facts(incident_status="RESOLVED", resolved_at=NOW + timedelta(minutes=10))
-    assert al.label_case(self_resolved).label == "FALSE_POSITIVE"
-    assert al.label_case(_facts(flapping=True)).label == "FALSE_POSITIVE"
+    assert al.label_case(self_resolved).label == "SELF_RESOLVED"
+    assert al.label_case(_facts(flapping=True)).label == "FLAPPING"
+    # Neither is claimed to be an operator-style false positive.
+    assert "FALSE_POSITIVE" not in {al.label_case(self_resolved).label, al.label_case(_facts(flapping=True)).label}
 
 
 def test_no_evidence_abstains_and_slow_recovery_is_not_a_false_alarm():

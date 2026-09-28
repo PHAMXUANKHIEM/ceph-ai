@@ -167,3 +167,40 @@ def test_ssh_transport_refuses_mutations_before_the_wire(monkeypatch):
     with pytest.raises(ec.CollectorRefused):
         transport.ceph("ceph osd out 1", 5)
     assert sent == []
+
+
+def test_run_budget_is_a_hard_deadline_not_a_soft_one():
+    import threading
+    import time
+
+    release = threading.Event()
+
+    def slow(command):
+        release.wait(5)
+        return {"late": True}
+
+    runner = ec.EvidenceRunner(FakeTransport(ceph=slow), budget_seconds=0.3)
+    begin = time.monotonic()
+    results = runner.run([ec.EvidenceRequest("ceph_osd_tree"), ec.EvidenceRequest("ceph_osd_perf")])
+    elapsed = time.monotonic() - begin
+    release.set()
+    assert results[0].status == ec.TIMEOUT and "deadline" in results[0].output
+    assert results[1].status == ec.SKIPPED_BUDGET
+    assert elapsed < 2.0
+
+
+def test_an_abandoned_slow_command_keeps_its_host_slot():
+    import threading
+
+    release = threading.Event()
+
+    def slow(host, command):
+        release.wait(5)
+        return "late"
+
+    runner = ec.EvidenceRunner(FakeTransport(host=slow), budget_seconds=0.3, host_concurrency=1)
+    first = runner.run([ec.EvidenceRequest("host_uptime", host="h1")])[0]
+    second = runner.run([ec.EvidenceRequest("host_memory", host="h1")])[0]
+    release.set()
+    assert first.status == ec.TIMEOUT
+    assert second.status == ec.SKIPPED_BUSY

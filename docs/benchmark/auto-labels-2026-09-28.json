@@ -1,19 +1,24 @@
 {
   "by_label": {
     "CORRECT": 1,
-    "FALSE_POSITIVE": 3830,
-    "INEFFECTIVE": 4
+    "INEFFECTIVE": 4,
+    "SELF_RESOLVED": 3842
   },
-  "cases": 4157,
+  "cases": 4174,
   "conflicts": 0,
-  "labelled": 3835,
+  "labelled": 3847,
   "lf_coverage": {
     "execution_failed": 4,
     "postcheck_passed": 1,
     "reopened_after_execution": 3,
-    "self_resolved_without_action": 3830
+    "self_resolved_without_action": 3842
   },
-  "lf_precision_vs_operator": {},
-  "note": "Auto labels never set operator_verdict and never grant autonomy.",
+  "lf_precision_vs_operator": {
+    "self_resolved_without_action": {
+      "checked": 3,
+      "precision": 0.0
+    }
+  },
+  "note": "Auto labels never set operator_verdict and never grant autonomy. SELF_RESOLVED and FLAPPING are not false-positive claims; their precision is agreement with the operator's FALSE_POSITIVE, used as a proxy.",
   "window_days": 30
 }

@@ -219,26 +219,46 @@ class EvidenceRunner:
             return EvidenceResult(request.collector_id, target, REFUSED, output=str(exc)[:300])
         if collector.kind == HOST and not request.host:
             return EvidenceResult(collector.id, target, REFUSED, command, "HOST collector needs a host")
-        if self.clock() - started >= self.budget_seconds:
+        remaining = self.budget_seconds - (self.clock() - started)
+        if remaining <= 0:
             return EvidenceResult(collector.id, target, SKIPPED_BUDGET, command)
         if self.breaker.is_open(target):
             return EvidenceResult(collector.id, target, SKIPPED_BREAKER, command)
         slot = self._slot(target)
         if not slot.acquire(timeout=1):
             return EvidenceResult(collector.id, target, SKIPPED_BUSY, command)
-        try:
-            return self._execute(collector, command, target, request)
-        finally:
-            slot.release()
+        # Hard deadline: wait at most the collector's own timeout and never
+        # past the run budget. The call runs in a daemon thread that keeps
+        # the host slot until the command really ends, so an abandoned slow
+        # command still counts against HOST_CONCURRENCY.
+        deadline = max(0.1, min(float(collector.timeout_seconds), remaining))
+        box: dict[str, Any] = {}
+        done = threading.Event()
+
+        def call() -> None:
+            try:
+                box["result"] = self._execute(collector, command, target, request, int(deadline) or 1)
+            finally:
+                slot.release()
+                done.set()
+
+        begin = self.clock()
+        threading.Thread(target=call, name=f"evidence-{collector.id}", daemon=True).start()
+        if not done.wait(deadline):
+            self.breaker.record(target, success=False)
+            return EvidenceResult(collector.id, target, TIMEOUT, command,
+                                  f"vượt deadline {deadline:.0f}s (timeout collector/ngân sách lượt)",
+                                  int((self.clock() - begin) * 1000))
+        return box["result"]
 
     def _execute(self, collector: Collector, command: str, target: str,
-                 request: EvidenceRequest) -> EvidenceResult:
+                 request: EvidenceRequest, timeout: int) -> EvidenceResult:
         begin = self.clock()
         try:
             if collector.kind == CEPH:
-                raw = self.transport.ceph(command, collector.timeout_seconds)
+                raw = self.transport.ceph(command, timeout)
             else:
-                raw = self.transport.host(str(request.host), command, collector.timeout_seconds)
+                raw = self.transport.host(str(request.host), command, timeout)
         except Exception as exc:  # noqa: BLE001 - every failure becomes evidence, never an exception
             self.breaker.record(target, success=False)
             status = TIMEOUT if "timed out" in str(exc).lower() or isinstance(exc, TimeoutError) else ERROR

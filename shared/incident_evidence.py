@@ -14,6 +14,18 @@ SKIPPED_CONTEXT = "skipped_context"
 SKIPPED_FLAPPING = "skipped_flapping"
 
 
+def investigation_allowed(cluster_id: str | None) -> bool:
+    """INVESTIGATION_ENABLED, optionally narrowed to canary clusters by
+    INVESTIGATION_CLUSTER_IDS. ``cluster_id`` must already be resolved
+    (legacy NULL rows belong to the default cluster)."""
+    from config.settings import settings
+
+    if not settings.investigation_enabled:
+        return False
+    allowed = {item.strip() for item in str(settings.investigation_cluster_ids or "").split(",") if item.strip()}
+    return not allowed or (cluster_id is not None and cluster_id in allowed)
+
+
 def store(session, incident_id: str, plan: InvestigationPlan, results: list[EvidenceResult]) -> dict:
     """Persist one investigation and add a timeline event; returns its summary."""
     for result in results:

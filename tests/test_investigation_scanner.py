@@ -157,3 +157,36 @@ def test_timeline_page_shows_collected_evidence(dashboard_client):
     assert "commit_latency_ms" in page.text
     # Only one OSD's perf row is stored, so the rules cannot compare and say so.
     assert "Chẩn đoán theo luật" in page.text and 'data-conclusion="UNKNOWN"' in page.text
+
+
+def test_investigation_is_off_by_default_and_can_be_limited_to_canary_clusters(monkeypatch):
+    from config.settings import Settings, settings
+
+    assert Settings.model_fields["investigation_enabled"].default is False
+    monkeypatch.setattr(settings, "investigation_enabled", True)
+    monkeypatch.setattr(settings, "investigation_cluster_ids", "")
+    assert incident_evidence.investigation_allowed("any") and incident_evidence.investigation_allowed(None)
+    monkeypatch.setattr(settings, "investigation_cluster_ids", "canary-1, canary-2")
+    assert incident_evidence.investigation_allowed("canary-2")
+    assert not incident_evidence.investigation_allowed("prod-1")
+    assert not incident_evidence.investigation_allowed(None)
+    monkeypatch.setattr(settings, "investigation_enabled", False)
+    assert not incident_evidence.investigation_allowed("canary-1")
+
+
+def test_raw_evidence_output_is_admin_only(dashboard_client, monkeypatch):
+    from dashboard.routes import auth
+    from shared import db as db_module
+
+    with db_module.SessionLocal() as session:
+        session.add(Incident(id="ev-private", ceph_code="OSD_DOWN", status="PENDING_APPROVAL",
+                             detected_at=datetime.utcnow()))
+        session.flush()
+        session.add(IncidentEvidence(incident_id="ev-private", runbook="OSD_DOWN", collector_id="ceph_osd_tree",
+                                     target="mon", status=OK, output_redacted="SECRET-LOOKING-OUTPUT"))
+        session.commit()
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    assert "SECRET-LOOKING-OUTPUT" in dashboard_client.get("/incidents/ev-private/timeline").text
+    monkeypatch.setattr(auth, "is_admin_user", lambda user: False)
+    page = dashboard_client.get("/incidents/ev-private/timeline").text
+    assert "SECRET-LOOKING-OUTPUT" not in page and "chỉ admin xem được" in page

@@ -1,7 +1,7 @@
 # Autonomous Self-Learning Operations Plan — Ceph AI
 
 **Ngày lập:** 26/09/2026
-**Trạng thái:** `NOT-STARTED` (plan chi tiết, chưa có hạng mục nào được triển khai)
+**Trạng thái:** `IN-PROGRESS` — code WP0–WP4 đã merge (xem bảng log cuối file); **chưa deploy**, nên mọi con số giảm nhiễu hiện là replay, chưa phải đo sau deploy. Tính năng thu evidence mặc định TẮT (`INVESTIGATION_ENABLED=false`), bật theo cluster canary bằng `INVESTIGATION_CLUSTER_IDS`.
 **Liên quan:** `Plan/incompleted/strict-production-readiness-closure-plan-2026-09-25.md` (§7 AI/online learning, §5.3 live read-only, §6 safety)
 **Mục tiêu:** đưa Ceph AI từ "đề xuất `investigate_manually` rồi bị từ chối" sang "tự điều tra, tự học từ nhãn thật, tự xử lý trong ngân sách rủi ro đã duyệt" — theo đúng thứ tự: **giảm nhiễu → có nhãn → có bằng chứng → có quyết định an toàn**.
 
@@ -384,6 +384,14 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP3.3 Tự thu evidence khi incident mở | Scan phụ nền, bảng incident_evidence + migration, hiển thị timeline; Telegram + cluster quan sát còn lại | 8 passed (135 cùng watcher/migrations) | Partial (chờ deploy + migrate) |
 | 28/09/2026 | WP3.4 Chẩn đoán theo luật | 3 family, trích dẫn evidence, UNKNOWN khi thiếu; ghi timeline; chưa gắn cổng LLM | 24 passed | Partial |
 | 28/09/2026 | WP3.4 Cổng evidence trước LLM | Worker tự thu evidence khi chưa có; luật tự tin thay LLM; LLM nhận [E#] khi UNKNOWN; tóm tắt vào Telegram | 5 test mới, 294 passed | Done (chờ deploy + đo hallucination) |
+| 28/09/2026 | Review 6,2/10 — hysteresis qua restart | Streak recovery `NODE_UNREACHABLE` nằm trong RAM: sau restart, 1 probe tốt đã đóng incident (test đặt tên ngược). Sửa fail-closed: Watcher mới khởi động phải tự thấy đủ N probe tốt; `OSD_LATENCY_HIGH` vốn đã fail-closed | test_node_health_monitor 22 passed | Done |
+| 28/09/2026 | Review — deadline cứng | Timeout collector không truyền xuống Ceph transport và ngân sách 60 s chỉ kiểm tra trước mỗi collector. Nay mỗi collector chờ tối đa min(timeout, ngân sách còn lại) trong thread riêng; slot host giữ tới khi lệnh thật sự kết thúc | 2 test mới | Done |
+| 28/09/2026 | Review — bật mặc định quá sớm | `INVESTIGATION_ENABLED` mặc định **false**; `INVESTIGATION_CLUSTER_IDS` giới hạn cluster canary; cổng worker (mọi cluster) và scanner (cluster mặc định) cùng tôn trọng | 1 test | Done |
+| 28/09/2026 | Review — dữ liệu evidence | Retention `INCIDENT_EVIDENCE_RETENTION_DAYS=30` trong sweep `learning_retention`; output thô trên timeline chỉ admin xem; mỗi collector ≤ 6.000 ký tự (≤ ~90 KB/incident). Chưa có mã hoá riêng | 2 test | Partial |
+| 28/09/2026 | Review — weak supervision | LF 'tự hết không action' và 'host chập chờn' không còn gắn `FALSE_POSITIVE` mà là lớp riêng `SELF_RESOLVED`/`FLAPPING`; precision so với `FALSE_POSITIVE` của operator chỉ là proxy. Dữ liệu thật đầu tiên: 3 verdict operator (`NODE_RESOURCE_HIGH`, đều `CORRECT`) trùng case LF gắn 'tự hết' → proxy precision 0/3 — xác nhận heuristic dễ hiểu sai; chưa đủ 20 mẫu để quyết trọng số | `docs/benchmark/auto-labels-2026-09-28.json` | Done |
+| 28/09/2026 | Review — release_gate | `release_gate` nay cần `integration` thành công. Còn lại: image vẫn được build/push trong job `quality` trước khi integration xong | workflow | Partial |
+| 28/09/2026 | Review — artifact CS-LAB | `scripts/evidence_smoke.py` (chỉ đọc, không lưu output lệnh, che IP) → `docs/benchmark/evidence-smoke-2026-09-28.json`: 5 runbook, 19/19 collector ok, lượt dài nhất 16,7 s; triage: TRANSIENT, RECOVERED×2, UNKNOWN×2 | artifact | Done |
+| 28/09/2026 | Review — chưa làm được bằng code | Deploy canary + đo KPI ≥ 7 ngày; ≥ 100 verdict; deploy/live workflow trên runner đúng; PostgreSQL/RabbitMQ/rollback/soak/DR; HA | — | Chờ vận hành |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 

@@ -60,3 +60,28 @@ def test_learning_retention_removes_old_raw_samples_only(db_session, monkeypatch
     result = learning_retention.prune_old_rows(now)
     assert result["host_metric_samples"] == 1
     assert db_session.query(HostMetricSample).count() == 1
+
+
+def test_learning_retention_drops_old_incident_evidence(db_session, monkeypatch):
+    from shared.models import Incident, IncidentEvidence
+
+    now = datetime(2026, 9, 28, 10, 0, 0)
+    incident = Incident(ceph_code="OSD_DOWN", status="RESOLVED", detected_at=now)
+    db_session.add(incident)
+    db_session.flush()
+    for age in (31, 1):
+        db_session.add(IncidentEvidence(incident_id=incident.id, runbook="OSD_DOWN", collector_id=f"c{age}",
+                                        target="mon", status="ok", output_redacted="x",
+                                        created_at=now - timedelta(days=age)))
+    db_session.commit()
+
+    @contextmanager
+    def session_override():
+        yield db_session
+
+    monkeypatch.setattr(learning_retention.db, "SessionLocal", session_override)
+    monkeypatch.setattr(learning_retention, "_last_prune_at", None)
+    monkeypatch.setattr(learning_retention.settings, "incident_evidence_retention_days", 30)
+    result = learning_retention.prune_old_rows(now)
+    assert result["incident_evidence"] == 1
+    assert [row.collector_id for row in db_session.query(IncidentEvidence)] == ["c1"]

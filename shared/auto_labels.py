@@ -4,7 +4,7 @@ Operators label few cases, but the database already records facts that
 suggest whether a diagnosis/proposal was right: the incident cleared on its
 own, the post-check passed without regression, the problem came back, the
 host was flapping. Each labeling function (LF) turns one such fact into a
-vote in the operator vocabulary (CORRECT / FALSE_POSITIVE / INEFFECTIVE) or
+vote (CORRECT / INEFFECTIVE, or the weak classes SELF_RESOLVED / FLAPPING) or
 abstains; votes are combined by weight.
 
 Rules of use (see the plan):
@@ -29,6 +29,12 @@ from shared.models import Action, Incident, RemediationCase
 from shared.time import utc_now
 
 CORRECT, FALSE_POSITIVE, INEFFECTIVE = "CORRECT", "FALSE_POSITIVE", "INEFFECTIVE"
+# Weak classes that are NOT operator verdicts: an alert that cleared by
+# itself, or a flapping host, may still have been a real problem (a short
+# network outage, an unstable link). They are compared with the operator's
+# FALSE_POSITIVE only as a proxy when precision is measured.
+SELF_RESOLVED, FLAPPING = "SELF_RESOLVED", "FLAPPING"
+PROXY_VERDICT = {SELF_RESOLVED: FALSE_POSITIVE, FLAPPING: FALSE_POSITIVE}
 SELF_RESOLVE_WINDOW = timedelta(minutes=30)
 REOPEN_WINDOW = timedelta(hours=24)
 _EXECUTED = {"EXECUTED", "AUTO_EXECUTED"}
@@ -97,13 +103,13 @@ def lf_self_resolved_without_action(facts: CaseFacts) -> Vote | None:
         and facts.resolved_at is not None
         and facts.resolved_at - facts.detected_at <= SELF_RESOLVE_WINDOW
     ):
-        return Vote("self_resolved_without_action", FALSE_POSITIVE, 0.6)
+        return Vote("self_resolved_without_action", SELF_RESOLVED, 0.6)
     return None
 
 
 def lf_flapping(facts: CaseFacts) -> Vote | None:
     if facts.flapping and not facts.executed:
-        return Vote("flapping_signal", FALSE_POSITIVE, 0.7)
+        return Vote("flapping_signal", FLAPPING, 0.7)
     return None
 
 
@@ -190,7 +196,7 @@ def quality_report(facts: list[CaseFacts]) -> dict:
             continue
         for vote in label.votes:
             checked[vote.lf] += 1
-            agreed[vote.lf] += int(vote.label == verdict)
+            agreed[vote.lf] += int(PROXY_VERDICT.get(vote.label, vote.label) == verdict)
     return {
         "cases": len(facts),
         "labelled": sum(1 for label in labels if label.label),
@@ -201,5 +207,7 @@ def quality_report(facts: list[CaseFacts]) -> dict:
             lf: {"checked": checked[lf], "precision": round(agreed[lf] / checked[lf], 3)}
             for lf in checked
         },
-        "note": "Auto labels never set operator_verdict and never grant autonomy.",
+        "note": ("Auto labels never set operator_verdict and never grant autonomy. SELF_RESOLVED and "
+                 "FLAPPING are not false-positive claims; their precision is agreement with the "
+                 "operator's FALSE_POSITIVE, used as a proxy."),
     }

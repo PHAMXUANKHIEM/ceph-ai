@@ -1,0 +1,227 @@
+{
+  "cluster_name": "CS-LAB",
+  "git_sha": "178642ab",
+  "output_stored": false,
+  "read_only": true,
+  "runs": [
+    {
+      "code": "NODE_UNREACHABLE:<host>",
+      "collectors": [
+        {
+          "duration_ms": 2323,
+          "id": "mon_ping",
+          "status": "ok",
+          "target_kind": "host",
+          "truncated": false
+        },
+        {
+          "duration_ms": 453,
+          "id": "host_uptime",
+          "status": "ok",
+          "target_kind": "host",
+          "truncated": false
+        },
+        {
+          "duration_ms": 7871,
+          "id": "ceph_osd_tree",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        },
+        {
+          "duration_ms": 2448,
+          "id": "ceph_health_detail",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        }
+      ],
+      "runbook": "NODE_UNREACHABLE",
+      "skipped": [],
+      "triage": {
+        "action_id": null,
+        "conclusion": "TRANSIENT",
+        "confidence": 0.8,
+        "summary": "Host đã trả lời SSH trở lại khi thu bằng chứng."
+      },
+      "wall_seconds": 13.1
+    },
+    {
+      "code": "OSD_LATENCY_HIGH:1",
+      "collectors": [
+        {
+          "duration_ms": 2509,
+          "id": "ceph_osd_perf",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        },
+        {
+          "duration_ms": 2544,
+          "id": "ceph_osd_slow_ops",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": true
+        },
+        {
+          "duration_ms": 3046,
+          "id": "ceph_osd_metadata",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        },
+        {
+          "duration_ms": 3707,
+          "id": "ceph_osd_df",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        },
+        {
+          "duration_ms": 3946,
+          "id": "ceph_pg_dump_stuck",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        }
+      ],
+      "runbook": "OSD_LATENCY_HIGH",
+      "skipped": [],
+      "triage": {
+        "action_id": null,
+        "conclusion": "RECOVERED",
+        "confidence": 0.6,
+        "summary": "osd.1 hiện 0 ms, gần mức chung (2 ms)."
+      },
+      "wall_seconds": 15.8
+    },
+    {
+      "code": "MON_CLOCK_SKEW",
+      "collectors": [
+        {
+          "duration_ms": 3164,
+          "id": "ceph_time_sync",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        },
+        {
+          "duration_ms": 4820,
+          "id": "ceph_health_detail",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        }
+      ],
+      "runbook": "MON_CLOCK_SKEW",
+      "skipped": [
+        {
+          "collector_id": "host_uptime",
+          "reason": "không có incident_host"
+        }
+      ],
+      "triage": {
+        "action_id": null,
+        "conclusion": "RECOVERED",
+        "confidence": 0.8,
+        "summary": "Mọi MON đã đồng bộ giờ."
+      },
+      "wall_seconds": 8.0
+    },
+    {
+      "code": "PG_DEGRADED",
+      "collectors": [
+        {
+          "duration_ms": 5061,
+          "id": "ceph_health_detail",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        },
+        {
+          "duration_ms": 4904,
+          "id": "ceph_pg_dump_stuck",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        },
+        {
+          "duration_ms": 2947,
+          "id": "ceph_osd_tree",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        },
+        {
+          "duration_ms": 3830,
+          "id": "ceph_osd_df",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        }
+      ],
+      "runbook": "PG_DEGRADED",
+      "skipped": [],
+      "triage": {
+        "action_id": null,
+        "conclusion": "UNKNOWN",
+        "confidence": 0.0,
+        "summary": "Chưa có luật cho fault family này."
+      },
+      "wall_seconds": 16.7
+    },
+    {
+      "code": "OSD_DOWN",
+      "collectors": [
+        {
+          "duration_ms": 2967,
+          "id": "ceph_osd_tree",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        },
+        {
+          "duration_ms": 2810,
+          "id": "ceph_health_detail",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        },
+        {
+          "duration_ms": 5119,
+          "id": "ceph_crash_ls_new",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        },
+        {
+          "duration_ms": 2893,
+          "id": "ceph_device_ls",
+          "status": "ok",
+          "target_kind": "mon",
+          "truncated": false
+        }
+      ],
+      "runbook": "OSD_DOWN",
+      "skipped": [
+        {
+          "collector_id": "ceph_osd_metadata",
+          "reason": "thiếu osd_id"
+        }
+      ],
+      "triage": {
+        "action_id": null,
+        "conclusion": "UNKNOWN",
+        "confidence": 0.0,
+        "summary": "Chưa có luật cho fault family này."
+      },
+      "wall_seconds": 13.8
+    }
+  ],
+  "schema": "ceph-ai.evidence-smoke.v1",
+  "summary": {
+    "collectors": 19,
+    "max_wall_seconds": 16.7,
+    "ok": 19
+  }
+}

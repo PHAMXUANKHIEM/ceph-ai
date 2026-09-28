@@ -91,7 +91,8 @@
         <details class="evidence-row">
           <summary><code>{{ row.collector_id }}</code> · {{ row.target }} · <strong>{{ row.status }}</strong>{% if row.duration_ms %} · {{ row.duration_ms }} ms{% endif %}{% if row.truncated %} · đã cắt bớt{% endif %}</summary>
           {% if row.command %}<p class="hint"><code>{{ row.command }}</code></p>{% endif %}
-          {% if row.output_redacted %}<pre class="evidence-output">{{ row.output_redacted }}</pre>{% endif %}
+          {% if row.output_redacted and is_admin %}<pre class="evidence-output">{{ row.output_redacted }}</pre>
+          {% elif row.output_redacted %}<p class="hint">Output chi tiết chỉ admin xem được.</p>{% endif %}
         </details>
         {% endfor %}
       {% else %}<p class="empty-state">Chưa thu bằng chứng cho incident này.</p>{% endif %}

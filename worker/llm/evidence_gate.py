@@ -12,8 +12,9 @@ the incident) and applies the deterministic rules.
 * Otherwise the LLM gets the real evidence in its prompt, with the
   instruction to cite it and to say when evidence is missing.
 
-``settings.investigation_enabled`` switches the whole gate off (the test
-suite does that), in which case diagnosis behaves exactly as before.
+INVESTIGATION_ENABLED (off by default) and INVESTIGATION_CLUSTER_IDS
+(canary clusters) decide where it runs; elsewhere diagnosis behaves
+exactly as before.
 """
 
 from __future__ import annotations
@@ -55,6 +56,9 @@ def _collect_if_missing(incident_id: str) -> list[IncidentEvidence]:
     with db.SessionLocal() as session:
         incident = session.get(Incident, incident_id)
         if incident is None:
+            return []
+        cluster_id = incident.cluster_id or session.query(Cluster.id).filter(Cluster.is_default.is_(True)).scalar()
+        if not incident_evidence.investigation_allowed(cluster_id):
             return []
         rows = incident_evidence.for_incident(session, incident_id)
         if rows:

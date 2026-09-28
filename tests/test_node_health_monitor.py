@@ -456,6 +456,10 @@ def test_restart_still_holds_a_recovering_host_open(reachability, monkeypatch):
     _scan(monkeypatch, ok=False)
     # Watcher restart: in-memory counters are gone, the open incident is not.
     _reset_reachability()
+    # The streak was in memory; a restarted Watcher must see the full
+    # recovery streak itself before it closes the incident (fail closed).
     _scan(monkeypatch, ok=True)
-    # No failure seen since restart, so the probe counts as recovered.
+    _scan(monkeypatch, ok=True)
+    assert _incidents()[0].status != IncidentStatus.RESOLVED.value
+    _scan(monkeypatch, ok=True)
     assert _incidents()[0].status == IncidentStatus.RESOLVED.value

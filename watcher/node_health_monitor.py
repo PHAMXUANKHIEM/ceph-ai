@@ -125,11 +125,13 @@ def check_node_reachability(still_unreachable: set[str] | None = None) -> dict[s
             _consecutive_unreachable_scans[host] = 0
             successes = _consecutive_reachable_scans.get(host, 0) + 1
             _consecutive_reachable_scans[host] = successes
-            # Recovery hysteresis: a host that failed recently is not
-            # recovered until it passes several probes in a row.
+            # Recovery hysteresis: a host is not recovered until it passes
+            # several probes in a row. Fail closed across a Watcher restart:
+            # the streak lives in memory, so a restarted process holds an
+            # open incident until it has seen the full streak itself. This
+            # only keeps existing incidents open; it never opens one.
             if (
-                host in _last_unreachable_at
-                and successes < max(1, int(settings.node_reachability_recovery_successes))
+                successes < max(1, int(settings.node_reachability_recovery_successes))
                 and still_unreachable is not None
             ):
                 still_unreachable.add(node_unreachable_code_for(host))

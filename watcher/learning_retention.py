@@ -20,6 +20,7 @@ from shared.models import (
     ForecastModelEvaluation,
     ForecastModelPromotionAudit,
     HostMetricSample,
+    IncidentEvidence,
     LogLearningAudit,
     NodeResourceForecastAlert,
     NodeResourceForecastFeedback,
@@ -47,6 +48,7 @@ def _zero_result() -> dict[str, int]:
         "model_evaluations": 0,
         "promotion_audits": 0,
         "learning_audit": 0,
+        "incident_evidence": 0,
     }
 
 
@@ -116,6 +118,12 @@ def prune_old_rows(now: datetime | None = None) -> dict[str, int]:
             ).delete(synchronize_session=False)
             result["learning_audit"] = session.query(LogLearningAudit).filter(
                 LogLearningAudit.created_at < audit_cutoff,
+            ).delete(synchronize_session=False)
+            # Pre-diagnosis command output (WP3.3) may hold data the regex
+            # redaction missed, so it is kept only briefly.
+            evidence_cutoff = now - timedelta(days=settings.incident_evidence_retention_days)
+            result["incident_evidence"] = session.query(IncidentEvidence).filter(
+                IncidentEvidence.created_at < evidence_cutoff,
             ).delete(synchronize_session=False)
             session.commit()
     except Exception:

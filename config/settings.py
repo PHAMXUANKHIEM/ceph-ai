@@ -409,10 +409,17 @@ class Settings(BaseSettings):
     # Autonomy plan WP3.3: collect read-only evidence (runbooks in
     # worker/policy/investigation_runbooks.yaml) for newly opened incidents,
     # in a background thread so it never delays incident detection.
-    investigation_enabled: bool = True
+    # Off by default: enable it on a canary first. INVESTIGATION_CLUSTER_IDS
+    # (comma-separated cluster ids) limits it to those clusters; empty means
+    # every cluster once enabled.
+    investigation_enabled: bool = False
+    investigation_cluster_ids: str = ""
     investigation_scan_interval_seconds: int = Field(default=60, ge=30, le=3600)
     investigation_max_age_minutes: int = Field(default=30, ge=5, le=1440)
     investigation_incidents_per_scan: int = Field(default=2, ge=1, le=10)
+    # Collected command output is deleted after this many days (retention
+    # sweep in watcher/learning_retention.py).
+    incident_evidence_retention_days: int = Field(default=30, ge=1, le=365)
     # WP3.4: a rule conclusion at least this confident (and at least
     # ai_min_diagnosis_confidence) replaces the LLM call for that incident.
     triage_min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
