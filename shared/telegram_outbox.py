@@ -131,6 +131,33 @@ def enqueue_node_alert(
 
 
 
+def enqueue_node_flapping_alert(
+    session,
+    *,
+    incident_id: str,
+    host: str,
+    message: str,
+) -> str:
+    """Queue the single "host is flapping" notice for one Incident.
+
+    Separate from the initial hardware alert (whose event id is idempotent
+    per Incident), so both are delivered exactly once.
+    """
+    payload = {
+        "kind": "node_alert",
+        "incident_id": incident_id,
+        "host": str(host),
+        "message": str(message)[:4000],
+    }
+    return _enqueue(
+        session,
+        event_id=f"incident:{incident_id}:hardware_flapping",
+        incident_id=incident_id,
+        category="hardware",
+        payload=payload,
+    )
+
+
 def enqueue_osd_latency_alert(
     session,
     *,

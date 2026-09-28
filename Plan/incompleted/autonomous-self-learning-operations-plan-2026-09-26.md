@@ -80,23 +80,23 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 **Hiện trạng:** mở sau 2 lần lỗi, đóng sau 1 lần OK → flapping sinh incident mới liên tục.
 
-- [ ] Thêm settings (`config/settings.py`, `shared/env_config.py` nếu cần hiển thị trên Settings):
+- [x] Thêm settings `node_reachability_recovery_successes=3`, `node_reachability_flap_window_seconds=3600`, `node_reachability_flap_threshold=3` (`config/settings.py`):
   - `node_reachability_recovery_successes: int = Field(default=3, ge=1, le=20)` — số lần quét OK liên tiếp trước khi RESOLVED,
   - `node_reachability_flap_window_seconds: int = 3600`,
   - `node_reachability_flap_threshold: int = 3` — số lần chuyển trạng thái trong cửa sổ để coi là flapping.
-- [ ] Lưu bộ đếm hồi phục bền vững (không chỉ trong RAM, vì Watcher restart): bảng nhẹ `node_reachability_state(cluster_id, host, consecutive_ok, consecutive_fail, transitions_json, updated_at)` + migration Alembic + test migration (`tests/test_migrations.py`).
-- [ ] Sửa `create_or_resolve_node_unreachable_incidents`:
+- [x] ~~Bảng trạng thái mới~~ không cần: số lần flapping đếm từ bảng `incidents` trong cửa sổ (bền qua restart); bộ đếm OK liên tiếp trong RAM, restart chỉ làm incident đóng theo hướng bình thường (có test).
+- [x] Sửa `check_node_reachability` (hysteresis) + `create_or_resolve_node_unreachable_incidents` (giữ mở khi flapping, gắn `flapping`, 1 cảnh báo qua `telegram_outbox.enqueue_node_flapping_alert`):
   - chỉ RESOLVED khi `consecutive_ok >= recovery_successes`,
   - nếu `transitions` trong cửa sổ ≥ `flap_threshold` → **không mở incident mới**, cập nhật incident hiện có sang trạng thái/nhãn `FLAPPING` (ghi `signal_evidence_json.flapping=true`, số lần chuyển, khoảng thời gian),
   - Telegram: một thông báo "host chập chờn" mỗi cửa sổ, không phải mỗi lần.
-- [ ] Không đổi action mặc định trong WP này (vẫn approval-gated); WP3 sẽ thay bằng điều tra tự động.
-- [ ] Test (`tests/test_node_health_monitor.py` hoặc file mới):
+- [x] Không đổi action mặc định (vẫn approval-gated).
+- [x] Test trong `tests/test_node_health_monitor.py` (4 test mới, 18 test cũ giữ nguyên):
   - 1 lần OK giữa chuỗi lỗi không đóng incident,
   - 3 lần OK liên tiếp đóng incident,
   - 3 lần chuyển trạng thái trong 1 giờ → 1 incident FLAPPING, không có incident thứ hai,
   - Watcher restart giữa chừng giữ nguyên bộ đếm,
   - host khác không bị ảnh hưởng.
-- [ ] Replay dữ liệu 30 ngày (script read-only mô phỏng chuỗi quét từ `incidents` + `audit`) để ước lượng số incident còn lại trước khi bật.
+- [x] Replay 30 ngày: `NODE_UNREACHABLE` 1.992 → 231 (**−88,4%**), host nặng nhất 609 → 54.
 
 **Nghiệm thu:** replay cho thấy `NODE_UNREACHABLE` giảm ≥ 80%; sau deploy 7 ngày đo bằng WP0 khớp replay ± 20%.
 **Rollback:** đặt `recovery_successes=1`, `flap_threshold` rất lớn → hành vi cũ.
@@ -340,6 +340,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 |---|---|---|---|---|
 | 26/09/2026 | Lập plan | Baseline §1 đo trên DB production (read-only) | Bảng §1 | Recorded |
 | 28/09/2026 | WP0 KPI | Script + API + thẻ KPI; baseline 6.817 incident, reopen 38,3%, placeholder 97,5%, 0 verdict | `docs/benchmark/autonomy-kpi-baseline-2026-09-28.json` | Accepted |
+| 28/09/2026 | WP1.1 NODE_UNREACHABLE | Hysteresis 3 lần OK + giữ mở khi flapping (≥3 incident/giờ, ổn định 1 giờ mới đóng), 1 cảnh báo chập chờn; replay 1.992 → 231 (−88,4%) | `tests/test_node_health_monitor.py` 22 passed | Partial (chờ deploy đo thật) |
 
 ## 13. Quy tắc trạng thái
 

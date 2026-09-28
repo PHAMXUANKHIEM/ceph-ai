@@ -739,6 +739,14 @@ class Settings(BaseSettings):
     # but require two consecutive failures before notifying operators.
     node_reachability_scan_interval_seconds: int = 120
     node_reachability_consecutive_failures: int = Field(default=2, ge=1, le=10)
+    # Autonomy plan WP1.1: one successful probe used to resolve the incident,
+    # so a flapping host opened hundreds of incidents. A host must now pass
+    # this many consecutive probes, and a host with at least
+    # node_reachability_flap_threshold incidents inside the flap window stays
+    # open until it has been stable for the whole window.
+    node_reachability_recovery_successes: int = Field(default=3, ge=1, le=20)
+    node_reachability_flap_window_seconds: int = Field(default=3600, ge=300, le=86400)
+    node_reachability_flap_threshold: int = Field(default=3, ge=2, le=50)
 
     # CPU/RAM forecasting is deliberately backed by Loki rather than the
     # application database.  Watcher pushes each node-health sample as a

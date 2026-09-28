@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from shared.time import utc_now
 
 from config.settings import settings
@@ -88,6 +88,8 @@ _RECOVERABLE_STATUSES = {
 # count is small and stable enough not to be a real unbounded-growth risk).
 _consecutive_high_scans: dict[str, int] = {}
 _consecutive_unreachable_scans: dict[str, int] = {}
+_consecutive_reachable_scans: dict[str, int] = {}
+_last_unreachable_at: dict[str, datetime] = {}
 
 
 def node_unreachable_code_for(host: str) -> str:
@@ -107,6 +109,8 @@ def check_node_reachability(still_unreachable: set[str] | None = None) -> dict[s
         except Exception as exc:
             failures = _consecutive_unreachable_scans.get(host, 0) + 1
             _consecutive_unreachable_scans[host] = failures
+            _consecutive_reachable_scans[host] = 0
+            _last_unreachable_at[host] = utc_now()
             code = node_unreachable_code_for(host)
             if still_unreachable is not None:
                 still_unreachable.add(code)
@@ -119,7 +123,71 @@ def check_node_reachability(still_unreachable: set[str] | None = None) -> dict[s
                 }
         else:
             _consecutive_unreachable_scans[host] = 0
+            successes = _consecutive_reachable_scans.get(host, 0) + 1
+            _consecutive_reachable_scans[host] = successes
+            # Recovery hysteresis: a host that failed recently is not
+            # recovered until it passes several probes in a row.
+            if (
+                host in _last_unreachable_at
+                and successes < max(1, int(settings.node_reachability_recovery_successes))
+                and still_unreachable is not None
+            ):
+                still_unreachable.add(node_unreachable_code_for(host))
     return flagged
+
+
+def _naive_utc(value: datetime) -> datetime:
+    """The repository stores naive UTC (shared.time.utc_now); accept either."""
+    return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+
+
+def _flap_count(session, ceph_code: str, now: datetime) -> int:
+    """Incidents for this host inside the flap window, read from the DB so a
+    Watcher restart does not forget a flapping host."""
+    window = timedelta(seconds=int(settings.node_reachability_flap_window_seconds))
+    return (
+        session.query(Incident)
+        .filter(Incident.ceph_code == ceph_code, Incident.created_at >= _naive_utc(now) - window)
+        .count()
+    )
+
+
+def _hold_open_while_flapping(session, incident: Incident, now: datetime) -> bool:
+    """Keep a flapping host's incident open until it has been stable for the
+    whole flap window; mark it once and send one "flapping" alert."""
+    flaps = _flap_count(session, incident.ceph_code, now)
+    if flaps < int(settings.node_reachability_flap_threshold):
+        return False
+    host = incident.ceph_code.removeprefix(NODE_UNREACHABLE_PREFIX)
+    last_failure = _naive_utc(_last_unreachable_at.get(host) or incident.detected_at)
+    stable_for = (_naive_utc(now) - last_failure).total_seconds()
+    return stable_for < int(settings.node_reachability_flap_window_seconds)
+
+
+def _mark_flapping(session, incident: Incident, flaps: int) -> str | None:
+    try:
+        evidence = json.loads(incident.signal_evidence_json or "{}")
+    except ValueError:
+        evidence = {}
+    if evidence.get("flapping"):
+        return None
+    evidence.update({
+        "flapping": True,
+        "flap_count": flaps,
+        "flap_window_seconds": int(settings.node_reachability_flap_window_seconds),
+    })
+    incident.signal_evidence_json = json.dumps(evidence, sort_keys=True)
+    host = incident.ceph_code.removeprefix(NODE_UNREACHABLE_PREFIX)
+    message = (
+        f"Node {host} đang chập chờn: {flaps} lần mất kết nối trong "
+        f"{int(settings.node_reachability_flap_window_seconds) // 60} phút. Incident được giữ mở "
+        "cho đến khi node ổn định trọn cửa sổ; sẽ không mở thêm incident mới cho từng lần."
+    )
+    if alert_lifecycle.inherit_active_mute(session, incident):
+        return None
+    return telegram_outbox.enqueue_node_flapping_alert(
+        session, incident_id=incident.id, host=host, message=message,
+    )
 
 
 def _unreachable_rationale(detail: dict) -> str:
@@ -153,10 +221,19 @@ def create_or_resolve_node_unreachable_incidents(
         )
         open_codes = {incident.ceph_code for incident in open_incidents}
         still_unreachable = still_unreachable or set()
+        now = utc_now()
         for incident in open_incidents:
-            if incident.ceph_code not in current and incident.ceph_code not in still_unreachable:
-                incident.status = IncidentStatus.RESOLVED.value
-                cancel_pending_actions(session, incident.id)
+            if incident.ceph_code in current or incident.ceph_code in still_unreachable:
+                flaps = _flap_count(session, incident.ceph_code, now)
+                if flaps >= int(settings.node_reachability_flap_threshold):
+                    event_id = _mark_flapping(session, incident, flaps)
+                    if event_id:
+                        pending_event_ids.append(event_id)
+                continue
+            if _hold_open_while_flapping(session, incident, now):
+                continue
+            incident.status = IncidentStatus.RESOLVED.value
+            cancel_pending_actions(session, incident.id)
 
         for ceph_code, detail in current.items():
             if ceph_code in open_codes:

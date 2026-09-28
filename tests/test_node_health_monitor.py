@@ -350,3 +350,112 @@ def test_node_unreachable_incident_sends_one_alert_and_resolves(isolated_db, mon
     with db_module.SessionLocal() as session:
         incident = session.query(Incident).filter_by(ceph_code="NODE_UNREACHABLE:node-1").one()
         assert incident.status == IncidentStatus.RESOLVED.value
+
+
+# --- WP1.1: recovery hysteresis and flapping (autonomy plan) ---------------
+
+
+def _reset_reachability():
+    nhm._consecutive_unreachable_scans.clear()
+    nhm._consecutive_reachable_scans.clear()
+    nhm._last_unreachable_at.clear()
+
+
+def _probe(monkeypatch, ok: bool):
+    if ok:
+        monkeypatch.setattr(nhm.ceph_client, "run_command_on_node", lambda *args, **kwargs: "")
+    else:
+        monkeypatch.setattr(
+            nhm.ceph_client, "run_command_on_node",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("SSH timeout")),
+        )
+
+
+def _scan(monkeypatch, ok: bool):
+    _probe(monkeypatch, ok)
+    still = set()
+    current = nhm.check_node_reachability(still)
+    nhm.create_or_resolve_node_unreachable_incidents(current, still)
+
+
+def _incidents():
+    with db_module.SessionLocal() as session:
+        return session.query(Incident).filter(Incident.ceph_code == "NODE_UNREACHABLE:node-1").order_by(
+            Incident.created_at
+        ).all()
+
+
+@pytest.fixture
+def reachability(isolated_db, monkeypatch):
+    _reset_reachability()
+    monkeypatch.setattr(nhm, "configured_nodes", lambda: [{"host": "node-1", "roles": ["OSD"]}])
+    monkeypatch.setattr(nhm.settings, "node_reachability_consecutive_failures", 2, raising=False)
+    monkeypatch.setattr(nhm.settings, "node_reachability_recovery_successes", 3, raising=False)
+    monkeypatch.setattr(nhm.settings, "node_reachability_flap_window_seconds", 3600, raising=False)
+    monkeypatch.setattr(nhm.settings, "node_reachability_flap_threshold", 3, raising=False)
+    alerts = []
+    monkeypatch.setattr(nhm, "send_node_alert", lambda host, message: alerts.append(message))
+    yield alerts
+    _reset_reachability()
+
+
+def test_one_good_probe_does_not_resolve_the_incident(reachability, monkeypatch):
+    _scan(monkeypatch, ok=False)
+    _scan(monkeypatch, ok=False)
+    assert [row.status for row in _incidents()] == [IncidentStatus.PENDING_APPROVAL.value]
+    _scan(monkeypatch, ok=True)
+    _scan(monkeypatch, ok=True)
+    assert _incidents()[0].status == IncidentStatus.PENDING_APPROVAL.value
+    _scan(monkeypatch, ok=True)
+    assert _incidents()[0].status == IncidentStatus.RESOLVED.value
+
+
+def test_intermittent_failures_during_recovery_keep_one_incident(reachability, monkeypatch):
+    for ok in (False, False, True, False, True, True, False, False, True):
+        _scan(monkeypatch, ok=ok)
+    rows = _incidents()
+    assert len(rows) == 1
+    assert rows[0].status == IncidentStatus.PENDING_APPROVAL.value
+
+
+def test_flapping_host_is_held_open_and_alerted_once(reachability, monkeypatch):
+    from datetime import timedelta
+
+    # Three separate outages within the hour (history from the DB).
+    with db_module.SessionLocal() as session:
+        for minutes in (50, 30):
+            session.add(Incident(
+                ceph_code="NODE_UNREACHABLE:node-1", status=IncidentStatus.RESOLVED.value,
+                detected_at=nhm.utc_now() - timedelta(minutes=minutes),
+                created_at=(nhm.utc_now() - timedelta(minutes=minutes)).replace(tzinfo=None),
+            ))
+        session.commit()
+    _scan(monkeypatch, ok=False)
+    _scan(monkeypatch, ok=False)
+    _scan(monkeypatch, ok=False)
+    open_rows = [row for row in _incidents() if row.status != IncidentStatus.RESOLVED.value]
+    assert len(open_rows) == 1
+    evidence = json.loads(open_rows[0].signal_evidence_json)
+    assert evidence["flapping"] is True and evidence["flap_count"] == 3
+    flapping_alerts = [text for text in reachability if "chập chờn" in text]
+    assert len(flapping_alerts) == 1
+
+    # Recovered probes are not enough while the host is still inside the window.
+    for _ in range(5):
+        _scan(monkeypatch, ok=True)
+    assert [row for row in _incidents() if row.status != IncidentStatus.RESOLVED.value]
+
+    # Stable for the whole window -> resolved.
+    nhm._last_unreachable_at["node-1"] = nhm.utc_now() - timedelta(seconds=3601)
+    _scan(monkeypatch, ok=True)
+    assert all(row.status == IncidentStatus.RESOLVED.value for row in _incidents())
+
+
+def test_restart_still_holds_a_recovering_host_open(reachability, monkeypatch):
+    _scan(monkeypatch, ok=False)
+    _scan(monkeypatch, ok=False)
+    # Watcher restart: in-memory counters are gone, the open incident is not.
+    _reset_reachability()
+    _scan(monkeypatch, ok=True)
+    # No failure seen since restart, so the probe counts as recovered.
+    assert _incidents()[0].status == IncidentStatus.RESOLVED.value
