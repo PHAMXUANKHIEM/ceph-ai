@@ -243,11 +243,13 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ## WP4 — Tận dụng tính năng sẵn có của Ceph (ưu tiên P1)
 
-- [ ] Phát hiện trạng thái module mgr (`ceph mgr module ls`): `devicehealth`, `diskprediction_local`, `pg_autoscaler`, `balancer` — read-only, hiển thị trên Capability Matrix (`dashboard/routes/capability_matrix.py`).
-- [ ] Action approval-required `enable_mgr_module` (chỉ cho `diskprediction_local`, `devicehealth`) với preflight + rollback (`disable`).
-- [ ] Ingest `ceph device ls` + `ceph device predict-life-expectancy <devid>` định kỳ vào trang Disk Risk (`dashboard/routes/disk_risk.py`); dùng làm feature/evidence cho WP3 và WP6.
-- [ ] `pg_autoscaler`/`balancer`: chỉ đọc trạng thái + khuyến nghị (`ceph osd pool autoscale-status`, `ceph balancer status/eval`), không tự bật.
-- [ ] Test parser cho từng output JSON (fixture thật đã redact).
+- [x] Phát hiện trạng thái module mgr (`ceph mgr module ls`): `devicehealth`, `diskprediction_local`, `pg_autoscaler`, `balancer` — read-only (`shared/ceph_features.py`, tập lệnh cố định). **Đổi chỗ hiển thị:** card trên trang Disk Risk (`/api/ceph-features`, cache 10 phút/cluster) thay vì Capability Matrix, vì Capability Matrix là bảng tài liệu do admin nhập tay.
+- [ ] ~~Action approval-required `enable_mgr_module`~~ — **hoãn có bằng chứng:** CS-LAB dùng đĩa ảo virtio; `ceph device get-health-metrics` trên 3 device lấy mẫu: 1 rỗng, 2 chỉ có bản ghi `smartctl failed` (sudo exit 137) — module phân biệt bản ghi lỗi này với SMART thật. Vì vậy bật `diskprediction_local` không sinh dự đoán nào. Card hiển thị khuyến nghị bật (kèm lệnh, cần duyệt) chỉ khi có dữ liệu SMART. Làm action khi có cluster đĩa vật lý.
+- [x] Đọc `ceph device ls` (life expectancy) + lấy mẫu `get-health-metrics` tối đa 3 device (ưu tiên OSD, devid được kiểm tra regex trước khi đưa vào lệnh) để biết SMART có khả dụng không. Ingest định kỳ làm feature cho WP3/WP6: chưa làm.
+- [x] `pg_autoscaler`/`balancer`: chỉ đọc trạng thái + khuyến nghị (`ceph osd pool autoscale-status`, `ceph balancer status`), không tự bật.
+- [x] Test parser với fixture lấy từ CS-LAB đã redact, gồm định dạng `always_on_modules` kiểu cũ (`tests/test_ceph_features.py`).
+
+**Kết quả 28/09/2026 (CS-LAB, chỉ đọc):** devicehealth/balancer/pg_autoscaler luôn bật; diskprediction_local tắt; 9 device, 0 có dự đoán, 0/3 mẫu có SMART (2 smartctl lỗi); balancer upmap, phân bố đã tối ưu; autoscaler không đề xuất thay đổi. Tiêu chí "≥ 80% device có life expectancy" không thể đạt trên đĩa ảo.
 
 **Nghiệm thu:** Disk Risk hiển thị life expectancy cho ≥ 80% device khi module bật; mỗi incident `DEVICE_HEALTH` có dự đoán kèm theo.
 **Ước lượng:** 2–3 ngày.
@@ -368,6 +370,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP2.2 Nhắc verdict | 5 case/ngày theo độ hữu ích, qua kênh cluster, không trùng | 54 passed | Partial (chờ deploy) |
 | 28/09/2026 | WP2.3 Nhãn tự động | 6 LF, tính khi cần (không migration), báo cáo chỉ đọc; 92% case có nhãn | 5 passed | Done (precision chờ nhãn operator) |
 | 28/09/2026 | WP2.4 Verdict trên Alert Center | Cột verdict + nút một chạm + lọc chưa nhãn; check trình duyệt | 5 passed | Done (chờ deploy) |
+| 28/09/2026 | WP4 Tính năng Ceph (chỉ đọc) | Card Disk Risk: devicehealth, diskprediction_local, pg_autoscaler, balancer + SMART; phân biệt smartctl lỗi; action bật module hoãn (đĩa ảo) | 14 passed | Partial (chờ deploy; action + ingest định kỳ còn lại) |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 

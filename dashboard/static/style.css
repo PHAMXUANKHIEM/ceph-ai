@@ -7083,3 +7083,6 @@ body:not(.dashboard-page-shell) .chat-fab,
 .backup-inventory-toolbar label input { min-width: 145px; }
 .backup-inventory-detail { margin-top: .8rem; padding: 1rem; border: 1px solid #334155; border-radius: 8px; background: #1e293b; color: #e2e8f0; line-height: 1.6; overflow-wrap: anywhere; }
 .backup-inventory-pagination { display: flex; align-items: center; justify-content: center; gap: .8rem; margin-top: 1rem; }
+.ceph-feature-ok { color: var(--success, #2e7d32); font-weight: 600; }
+.ceph-feature-warn { color: var(--warning, #b26a00); font-weight: 600; }
+.ceph-feature-info, .ceph-feature-unavailable { color: var(--muted); }
