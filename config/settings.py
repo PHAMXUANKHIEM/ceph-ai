@@ -401,6 +401,9 @@ class Settings(BaseSettings):
     ai_ops_weekly_digest_day: str = "mon"
     ai_ops_weekly_digest_hour: int = Field(default=8, ge=0, le=23)
     ai_ops_weekly_digest_minute: int = Field(default=0, ge=0, le=59)
+    # Autonomy plan WP8: the weekly digest also writes its autonomy section
+    # as JSON here (one file per ISO week). Empty disables the file.
+    ai_ops_weekly_report_dir: str = ""
     # Autonomy plan WP2.2: once a day (Asia/Ho_Chi_Minh), ask for verdicts on
     # the few remediation cases that would teach the learning loop the most.
     verdict_nudge_enabled: bool = True

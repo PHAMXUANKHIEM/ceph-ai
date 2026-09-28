@@ -1,0 +1,49 @@
+[
+  {
+    "schema": "ceph-ai.weekly-autonomy-report.v1",
+    "cluster": "CS-LAB",
+    "period_start": "2026-09-21T10:01:24.765918",
+    "period_end": "2026-09-28T10:01:24.765918",
+    "noise": {
+      "incidents": 1842,
+      "top_families": [
+        [
+          "NODE_UNREACHABLE",
+          1163
+        ],
+        [
+          "CRUSH_SKEW_PG",
+          273
+        ],
+        [
+          "OSD_LATENCY_HIGH",
+          251
+        ]
+      ],
+      "reopen_rate": 0.6021,
+      "investigate_manually_rate": 0.9723
+    },
+    "verdicts": {
+      "new": {
+        "CORRECT": 3
+      },
+      "new_total": 3,
+      "labelled_total": 3,
+      "label_target": 200
+    },
+    "evidence": null,
+    "decisions": null,
+    "playbooks": {
+      "ready": [],
+      "closest": [],
+      "threshold": {
+        "verified": 20,
+        "trust_score": 0.85
+      }
+    },
+    "errors": {
+      "evidence": "ProgrammingError",
+      "decisions": "ProgrammingError"
+    }
+  }
+]

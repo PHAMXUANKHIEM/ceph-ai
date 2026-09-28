@@ -325,7 +325,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 ## WP8 — Quan sát, quản trị và tài liệu
 
 - [ ] Trang `/ai-learning`: thẻ KPI (WP0), chất lượng LF (WP2.3), evidence coverage (WP3), OPE/FRR (WP6).
-- [ ] Báo cáo tuần tự động (Telegram + JSON trong `docs/benchmark/`): KPI, top incident, verdict mới, playbook gần đạt Trust Engine.
+- [x] Báo cáo tuần tự động: mục "🤖 Tự vận hành" ghép vào digest AI Ops thứ Hai sẵn có (`worker/ai_ops_digest.py`, lịch `AI_OPS_WEEKLY_DIGEST_*`), mỗi cluster: nhiễu (incident, top family, tỉ lệ mở lại, investigate_manually), verdict mới + tiến độ tới 200 nhãn, bằng chứng + độ phủ luật, nguồn quyết định, playbook đủ/gần ngưỡng Trust Engine (`shared/weekly_autonomy_report.py`). Mỗi mục lỗi riêng (rollback, ghi "Thiếu mục") không chặn digest. JSON: `AI_OPS_WEEKLY_REPORT_DIR` (mặc định tắt) hoặc `scripts/weekly_autonomy_report.py` chạy tay. Chạy thật 28/09 (`docs/benchmark/weekly-autonomy-2026-W40.json`): 1.842 incident/7 ngày, mở lại ≤30 phút 60,2%, investigate_manually 97,2%, 3/200 verdict; evidence/decisions báo thiếu vì production chưa migrate.
 - [ ] `docs/ai-evaluation.md`, `docs/production-release-runbook.md`: bổ sung quy trình verdict, chaos, nâng quyền.
 - [ ] Mỗi WP thêm browser acceptance check nếu có UI; static-analysis budget/coverage gate phải pass; critical-path coverage không giảm.
 
@@ -393,6 +393,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | Review — artifact CS-LAB | `scripts/evidence_smoke.py` (chỉ đọc, không lưu output lệnh, che IP) → `docs/benchmark/evidence-smoke-2026-09-28.json`: 5 runbook, 19/19 collector ok, lượt dài nhất 16,7 s; triage: TRANSIENT, RECOVERED×2, UNKNOWN×2 | artifact | Done |
 | 28/09/2026 | Review — chưa làm được bằng code | Deploy canary + đo KPI ≥ 7 ngày; ≥ 100 verdict; deploy/live workflow trên runner đúng; PostgreSQL/RabbitMQ/rollback/soak/DR; HA | — | Chờ vận hành |
 | 28/09/2026 | WP6.1–6.2 Decision log + OPE | Worker ghi quyết định (nguồn, context có cấu trúc, propensity) cho mọi case mới; IPS/SNIPS/DR + CI + support; báo cáo chỉ đọc. Học/exploration (WP6.3) vẫn chờ ≥ 200 nhãn | 17 test mới, 212 passed | Done (chờ deploy + migrate) |
+| 28/09/2026 | WP8 Báo cáo tuần | Mục autonomy trong digest thứ Hai + JSON tuỳ chọn + script chạy tay; mỗi mục hạ cấp độc lập (đã thấy trên PostgreSQL thật khi thiếu bảng) | 4 test mới | Done (chờ deploy) |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 
