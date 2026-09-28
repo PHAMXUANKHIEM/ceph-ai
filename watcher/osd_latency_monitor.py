@@ -40,6 +40,7 @@ import json
 import statistics
 from shared.time import utc_now
 
+from config.settings import settings
 from shared import alert_lifecycle, audit, db, telegram_outbox
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
@@ -98,10 +99,19 @@ _RECOVERABLE_STATUSES = {
 # lab/small deployment's OSD count is small and stable enough not to be a
 # real unbounded-growth risk).
 _consecutive_high_scans: dict[int, int] = {}
+_consecutive_ok_scans: dict[int, int] = {}
 
 
 def ceph_code_for(osd_id: int) -> str:
     return f"{OSD_LATENCY_HIGH_PREFIX}{osd_id}"
+
+
+def _open_scans() -> int:
+    return max(1, int(getattr(settings, "osd_latency_open_scans", CONSECUTIVE_SCANS_REQUIRED)))
+
+
+def _recovery_scans() -> int:
+    return max(1, int(getattr(settings, "osd_latency_recovery_scans", 1)))
 
 
 def check_osd_latency_outliers(
@@ -170,6 +180,7 @@ def check_osd_latency_outliers(
     for osd_id in commit_latency_by_id:
         if osd_id in currently_high:
             _consecutive_high_scans[osd_id] = _consecutive_high_scans.get(osd_id, 0) + 1
+            _consecutive_ok_scans[osd_id] = 0
             # 2026-08-20: độc lập với streak — xem
             # create_or_resolve_osd_latency_incidents để biết vì sao
             # "đang cao ngay bây giờ" phải tách khỏi "đã cao đủ lâu".
@@ -177,8 +188,14 @@ def check_osd_latency_outliers(
                 still_over_threshold.add(ceph_code_for(osd_id))
         else:
             _consecutive_high_scans[osd_id] = 0
+            ok_scans = _consecutive_ok_scans.get(osd_id, 0) + 1
+            _consecutive_ok_scans[osd_id] = ok_scans
+            # Recovery hysteresis: an OSD that was high is not recovered
+            # until it has looked normal for several scans in a row.
+            if ok_scans < _recovery_scans() and still_over_threshold is not None:
+                still_over_threshold.add(ceph_code_for(osd_id))
 
-        if _consecutive_high_scans[osd_id] >= CONSECUTIVE_SCANS_REQUIRED:
+        if _consecutive_high_scans[osd_id] >= _open_scans():
             flagged[ceph_code_for(osd_id)] = {
                 "osd_id": osd_id,
                 "host": host_by_osd_id.get(osd_id),

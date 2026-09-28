@@ -102,7 +102,14 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 **Rollback:** đặt `recovery_successes=1`, `flap_threshold` rất lớn → hành vi cũ.
 **Ước lượng:** 1–1,5 ngày.
 
-### WP1.2 `BLUESTORE_SLOW_OP_ALERT`: từ incident lặp sang tín hiệu xu hướng
+### WP1.2 (điều chỉnh theo dữ liệu 28/09) — `BLUESTORE_SLOW_OP_ALERT` và `OSD_LATENCY_HIGH`
+
+**Phát hiện 28/09:** 1.025/1.040 incident BlueStore xảy ra **trong một ngày (06/09)**, chồng lên nhau (tạo trùng khi incident trước còn mở) — một đợt bão lịch sử, nay đã bị chặn bởi unique index in-flight (`uq_incidents_inflight_cluster_code`); sau đó ~1 incident/ngày. Nhiễu **hiện tại** (7 ngày: 1.833 incident) là `NODE_UNREACHABLE` 1.157 (WP1.1), `CRUSH_SKEW_PG/USE` 369 (WP1.4 mới), `OSD_LATENCY_HIGH` 256.
+
+- [x] `OSD_LATENCY_HIGH`: incident chỉ sống ~2 phút (mở sau 2 scan, đóng sau 1 scan tốt). Thêm `osd_latency_open_scans=4`, `osd_latency_recovery_scans=3`; replay 7 ngày **256 → 48 (−81%)**; test `tests/test_osd_latency_monitor.py` (16 passed).
+- [!] Phần BlueStore dưới đây **tạm hoãn**: không còn là nguồn nhiễu; chỉ làm nếu WP0 cho thấy tăng lại.
+
+#### (Hoãn) BlueStore: từ incident lặp sang tín hiệu xu hướng
 
 **Hiện trạng:** 1.040 incident/30 ngày; router có nhánh self-heal restart OSD có điều kiện (`router_client.py` ~1204).
 
@@ -117,10 +124,18 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 **Nghiệm thu:** incident BlueStore giảm ≥ 70% mà không bỏ sót trường hợp slow op tăng đột biến (test replay với 3 đợt thật trong dữ liệu).
 **Ước lượng:** 2 ngày.
 
+### WP1.4 (mới, 28/09) — Gom `CRUSH_SKEW_PG/USE` theo cluster
+
+**Dữ liệu 7 ngày:** 274 `CRUSH_SKEW_PG` + 95 `CRUSH_SKEW_USE`, tách thành 12 mã (theo OSD và host~class), sống 5–30 phút, cách nhau hàng giờ — là sự kiện thật (rebalance) bị chẻ nhỏ. Hysteresis chỉ giảm ≤ 45% và làm trễ 25 phút → không phù hợp.
+
+- [ ] Một incident `CRUSH_SKEW` mỗi cluster: các OSD/host~class lệch là **entity trong evidence** (danh sách + mức lệch), không phải mã riêng (`watcher/crush_skew_monitor.py`).
+- [ ] Cập nhật evidence khi tập entity đổi; đóng khi không còn entity lệch qua N scan.
+- [ ] Replay 7 ngày ước lượng số incident còn lại; test gom/tách/đóng.
+
 ### WP1.3 `OSD_LATENCY_HIGH:N` và health check tái mở
 
-- [ ] Áp dụng cùng khung hysteresis (WP1.1) cho `OSD_LATENCY_HIGH:*`: mở sau N mẫu vượt ngưỡng, đóng sau M mẫu bình thường; ngưỡng theo device class.
-- [ ] Chính sách chung "reopen suppression": incident cùng `dedupe_key` được RESOLVED < 30 phút trước → mở lại incident cũ (`REOPENED`, tăng `reopen_count`) thay vì tạo mới. Sửa ở điểm tạo incident chung của Watcher (dedupe hiện có trong `watcher/incident_grouping.py`).
+- [x] Hysteresis cho `OSD_LATENCY_HIGH:*` đã làm trong WP1.2 (mở 4 scan, đóng 3 scan).
+- [!] Reopen suppression chung: đo 30 ngày cho thấy mở lại < 5 phút chỉ 5,7% với health check khác (38% trước đây do `NODE_UNREACHABLE`, đã xử lý ở WP1.1) → ưu tiên thấp, đánh giá lại sau khi deploy WP1.1/WP1.2.
 - [ ] Test: reopen trong/ngoài cửa sổ, khác cluster không gộp, audit ghi `REOPENED`.
 
 **Nghiệm thu:** tỉ lệ tái mở (WP0) giảm ≥ 60%.
@@ -342,6 +357,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP0 KPI | Script + API + thẻ KPI; baseline 6.817 incident, reopen 38,3%, placeholder 97,5%, 0 verdict | `docs/benchmark/autonomy-kpi-baseline-2026-09-28.json` | Accepted |
 | 28/09/2026 | WP1.1 NODE_UNREACHABLE | Hysteresis 3 lần OK + giữ mở khi flapping (≥3 incident/giờ, ổn định 1 giờ mới đóng), 1 cảnh báo chập chờn; replay 1.992 → 231 (−88,4%) | `tests/test_node_health_monitor.py` 22 passed | Partial (chờ deploy đo thật) |
 | 28/09/2026 | WP2.1 Verdict Telegram | Hỏi verdict sau mỗi quyết định, lý do chọn sẵn, hàm ghi dùng chung, audit | `tests/test_telegram_approval_bot.py` 47 passed | Partial (chờ deploy, đo ≥ 30 verdict/tuần) |
+| 28/09/2026 | WP1.2 điều chỉnh | BlueStore = bão lịch sử 06/09 (đã chặn); OSD latency mở 4/đóng 3 scan, replay 256 → 48 (−81%); thêm WP1.4 gom CRUSH skew | `tests/test_osd_latency_monitor.py` 16 passed | Partial (chờ deploy) |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 
 ## 13. Quy tắc trạng thái

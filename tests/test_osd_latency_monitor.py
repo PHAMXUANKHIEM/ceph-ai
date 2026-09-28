@@ -27,14 +27,21 @@ def isolated_db(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def clear_module_state():
+def clear_module_state(monkeypatch):
     # osdlm._consecutive_high_scans is process-lifetime module state (by
     # design, same as watcher/node_health_monitor.py's own
     # _consecutive_high_scans) — would otherwise leak an osd_id's streak
     # across unrelated test functions.
+    # The streak-mechanics tests below predate the configurable open/close
+    # scans (autonomy plan WP1.2); pin the historic 2-open/1-close behaviour
+    # for them. The WP1.2 tests set their own values.
+    monkeypatch.setattr(osdlm.settings, "osd_latency_open_scans", osdlm.CONSECUTIVE_SCANS_REQUIRED, raising=False)
+    monkeypatch.setattr(osdlm.settings, "osd_latency_recovery_scans", 1, raising=False)
     osdlm._consecutive_high_scans.clear()
+    osdlm._consecutive_ok_scans.clear()
     yield
     osdlm._consecutive_high_scans.clear()
+    osdlm._consecutive_ok_scans.clear()
 
 
 def _osds(up_ids, down_ids=(), hosts=None):
@@ -260,3 +267,42 @@ def test_create_or_resolve_does_not_alert_on_resolve(isolated_db, monkeypatch):
     osdlm.create_or_resolve_osd_latency_incidents({})  # resolve — must not send another alert
 
     assert calls == []
+
+
+# --- WP1.2: configurable open/close hysteresis (autonomy plan) ---------------
+
+
+def test_default_settings_open_after_four_scans_and_close_after_three():
+    from config.settings import Settings
+
+    fields = Settings.model_fields
+    assert fields["osd_latency_open_scans"].default == 4
+    assert fields["osd_latency_recovery_scans"].default == 3
+
+
+def test_short_spike_does_not_open_with_four_scan_requirement(monkeypatch):
+    monkeypatch.setattr(osdlm.settings, "osd_latency_open_scans", 4, raising=False)
+    high = {0: 10.0, 1: 10.0, 2: 10.0, 3: 50.0}
+    normal = {0: 10.0, 1: 10.0, 2: 10.0, 3: 10.0}
+    for latencies in (high, high, high, normal):
+        _mock_ceph(monkeypatch, latencies, hosts={3: "node2"})
+        assert osdlm.check_osd_latency_outliers() == {}
+    for _ in range(3):
+        _mock_ceph(monkeypatch, high, hosts={3: "node2"})
+        assert osdlm.check_osd_latency_outliers() == {}
+    _mock_ceph(monkeypatch, high, hosts={3: "node2"})
+    assert "OSD_LATENCY_HIGH:3" in osdlm.check_osd_latency_outliers()
+
+
+def test_recovering_osd_stays_over_threshold_until_enough_good_scans(monkeypatch):
+    monkeypatch.setattr(osdlm.settings, "osd_latency_open_scans", 1, raising=False)
+    monkeypatch.setattr(osdlm.settings, "osd_latency_recovery_scans", 3, raising=False)
+    _mock_ceph(monkeypatch, {0: 10.0, 1: 10.0, 2: 10.0, 3: 50.0}, hosts={3: "node2"})
+    osdlm.check_osd_latency_outliers()
+    normal = {0: 10.0, 1: 10.0, 2: 10.0, 3: 10.0}
+    for expected_held in (True, True, False):
+        _mock_ceph(monkeypatch, normal, hosts={3: "node2"})
+        still = set()
+        osdlm.check_osd_latency_outliers(still)
+        assert ("OSD_LATENCY_HIGH:3" in still) is expected_held
+

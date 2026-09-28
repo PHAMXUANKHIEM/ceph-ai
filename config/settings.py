@@ -922,6 +922,11 @@ class Settings(BaseSettings):
     # transient MON hiccup on this query never affects the main health-check
     # cadence and vice versa.
     osd_latency_scan_interval_seconds: int = 120
+    # Autonomy plan WP1.2: 2 scans to open / 1 good scan to close produced
+    # ~2-minute incidents about hourly per OSD (256 in 7 days). Replay: 4
+    # scans to open and 3 good scans to close removes ~81% of them.
+    osd_latency_open_scans: int = Field(default=4, ge=1, le=20)
+    osd_latency_recovery_scans: int = Field(default=3, ge=1, le=20)
 
     # watcher/crush_structure_monitor.py + watcher/crush_distribution_monitor.py's
     # shared scan cadence (Epic 12, AD-25b) -- both `ceph osd crush dump` and
