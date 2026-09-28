@@ -47,6 +47,13 @@
               <option value="1y" {{ "selected" if period_filter == "1y" else "" }}>1 năm</option>
             </select>
           </label>
+          <label>Verdict
+            <select name="verdict">
+              <option value="all" {{ "selected" if verdict_filter == "all" else "" }}>Tất cả</option>
+              <option value="unlabelled" {{ "selected" if verdict_filter == "unlabelled" else "" }}>Chưa có nhãn</option>
+              <option value="labelled" {{ "selected" if verdict_filter == "labelled" else "" }}>Đã có nhãn</option>
+            </select>
+          </label>
           <button class="btn btn-primary btn-sm" type="submit">Lọc</button>
           <a class="btn btn-ghost btn-sm" href="/alerts">Xoá lọc</a>
         </form>
@@ -56,7 +63,7 @@
         </div>
         <div class="table-wrap">
           <table class="alert-center-table">
-            <thead><tr><th>Nhóm cảnh báo</th><th>Trạng thái</th><th>Số lần</th><th>Lần đầu</th><th>Lần gần nhất</th><th></th></tr></thead>
+            <thead><tr><th>Nhóm cảnh báo</th><th>Trạng thái</th><th>Số lần</th><th>Lần đầu</th><th>Lần gần nhất</th><th>Verdict</th><th></th></tr></thead>
             <tbody>
             {% for group in alert_groups %}
               {% set current = group.representative %}
@@ -78,6 +85,28 @@
                 <td><strong>{{ group.occurrence_count }}</strong>{% if group.active_count %}<div class="hint">{{ group.active_count }} đang mở</div>{% endif %}</td>
                 <td><code>{{ group.first_seen|vntime }}</code></td>
                 <td><code>{{ group.last_seen|vntime }}</code></td>
+                <td class="alert-verdict-cell">
+                  {% set case = group.case %}
+                  {% if not case %}<span class="hint">Không có case</span>
+                  {% elif case.operator_verdict %}<span class="alert-state-badge" title="{{ case_verdicts.get(case.operator_verdict, case.operator_verdict) }}">{{ case.operator_verdict }}</span>
+                  {% elif not is_admin %}<span class="hint">Chưa có nhãn</span>
+                  {% else %}
+                  <div class="alert-verdict-actions" data-case-id="{{ case.id }}">
+                    <form method="post" action="/incidents/{{ case.incident_id }}/cases/{{ case.id }}/verdict">
+                      <input type="hidden" name="verdict" value="CORRECT"><input type="hidden" name="next" value="{{ alerts_return }}">
+                      <button class="btn btn-ghost btn-sm" type="submit" title="{{ case_verdicts.CORRECT }}">✓ Đúng</button>
+                    </form>
+                    <details class="alert-verdict-more"><summary>Đánh giá khác</summary>
+                      <form method="post" action="/incidents/{{ case.incident_id }}/cases/{{ case.id }}/verdict" class="alert-verdict-form">
+                        <input type="hidden" name="next" value="{{ alerts_return }}">
+                        <select name="verdict" required aria-label="Verdict">{% for value, label in case_verdicts.items() if value != "CORRECT" %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select>
+                        <input type="text" name="note" maxlength="2000" placeholder="Ghi chú (bắt buộc nếu sai)" aria-label="Ghi chú">
+                        <button class="btn btn-ghost btn-sm" type="submit">Lưu</button>
+                      </form>
+                    </details>
+                  </div>
+                  {% endif %}
+                </td>
                 <td>
                   <div class="alert-row-actions"><a class="btn btn-ghost btn-sm" href="/incidents/{{ current.id }}/timeline">Xem timeline</a>
                   {% if group.is_acknowledged %}<form method="post" action="/alerts/{{ current.id }}/unacknowledge"><button class="btn btn-ghost btn-sm" type="submit">Bỏ xác nhận</button></form>{% else %}<form method="post" action="/alerts/{{ current.id }}/acknowledge"><button class="btn btn-ghost btn-sm" type="submit">Xác nhận</button></form>{% endif %}
@@ -85,7 +114,7 @@
                 </td>
               </tr>
             {% else %}
-              <tr class="empty-row"><td colspan="6" class="empty-state">Chưa có cảnh báo nào.</td></tr>
+              <tr class="empty-row"><td colspan="7" class="empty-state">Chưa có cảnh báo nào.</td></tr>
             {% endfor %}
             </tbody>
           </table>

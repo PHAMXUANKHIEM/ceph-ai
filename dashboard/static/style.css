@@ -909,6 +909,11 @@ code {
 .alert-row-actions form { margin: 0; }
 .alert-mute-form { display: flex; gap: 4px; align-items: center; }
 .alert-state-badge { margin-top: 5px; color: var(--accent-hover); font-size: .72rem; white-space: nowrap; }
+.alert-verdict-actions { display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
+.alert-verdict-actions form { margin: 0; }
+.alert-verdict-more summary { cursor: pointer; font-size: .78rem; color: var(--muted); }
+.alert-verdict-form { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.alert-verdict-form select, .alert-verdict-form input { min-height: 30px; font-size: .8rem; }
 .alert-center-table { min-width: 860px; }
 .alert-center-table td { vertical-align: top; }
 .alert-center-note { margin-top: 14px; }

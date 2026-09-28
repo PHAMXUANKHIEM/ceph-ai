@@ -195,6 +195,31 @@ await guarded("keyboard_focus", async () => {
   await page.close();
 });
 
+// 7. Alert Center verdicts (autonomy plan WP2.4): the "unlabelled" filter
+// keeps its value, the Verdict column is present and every row left in the
+// filtered view is either unlabelled or offers the quick verdict controls.
+// Read-only: the verdict forms are inspected, never submitted.
+await guarded("alert_verdicts", async () => {
+  const page = await authed.newPage();
+  await page.goto(`${baseUrl}/alerts?verdict=unlabelled`, { waitUntil: "domcontentloaded" });
+  const state = await page.evaluate(() => {
+    const headers = [...document.querySelectorAll(".alert-center-table thead th")].map((th) => th.textContent.trim());
+    const rows = [...document.querySelectorAll(".alert-center-table tbody tr:not(.empty-row)")];
+    const labelled = rows.filter((row) => row.querySelector(".alert-verdict-cell .alert-state-badge")).length;
+    return {
+      hasColumn: headers.includes("Verdict"),
+      filter: document.querySelector("select[name=verdict]")?.value,
+      rows: rows.length,
+      quick: document.querySelectorAll(".alert-verdict-actions").length,
+      labelled,
+    };
+  });
+  const ok = state.hasColumn && state.filter === "unlabelled" && state.labelled === 0;
+  record("alert_verdicts", ok ? "PASSED" : "FAILED",
+    `column=${state.hasColumn} filter=${state.filter} rows=${state.rows} quick_forms=${state.quick} labelled_rows=${state.labelled}`);
+  await page.close();
+});
+
 await browser.close();
 const failed = checks.filter((item) => item.status === "FAILED");
 const report = {

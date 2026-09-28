@@ -192,8 +192,10 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ### WP2.4 Trang đánh giá nhanh trên Dashboard
 
-- [ ] Trong Alert Center (`/alerts`), thêm cột verdict và thao tác nhanh (dùng chung `record_verdict`), lọc "chưa có nhãn".
-- [ ] Browser acceptance (`scripts/browser_acceptance.mjs`) thêm check trang này.
+- [x] Trong Alert Center (`/alerts`), thêm cột verdict (case mới nhất của nhóm) và thao tác nhanh (một chạm "✓ Đúng", hoặc chọn verdict khác kèm ghi chú), dùng chung endpoint + `record_verdict` nên vẫn chỉ admin, vẫn bắt ghi chú cho verdict âm, vẫn audit; lọc "chưa có nhãn / đã có nhãn"; sau khi lưu quay lại đúng trang/bộ lọc (`next` chỉ nhận `/alerts…`, chống open redirect).
+- [x] Browser acceptance (`scripts/browser_acceptance.mjs`) thêm check `alert_verdicts` (chỉ đọc, không submit form).
+
+**Kết quả 28/09/2026:** production có 195 nhóm cảnh báo, 119 nhóm có case chưa nhãn; truy vấn case thêm 0,1 s. Test: `tests/test_alert_center_verdicts.py` (5 passed).
 
 **Ước lượng:** 1 ngày.
 
@@ -365,6 +367,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP1.4 CRUSH skew | 1 incident/tín hiệu thay vì 1/entity; replay 369 → 66 (−82%) | `tests/test_crush_skew_monitor.py` 29 passed | Partial (chờ deploy) |
 | 28/09/2026 | WP2.2 Nhắc verdict | 5 case/ngày theo độ hữu ích, qua kênh cluster, không trùng | 54 passed | Partial (chờ deploy) |
 | 28/09/2026 | WP2.3 Nhãn tự động | 6 LF, tính khi cần (không migration), báo cáo chỉ đọc; 92% case có nhãn | 5 passed | Done (precision chờ nhãn operator) |
+| 28/09/2026 | WP2.4 Verdict trên Alert Center | Cột verdict + nút một chạm + lọc chưa nhãn; check trình duyệt | 5 passed | Done (chờ deploy) |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 

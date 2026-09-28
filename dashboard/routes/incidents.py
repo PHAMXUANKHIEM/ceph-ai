@@ -4,6 +4,7 @@ import logging
 import math
 import threading
 from time import monotonic
+from typing import Any
 from urllib.parse import quote, urlencode
 from datetime import datetime, timedelta
 from shared.time import utc_now
@@ -208,6 +209,57 @@ def _schedule_dashboard_health_refresh(selected_cluster: Cluster) -> bool:
     asyncio.create_task(refresh())
     return True
 
+ALERT_VERDICT_FILTERS = {"all", "unlabelled", "labelled"}
+
+
+def _attach_latest_cases(session, groups: list[dict], incident_filters: list) -> None:
+    """Give each alert group its most recent Remediation Case so operators can
+    record a verdict from the Alert Center (autonomy plan WP2.4)."""
+    rows = (
+        session.query(RemediationCase.id, RemediationCase.incident_id,
+                      RemediationCase.operator_verdict, RemediationCase.created_at)
+        .join(Incident, Incident.id == RemediationCase.incident_id)
+        .filter(*incident_filters)
+        .all()
+    )
+    latest: dict[str, Any] = {}
+    for row in rows:
+        current = latest.get(row.incident_id)
+        if current is None or row.created_at > current.created_at:
+            latest[row.incident_id] = row
+    for group in groups:
+        cases = [latest[item.id] for item in group["incidents"] if item.id in latest]
+        group["case"] = max(cases, key=lambda row: row.created_at) if cases else None
+
+
+_STATUS_PREDICATES = {
+    "open": lambda group: group["is_active"],
+    "closed": lambda group: not group["is_active"],
+    "acknowledged": lambda group: group["is_acknowledged"],
+    "muted": lambda group: group["is_muted"],
+}
+
+
+def _filter_groups_by_status(groups: list[dict], status_filter: str) -> list[dict]:
+    predicate = _STATUS_PREDICATES.get(status_filter)
+    return [group for group in groups if predicate(group)] if predicate else groups
+
+
+def _filter_groups_by_verdict(groups: list[dict], verdict_filter: str) -> list[dict]:
+    if verdict_filter == "unlabelled":
+        return [group for group in groups if group["case"] is not None and not group["case"].operator_verdict]
+    if verdict_filter == "labelled":
+        return [group for group in groups if group["case"] is not None and group["case"].operator_verdict]
+    return groups
+
+
+def _safe_alerts_return(target: str) -> str | None:
+    """Only an Alert Center URL on this host may be used as a return target."""
+    if target == "/alerts" or (target.startswith("/alerts?") and "//" not in target and "\\" not in target):
+        return target
+    return None
+
+
 @router.get("/alerts", response_class=HTMLResponse)
 async def alert_center_page(request: Request, user: str = Depends(require_login)):
     status_filter = request.query_params.get("status", "all").strip().lower()
@@ -220,6 +272,9 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
         severity_filter = "ALL"
     if period_filter not in {"all", "24h", "7d", "30d", "1y"}:
         period_filter = "all"
+    verdict_filter = request.query_params.get("verdict", "all").strip().lower()
+    if verdict_filter not in ALERT_VERDICT_FILTERS:
+        verdict_filter = "all"
     try:
         clusters, selected_cluster = _resolve_selected_cluster(
             request.query_params.get("cluster", ""), request.session.get("selected_cluster_id", ""), request=request
@@ -230,30 +285,27 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
             if selected_cluster.is_default
             else Incident.cluster_id == selected_cluster.id
         )
+        incident_filters = [cluster_filter]
+        if severity_filter != "ALL":
+            incident_filters.append(Incident.severity == severity_filter)
+        if code_filter:
+            incident_filters.append(Incident.ceph_code.ilike(f"%{code_filter}%"))
+        if period_filter != "all":
+            hours = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30, "1y": 24 * 365}[period_filter]
+            incident_filters.append(Incident.detected_at >= utc_now() - timedelta(hours=hours))
         with db.SessionLocal() as session:
-            query = session.query(Incident).filter(cluster_filter)
-            if severity_filter != "ALL":
-                query = query.filter(Incident.severity == severity_filter)
-            if code_filter:
-                query = query.filter(Incident.ceph_code.ilike(f"%{code_filter}%"))
-            if period_filter != "all":
-                hours = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30, "1y": 24 * 365}[period_filter]
-                query = query.filter(Incident.detected_at >= utc_now() - timedelta(hours=hours))
-            incidents = query.order_by(Incident.detected_at.desc(), Incident.id.desc()).all()
+            incidents = (
+                session.query(Incident).filter(*incident_filters)
+                .order_by(Incident.detected_at.desc(), Incident.id.desc()).all()
+            )
+            groups = alert_center.build_alert_groups(incidents)
+            _attach_latest_cases(session, groups, incident_filters)
     except SQLAlchemyError:
         logger.exception("alert_center: failed to query incidents from DB")
         raise HTTPException(status_code=503, detail="Không kết nối được database")
-    groups = alert_center.build_alert_groups(incidents)
     for group in groups:
         group["target"] = _rgw_incident_target(group.get("representative"))
-    if status_filter == "open":
-        groups = [group for group in groups if group["is_active"]]
-    elif status_filter == "closed":
-        groups = [group for group in groups if not group["is_active"]]
-    elif status_filter == "acknowledged":
-        groups = [group for group in groups if group["is_acknowledged"]]
-    elif status_filter == "muted":
-        groups = [group for group in groups if group["is_muted"]]
+    groups = _filter_groups_by_verdict(_filter_groups_by_status(groups, status_filter), verdict_filter)
     try:
         page = int(request.query_params.get("page", "1"))
     except (TypeError, ValueError):
@@ -266,6 +318,7 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
         "severity": severity_filter.lower(),
         "period": period_filter,
         "code": code_filter,
+        "verdict": verdict_filter,
     })
     return templates.TemplateResponse(request, "alerts.html", {
         "user": user,
@@ -283,6 +336,9 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
         "severity_filter": severity_filter,
         "period_filter": period_filter,
         "code_filter": code_filter,
+        "verdict_filter": verdict_filter,
+        "case_verdicts": CASE_VERDICTS,
+        "alerts_return": f"/alerts?page={page_data['page']}&{filter_query}",
         "filter_query": filter_query,
         "mute_hours": ALERT_MUTE_HOURS,
     })
@@ -591,6 +647,7 @@ async def update_remediation_case_verdict(
     case_id: str,
     verdict: str = Form(...),
     note: str = Form(""),
+    next_url: str = Form("", alias="next"),
     user: str = Depends(require_login),
 ):
     if not auth.is_admin_user(user):
@@ -611,7 +668,8 @@ async def update_remediation_case_verdict(
             session.rollback()
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         session.commit()
-    return RedirectResponse(f"/incidents/{incident_id}/timeline", status_code=303)
+    target = _safe_alerts_return(next_url) or f"/incidents/{incident_id}/timeline"
+    return RedirectResponse(target, status_code=303)
 
 
 @router.post("/incidents/{incident_id}/postmortem")
