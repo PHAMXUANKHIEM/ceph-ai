@@ -73,3 +73,25 @@ def test_main_writes_reports_even_when_budget_fails(tmp_path, monkeypatch):
 
     assert module.main(["--budget", str(budget), "--output", str(output), "--write-budget"]) == 0
     assert json.loads(budget.read_text(encoding="utf-8"))["max"]["mypy"] == {"total": 1, "critical": 1}
+
+
+COLOURED = (
+    "shared/db.py:10: \x1b[1m\x1b[31merror:\x1b(B\x1b[m Incompatible return value type  "
+    "\x1b[33m[return-value]\x1b(B\x1b[m\n"
+)
+
+
+def test_coloured_mypy_output_is_still_parsed(tmp_path):
+    # FORCE_COLOR made mypy colour piped output and the budget read 0 errors.
+    parsed = module.parse_mypy(COLOURED, tmp_path)
+    assert [(item["file"], item["rule"]) for item in parsed] == [("shared/db.py", "return-value")]
+
+
+def test_unparseable_mypy_errors_fail_closed(monkeypatch, tmp_path):
+    import pytest
+
+    monkeypatch.setattr(module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    outputs = {"ruff": "[]", "mypy": "garbled: error: but no file:line prefix\n", "bandit": '{"results": []}'}
+    monkeypatch.setattr(module, "_run", lambda command, root: outputs[command[0]])
+    with pytest.raises(SystemExit, match="could not be parsed"):
+        module.scan(tmp_path)

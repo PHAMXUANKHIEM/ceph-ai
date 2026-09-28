@@ -107,12 +107,21 @@ def parse_ruff(output: str, root: Path, tool: str) -> list[dict[str, Any]]:
     return findings
 
 
+# FORCE_COLOR in the environment makes mypy colour its output even when it
+# is piped; unparsed lines would silently count as zero findings.
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\(B")
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE.sub("", text or "")
+
+
 MYPY_LINE = re.compile(r"^(?P<file>[^:]+):(?P<line>\d+)(?::\d+)?: error: (?P<message>.*?)(?:\s+\[(?P<code>[a-z0-9-]+)\])?$")
 
 
 def parse_mypy(output: str, root: Path) -> list[dict[str, Any]]:
     findings = []
-    for line in output.splitlines():
+    for line in strip_ansi(output).splitlines():
         match = MYPY_LINE.match(line.strip())
         if not match:
             continue
@@ -150,9 +159,16 @@ def scan(root: Path) -> list[dict[str, Any]]:
     findings += parse_ruff(
         _run(["ruff", "check", "--select", "C901", "--output-format", "json", *dirs], root), root, "complexity"
     )
-    findings += parse_mypy(
-        _run(["mypy", *_existing(MYPY_DIRS, root), "--ignore-missing-imports", "--no-error-summary"], root), root
+    mypy_output = _run(
+        ["mypy", *_existing(MYPY_DIRS, root), "--ignore-missing-imports", "--no-error-summary",
+         "--no-color-output"], root,
     )
+    mypy_findings = parse_mypy(mypy_output, root)
+    if ": error:" in strip_ansi(mypy_output) and not mypy_findings:
+        # Fail closed: output that looks like errors but parses to nothing
+        # would otherwise pass the budget with a count of zero.
+        raise SystemExit("mypy reported errors that could not be parsed; refusing to report 0 findings")
+    findings += mypy_findings
     findings += parse_bandit(_run(["bandit", "-r", "-q", "-f", "json", *dirs], root), root)
     for finding in findings:
         finding["owner"] = owner_for(finding["file"])

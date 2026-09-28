@@ -87,3 +87,15 @@ def test_static_analysis_status_carries_before_and_after_counts(tmp_path):
     assert result["status"] == "passed"
     assert result["before"]["ruff"]["total"] == 3
     assert result["after"]["ruff"]["total"] == 2
+
+
+def test_quality_gate_compares_coloured_mypy_output():
+    import importlib.util as util
+    from pathlib import Path as _Path
+
+    path = _Path(__file__).resolve().parents[1] / "scripts" / "ci" / "quality_gate.py"
+    spec_ = util.spec_from_file_location("quality_gate_for_colour", path)
+    gate = util.module_from_spec(spec_)
+    spec_.loader.exec_module(gate)
+    coloured = "shared/db.py:10: \x1b[1m\x1b[31merror:\x1b(B\x1b[m Bad type  \x1b[33m[arg-type]\x1b(B\x1b[m\n"
+    assert gate.mypy_signature(coloured) == {"shared/db.py: error: Bad type  [arg-type]"}

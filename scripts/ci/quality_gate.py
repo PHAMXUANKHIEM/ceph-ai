@@ -100,6 +100,8 @@ def ruff_signature(output: str, *, root: Path = ROOT) -> set[tuple[str, str, str
 def mypy_signature(output: str) -> set[str]:
     signatures: set[str] = set()
     pattern = re.compile(r"^(.*?):\d+(?::\d+)?: error: (.*)$")
+    # Strip ANSI colour (FORCE_COLOR) so coloured lines are still compared.
+    output = re.sub(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\(B", "", output or "")
     for line in output.splitlines():
         match = pattern.match(line.strip())
         if match:
@@ -133,7 +135,7 @@ def compare_static_analysis(base: str | None, changed_py: list[str], failures: l
     base_mypy = ""
     if app_py:
         _, head_mypy = run_command(
-            [mypy, *app_py, "--ignore-missing-imports", "--no-error-summary"],
+            [mypy, *app_py, "--ignore-missing-imports", "--no-error-summary", "--no-color-output"],
         output=ARTIFACTS / "mypy-head.txt",
         )
 
@@ -155,7 +157,7 @@ def compare_static_analysis(base: str | None, changed_py: list[str], failures: l
             base_app_py = [path for path in app_py if (base_root / path).is_file()]
             if base_app_py:
                 _, base_mypy = run_command(
-                    [mypy, *base_app_py, "--ignore-missing-imports", "--no-error-summary"],
+                    [mypy, *base_app_py, "--ignore-missing-imports", "--no-error-summary", "--no-color-output"],
                     cwd=base_root,
                     output=ARTIFACTS / "mypy-base.txt",
                 )
