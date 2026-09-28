@@ -163,9 +163,9 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ### WP2.2 Nhắc đánh giá có chủ đích
 
-- [ ] Job hằng ngày (worker scheduler hiện có) chọn **tối đa 10 case đáng nhãn nhất**: ưu tiên fault family ít nhãn, case có `outcome` đã rõ (VERIFIED_*/EXECUTION_FAILED), case có AI confidence cao nhưng bị REJECTED (bất đồng người–máy).
-- [ ] Gửi 1 tin Telegram "10 case cần anh/chị đánh giá" kèm nút WP2.1.
-- [ ] Test chọn mẫu (active-learning heuristic) và giới hạn số lượng.
+- [x] `shared/verdict_nudges.select_cases`: tối đa `verdict_nudge_limit` (mặc định 5) case chưa verdict trong 14 ngày; ưu tiên outcome rõ, AI tự tin nhưng bị từ chối, family ít nhãn, đề xuất cụ thể; ≤ 2 case/family; không nhắc lại case đã nhắc (event timeline, không cần migration).
+- [x] Chạy trong vòng `_notify_loop` của service Telegram, sau `verdict_nudge_hour` (mặc định 9h VN), mỗi case 1 tin kèm nút verdict qua đúng kênh cluster; một lần/ngày, kiểm tra trong DB nên restart không gửi trùng.
+- [x] `tests/test_verdict_nudges.py` (4) + 2 test gửi trong `tests/test_telegram_approval_bot.py`.
 
 **Ước lượng:** 1 ngày.
 
@@ -359,6 +359,8 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP2.1 Verdict Telegram | Hỏi verdict sau mỗi quyết định, lý do chọn sẵn, hàm ghi dùng chung, audit | `tests/test_telegram_approval_bot.py` 47 passed | Partial (chờ deploy, đo ≥ 30 verdict/tuần) |
 | 28/09/2026 | WP1.2 điều chỉnh | BlueStore = bão lịch sử 06/09 (đã chặn); OSD latency mở 4/đóng 3 scan, replay 256 → 48 (−81%); thêm WP1.4 gom CRUSH skew | `tests/test_osd_latency_monitor.py` 16 passed | Partial (chờ deploy) |
 | 28/09/2026 | WP1.4 CRUSH skew | 1 incident/tín hiệu thay vì 1/entity; replay 369 → 66 (−82%) | `tests/test_crush_skew_monitor.py` 29 passed | Partial (chờ deploy) |
+| 28/09/2026 | WP2.2 Nhắc verdict | 5 case/ngày theo độ hữu ích, qua kênh cluster, không trùng | 54 passed | Partial (chờ deploy) |
+| 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 
 ## 13. Quy tắc trạng thái

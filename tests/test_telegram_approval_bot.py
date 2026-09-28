@@ -944,3 +944,41 @@ def test_long_telegram_actor_on_approval_fits_the_audit_columns(dashboard_client
         assert entries and all(len(entry.actor) <= 32 for entry in entries)
         assert events and all(len(event.actor) <= 32 for event in events)
         assert any("u" * 32 in (event.evidence_json or "") for event in events)
+
+
+# --- daily verdict nudges (autonomy plan WP2.2) ------------------------------
+
+
+def test_daily_nudge_sends_to_the_incident_channel_once_per_day(dashboard_client, monkeypatch):
+    from datetime import timezone as tz
+
+    _verdict_env(monkeypatch)
+    monkeypatch.setattr(bot.settings, "verdict_nudge_enabled", True, raising=False)
+    monkeypatch.setattr(bot.settings, "verdict_nudge_hour", 9, raising=False)
+    monkeypatch.setattr(bot.settings, "verdict_nudge_limit", 5, raising=False)
+    sent = []
+    monkeypatch.setattr(bot, "send_telegram_message_with_keyboard",
+                        lambda token, chat, text, buttons: sent.append((chat, text, buttons)) or 1)
+    action_pk = _pending_action("inc-nudge-1")
+    _with_case(action_pk)
+
+    before_hour = datetime(2026, 9, 28, 1, 0, tzinfo=tz.utc)      # 08:00 VN
+    assert bot._maybe_send_verdict_nudges(before_hour) == 0
+    at_hour = datetime(2026, 9, 28, 2, 30, tzinfo=tz.utc)          # 09:30 VN
+    assert bot._maybe_send_verdict_nudges(at_hour) == 1
+    chat, text, buttons = sent[0]
+    assert chat == "-100999"
+    assert text.startswith("📝 Nhờ đánh giá chẩn đoán AI")
+    assert [label for label, _data in buttons] == ["✅ Đúng", "❌ Sai", "⚠️ Nguy hiểm", "🤷 Chưa rõ"]
+
+    other = _pending_action("inc-nudge-2")
+    _with_case(other)
+    assert bot._maybe_send_verdict_nudges(at_hour + timedelta(hours=2)) == 0   # same VN day
+    assert bot._maybe_send_verdict_nudges(at_hour + timedelta(days=1)) == 1   # next day, new case only
+    assert len(sent) == 2
+
+
+def test_daily_nudge_can_be_disabled(dashboard_client, monkeypatch):
+    _verdict_env(monkeypatch)
+    monkeypatch.setattr(bot.settings, "verdict_nudge_enabled", False, raising=False)
+    assert bot._maybe_send_verdict_nudges() == 0

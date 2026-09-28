@@ -93,7 +93,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from shared.time import utc_now
 from pathlib import Path
 
@@ -110,6 +110,7 @@ from dashboard.routes.actions import (
 )
 from shared import db
 from shared import remediation_cases as case_memory
+from shared import verdict_nudges
 from shared.clusters import get_default_cluster_id
 from shared.models import Action, ActionStatus, Cluster, Incident, RemediationCase
 from shared import telegram_federation
@@ -653,12 +654,56 @@ def _notify_pending_actions() -> None:
                 )
 
 
+def _maybe_send_verdict_nudges(now: datetime | None = None) -> int:
+    """Once a day after ``verdict_nudge_hour`` (VN time), ask for verdicts on
+    the most informative unlabeled cases (autonomy plan WP2.2)."""
+    if not settings.verdict_nudge_enabled:
+        return 0
+    from dashboard.vntime import VN_TZ
+
+    current = now or datetime.now(timezone.utc)
+    local = current.astimezone(VN_TZ)
+    if local.hour < settings.verdict_nudge_hour:
+        return 0
+    start_of_day = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    sent = 0
+    with db.SessionLocal() as session:
+        if verdict_nudges.nudged_since(session, start_of_day.replace(tzinfo=None)):
+            return 0
+        for candidate in verdict_nudges.select_cases(session, limit=settings.verdict_nudge_limit):
+            action = session.get(Action, candidate.action_pk)
+            incident = session.get(Incident, candidate.incident_id)
+            channels = channels_for_incident(incident, session)
+            if action is None or not channels:
+                continue
+            _key, bot_token, chat_id = channels[0]
+            header = "📝 Nhờ đánh giá chẩn đoán AI"
+            if candidate.reasons:
+                header += " (" + "; ".join(candidate.reasons) + ")"
+            try:
+                send_telegram_message_with_keyboard(
+                    bot_token, chat_id, header + "\n\n" + _action_message_text(action, incident, session),
+                    _verdict_keyboard(action.id),
+                )
+            except TelegramSendError:
+                logger.exception("telegram_approval_bot: verdict nudge for case %s failed", candidate.case_id)
+                continue
+            verdict_nudges.mark_nudged(session, candidate)
+            sent += 1
+        session.commit()
+    return sent
+
+
 def _notify_loop(stop_event: threading.Event) -> None:
     while not stop_event.is_set():
         try:
             _notify_pending_actions()
         except Exception:
             logger.exception("telegram_approval_bot: _notify_pending_actions crashed")
+        try:
+            _maybe_send_verdict_nudges()
+        except Exception:
+            logger.exception("telegram_approval_bot: verdict nudges crashed")
         stop_event.wait(max(1, settings.telegram_approval_scan_interval_seconds))
 
 
