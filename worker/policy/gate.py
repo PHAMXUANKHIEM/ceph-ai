@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from shared.models import ActionClassification
 

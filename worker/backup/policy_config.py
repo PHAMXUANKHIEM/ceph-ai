@@ -4,7 +4,6 @@ tracked_images), same "one file, one loader" posture as `worker/policy/
 gate.py` for `action_policy.yaml`.
 """
 
-import json
 import os
 import re
 import tempfile
@@ -13,7 +12,7 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from worker.backup import application_consistency
 
