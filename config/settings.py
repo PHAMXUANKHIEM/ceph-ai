@@ -413,6 +413,9 @@ class Settings(BaseSettings):
     investigation_scan_interval_seconds: int = Field(default=60, ge=30, le=3600)
     investigation_max_age_minutes: int = Field(default=30, ge=5, le=1440)
     investigation_incidents_per_scan: int = Field(default=2, ge=1, le=10)
+    # WP3.4: a rule conclusion at least this confident (and at least
+    # ai_min_diagnosis_confidence) replaces the LLM call for that incident.
+    triage_min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
 
     # Vitastor is a separate product workspace, so its chat connection must
     # not silently inherit or overwrite the Ceph AI provider configuration.

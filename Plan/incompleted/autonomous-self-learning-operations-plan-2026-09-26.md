@@ -229,8 +229,8 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 - [x] Chạy tự động: **đổi hướng** — thay vì móc vào >10 chỗ tạo incident, `watcher/investigation_scanner.py` là một scan phụ của Watcher (thread riêng, không chặn phát hiện): mỗi 60 s lấy ≤ 2 incident đang mở, ≤ 30 phút tuổi, chưa có evidence → chạy runbook → lưu `incident_evidence(incident_id, runbook, collector_id, target, status, command, output_redacted, truncated, duration_ms, created_at)` + migration `m20260928incidentevidence` + sự kiện timeline `evidence_collected`. Incident lặp của host FLAPPING được đánh dấu `skipped_flapping`, không SSH; một fault family/cluster chỉ chạy 1 lần/10 phút (cơn bão cùng loại chỉ tốn 1 lượt). Cấu hình: `INVESTIGATION_ENABLED`, `INVESTIGATION_SCAN_INTERVAL_SECONDS`, `INVESTIGATION_MAX_AGE_MINUTES`, `INVESTIGATION_INCIDENTS_PER_SCAN`.
 - [x] Hiển thị evidence trên timeline incident (tóm tắt 3 dòng + từng collector, output đã redact).
-- [ ] Tóm tắt 3 dòng trên Telegram (`incident_evidence.summary_lines` đã sẵn) — chưa gắn vào tin nhắn.
-- [ ] Cluster quan sát (không mặc định): chưa chạy — loop của chúng không có scan phụ.
+- [x] Tóm tắt trên Telegram: `worker/llm/evidence_gate.annotate` ghép `summary_lines` vào `diagnosis_text`, nên tin cảnh báo AI mang theo tóm tắt bằng chứng.
+- [x] Cluster quan sát: worker thu evidence cho incident của mọi cluster ngay trước khi chẩn đoán (WP3.4), scanner chỉ còn là lưới an toàn cho cluster mặc định.
 - [x] Test end-to-end với transport giả (`tests/test_investigation_scanner.py`, 8 passed) + trang timeline.
 
 ### WP3.4 Chẩn đoán xác định trước LLM
@@ -240,8 +240,8 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
   - `OSD_LATENCY_HIGH`: ≥ 50% OSD ≥ 100 ms → `CLUSTER_WIDE_LOAD`; OSD đích ≥ 3× trung vị → `SINGLE_OSD_OUTLIER` (xem SMART trước khi restart); còn lại → `RECOVERED`.
   - `MON_CLOCK_SKEW`: nêu MON lệch + action `resync_ntp` (cần duyệt; test kiểm tra action có trong `action_policy.yaml`).
 - [x] Scanner WP3.3 ghi kết luận vào timeline (`triage_concluded`, cả `UNKNOWN` để đo độ phủ); trang timeline hiển thị kết luận + khuyến nghị.
-- [ ] LLM chỉ được gọi khi triage trả `UNKNOWN`; prompt chứa evidence thật + verified case — **chưa làm**: cần sửa `worker/llm/`, chờ phiên song song commit xong để tránh xung đột.
-- [ ] LLM phải trích evidence cho mỗi khẳng định; không có evidence → abstain.
+- [x] Cổng `worker/llm/evidence_gate.py` trong `diagnose_incident`: nếu incident chưa có evidence, worker tự thu (cùng runbook/collector/giới hạn, lưu vào `incident_evidence` nên scanner bỏ qua) → chạy luật; kết luận đã biết với độ tin ≥ `TRIAGE_MIN_CONFIDENCE` (0.75, và ≥ `ai_min_diagnosis_confidence`) **thay thế lời gọi LLM**; action (nếu có) vẫn qua đúng phân loại/preflight/duyệt như đề xuất LLM (vd. `resync_ntp` là SAFE theo policy hiện hành), kết luận không action → `investigate_manually`. Lỗi thu evidence không bao giờ chặn chẩn đoán. Verified case vẫn đi qua `find_verified_cases` như trước.
+- [x] Khi luật `UNKNOWN`/kém tin: prompt LLM thêm evidence thật dạng `[E#]` (≤ 4000 ký tự) + yêu cầu trích `[E#]` cho mỗi khẳng định, thiếu bằng chứng thì nói chưa chắc chắn. **Chưa đo** tỉ lệ trích dẫn/hallucination bằng `ai_evaluation` (cần dữ liệu sau deploy).
 - [x] Test luật (`tests/test_deterministic_triage.py`, 24 passed) + scanner/timeline. Chạy trên evidence thật CS-LAB: `NODE_UNREACHABLE`→`TRANSIENT`, `OSD_LATENCY_HIGH:1`→`RECOVERED`, `MON_CLOCK_SKEW`→`RECOVERED`, khớp trạng thái thực.
 
 **Nghiệm thu WP3:** ≥ 90% incident top-10 code có evidence trong ≤ 2 phút; `investigate_manually` ≤ 40%; không có lệnh ghi nào trong audit của collector.
@@ -383,6 +383,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP3.2 Runbook điều tra | 12 runbook + default, validator đồng bộ với registry; chạy thật OSD_LATENCY_HIGH 5/5 ok trong 37 s | 22 passed | Done |
 | 28/09/2026 | WP3.3 Tự thu evidence khi incident mở | Scan phụ nền, bảng incident_evidence + migration, hiển thị timeline; Telegram + cluster quan sát còn lại | 8 passed (135 cùng watcher/migrations) | Partial (chờ deploy + migrate) |
 | 28/09/2026 | WP3.4 Chẩn đoán theo luật | 3 family, trích dẫn evidence, UNKNOWN khi thiếu; ghi timeline; chưa gắn cổng LLM | 24 passed | Partial |
+| 28/09/2026 | WP3.4 Cổng evidence trước LLM | Worker tự thu evidence khi chưa có; luật tự tin thay LLM; LLM nhận [E#] khi UNKNOWN; tóm tắt vào Telegram | 5 test mới, 294 passed | Done (chờ deploy + đo hallucination) |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 

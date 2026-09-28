@@ -83,7 +83,7 @@
         {% if triage %}<div class="triage-conclusion" data-conclusion="{{ triage.conclusion }}">
           <p><strong>Chẩn đoán theo luật:</strong> <code>{{ triage.conclusion }}</code>{% if triage.is_known %} · độ tin {{ (triage.confidence * 100)|round(0)|int }}%{% endif %}</p>
           <p>{{ triage.summary }}</p>
-          {% if triage.recommendation %}<p class="hint">Khuyến nghị: {{ triage.recommendation }}{% if triage.action_id %} (action <code>{{ triage.action_id }}</code>, cần duyệt){% endif %}</p>{% endif %}
+          {% if triage.recommendation %}<p class="hint">Khuyến nghị: {{ triage.recommendation }}{% if triage.action_id %} (action <code>{{ triage.action_id }}</code>, phân loại theo policy){% endif %}</p>{% endif %}
           {% if not triage.is_known %}<p class="hint">Luật chưa kết luận được; cần AI hoặc người vận hành xem bằng chứng bên dưới.</p>{% endif %}
         </div>{% endif %}
         {% for line in evidence_summary %}<p class="hint">{{ line }}</p>{% endfor %}

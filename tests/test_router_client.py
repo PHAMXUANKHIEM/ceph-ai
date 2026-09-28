@@ -3949,3 +3949,113 @@ def test_action_target_guard_stays_out_of_the_way_under_pytest():
     assert router_client._live_action_target_safety_reason(
         None, ["203.0.113.9"], "/tmp/x"
     ) is None
+
+
+# --- Autonomy plan WP3.4: evidence gate before the LLM -------------------
+
+def _evidence_row(collector_id, output, status="ok", index=1):
+    return SimpleNamespace(id=f"ev-{index}", collector_id=collector_id, status=status, runbook="MON_CLOCK_SKEW",
+                           output_redacted=output, target="mon", duration_ms=10, truncated=False)
+
+
+def _gate_on(monkeypatch, rows):
+    from worker.llm import evidence_gate
+
+    monkeypatch.setattr(settings, "investigation_enabled", True)
+    monkeypatch.setattr(evidence_gate, "_collect_if_missing", lambda incident_id: rows)
+    monkeypatch.setattr(router_client, "execute_command", lambda host, command, **kwargs: "ok")
+
+
+SKEWED = json.dumps({"time_skew_status": {"mon-a": {"health": "HEALTH_OK"}, "mon-b": {"health": "HEALTH_WARN"}}})
+HEALTHY = json.dumps({"time_skew_status": {"mon-a": {"health": "HEALTH_OK"}, "mon-b": {"health": "HEALTH_OK"}}})
+
+
+def test_confident_rule_conclusion_replaces_the_llm_call(isolated_db, monkeypatch):
+    _gate_on(monkeypatch, [_evidence_row("ceph_time_sync", SKEWED)])
+
+    async def must_not_call(user_content):
+        raise AssertionError("LLM must not be called when the rules decided")
+
+    monkeypatch.setattr(router_client, "_call_router", must_not_call)
+    _create_incident("gate-skew")
+    asyncio.run(router_client.diagnose_incident("gate-skew", dict(ENVELOPE, incident_id="gate-skew")))
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "gate-skew")
+        assert incident.diagnosis_text.startswith("[Chẩn đoán theo luật: MON_SKEWED]")
+        assert "mon-b" in incident.diagnosis_text
+        assert "Bằng chứng (MON_CLOCK_SKEW): 1/1 collector thành công" in incident.diagnosis_text
+        (action,) = session.query(Action).filter_by(incident_id="gate-skew").all()
+        assert action.action_id == "resync_ntp"
+
+
+def test_rule_conclusion_without_action_records_no_remediation(isolated_db, monkeypatch):
+    _gate_on(monkeypatch, [_evidence_row("ceph_time_sync", HEALTHY)])
+
+    async def must_not_call(user_content):
+        raise AssertionError("LLM must not be called when the rules decided")
+
+    monkeypatch.setattr(router_client, "_call_router", must_not_call)
+    _create_incident("gate-healthy")
+    asyncio.run(router_client.diagnose_incident("gate-healthy", dict(ENVELOPE, incident_id="gate-healthy")))
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "gate-healthy")
+        assert "[Chẩn đoán theo luật: RECOVERED]" in incident.diagnosis_text
+        actions = session.query(Action).filter_by(incident_id="gate-healthy").all()
+        assert [a.action_id for a in actions] in ([], ["investigate_manually"])
+
+
+def test_unknown_rule_result_sends_cited_evidence_to_the_llm(isolated_db, monkeypatch):
+    _gate_on(monkeypatch, [_evidence_row("ceph_time_sync", "{truncated", index=1),
+                           _evidence_row("ceph_health_detail", '{"checks": {"MON_CLOCK_SKEW": {}}}', index=2)])
+    prompts = []
+
+    async def fake_call_router(user_content):
+        prompts.append(user_content)
+        return {"diagnosis_text": "MON skew [E2].", "action_id": "resync_ntp", "rationale": "E2 shows it."}
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    _create_incident("gate-unknown")
+    asyncio.run(router_client.diagnose_incident("gate-unknown", dict(ENVELOPE, incident_id="gate-unknown")))
+    assert len(prompts) == 1
+    assert "[E1] ceph_time_sync (ok): {truncated" in prompts[0]
+    assert "[E2] ceph_health_detail (ok)" in prompts[0]
+    assert "trích mã [E#]" in prompts[0]
+    with db_module.SessionLocal() as session:
+        text = session.get(Incident, "gate-unknown").diagnosis_text
+        assert text.startswith("MON skew [E2].") and "Bằng chứng (MON_CLOCK_SKEW): 2/2" in text
+
+
+def test_gate_off_or_failing_keeps_the_previous_behaviour(isolated_db, monkeypatch):
+    from worker.llm import evidence_gate
+
+    monkeypatch.setattr(settings, "investigation_enabled", True)
+
+    def boom(incident_id):
+        raise RuntimeError("ssh exploded")
+
+    monkeypatch.setattr(evidence_gate, "_collect_if_missing", boom)
+    monkeypatch.setattr(router_client, "execute_command", lambda host, command, **kwargs: "ok")
+    prompts = []
+
+    async def fake_call_router(user_content):
+        prompts.append(user_content)
+        return {"diagnosis_text": "skew", "action_id": "resync_ntp", "rationale": "ntp"}
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    _create_incident("gate-boom")
+    asyncio.run(router_client.diagnose_incident("gate-boom", dict(ENVELOPE, incident_id="gate-boom")))
+    assert prompts and "[E1]" not in prompts[0]
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, "gate-boom").diagnosis_text == "skew"
+
+
+def test_low_confidence_rule_falls_back_to_the_llm(isolated_db, monkeypatch):
+    from worker.llm import evidence_gate
+
+    rows = [_evidence_row("ceph_osd_perf", json.dumps({"osdstats": {"osd_perf_infos": [
+        {"id": i, "perf_stats": {"commit_latency_ms": 3}} for i in range(4)]}}))]
+    monkeypatch.setattr(settings, "investigation_enabled", True)
+    monkeypatch.setattr(evidence_gate, "_collect_if_missing", lambda incident_id: rows)
+    gate = asyncio.run(evidence_gate.prepare("x", "OSD_LATENCY_HIGH:1"))
+    assert gate.triage.conclusion == "RECOVERED" and gate.triage.confidence < settings.triage_min_confidence
+    assert gate.decided is False and "[E1] ceph_osd_perf" in gate.prompt_block

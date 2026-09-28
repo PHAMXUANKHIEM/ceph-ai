@@ -40,7 +40,7 @@ def runner_for(key: str, factory: Callable[[], EvidenceRunner]) -> EvidenceRunne
         return _runners[key]
 
 
-def _signal_evidence(text: str | None) -> dict[str, Any]:
+def signal_evidence(text: str | None) -> dict[str, Any]:
     try:
         value = json.loads(text or "{}")
     except ValueError:
@@ -74,7 +74,7 @@ def investigate(session_factory, transport, runner: EvidenceRunner, *, cluster_i
     for row in rows:
         if len(done) >= limit:
             break
-        signal = _signal_evidence(row.signal_evidence_json)
+        signal = signal_evidence(row.signal_evidence_json)
         if signal.get("flapping"):
             with session_factory() as session:
                 incident_evidence.mark_flapping(session, row.id)

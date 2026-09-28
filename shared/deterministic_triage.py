@@ -4,9 +4,10 @@ Before an LLM is asked, simple rules read the read-only evidence of
 WP3.3 (``incident_evidence`` rows) for the most frequent fault families
 and draw the conclusion an operator would.  Every conclusion cites the
 evidence it used; when the evidence is missing or ambiguous the result is
-``UNKNOWN`` and the LLM (or a human) decides.  Rules never propose a
-mutating action on their own: at most they name an approval-gated
-``action_id`` that already exists in worker/policy/action_policy.yaml.
+``UNKNOWN`` and the LLM (or a human) decides.  Rules never execute
+anything: at most they name an ``action_id`` from
+worker/policy/action_policy.yaml, which the Worker then classifies and
+gates exactly like an LLM proposal (never a reboot).
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ class Triage:
     conclusion: str
     summary: str = ""
     recommendation: str = ""
-    action_id: str | None = None          # approval-gated action, never executed here
+    action_id: str | None = None          # policy action id; classified/gated by the Worker
     confidence: float = 0.0
     cited: list[str] = field(default_factory=list)
 
@@ -174,7 +175,7 @@ def _clock_skew(evidence: dict[str, Evidence]) -> Triage:
         return Triage(family, "RECOVERED", "Mọi MON đã đồng bộ giờ.", "Theo dõi; không hành động.",
                       confidence=0.8, cited=_cite(sync))
     return Triage(family, "MON_SKEWED", f"MON lệch giờ: {', '.join(skewed)}.",
-                  "Đồng bộ NTP trên MON đó (cần duyệt).", action_id="resync_ntp", confidence=0.8, cited=_cite(sync))
+                  "Đồng bộ NTP trên MON đó (action resync_ntp theo policy hiện hành).", action_id="resync_ntp", confidence=0.8, cited=_cite(sync))
 
 
 def triage(ceph_code: str | None, rows: Iterable[Any]) -> Triage:

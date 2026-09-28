@@ -74,6 +74,7 @@ from worker.autonomy_runtime import (
 )
 from watcher.ceph_client import CephQueryError, query_rbd_trash, run_ceph_json_command_with
 from worker.redaction import default_redactor
+from worker.llm import evidence_gate
 
 logger = logging.getLogger(__name__)
 
@@ -887,8 +888,17 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 "rationale": omap_text,
                 "diagnosis_confidence": 1.0,
             }
-    else:
-        result = await _call_router(user_content)
+    triage_decided = False
+    if not deterministic_omap:
+        # Autonomy plan WP3.4: read-only evidence first; a confident rule
+        # conclusion replaces the LLM call, otherwise the LLM sees the evidence.
+        evidence = await evidence_gate.prepare(incident_id, envelope.get("ceph_code"))
+        if evidence.decided and evidence.triage is not None:
+            result = evidence_gate.result_from_triage(evidence.triage)
+            triage_decided = True
+        else:
+            result = await _call_router(user_content + evidence.prompt_block)
+        result = evidence_gate.annotate(result, evidence)
 
     diagnosis_text = (result.get("diagnosis_text") or "").strip()
     action_id = (result.get("action_id") or "").strip()
@@ -916,7 +926,11 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
         or not rationale
         or (diagnosis_confidence is None and settings.ai_min_diagnosis_confidence > 0)
         or (diagnosis_confidence is not None and not 0 <= diagnosis_confidence <= 1)
-        or (not deterministic_code and action_id not in AI_EXECUTABLE_ACTION_IDS)
+        or (
+            not deterministic_code
+            and action_id not in AI_EXECUTABLE_ACTION_IDS
+            and not (triage_decided and action_id == evidence_gate.NO_ACTION)
+        )
     ):
         raise RouterDiagnosisError(
             f"invalid router response for incident {incident_id}: "
