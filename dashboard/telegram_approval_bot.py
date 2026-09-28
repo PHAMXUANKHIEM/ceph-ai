@@ -807,7 +807,7 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
         if not action_id or (verdict_code not in VERDICT_CODES and verdict_code != VERDICT_REASONS_CODE):
             logger.warning("telegram_approval_bot: invalid verdict callback=%r", data)
             return
-        core_fn = None
+        # Verdicts are handled by _handle_verdict below and never reach core_fn.
     elif data.startswith(POOL_APP_CALLBACK_PREFIX):
         remainder = data[len(POOL_APP_CALLBACK_PREFIX):]
         selected_pool_app, separator, action_id = remainder.partition(":")

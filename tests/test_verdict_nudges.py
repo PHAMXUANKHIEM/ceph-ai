@@ -43,9 +43,13 @@ def test_ranking_prefers_known_outcomes_disagreement_and_concrete_actions():
     verified = _case(session, 2, family="MON_DOWN", outcome="VERIFIED_FAILED")
     disagree = _case(session, 3, family="SLOW_OPS", action_id="restart_osd_daemon", confidence=0.9)
     chosen = verdict_nudges.select_cases(session, limit=3, now=NOW)
-    assert [item.case_id for item in chosen] == [disagree.id, verified.id, plain.id]
-    assert "AI tự tin nhưng bị từ chối" in chosen[0].reasons
-    assert "outcome VERIFIED_FAILED" in chosen[1].reasons
+    # Disagreement + concrete action and a known outcome score the same (5);
+    # both must beat the plain placeholder case, their mutual order is by id.
+    assert {item.case_id for item in chosen[:2]} == {disagree.id, verified.id}
+    assert chosen[2].case_id == plain.id
+    by_id = {item.case_id: item for item in chosen}
+    assert "AI tự tin nhưng bị từ chối" in by_id[disagree.id].reasons
+    assert "outcome VERIFIED_FAILED" in by_id[verified.id].reasons
 
 
 def test_labelled_cases_old_cases_and_per_family_cap_are_respected():
