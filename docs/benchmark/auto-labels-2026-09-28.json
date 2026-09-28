@@ -1,0 +1,19 @@
+{
+  "by_label": {
+    "CORRECT": 1,
+    "FALSE_POSITIVE": 3830,
+    "INEFFECTIVE": 4
+  },
+  "cases": 4157,
+  "conflicts": 0,
+  "labelled": 3835,
+  "lf_coverage": {
+    "execution_failed": 4,
+    "postcheck_passed": 1,
+    "reopened_after_execution": 3,
+    "self_resolved_without_action": 3830
+  },
+  "lf_precision_vs_operator": {},
+  "note": "Auto labels never set operator_verdict and never grant autonomy.",
+  "window_days": 30
+}

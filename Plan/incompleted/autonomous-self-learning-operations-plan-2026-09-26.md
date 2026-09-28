@@ -171,17 +171,21 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ### WP2.3 Nhãn tự động kiểu weak supervision (không cấp quyền)
 
-- [ ] Module `shared/auto_labels.py` với các labeling function (LF) thuần, trả `CORRECT | FALSE_POSITIVE | INEFFECTIVE | ABSTAIN` + độ tin:
-  - `lf_self_resolved_no_action`: incident RESOLVED trong ≤ N phút, không có action EXECUTED → "không cần hành động" (nhãn cho abstention),
-  - `lf_postcheck_pass_no_regression`: outcome `VERIFIED_SUCCESS` và `regressed_24h=false` → CORRECT,
-  - `lf_regressed`: `regressed_1h`/`regressed_24h=true` → INEFFECTIVE,
-  - `lf_rejected_then_self_resolved`: action bị REJECTED và incident tự hết → đề xuất có thể thừa,
-  - `lf_flapping_host`: incident thuộc chuỗi FLAPPING (WP1.1) → FALSE_POSITIVE cho đề xuất khởi động lại host,
-  - `lf_same_code_reopened_after_action` → INEFFECTIVE.
-- [ ] Bảng `remediation_case_auto_labels(case_id, lf_name, label, confidence, created_at)` + migration; bảng tổng hợp theo đa số có trọng số (ban đầu trọng số = precision LF đo trên nhãn operator).
-- [ ] **Tuyệt đối không** ghi vào `operator_verdict`, không dùng trong `trust_engine` để mở autopilot; chỉ dùng cho: `ai_evaluation`, xếp hạng case cần nhãn (WP2.2), shadow bandit (WP6).
-- [ ] Báo cáo chất lượng LF: coverage, conflict, precision so với nhãn operator (khi có ≥ 20 nhãn chồng lấp).
-- [ ] Test từng LF + tổng hợp + đảm bảo không đụng `operator_verdict`.
+- [x] Module `shared/auto_labels.py` với các labeling function (LF) thuần, trả `CORRECT | FALSE_POSITIVE | INEFFECTIVE` hoặc bỏ phiếu trắng (abstain), kèm trọng số:
+  - `lf_self_resolved_without_action` (FALSE_POSITIVE, 0.6): incident RESOLVED trong ≤ 30 phút, không có action được thực thi,
+  - `lf_postcheck_passed` (CORRECT, 1.0): outcome `VERIFIED_SUCCESS` và `regressed_24h=false`,
+  - `lf_regressed` (INEFFECTIVE, 1.0): `regressed_1h`/`regressed_24h=true`,
+  - `lf_execution_failed` (INEFFECTIVE, 0.5),
+  - `lf_flapping` (FALSE_POSITIVE, 0.7): incident có cờ `flapping` của WP1.1 và không thực thi action,
+  - `lf_reopened_after_execution` (INEFFECTIVE, 0.8): cùng code mở lại trong 24 giờ sau khi thực thi.
+  - `lf_rejected_then_self_resolved` gộp vào `lf_self_resolved_without_action` (action REJECTED thì không được thực thi).
+- [x] ~~Bảng `remediation_case_auto_labels` + migration~~ — **đổi hướng:** nhãn được tính khi cần từ các dòng đã có (2 giây cho 30 ngày), nên không thêm bảng/migration; tổng hợp bằng biểu quyết có trọng số. Khi có ≥ 20 nhãn operator chồng lấp sẽ đặt lại trọng số theo precision đo được.
+- [x] **Tuyệt đối không** ghi vào `operator_verdict`, không dùng trong `trust_engine` để mở autopilot; có test chứng minh.
+- [x] Báo cáo chất lượng LF: `scripts/auto_label_report.py` (chỉ đọc) — coverage, conflict, precision so với nhãn operator.
+- [x] Test từng LF + tổng hợp + `collect_facts` + không đụng `operator_verdict` (`tests/test_auto_labels.py`).
+- [ ] Dùng nhãn tự động trong `ai_evaluation` và xếp hạng nhắc verdict (WP2.2), thẻ trên `/ai-learning` (WP8).
+
+**Kết quả 28/09/2026 (production, 30 ngày, `docs/benchmark/auto-labels-2026-09-28.json`):** 3.835/4.157 case (92%) có nhãn tự động — FALSE_POSITIVE 3.830, INEFFECTIVE 4, CORRECT 1, 0 xung đột. Gần như toàn bộ đến từ `self_resolved_without_action`, tức là phần lớn cảnh báo tự hết trong 30 phút mà không cần hành động. Chưa đo được precision vì chưa có nhãn operator; `lf_flapping` = 0 vì WP1.1 chưa deploy.
 
 **Nghiệm thu:** ≥ 60% case trong 30 ngày có ít nhất 1 nhãn tự động; precision LF được báo cáo.
 **Ước lượng:** 2 ngày.
@@ -360,6 +364,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP1.2 điều chỉnh | BlueStore = bão lịch sử 06/09 (đã chặn); OSD latency mở 4/đóng 3 scan, replay 256 → 48 (−81%); thêm WP1.4 gom CRUSH skew | `tests/test_osd_latency_monitor.py` 16 passed | Partial (chờ deploy) |
 | 28/09/2026 | WP1.4 CRUSH skew | 1 incident/tín hiệu thay vì 1/entity; replay 369 → 66 (−82%) | `tests/test_crush_skew_monitor.py` 29 passed | Partial (chờ deploy) |
 | 28/09/2026 | WP2.2 Nhắc verdict | 5 case/ngày theo độ hữu ích, qua kênh cluster, không trùng | 54 passed | Partial (chờ deploy) |
+| 28/09/2026 | WP2.3 Nhãn tự động | 6 LF, tính khi cần (không migration), báo cáo chỉ đọc; 92% case có nhãn | 5 passed | Done (precision chờ nhãn operator) |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 
