@@ -19,7 +19,6 @@ from typing import Any, Callable
 from sqlalchemy import func, or_
 
 from shared import autonomy_kpi
-from shared.incident_evidence import EVENT_TRIAGED, SKIPPED_FLAPPING
 from shared.models import (
     AutonomyDecision,
     Cluster,
@@ -35,6 +34,10 @@ from shared.trust_engine import SHADOW_MIN_TRUST_SCORE, SHADOW_MIN_VERIFIED_SAMP
 logger = logging.getLogger(__name__)
 
 LABEL_TARGET = 200          # WP6 starts with at least this many operator labels
+# Same values as shared.incident_evidence. Not imported: that module pulls in
+# the SSH transport (watcher.ceph_client), which a read-only report never needs.
+EVENT_TRIAGED = "triage_concluded"
+SKIPPED_FLAPPING = "skipped_flapping"
 SCHEMA = "ceph-ai.weekly-autonomy-report.v1"
 
 

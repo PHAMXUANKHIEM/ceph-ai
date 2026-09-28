@@ -124,3 +124,10 @@ def test_digest_still_sends_when_the_autonomy_report_fails(dashboard_client, mon
     monkeypatch.setattr(ai_ops_digest.weekly_autonomy_report, "build", boom)
     rows = ai_ops_digest.build_digest(now=NOW)
     assert rows and "🤖" not in rows[0][1] and "Incident:" in rows[0][1]
+
+
+def test_report_constants_match_the_evidence_module():
+    from shared import incident_evidence
+
+    assert war.EVENT_TRIAGED == incident_evidence.EVENT_TRIAGED
+    assert war.SKIPPED_FLAPPING == incident_evidence.SKIPPED_FLAPPING
