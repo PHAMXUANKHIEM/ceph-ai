@@ -15,13 +15,17 @@ operator verdict and verified outcome whenever a report runs.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from shared import shadow_policy
 from shared.autonomy_kpi import fault_family
 from shared.models import AutonomyDecision, Incident, RemediationCase
 from shared.time import utc_now
+
+logger = logging.getLogger(__name__)
 
 POLICY_VERSION = "rules-llm-v1"
 ESCALATE = "investigate_manually"
@@ -71,17 +75,40 @@ def record(session, *, incident: Incident, case: RemediationCase, chosen_action:
     if existing is not None:
         return existing
     candidates = sorted({chosen_action, ESCALATE})
+    context = features(incident=incident, case=case, envelope=envelope, triage=triage, now=now)
+    shadow = _shadow(session, context, chosen_action, chosen_by, incident.cluster_id, now or utc_now())
     row = AutonomyDecision(
         case_id=case.id, incident_id=incident.id, cluster_id=incident.cluster_id,
         fault_family=fault_family(incident.ceph_code)[:64],
-        context_json=json.dumps(features(incident=incident, case=case, envelope=envelope, triage=triage, now=now),
-                                sort_keys=True),
+        context_json=json.dumps(context, sort_keys=True),
         candidates_json=json.dumps(candidates),
         chosen_action=chosen_action[:64], chosen_by=chosen_by, propensity=1.0, policy_version=POLICY_VERSION,
+        shadow_recommendation=shadow.recommendation if shadow else None,
+        shadow_reasons_json=json.dumps(shadow.reasons, ensure_ascii=False) if shadow else None,
     )
     session.add(row)
     session.flush()
     return row
+
+
+def _shadow(session, context: dict, action_id: str, chosen_by: str, cluster_id: str | None,
+            now: datetime) -> shadow_policy.ShadowDecision | None:
+    """What the WP6.3 shadow policy would do; a failure here only loses the
+    shadow column, never the decision log or the diagnosis."""
+    from config.settings import settings
+
+    try:
+        # Savepoint: a failed FRR query must not poison the caller's
+        # transaction (the Action/RemediationCase being created).
+        with session.begin_nested():
+            frr = shadow_policy.false_release_rate(session, cluster_id, now)
+        return shadow_policy.evaluate(
+            context, action_id, chosen_by, shadow_policy.contract_info(action_id),
+            frr, float(settings.shadow_frr_budget),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("decision_log: shadow policy failed for %s", action_id)
+        return None
 
 
 def reward_for(operator_verdict: str | None, outcome: str | None, regressed_24h: bool | None) -> float | None:

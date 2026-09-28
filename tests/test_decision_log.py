@@ -87,3 +87,29 @@ def test_load_joins_current_rewards_and_counts_unknown():
     session.commit()
     logged, unknown = decision_log.load(session, days=30, now=NOW)
     assert sorted(item.reward for item in logged) == [0.0, 1.0] and unknown == 1
+
+
+def test_record_stores_the_shadow_recommendation_without_acting():
+    session = _session()
+    incident, case = _case(session, code="MON_CLOCK_SKEW:mon-z")
+    row = decision_log.record(session, incident=incident, case=case, chosen_action="resync_ntp",
+                              chosen_by="llm", envelope=ENVELOPE, now=NOW)
+    assert row.shadow_recommendation == "escalate"          # no trust samples yet
+    reasons = json.loads(row.shadow_reasons_json)
+    assert any("Trust Engine 0/20" in reason for reason in reasons)
+    assert session.get(Action, case.action_id).status == "PENDING"   # nothing executed
+
+
+def test_a_broken_shadow_policy_never_breaks_the_decision_log(monkeypatch):
+    from shared import shadow_policy
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("frr query failed")
+
+    monkeypatch.setattr(shadow_policy, "false_release_rate", boom)
+    session = _session()
+    incident, case = _case(session, code="MON_CLOCK_SKEW:mon-y")
+    row = decision_log.record(session, incident=incident, case=case, chosen_action="resync_ntp",
+                              chosen_by="llm", envelope=ENVELOPE, now=NOW)
+    session.commit()
+    assert row.shadow_recommendation is None and row.chosen_action == "resync_ntp"

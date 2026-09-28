@@ -294,10 +294,10 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ### WP6.3 Chính sách "tự làm hay gọi người" (execute vs escalate)
 
-- [ ] Contextual bandit (Vowpal Wabbit hoặc River, đã có `scripts/benchmark_vw_bandit.py`) chạy **shadow**: ghi quyết định đề xuất, không hành động.
-- [ ] Ràng buộc rủi ro 3 chiều (theo hướng risk-constrained remediation): blast radius (số OSD/PG ảnh hưởng), reversibility (có rollback plan đã diễn tập), uncertainty (bất đồng ensemble/độ tin chẩn đoán) — vượt một chiều là escalate.
-- [ ] Ngân sách FRR do operator đặt (mặc định 5%/tháng/cluster); vượt → tự hạ về APPROVAL_REQUIRED + cảnh báo.
-- [ ] Tích hợp: đầu ra bandit chỉ là **một input** cho `autopilot_guardrails` + Trust Engine; không bỏ qua kill switch/cooldown/budget hiện có.
+- [x] Chính sách shadow `shared/shadow_policy.py` (luật có ràng buộc rủi ro, **chưa** phải bandit học — chưa đủ nhãn): mỗi quyết định WP6.1 được gắn `shadow_recommendation` = execute/escalate + lý do (migration `m20260928shadowpolicy`), không hành động. Bandit học (VW/River) thay cho luật này khi có ≥ 200 nhãn.
+- [x] Ràng buộc rủi ro: contract đăng ký, blast radius (node ảnh hưởng ≤ `max_targets` của contract), reversibility (contract có rollback), uncertainty (độ tin: LLM ≥ 0,9, luật ≥ 0,75), Trust Engine (≥ 20 mẫu, ≥ 0,85) — trượt một cổng là escalate. **Chưa có:** số OSD/PG ảnh hưởng, rollback *đã diễn tập*, bất đồng ensemble.
+- [x] Ngân sách FRR `SHADOW_FRR_BUDGET` (mặc định 5%): FRR = tỉ lệ khuyến nghị execute của chính policy trong 30 ngày bị operator đánh giá sai (cần ≥ 10 nhãn mới áp dụng); vượt → escalate. Hạ quyền thật + cảnh báo làm cùng WP6.4 (hiện chưa có gì để hạ).
+- [ ] Tích hợp: đầu ra chỉ là **một input** cho `autopilot_guardrails` + Trust Engine — **cố ý chưa nối**: hiện policy chỉ ghi, không có đường nào từ shadow tới thực thi (test chứng minh). Báo cáo tuần hiển thị số execute/escalate và lý do chính.
 
 ### WP6.4 Lộ trình nâng quyền
 
@@ -394,6 +394,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | Review — chưa làm được bằng code | Deploy canary + đo KPI ≥ 7 ngày; ≥ 100 verdict; deploy/live workflow trên runner đúng; PostgreSQL/RabbitMQ/rollback/soak/DR; HA | — | Chờ vận hành |
 | 28/09/2026 | WP6.1–6.2 Decision log + OPE | Worker ghi quyết định (nguồn, context có cấu trúc, propensity) cho mọi case mới; IPS/SNIPS/DR + CI + support; báo cáo chỉ đọc. Học/exploration (WP6.3) vẫn chờ ≥ 200 nhãn | 17 test mới, 212 passed | Done (chờ deploy + migrate) |
 | 28/09/2026 | WP8 Báo cáo tuần | Mục autonomy trong digest thứ Hai + JSON tuỳ chọn + script chạy tay; mỗi mục hạ cấp độc lập (đã thấy trên PostgreSQL thật khi thiếu bảng) | 4 test mới | Done (chờ deploy) |
+| 28/09/2026 | WP6.3 Chính sách shadow execute/escalate | Luật ràng buộc rủi ro gắn khuyến nghị + lý do vào mỗi quyết định, FRR theo cluster, savepoint để lỗi không ảnh hưởng chẩn đoán; báo cáo tuần có mục shadow | 17 test mới, 183 passed | Done (shadow; bandit học chờ ≥ 200 nhãn) |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 

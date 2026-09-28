@@ -426,6 +426,9 @@ class Settings(BaseSettings):
     # WP3.4: a rule conclusion at least this confident (and at least
     # ai_min_diagnosis_confidence) replaces the LLM call for that incident.
     triage_min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+    # WP6.3: false-release budget of the shadow execute/escalate policy
+    # (share of its "execute" recommendations operators judged wrong, 30 days).
+    shadow_frr_budget: float = Field(default=0.05, ge=0.0, le=1.0)
 
     # Vitastor is a separate product workspace, so its chat connection must
     # not silently inherit or overwrite the Ceph AI provider configuration.

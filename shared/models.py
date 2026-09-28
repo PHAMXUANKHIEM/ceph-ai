@@ -816,6 +816,10 @@ class AutonomyDecision(Base):
     chosen_by: Mapped[str] = mapped_column(String(32), nullable=False)
     propensity: Mapped[float] = mapped_column(Float, nullable=False)
     policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # WP6.3: what the risk-constrained shadow policy would have done
+    # (execute/escalate) and why; never acted on.
+    shadow_recommendation: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    shadow_reasons_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 

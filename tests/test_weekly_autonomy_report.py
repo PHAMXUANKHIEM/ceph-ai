@@ -33,7 +33,9 @@ def _seed(cluster):
         session.add(AutonomyDecision(case_id=case.id, incident_id=incidents[0].id, cluster_id=cluster.id,
                                      fault_family="NODE_UNREACHABLE", context_json="{}", candidates_json="[]",
                                      chosen_action="resync_ntp", chosen_by="rules", propensity=1.0,
-                                     policy_version="v1", created_at=NOW - timedelta(days=1)))
+                                     policy_version="v1", created_at=NOW - timedelta(days=1),
+                                     shadow_recommendation="escalate",
+                                     shadow_reasons_json=json.dumps(["không có rollback đã đăng ký"])))
         session.add(IncidentEvidence(incident_id=incidents[0].id, runbook="NODE_UNREACHABLE", collector_id="mon_ping",
                                      target="mon", status="ok", created_at=NOW - timedelta(days=1)))
         for incident, conclusion in ((incidents[0], "TRANSIENT"), (incidents[2], "UNKNOWN")):
@@ -73,12 +75,14 @@ def test_weekly_report_sections(dashboard_client):
     assert report["verdicts"] == {"new": {"CORRECT": 1}, "new_total": 1, "labelled_total": 1, "label_target": 200}
     assert report["evidence"]["incidents_investigated"] == 1
     assert (report["evidence"]["triaged"], report["evidence"]["rule_concluded"]) == (2, 1)
-    assert report["decisions"] == {"rules": 1}
+    assert report["decisions"]["by_source"] == {"rules": 1}
+    assert report["decisions"]["shadow"] == {"escalate": 1}
     assert [p["playbook"] for p in report["playbooks"]["ready"]] == ["restart_osd_daemon"]
     assert [p["playbook"] for p in report["playbooks"]["closest"]] == ["resync_ntp"]
     text = "\n".join(war.format_lines(report))
     assert "Verdict mới: 1 (CORRECT 1); tổng 1/200" in text
     assert "luật kết luận 1/2 (50.0%)" in text
+    assert "Shadow (không hành động): execute 0 · escalate 1 — lý do chính: không có rollback đã đăng ký (1)" in text
     assert "Đủ ngưỡng Trust Engine (chờ operator duyệt nâng quyền): restart_osd_daemon" in text
     assert "resync_ntp 12/20 mẫu, trust 0.70" in text
     assert "pg_repair_force" not in text and "other_cluster" not in text

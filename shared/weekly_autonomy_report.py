@@ -104,10 +104,19 @@ def _evidence(session, cluster: Cluster, start: datetime) -> dict:
 
 
 def _decisions(session, cluster: Cluster, start: datetime) -> dict:
-    rows = session.query(AutonomyDecision.chosen_by).filter(
+    rows = session.query(AutonomyDecision.chosen_by, AutonomyDecision.shadow_recommendation,
+                         AutonomyDecision.shadow_reasons_json).filter(
         _scope(AutonomyDecision.cluster_id, cluster), AutonomyDecision.created_at >= start,
     ).all()
-    return dict(Counter(source for (source,) in rows))
+    reasons: Counter = Counter()
+    for row in rows:
+        for reason in json.loads(row.shadow_reasons_json or "[]"):
+            reasons[str(reason).split(" ")[0] if str(reason).startswith(("Trust", "FRR")) else str(reason)] += 1
+    return {
+        "by_source": dict(Counter(row.chosen_by for row in rows)),
+        "shadow": dict(Counter(row.shadow_recommendation or "none" for row in rows)),
+        "top_escalation_reasons": reasons.most_common(3),
+    }
 
 
 def _playbooks(session, cluster: Cluster) -> dict:
@@ -168,8 +177,13 @@ def format_lines(report: dict) -> list[str]:
         lines.append(f"• Bằng chứng: {evidence['incidents_investigated']} incident; luật kết luận "
                      f"{evidence['rule_concluded']}/{evidence['triaged']} ({_percent(evidence['rule_coverage'])})")
     decisions = report.get("decisions")
-    if decisions:
-        lines.append("• Nguồn quyết định: " + ", ".join(f"{key} {value}" for key, value in sorted(decisions.items())))
+    if decisions and decisions["by_source"]:
+        lines.append("• Nguồn quyết định: " + ", ".join(
+            f"{key} {value}" for key, value in sorted(decisions["by_source"].items())))
+        shadow = decisions["shadow"]
+        reasons = "; ".join(f"{reason} ({count})" for reason, count in decisions["top_escalation_reasons"])
+        lines.append(f"• Shadow (không hành động): execute {shadow.get('execute', 0)} · escalate "
+                     f"{shadow.get('escalate', 0)}" + (f" — lý do chính: {reasons}" if reasons else ""))
     playbooks = report.get("playbooks")
     if playbooks:
         if playbooks["ready"]:
