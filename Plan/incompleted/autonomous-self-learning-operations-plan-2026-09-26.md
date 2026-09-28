@@ -207,12 +207,15 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ### WP3.1 Registry evidence collector
 
-- [ ] `shared/evidence_collectors.py`: mỗi collector = id, mô tả, lệnh typed (không chuỗi tự do), phạm vi (cluster/host/osd), timeout, kích thước tối đa, redaction. Ứng viên:
-  - Ceph: `ceph osd perf`, `ceph osd tree`, `ceph pg dump_stuck`, `ceph device ls`, `ceph device get-health-metrics <devid>`, `ceph daemon osd.N dump_historic_slow_ops` (qua cephadm/docker exec), `ceph osd metadata N`,
-  - Host (SSH read-only identity): `smartctl -a /dev/X`, `iostat -x 1 3`, `uptime`, `free -m`, `dmesg --since` (lọc), `journalctl -u ceph-osd@N --since -30min -n 200`, `ip -s link`, `ping -c 3` từ MON tới host.
-- [ ] Kiểm soát read-only bằng allowlist + test giống `scripts/live_readonly_acceptance.py` (chặn mutation verb ở transport).
-- [ ] Giới hạn: đồng thời ≤ 2 collector/host, ≤ 1 lượt/incident/10 phút, tổng thời gian ≤ 60s/incident, circuit breaker theo host.
-- [ ] Test: allowlist, redaction, timeout, circuit breaker, không lệnh nào ghi.
+- [x] `shared/evidence_collectors.py`: 15 collector, mỗi cái có id, mô tả, loại (CEPH qua MON / HOST qua SSH read-only), lệnh cố định + tham số kiểm tra bằng regex (`osd_id`, `devid`, `target`), timeout, giới hạn kích thước, redaction (`shared/ai_redaction.redact_text`):
+  - Ceph: `health detail`, `osd tree`, `osd perf`, `osd df`, `pg dump_stuck`, `device ls`, `crash ls-new`, `time-sync-status`, `osd metadata N`, `tell osd.N dump_historic_slow_ops`, `device get-health-metrics <devid>`,
+  - Host: `uptime`, `free -m`, `ip -s link`, `ping -c 3 -W 1 <target>` từ MON.
+  - **Chưa có** (cần quyền root, khóa read-only không có): `smartctl`, `dmesg`, `journalctl`, `iostat` — để lại cho khi có identity chẩn đoán riêng.
+- [x] Kiểm soát read-only: mọi lệnh sau khi render đều qua `assert_read_only` (động từ ghi giống `scripts/live_readonly_acceptance.py` + ký tự shell), kiểm tra lại lần nữa ở transport `SshTransport` trước khi gửi.
+- [x] Giới hạn: ≤ 2 collector đồng thời/host, ≤ 1 lượt/incident/10 phút (`claim`), ≤ 60 s/lượt (phần còn lại `skipped_budget`), circuit breaker theo host (3 lỗi → nghỉ 5 phút, half-open).
+- [x] Test: allowlist, lệnh ghi/chuỗi lệnh bị chặn, tham số độc hại, redaction, cắt output, ngân sách, breaker, concurrency, cooldown, transport chặn trước khi gửi (`tests/test_evidence_collectors.py`, 28 passed).
+
+**Kết quả 28/09/2026 (CS-LAB, chỉ đọc):** 11/11 collector thử đều `ok`, tổng ~29 s; lệnh `ceph` 3–5 s/lệnh (cephadm shell), lệnh host ~0,2 s. Vì ngân sách 60 s, runbook WP3.2 nên giới hạn ~8 lệnh `ceph`/incident.
 
 ### WP3.2 Runbook điều tra dạng dữ liệu
 
@@ -371,6 +374,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP2.3 Nhãn tự động | 6 LF, tính khi cần (không migration), báo cáo chỉ đọc; 92% case có nhãn | 5 passed | Done (precision chờ nhãn operator) |
 | 28/09/2026 | WP2.4 Verdict trên Alert Center | Cột verdict + nút một chạm + lọc chưa nhãn; check trình duyệt | 5 passed | Done (chờ deploy) |
 | 28/09/2026 | WP4 Tính năng Ceph (chỉ đọc) | Card Disk Risk: devicehealth, diskprediction_local, pg_autoscaler, balancer + SMART; phân biệt smartctl lỗi; action bật module hoãn (đĩa ảo) | 14 passed | Partial (chờ deploy; action + ingest định kỳ còn lại) |
+| 28/09/2026 | WP3.1 Evidence collectors | 15 collector chỉ đọc, chặn lệnh ghi 2 lớp, ngân sách/breaker/cooldown; thử thật 11/11 ok | 28 passed | Done (chưa gắn vào incident — WP3.3) |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
 
