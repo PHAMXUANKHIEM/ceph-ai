@@ -3930,6 +3930,38 @@ def test_action_target_guard_is_not_limited_to_container_deployments(monkeypatch
     assert "203.0.113.9" in reason
 
 
+def test_approved_action_target_guard_persists_failure_progress(isolated_db, monkeypatch):
+    monkeypatch.setattr(
+        router_client,
+        "_live_action_target_safety_reason",
+        lambda cluster, nodes, key_path: "target node không thuộc cấu hình cluster hiện tại: 203.0.113.9",
+    )
+    monkeypatch.setattr(
+        router_client,
+        "execute_command",
+        lambda *args, **kwargs: pytest.fail("unsafe target must not open SSH"),
+    )
+    _create_incident("incident-target-guard-progress")
+    with db_module.SessionLocal() as session:
+        action = _approved_cluster_deploy_action(
+            session,
+            "incident-target-guard-progress",
+            {"version": "18.2.8", "nodes": []},
+        )
+        action.target_nodes = json.dumps(["203.0.113.9"])
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.FAILED.value
+        progress = json.loads(action.execution_progress)
+        assert progress[0]["step"] == "preflight"
+        assert progress[0]["status"] == "failed"
+        assert "203.0.113.9" in progress[0]["message"]
+
+
 def test_action_target_guard_rejects_a_test_fixture_ssh_key(monkeypatch):
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     allowed = settings.ceph_mon_nodes.split(",")[0]

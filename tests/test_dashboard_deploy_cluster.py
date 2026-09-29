@@ -393,6 +393,48 @@ def test_progress_endpoint_returns_latest_action_status_and_progress(dashboard_c
     ]
 
 
+def test_failed_deploy_without_saved_progress_shows_target_safety_reason(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        deploy_cluster_route.env_config,
+        "current_cluster_config_fingerprint",
+        lambda: "stable-test-config",
+    )
+    monkeypatch.setattr(
+        deploy_cluster_route,
+        "configured_nodes",
+        lambda: [{"host": "10.20.1.10", "roles": ["MON"]}],
+    )
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/deploy-cluster/propose",
+        json=_valid_payload(method="ceph-deploy"),
+    )
+    action_pk = response.json()["action_id"]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        params = json.loads(action.action_params)
+        params["_cluster_config_fingerprint"] = "stable-test-config"
+        action.action_params = json.dumps(params)
+        action.status = ActionStatus.FAILED.value
+        action.execution_progress = None
+        session.commit()
+
+    progress_response = dashboard_client.get("/deploy-cluster/progress")
+    body = progress_response.json()
+    assert body["status"] == "FAILED"
+    assert body["progress"][0]["step"] == "preflight"
+    assert "10.20.1.112, 10.20.1.95, 10.20.1.21" in body["progress"][0]["message"]
+    assert "không thuộc cấu hình cluster hiện tại" in body["progress"][0]["message"]
+
+    page = dashboard_client.get("/deploy-cluster")
+    state_json = page.text.split(
+        '<script type="application/json" id="deploy-initial-state">', 1
+    )[1].split("</script>", 1)[0].strip()
+    initial_state = json.loads(state_json)
+    assert initial_state["progress"][0]["label"] == "Kiểm tra an toàn trước triển khai"
+    assert "không thuộc cấu hình cluster hiện tại" in initial_state["progress"][0]["message"]
+
+
 def test_progress_endpoint_formats_real_timestamps_as_vietnam_local_clock(dashboard_client):
     # 2026-07-28 regression test for the "time keeps changing after a step
     # finished" bug — a step with a REAL frozen finished_at (as

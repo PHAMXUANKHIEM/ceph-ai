@@ -17,6 +17,7 @@ from dashboard.vntime import format_vn_clock
 from shared import audit, db, env_config
 from shared.clusters import get_default_cluster_id
 from shared.ceph_releases import codenames_oldest_first, versions_by_codename
+from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from watcher.ceph_client import HostKeyProvisionError, forget_host_key, provision_host_key
 from worker.executor import commands as executor_commands
@@ -342,6 +343,50 @@ def _with_step_display_times(progress: list) -> list:
     return progress
 
 
+def _failed_action_progress(action: Action, progress: list) -> list:
+    """Provide an operator-visible explanation when a failed action has no log.
+
+    Older Worker code could reject an unsafe target before creating its first
+    progress row. For deploy actions, reconstruct that specific preflight
+    failure only when the saved cluster-config fingerprint still matches the
+    live config; otherwise avoid presenting a current-state inference as fact.
+    """
+    if action.status != ActionStatus.FAILED.value or progress:
+        return progress
+
+    message = "Worker đánh dấu triển khai thất bại nhưng lần chạy này không lưu được log từng bước."
+    if action.action_id in CLUSTER_DEPLOY_ACTION_IDS:
+        try:
+            params = json.loads(action.action_params or "{}")
+            targets = json.loads(action.target_nodes or "[]")
+            stored_fingerprint = params.get("_cluster_config_fingerprint") if isinstance(params, dict) else None
+            if (
+                isinstance(targets, list)
+                and all(isinstance(host, str) for host in targets)
+                and stored_fingerprint
+                and stored_fingerprint == env_config.current_cluster_config_fingerprint()
+            ):
+                configured = {row["host"] for row in configured_nodes()}
+                unexpected = [host for host in targets if host not in configured]
+                if unexpected:
+                    message = (
+                        "Worker đã chặn trước khi SSH: node đích không thuộc cấu hình cluster hiện tại: "
+                        + ", ".join(unexpected)
+                    )
+        except (TypeError, ValueError, KeyError, SQLAlchemyError):
+            logger.exception("Could not reconstruct missing deploy failure progress for action %s", action.id)
+
+    failed_at = action.updated_at.isoformat() if action.updated_at else None
+    return [{
+        "step": "preflight",
+        "label": "Kiểm tra an toàn trước triển khai",
+        "pct": 0,
+        "status": "failed",
+        "message": message,
+        "finished_at": failed_at,
+    }]
+
+
 @router.get("/deploy-cluster", response_class=HTMLResponse)
 async def deploy_cluster_page(request: Request, user: str = Depends(require_login)):
     try:
@@ -377,6 +422,7 @@ async def deploy_cluster_page(request: Request, user: str = Depends(require_logi
             progress = json.loads(last_action.execution_progress) or []
         except (TypeError, ValueError):
             progress = []
+    progress = _failed_action_progress(last_action, progress) if last_action is not None else progress
     progress = _with_step_display_times(progress)
 
     return templates.TemplateResponse(
@@ -599,5 +645,6 @@ async def deploy_cluster_progress(user: str = Depends(require_login)):
             progress = json.loads(action.execution_progress) if action.execution_progress else []
         except (TypeError, ValueError):
             progress = []
+        progress = _failed_action_progress(action, progress)
         progress = _with_step_display_times(progress)
         return JSONResponse({"status": action.status, "progress": progress, "action_id": action.id})

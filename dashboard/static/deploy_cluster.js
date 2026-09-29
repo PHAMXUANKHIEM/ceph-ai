@@ -372,6 +372,15 @@
     if (!logBox) return; // PENDING_APPROVAL view has no log box (shows the plan instead)
 
     if (!progress || !progress.length) {
+      if (status === "FAILED") {
+        logBox.innerHTML = "";
+        var fallbackLine = document.createElement("p");
+        fallbackLine.className = "deploy-log-line status-failed";
+        fallbackLine.textContent = "❌ Deployment thất bại nhưng không có log chi tiết. Hãy kiểm tra Worker log hoặc liên hệ admin.";
+        logBox.appendChild(fallbackLine);
+        if (progressLabel) progressLabel.textContent = "0% — Deployment thất bại; thiếu log chi tiết";
+        if (logTitle) logTitle.textContent = "❌ Thất bại";
+      }
       return;
     }
 
