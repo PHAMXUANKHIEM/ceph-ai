@@ -81,86 +81,97 @@ def test_ceph_learning_uses_same_test_deploy_pipeline(monkeypatch, tmp_path):
     assert captured["statuses"] == ["RUNNING", "LEARNED"]
 
 
-def test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline(monkeypatch, tmp_path):
+def test_nightly_creates_plan_only_and_never_calls_repair_pipeline(monkeypatch, tmp_path):
     state_path = tmp_path / "nightly.json"
     notifications = []
-    captured = {}
-    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_hour", 0, raising=False)
-    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_minute", 0, raising=False)
-    # These are enabled for the normal incident-repair pipeline. Nightly
-    # must ignore them because it is review-only.
+    captured = []
     monkeypatch.setattr(supervisor.settings, "code_repair_push", True)
     monkeypatch.setattr(supervisor.settings, "code_repair_deploy_staging", True)
     monkeypatch.setattr(supervisor.settings, "code_repair_promote_main", True)
     monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: "")
     monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
-
-    def fake_run(evidence, config, *, force):
-        captured.update({"evidence": evidence, "config": config, "force": force})
-        return SimpleNamespace(
-            status="PROMOTED", fingerprint="fp", branch="ai-repair/nightly", commit="abc",
-            changed_files=["shared/ai.py"], review_rounds=1, error=None,
-        )
-
-    monkeypatch.setattr(supervisor, "run_repair", fake_run)
+    monkeypatch.setattr(supervisor, "run_repair", lambda *a, **k: (_ for _ in ()).throw(AssertionError("nightly must not implement")))
+    monkeypatch.setattr(supervisor, "collect_nightly_multi_agent_analysis", lambda repo, evidence: captured.append(evidence) or (["system upgrade plan", "error review plan", "test plan"], []))
     now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)  # 00:00 Asia/Ho_Chi_Minh
 
     assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is True
     assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is False
-    assert captured["evidence"] == supervisor.NIGHTLY_IMPROVEMENT_EVIDENCE
-    assert captured["force"] is True
-    assert captured["config"].task_kind == "nightly-ai-improvement"
-    assert captured["config"].allow_no_change is True
-    assert captured["config"].test_command == supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
-    assert captured["config"].candidate_test_command == supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
-    assert "-k 'not (" in supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
-    assert "direct_nightly_call" in supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
-    assert "nightly_dirty_checkout" in supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
-    assert captured["config"].full_access is True
-    assert captured["config"].create_commit is False
-    assert captured["config"].preserve_candidate is True
-    assert captured["config"].candidate_root == state_path.parent / "nightly-ai-improvement-candidates"
-    assert captured["config"].isolate_venv is True
-    assert captured["config"].test_runner_command == ".venv/bin/python -m pytest"
-    assert captured["config"].require_changed_tests is False
-    assert captured["config"].max_ai_attempts == 1
-    assert captured["config"].timeout_seconds == supervisor.NIGHTLY_AI_STEP_TIMEOUT_SECONDS
-    assert captured["config"].push is False
-    assert captured["config"].deploy_staging is False
-    assert captured["config"].promote_main is False
-    assert json.loads(state_path.read_text())["status"] == "PROMOTED"
-    assert len(notifications) == 2
+    assert captured == [supervisor.NIGHTLY_IMPROVEMENT_EVIDENCE]
+    saved = json.loads(state_path.read_text())
+    assert saved["status"] == "PLAN_READY"
+    assert saved["mode"] == "PLAN_ONLY"
+    assert saved["analysis_report_previews"] == ["system upgrade plan", "error review plan", "test plan"]
+    assert saved["changed_files"] == []
+    assert saved["commit"] is None
+    assert saved["candidate_worktree"] is None
+    assert notifications == []
 
 
-def test_nightly_multi_agent_reports_are_passed_to_single_writer(monkeypatch, tmp_path):
+def test_nightly_records_partial_plans_and_does_not_block_on_dirty_checkout(monkeypatch, tmp_path):
     state_path = tmp_path / "nightly.json"
     captured = {}
-    monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: "")
+    monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: " M dashboard/app.py")
     monkeypatch.setattr(supervisor, "send_code_repair_alert", lambda message: None)
     monkeypatch.setattr(supervisor.settings, "ai_nightly_multi_agent_analysis_enabled", True, raising=False)
     monkeypatch.setattr(
         supervisor,
         "collect_nightly_multi_agent_analysis",
-        lambda repo, evidence: (["[ai_product / claude]\nbounded finding"], ["safety_budget: timeout"]),
+        lambda repo, evidence: (["[error_review / claude]\nbounded finding"], ["test_review: timeout"]),
     )
-
-    def fake_run(evidence, config, *, force):
-        captured["evidence"] = evidence
-        captured["config"] = config
-        return SimpleNamespace(
-            status="NO_CHANGE", fingerprint="fp", branch=None, commit=None,
-            changed_files=[], review_rounds=0, error=None,
-        )
-
-    monkeypatch.setattr(supervisor, "run_repair", fake_run)
+    monkeypatch.setattr(supervisor, "run_repair", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run repair")))
     now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
 
     assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is True
-    assert "bounded finding" in captured["evidence"]
     saved = json.loads(state_path.read_text())
+    assert saved["status"] == "PLAN_READY_WITH_WARNINGS"
+    assert saved["mode"] == "PLAN_ONLY"
+    assert saved["checkout_dirty"] is True
+    assert saved["checkout_changes"] == [" M dashboard/app.py"]
     assert saved["analysis_status"] == "COMPLETED"
     assert saved["analysis_reports"] == 1
-    assert saved["analysis_failures"] == ["safety_budget: timeout"]
+    assert saved["analysis_failures"] == ["test_review: timeout"]
+
+
+def test_nightly_prompts_cover_upgrade_errors_and_tests_without_execution():
+    assert {name for name, _ in supervisor.NIGHTLY_ANALYSTS} == {
+        "system_upgrade", "error_review", "test_review",
+    }
+    prompt = supervisor._nightly_analyst_prompt("test_review", "coverage", "evidence")
+    assert "planning-only" in prompt
+    assert "execute tests" in prompt
+    assert "Acceptance criteria" in prompt
+    assert "do not claim that runtime incidents were reviewed" in prompt
+
+
+def test_nightly_collects_bounded_redacted_recent_application_errors(tmp_path):
+    log = tmp_path / "ceph-ai-worker.log"
+    log.write_text("INFO healthy\nERROR request failed token=very-secret-value\nTraceback (most recent call last):\nRuntimeError: backend unavailable\n")
+
+    evidence = supervisor._collect_recent_nightly_error_evidence(tmp_path)
+
+    assert "ceph-ai-worker.log" in evidence
+    assert "backend unavailable" in evidence
+    assert "very-secret-value" not in evidence
+    assert "<redacted>" in evidence
+
+
+def test_nightly_passes_runtime_log_evidence_only_to_error_analyst(monkeypatch):
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_multi_agent_analysis_enabled", True, raising=False)
+    monkeypatch.setattr(supervisor, "_collect_recent_nightly_error_evidence", lambda: "\nRUNTIME_ERROR_EVIDENCE")
+    captured = {}
+
+    def fake_analyst(repo, evidence, role, focus, **kwargs):
+        captured[role] = evidence
+        return role, f"[{role}] plan"
+
+    monkeypatch.setattr(supervisor, "_run_nightly_analyst", fake_analyst)
+    reports, failures = supervisor.collect_nightly_multi_agent_analysis(Path("."), "base plan")
+
+    assert not failures
+    assert len(reports) == len(supervisor.NIGHTLY_ANALYSTS)
+    assert "RUNTIME_ERROR_EVIDENCE" in captured["error_review"]
+    assert "RUNTIME_ERROR_EVIDENCE" not in captured["system_upgrade"]
+    assert "RUNTIME_ERROR_EVIDENCE" not in captured["test_review"]
 
 
 def test_nightly_analysis_redacts_assignment_and_json_secrets():
@@ -225,6 +236,7 @@ def test_nightly_due_retries_an_interrupted_or_failed_run():
     now = datetime(2026, 8, 30, 20, 15, tzinfo=timezone.utc)
     for status in ("RUNNING", "FAILED"):
         assert supervisor._nightly_due({"last_run_date": "2026-08-31", "status": status}, now) is True
+    assert supervisor._nightly_due({"last_run_date": "2026-08-31", "status": "PLAN_INCOMPLETE"}, now) is True
 
 
 def test_nightly_dashboard_override_is_scoped_to_today(monkeypatch):
@@ -267,10 +279,16 @@ def test_repair_execution_lock_serializes_timer_and_supervisor(monkeypatch, tmp_
 
 def test_nightly_failure_is_persisted_and_notified(monkeypatch, tmp_path):
     state_path = tmp_path / "nightly.json"
+    state_path.write_text(json.dumps({
+        "last_run_date": "2026-08-30",
+        "analysis_report_previews": ["stale yesterday plan"],
+        "analysis_reports": 3,
+        "changed_files": ["yesterday.py"],
+    }))
     notifications = []
     monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: "")
     monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
-    monkeypatch.setattr(supervisor, "run_repair", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(supervisor, "collect_nightly_multi_agent_analysis", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
     now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
 
     assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is False
@@ -279,47 +297,52 @@ def test_nightly_failure_is_persisted_and_notified(monkeypatch, tmp_path):
     assert "last_run_date" not in state
     assert state["status"] == "FAILED"
     assert "boom" in state["error"]
-    assert len(notifications) == 2
+    assert len(notifications) == 1
+    assert state["analysis_report_previews"] == []
+    assert state["analysis_reports"] == 0
+    assert state["changed_files"] == []
 
 
-def test_nightly_failed_pipeline_is_left_retryable(monkeypatch, tmp_path):
+def test_nightly_all_analysts_failed_is_reported_without_implementer_retry(monkeypatch, tmp_path):
     state_path = tmp_path / "nightly.json"
     monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: "")
     monkeypatch.setattr(supervisor, "send_code_repair_alert", lambda message: None)
     monkeypatch.setattr(
         supervisor,
-        "run_repair",
-        lambda *args, **kwargs: SimpleNamespace(
-            status="FAILED", fingerprint="fp", branch="ai-repair/nightly", commit=None,
-            changed_files=[], review_rounds=0, error="candidate gate failed",
-        ),
+        "collect_nightly_multi_agent_analysis",
+        lambda *args, **kwargs: ([], ["system_upgrade: timeout", "error_review: unavailable"]),
     )
-    now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
-
-    assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is False
-
-    state = json.loads(state_path.read_text())
-    assert state["status"] == "FAILED"
-    assert "last_run_date" not in state
-
-
-def test_nightly_dirty_checkout_stops_before_ai(monkeypatch, tmp_path):
-    state_path = tmp_path / "nightly.json"
-    notifications = []
-    monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: " M compose.yaml")
-    monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
-    monkeypatch.setattr(supervisor, "run_repair", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(supervisor, "run_repair", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run repair")))
     now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
 
     assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is True
 
     state = json.loads(state_path.read_text())
-    assert state["status"] == "BLOCKED_DIRTY_CHECKOUT"
+    assert state["status"] == "PLAN_INCOMPLETE"
     assert state["last_run_date"] == "2026-08-31"
-    assert notifications and "chưa commit" in notifications[0]
+    assert state["analysis_failures"] == ["system_upgrade: timeout", "error_review: unavailable"]
 
 
-def test_nightly_dashboard_override_allows_dirty_checkout(monkeypatch, tmp_path):
+def test_nightly_dirty_checkout_is_recorded_but_does_not_block_read_only_plan(monkeypatch, tmp_path):
+    state_path = tmp_path / "nightly.json"
+    notifications = []
+    monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: " M compose.yaml")
+    monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
+    monkeypatch.setattr(supervisor, "collect_nightly_multi_agent_analysis", lambda *args, **kwargs: (["read-only plan"], []))
+    monkeypatch.setattr(supervisor, "run_repair", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run repair")))
+    now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
+
+    assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is True
+
+    state = json.loads(state_path.read_text())
+    assert state["status"] == "PLAN_READY"
+    assert state["last_run_date"] == "2026-08-31"
+    assert state["checkout_dirty"] is True
+    assert state["checkout_changes"] == [" M compose.yaml"]
+    assert notifications == []
+
+
+def test_nightly_dashboard_override_never_enables_implementation(monkeypatch, tmp_path):
     state_path = tmp_path / "nightly.json"
     notifications = []
     now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
@@ -327,15 +350,11 @@ def test_nightly_dashboard_override_allows_dirty_checkout(monkeypatch, tmp_path)
     monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
     monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_override_date", "2026-08-31", raising=False)
     monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_override_enabled", True, raising=False)
-    monkeypatch.setattr(
-        supervisor,
-        "run_repair",
-        lambda *args, **kwargs: SimpleNamespace(
-            status="NO_CHANGE", fingerprint="fp", branch=None, commit=None,
-            changed_files=[], review_rounds=0, error=None,
-        ),
-    )
+    monkeypatch.setattr(supervisor, "collect_nightly_multi_agent_analysis", lambda *args, **kwargs: (["plan"], []))
+    monkeypatch.setattr(supervisor, "run_repair", lambda *a, **k: (_ for _ in ()).throw(AssertionError("override must not enable repair")))
 
     assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is True
-    assert json.loads(state_path.read_text())["status"] == "NO_CHANGE"
-    assert "cho phép chạy hôm nay" in notifications[0]
+    state = json.loads(state_path.read_text())
+    assert state["status"] == "PLAN_READY"
+    assert state["mode"] == "PLAN_ONLY"
+    assert notifications == []

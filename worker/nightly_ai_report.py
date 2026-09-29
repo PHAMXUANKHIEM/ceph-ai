@@ -63,6 +63,23 @@ def _state_run_date(state: dict) -> str:
 
 def _recommendation(state: dict) -> str:
     status = str(state.get("status") or "UNKNOWN")
+    if status in {"PLAN_READY", "PLAN_READY_WITH_WARNINGS"}:
+        return (
+            "Đây là kế hoạch đề xuất, nightly chưa sửa code hoặc chạy test. "
+            "Chọn một việc ưu tiên để operator duyệt và triển khai; chạy acceptance/regression test "
+            "được nêu trong từng đề xuất sau khi duyệt."
+        )
+    if status == "PLAN_INCOMPLETE":
+        if state.get("analysis_status") == "DISABLED":
+            return (
+                "Multi-agent analysis đang tắt. Bật cấu hình nightly analyst trước, "
+                "sau đó chạy lại service; chưa có kế hoạch để thực hiện."
+            )
+        return (
+            "Kế hoạch chưa đủ dữ liệu. Kiểm tra lỗi analyst/provider trong báo cáo, "
+            "có thể chạy lại review hôm nay bằng `systemctl start ceph-ai-nightly-ai-improvement.service`; "
+            "nếu không, nightly sẽ thử lại ở lịch kế tiếp."
+        )
     if status in {"PATCH_READY", "COMMITTED", "PUSHED", "STAGING_VERIFIED", "PROMOTED"}:
         return (
             "1) Review diff của candidate và test output. "
@@ -97,16 +114,33 @@ def build_morning_report(state: dict, *, now: datetime | None = None) -> str:
     run_date = _state_run_date(state)
     status = str(state.get("status") or "NO_RECORD")
     lines = [
-        "☀️ AI NIGHTLY IMPROVEMENT — BÁO CÁO 08:30",
+        "☀️ NIGHTLY SYSTEM REVIEW — KẾ HOẠCH 08:30",
         f"Ngày báo cáo: {local.strftime('%d/%m/%Y %H:%M')} · Kết quả job: {run_date or 'không có record'}",
         f"Trạng thái: {status}",
     ]
 
+    if state.get("mode") == "PLAN_ONLY":
+        lines.append("Chế độ: chỉ rà soát và lập kế hoạch; không sửa code, không chạy test/remediation.")
+        if state.get("runtime_error_evidence") == "bounded_redacted_24h":
+            lines.append("Lỗi runtime: analyst lỗi nhận tail log app gần đây đã lọc/che secret (file log cập nhật trong 24h).")
+        elif state.get("runtime_error_evidence") == "pending":
+            lines.append("Lỗi runtime: lượt rà soát bị gián đoạn trước khi hoàn tất thu thập log.")
+        else:
+            lines.append("Lỗi runtime: chưa thu thập log ứng dụng cho lượt rà soát này.")
+    if state.get("source_revision"):
+        lines.append(f"Mã nguồn đã rà soát: {state['source_revision']}")
+    if state.get("checkout_dirty"):
+        lines.append(
+            "Lưu ý: checkout có thay đổi chưa commit; analyst chỉ đọc HEAD, không đọc diff chưa commit."
+        )
+
     changed_files = state.get("changed_files") or []
-    if changed_files:
+    if state.get("mode") == "PLAN_ONLY":
+        lines.append("Thay đổi code/test: không có (đúng theo chế độ chỉ lập kế hoạch).")
+    elif changed_files:
         files = ", ".join(_clip(item, 100) for item in changed_files[:12])
         lines.append(f"Đã thay đổi ({len(changed_files)} file): {files}")
-    else:
+    elif not state.get("mode"):
         lines.append("Đã thay đổi: không có patch được ghi nhận.")
     if state.get("candidate_worktree"):
         lines.append(f"Candidate: {_clip(state['candidate_worktree'], 260)}")

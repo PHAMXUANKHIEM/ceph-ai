@@ -22,6 +22,31 @@ def test_build_morning_report_includes_work_and_recommendations():
     assert len(message) <= nightly_ai_report.MAX_TELEGRAM_CHARS
 
 
+def test_plan_only_report_explains_scope_and_never_claims_code_was_changed():
+    message = nightly_ai_report.build_morning_report({
+        "last_run_date": "2026-09-29",
+        "status": "PLAN_READY_WITH_WARNINGS",
+        "mode": "PLAN_ONLY",
+        "runtime_error_evidence": "bounded_redacted_24h",
+        "source_revision": "abc1234",
+        "checkout_dirty": True,
+        "checkout_changes": [" M dashboard/app.py"],
+        "analysis_reports": 2,
+        "analysis_failures": ["test_review: timeout"],
+        "analysis_report_previews": ["P1: nâng cấp dependency; kiểm thử hồi quy tương thích."],
+    }, now=datetime(2026, 9, 29, 1, 30, tzinfo=timezone.utc))
+
+    assert "PLAN_READY_WITH_WARNINGS" in message
+    assert "chỉ rà soát và lập kế hoạch" in message
+    assert "không sửa code, không chạy test/remediation" in message
+    assert "abc1234" in message
+    assert "checkout có thay đổi chưa commit" in message
+    assert "không có (đúng theo chế độ chỉ lập kế hoạch)" in message
+    assert "nâng cấp dependency" in message
+    assert "operator" in message
+    assert "file log cập nhật trong 24h" in message
+
+
 def test_failed_retryable_state_uses_finished_date():
     message = nightly_ai_report.build_morning_report({
         "status": "FAILED",
@@ -31,6 +56,18 @@ def test_failed_retryable_state_uses_finished_date():
 
     assert "Kết quả job: 2026-09-16" in message
     assert "test gate failed" in message
+
+
+def test_incomplete_disabled_review_does_not_recommend_repeating_unchanged_config():
+    message = nightly_ai_report.build_morning_report({
+        "last_run_date": "2026-09-29",
+        "status": "PLAN_INCOMPLETE",
+        "analysis_status": "DISABLED",
+        "mode": "PLAN_ONLY",
+    }, now=datetime(2026, 9, 29, 1, 30, tzinfo=timezone.utc))
+
+    assert "Multi-agent analysis đang tắt" in message
+    assert "chạy lại service" in message
 
 
 def test_main_sends_once_and_marks_state(monkeypatch, tmp_path):

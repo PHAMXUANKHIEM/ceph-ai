@@ -1,4 +1,4 @@
-"""Continuously trigger bounded Code Repair from newly appended app logs.
+"""Supervise Code Repair and run a read-only nightly system review.
 
 This process deliberately lives outside Watcher/Worker. Candidate deployments
 restart those services, while this supervisor must survive long enough to
@@ -31,7 +31,6 @@ from worker.code_repair import (
     RepairConfig,
     cleanup_stale_worktrees,
     clean_evidence,
-    cleanup_preserved_candidates,
     reconcile_stale_attempts_file,
     run_repair,
     _provider_command,
@@ -49,60 +48,36 @@ logger = logging.getLogger(__name__)
 REPAIR_COOLDOWN_SECONDS = 3600
 NIGHTLY_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 NIGHTLY_IMPROVEMENT_EVIDENCE = (
-    "Scheduled nightly review: Cần nâng cấp gì cho phần AI của tool này?"
+    "Scheduled read-only nightly operations review for ceph-ai. Assess what the operator should do next "
+    "in three areas: (1) system upgrades and production readiness, (2) operational errors and failure "
+    "handling, and (3) tests, coverage, and validation strategy. Produce a prioritized plan only. "
+    "Do not implement, modify files, commit, push, deploy, execute tests, or run remediation."
 )
-NIGHTLY_TEST_ENV_UNSET = (
-    "AI_NIGHTLY_MULTI_AGENT_ANALYSIS_ENABLED",
-    "AI_NIGHTLY_MULTI_AGENT_MAX_PARALLEL",
-    "AI_NIGHTLY_MULTI_AGENT_TIMEOUT_SECONDS",
-)
-NIGHTLY_REGRESSION_TEST_COMMAND = (
-    "env -u AI_NIGHTLY_MULTI_AGENT_ANALYSIS_ENABLED "
-    "-u AI_NIGHTLY_MULTI_AGENT_MAX_PARALLEL "
-    "-u AI_NIGHTLY_MULTI_AGENT_TIMEOUT_SECONDS "
-    "CEPH_AI_ENV_FILE=/dev/null "
-    "PYTHONPATH=. .venv/bin/python -m pytest -q "
-    "tests/test_code_repair.py "
-    "tests/test_code_repair_supervisor.py "
-    "--deselect=tests/test_code_repair_supervisor.py::test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline "
-    "--deselect=tests/test_code_repair_supervisor.py::test_nightly_multi_agent_reports_are_passed_to_single_writer "
-    "-k 'not (nightly_improvement or nightly_multi_agent or direct_nightly_call or nightly_failure "
-    "or nightly_failed_pipeline or nightly_dirty_checkout or nightly_dashboard_override)'"
-)
-NIGHTLY_AI_STEP_TIMEOUT_SECONDS = 1200
-NIGHTLY_MAX_REVIEW_ROUNDS = 2
-NIGHTLY_CANDIDATE_MAX_COUNT = 7
-NIGHTLY_CANDIDATE_RETENTION_SECONDS = 14 * 86400
 NIGHTLY_ANALYSIS_REPORT_LIMIT = 4_500
-NIGHTLY_ANALYSIS_TOTAL_LIMIT = 16_000
+NIGHTLY_ERROR_EVIDENCE_MAX_FILES = 6
+NIGHTLY_ERROR_EVIDENCE_MAX_CHARS = 6_000
+NIGHTLY_ERROR_EVIDENCE_MAX_BYTES_PER_FILE = 100_000
 _NIGHTLY_SECRET_RE = re.compile(
     r"(?i)(?P<prefix>[\"']?(?:api[_-]?key|secret|password|token|authorization|private[_-]?key)"
     r"[\"']?\s*[:=]\s*)(?P<quote>[\"']?)(?P<value>[^\"'\s,}]+)(?P=quote)"
 )
 NIGHTLY_ANALYSTS = (
     (
-        "ai_product",
-        "provider routing, chat-with-AI, two-agent workflows, and user-visible AI behavior",
+        "system_upgrade",
+        "system and dependency upgrades, production readiness, compatibility, migrations, security posture, "
+        "deployment/rollback, and operational capacity",
     ),
     (
-        "safety_budget",
-        "rate limits, provider budgets, isolation, permissions, secrets, and failure handling",
+        "error_review",
+        "operational failure modes, error handling, stale state, retries, logs/diagnostics, alert quality, "
+        "and unresolved defects evident in source or existing reports",
     ),
     (
-        "tests_observability",
-        "regression tests, telemetry, lifecycle state, logs, and operational diagnosability",
+        "test_review",
+        "test gaps, flaky or missing regression coverage, acceptance/e2e validation, safe test commands, "
+        "and how to verify the highest-priority operational changes",
     ),
 )
-NIGHTLY_IMPROVEMENT_INSTRUCTIONS = """This is a proactive nightly AI improvement task, not an incident repair.
-
-The Implementer has full write access to the isolated candidate worktree. Make whatever repository changes
-are needed for the selected improvement, including tests, configuration, scripts, and documentation. Do not
-commit, push, deploy, or modify anything outside the candidate worktree. The supervisor will preserve the
-uncommitted candidate for human review after the tests finish. Do not create cosmetic-only changes. If no
-bounded improvement is justified, finish the plan with exactly:
-VERDICT: NO_CHANGE_NEEDED
-Otherwise give the Implementer an exact plan and tests, then implement it fully in the candidate worktree.
-"""
 
 
 def _redact_nightly_text(value: str) -> str:
@@ -117,11 +92,16 @@ def _nightly_analyst_prompt(role: str, focus: str, evidence: str) -> str:
     return f"""You are the read-only {role} analyst in a nightly multi-agent review of ceph-ai.
 
 Inspect the isolated repository and analyze only this focus: {focus}.
-Do not edit files, create files, commit, push, deploy, call Ceph, change configuration,
-or access credentials. This is an advisory report for a separate Planner and one Implementer.
-Return a concise report with: findings backed by exact files/functions, one or more bounded
-improvement candidates if justified, risks, and the smallest regression-test idea. Do not
-recommend more than one implementation candidate. If nothing is justified, say so clearly.
+This is planning-only: do not edit/create files, commit, push, deploy, call Ceph, change configuration,
+execute tests, run commands that mutate state, or access credentials. Do not assume another agent will
+implement your proposal tonight. Return a concise prioritized plan using this format:
+1) Priority (P0/P1/P2) and proposed next task.
+2) Evidence (exact files/functions or supplied operational evidence; distinguish fact from inference).
+3) Expected benefit and risk/dependency.
+4) Acceptance criteria and specific tests an operator should run later; do not run them now.
+Recommend at most two tasks. If no actionable task is justified, say so clearly.
+For error_review, use runtime log evidence only when it is explicitly included below; if it says no
+matching errors or unavailable, do not claim that runtime incidents were reviewed.
 
 Nightly task context (already redacted):
 ---
@@ -251,6 +231,7 @@ def collect_nightly_multi_agent_analysis(repo: Path, evidence: str) -> tuple[lis
     """Collect independent advisory reports without granting any agent write access."""
     if not settings.ai_nightly_multi_agent_analysis_enabled:
         return [], []
+    runtime_error_evidence = _collect_recent_nightly_error_evidence()
     provider = settings.code_repair_planner_provider or settings.code_repair_provider
     account_profile = _configured_account_profile(
         settings.code_repair_planner_account_source,
@@ -264,7 +245,7 @@ def collect_nightly_multi_agent_analysis(repo: Path, evidence: str) -> tuple[lis
             pool.submit(
                 _run_nightly_analyst,
                 repo,
-                evidence,
+                evidence + runtime_error_evidence if role == "error_review" else evidence,
                 role,
                 focus,
                 provider=provider,
@@ -288,11 +269,57 @@ def collect_nightly_multi_agent_analysis(repo: Path, evidence: str) -> tuple[lis
     return reports, failures
 
 
-def _nightly_analysis_context(reports: list[str]) -> str:
-    if not reports:
-        return ""
-    context = "\n\n".join(reports)
-    return "\n\nIndependent read-only analyst reports (advisory; verify before changing):\n---\n" + context[:NIGHTLY_ANALYSIS_TOTAL_LIMIT] + "\n---"
+def _collect_recent_nightly_error_evidence(
+    log_dir: Path = Path("/var/log"), *, now: datetime | None = None,
+) -> str:
+    """Read a bounded 24-hour tail of application errors for the error analyst only."""
+    cutoff = (now or datetime.now(timezone.utc)).timestamp() - 24 * 60 * 60
+    evidence: list[str] = []
+    total_chars = 0
+    try:
+        paths = sorted(log_dir.glob("ceph-ai-*.log"), key=lambda path: path.name)
+    except OSError:
+        return "\n\nRuntime error evidence: unavailable (log directory could not be read)."
+
+    for path in paths:
+        if "code-repair" in path.name or len(evidence) >= NIGHTLY_ERROR_EVIDENCE_MAX_FILES:
+            continue
+        try:
+            stat = path.stat()
+            if stat.st_mtime < cutoff or not path.is_file():
+                continue
+            with path.open("rb") as handle:
+                handle.seek(max(0, stat.st_size - NIGHTLY_ERROR_EVIDENCE_MAX_BYTES_PER_FILE))
+                text = handle.read().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+
+        matches = list(ERROR_RE.finditer(text))[-2:]
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            block = text[match.start():min(end, match.start() + 2_000)]
+            block = clean_evidence(block)
+            block = SECRET_RE.sub(lambda item: item.group(1) + "=<redacted>", block)
+            block = _redact_nightly_text(block).strip()
+            if not block:
+                continue
+            remaining = NIGHTLY_ERROR_EVIDENCE_MAX_CHARS - total_chars
+            if remaining <= 0:
+                break
+            block = block[:remaining]
+            evidence.append(f"{path.name}:\n{block}")
+            total_chars += len(block)
+        if total_chars >= NIGHTLY_ERROR_EVIDENCE_MAX_CHARS:
+            break
+
+    if not evidence:
+        return "\n\nRuntime error evidence: no matching errors found in readable ceph-ai log files updated within 24 hours."
+    return (
+        "\n\nBounded, secret-redacted error excerpts from recent ceph-ai log tails "
+        "(only files updated within the last 24 hours; excerpt is not a strict event-time window) "
+        "(provided only to the error-review analyst; verify against source):\n"
+        + "\n---\n".join(evidence)
+    )
 
 
 def _configured_account_profile(source: str, profile: str) -> str:
@@ -337,14 +364,14 @@ def _save_nightly_state(path: Path, value: dict) -> None:
 
 
 def _nightly_due(state: dict, now: datetime) -> bool:
-    """Run once per day, except a process killed mid-run is retried."""
+    """Run once daily; allow explicit same-day retries after incomplete/failed runs."""
     local = now.astimezone(NIGHTLY_TIMEZONE)
     if state.get("last_run_date") != local.date().isoformat():
         return True
     # A RUNNING state only remains after an abnormal process death: a live
     # pipeline still owns _repair_run_lock, and normal completion writes a
     # terminal status.  FAILED is intentionally retried by systemd.
-    return state.get("status") in {"RUNNING", "FAILED"}
+    return state.get("status") in {"RUNNING", "FAILED", "PLAN_INCOMPLETE"}
 
 
 def nightly_override_for_today(now: datetime | None = None) -> bool | None:
@@ -389,10 +416,25 @@ def run_nightly_ai_improvement(repo: Path, state_path: Path, *, now: datetime | 
         # A runtime failure is retryable.  Do not consume this calendar day;
         # the systemd failure exit will invoke this job again after backoff.
         state.pop("last_run_date", None)
+        for field in (
+            "analysis_status", "analysis_reports", "analysis_failures",
+            "analysis_report_previews", "changed_files", "commit", "candidate_worktree",
+            "source_revision", "checkout_dirty", "checkout_changes", "review_scope",
+            "runtime_error_evidence",
+        ):
+            state.pop(field, None)
         state.update({
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "status": "FAILED",
-            "error": str(exc),
+            "mode": "PLAN_ONLY",
+            "analysis_reports": 0,
+            "analysis_failures": [_redact_nightly_text(str(exc))[:600]],
+            "analysis_report_previews": [],
+            "runtime_error_evidence": "not_collected",
+            "changed_files": [],
+            "commit": None,
+            "candidate_worktree": None,
+            "error": _redact_nightly_text(str(exc)),
         })
         try:
             _save_nightly_state(state_path, state)
@@ -401,8 +443,8 @@ def run_nightly_ai_improvement(repo: Path, state_path: Path, *, now: datetime | 
         logger.exception("nightly AI improvement failed")
         try:
             send_code_repair_alert(
-                "⚠️ AI NIGHTLY IMPROVEMENT KHÔNG TRIỂN KHAI\n"
-                f"Lỗi runtime: {str(exc)[:900]}"
+                "⚠️ NIGHTLY SYSTEM REVIEW KHÔNG LẬP ĐƯỢC KẾ HOẠCH\n"
+                f"Lỗi runtime: {_redact_nightly_text(str(exc))[:900]}"
             )
         except Exception:
             logger.exception("could not send nightly AI improvement failure alert")
@@ -412,7 +454,7 @@ def run_nightly_ai_improvement(repo: Path, state_path: Path, *, now: datetime | 
 def _run_nightly_ai_improvement_locked(
     repo: Path, state_path: Path, *, now: datetime | None = None,
 ) -> bool:
-    """Run the nightly pipeline while the cross-process repair lock is held."""
+    """Create a read-only nightly work plan while holding the shared job lock."""
     current = now or datetime.now(timezone.utc)
     state = _load_nightly_state(state_path)
     if not _nightly_due(state, current):
@@ -420,21 +462,20 @@ def _run_nightly_ai_improvement_locked(
 
     local = current.astimezone(NIGHTLY_TIMEZONE)
     dirty_checkout = _dirty_checkout(repo)
-    override = nightly_override_for_today(current)
-    if dirty_checkout and override is not True:
-        state.update({
-            "last_run_date": local.date().isoformat(),
-            "finished_at": current.isoformat(),
-            "status": "BLOCKED_DIRTY_CHECKOUT",
-            "error": dirty_checkout,
-        })
-        _save_nightly_state(state_path, state)
-        send_code_repair_alert(
-            "⚠️ AI NIGHTLY IMPROVEMENT CHƯA CHẠY\n"
-            "Checkout ceph-ai đang có thay đổi chưa commit nên job dừng trước khi gọi AI.\n"
-            f"Files: {dirty_checkout[:900]}"
-        )
-        return True
+    revision = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"], cwd=repo, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+    )
+    source_revision = revision.stdout.strip() if revision.returncode == 0 else "unknown"
+
+    # Do not let a crash or provider error leave yesterday's plan in today's
+    # morning report while this run is still in progress.
+    for field in (
+        "analysis_status", "analysis_reports", "analysis_failures",
+        "analysis_report_previews", "changed_files", "commit", "candidate_worktree",
+        "error",
+    ):
+        state.pop(field, None)
 
     # The state records an in-progress run before invoking AI.  If this
     # process is killed, _nightly_due will retry only after it can reacquire
@@ -443,28 +484,23 @@ def _run_nightly_ai_improvement_locked(
         "last_run_date": local.date().isoformat(),
         "started_at": current.isoformat(),
         "status": "RUNNING",
+        "mode": "PLAN_ONLY",
+        "source_revision": source_revision,
+        "checkout_dirty": bool(dirty_checkout),
+        "checkout_changes": dirty_checkout.splitlines() if dirty_checkout else [],
+        "review_scope": [name for name, _ in NIGHTLY_ANALYSTS],
+        "runtime_error_evidence": "pending" if settings.ai_nightly_multi_agent_analysis_enabled else "not_collected",
     })
     _save_nightly_state(state_path, state)
-    candidate_root = state_path.parent / "nightly-ai-improvement-candidates"
-    removed_candidates = cleanup_preserved_candidates(
-        repo,
-        candidate_root,
-        keep=NIGHTLY_CANDIDATE_MAX_COUNT,
-        max_age_seconds=NIGHTLY_CANDIDATE_RETENTION_SECONDS,
-    )
-    if removed_candidates:
-        logger.info("nightly candidate cleanup removed %d old candidate(s)", len(removed_candidates))
-    send_code_repair_alert(
-        "🌙 AI NIGHTLY IMPROVEMENT BẮT ĐẦU\n"
-        "Các analyst read-only đang rà soát; sau đó một Planner/Implementer duy nhất mới quyết định và sửa.\n"
-        "Phạm vi: AI/chat/router/giới hạn/quan sát/học; chỉ worktree + test, không đụng tài khoản hay cấu hình bí mật."
-        + ("\n⚠️ Dashboard đã cho phép chạy hôm nay dù checkout có thay đổi chưa commit." if dirty_checkout else "")
-    )
     analysis_reports, analysis_failures = collect_nightly_multi_agent_analysis(
         repo, NIGHTLY_IMPROVEMENT_EVIDENCE,
     )
-    analysis_context = _nightly_analysis_context(analysis_reports)
+    status = "PLAN_READY" if analysis_reports and not analysis_failures else (
+        "PLAN_READY_WITH_WARNINGS" if analysis_reports else "PLAN_INCOMPLETE"
+    )
     state.update({
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "status": status,
         "analysis_status": (
             "COMPLETED" if analysis_reports else
             "FALLBACK_NO_REPORTS" if settings.ai_nightly_multi_agent_analysis_enabled else
@@ -472,98 +508,22 @@ def _run_nightly_ai_improvement_locked(
         ),
         "analysis_reports": len(analysis_reports),
         "analysis_failures": analysis_failures,
-        # Keep a bounded, redacted preview for the 08:30 operator report.
-        # The full analyst output remains in the normal AI transcript; the
-        # state file only needs enough context to explain today's proposal.
+        "runtime_error_evidence": "bounded_redacted_24h" if settings.ai_nightly_multi_agent_analysis_enabled else "not_collected",
+        # Bounded, redacted plan excerpts are what the morning report delivers.
         "analysis_report_previews": [
             _redact_nightly_text(report).strip()[:1_200]
             for report in analysis_reports
         ],
+        "changed_files": [],
+        "commit": None,
+        "candidate_worktree": None,
+        "error": "\n".join(analysis_failures) if analysis_failures else None,
     })
     _save_nightly_state(state_path, state)
-    evidence = NIGHTLY_IMPROVEMENT_EVIDENCE + analysis_context
-    repair_state = state_path.with_name("nightly-ai-improvement-repairs.json")
-    result = run_repair(
-        evidence,
-        RepairConfig(
-            repo=repo,
-            provider=settings.code_repair_provider,
-            planner_provider=settings.code_repair_planner_provider,
-            planner_model=settings.code_repair_planner_model,
-            planner_account_profile=_configured_account_profile(
-                settings.code_repair_planner_account_source,
-                settings.code_repair_planner_account_profile,
-            ),
-            implementer_provider=settings.code_repair_implementer_provider,
-            implementer_model=settings.code_repair_implementer_model,
-            implementer_account_profile=_configured_account_profile(
-                settings.code_repair_implementer_account_source,
-                settings.code_repair_implementer_account_profile,
-            ),
-            max_review_rounds=min(settings.code_repair_max_review_rounds, NIGHTLY_MAX_REVIEW_ROUNDS),
-            test_command=NIGHTLY_REGRESSION_TEST_COMMAND,
-            candidate_test_command=NIGHTLY_REGRESSION_TEST_COMMAND,
-            full_access=True,
-            create_commit=False,
-            preserve_candidate=True,
-            candidate_root=candidate_root,
-            isolate_venv=True,
-            require_changed_tests=False,
-            test_env_unset=NIGHTLY_TEST_ENV_UNSET,
-            test_env_file="/dev/null",
-            test_runner_command=".venv/bin/python -m pytest",
-            timeout_seconds=min(settings.code_repair_timeout_seconds, NIGHTLY_AI_STEP_TIMEOUT_SECONDS),
-            # Nightly produces an uncommitted candidate for human review.
-            # Do not inherit the production repair pipeline's promotion
-            # settings: those settings may intentionally be enabled for
-            # incident repair and must not make this review-only job fail.
-            push=False,
-            deploy_staging=False,
-            promote_main=False,
-            state_file=repair_state,
-            task_kind="nightly-ai-improvement",
-            task_instructions=NIGHTLY_IMPROVEMENT_INSTRUCTIONS,
-            max_ai_attempts=1,
-            max_pipeline_attempts=1,
-            running_stale_seconds=settings.code_repair_running_stale_seconds,
-            notify_telegram=False,
-            allow_no_change=True,
-        ),
-        force=True,
+    logger.info(
+        "nightly read-only plan completed: status=%s analysts=%s source=%s dirty=%s",
+        status, len(analysis_reports), source_revision, bool(dirty_checkout),
     )
-    state.update({
-        "finished_at": datetime.now(timezone.utc).isoformat(),
-        "status": result.status,
-        "branch": result.branch,
-        "commit": result.commit,
-        "changed_files": result.changed_files or [],
-        "candidate_worktree": getattr(result, "candidate_worktree", None),
-        "error": result.error,
-    })
-    _save_nightly_state(state_path, state)
-    if result.status == "NO_CHANGE":
-        message = "🌙 AI NIGHTLY IMPROVEMENT\nKết quả: chưa có nâng cấp AI nào đủ nhỏ và an toàn để triển khai hôm nay."
-    elif result.status in {"PUSHED", "STAGING_VERIFIED", "PROMOTED", "COMMITTED", "PATCH_READY"}:
-        files = ", ".join(result.changed_files or []) or "—"
-        message = (
-            "✅ AI NIGHTLY IMPROVEMENT ĐÃ TẠO CANDIDATE\n"
-            f"Kết quả: {result.status}\nBranch: {result.branch or '—'}\n"
-            f"Files: {files}\nCandidate: {getattr(result, 'candidate_worktree', None) or '—'}\n"
-            f"Review rounds: {result.review_rounds}\nChưa commit/chưa push."
-        )
-    else:
-        message = (
-            "⚠️ AI NIGHTLY IMPROVEMENT KHÔNG TRIỂN KHAI\n"
-            f"Kết quả: {result.status}\nLý do: {(result.error or 'không rõ')[:900]}"
-        )
-    send_code_repair_alert(message)
-    logger.info("nightly AI improvement completed: %s (%s)", result.status, result.fingerprint)
-    # Let systemd retry only real pipeline failures.  A clean NO_CHANGE or
-    # an intentionally blocked dirty checkout remains one completed run.
-    if result.status == "FAILED":
-        state.pop("last_run_date", None)
-        _save_nightly_state(state_path, state)
-        return False
     return True
 
 
