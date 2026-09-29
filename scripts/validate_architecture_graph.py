@@ -228,26 +228,31 @@ def _validate_edge_reviews(graph: dict, nodes: dict, errors: list[str]) -> None:
         if not isinstance(review, dict):
             errors.append(f"{where}: expected a mapping")
             continue
-        edge = tuple(review.get(field) for field in ("source", "target", "kind"))
-        if any(not isinstance(value, str) for value in edge):
+        source, target, kind = (review.get(field) for field in ("source", "target", "kind"))
+        if not (isinstance(source, str) and isinstance(target, str) and isinstance(kind, str)):
             errors.append(f"{where}: source, target and kind must be strings")
             continue
+        edge = (source, target, kind)
         if edge in seen_edges:
             errors.append(f"{where}: duplicate edge review {edge!r}")
         seen_edges.add(edge)
         if edge not in declared_edges:
             errors.append(f"{where}: edge is not declared in graph.edges: {edge!r}")
-        owner_area = review.get("owner_area")
-        if not isinstance(owner_area, str) or not _NODE_ID.fullmatch(owner_area):
-            errors.append(f"{where}.owner_area: expected a stable code-area identifier")
-        if review.get("confidence") not in _REVIEW_CONFIDENCES:
-            errors.append(f"{where}.confidence: expected high/medium/low")
-        evidence = review.get("evidence")
-        if not isinstance(evidence, list) or not evidence:
-            errors.append(f"{where}.evidence: reviewed edge requires at least one evidence item")
-            continue
-        for evidence_index, item in enumerate(evidence):
-            _validate_review_evidence(item, f"{where}.evidence[{evidence_index}]", errors)
+        _validate_edge_review_body(review, where, errors)
+
+
+def _validate_edge_review_body(review: dict, where: str, errors: list[str]) -> None:
+    owner_area = review.get("owner_area")
+    if not isinstance(owner_area, str) or not _NODE_ID.fullmatch(owner_area):
+        errors.append(f"{where}.owner_area: expected a stable code-area identifier")
+    if review.get("confidence") not in _REVIEW_CONFIDENCES:
+        errors.append(f"{where}.confidence: expected high/medium/low")
+    evidence = review.get("evidence")
+    if not isinstance(evidence, list) or not evidence:
+        errors.append(f"{where}.evidence: reviewed edge requires at least one evidence item")
+        return
+    for evidence_index, item in enumerate(evidence):
+        _validate_review_evidence(item, f"{where}.evidence[{evidence_index}]", errors)
 
 
 def edge_review_gaps(graph: dict[str, Any]) -> list[tuple[str, str, str]]:
@@ -446,25 +451,31 @@ def _unmatched_globs(patterns: list[str], root: Path, where: str) -> list[str]:
     return issues
 
 
-def _audit_repository_paths(graph: dict[str, Any], root: Path) -> list[str]:
+def _evidence_path_issues(path: str, patterns: list, root: Path, where: str, uncovered: str) -> list[str]:
+    """A missing evidence file, or one outside the owning source mappings."""
+    missing = _missing_files([path], root, where)
+    if missing:
+        return missing
+    if not any(_is_safe_repo_path(pattern) and PurePosixPath(path).match(pattern) for pattern in patterns):
+        return [f"{where}: {uncovered}"]
+    return []
+
+
+def _audit_node_review_paths(graph: dict[str, Any], root: Path) -> list[str]:
     issues: list[str] = []
-    for node_id, node in graph["nodes"].items():
-        issues += _unmatched_globs(node.get("source", []), root, f"nodes.{node_id}.source")
-        issues += _missing_files(node.get("tests", []), root, f"nodes.{node_id}.tests")
     for node_id, review in graph.get("node_reviews", {}).items():
         node = graph["nodes"].get(node_id, {})
         for index, item in enumerate(review.get("evidence", [])):
-            where = f"node_reviews.{node_id}.evidence[{index}].path"
-            path = item.get("path", "")
-            path_issues = _missing_files([path], root, where)
-            issues += path_issues
-            if path_issues:
-                continue
-            if not any(
-                _is_safe_repo_path(pattern) and PurePosixPath(path).match(pattern)
-                for pattern in node.get("source", [])
-            ):
-                issues.append(f"{where}: evidence path is not covered by nodes.{node_id}.source")
+            issues += _evidence_path_issues(
+                item.get("path", ""), node.get("source", []), root,
+                f"node_reviews.{node_id}.evidence[{index}].path",
+                f"evidence path is not covered by nodes.{node_id}.source",
+            )
+    return issues
+
+
+def _audit_edge_review_paths(graph: dict[str, Any], root: Path) -> list[str]:
+    issues: list[str] = []
     for index, review in enumerate(graph.get("edge_reviews", [])):
         if not isinstance(review, dict):
             continue
@@ -479,17 +490,21 @@ def _audit_repository_paths(graph: dict[str, Any], root: Path) -> list[str]:
         for evidence_index, item in enumerate(review.get("evidence", [])):
             if not isinstance(item, dict):
                 continue
-            path = item.get("path", "")
-            where = f"edge_reviews[{index}].evidence[{evidence_index}].path"
-            path_issues = _missing_files([path], root, where)
-            issues += path_issues
-            if path_issues:
-                continue
-            if not any(
-                _is_safe_repo_path(pattern) and PurePosixPath(path).match(pattern)
-                for pattern in endpoint_sources
-            ):
-                issues.append(f"{where}: evidence path is not covered by either endpoint source mapping")
+            issues += _evidence_path_issues(
+                item.get("path", ""), endpoint_sources, root,
+                f"edge_reviews[{index}].evidence[{evidence_index}].path",
+                "evidence path is not covered by either endpoint source mapping",
+            )
+    return issues
+
+
+def _audit_repository_paths(graph: dict[str, Any], root: Path) -> list[str]:
+    issues: list[str] = []
+    for node_id, node in graph["nodes"].items():
+        issues += _unmatched_globs(node.get("source", []), root, f"nodes.{node_id}.source")
+        issues += _missing_files(node.get("tests", []), root, f"nodes.{node_id}.tests")
+    issues += _audit_node_review_paths(graph, root)
+    issues += _audit_edge_review_paths(graph, root)
     for flow_id, flow in graph.get("flows", {}).items():
         issues += _missing_files(flow.get("tests", []), root, f"flows.{flow_id}.tests")
     for index, variant in enumerate(graph.get("deployment_variants", [])):
