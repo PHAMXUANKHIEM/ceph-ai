@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import dashboard.routes.pgs as pgs_route
@@ -71,13 +72,14 @@ def test_pool_pg_advisor_api_is_snapshot_scoped_and_read_only(dashboard_client, 
 
 
 def test_scrub_schedule_api_uses_shared_pg_snapshot(dashboard_client, monkeypatch):
+    now = datetime.now(timezone.utc)
     monkeypatch.setattr(pgs_route, "read_section_snapshot", lambda *_args, **_kwargs: {
         "pgs": [{
             "pgid": "1.a",
             "pool": "data",
             "state": "active+clean",
-            "last_scrub": "2026-09-10T00:00:00Z",
-            "last_deep_scrub": "2026-09-01T00:00:00Z",
+            "last_scrub": (now - timedelta(days=8)).isoformat(),
+            "last_deep_scrub": (now - timedelta(days=15)).isoformat(),
         }],
         "generation": 4,
         "collected_at": "2026-09-21T10:00:00Z",
