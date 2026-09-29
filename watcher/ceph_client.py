@@ -1711,16 +1711,8 @@ def _write_host_key_notes_atomically(notes: dict[str, dict[str, str]]) -> None:
             pass
 
 
-def provision_host_key(
-    host: str, public_key: str, note: str = "", added_by: str = ""
-) -> str:
-    """Atomically pin one operator-verified OpenSSH host public key.
-
-    The key must be obtained and verified out of band. This function never
-    opens an SSH connection or performs trust-on-first-use. A host may have
-    multiple key algorithms; adding a key replaces only the same host/type
-    pair and preserves the other algorithms.
-    """
+def _parse_host_public_key(host: str, public_key: str) -> HostKeyEntry:
+    """Validate a host name and an operator-supplied OpenSSH public key."""
     if not _HOSTNAME_RE.fullmatch(host):
         raise HostKeyProvisionError("IP/hostname không hợp lệ")
     parts = public_key.strip().split()
@@ -1732,7 +1724,10 @@ def provision_host_key(
         raise HostKeyProvisionError("SSH host public key không hợp lệ") from exc
     if entry is None or entry.key is None:
         raise HostKeyProvisionError("Loại SSH host key không được hỗ trợ")
+    return entry
 
+
+def _clean_host_key_metadata(note: str, added_by: str) -> tuple[str, str]:
     note = str(note or "").strip()
     if len(note) > 500:
         raise HostKeyProvisionError("Ghi chú không được vượt quá 500 ký tự")
@@ -1741,6 +1736,21 @@ def provision_host_key(
     added_by = str(added_by or "").strip()[:128]
     if any(ord(char) < 32 for char in added_by):
         raise HostKeyProvisionError("Tên người thêm chứa ký tự không hợp lệ")
+    return note, added_by
+
+
+def provision_host_key(
+    host: str, public_key: str, note: str = "", added_by: str = ""
+) -> str:
+    """Atomically pin one operator-verified OpenSSH host public key.
+
+    The key must be obtained and verified out of band. This function never
+    opens an SSH connection or performs trust-on-first-use. A host may have
+    multiple key algorithms; adding a key replaces only the same host/type
+    pair and preserves the other algorithms.
+    """
+    entry = _parse_host_public_key(host, public_key)
+    note, added_by = _clean_host_key_metadata(note, added_by)
 
     with _host_keys_lock():
         host_keys = paramiko.HostKeys()
@@ -1766,17 +1776,7 @@ def provision_host_key(
 
 def fingerprint_host_public_key(host: str, public_key: str) -> tuple[str, str]:
     """Validate an operator-supplied host public key and return type/fingerprint."""
-    if not _HOSTNAME_RE.fullmatch(host):
-        raise HostKeyProvisionError("IP/hostname không hợp lệ")
-    parts = public_key.strip().split()
-    if len(parts) < 2 or not re.fullmatch(r"(?:ssh|ecdsa)-[A-Za-z0-9@._+-]+", parts[0]):
-        raise HostKeyProvisionError("SSH host public key không hợp lệ")
-    try:
-        entry = HostKeyEntry.from_line(f"{host} {parts[0]} {parts[1]}")
-    except (TypeError, ValueError, InvalidHostKey) as exc:
-        raise HostKeyProvisionError("SSH host public key không hợp lệ") from exc
-    if entry is None or entry.key is None:
-        raise HostKeyProvisionError("Loại SSH host key không được hỗ trợ")
+    entry = _parse_host_public_key(host, public_key)
     digest = base64.b64encode(hashlib.sha256(entry.key.asbytes()).digest()).decode("ascii").rstrip("=")
     return entry.key.get_name(), "SHA256:" + digest
 

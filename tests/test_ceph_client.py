@@ -2,7 +2,7 @@ import json
 import threading
 
 import pytest
-import paramiko
+import paramiko  # type: ignore[import-untyped]
 
 import watcher.ceph_client as ceph_client
 from shared.ceph_runner import CephRunnerError

@@ -1,7 +1,10 @@
 """Strict, deterministic offline metrics for AI diagnosis evaluations."""
 from __future__ import annotations
 from dataclasses import asdict, dataclass
-from typing import Iterable
+from typing import TYPE_CHECKING, Any, Iterable
+
+if TYPE_CHECKING:
+    from shared.auto_labels import CaseFacts
 
 CALIBRATION_BINS = 10
 
@@ -176,7 +179,7 @@ def evaluate_by(golden: list[dict], predictions: list[dict], key: str, *,
     }
 
 
-def evaluate_weak_supervision(facts: Iterable[object]) -> dict:
+def evaluate_weak_supervision(facts: Iterable["CaseFacts"]) -> dict:
     """Evaluate weak labels only against independent operator verdicts.
 
     This report deliberately does not feed auto labels into the ordinary
@@ -225,7 +228,7 @@ def evaluate_weak_supervision(facts: Iterable[object]) -> dict:
                 per_lf[vote.lf]["checked"] += 1
                 per_lf[vote.lf]["agreed"] += int(vote.label == truth)
 
-    class_metrics = {}
+    class_metrics: dict[str, dict[str, Any]] = {}
     for label in labels:
         operator_label = PROXY_VERDICT.get(label, label)
         true_positive = matrix[operator_label][label]

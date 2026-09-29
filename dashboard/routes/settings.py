@@ -10,6 +10,7 @@ import shlex
 import signal
 import socket
 import stat
+from typing import Any
 import subprocess
 import sys
 import tempfile
@@ -1171,6 +1172,31 @@ def _ai_cost_overview(hours: int = 24) -> dict:
         }
 
 
+def _decorate_host_key(item: dict[str, Any], fingerprint_hosts: dict[str, set[str]]) -> None:
+    """Prepare one host-key row for rendering (in place)."""
+    item["fingerprint_masked"] = _mask_host_fingerprint(item.get("fingerprint", ""))
+    item["duplicate_hosts"] = sorted(
+        host for host in fingerprint_hosts.get(str(item.get("fingerprint", "")), set())
+        if host != str(item.get("host", ""))
+    )
+    # Fingerprints are deliberately removed before rendering. Admins
+    # reveal a single value through the audited endpoint below.
+    item.pop("fingerprint", None)
+    item.setdefault("added_by", "")
+    item.setdefault("created_at", "")
+    created_at = item.get("created_at", "")
+    try:
+        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+        item["created_at_display"] = parsed.astimezone(
+            ZoneInfo("Asia/Ho_Chi_Minh")
+        ).strftime("%d/%m/%Y %H:%M:%S")
+    except (TypeError, ValueError):
+        item["created_at_display"] = "Chưa ghi nhận"
+    item["added_by_display"] = item["added_by"] if item.get("added_by") else "Chưa ghi nhận"
+
+
 def _settings_context(
     user: str,
     *,
@@ -1246,7 +1272,7 @@ def _settings_context(
     try:
         # Work on copies so a cached/shared inventory can never be altered by
         # response masking or by a later request's search/pagination pass.
-        ceph_host_keys = [dict(item) for item in list_host_keys()]
+        ceph_host_keys: list[dict[str, Any]] = [dict(item) for item in list_host_keys()]
         ceph_host_key_inventory_error = None
     except HostKeyProvisionError as exc:
         ceph_host_keys = []
@@ -1262,30 +1288,7 @@ def _settings_context(
         host for hosts in fingerprint_hosts.values() if len(hosts) > 1 for host in hosts
     }
     for item in ceph_host_keys:
-        item["fingerprint_masked"] = _mask_host_fingerprint(item.get("fingerprint", ""))
-        item["duplicate_hosts"] = sorted(
-            host for host in fingerprint_hosts.get(str(item.get("fingerprint", "")), set())
-            if host != str(item.get("host", ""))
-        )
-        # Fingerprints are deliberately removed before rendering. Admins
-        # reveal a single value through the audited endpoint below.
-        item.pop("fingerprint", None)
-        item.setdefault("added_by", "")
-        item.setdefault("created_at", "")
-        created_at = item.get("created_at", "")
-        try:
-            parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
-            item["created_at_display"] = parsed.astimezone(
-                ZoneInfo("Asia/Ho_Chi_Minh")
-            ).strftime("%d/%m/%Y %H:%M:%S")
-        except (TypeError, ValueError):
-            item["created_at_display"] = "Chưa ghi nhận"
-        if not item.get("added_by"):
-            item["added_by_display"] = "Chưa ghi nhận"
-        else:
-            item["added_by_display"] = item["added_by"]
+        _decorate_host_key(item, fingerprint_hosts)
     # Keep the inventory bounded in the HTML response.  Host keys are
     # operator-managed data, so filtering is intentionally server-side and
     # applies before pagination.

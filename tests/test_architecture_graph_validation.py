@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from scripts.validate_architecture_graph import audit_paths, validate_graph
 

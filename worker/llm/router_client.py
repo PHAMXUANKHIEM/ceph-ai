@@ -11,7 +11,7 @@ from shared.time import utc_now
 from pathlib import Path
 
 import httpx
-import yaml
+import yaml  # type: ignore[import-untyped]
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
@@ -1629,6 +1629,35 @@ def _live_pg_ids(connection: CephConnection, requested: list[str]) -> set[str]:
     return live
 
 
+def _live_target_scope(cluster: Cluster, target_type: str, target_ids: list[str]) -> TargetScope:
+    """Resolve OSD/PG/pool targets against the live cluster at execution time.
+
+    Building the scope from the requested IDs themselves would accept any
+    ID, including one that no longer exists or belongs to another cluster.
+    """
+    live_osds: set[str] = set()
+    live_pgs: set[str] = set()
+    live_pools: set[str] = set()
+    if target_type in {"osd", "pg", "pool"}:
+        connection = _cluster_read_connection(cluster)
+        try:
+            if target_type == "osd":
+                live_osds = _live_osd_ids(connection)
+            elif target_type == "pg":
+                live_pgs = _live_pg_ids(connection, target_ids)
+            else:
+                live_pools = _live_pool_names(connection)
+        except CephQueryError as exc:
+            raise ActionContractError(f"không resolve được {target_type} target trên cluster: {exc}") from exc
+    return TargetScope(
+        cluster_id=cluster.id,
+        nodes=frozenset(str(row["host"]) for row in configured_nodes(cluster)),
+        osds=frozenset(live_osds),
+        pools=frozenset(live_pools),
+        pgs=frozenset(live_pgs),
+    )
+
+
 def _authorize_typed_action_before_lease(
     *, cluster: Cluster, action: Action, action_id: str,
     target_nodes: list[str], action_params: dict | None,
@@ -1664,30 +1693,7 @@ def _authorize_typed_action_before_lease(
     )
     if not target_ids:
         raise ActionContractError("action contract không có target id cụ thể")
-    # Resolve OSD/PG targets against the live cluster at execution time.
-    # Building the scope from the requested IDs themselves would accept any
-    # ID, including one that no longer exists or belongs to another cluster.
-    live_osds: set[str] = set()
-    live_pgs: set[str] = set()
-    live_pools: set[str] = set()
-    if target_type in {"osd", "pg", "pool"}:
-        connection = _cluster_read_connection(cluster)
-        try:
-            if target_type == "osd":
-                live_osds = _live_osd_ids(connection)
-            elif target_type == "pg":
-                live_pgs = _live_pg_ids(connection, target_ids)
-            else:
-                live_pools = _live_pool_names(connection)
-        except CephQueryError as exc:
-            raise ActionContractError(f"không resolve được {target_type} target trên cluster: {exc}") from exc
-    scope = TargetScope(
-        cluster_id=cluster.id,
-        nodes={row["host"] for row in configured_nodes(cluster)},
-        osds=live_osds,
-        pools=live_pools,
-        pgs=live_pgs,
-    )
+    scope = _live_target_scope(cluster, target_type, target_ids)
     gateway = TypedActionGateway(
         allowed_action_ids={action_id},
         allowed_capabilities={f"{_TYPED_CAPABILITY_PREFIX}{action_id}"},
