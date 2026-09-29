@@ -466,6 +466,60 @@ node_reviews:
       - path: shared/audit.py
         symbol: record
         claim: Centralizes creation of audit entries for security- and operation-relevant events.
+  data.sqlalchemy:
+    owner_area: shared-persistence
+    confidence: high
+    evidence:
+      - path: shared/db.py
+        symbol: make_engine, use_database, session_factory_for_url
+        claim: Creates bounded SQLAlchemy engines, routes database sessions by context, and keeps separate factories for configured database URLs.
+  data.cluster_registry:
+    owner_area: shared-cluster-registry
+    confidence: high
+    evidence:
+      - path: shared/clusters.py
+        symbol: ensure_default_cluster, list_active_clusters
+        claim: Seeds the default cluster idempotently with a database uniqueness guard and exposes active clusters while excluding deactivated rows.
+  data.outboxes:
+    owner_area: durable-notification-delivery
+    confidence: high
+    evidence:
+      - path: shared/incident_outbox.py
+        symbol: enqueue, dispatch_due, reconcile_stale
+        claim: Persists incident delivery in the caller transaction, retries claimed rows with bounded attempts, and detects stale or missing delivery records.
+      - path: shared/telegram_outbox.py
+        symbol: _enqueue, dispatch_due, replay_dead
+        claim: Persists Telegram notifications for post-commit dispatch, supports bounded delivery/replay, and does not expose outbox payloads in delivery statistics.
+  mq.incidents:
+    owner_area: incident-message-contract
+    confidence: high
+    evidence:
+      - path: watcher/publisher.py
+        symbol: build_envelope, publish_incident
+        claim: Builds a versioned cluster-scoped incident envelope and publishes a persistent RabbitMQ message with publisher confirms and an optional outbox event ID.
+      - path: worker/main.py
+        symbol: _handle_message, run
+        claim: Worker consumes incident messages through its processing path and uses the persisted outbox consumer claim to prevent duplicate diagnosis.
+  event.incident_queue:
+    owner_area: incident-queue-topology
+    confidence: high
+    evidence:
+      - path: shared/mq.py
+        symbol: get_connection, declare_topology
+        claim: Owns RabbitMQ connection timeout and durable incidents/DLX/DLQ topology declarations used by producers and consumers.
+      - path: watcher/publisher.py
+        symbol: publish_incident
+        claim: Publishes the persistent incident envelope to the shared incidents queue after declaring the common topology.
+  event.action_state_changed:
+    owner_area: action-state-invalidation
+    confidence: high
+    evidence:
+      - path: shared/db.py
+        symbol: _collect_action_state_events, _publish_action_state_events
+        claim: Collects Action status transitions during flush and publishes bounded state events only after transaction commit; rollback discards pending events.
+      - path: shared/cluster_events.py
+        symbol: publish_action_state_event, read_latest_event
+        claim: Stores cluster-scoped event metadata with normalized action state and request correlation, then reads the latest event for that cluster.
 
 flows:
   flow.dashboard_read:

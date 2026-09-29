@@ -1,7 +1,7 @@
 # Kế hoạch triển khai Impact Analysis và kiểm thử hồi quy theo kiến trúc
 
 **Phạm vi đích:** repo `/root/ceph-ai` trên `10.3.55.213`  
-**Trạng thái:** Chưa triển khai; kế hoạch chi tiết  
+**Trạng thái:** Đang triển khai theo từng lát; Pha 0 chưa hoàn thành
 **Kế hoạch tổng:** [`Plan/regression-test-gate-plan.md`](../regression-test-gate-plan.md), Pha 4  
 **Mục tiêu:** khi code thay đổi, xác định có căn cứ thành phần/luồng bị ảnh hưởng, chọn và chạy đúng test an toàn, giải thích được vì sao test được chọn; nếu không đủ tin cậy thì chạy full non-live suite.
 
@@ -26,7 +26,8 @@
 - [x] Slice semantics cạnh: mọi `edge_kind` có chính sách impact tường minh; mặc định bảo thủ `both`, còn `not_wired` buộc `full_suite`. Graph schema được nâng lên v2 và validator từ chối loại cạnh thiếu/chưa biết policy.
 - [x] Slice metadata node rủi ro cao: thêm `node_reviews` cho auth, cluster scope, action lifecycle, policy, executor và audit; ghi code-area owner, confidence, path/symbol/claim evidence; strict audit xác minh evidence tồn tại và nằm trong source mapping của node. Graph schema lên v3.
 - [x] Validator test review metadata, file evidence và recursive source glob `**`; kiểm tra nhóm architecture/profile/Stream đạt 28 passed, strict audit đạt.
-- [ ] Pha 0 chưa hoàn thành: mới review 6/70 node; chưa có edge-level evidence/review và chưa audit thủ công toàn bộ các mapping/coverage rule. Quy tắc `both` hiện cố ý rộng, chưa tối ưu theo hướng thực tế từng edge. Node chưa có `node_reviews` được xem là unreviewed; selector sau này phải fallback khi impact chạm vùng chưa review.
+- [x] Tiếp tục review evidence cho persistence, cluster registry, durable outboxes, RabbitMQ incident queue và action-state event; tổng cộng 12/70 node có review record mức confidence cao. Claims chỉ nêu hành vi thấy trực tiếp trong các symbol được dẫn.
+- [ ] Pha 0 chưa hoàn thành: mới review 12/70 node; chưa có edge-level evidence/review và chưa audit thủ công toàn bộ các mapping/coverage rule. Quy tắc `both` hiện cố ý rộng, chưa tối ưu theo hướng thực tế từng edge. Node chưa có `node_reviews` được xem là unreviewed; selector sau này phải fallback khi impact chạm vùng chưa review.
 
 ## 2. Luồng đích
 
