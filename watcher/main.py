@@ -48,7 +48,7 @@ from watcher.ceph_client import CephQueryError, query_cluster_health, query_clus
 from watcher.crush_skew_monitor import is_crush_skew_code
 from watcher.database_capacity_monitor import DATABASE_SIZE_HIGH_PREFIX
 from watcher.device_health_monitor import DEVICE_HEALTH_EVACUATE_PREFIX
-from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
+from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX, NODE_UNREACHABLE_PREFIX
 from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
@@ -494,6 +494,12 @@ def _resolve_recovered_incidents(
                 # family's own create/resolve lifecycle (its own
                 # consecutive-high-scans streak per host), never a real
                 # `ceph health detail` check code.
+                continue
+            if incident.ceph_code.startswith(NODE_UNREACHABLE_PREFIX):
+                # SSH reachability incidents are synthetic and never appear
+                # in `ceph health detail`. node_health_monitor owns their
+                # lifecycle, including recovery hysteresis; this generic
+                # resolver must not close them on every healthy Ceph poll.
                 continue
             if incident.ceph_code.startswith(BLUESTORE_OMAP_PREFIX):
                 # 2026-08-06: same reasoning as the guards above —

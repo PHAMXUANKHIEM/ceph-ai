@@ -836,6 +836,24 @@ def test_recovery_alert_is_emitted_once_after_incident_becomes_resolved(monkeypa
     assert [ceph_code for ceph_code, _kwargs in sent] == ["OSD_DOWN"]
 
 
+def test_generic_health_reconcile_does_not_resolve_ssh_reachability_incident():
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code="NODE_UNREACHABLE:10.20.1.195",
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.commit()
+        incident_id = incident.id
+
+    watcher_main._resolve_recovered_incidents(set())
+
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, incident_id)
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+
+
 def test_run_records_failed_heartbeat_when_query_raises_unexpected_exception(monkeypatch):
     # Not a CephQueryError — some other bug/failure inside query_cluster_health()
     # itself. AC #1: every poll iteration gets a heartbeat, success or not.

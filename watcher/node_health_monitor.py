@@ -194,10 +194,18 @@ def _mark_flapping(session, incident: Incident, flaps: int) -> str | None:
 
 def _unreachable_rationale(detail: dict) -> str:
     roles = ", ".join(detail.get("roles") or []) or "Ceph"
+    error = detail.get("error") or "không rõ"
+    if "not found in known_hosts" in error.lower() or "host key" in error.lower():
+        return (
+            f"Node {detail['host']} ({roles}) chưa vượt qua bước xác minh SSH host key. "
+            f"Lỗi gần nhất: {error}. Đây chưa phải bằng chứng node mất điện hoặc mất mạng. "
+            "Đối chiếu fingerprint qua console/nguồn tin cậy rồi thêm host key trong Settings; "
+            "hệ thống không tự chấp nhận key và không tự reboot."
+        )
     return (
         f"Node {detail['host']} ({roles}) không phản hồi SSH sau "
         f"{detail['consecutive_failures']} lần kiểm tra liên tiếp. "
-        f"Lỗi gần nhất: {detail.get('error') or 'không rõ'}. "
+        f"Lỗi gần nhất: {error}. "
         "Cần kiểm tra nguồn điện, mạng và console của node; hệ thống không tự reboot."
     )
 

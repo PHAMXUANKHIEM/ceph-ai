@@ -352,6 +352,20 @@ def test_node_unreachable_incident_sends_one_alert_and_resolves(isolated_db, mon
         assert incident.status == IncidentStatus.RESOLVED.value
 
 
+def test_known_hosts_failure_explains_trust_setup_not_power_or_network():
+    message = nhm._unreachable_rationale({
+        "host": "10.20.1.195",
+        "roles": ["OSD"],
+        "consecutive_failures": 117,
+        "error": "Server '10.20.1.195' not found in known_hosts",
+    })
+
+    assert "xác minh SSH host key" in message
+    assert "chưa phải bằng chứng node mất điện hoặc mất mạng" in message
+    assert "không tự chấp nhận key" in message
+    assert "kiểm tra nguồn điện, mạng" not in message
+
+
 # --- WP1.1: recovery hysteresis and flapping (autonomy plan) ---------------
 
 
