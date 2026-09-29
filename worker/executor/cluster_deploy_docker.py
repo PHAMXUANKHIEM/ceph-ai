@@ -192,6 +192,45 @@ def _assert_osd_disk_safe(host: str, device: str) -> None:
         raise DockerDeployError(f"{host}: {device} thiếu hoặc có filesystem, mount, LVM; từ chối ghi lên disk")
 
 
+def _preflight_node(node: dict, profile: dict) -> tuple[str, str]:
+    """Read-only validation for one host, including only its assigned OSD disks."""
+    host = node["ip"]
+    hostname = execute_command(host, "hostname -s").strip()
+    if not hostname:
+        raise DockerDeployError(f"{host}: không xác định được hostname")
+    owned_ips = execute_command(
+        host,
+        "ip -o -4 addr show | awk '{print $4}' | cut -d/ -f1",
+    ).split()
+    if host not in owned_ips:
+        raise DockerDeployError(f"{host}: IP này không được gán trên node (NIC/IP không khớp)")
+    docker_info = execute_command(host, "docker info --format '{{.ServerVersion}}'").strip()
+    if not docker_info:
+        raise DockerDeployError(f"{host}: Docker daemon chưa sẵn sàng")
+
+    inventory = execute_command(
+        host,
+        "{ cephadm ls 2>/dev/null || true; "
+        "systemctl list-units --type=service --no-legend 'ceph*' 2>/dev/null || true; "
+        "docker ps -a --format '{{.Names}} {{.Mounts}}' 2>/dev/null | grep -Ei 'ceph|vitastor' || true; }",
+    )
+    _assert_namespace_free(host, profile, check_mon_ports="mon" in (node.get("roles") or []))
+    if "osd" in (node.get("roles") or []):
+        lvm_tools = execute_command(
+            host,
+            "command -v lvm >/dev/null 2>&1 && command -v dmsetup >/dev/null 2>&1 "
+            "&& command -v pvs >/dev/null 2>&1 && command -v wipefs >/dev/null 2>&1 "
+            "&& command -v lsblk >/dev/null 2>&1 && test -d /run/lvm && echo READY || true",
+        ).strip()
+        if lvm_tools != "READY":
+            raise DockerDeployError(
+                f"{host}: thiếu lvm2/dmsetup hoặc /run/lvm; cần chuẩn bị LVM trước khi tạo OSD"
+            )
+        for device in node.get("osd_disks") or []:
+            _assert_osd_disk_safe(host, device)
+    return hostname, inventory[-3000:]
+
+
 def _preflight(nodes: list[dict], params: dict, update) -> None:
     profile = _profile(params)
     expected_fingerprint = params.get("_cluster_config_fingerprint")
@@ -207,43 +246,9 @@ def _preflight(nodes: list[dict], params: dict, update) -> None:
         statuses[index]["status"] = "running"
         update(statuses)
         try:
-            hostname = execute_command(host, "hostname -s").strip()
-            if not hostname:
-                raise DockerDeployError(f"{host}: không xác định được hostname")
+            hostname, inventory = _preflight_node(node, profile)
             hostnames[host] = hostname
-            owned_ips = execute_command(
-                host,
-                "ip -o -4 addr show | awk '{print $4}' | cut -d/ -f1",
-            ).split()
-            if host not in owned_ips:
-                raise DockerDeployError(f"{host}: IP này không được gán trên node (NIC/IP không khớp)")
-            docker_info = execute_command(host, "docker info --format '{{.ServerVersion}}'").strip()
-            if not docker_info:
-                raise DockerDeployError(f"{host}: Docker daemon chưa sẵn sàng")
-
-            inventory = execute_command(
-                host,
-                "{ cephadm ls 2>/dev/null || true; "
-                "systemctl list-units --type=service --no-legend 'ceph*' 2>/dev/null || true; "
-                "docker ps -a --format '{{.Names}} {{.Mounts}}' 2>/dev/null | grep -Ei 'ceph|vitastor' || true; }",
-            )
-            params.setdefault("_docker_inventory", {})[host] = inventory[-3000:]
-
-            _assert_namespace_free(host, profile, check_mon_ports="mon" in (node.get("roles") or []))
-
-            if "osd" in (node.get("roles") or []):
-                lvm_tools = execute_command(
-                    host,
-                    "command -v lvm >/dev/null 2>&1 && command -v dmsetup >/dev/null 2>&1 "
-                    "&& command -v pvs >/dev/null 2>&1 && command -v wipefs >/dev/null 2>&1 "
-                    "&& command -v lsblk >/dev/null 2>&1 && test -d /run/lvm && echo READY || true",
-                ).strip()
-                if lvm_tools != "READY":
-                    raise DockerDeployError(
-                        f"{host}: thiếu lvm2/dmsetup hoặc /run/lvm; cần chuẩn bị LVM trước khi tạo OSD"
-                    )
-                for device in node.get("osd_disks") or []:
-                    _assert_osd_disk_safe(host, device)
+            params.setdefault("_docker_inventory", {})[host] = inventory
         except (ExecutorError, DockerDeployError) as exc:
             statuses[index]["status"] = "failed"
             statuses[index]["message"] = str(exc)
