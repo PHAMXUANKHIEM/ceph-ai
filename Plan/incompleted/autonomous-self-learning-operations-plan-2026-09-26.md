@@ -183,9 +183,12 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 - [x] **Tuyệt đối không** ghi vào `operator_verdict`, không dùng trong `trust_engine` để mở autopilot; có test chứng minh.
 - [x] Báo cáo chất lượng LF: `scripts/auto_label_report.py` (chỉ đọc) — coverage, conflict, precision so với nhãn operator.
 - [x] Test từng LF + tổng hợp + `collect_facts` + không đụng `operator_verdict` (`tests/test_auto_labels.py`).
-- [ ] Dùng nhãn tự động trong `ai_evaluation` và xếp hạng nhắc verdict (WP2.2), thẻ trên `/ai-learning` (WP8).
+- [x] Dùng weak label trong `ai_evaluation`: đo coverage/precision/recall/F1 và ma trận nhầm lẫn; chỉ chấm trên operator verdict độc lập. `SELF_RESOLVED`/`FLAPPING` giữ là weak class riêng và chỉ dùng `FALSE_POSITIVE` làm proxy khi đối chiếu.
+- [x] Dùng weak label/xung đột LF để xếp hạng và cân bằng batch nhắc verdict (WP2.2); tín hiệu chỉ nằm trong audit event, không làm lộ dự đoán cho operator trước khi đánh giá.
+- [x] Hiển thị coverage, so sánh độc lập, xung đột LF, metrics theo nhãn/LF trên `/ai-learning`; lọc facts theo cluster và giữ legacy unscoped rows chỉ trong cluster mặc định.
+- [x] Giữ nguyên ranh giới an toàn: không ghi `operator_verdict`, không thay đổi trust/autonomy.
 
-**Kết quả 28/09/2026 (production, 30 ngày, `docs/benchmark/auto-labels-2026-09-28.json`):** 3.835/4.157 case (92%) có nhãn tự động — FALSE_POSITIVE 3.830, INEFFECTIVE 4, CORRECT 1, 0 xung đột. Gần như toàn bộ đến từ `self_resolved_without_action`, tức là phần lớn cảnh báo tự hết trong 30 phút mà không cần hành động. Chưa đo được precision vì chưa có nhãn operator; `lf_flapping` = 0 vì WP1.1 chưa deploy.
+**Kết quả 28/09/2026 (production, 30 ngày, `docs/benchmark/auto-labels-2026-09-28.json`):** 3.835/4.157 case (92%) có nhãn tự động — số liệu này được tạo trước khi `SELF_RESOLVED`/`FLAPPING` tách khỏi verdict-like classes, nên không dùng làm precision hiện tại. Metrics mới chỉ có ý nghĩa khi tồn tại operator verdict độc lập chồng lấp; không suy diễn weak class thành operator truth.
 
 **Nghiệm thu:** ≥ 60% case trong 30 ngày có ít nhất 1 nhãn tự động; precision LF được báo cáo.
 **Ước lượng:** 2 ngày.

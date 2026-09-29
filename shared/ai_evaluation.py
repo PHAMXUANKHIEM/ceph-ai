@@ -174,3 +174,96 @@ def evaluate_by(golden: list[dict], predictions: list[dict], key: str, *,
         ).as_dict()
         for group, ids in sorted(groups.items())
     }
+
+
+def evaluate_weak_supervision(facts: Iterable[object]) -> dict:
+    """Evaluate weak labels only against independent operator verdicts.
+
+    This report deliberately does not feed auto labels into the ordinary
+    diagnosis score, operator verdict field, trust engine, or autonomy gate.
+    It measures coverage on all cases and classification quality only where
+    an operator supplied a comparable verdict.
+    """
+    from shared.auto_labels import (
+        CORRECT, FALSE_POSITIVE, INEFFECTIVE, PROXY_VERDICT,
+        SELF_RESOLVED, FLAPPING, label_case,
+    )
+
+    labels = (CORRECT, FALSE_POSITIVE, INEFFECTIVE, SELF_RESOLVED, FLAPPING)
+    operator_labels = (CORRECT, FALSE_POSITIVE, INEFFECTIVE)
+    matrix = {truth: {pred: 0 for pred in labels} for truth in operator_labels}
+    per_lf = {
+        name: {"checked": 0, "agreed": 0}
+        for name in (
+            "postcheck_passed", "regressed", "execution_failed",
+            "reopened_after_execution", "self_resolved_without_action",
+            "flapping_signal",
+        )
+    }
+    total = generated = conflicts = compared = 0
+    predicted_counts = {label: 0 for label in labels}
+    compared_predicted_counts = {label: 0 for label in labels}
+    actual_counts = {label: 0 for label in operator_labels}
+    for facts_row in facts:
+        total += 1
+        auto = label_case(facts_row)
+        if auto.label in labels:
+            generated += 1
+            predicted_counts[auto.label] += 1
+        if len({vote.label for vote in auto.votes}) > 1:
+            conflicts += 1
+        truth = getattr(facts_row, "operator_verdict", None)
+        if truth not in operator_labels:
+            continue
+        actual_counts[truth] += 1
+        if auto.label in labels:
+            compared += 1
+            compared_predicted_counts[auto.label] += 1
+            matrix[truth][PROXY_VERDICT.get(auto.label, auto.label)] += 1
+        for vote in auto.votes:
+            if vote.lf in per_lf:
+                per_lf[vote.lf]["checked"] += 1
+                per_lf[vote.lf]["agreed"] += int(vote.label == truth)
+
+    class_metrics = {}
+    for label in labels:
+        operator_label = PROXY_VERDICT.get(label, label)
+        true_positive = matrix[operator_label][label]
+        precision = true_positive / compared_predicted_counts[label] if compared_predicted_counts[label] else None
+        recall = true_positive / actual_counts[operator_label] if actual_counts[operator_label] else None
+        f1 = (
+            2 * precision * recall / (precision + recall)
+            if precision is not None and recall is not None and precision + recall
+            else None
+        )
+        class_metrics[label] = {
+            "precision": round(precision, 4) if precision is not None else None,
+            "recall": round(recall, 4) if recall is not None else None,
+            "f1": round(f1, 4) if f1 is not None else None,
+            "predicted": predicted_counts[label],
+            "compared_predictions": compared_predicted_counts[label],
+            "operator_labeled": actual_counts[label],
+            "proxy_operator_verdict": operator_label if label in PROXY_VERDICT else None,
+        }
+    measured = [item["precision"] for item in class_metrics.values() if item["precision"] is not None]
+    return {
+        "cases": total,
+        "auto_labeled": generated,
+        "coverage": round(generated / total, 4) if total else 0.0,
+        "operator_labeled": sum(actual_counts.values()),
+        "compared": compared,
+        "conflicts": conflicts,
+        "confusion_matrix": matrix,
+        "by_label": class_metrics,
+        "macro_precision": round(sum(measured) / len(measured), 4) if measured else None,
+        "by_labeling_function": {
+            name: {
+                **values,
+                "precision": round(values["agreed"] / values["checked"], 4)
+                if values["checked"] else None,
+            }
+            for name, values in per_lf.items()
+        },
+        "independent_truth": "operator_verdict",
+        "safety": "Weak labels are evaluation/ranking signals only; they never update operator_verdict or grant autonomy.",
+    }

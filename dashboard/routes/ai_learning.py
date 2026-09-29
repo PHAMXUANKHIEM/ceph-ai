@@ -18,6 +18,8 @@ from dashboard.routes.auth import is_admin_user, require_login
 from dashboard.templating import make_templates
 from shared import (
     autonomy_kpi,
+    ai_evaluation,
+    auto_labels,
     canary,
     db,
     forecast_feedback,
@@ -833,7 +835,15 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
             } if latest_cycle else None,
         }
 
+        selected_cluster = session.get(Cluster, cluster_id)
+        weak_supervision = ai_evaluation.evaluate_weak_supervision(
+            auto_labels.collect_facts(
+                session, days=30, cluster_id=cluster_id,
+                include_unscoped=bool(selected_cluster and selected_cluster.is_default),
+            )
+        )
         return {
+            "weak_supervision": weak_supervision,
             "online_learning": online_learning,
             "forecast_feedback": {
                 **feedback_summary,

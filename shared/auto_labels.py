@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable
 
+from sqlalchemy import or_
+
 from shared.models import Action, Incident, RemediationCase
 from shared.time import utc_now
 
@@ -141,9 +143,12 @@ def _flapping(evidence_json: str | None) -> bool:
         return False
 
 
-def collect_facts(session, *, days: int = 30, now: datetime | None = None) -> list[CaseFacts]:
+def collect_facts(
+    session, *, days: int = 30, now: datetime | None = None,
+    cluster_id: str | None = None, include_unscoped: bool = False,
+) -> list[CaseFacts]:
     since = (now or utc_now()) - timedelta(days=days)
-    rows = (
+    query = (
         session.query(
             RemediationCase.id, RemediationCase.fault_family, RemediationCase.outcome,
             RemediationCase.regressed_1h, RemediationCase.regressed_24h, RemediationCase.operator_verdict,
@@ -154,8 +159,13 @@ def collect_facts(session, *, days: int = 30, now: datetime | None = None) -> li
         .join(Incident, Incident.id == RemediationCase.incident_id)
         .join(Action, Action.id == RemediationCase.action_id)
         .filter(RemediationCase.created_at >= since)
-        .all()
     )
+    if cluster_id is not None:
+        if include_unscoped:
+            query = query.filter(or_(Incident.cluster_id == cluster_id, Incident.cluster_id.is_(None)))
+        else:
+            query = query.filter(Incident.cluster_id == cluster_id)
+    rows = query.all()
     codes = {(row.cluster_id, row.ceph_code) for row in rows}
     openings: dict[tuple, list[datetime]] = defaultdict(list)
     if codes:

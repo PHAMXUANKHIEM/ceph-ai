@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from shared import incident_events
+from shared.auto_labels import collect_facts, label_case
 from shared.models import Action, IncidentTimelineEvent, RemediationCase
 from shared.time import utc_now
 
@@ -37,10 +38,14 @@ class NudgeCandidate:
     fault_family: str
     score: float
     reasons: tuple[str, ...]
+    weak_label: str | None = None
+    weak_confidence: float = 0.0
+    weak_label_conflict: bool = False
 
 
 def _score(case, action_id: str | None, action_status: str | None,
-           labelled_in_family: int) -> tuple[float, tuple[str, ...]]:
+           labelled_in_family: int, *, weak_label: str | None = None,
+           weak_label_conflict: bool = False) -> tuple[float, tuple[str, ...]]:
     score, reasons = 0.0, []
     if case.outcome in _KNOWN_OUTCOMES:
         score += 3
@@ -55,11 +60,20 @@ def _score(case, action_id: str | None, action_status: str | None,
     if action_id and action_id != PLACEHOLDER_ACTION:
         score += 1
         reasons.append(f"đề xuất cụ thể: {action_id}")
+    if weak_label_conflict:
+        score += 2.5
+        reasons.append("nhãn tự động đang mâu thuẫn, cần operator kiểm chứng")
+    elif weak_label:
+        score += 1.5
+        reasons.append("mẫu đánh giá chất lượng nhãn tự động")
+    else:
+        score += 0.5
+        reasons.append("case chưa có nhãn tự động")
     return score, tuple(reasons)
 
 
 def select_cases(session, *, limit: int = 5, lookback_days: int = 14, per_family_cap: int = 2,
-                 now: datetime | None = None) -> list[NudgeCandidate]:
+                 per_label_cap: int = 2, now: datetime | None = None) -> list[NudgeCandidate]:
     if limit <= 0:
         return []
     since = (now or utc_now()) - timedelta(days=lookback_days)
@@ -77,23 +91,44 @@ def select_cases(session, *, limit: int = 5, lookback_days: int = 14, per_family
         .filter(RemediationCase.operator_verdict.is_(None), RemediationCase.created_at >= since)
         .all()
     )
+    weak_by_case = {
+        result.case_id: result
+        for result in (
+            label_case(facts)
+            for facts in collect_facts(session, days=lookback_days, now=now)
+        )
+    }
     ranked = []
     for case, action_id, action_status in rows:
         if case.action_id in already_nudged:
             continue
-        score, reasons = _score(case, action_id, action_status, labelled[case.fault_family])
+        weak = weak_by_case.get(case.id)
+        weak_conflict = bool(weak and len({vote.label for vote in weak.votes}) > 1)
+        score, reasons = _score(
+            case, action_id, action_status, labelled[case.fault_family],
+            weak_label=weak.label if weak else None,
+            weak_label_conflict=weak_conflict,
+        )
         ranked.append(NudgeCandidate(
             case_id=case.id, incident_id=case.incident_id, action_pk=case.action_id,
             fault_family=case.fault_family, score=round(score, 3), reasons=reasons,
+            weak_label=weak.label if weak else None,
+            weak_confidence=weak.confidence if weak else 0.0,
+            weak_label_conflict=weak_conflict,
         ))
     ranked.sort(key=lambda item: (-item.score, item.case_id))
     chosen: list[NudgeCandidate] = []
     per_family: Counter = Counter()
+    per_label: Counter = Counter()
     for candidate in ranked:
         if per_family[candidate.fault_family] >= per_family_cap:
             continue
+        label_key = candidate.weak_label or "UNLABELED"
+        if per_label[label_key] >= per_label_cap:
+            continue
         chosen.append(candidate)
         per_family[candidate.fault_family] += 1
+        per_label[label_key] += 1
         if len(chosen) >= limit:
             break
     return chosen
@@ -103,7 +138,13 @@ def mark_nudged(session, candidate: NudgeCandidate) -> None:
     incident_events.record(
         session, incident_id=candidate.incident_id, action_id=candidate.action_pk,
         event_type=NUDGE_EVENT, actor="system",
-        evidence={"score": candidate.score, "reasons": list(candidate.reasons)},
+        evidence={
+            "score": candidate.score,
+            "reasons": list(candidate.reasons),
+            "weak_label": candidate.weak_label,
+            "weak_confidence": candidate.weak_confidence,
+            "weak_label_conflict": candidate.weak_label_conflict,
+        },
     )
 
 
@@ -113,4 +154,3 @@ def nudged_since(session, since: datetime) -> bool:
         IncidentTimelineEvent.event_type == NUDGE_EVENT,
         IncidentTimelineEvent.created_at >= since,
     ).first() is not None
-

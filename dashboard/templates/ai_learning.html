@@ -103,6 +103,7 @@
         <div class="ai-overview-tile"><span class="hint">Dự báo sớm RBD</span><strong>{{ volume_learning.early_forecasts|length }}</strong><small>forecast mới nhất · {{ volume_learning.forecast_warning_count }} cảnh báo</small></div>
         <div class="ai-overview-tile"><span class="hint">Log daemon</span><strong>{{ log_learning.sample_count }}</strong><small>mẫu · {{ log_learning.eligible_count }} đủ điều kiện học</small></div>
         <div class="ai-overview-tile"><span class="hint">AI remediation</span><strong>{{ remediation_feedback.labeled }}/{{ remediation_feedback.total_cases }}</strong><small>case đã đánh giá · precision {{ (remediation_feedback.precision_percent|string + '%') if remediation_feedback.precision_percent is not none else '—' }}</small></div>
+        <div class="ai-overview-tile"><span class="hint">Weak labels · 30 ngày</span><strong>{{ weak_supervision.auto_labeled }}/{{ weak_supervision.cases }}</strong><small>coverage {{ (weak_supervision.coverage * 100)|round(1) }}% · precision đối chiếu operator {% if weak_supervision.macro_precision is not none %}{{ (weak_supervision.macro_precision * 100)|round(1) }}%{% else %}chưa đủ verdict{% endif %}</small></div>
       </div>
       <div class="ai-tip">Telemetry đã xác minh: {{ remediation_feedback.telemetry_labeled }} case · {{ remediation_feedback.telemetry_scored }} case có thể chấm điểm · precision {{ (remediation_feedback.telemetry_precision_percent|string + '%') if remediation_feedback.telemetry_precision_percent is not none else 'chưa đủ outcome' }}.</div>
       <div class="ai-overview-grid" id="autonomy-kpi" data-endpoint="/api/ai-learning/autonomy-kpi?days=30" hidden>
@@ -275,6 +276,20 @@
     {% for item in remediation_feedback.recent_unlabeled %}<li><a href="/incidents/{{ item.incident_id }}/timeline"><code>{{ item.fault_family }}</code> · {{ item.created_at|vntime }}</a>{% if item.diagnosis %} — {{ item.diagnosis|truncate(180) }}{% endif %}</li>
     {% else %}<li>Không còn case chưa đánh giá.</li>{% endfor %}
     </ul></div>
+    <div class="card-header"><div><h2>Đánh giá nhãn tự động</h2><p class="hint">Weak label chỉ là tín hiệu tham khảo. Precision chỉ tính trên case đã có operator verdict độc lập; nhãn tự động không được ghi thành verdict.</p></div></div>
+    <div class="card-body">
+      <p><span class="badge">Coverage {{ (weak_supervision.coverage * 100)|round(1) }}% · {{ weak_supervision.auto_labeled }}/{{ weak_supervision.cases }} case</span>
+        <span class="badge">Đối chiếu độc lập {{ weak_supervision.compared }}/{{ weak_supervision.operator_labeled }}</span>
+        <span class="badge {% if weak_supervision.conflicts %}badge-warn{% else %}badge-ok{% endif %}">Xung đột LF {{ weak_supervision.conflicts }}</span>
+        <span class="badge">Macro precision {{ (weak_supervision.macro_precision * 100)|round(1) if weak_supervision.macro_precision is not none else '—' }}%</span></p>
+      <p class="hint">SELF_RESOLVED và FLAPPING vẫn là weak label riêng. Khi đo precision, chúng chỉ được đối chiếu với FALSE_POSITIVE như proxy, không khẳng định case là false positive.</p>
+    </div>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table"><thead><tr><th>Nhãn weak</th><th>Số dự đoán</th><th>Verdict operator</th><th>Precision</th><th>Recall</th><th>F1</th></tr></thead><tbody>
+      {% for label, item in weak_supervision.by_label.items() %}<tr><td><code>{{ label }}</code></td><td>{{ item.predicted }}</td><td>{{ item.operator_labeled }}</td><td>{{ (item.precision * 100)|round(1) if item.precision is not none else '—' }}%</td><td>{{ (item.recall * 100)|round(1) if item.recall is not none else '—' }}%</td><td>{{ (item.f1 * 100)|round(1) if item.f1 is not none else '—' }}%</td></tr>{% endfor %}
+    </tbody></table></div>
+    <div class="table-wrap learning-table-wrap"><table class="learning-table"><thead><tr><th>Labeling function</th><th>Đã đối chiếu</th><th>Khớp operator</th><th>Precision</th></tr></thead><tbody>
+      {% for name, item in weak_supervision.by_labeling_function.items() %}<tr><td><code>{{ name }}</code></td><td>{{ item.checked }}</td><td>{{ item.agreed }}</td><td>{{ (item.precision * 100)|round(1) if item.precision is not none else '—' }}%</td></tr>{% endfor %}
+    </tbody></table></div>
   </section>
 
   <section class="card learning-tab-panel" data-tab-panel="rbd">
