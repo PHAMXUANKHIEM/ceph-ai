@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import stat
 
 from config.settings import settings
 from scripts.update_ai_pricing import build_snapshot, write_snapshot
@@ -32,9 +33,21 @@ def test_build_snapshot_maps_aliases_and_normalizes_rates():
     assert by_key[("claude", "sonnet")]["as_of"] == "2026-08-28"
 
 
+def test_build_snapshot_does_not_guess_price_for_router_default_alias():
+    catalog = {
+        "gemini-2.5-flash": {
+            "input_cost_per_token": 0.0000003,
+            "output_cost_per_token": 0.0000025,
+        },
+    }
+
+    records = build_snapshot(catalog, [("9router", "default")])
+    assert not any(row["provider"] == "9router" and row["model_id"] == "default" for row in records)
+
+
 def test_cost_table_uses_validated_runtime_snapshot(tmp_path, monkeypatch):
     destination = tmp_path / "pricing.json"
-    write_snapshot([{
+    snapshot_path = write_snapshot([{
         "provider": "codex",
         "model_id": "gpt-5.6-sol",
         "label": "Updated GPT",
@@ -45,6 +58,7 @@ def test_cost_table_uses_validated_runtime_snapshot(tmp_path, monkeypatch):
         "as_of": "2026-08-28",
         "note": "test",
     }], destination)
+    assert stat.S_IMODE(snapshot_path.stat().st_mode) == 0o644
     monkeypatch.setattr(settings, "ai_cost_pricing_cache_path", str(destination))
 
     row = next(item for item in pricing_table() if item["model_id"] == "gpt-5.6-sol")

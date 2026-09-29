@@ -1,12 +1,11 @@
 [Unit]
-Description=Refresh Ceph AI model pricing every five hours
+Description=Refresh Ceph AI model prices daily at midnight
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=5h
+OnCalendar=*-*-* 00:00:00
+AccuracySec=1s
 Persistent=true
 Unit=ceph-ai-ai-pricing.service
 
 [Install]
 WantedBy=timers.target
-

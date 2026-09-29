@@ -87,6 +87,8 @@ def _resolve_price(provider: str, model_id: str) -> TokenPrice | None:
         return next(price for price in _active_prices() if price.provider == "claude")
 
     # 9router qualifies Google Cloud models with ``gc/`` in its model id.
+    # Do not map the generic "default" alias: the router's actual upstream
+    # model (and price) is not knowable from this identifier.
     if provider_key == "9router" and model_key.removeprefix("gc/") == "gemini-2.5-flash":
         return next(price for price in _active_prices() if price.provider == "9router")
     return None

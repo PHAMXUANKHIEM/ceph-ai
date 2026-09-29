@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -80,11 +81,11 @@ def _price_record(provider: str, model_id: str, entry: dict, catalog_key: str, n
         output_rate = float(entry["output_cost_per_token"]) * 1_000_000
     except (KeyError, TypeError, ValueError):
         return None
-    if input_rate < 0 or output_rate < 0:
+    if not math.isfinite(input_rate) or not math.isfinite(output_rate) or input_rate < 0 or output_rate < 0:
         return None
     cached = entry.get("cache_read_input_token_cost")
     cached_rate = float(cached) * 1_000_000 if cached is not None else None
-    if cached_rate is not None and cached_rate < 0:
+    if cached_rate is not None and (not math.isfinite(cached_rate) or cached_rate < 0):
         return None
     note = (
         f"Synced from LiteLLM catalog ({catalog_key}); verify account tier and proxy markup."
@@ -116,6 +117,12 @@ def build_snapshot(catalog: dict, models: list[tuple[str, str]] | None = None, *
     as_of = (now or datetime.now(timezone.utc)).isoformat()
     records = []
     for provider, model_id in sorted(targets):
+        # "default" is a routing alias, not a priced model. The upstream
+        # router may change its destination without changing this identifier;
+        # carrying a prior guessed price would silently misstate spend.
+        if provider == "9router" and model_id.strip().lower() == "default":
+            logger.warning("Skipping ambiguous routed model %s/%s; configure the concrete upstream model", provider, model_id)
+            continue
         match = _catalog_entry(catalog, provider, model_id)
         if match is None:
             old = previous.get((provider, model_id.lower()))
@@ -147,6 +154,10 @@ def write_snapshot(records: list[dict], path: Path | None = None, *, now: dateti
     }
     fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent, text=True)
     try:
+        # The updater runs as the host service account while application
+        # containers run unprivileged. Prices are public reference data, so
+        # make the atomically published snapshot readable to those processes.
+        os.fchmod(fd, 0o644)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.write("\n")

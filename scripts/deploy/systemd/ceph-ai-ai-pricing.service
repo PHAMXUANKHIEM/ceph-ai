@@ -7,6 +7,6 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/root/ceph-ai
 ExecStart=/root/ceph-ai/.venv/bin/python -m scripts.update_ai_pricing
+Environment=AI_COST_PRICING_CACHE_PATH=/var/lib/ceph-ai/config/ai-pricing.json
 NoNewPrivileges=yes
 PrivateTmp=yes
-
