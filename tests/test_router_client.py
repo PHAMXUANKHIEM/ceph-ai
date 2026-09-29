@@ -4122,3 +4122,20 @@ def test_every_new_case_logs_a_decision_with_its_source(isolated_db, monkeypatch
         assert json.loads(rows["decision-rules"].context_json)["triage_conclusion"] == "MON_SKEWED"
         assert rows["decision-llm"].chosen_by == "llm"
         assert all(row.propensity == 1.0 and row.chosen_action == "resync_ntp" for row in rows.values())
+
+
+def test_approved_action_with_empty_target_nodes_fails_with_a_readable_reason(isolated_db, monkeypatch):
+    progress = []
+    monkeypatch.setattr(router_client, "_write_action_progress", lambda pk, rows: progress.append((pk, rows)))
+    monkeypatch.setattr(router_client, "execute_command", lambda *a, **k: pytest.fail("must not execute"))
+    _create_incident("incident-no-targets")
+    with db_module.SessionLocal() as session:
+        action_pk = _approved_action(session, "incident-no-targets", nodes=[]).id
+
+    router_client._execute_approved_action(action_pk)
+
+    (pk, rows), = progress
+    assert pk == action_pk and rows[0]["status"] == "failed" and rows[0]["step"] == "preflight"
+    assert "target_nodes thiếu hoặc không hợp lệ" in rows[0]["message"]
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, action_pk).status == ActionStatus.FAILED.value

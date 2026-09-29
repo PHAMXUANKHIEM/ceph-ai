@@ -269,6 +269,34 @@ def collect_nightly_multi_agent_analysis(repo: Path, evidence: str) -> tuple[lis
     return reports, failures
 
 
+def _read_recent_tail(path: Path, cutoff: float) -> str | None:
+    """The bounded tail of a log file updated since ``cutoff``, else None."""
+    try:
+        stat = path.stat()
+        if stat.st_mtime < cutoff or not path.is_file():
+            return None
+        with path.open("rb") as handle:
+            handle.seek(max(0, stat.st_size - NIGHTLY_ERROR_EVIDENCE_MAX_BYTES_PER_FILE))
+            return handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _redacted_error_blocks(text: str) -> list[str]:
+    """The last two error blocks of ``text``, cleaned and secret-redacted."""
+    blocks = []
+    matches = list(ERROR_RE.finditer(text))[-2:]
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        block = text[match.start():min(end, match.start() + 2_000)]
+        block = clean_evidence(block)
+        block = SECRET_RE.sub(lambda item: item.group(1) + "=<redacted>", block)
+        block = _redact_nightly_text(block).strip()
+        if block:
+            blocks.append(block)
+    return blocks
+
+
 def _collect_recent_nightly_error_evidence(
     log_dir: Path = Path("/var/log"), *, now: datetime | None = None,
 ) -> str:
@@ -284,25 +312,10 @@ def _collect_recent_nightly_error_evidence(
     for path in paths:
         if "code-repair" in path.name or len(evidence) >= NIGHTLY_ERROR_EVIDENCE_MAX_FILES:
             continue
-        try:
-            stat = path.stat()
-            if stat.st_mtime < cutoff or not path.is_file():
-                continue
-            with path.open("rb") as handle:
-                handle.seek(max(0, stat.st_size - NIGHTLY_ERROR_EVIDENCE_MAX_BYTES_PER_FILE))
-                text = handle.read().decode("utf-8", errors="replace")
-        except OSError:
+        text = _read_recent_tail(path, cutoff)
+        if text is None:
             continue
-
-        matches = list(ERROR_RE.finditer(text))[-2:]
-        for index, match in enumerate(matches):
-            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-            block = text[match.start():min(end, match.start() + 2_000)]
-            block = clean_evidence(block)
-            block = SECRET_RE.sub(lambda item: item.group(1) + "=<redacted>", block)
-            block = _redact_nightly_text(block).strip()
-            if not block:
-                continue
+        for block in _redacted_error_blocks(text):
             remaining = NIGHTLY_ERROR_EVIDENCE_MAX_CHARS - total_chars
             if remaining <= 0:
                 break
@@ -462,7 +475,8 @@ def _run_nightly_ai_improvement_locked(
 
     local = current.astimezone(NIGHTLY_TIMEZONE)
     dirty_checkout = _dirty_checkout(repo)
-    revision = subprocess.run(
+    # Fixed argv (no caller input); git is resolved from the host service PATH.
+    revision = subprocess.run(  # nosec B603 B607
         ["git", "rev-parse", "--short", "HEAD"], cwd=repo, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
     )

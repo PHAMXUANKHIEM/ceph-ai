@@ -7,7 +7,7 @@ import argparse
 import re
 import sys
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator
+from typing import Any, Generator
 
 import yaml  # type: ignore[import-untyped]
 
@@ -24,7 +24,7 @@ class _UniqueKeyLoader(yaml.SafeLoader):
 
 def _construct_unique_mapping(
     loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
-) -> Iterator[dict[Any, Any]]:
+) -> Generator[dict[Any, Any], None, dict[Any, Any]]:
     mapping: dict[Any, Any] = {}
     yield mapping
     explicit_key_nodes = {
@@ -132,17 +132,20 @@ def _validate_node_reviews(graph: dict, nodes: dict, errors: list[str]) -> None:
             errors.append(f"{where}.evidence: reviewed node requires at least one evidence item")
             continue
         for index, item in enumerate(evidence):
-            item_where = f"{where}.evidence[{index}]"
-            if not isinstance(item, dict):
-                errors.append(f"{item_where}: expected a mapping")
-                continue
-            path = item.get("path")
-            if not isinstance(path, str) or not _is_safe_repo_path(path):
-                errors.append(f"{item_where}.path: expected a safe repo-relative path")
-            for field in ("symbol", "claim"):
-                value = item.get(field)
-                if not isinstance(value, str) or not value.strip():
-                    errors.append(f"{item_where}.{field}: required non-empty string")
+            _validate_review_evidence(item, f"{where}.evidence[{index}]", errors)
+
+
+def _validate_review_evidence(item: Any, item_where: str, errors: list[str]) -> None:
+    if not isinstance(item, dict):
+        errors.append(f"{item_where}: expected a mapping")
+        return
+    path = item.get("path")
+    if not isinstance(path, str) or not _is_safe_repo_path(path):
+        errors.append(f"{item_where}.path: expected a safe repo-relative path")
+    for field in ("symbol", "claim"):
+        value = item.get(field)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"{item_where}.{field}: required non-empty string")
 
 
 def _edge_kinds(graph: dict, errors: list[str]) -> list:
@@ -396,7 +399,8 @@ def audit_paths(graph: dict[str, Any], root: Path) -> list[str]:
 
 def _load_manifest(path: Path) -> Any:
     try:
-        return yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+        # _UniqueKeyLoader subclasses yaml.SafeLoader: no arbitrary objects.
+        return yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)  # nosec B506
     except (OSError, yaml.YAMLError) as exc:
         raise ValueError(f"cannot read manifest {path}: {exc}") from exc
 

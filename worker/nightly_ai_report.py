@@ -107,6 +107,48 @@ def _recommendation(state: dict) -> str:
     )
 
 
+def _plan_mode_lines(state: dict) -> list[str]:
+    if state.get("mode") != "PLAN_ONLY":
+        return []
+    evidence = state.get("runtime_error_evidence")
+    if evidence == "bounded_redacted_24h":
+        runtime = "Lỗi runtime: analyst lỗi nhận tail log app gần đây đã lọc/che secret (file log cập nhật trong 24h)."
+    elif evidence == "pending":
+        runtime = "Lỗi runtime: lượt rà soát bị gián đoạn trước khi hoàn tất thu thập log."
+    else:
+        runtime = "Lỗi runtime: chưa thu thập log ứng dụng cho lượt rà soát này."
+    return ["Chế độ: chỉ rà soát và lập kế hoạch; không sửa code, không chạy test/remediation.", runtime]
+
+
+def _change_lines(state: dict) -> list[str]:
+    changed_files = state.get("changed_files") or []
+    if state.get("mode") == "PLAN_ONLY":
+        return ["Thay đổi code/test: không có (đúng theo chế độ chỉ lập kế hoạch)."]
+    if changed_files:
+        files = ", ".join(_clip(item, 100) for item in changed_files[:12])
+        return [f"Đã thay đổi ({len(changed_files)} file): {files}"]
+    if not state.get("mode"):
+        return ["Đã thay đổi: không có patch được ghi nhận."]
+    return []
+
+
+def _preview_lines(previews: list, remaining: int) -> list[str]:
+    """Analyst previews that fit in what the mandatory lines leave free."""
+    if not previews or remaining <= len("\nĐề xuất từ analyst:\n") + 40:
+        return []
+    preview_lines = ["Đề xuất từ analyst:"]
+    remaining -= len("\n".join(preview_lines)) + 1
+    for index, preview in enumerate(previews[:3], 1):
+        label = f"{index}. "
+        budget = min(650, remaining - len(label) - 1)
+        if budget < 40:
+            break
+        item = f"{label}{_clip(preview, budget)}"
+        preview_lines.append(item)
+        remaining -= len(item) + 1
+    return preview_lines
+
+
 def build_morning_report(state: dict, *, now: datetime | None = None) -> str:
     """Build one bounded, operator-readable report from nightly state."""
     current = now or datetime.now(timezone.utc)
@@ -119,14 +161,7 @@ def build_morning_report(state: dict, *, now: datetime | None = None) -> str:
         f"Trạng thái: {status}",
     ]
 
-    if state.get("mode") == "PLAN_ONLY":
-        lines.append("Chế độ: chỉ rà soát và lập kế hoạch; không sửa code, không chạy test/remediation.")
-        if state.get("runtime_error_evidence") == "bounded_redacted_24h":
-            lines.append("Lỗi runtime: analyst lỗi nhận tail log app gần đây đã lọc/che secret (file log cập nhật trong 24h).")
-        elif state.get("runtime_error_evidence") == "pending":
-            lines.append("Lỗi runtime: lượt rà soát bị gián đoạn trước khi hoàn tất thu thập log.")
-        else:
-            lines.append("Lỗi runtime: chưa thu thập log ứng dụng cho lượt rà soát này.")
+    lines.extend(_plan_mode_lines(state))
     if state.get("source_revision"):
         lines.append(f"Mã nguồn đã rà soát: {state['source_revision']}")
     if state.get("checkout_dirty"):
@@ -134,14 +169,7 @@ def build_morning_report(state: dict, *, now: datetime | None = None) -> str:
             "Lưu ý: checkout có thay đổi chưa commit; analyst chỉ đọc HEAD, không đọc diff chưa commit."
         )
 
-    changed_files = state.get("changed_files") or []
-    if state.get("mode") == "PLAN_ONLY":
-        lines.append("Thay đổi code/test: không có (đúng theo chế độ chỉ lập kế hoạch).")
-    elif changed_files:
-        files = ", ".join(_clip(item, 100) for item in changed_files[:12])
-        lines.append(f"Đã thay đổi ({len(changed_files)} file): {files}")
-    elif not state.get("mode"):
-        lines.append("Đã thay đổi: không có patch được ghi nhận.")
+    lines.extend(_change_lines(state))
     if state.get("candidate_worktree"):
         lines.append(f"Candidate: {_clip(state['candidate_worktree'], 260)}")
     if state.get("analysis_reports") is not None:
@@ -158,19 +186,7 @@ def build_morning_report(state: dict, *, now: datetime | None = None) -> str:
     # context, but must never push the operator's next action out of Telegram.
     mandatory = "\n".join(lines + recommendation_lines)
     remaining = MAX_TELEGRAM_CHARS - len(mandatory)
-    previews = state.get("analysis_report_previews") or []
-    if previews and remaining > len("\nĐề xuất từ analyst:\n") + 40:
-        preview_lines = ["Đề xuất từ analyst:"]
-        remaining -= len("\n".join(preview_lines)) + 1
-        for index, preview in enumerate(previews[:3], 1):
-            label = f"{index}. "
-            budget = min(650, remaining - len(label) - 1)
-            if budget < 40:
-                break
-            item = f"{label}{_clip(preview, budget)}"
-            preview_lines.append(item)
-            remaining -= len(item) + 1
-        lines.extend(preview_lines)
+    lines.extend(_preview_lines(state.get("analysis_report_previews") or [], remaining))
     lines.extend(recommendation_lines)
     return "\n".join(lines)
 

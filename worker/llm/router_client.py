@@ -2105,7 +2105,6 @@ def _maybe_execute_safe_action(
     if not isinstance(nodes, list) or not nodes or not all(
         isinstance(host, str) and host for host in nodes
     ):
-        failure_message = "Từ chối thực thi: danh sách target_nodes thiếu hoặc không hợp lệ."
         logger.warning(
             "diagnose_incident: envelope nodes is missing or malformed for incident %s "
             "(action_id=%s) — marking FAILED instead of guessing",
@@ -3555,6 +3554,7 @@ def _execute_approved_action(action_pk: str) -> None:
             action_pk,
             incident_id,
         )
+        failure_message = "Từ chối thực thi: danh sách target_nodes thiếu hoặc không hợp lệ."
         failed_at = utc_now().isoformat()
         _write_action_progress(action_pk, [{
             "step": "preflight",

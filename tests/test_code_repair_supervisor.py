@@ -109,7 +109,6 @@ def test_nightly_creates_plan_only_and_never_calls_repair_pipeline(monkeypatch, 
 
 def test_nightly_records_partial_plans_and_does_not_block_on_dirty_checkout(monkeypatch, tmp_path):
     state_path = tmp_path / "nightly.json"
-    captured = {}
     monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: " M dashboard/app.py")
     monkeypatch.setattr(supervisor, "send_code_repair_alert", lambda message: None)
     monkeypatch.setattr(supervisor.settings, "ai_nightly_multi_agent_analysis_enabled", True, raising=False)
