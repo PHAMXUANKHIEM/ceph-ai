@@ -222,11 +222,13 @@ def evaluate_weak_supervision(facts: Iterable["CaseFacts"]) -> dict:
         if auto.label in labels:
             compared += 1
             compared_predicted_counts[auto.label] += 1
-            matrix[truth][PROXY_VERDICT.get(auto.label, auto.label)] += 1
+            # Rows are operator truth, columns the raw predicted label (weak
+            # classes included); precision maps a weak class to its proxy row.
+            matrix[truth][auto.label] += 1
         for vote in auto.votes:
             if vote.lf in per_lf:
                 per_lf[vote.lf]["checked"] += 1
-                per_lf[vote.lf]["agreed"] += int(vote.label == truth)
+                per_lf[vote.lf]["agreed"] += int(PROXY_VERDICT.get(vote.label, vote.label) == truth)
 
     class_metrics: dict[str, dict[str, Any]] = {}
     for label in labels:
@@ -245,7 +247,7 @@ def evaluate_weak_supervision(facts: Iterable["CaseFacts"]) -> dict:
             "f1": round(f1, 4) if f1 is not None else None,
             "predicted": predicted_counts[label],
             "compared_predictions": compared_predicted_counts[label],
-            "operator_labeled": actual_counts[label],
+            "operator_labeled": actual_counts[operator_label],
             "proxy_operator_verdict": operator_label if label in PROXY_VERDICT else None,
         }
     measured = [item["precision"] for item in class_metrics.values() if item["precision"] is not None]

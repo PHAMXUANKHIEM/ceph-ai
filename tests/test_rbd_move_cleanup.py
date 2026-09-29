@@ -34,7 +34,8 @@ def test_cleanup_command_only_deletes_token_owned_destination():
     assert "ceph.ai.move_token" in command
     assert "rbd rm images/vm-new" in command
     assert "rbd rm vms/vm-old" not in command
-    with pytest.raises(ExecutorError, match="explicit destination-delete"):
+    # The typed contract now rejects this before the command builder runs.
+    with pytest.raises(ExecutorError, match="xác nhận xóa destination"):
         get_command("rbd_move_cleanup_partial", params={**_params(), "delete_destination": False})
     with pytest.raises(ExecutorError, match="token"):
         get_command("rbd_move_cleanup_partial", params={**_params(), "move_token": "wrong"})

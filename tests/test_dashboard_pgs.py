@@ -71,16 +71,25 @@ def test_pool_pg_advisor_api_is_snapshot_scoped_and_read_only(dashboard_client, 
 
 
 def test_scrub_schedule_api_uses_shared_pg_snapshot(dashboard_client, monkeypatch):
+    # Ages relative to the real clock the route uses (the original fixed
+    # dates turned "overdue" once the calendar passed the hard limit).
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    now = _dt.now(_tz.utc).replace(microsecond=0)
+
+    def stamp(days: int) -> str:
+        return (now - _td(days=days)).isoformat().replace("+00:00", "Z")
+
     monkeypatch.setattr(pgs_route, "read_section_snapshot", lambda *_args, **_kwargs: {
         "pgs": [{
             "pgid": "1.a",
             "pool": "data",
             "state": "active+clean",
-            "last_scrub": "2026-09-10T00:00:00Z",
-            "last_deep_scrub": "2026-09-01T00:00:00Z",
+            "last_scrub": stamp(11),
+            "last_deep_scrub": stamp(20),
         }],
         "generation": 4,
-        "collected_at": "2026-09-21T10:00:00Z",
+        "collected_at": stamp(0),
         "age_seconds": 5,
         "stale": False,
         "section_available": True,

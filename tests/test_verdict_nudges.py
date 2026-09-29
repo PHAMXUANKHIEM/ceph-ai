@@ -42,7 +42,9 @@ def test_ranking_prefers_known_outcomes_disagreement_and_concrete_actions():
     plain = _case(session, 1)
     verified = _case(session, 2, family="MON_DOWN", outcome="VERIFIED_FAILED")
     disagree = _case(session, 3, family="SLOW_OPS", action_id="restart_osd_daemon", confidence=0.9)
-    chosen = verdict_nudges.select_cases(session, limit=3, now=NOW)
+    # All three have no weak label; lift the per-weak-label cap so this test
+    # is only about the ranking (the cap has its own test below).
+    chosen = verdict_nudges.select_cases(session, limit=3, per_label_cap=3, now=NOW)
     # Disagreement + concrete action and a known outcome score the same (5);
     # both must beat the plain placeholder case, their mutual order is by id.
     assert {item.case_id for item in chosen[:2]} == {disagree.id, verified.id}
@@ -83,3 +85,11 @@ def test_a_nudged_case_is_not_nudged_again_and_the_day_is_detected():
     assert [item.case_id for item in remaining] == [({first.id, second.id} - {batch[0].case_id}).pop()]
     assert verdict_nudges.nudged_since(session, datetime(2000, 1, 1))
     assert verdict_nudges.select_cases(session, limit=0, now=NOW) == []
+
+
+def test_batch_is_capped_per_weak_label():
+    session = _session()
+    for index in range(4):
+        _case(session, index, family=f"FAMILY_{index}")
+    chosen = verdict_nudges.select_cases(session, limit=4, per_label_cap=2, now=NOW)
+    assert len(chosen) == 2 and {item.weak_label for item in chosen} == {None}

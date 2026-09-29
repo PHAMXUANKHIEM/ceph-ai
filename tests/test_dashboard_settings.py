@@ -222,7 +222,7 @@ def test_codex_status_and_model_selection_use_live_catalog(dashboard_client, mon
     async def fake_account():
         return {"email": "admin@example.test", "planType": "plus"}
 
-    async def fake_models():
+    async def fake_models(*, include_hidden=True):
         return [
             {"id": "model-1", "model": "gpt-codex-1", "displayName": "Codex One", "isDefault": True},
             {"id": "model-2", "model": "gpt-codex-2", "displayName": "Codex Two", "isDefault": False},
@@ -242,7 +242,8 @@ def test_codex_status_and_model_selection_use_live_catalog(dashboard_client, mon
     status = dashboard_client.get("/settings/codex/status")
     assert status.status_code == 200
     assert status.json()["models"][0] == {
-        "id": "gpt-codex-1", "label": "Codex One", "is_default": True
+        "id": "gpt-codex-1", "label": "Codex One", "version": None,
+        "is_default": True, "is_hidden": False,
     }
     assert status.json()["limits"][0]["remaining_percent"] == 14
 

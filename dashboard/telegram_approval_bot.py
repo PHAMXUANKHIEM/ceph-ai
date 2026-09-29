@@ -670,7 +670,8 @@ def _maybe_send_verdict_nudges(now: datetime | None = None) -> int:
     with db.SessionLocal() as session:
         if verdict_nudges.nudged_since(session, start_of_day.replace(tzinfo=None)):
             return 0
-        for candidate in verdict_nudges.select_cases(session, limit=settings.verdict_nudge_limit):
+        naive_now = current.astimezone(timezone.utc).replace(tzinfo=None)
+        for candidate in verdict_nudges.select_cases(session, limit=settings.verdict_nudge_limit, now=naive_now):
             action = session.get(Action, candidate.action_pk)
             incident = session.get(Incident, candidate.incident_id)
             channels = channels_for_incident(incident, session)
@@ -688,7 +689,7 @@ def _maybe_send_verdict_nudges(now: datetime | None = None) -> int:
             except TelegramSendError:
                 logger.exception("telegram_approval_bot: verdict nudge for case %s failed", candidate.case_id)
                 continue
-            verdict_nudges.mark_nudged(session, candidate)
+            verdict_nudges.mark_nudged(session, candidate, now=naive_now)
             sent += 1
         session.commit()
     return sent

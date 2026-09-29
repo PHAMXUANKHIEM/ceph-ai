@@ -134,10 +134,11 @@ def select_cases(session, *, limit: int = 5, lookback_days: int = 14, per_family
     return chosen
 
 
-def mark_nudged(session, candidate: NudgeCandidate) -> None:
+def mark_nudged(session, candidate: NudgeCandidate, now: datetime | None = None) -> None:
+    """Record the nudge at ``now`` (the same clock nudged_since compares with)."""
     incident_events.record(
         session, incident_id=candidate.incident_id, action_id=candidate.action_pk,
-        event_type=NUDGE_EVENT, actor="system",
+        event_type=NUDGE_EVENT, actor="system", created_at=now,
         evidence={
             "score": candidate.score,
             "reasons": list(candidate.reasons),

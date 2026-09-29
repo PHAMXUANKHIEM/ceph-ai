@@ -114,3 +114,36 @@ def test_cli_catalogue_is_the_policy_action_list():
     catalogue = module.action_catalogue()
     assert {"resync_ntp", "restart_osd_daemon"} <= catalogue
     assert "invented_fix" not in catalogue
+
+
+def test_weak_supervision_scores_weak_classes_through_their_proxy_verdict():
+    from datetime import datetime, timedelta
+
+    from shared.ai_evaluation import evaluate_weak_supervision
+    from shared.auto_labels import CaseFacts
+
+    now = datetime(2026, 9, 29, 12, 0)
+
+    def facts(case_id, verdict, **kw):
+        base = dict(case_id=case_id, fault_family="OSD_DOWN", outcome="PROPOSED", regressed_1h=None,
+                    regressed_24h=None, incident_status="RESOLVED", detected_at=now,
+                    resolved_at=now + timedelta(minutes=5), executed=False, flapping=False,
+                    reopened_after_execution=False, operator_verdict=verdict)
+        base.update(kw)
+        return CaseFacts(**base)
+
+    report = evaluate_weak_supervision([
+        facts("a", "FALSE_POSITIVE"),                   # SELF_RESOLVED, proxy agrees
+        facts("b", "CORRECT"),                          # SELF_RESOLVED, proxy disagrees
+        facts("c", None),                               # SELF_RESOLVED, unlabelled
+        facts("d", "CORRECT", incident_status="PENDING_APPROVAL", resolved_at=None,
+              outcome="VERIFIED_SUCCESS", regressed_24h=False, executed=True),
+    ])
+    self_resolved = report["by_label"]["SELF_RESOLVED"]
+    assert self_resolved["proxy_operator_verdict"] == "FALSE_POSITIVE"
+    assert self_resolved["predicted"] == 3 and self_resolved["compared_predictions"] == 2
+    assert self_resolved["precision"] == 0.5
+    assert report["by_label"]["CORRECT"]["precision"] == 1.0
+    assert report["confusion_matrix"]["CORRECT"]["SELF_RESOLVED"] == 1
+    lf = report["by_labeling_function"]["self_resolved_without_action"]
+    assert (lf["checked"], lf["agreed"], lf["precision"]) == (2, 1, 0.5)
