@@ -962,9 +962,9 @@ def test_daily_nudge_sends_to_the_incident_channel_once_per_day(dashboard_client
     action_pk = _pending_action("inc-nudge-1")
     _with_case(action_pk)
 
-    before_hour = datetime(2026, 9, 28, 1, 0, tzinfo=tz.utc)      # 08:00 VN
+    at_hour = datetime.now(tz.utc).replace(hour=2, minute=30, second=0, microsecond=0)  # 09:30 VN
+    before_hour = at_hour - timedelta(hours=1, minutes=30)       # 08:00 VN
     assert bot._maybe_send_verdict_nudges(before_hour) == 0
-    at_hour = datetime(2026, 9, 28, 2, 30, tzinfo=tz.utc)          # 09:30 VN
     assert bot._maybe_send_verdict_nudges(at_hour) == 1
     chat, text, buttons = sent[0]
     assert chat == "-100999"

@@ -135,9 +135,9 @@ patch_action_ids:
 # đặt". Unlike every other family here, this one targets nodes that are NOT
 # yet part of any monitored cluster (a brand-new deploy, not a remediation
 # of an existing one) — worker/policy/gate.py loads this as
-# VALID_CLUSTER_DEPLOY_ACTION_IDS. One id per install method (Story 8.1 only
-# wires up real execution for deploy_cluster_cephadm; the other two are
-# registered now so Stories 8.2/8.3 need zero policy-layer changes).
+# VALID_CLUSTER_DEPLOY_ACTION_IDS. One id per install method; each backend
+# has a separate execution path so adding Docker-manual B mode does not alter
+# the existing single-cluster deployment methods.
 # 2026-07-26: Xóa cụm Ceph (dashboard/routes/delete_cluster.py) added to
 # this SAME family (not a new one) — it shares worker/executor/
 # cluster_deploy.py's phase-runner, dispatch check, and policy-loading with
@@ -178,6 +178,7 @@ cluster_deploy_action_ids:
   - deploy_cluster_cephadm
   - deploy_cluster_ceph_deploy
   - deploy_cluster_rpm_local
+  - deploy_cluster_docker_manual
   - delete_cluster_cephadm
   - delete_cluster_manual
   - convert_cluster_to_cephadm
@@ -348,11 +349,12 @@ risky:
   - patch_install
   # 2026-07-25: same conservative-by-default reasoning — bootstrapping a
   # brand-new cluster runs package installs, MON/MGR/OSD creation, and (for
-  # ceph-deploy/rpm-local) real disk formatting, so all 3 install methods
+  # ceph-deploy/rpm-local) real disk formatting, so every install method
   # always require explicit approval, no exceptions.
   - deploy_cluster_cephadm
   - deploy_cluster_ceph_deploy
   - deploy_cluster_rpm_local
+  - deploy_cluster_docker_manual
   # 2026-07-28: converts every daemon's management style in place on a
   # LIVE cluster (real data, real running VMs on top of it) — always
   # requires explicit approval, no exceptions, same as the rest of this

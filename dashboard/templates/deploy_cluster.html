@@ -95,12 +95,26 @@
               <label class="checkbox-label"><input type="radio" name="method" value="cephadm" checked> cephadm — khuyến nghị cho bản mới</label>
               <label class="checkbox-label"><input type="radio" name="method" value="ceph-deploy"> ceph-deploy — cài gói truyền thống (mọi version, cần gói có sẵn trên download.ceph.com){% if "ceph-deploy" in not_yet_supported_methods %} (chưa hỗ trợ){% endif %}</label>
               <label class="checkbox-label"><input type="radio" name="method" value="rpm-local"> RPM local — đã có sẵn gói cài trên node{% if "rpm-local" in not_yet_supported_methods %} (chưa hỗ trợ){% endif %}</label>
+              <label class="checkbox-label"><input type="radio" name="method" value="docker-manual"> Docker thủ công · kiểu B — thêm cụm song song, MON có thể dùng chung với cụm A</label>
             </div>
 
             <label id="df-rpm-path-label" hidden>
               Đường dẫn thư mục RPM trên node
               <input type="text" id="df-rpm-path" name="rpm_path" placeholder="/opt/ceph-rpms">
             </label>
+
+            <section id="df-docker-profile" class="deploy-docker-profile" hidden>
+              <h3>Profile namespace riêng cho cụm B</h3>
+              <div class="deploy-field-grid">
+                <label>Tên cụm<input id="df-cluster-name" value="cephB" maxlength="32"></label>
+                <label>Docker image<input id="df-image-reference" value="ceph/ceph:v15" maxlength="256"><small>Version Ceph đã chọn phải khớp chính xác với version trong image.</small></label>
+                <label>Thư mục config<input id="df-config-dir" value="/etc/cephB"></label>
+                <label>Thư mục data<input id="df-data-dir" value="/var/lib/cephB"></label>
+                <label>Cổng MON v1<input id="df-mon-v1-port" type="number" value="6790" min="1" max="65535"></label>
+                <label>Cổng MON v2<input id="df-mon-v2-port" type="number" value="3301" min="1" max="65535"></label>
+              </div>
+              <p class="hint">Docker Engine và lvm2 phải được cài sẵn. Preflight kiểm tra namespace, MON port và toàn bộ thiết bị OSD; không tự xoá dữ liệu khi lỗi.</p>
+            </section>
 
             <div class="deploy-field-grid">
               <label>

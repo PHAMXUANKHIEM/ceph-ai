@@ -1609,6 +1609,18 @@ def _deploy_cluster_rpm_local_preview_command(host: str | None, params: dict) ->
     )
 
 
+def _deploy_cluster_docker_manual_preview_command(host: str | None, params: dict) -> str:
+    mon_nodes = [n.get("ip") for n in params.get("nodes") or [] if "mon" in (n.get("roles") or [])]
+    first_mon = mon_nodes[0] if mon_nodes else host or "<mon-node>"
+    return (
+        f"Preflight trên {len(params.get('nodes') or [])} node; tạo cụm Docker thủ công "
+        f"{params.get('cluster_name', '?')} bằng image {params.get('image_reference', '?')}, "
+        f"FSID {params.get('fsid', '?')}, config/data riêng, MON ports "
+        f"{params.get('mon_v1_port', '?')}/{params.get('mon_v2_port', '?')}; bắt đầu tại "
+        f"{first_mon}, tạo MON/quorum rồi MGR/OSD trên các disk đã khai báo"
+    )
+
+
 def _delete_cluster_preview_command(host: str | None, params: dict) -> str:
     """Shared by both delete_cluster_cephadm and delete_cluster_manual —
     verified live, 2026-07-27: the systemctl-discovery + rm -rf +
@@ -1691,6 +1703,7 @@ _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "deploy_cluster_cephadm": _deploy_cluster_cephadm_preview_command,
     "deploy_cluster_ceph_deploy": _deploy_cluster_ceph_deploy_preview_command,
     "deploy_cluster_rpm_local": _deploy_cluster_rpm_local_preview_command,
+    "deploy_cluster_docker_manual": _deploy_cluster_docker_manual_preview_command,
     "delete_cluster_cephadm": _delete_cluster_preview_command,
     "delete_cluster_manual": _delete_cluster_preview_command,
     "convert_cluster_to_cephadm": _convert_cluster_to_cephadm_preview_command,

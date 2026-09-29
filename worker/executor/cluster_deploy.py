@@ -3997,6 +3997,22 @@ def run(
     Action.status EXECUTED/FAILED the same way it already does for the
     generic per-host loop's own True/False result.
     """
+    if action_id == "deploy_cluster_docker_manual":
+        params = dict(action_params)
+        try:
+            params["_gate_cluster"] = _cluster_for_gate_action(incident_id)
+        except DeployPhaseError as exc:
+            logger.error("cluster_deploy.run: refusing unscoped Docker deploy %s: %s", action_pk, exc)
+            write_progress(
+                action_pk,
+                [{"step": "preflight", "label": "Kiểm tra phạm vi SSH", "pct": 0,
+                  "status": "failed", "message": str(exc), "hosts": []}],
+            )
+            return False
+        from worker.executor.cluster_deploy_docker import run as run_docker_manual
+
+        return run_docker_manual(action_pk, params, write_progress)
+
     if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
         # The persisted action_params intentionally contains only JSON data;
         # resolve the Incident's cluster here in the Worker and keep the ORM
