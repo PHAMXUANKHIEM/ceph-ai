@@ -60,6 +60,9 @@ jobs:
       - name: Verify default pytest collection root
         run: python scripts/ci/verify_pytest_collection.py
 
+      - name: Validate architecture impact graph
+        run: python scripts/validate_architecture_graph.py --strict-paths
+
       - name: Run tests (Python ${{ matrix.python-version }})
         run: |
           mkdir -p artifacts

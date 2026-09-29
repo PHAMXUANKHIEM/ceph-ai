@@ -55,6 +55,7 @@ from dashboard.routes import (
     delete_cluster,
     deploy_cluster,
     incidents,
+    installation_stream,
     maintenance,
     nodes,
     openstack,
@@ -603,6 +604,7 @@ def create_app() -> FastAPI:
     application.include_router(synthetic_incidents_routes.router)
     application.include_router(runbooks_routes.router)
     application.include_router(incidents.router)
+    application.include_router(installation_stream.router)
     application.include_router(nodes.router)
     application.include_router(block_storage.router)
     application.include_router(openstack.router)

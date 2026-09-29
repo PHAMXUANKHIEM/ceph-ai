@@ -25,8 +25,9 @@
     <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
     <div class="topbar-context"><span class="topbar-breadcrumb">Ceph / {{ nav_path == "/" and "Dashboard" or nav_path.lstrip("/")|replace("/", " / ") }}</span>{% if selected_cluster %}<span class="topbar-cluster-name">{{ selected_cluster.name }}</span>{% endif %}</div>
     <nav class="main-nav">
-      <div class="sidebar-section-title">Overview & Monitoring</div>
+      <div class="sidebar-section-title">Monitoring &amp; Metrics</div>
       <a href="/" data-initial="D" class="nav-link{{ ' active' if nav_path == '/' else '' }}">Dashboard</a>
+      {% if is_admin %}<a href="/stream" data-initial="ST" class="nav-link{{ ' active' if nav_path == '/stream' else '' }}">Stream</a>{% endif %}
       <div class="sidebar-section-title">Storage &amp; Lifecycle</div>
       <div class="nav-dropdown">
         <button type="button" data-initial="C" class="nav-link nav-dropdown-toggle{{ ' active' if cluster_group_active else '' }}">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>

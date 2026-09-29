@@ -1,0 +1,673 @@
+# Architecture and regression impact graph.
+# Keep node IDs stable. Update this graph and docs/architecture/overview.md in
+# the same change whenever runtime ownership or a material flow changes.
+schema_version: 1
+snapshot:
+  repository: PHAMXUANKHIEM/ceph-ai
+  observed_at: 2026-09-28
+  source_of_truth: code review of authoritative checkout at commit 567e071604d9571ce07c97a2551da30b673839eb
+  notes:
+    - Runtime relationships are manually reviewed; source paths are exact/glob patterns.
+    - Process-local caches are not shared between Dashboard, Watcher and Worker.
+    - A missing edge is not proof of no coupling; unknown/high-risk changes run the full non-live suite.
+
+edge_kinds:
+  - serves
+  - starts
+  - renders
+  - calls
+  - reads
+  - writes
+  - publishes
+  - consumes
+  - requires_auth
+  - requires_product
+  - requires_cluster_scope
+  - requires_permission
+  - executes
+  - not_wired
+  - covered_by
+  - consumed_by
+  - uses_transport
+  - configured_when
+
+nodes:
+  browser.ceph_jinja:
+    kind: frontend
+    source: [dashboard/templates/*.html, dashboard/static/*.js]
+    criticality: high
+    tests: [tests/test_dashboard_navigation.py, tests/test_dashboard_health_api.py]
+    notes: Jinja and page-specific JavaScript; some templates mount the Vite React bundle.
+  browser.react:
+    kind: frontend
+    source: [ceph-health-dashboard/src/**, ceph-health-dashboard/vite.config.ts]
+    criticality: high
+    tests: []
+    validation: [npm --prefix ceph-health-dashboard run build]
+  browser.chat_widget:
+    kind: frontend
+    source: [dashboard/static/chat_widget.js, dashboard/templates/index.html, dashboard/templates/vitastor/index.html]
+    criticality: high
+    tests: [tests/test_dashboard_chat.py, tests/test_dashboard_vitastor_chat.py]
+
+  config.runtime:
+    kind: configuration
+    source: [config/settings.py, shared/models.py, .env.example]
+    criticality: critical
+    tests: [tests/test_env_config.py, tests/test_clusters.py]
+    notes: Global defaults plus per-cluster DB configuration; actual features vary by install.
+  dashboard.app:
+    kind: application
+    source: [dashboard/app.py, dashboard/cache_warmup.py, dashboard/templating.py]
+    criticality: critical
+    tests: [tests/test_dashboard_navigation.py, tests/test_dashboard_auth.py, tests/test_dashboard_status.py]
+  dashboard.auth:
+    kind: security_boundary
+    source: [dashboard/routes/auth.py]
+    criticality: critical
+    tests: [tests/test_dashboard_auth.py, tests/test_dashboard_users.py]
+  dashboard.cluster_scope:
+    kind: security_boundary
+    source: [dashboard/cluster_scope.py, shared/clusters.py]
+    criticality: critical
+    tests: [tests/test_clusters.py, tests/test_dashboard_clusters.py, tests/test_dashboard_volumes.py]
+  dashboard.incidents:
+    kind: route_group
+    source: [dashboard/routes/incidents.py, dashboard/routes/system_health.py, dashboard/routes/synthetic_incidents.py]
+    criticality: critical
+    tests: [tests/test_dashboard_health_api.py, tests/test_dashboard_feed.py, tests/test_dashboard_status.py, tests/test_synthetic_incidents.py, tests/test_watcher_incident_flow.py]
+  dashboard.actions:
+    kind: route_group
+    source: [dashboard/routes/actions.py, dashboard/telegram_approval_bot.py]
+    criticality: critical
+    tests: [tests/test_dashboard_actions.py, tests/test_telegram_approval_bot.py, tests/test_policy_gate.py]
+  dashboard.nodes_monitoring:
+    kind: route_group
+    source: [dashboard/routes/nodes.py, dashboard/routes/pgs.py, dashboard/routes/crush_map.py, dashboard/routes/capacity_forecast.py, dashboard/routes/disk_risk.py]
+    criticality: high
+    tests: [tests/test_dashboard_nodes.py, tests/test_dashboard_pgs.py, tests/test_dashboard_pools.py, tests/test_dashboard_crush_map.py, tests/test_capacity_forecast.py]
+  dashboard.block_storage:
+    kind: route_group
+    source: [dashboard/routes/block_storage.py, dashboard/routes/volumes.py, dashboard/cinder_discovery.py]
+    criticality: critical
+    tests: [tests/test_dashboard_block_storage.py, tests/test_dashboard_volumes.py, tests/test_block_storage_insights.py, tests/test_block_storage_acceptance_matrix.py, tests/test_cinder_mapping_api.py]
+  dashboard.object_storage:
+    kind: route_group
+    source: [dashboard/routes/object_storage.py, dashboard/routes/object_storage_users.py, dashboard/routes/bucket_access_log.py]
+    criticality: critical
+    tests: [tests/test_dashboard_object_storage.py, tests/test_dashboard_object_storage_users.py, tests/test_dashboard_bucket_access_log.py, tests/test_rgw_access_log.py]
+  dashboard.backup_restore:
+    kind: route_group
+    source: [dashboard/routes/backups.py, dashboard/routes/restore_cluster.py]
+    criticality: critical
+    tests: [tests/test_dashboard_backups.py, tests/test_dashboard_restore_cluster.py, tests/test_backup_restore.py, tests/test_restore_drill.py]
+  dashboard.chat:
+    kind: route_group
+    source: [dashboard/routes/chat.py, dashboard/chat_client.py]
+    criticality: high
+    tests: [tests/test_dashboard_chat.py, tests/test_chat_client.py, tests/test_router_client_shared.py]
+  dashboard.log_intelligence:
+    kind: route_group
+    source: [dashboard/routes/log_intelligence.py, dashboard/routes/event_timeline.py]
+    criticality: high
+    tests: [tests/test_dashboard_log_intelligence.py, tests/test_log_intelligence_e2e.py, tests/test_unified_timeline.py]
+  dashboard.alerting:
+    kind: route_group
+    source: [dashboard/routes/telegram_alerts.py, shared/telegram_alerts.py, shared/telegram_client.py]
+    criticality: high
+    tests: [tests/test_dashboard_telegram_alerts.py, tests/test_shared_telegram_alerts.py, tests/test_telegram_client.py]
+  dashboard.cluster_lifecycle:
+    kind: route_group
+    source: [dashboard/routes/clusters.py, dashboard/routes/deploy_cluster.py, dashboard/routes/delete_cluster.py, dashboard/routes/convert_cluster.py, dashboard/routes/upgrade.py, dashboard/routes/patch.py]
+    criticality: critical
+    tests: [tests/test_dashboard_clusters.py, tests/test_dashboard_deploy_cluster.py, tests/test_dashboard_delete_cluster.py, tests/test_dashboard_convert_cluster.py, tests/test_dashboard_upgrade.py, tests/test_dashboard_patch.py]
+  dashboard.admin:
+    kind: route_group
+    source: [dashboard/routes/settings.py, dashboard/routes/users.py, dashboard/routes/maintenance.py, dashboard/routes/capability_matrix.py, dashboard/routes/openstack.py, dashboard/routes/rbac.py]
+    criticality: high
+    tests: [tests/test_dashboard_settings.py, tests/test_dashboard_users.py, tests/test_dashboard_capability_matrix.py, tests/test_dashboard_openstack.py, tests/test_rbac_authorization.py]
+  dashboard.installation_stream:
+    kind: admin_route
+    source: [dashboard/routes/installation_stream.py, dashboard/templates/installation_stream.html, dashboard/templates/_nav.html]
+    criticality: high
+    tests: [tests/test_dashboard_installation_stream.py]
+    notes: Read-only configuration map; admin-only; renders a secret-free profile for this installation.
+  dashboard.ai_ops:
+    kind: route_group
+    source: [dashboard/routes/ai_cost.py, dashboard/routes/ai_learning.py, dashboard/routes/runbooks.py]
+    criticality: high
+    tests: [tests/test_ai_cost.py, tests/test_dashboard_ai_learning.py, tests/test_remediation_runbook.py]
+  dashboard.ai_tasks_unmounted:
+    kind: unmounted_route_module
+    source: [dashboard/routes/ai_tasks.py]
+    criticality: medium
+    tests: []
+    status: imported_but_router_not_registered
+    notes: Module exists but dashboard.app does not include its router; do not count as a served feature.
+  dashboard.cinder_backups:
+    kind: route_group
+    source: [dashboard/routes/cinder_backups.py]
+    criticality: high
+    tests: [tests/test_cinder_discovery.py, tests/test_cinder_mapping_api.py]
+  dashboard.federated_iam:
+    kind: route_group
+    source: [dashboard/routes/federated_iam.py]
+    criticality: critical
+    tests: [tests/test_federated_iam.py, tests/test_federated_iam_sts.py, tests/test_federated_iam_worker.py]
+  dashboard.storage_audit:
+    kind: route_group
+    source: [dashboard/routes/storage_audit.py]
+    criticality: high
+    tests: [tests/test_storage_audit_viewer.py, tests/test_dashboard_audit.py]
+  dashboard.performance_rca:
+    kind: route_group
+    source: [dashboard/routes/performance_rca.py, dashboard/volume_perf_analysis.py, watcher/performance_rca.py, watcher/performance_rca_monitor.py]
+    criticality: high
+    tests: [tests/test_performance_rca.py, tests/test_performance_rca_monitor.py, tests/test_performance_rca_ui.py, tests/test_performance_simulation.py]
+  dashboard.vitastor:
+    kind: route_group
+    source: [dashboard/routes/vitastor*.py, dashboard/routes/vitastor.py]
+    criticality: critical
+    tests: [tests/test_dashboard_vitastor_dashboard.py, tests/test_dashboard_vitastor_chat.py, tests/test_dashboard_vitastor_lifecycle.py, tests/test_dashboard_vitastor_users.py, tests/test_dashboard_vitastor_clusters.py, tests/test_dashboard_vitastor_logs.py, tests/test_dashboard_vitastor_settings.py]
+  dashboard.websocket:
+    kind: realtime_transport
+    source: [dashboard/ws.py, dashboard/static/app.js]
+    criticality: high
+    tests: [tests/test_dashboard_ws.py]
+    notes: WebSocket checks DB Incident fingerprint; not a direct RabbitMQ subscription.
+  dashboard.telegram_approval:
+    kind: background_listener
+    source: [dashboard/telegram_approval_bot.py, dashboard/telegram_chat.py]
+    criticality: critical
+    tests: [tests/test_telegram_approval_bot.py, tests/test_dashboard_chat.py]
+    notes: Dashboard starts Telegram chat/approval listeners only when telegram_listener_enabled is true; long-poll is per distinct active token.
+
+  data.sqlalchemy:
+    kind: persistence
+    source: [shared/db.py, shared/models.py, alembic/versions/*.py]
+    criticality: critical
+    tests: [tests/test_models.py, tests/test_migrations.py]
+  data.request_observability:
+    kind: cross_cutting_service
+    source: [shared/request_context.py, shared/api_observability.py, shared/api_rate_limit.py, shared/security_audit.py, shared/logging_redaction.py]
+    criticality: critical
+    tests: [tests/test_dashboard_status.py, tests/test_redaction.py]
+  data.ceph_query_cache:
+    kind: cache
+    source: [shared/ceph_query_cache.py]
+    criticality: high
+    tests: [tests/test_ceph_query_cache.py]
+  data.object_storage_cache:
+    kind: cache
+    source: [shared/object_storage_cache.py]
+    criticality: high
+    tests: [tests/test_dashboard_object_storage.py, tests/test_dashboard_object_storage_users.py]
+  data.audit:
+    kind: audit_contract
+    source: [shared/audit.py, shared/models.py]
+    criticality: critical
+    tests: [tests/test_audit.py, tests/test_dashboard_audit.py]
+  data.cluster_registry:
+    kind: tenancy_contract
+    source: [shared/clusters.py, shared/models.py]
+    criticality: critical
+    tests: [tests/test_clusters.py, tests/test_dashboard_clusters.py]
+  shared.installation_profile:
+    kind: configuration_inventory
+    source: [scripts/architecture_profile.py]
+    criticality: high
+    tests: [tests/test_architecture_profile.py]
+    notes: Reads settings and database records only; never probes Ceph or external integrations and excludes secret values.
+  data.outboxes:
+    kind: durable_delivery
+    source: [shared/incident_outbox.py, shared/telegram_outbox.py]
+    criticality: critical
+    tests: [tests/test_incident_outbox.py, tests/test_incident_outbox_chaos.py, tests/test_telegram_outbox.py, tests/test_reliability_outbox.py]
+    notes: Durable DB-backed dispatch/reconcile separates committed state from RabbitMQ/Telegram delivery.
+  mq.incidents:
+    kind: message_contract
+    source: [shared/mq.py, watcher/publisher.py, worker/main.py]
+    criticality: critical
+    tests: [tests/test_publisher.py, tests/test_worker_main.py, tests/test_mq.py]
+
+  watcher.ceph_client:
+    kind: backend_client
+    source: [watcher/ceph_client.py, dashboard/ceph_tools.py]
+    criticality: critical
+    tests: [tests/test_ceph_client.py, tests/test_ceph_tools.py]
+  watcher.block_storage_dependencies:
+    kind: evidence_evaluator
+    source: [watcher/block_storage_dependencies.py]
+    criticality: high
+    tests: [tests/test_block_storage_dependencies.py, tests/test_block_storage_acceptance_matrix.py]
+  watcher.collectors:
+    kind: collector
+    source: [watcher/collector.py, watcher/*_monitor.py, watcher/node_metrics.py, watcher/capacity_forecast.py, watcher/capacity_evidence.py, watcher/log_intel.py, watcher/rgw_access_log.py, watcher/rgw_log.py]
+    criticality: high
+    tests: [tests/test_collector.py, tests/test_node_metrics.py, tests/test_volume_monitor.py, tests/test_capacity_forecast.py, tests/test_log_intel.py]
+  watcher.main:
+    kind: process
+    source: [watcher/main.py]
+    criticality: critical
+    tests: [tests/test_watcher_main.py, tests/test_watcher_incident_flow.py]
+  watcher.remediation:
+    kind: process
+    source: [watcher/remediation_main.py, watcher/verify.py]
+    criticality: critical
+    tests: [tests/test_remediation_watcher.py, tests/test_incident_verification.py]
+  watcher.vitastor:
+    kind: process
+    source: [watcher/vitastor_monitor.py, vitastor/client.py]
+    criticality: critical
+    tests: [tests/test_vitastor_monitor.py, tests/test_vitastor_client.py, tests/test_vitastor_node_metrics.py]
+  watcher.incident_publisher:
+    kind: message_producer
+    source: [watcher/publisher.py, watcher/main.py]
+    criticality: critical
+    tests: [tests/test_publisher.py, tests/test_watcher_incident_flow.py]
+
+  worker.main:
+    kind: process
+    source: [worker/main.py]
+    criticality: critical
+    tests: [tests/test_worker_main.py]
+  worker.diagnosis:
+    kind: service
+    source: [worker/llm/router_client.py, worker/llm/**, worker/code_repair.py]
+    criticality: critical
+    tests: [tests/test_router_client.py, tests/test_code_repair.py, tests/test_chat_client.py]
+  worker.policy:
+    kind: policy_boundary
+    source: [worker/policy/**]
+    criticality: critical
+    tests: [tests/test_policy_gate.py, tests/test_playbook_registry.py, tests/test_operational_gate.py]
+  worker.executor:
+    kind: execution_boundary
+    source: [worker/executor/**, worker/preflight.py]
+    criticality: critical
+    tests: [tests/test_commands.py, tests/test_ssh_executor.py, tests/test_rbd_reconciliation.py, tests/test_cinder_reconciliation.py]
+  worker.backup:
+    kind: workflow
+    source: [worker/backup/**]
+    criticality: critical
+    tests: [tests/test_backup_engine.py, tests/test_backup_restore.py, tests/test_backup_scheduler.py, tests/test_backup_integrity_check.py, tests/test_restore_drill.py]
+  worker.bucket_logging:
+    kind: background_job
+    source: [worker/bucket_logging.py]
+    criticality: high
+    tests: [tests/test_dashboard_bucket_access_log.py, tests/test_rgw_access_log.py]
+  worker.rgw_audit:
+    kind: background_job
+    source: [worker/rgw_access_audit.py]
+    criticality: high
+    tests: [tests/test_rgw_access_audit.py]
+  worker.delegated_tasks:
+    kind: background_consumer
+    source: [worker/delegated_tasks.py]
+    criticality: high
+    tests: [tests/test_delegated_tasks.py, tests/test_ai_delegation.py]
+    notes: Separate delegated-AI queue and bounded consumer; not the incident queue.
+  worker.federated_iam:
+    kind: background_reconciliation
+    source: [worker/federated_iam.py, worker/llm/router_client.py]
+    criticality: high
+    tests: [tests/test_federated_iam_worker.py]
+    notes: OIDC RGW role mapping reconciliation is invoked from the approved-action poll path; LDAP/AD end-to-end reconciliation is not implemented.
+
+  shared.directory_identity:
+    kind: identity_adapter
+    source: [shared/ldap_identity.py]
+    criticality: high
+    tests: [tests/test_ldap_identity.py]
+    notes: LDAP/AD validation and group lookup; secret references may resolve from env/file/Vault.
+
+  ai.shared_client:
+    kind: external_service_adapter
+    source: [shared/router_client.py, shared/ai_cost.py, shared/ai_limits.py, shared/ai_observability.py]
+    criticality: high
+    tests: [tests/test_router_client_shared.py, tests/test_ai_observability.py]
+  external.ceph:
+    kind: external_system
+    criticality: critical
+    tests: [tests/test_ceph_client.py]
+  external.rabbitmq:
+    kind: external_system
+    criticality: critical
+    tests: [tests/test_mq.py, tests/test_worker_main.py]
+  external.sql_database:
+    kind: external_system
+    criticality: critical
+    tests: [tests/test_models.py, tests/test_migrations.py]
+  external.openstack:
+    kind: external_system
+    criticality: high
+    tests: [tests/test_cinder_discovery.py, tests/test_dashboard_openstack.py]
+  external.rgw_s3:
+    kind: external_system
+    criticality: critical
+    tests: [tests/test_dashboard_object_storage.py, tests/test_dashboard_object_storage_users.py]
+  external.backup_targets:
+    kind: external_system
+    criticality: critical
+    tests: [tests/test_backup_storage_ssh.py, tests/test_backup_storage_s3.py]
+  external.ai_provider:
+    kind: external_system
+    criticality: high
+    tests: [tests/test_router_client_shared.py, tests/test_chat_client.py]
+  external.telegram:
+    kind: external_system
+    criticality: high
+    tests: [tests/test_telegram_client.py, tests/test_shared_telegram_alerts.py]
+  external.logs:
+    kind: external_system
+    criticality: medium
+    tests: [tests/test_log_source_loki.py, tests/test_ceph_log.py]
+  external.vitastor:
+    kind: external_system
+    criticality: critical
+    tests: [tests/test_vitastor_client.py, tests/test_vitastor_operations.py]
+  external.vault_identity:
+    kind: external_system
+    criticality: high
+    tests: [tests/test_ldap_identity.py]
+    notes: Optional secret backend only; not the identity provider itself.
+  external.identity_provider:
+    kind: external_system
+    criticality: high
+    tests: [tests/test_federated_iam.py, tests/test_federated_iam_sts.py, tests/test_ldap_identity.py]
+    notes: OIDC or LDAP/AD endpoint, depending on configured provider and implemented path.
+
+  event.incident_queue:
+    kind: event
+    source: [shared/mq.py, watcher/publisher.py]
+    criticality: critical
+    tests: [tests/test_publisher.py, tests/test_worker_main.py]
+  event.incidents_changed_ws:
+    kind: event
+    source: [dashboard/ws.py, dashboard/static/app.js]
+    criticality: high
+    tests: [tests/test_dashboard_ws.py]
+    notes: Poll-based DB fingerprint notification.
+  event.action_state_changed:
+    kind: event
+    source: [shared/cluster_events.py, shared/db.py, dashboard/ws.py, dashboard/static/app.js, dashboard/static/ceph-health/app.js]
+    criticality: high
+    tests: [tests/test_cluster_events.py, tests/test_dashboard_ws.py]
+    notes: Shared cluster-state event persisted after Action transactions commit; browser consumers use it as an invalidation hint and refetch through authenticated APIs.
+
+flows:
+  flow.dashboard_read:
+    diagram: dashboard-read
+    criticality: critical
+    nodes: [browser.ceph_jinja, browser.react, dashboard.app, config.runtime, data.request_observability, dashboard.auth, dashboard.cluster_scope, dashboard.incidents, dashboard.block_storage, watcher.block_storage_dependencies, dashboard.nodes_monitoring, dashboard.websocket, event.incidents_changed_ws, data.ceph_query_cache, data.sqlalchemy, external.sql_database, watcher.ceph_client, external.ceph]
+    tests: [tests/test_dashboard_health_api.py, tests/test_dashboard_nodes.py, tests/test_dashboard_volumes.py, tests/test_dashboard_block_storage.py, tests/test_block_storage_dependencies.py, tests/test_block_storage_acceptance_matrix.py, tests/test_ceph_client.py]
+  flow.watcher_incident_diagnosis:
+    diagram: watcher-incident-diagnosis
+    criticality: critical
+    nodes: [config.runtime, watcher.main, watcher.remediation, watcher.collectors, watcher.ceph_client, data.sqlalchemy, data.outboxes, watcher.incident_publisher, event.incident_queue, mq.incidents, external.rabbitmq, worker.main, worker.diagnosis, ai.shared_client, external.ai_provider, external.telegram]
+    tests: [tests/test_watcher_incident_flow.py, tests/test_remediation_watcher.py, tests/test_worker_main.py, tests/test_router_client.py]
+  flow.approval_execution:
+    diagram: approval-execution
+    criticality: critical
+    nodes: [browser.ceph_jinja, browser.chat_widget, dashboard.app, dashboard.actions, dashboard.chat, dashboard.telegram_approval, event.action_state_changed, dashboard.auth, dashboard.cluster_scope, data.request_observability, data.sqlalchemy, external.sql_database, data.audit, data.outboxes, worker.main, worker.policy, worker.executor, external.ceph, external.openstack, external.rgw_s3, external.telegram]
+    tests: [tests/test_dashboard_actions.py, tests/test_dashboard_chat.py, tests/test_policy_gate.py, tests/test_commands.py, tests/test_audit.py]
+  flow.backup_restore:
+    diagram: backup-restore
+    criticality: critical
+    nodes: [config.runtime, dashboard.backup_restore, dashboard.cinder_backups, data.sqlalchemy, external.sql_database, worker.main, worker.backup, worker.executor, external.ceph, external.openstack, external.backup_targets, data.audit]
+    tests: [tests/test_dashboard_backups.py, tests/test_backup_engine.py, tests/test_backup_restore.py, tests/test_restore_drill.py]
+  flow.object_storage:
+    diagram: object-storage
+    criticality: critical
+    nodes: [config.runtime, dashboard.object_storage, dashboard.storage_audit, dashboard.auth, dashboard.cluster_scope, data.object_storage_cache, data.request_observability, data.audit, data.sqlalchemy, external.sql_database, worker.executor, worker.bucket_logging, worker.rgw_audit, external.rgw_s3, external.telegram]
+    tests: [tests/test_dashboard_object_storage.py, tests/test_dashboard_object_storage_users.py, tests/test_dashboard_bucket_access_log.py, tests/test_policy_gate.py]
+  flow.chat:
+    diagram: chat
+    criticality: high
+    nodes: [browser.chat_widget, dashboard.chat, dashboard.vitastor, ai.shared_client, worker.diagnosis, worker.delegated_tasks, data.sqlalchemy, external.sql_database, worker.policy, worker.executor, external.ai_provider, external.rabbitmq]
+    tests: [tests/test_dashboard_chat.py, tests/test_dashboard_vitastor_chat.py, tests/test_chat_client.py, tests/test_router_client_shared.py]
+  flow.vitastor_product:
+    diagram: vitastor-product
+    criticality: critical
+    nodes: [dashboard.vitastor, watcher.vitastor, data.sqlalchemy, external.sql_database, external.vitastor, worker.policy, worker.executor]
+    tests: [tests/test_dashboard_vitastor_dashboard.py, tests/test_vitastor_monitor.py, tests/test_vitastor_operations.py, tests/test_vitastor_remediation.py]
+  flow.federated_iam:
+    diagram: federated-iam
+    criticality: high
+    nodes: [dashboard.federated_iam, dashboard.auth, dashboard.cluster_scope, shared.directory_identity, worker.main, worker.federated_iam, data.sqlalchemy, external.sql_database, data.audit, external.identity_provider, external.vault_identity, external.rgw_s3]
+    tests: [tests/test_federated_iam.py, tests/test_federated_iam_sts.py, tests/test_federated_iam_worker.py, tests/test_ldap_identity.py]
+  flow.installation_stream:
+    diagram: installation-stream
+    criticality: high
+    nodes: [browser.ceph_jinja, browser.react, dashboard.app, dashboard.installation_stream, dashboard.auth, dashboard.cluster_scope, shared.installation_profile, config.runtime, data.cluster_registry, data.sqlalchemy]
+    tests: [tests/test_dashboard_installation_stream.py, tests/test_architecture_profile.py]
+  flow.incident_realtime:
+    diagram: incident-realtime
+    criticality: critical
+    nodes: [browser.ceph_jinja, dashboard.app, dashboard.auth, dashboard.cluster_scope, dashboard.incidents, dashboard.alerting, dashboard.actions, dashboard.telegram_approval, dashboard.websocket, data.sqlalchemy, external.sql_database, data.audit, data.outboxes, mq.incidents, external.rabbitmq, external.telegram, event.incidents_changed_ws, event.action_state_changed]
+    tests: [tests/test_dashboard_health_api.py, tests/test_dashboard_ws.py, tests/test_cluster_events.py, tests/test_dashboard_telegram_alerts.py, tests/test_telegram_approval_bot.py, tests/test_incident_outbox.py, tests/test_watcher_incident_flow.py]
+  flow.admin_management:
+    diagram: admin-management
+    criticality: high
+    nodes: [browser.ceph_jinja, dashboard.app, dashboard.auth, dashboard.admin, dashboard.ai_ops, dashboard.storage_audit, config.runtime, data.sqlalchemy, external.sql_database, data.audit]
+    tests: [tests/test_dashboard_settings.py, tests/test_dashboard_users.py, tests/test_dashboard_capability_matrix.py, tests/test_dashboard_openstack.py, tests/test_ai_cost.py, tests/test_dashboard_ai_learning.py, tests/test_storage_audit_viewer.py]
+  flow.cluster_lifecycle:
+    diagram: cluster-lifecycle
+    criticality: critical
+    nodes: [browser.ceph_jinja, dashboard.app, dashboard.auth, dashboard.cluster_scope, dashboard.cluster_lifecycle, dashboard.cinder_backups, config.runtime, data.cluster_registry, data.sqlalchemy, external.sql_database, data.audit, worker.main, worker.policy, worker.executor, external.ceph, external.openstack]
+    tests: [tests/test_dashboard_clusters.py, tests/test_dashboard_deploy_cluster.py, tests/test_dashboard_delete_cluster.py, tests/test_dashboard_convert_cluster.py, tests/test_dashboard_upgrade.py, tests/test_dashboard_patch.py, tests/test_cinder_mapping_api.py]
+  flow.performance_rca:
+    diagram: performance-rca
+    criticality: high
+    nodes: [config.runtime, dashboard.app, dashboard.auth, dashboard.cluster_scope, dashboard.performance_rca, watcher.collectors, watcher.ceph_client, data.sqlalchemy, external.sql_database, external.ceph, dashboard.alerting, external.telegram]
+    tests: [tests/test_performance_rca.py, tests/test_performance_rca_monitor.py, tests/test_performance_rca_ui.py, tests/test_performance_simulation.py]
+  flow.log_intelligence:
+    diagram: log-intelligence
+    criticality: high
+    nodes: [config.runtime, dashboard.app, dashboard.auth, dashboard.cluster_scope, dashboard.log_intelligence, external.logs, data.sqlalchemy, external.sql_database]
+    tests: [tests/test_dashboard_log_intelligence.py, tests/test_log_intelligence_e2e.py, tests/test_unified_timeline.py, tests/test_log_source_loki.py, tests/test_ceph_log.py]
+  flow.unmounted_ai_tasks:
+    diagram: unmounted-ai-tasks
+    criticality: low
+    nodes: [dashboard.ai_tasks_unmounted]
+    tests: [tests/test_dashboard_navigation.py]
+
+edges:
+  - [browser.ceph_jinja, dashboard.app, calls]
+  - [browser.react, dashboard.app, renders]
+  - [browser.chat_widget, dashboard.chat, calls]
+  - [dashboard.app, dashboard.auth, requires_auth]
+  - [dashboard.app, config.runtime, reads]
+  - [dashboard.app, data.request_observability, calls]
+  - [dashboard.app, dashboard.incidents, serves]
+  - [dashboard.app, dashboard.actions, serves]
+  - [dashboard.app, dashboard.nodes_monitoring, serves]
+  - [dashboard.app, dashboard.block_storage, serves]
+  - [dashboard.app, dashboard.object_storage, serves]
+  - [dashboard.app, dashboard.backup_restore, serves]
+  - [dashboard.app, dashboard.chat, serves]
+  - [dashboard.app, dashboard.log_intelligence, serves]
+  - [dashboard.app, dashboard.alerting, serves]
+  - [dashboard.app, dashboard.telegram_approval, configured_when]
+  - [dashboard.app, dashboard.ai_ops, serves]
+  - [dashboard.app, dashboard.ai_tasks_unmounted, not_wired]
+  - [dashboard.app, dashboard.cinder_backups, serves]
+  - [dashboard.app, dashboard.federated_iam, serves]
+  - [dashboard.app, dashboard.storage_audit, serves]
+  - [dashboard.app, dashboard.performance_rca, serves]
+  - [dashboard.app, dashboard.cluster_lifecycle, serves]
+  - [dashboard.app, dashboard.admin, serves]
+  - [dashboard.app, dashboard.installation_stream, serves]
+  - [dashboard.app, dashboard.vitastor, serves]
+  - [dashboard.app, dashboard.websocket, serves]
+  - [dashboard.auth, dashboard.cluster_scope, requires_cluster_scope]
+  - [dashboard.installation_stream, dashboard.auth, requires_auth]
+  - [dashboard.installation_stream, dashboard.cluster_scope, calls]
+  - [dashboard.installation_stream, shared.installation_profile, calls]
+  - [shared.installation_profile, config.runtime, reads]
+  - [shared.installation_profile, data.cluster_registry, reads]
+  - [shared.installation_profile, data.sqlalchemy, reads]
+  - [dashboard.auth, dashboard.vitastor, requires_product]
+  - [dashboard.cluster_scope, dashboard.incidents, requires_cluster_scope]
+  - [dashboard.cluster_scope, dashboard.nodes_monitoring, requires_cluster_scope]
+  - [dashboard.cluster_scope, dashboard.block_storage, requires_cluster_scope]
+  - [dashboard.cluster_scope, dashboard.object_storage, requires_cluster_scope]
+  - [dashboard.cluster_scope, dashboard.backup_restore, requires_cluster_scope]
+  - [dashboard.incidents, data.sqlalchemy, reads]
+  - [dashboard.incidents, data.audit, reads]
+  - [dashboard.actions, data.sqlalchemy, reads]
+  - [dashboard.actions, data.audit, writes]
+  - [dashboard.actions, dashboard.telegram_approval, calls]
+  - [dashboard.nodes_monitoring, watcher.ceph_client, calls]
+  - [dashboard.nodes_monitoring, data.ceph_query_cache, reads]
+  - [dashboard.block_storage, watcher.ceph_client, calls]
+  - [dashboard.block_storage, watcher.block_storage_dependencies, calls]
+  - [dashboard.block_storage, data.ceph_query_cache, reads]
+  - [dashboard.block_storage, data.sqlalchemy, reads]
+  - [dashboard.object_storage, data.object_storage_cache, reads]
+  - [dashboard.object_storage, external.rgw_s3, calls]
+  - [dashboard.object_storage, data.audit, writes]
+  - [dashboard.backup_restore, data.sqlalchemy, writes]
+  - [dashboard.chat, ai.shared_client, calls]
+  - [dashboard.chat, data.sqlalchemy, reads]
+  - [dashboard.chat, dashboard.actions, calls]
+  - [dashboard.ai_ops, worker.policy, calls]
+  - [dashboard.cinder_backups, external.openstack, calls]
+  - [dashboard.federated_iam, shared.directory_identity, calls]
+  - [shared.directory_identity, external.identity_provider, calls]
+  - [shared.directory_identity, external.vault_identity, configured_when]
+  - [dashboard.storage_audit, data.audit, reads]
+  - [dashboard.performance_rca, data.sqlalchemy, reads]
+  - [dashboard.performance_rca, watcher.collectors, reads]
+  - [dashboard.log_intelligence, data.sqlalchemy, reads]
+  - [dashboard.log_intelligence, external.logs, calls]
+  - [dashboard.cluster_lifecycle, worker.executor, executes]
+  - [dashboard.websocket, data.sqlalchemy, reads]
+  - [dashboard.websocket, event.incidents_changed_ws, publishes]
+  - [event.incident_queue, worker.main, consumed_by]
+  - [watcher.main, watcher.collectors, calls]
+  - [watcher.main, watcher.ceph_client, calls]
+  - [watcher.remediation, watcher.ceph_client, calls]
+  - [watcher.vitastor, external.vitastor, calls]
+  - [watcher.main, data.sqlalchemy, writes]
+  - [watcher.remediation, data.sqlalchemy, writes]
+  - [watcher.vitastor, data.sqlalchemy, writes]
+  - [watcher.main, watcher.incident_publisher, calls]
+  - [watcher.remediation, watcher.incident_publisher, calls]
+  - [watcher.incident_publisher, event.incident_queue, publishes]
+  - [watcher.ceph_client, external.ceph, calls]
+  - [event.incident_queue, external.rabbitmq, uses_transport]
+  - [worker.main, event.incident_queue, consumes]
+  - [worker.main, worker.delegated_tasks, consumes]
+  - [worker.delegated_tasks, external.rabbitmq, uses_transport]
+  - [worker.main, worker.diagnosis, calls]
+  - [worker.main, worker.policy, calls]
+  - [worker.main, worker.executor, calls]
+  - [worker.main, data.sqlalchemy, reads]
+  - [worker.main, data.outboxes, reads]
+  - [worker.main, worker.federated_iam, calls]
+  - [worker.federated_iam, external.rgw_s3, executes]
+  - [worker.main, data.outboxes, writes]
+  - [worker.diagnosis, ai.shared_client, calls]
+  - [ai.shared_client, external.ai_provider, calls]
+  - [worker.executor, worker.policy, requires_permission]
+  - [worker.executor, external.ceph, executes]
+  - [worker.executor, external.openstack, executes]
+  - [worker.executor, external.rgw_s3, executes]
+  - [worker.backup, worker.executor, calls]
+  - [worker.backup, external.ceph, calls]
+  - [worker.backup, external.backup_targets, writes]
+  - [worker.bucket_logging, external.rgw_s3, calls]
+  - [worker.rgw_audit, external.rgw_s3, calls]
+  - [worker.rgw_audit, data.sqlalchemy, writes]
+  - [data.outboxes, external.rabbitmq, publishes]
+  - [data.outboxes, external.telegram, calls]
+  - [dashboard.telegram_approval, data.sqlalchemy, writes]
+  - [dashboard.telegram_approval, external.telegram, calls]
+  - [worker.main, external.telegram, calls]
+  - [watcher.main, external.telegram, calls]
+  - [dashboard.alerting, external.telegram, calls]
+  - [data.sqlalchemy, external.sql_database, reads]
+  - [config.runtime, dashboard.cluster_scope, configured_when]
+  - [config.runtime, watcher.main, configured_when]
+  - [config.runtime, worker.main, configured_when]
+  - [config.runtime, dashboard.vitastor, configured_when]
+  - [config.runtime, dashboard.telegram_approval, configured_when]
+  - [data.cluster_registry, dashboard.cluster_scope, requires_cluster_scope]
+  - [data.audit, data.sqlalchemy, writes]
+  - [event.action_state_changed, dashboard.actions, not_wired]
+  - [event.action_state_changed, browser.ceph_jinja, not_wired]
+
+deployment_variants:
+  - id: ceph_execution_mode
+    source: [config/settings.py, shared/models.py]
+    values: [docker, podman, cephadm, none]
+    changes_nodes: [watcher.ceph_client, watcher.collectors, worker.executor, dashboard.cluster_scope]
+    note: Exact supported values and command paths must be verified per connector before release.
+  - id: cluster_topology
+    source: [shared/models.py, shared/clusters.py]
+    values: [default_only, default_plus_active_secondary, inactive_secondary]
+    changes_nodes: [dashboard.cluster_scope, watcher.main, watcher.remediation, worker.main]
+  - id: object_storage
+    condition: RGW nodes and/or S3 endpoint credentials are configured
+    source: [config/settings.py, shared/models.py]
+    changes_nodes: [dashboard.object_storage, dashboard.alerting, worker.bucket_logging, worker.rgw_audit, external.rgw_s3]
+  - id: openstack_cinder
+    condition: OpenStack controller connection/authentication is configured
+    source: [config/settings.py, shared/models.py]
+    changes_nodes: [dashboard.block_storage, dashboard.cinder_backups, worker.executor, external.openstack]
+  - id: ai_provider
+    condition: Provider enabled and usable credentials/endpoint configured
+    source: [config/settings.py]
+    changes_nodes: [dashboard.chat, dashboard.ai_ops, worker.diagnosis, ai.shared_client, external.ai_provider]
+  - id: backup_target
+    values: [unconfigured, ssh, s3, dual_target]
+    source: [config/settings.py, worker/policy/backup_policy.yaml]
+    changes_nodes: [dashboard.backup_restore, dashboard.cinder_backups, worker.backup, external.backup_targets]
+  - id: log_intelligence_source
+    values: [ssh, loki]
+    source: [config/settings.py, watcher/log_source/**]
+    changes_nodes: [dashboard.log_intelligence, watcher.collectors, external.logs]
+  - id: telegram_channels
+    condition: Per-channel enabled flag and token/chat credentials are configured
+    source: [config/settings.py, shared/models.py]
+    changes_nodes: [dashboard.alerting, dashboard.telegram_approval, watcher.main, worker.main, external.telegram]
+  - id: vitastor_product
+    condition: Vitastor product enabled and one or more active Vitastor clusters configured
+    source: [config/settings.py, shared/models.py]
+    changes_nodes: [dashboard.vitastor, watcher.vitastor, external.vitastor]
+  - id: federated_identity
+    condition: Configured identity provider (OIDC or LDAP/AD) and its required credentials/secret backend are present; execution capability depends on provider support.
+    source: [dashboard/routes/federated_iam.py, config/settings.py, shared/models.py, shared/ldap_identity.py, worker/federated_iam.py]
+    changes_nodes: [dashboard.federated_iam, shared.directory_identity, worker.federated_iam, external.identity_provider, external.vault_identity, external.rgw_s3]
+
+coverage_rules:
+  - id: rule.shared_security
+    when_nodes: [dashboard.auth, dashboard.cluster_scope, worker.policy]
+    include_flows: [flow.dashboard_read, flow.approval_execution, flow.object_storage, flow.vitastor_product]
+    require_tests: [tests/test_dashboard_auth.py, tests/test_clusters.py, tests/test_policy_gate.py]
+  - id: rule.persistence_schema
+    when_nodes: [data.sqlalchemy, data.cluster_registry]
+    include_flows: [flow.dashboard_read, flow.watcher_incident_diagnosis, flow.approval_execution, flow.backup_restore, flow.object_storage, flow.vitastor_product]
+    require_tests: [tests/test_models.py, tests/test_migrations.py]
+  - id: rule.incident_pipeline
+    when_nodes: [watcher.main, watcher.remediation, watcher.incident_publisher, event.incident_queue, worker.main, worker.diagnosis]
+    include_flows: [flow.watcher_incident_diagnosis, flow.approval_execution]
+    require_tests: [tests/test_watcher_incident_flow.py, tests/test_worker_main.py, tests/test_publisher.py]
+  - id: rule.execution_pipeline
+    when_nodes: [dashboard.actions, worker.policy, worker.executor]
+    include_flows: [flow.approval_execution, flow.backup_restore, flow.object_storage, flow.vitastor_product]
+    require_tests: [tests/test_dashboard_actions.py, tests/test_policy_gate.py, tests/test_commands.py, tests/test_audit.py]
+  - id: rule.frontend
+    when_nodes: [browser.ceph_jinja, browser.react, browser.chat_widget]
+    require_tests: [tests/test_dashboard_navigation.py]
+    require_checks: [npm --prefix ceph-health-dashboard run build]
+  - id: rule.configuration_variant
+    when_nodes: [config.runtime]
+    include_flows: [flow.dashboard_read, flow.watcher_incident_diagnosis, flow.approval_execution, flow.backup_restore, flow.object_storage, flow.vitastor_product]
+    require_tests: [tests/test_env_config.py, tests/test_clusters.py]
+
+fallback:
+  unknown_source_path: full_non_live_suite
+  critical_node_without_tests: full_non_live_suite_and_report_gap
+  graph_parse_or_validation_error: fail_impact_selection_and_run_full_non_live_suite

@@ -35,6 +35,7 @@ COPY scripts ./scripts
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY docs/ceph-ai-rca-knowledge.md docs/runbook-dr.md docs/runbook-log-intelligence.md docs/crush-map-monitor.md ./docs/
+COPY tests/architecture/graph.yaml ./docs/architecture/graph.yaml
 
 # Runtime dependencies are pinned transitively, with wheel hashes. Do not let
 # installing the local package resolve a second, newer dependency set.
