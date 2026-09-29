@@ -1,5 +1,37 @@
 # CI/CD deploy setup
 
+## Isolated release checkout (implementation in progress)
+
+`release_checkout.sh` prepares an independent checkout under
+`/var/lib/ceph-ai/releases/<full-sha>` without resetting or cleaning the
+development checkout. It accepts only a full commit SHA, verifies the detached
+HEAD and clean worktree, and supports atomically switching `/var/lib/ceph-ai/current`
+or restoring the previous checkout:
+
+```bash
+scripts/deploy/release_checkout.sh prepare <full-40-character-sha>
+scripts/deploy/release_checkout.sh activate <full-40-character-sha>
+scripts/deploy/release_checkout.sh rollback
+```
+
+This helper is not wired into the live systemd/Compose owner yet. Do not use
+`activate` on the production host until the container unit and all host-side
+maintenance units have been migrated to `/var/lib/ceph-ai/current` and the
+rollback/smoke sequence has been rehearsed. The existing deployment entrypoint
+still operates on its configured repository checkout.
+
+## Rollout preflight and failure handling
+
+`restart_container_stack.sh` now runs `deploy_preflight.sh` before its checkout,
+migration, or restart phases. If restart, health, consumer, or smoke validation
+fails, the script records the failed phase. Automatic container rollback is
+disabled by default; it runs only when the operator explicitly sets
+`CEPH_AI_ROLLBACK_ACK_COMPATIBLE_SCHEMA=yes`, confirming that the deployed
+database schema is compatible with the previous image. This never rolls back
+PostgreSQL schema. The rollback script validates container health, the
+Dashboard health/login endpoints, and the RabbitMQ incidents consumer before
+recording success.
+
 `.github/workflows/ci-cd.yml` runs the test suite on every push/PR to
 `main`, then (push to `main` only, after tests pass) SSHes into this server
 and runs `restart_services.sh` to pull the latest code and restart

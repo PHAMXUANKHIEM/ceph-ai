@@ -74,7 +74,8 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 ### 3.3 Tách worktree phát triển khỏi deployment checkout
 
-- [ ] Không dùng `/root/ceph-ai` đang có thay đổi operator làm source duy nhất cho CD.
+- [~] Có `scripts/deploy/release_checkout.sh` để tạo checkout độc lập theo full SHA, kiểm tra checkout sạch, chuyển symlink `current` nguyên tử và rollback symlink `previous-release`; hướng dẫn ghi rõ chưa được activate trên production.
+- [ ] Tích hợp helper vào CD để không dùng `/root/ceph-ai` đang có thay đổi operator làm source duy nhất cho CD.
 - [ ] Chọn một deployment root ổn định, ví dụ `/var/lib/ceph-ai/releases/<sha>` và symlink/current pointer có quyền kiểm soát.
 - [ ] Chuyển systemd units, `container-up`, `container-down`, migration và compose path sang deployment root ổn định; không hard-code nhầm worktree phát triển.
 - [ ] Mỗi release checkout phải sạch, detached tại đúng SHA, và được verify trước khi restart.
@@ -97,6 +98,8 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 ### 3.5 Migration, restart, smoke và retry
 
+- [~] `restart_container_stack.sh` tự chạy read-only `deploy_preflight.sh` trước checkout/mutation; rollback có thể được orchestration gọi sau restart/health/consumer/smoke failure khi operator đặt `CEPH_AI_ROLLBACK_ACK_COMPATIBLE_SCHEMA=yes`. Chưa chạy trên host staging.
+- [~] `rollback_container_stack.sh` kiểm tra trạng thái health, endpoint health/login và incidents consumer; nếu post-check rollback thất bại, khôi phục image reference trước rollback và khởi động lại stack. Chưa có witnessed rollback.
 - [ ] Thứ tự bắt buộc: preflight → pull/verify image → backup → migration rehearsal check → migration → persist approved digest → restart.
 - [ ] Migration fail phải dừng trước restart; không tự rollback database nếu chưa có migration-specific rollback evidence.
 - [ ] Restart phải idempotent; chạy lại sau timeout không tạo worker/consumer trùng.
@@ -109,6 +112,7 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 ### 3.6 Rollback artifact
 
 - [~] Deploy ghi `rollback-target.json`; sửa lỗi deploy lại cùng digest ghi đè mất rollback target (`b9f58e48`).
+- [~] Rollback script xác minh health endpoint và incidents consumer; failure orchestration chỉ tự gọi khi có explicit schema-compatibility acknowledgement. Chưa có witnessed rollback.
 - [ ] Diễn tập container rollback sau lỗi health nhưng trước schema change.
 - [ ] Diễn tập migration failure giữa chừng với PostgreSQL staging; ghi rõ schema compatibility.
 - [ ] Diễn tập rollback sau migration chỉ khi có kế hoạch downgrade/forward-fix đã review; không gọi container rollback là database rollback.
@@ -121,6 +125,7 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 ### 4.1 PostgreSQL rehearsal
 
+- [~] Backup và rehearsal report giờ dùng tên collision-safe; report được publish nguyên tử, mode `0600`, và không ghi đè artifact cũ. Chưa chạy restore/migration trên PostgreSQL staging.
 - [~] Dựng PostgreSQL staging gần production về version, extension, collation, pool và credential mode: đã thêm restore-rehearsal tooling và strict target guards; chưa có staging witness mới.
 - [~] Restore backup thực tế vào database mới; xác minh row counts, migration head, checksum và các bảng critical: script `scripts/deploy/postgresql_restore_rehearsal.py` đã thực hiện flow này khi được cấp PostgreSQL staging.
 - [~] Chạy migration từ một revision cũ có dữ liệu; inject failure trước/sau từng phase chính: đã có failure-injection phases trong script, chưa chạy acceptance trên database thật.
@@ -130,6 +135,7 @@ Không được đảo thứ tự để promotion AI hoặc mở autonomy trư�
 
 ### 4.2 Incident Outbox
 
+- [~] Reliability API now raises a critical `incident_missing_outbox` alert for old `NEW` incidents with no envelope. It intentionally does not reconstruct the original payload from current cluster state; operator recovery must preserve the original detection context. Deterministic tests cover the alert; broker/process-kill witness remains open.
 - [ ] Kill publisher sau database commit nhưng trước RabbitMQ confirm.
 - [ ] Kill publisher sau confirm nhưng trước mark `SENT`.
 - [ ] Restart RabbitMQ và xác minh retry/backoff/reconciliation/DLQ.

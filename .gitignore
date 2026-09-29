@@ -60,3 +60,6 @@ dashboard-readonly-id_ed25519
 dashboard-empty-full-executor-accounts/
 # Local backups/copies made during manual edits are not source.
 backups/
+
+# Runtime HOME of the full-executor container (compose.yaml mount), e.g. known_hosts
+full-executor-home/

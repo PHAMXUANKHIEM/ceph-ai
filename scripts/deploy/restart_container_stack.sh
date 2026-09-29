@@ -50,8 +50,26 @@ ALLOWED_DIRTY_PATHS="${CEPH_AI_DEPLOY_ALLOWED_DIRTY_PATHS:-}"
 PRESERVED_DIRTY_ROOT=""
 restore_allowed_dirty_files() {
   local exit_status=$?
+  local failed_phase="$CURRENT_DEPLOY_PHASE"
   if [ "$exit_status" -ne 0 ]; then
     record_deploy_event "$CURRENT_DEPLOY_PHASE" FAILED "exit_code=$exit_status"
+    case "$failed_phase" in
+      restart|health|consumer|smoke)
+        if [ "${CEPH_AI_ROLLBACK_ACK_COMPATIBLE_SCHEMA:-}" = yes ]; then
+          CURRENT_DEPLOY_PHASE=rollback
+          record_deploy_event rollback STARTED "after=$failed_phase"
+          if CEPH_AI_ROLLBACK_ACK_COMPATIBLE_SCHEMA=yes \
+            "$REPO_DIR/scripts/deploy/rollback_container_stack.sh"; then
+            record_deploy_event rollback PASSED "after=$failed_phase"
+          else
+            rollback_status=$?
+            record_deploy_event rollback FAILED "exit_code=$rollback_status after=$failed_phase"
+          fi
+        else
+          record_deploy_event rollback SKIPPED "schema_compatibility_ack_missing after=$failed_phase"
+        fi
+        ;;
+    esac
   fi
   if [ -n "$PRESERVED_DIRTY_ROOT" ]; then
     while IFS= read -r path; do
@@ -68,6 +86,11 @@ restore_allowed_dirty_files() {
   return "$exit_status"
 }
 trap restore_allowed_dirty_files EXIT
+
+start_phase preflight
+CEPH_AI_DEPLOY_DIR="$REPO_DIR" \
+  "$REPO_DIR/scripts/deploy/deploy_preflight.sh"
+finish_phase
 
 start_phase checkout
 dirty_status="$(git status --porcelain --untracked-files=all)"

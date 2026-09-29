@@ -23,6 +23,7 @@ from shared.cluster_snapshot import read_snapshot
 from shared.clusters import list_active_clusters
 from shared.models import (
     Action,
+    Incident,
     IncidentOutbox,
     RgwFederatedRoleMapping,
     TelegramOutbox,
@@ -175,6 +176,20 @@ def _outbox_row(session, model, *, name: str, attempt_limit: int, lease_seconds:
         model.claimed_at <= now - timedelta(seconds=lease_seconds),
     ).scalar() or 0)
     row["retry_exhaustion"] = max_attempts >= max(1, attempt_limit - 2)
+    if model is IncidentOutbox:
+        # Do not synthesize a replacement envelope from current Ceph state:
+        # the original detection snapshot and cluster execution identity are
+        # not recoverable from Incident alone. Surface such orphans loudly for
+        # operator-directed repair instead. Bound this diagnostic query.
+        orphan_ids = session.query(Incident.id).filter(
+            Incident.status == "NEW",
+            Incident.created_at <= now - timedelta(seconds=300),
+            ~session.query(IncidentOutbox.id).filter(
+                IncidentOutbox.incident_id == Incident.id,
+            ).exists(),
+        ).limit(101).all()
+        row["missing_delivery_incidents"] = len(orphan_ids)
+        row["missing_delivery_count_capped"] = len(orphan_ids) > 100
     return row
 
 
@@ -239,6 +254,8 @@ def _queue_alerts(queue: dict) -> list[dict[str, object]]:
         alerts.append({"code": "outbox_overdue_retry", "severity": "warning", "queue": name, "count": queue["overdue_retries"], "message": "Retry đã đến hạn nhưng publisher chưa xử lý."})
     if queue.get("stuck_claims"):
         alerts.append({"code": "outbox_stuck_claim", "severity": "warning", "queue": name, "count": queue["stuck_claims"], "message": "Message PROCESSING quá lease; publisher có thể đã chết giữa chừng."})
+    if queue.get("missing_delivery_incidents"):
+        alerts.append({"code": "incident_missing_outbox", "severity": "critical", "queue": name, "count": queue["missing_delivery_incidents"], "count_capped": queue.get("missing_delivery_count_capped", False), "message": "Incident NEW cũ không có envelope Outbox; cần operator điều tra và khôi phục có kiểm soát."})
     return alerts
 
 

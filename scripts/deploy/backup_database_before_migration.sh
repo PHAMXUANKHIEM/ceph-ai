@@ -25,7 +25,7 @@ case "$database_url" in
       pg_dump_bin="$(command -v pg_dump || true)"
     fi
     [[ -x "$pg_dump_bin" ]] || { echo "pg_dump is required" >&2; exit 2; }
-    output="$destination/ceph-ai-$stamp.dump"
+    output="$(mktemp "$destination/ceph-ai-$stamp.XXXXXX.dump")"
     # SQLAlchemy URLs include the driver name, while libpq tools expect a
     # plain PostgreSQL URL. Keep credentials/query parameters unchanged.
     pg_dump_url="${database_url/postgresql+psycopg:/postgresql:}"
@@ -36,7 +36,7 @@ case "$database_url" in
   sqlite:///*)
     command -v sqlite3 >/dev/null || { echo "sqlite3 is required" >&2; exit 2; }
     database_path="${database_url#sqlite:///}"
-    output="$destination/ceph-ai-$stamp.sqlite3"
+    output="$(mktemp "$destination/ceph-ai-$stamp.XXXXXX.sqlite3")"
     sqlite3 "$database_path" ".backup '$output'"
     echo "Created SQLite backup: $output"
     ;;

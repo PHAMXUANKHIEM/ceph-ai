@@ -87,3 +87,22 @@ def test_first_attempt_waiting_for_publisher_is_not_an_overdue_retry():
     session = _session()
     _row(session, 1, status="PENDING", attempts=0, next_in=-600)
     assert _outbox(session)["overdue_retries"] == 0
+
+
+def test_old_incident_without_delivery_row_is_a_critical_reliability_alert():
+    session = _session()
+    session.add(Incident(
+        ceph_code="OSD_DOWN_ORPHAN",
+        status=IncidentStatus.NEW.value,
+        detected_at=utc_now() - timedelta(minutes=10),
+        created_at=utc_now() - timedelta(minutes=10),
+    ))
+    session.commit()
+
+    queue = _outbox(session)
+    alerts = reliability._alerts([], {}, [queue], {}, [], {})
+
+    assert queue["missing_delivery_incidents"] == 1
+    orphan_alert = next(alert for alert in alerts if alert["code"] == "incident_missing_outbox")
+    assert orphan_alert["severity"] == "critical"
+    assert orphan_alert["count"] == 1

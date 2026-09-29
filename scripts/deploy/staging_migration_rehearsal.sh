@@ -35,6 +35,10 @@ export CEPH_AI_ENVIRONMENT=staging
 export DATABASE_URL="$STAGING_DATABASE_URL"
 mkdir -p "$backup_dir" "$(dirname "$report_path")"
 umask 077
+if [ -e "$report_path" ] || [ -L "$report_path" ]; then
+  echo "Refusing to overwrite existing rehearsal evidence: $report_path" >&2
+  exit 2
+fi
 
 revision() {
   # Keep stderr (Alembic logging) out of the evidence value.  An empty
@@ -90,9 +94,14 @@ payload = {
     "restore_validation": "pg_restore --list passed",
 }
 path = Path(os.environ["REPORT_PATH"])
+final_path = Path(os.environ["REPORT_FINAL_PATH"])
 path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 path.chmod(0o600)
-path.replace(Path(os.environ["REPORT_FINAL_PATH"]))
+try:
+    os.link(path, final_path)
+except FileExistsError as exc:
+    raise SystemExit(f"Refusing to overwrite existing rehearsal evidence: {final_path}") from exc
+path.unlink()
 PY
 
 echo "STAGING MIGRATION REHEARSAL PASSED: target=$STAGING_TARGET_ID head=$head report=$report_path"

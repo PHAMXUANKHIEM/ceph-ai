@@ -73,7 +73,8 @@ fi
 # Refresh once during deployment so a newly installed checkout does not wait
 # for the first timer tick. A network/catalog failure is non-fatal because
 # the cost dashboard can use the last validated snapshot or built-in prices.
-if ! "$VENV_PYTHON" -m scripts.update_ai_pricing; then
+if ! AI_COST_PRICING_CACHE_PATH=/var/lib/ceph-ai/config/ai-pricing.json \
+  "$VENV_PYTHON" -m scripts.update_ai_pricing; then
   echo "WARNING: AI pricing refresh failed; retaining the previous snapshot/fallback prices"
 fi
 

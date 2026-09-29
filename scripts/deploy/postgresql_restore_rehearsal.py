@@ -18,6 +18,7 @@ import shutil
 # Fixed tool argv built from validated arguments, no shell.
 import subprocess  # nosec B404
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,10 +81,27 @@ def _run(command: list[str], *, env: dict[str, str], timeout: int) -> str:
 
 def _write_report(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.chmod(0o600)
-    temporary.replace(path)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            # Hard-link publication is atomic and fails if a prior evidence file
+            # already occupies the requested path; never replace release evidence.
+            os.link(temporary, path)
+        except FileExistsError as exc:
+            raise RehearsalError(f"report already exists; choose a new path: {path}") from exc
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _validated_ids(args: argparse.Namespace) -> tuple[str, str]:
@@ -124,7 +142,13 @@ def run_rehearsal(args: argparse.Namespace) -> dict:
     backup_dir = args.backup_dir.resolve()
     backup_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(backup_dir, 0o700)
-    backup_path = backup_dir / f"ceph-ai-rehearsal-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.dump"
+    backup_fd, backup_name = tempfile.mkstemp(
+        prefix=f"ceph-ai-rehearsal-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-",
+        suffix=".dump",
+        dir=backup_dir,
+    )
+    os.close(backup_fd)
+    backup_path = Path(backup_name)
     started = time.monotonic()
     env = os.environ.copy()
     env.update({"CEPH_AI_ENV_FILE": "/dev/null", "CEPH_AI_ENVIRONMENT": "staging"})
