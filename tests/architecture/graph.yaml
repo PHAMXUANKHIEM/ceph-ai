@@ -520,6 +520,45 @@ node_reviews:
       - path: shared/cluster_events.py
         symbol: publish_action_state_event, read_latest_event
         claim: Stores cluster-scoped event metadata with normalized action state and request correlation, then reads the latest event for that cluster.
+  data.request_observability:
+    owner_area: request-observability-and-protection
+    confidence: high
+    evidence:
+      - path: shared/api_observability.py
+        symbol: record_request, get_metrics
+        claim: Maintains bounded per-route request/error counts, duration buckets and p95 estimates, plus a capped recent-request list carrying correlation IDs.
+      - path: shared/security_audit.py
+        symbol: record_mutation
+        claim: Persists mutation metadata without reading request bodies and avoids replacing a completed mutation response when audit storage raises a SQLAlchemy error.
+      - path: shared/api_rate_limit.py
+        symbol: allow_api_request
+        claim: Atomically consumes shared database-backed rate-limit capacity and fails closed when the rate-limit store is unavailable.
+      - path: shared/request_context.py
+        symbol: request_id_from_headers
+        claim: Accepts only bounded safe request IDs from message headers for cross-service correlation.
+      - path: shared/logging_redaction.py
+        symbol: install_logging_redaction
+        claim: Installs process-wide log-record redaction for Telegram bot tokens and suppresses verbose HTTP client logs.
+  data.ceph_query_cache:
+    owner_area: ceph-snapshot-cache
+    confidence: high
+    evidence:
+      - path: shared/ceph_query_cache.py
+        symbol: get_or_load, store_versioned
+        claim: Serves persistent per-key snapshots with stale-if-error behavior, versioned writes, bounded lock waits, and background refresh support.
+      - path: shared/ceph_query_cache.py
+        symbol: prune_disk_cache, get_storage_metrics
+        claim: Reports bounded cache storage usage and prunes oldest JSON snapshots when configured file or byte limits are exceeded.
+  data.object_storage_cache:
+    owner_area: object-storage-inventory-cache
+    confidence: high
+    evidence:
+      - path: shared/object_storage_cache.py
+        symbol: get_or_load, _schedule_refresh
+        claim: Keeps cluster-keyed values in process memory, returns stale inventory while scheduling at most one refresh per key, and exposes refreshing/error state.
+      - path: shared/object_storage_cache.py
+        symbol: _remove_previous_locked, invalidate
+        claim: Can remove prior cached inventory entries for a cluster on replacement or explicit invalidation; unlike the Ceph query cache, this module does not persist snapshots to disk.
 
 flows:
   flow.dashboard_read:
@@ -723,6 +762,62 @@ edges:
   - [data.audit, data.sqlalchemy, writes]
   - [event.action_state_changed, dashboard.actions, not_wired]
   - [event.action_state_changed, browser.ceph_jinja, not_wired]
+
+edge_reviews:
+  - source: data.cluster_registry
+    target: dashboard.cluster_scope
+    kind: requires_cluster_scope
+    owner_area: cluster-selection-contract
+    confidence: high
+    evidence:
+      - path: dashboard/cluster_scope.py
+        symbol: _active_clusters, selected_cluster, _enforce_request_cluster_access
+        claim: Dashboard cluster selection loads the active registry/default row and applies the requesting user's cluster authorization before persisting the selected cluster in session.
+  - source: watcher.incident_publisher
+    target: event.incident_queue
+    kind: publishes
+    owner_area: incident-publication-contract
+    confidence: high
+    evidence:
+      - path: watcher/publisher.py
+        symbol: publish_incident
+        claim: Declares the shared incident topology and publishes a persistent incident envelope to the incidents routing key, optionally carrying its outbox event ID.
+  - source: event.incident_queue
+    target: external.rabbitmq
+    kind: uses_transport
+    owner_area: rabbitmq-topology-contract
+    confidence: high
+    evidence:
+      - path: shared/mq.py
+        symbol: get_connection, declare_topology
+        claim: The incidents queue and dead-letter topology are declared through RabbitMQ using a connection timeout and durable queues/exchanges.
+  - source: worker.main
+    target: event.incident_queue
+    kind: consumes
+    owner_area: incident-consumer-contract
+    confidence: high
+    evidence:
+      - path: worker/main.py
+        symbol: _handle_message_without_context, run
+        claim: The Worker parses consumed incident envelopes, claims persisted outbox consumer state when an event ID is present, and acknowledges, retries or rejects messages through the consumer path.
+  - source: data.outboxes
+    target: external.rabbitmq
+    kind: publishes
+    owner_area: incident-outbox-delivery
+    confidence: high
+    evidence:
+      - path: shared/incident_outbox.py
+        symbol: _publish, dispatch_due
+        claim: The durable incident outbox publishes claimed due rows through the incident publisher and marks delivery sent or retryable after the attempt.
+  - source: data.outboxes
+    target: external.telegram
+    kind: calls
+    owner_area: telegram-outbox-delivery
+    confidence: high
+    evidence:
+      - path: shared/telegram_outbox.py
+        symbol: _deliver, dispatch_due
+        claim: The Telegram outbox resolves an allowlisted alert callback and dispatches claimed due notifications with retry state persisted separately.
 
 deployment_variants:
   - id: ceph_execution_mode

@@ -108,6 +108,14 @@ def _validate_nodes(nodes: dict, errors: list[str]) -> None:
             errors.append(f"nodes.{node_id}.criticality: expected critical/high/medium/low")
         _repo_path_list(node.get("source"), f"nodes.{node_id}.source", errors)
         _repo_path_list(node.get("tests"), f"nodes.{node_id}.tests", errors)
+        validations = node.get("validation", [])
+        if not isinstance(validations, list) or any(
+            not isinstance(item, str) or not item.strip() or "\n" in item or "\r" in item
+            for item in validations
+        ):
+            errors.append(f"nodes.{node_id}.validation: expected a list of single-line non-empty strings")
+        elif len(validations) != len(set(validations)):
+            errors.append(f"nodes.{node_id}.validation: duplicate entries are not allowed")
 
 
 def _validate_node_reviews(graph: dict, nodes: dict, errors: list[str]) -> None:
@@ -204,6 +212,58 @@ def _validate_edges(graph: dict, nodes: dict, errors: list[str]) -> None:
                 errors.append(f"edges[{index}]: unknown {label} {value!r}")
 
 
+def _validate_edge_reviews(graph: dict, nodes: dict, errors: list[str]) -> None:
+    reviews = graph.get("edge_reviews", [])
+    if not isinstance(reviews, list):
+        errors.append("edge_reviews: expected a list")
+        return
+    declared_edges = {
+        tuple(edge)
+        for edge in graph.get("edges", [])
+        if isinstance(edge, list) and len(edge) == 3 and all(isinstance(value, str) for value in edge)
+    }
+    seen_edges: set[tuple[str, str, str]] = set()
+    for index, review in enumerate(reviews):
+        where = f"edge_reviews[{index}]"
+        if not isinstance(review, dict):
+            errors.append(f"{where}: expected a mapping")
+            continue
+        edge = tuple(review.get(field) for field in ("source", "target", "kind"))
+        if any(not isinstance(value, str) for value in edge):
+            errors.append(f"{where}: source, target and kind must be strings")
+            continue
+        if edge in seen_edges:
+            errors.append(f"{where}: duplicate edge review {edge!r}")
+        seen_edges.add(edge)
+        if edge not in declared_edges:
+            errors.append(f"{where}: edge is not declared in graph.edges: {edge!r}")
+        owner_area = review.get("owner_area")
+        if not isinstance(owner_area, str) or not _NODE_ID.fullmatch(owner_area):
+            errors.append(f"{where}.owner_area: expected a stable code-area identifier")
+        if review.get("confidence") not in _REVIEW_CONFIDENCES:
+            errors.append(f"{where}.confidence: expected high/medium/low")
+        evidence = review.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            errors.append(f"{where}.evidence: reviewed edge requires at least one evidence item")
+            continue
+        for evidence_index, item in enumerate(evidence):
+            _validate_review_evidence(item, f"{where}.evidence[{evidence_index}]", errors)
+
+
+def edge_review_gaps(graph: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """Return declared edges that do not yet have code evidence review."""
+    reviewed = {
+        (item.get("source"), item.get("target"), item.get("kind"))
+        for item in graph.get("edge_reviews", [])
+        if isinstance(item, dict)
+    }
+    return sorted(
+        tuple(edge)
+        for edge in graph.get("edges", [])
+        if isinstance(edge, list) and len(edge) == 3 and tuple(edge) not in reviewed
+    )
+
+
 def _unknown_refs(values: list[str], known: Any, where: str, noun: str, errors: list[str]) -> None:
     for value in values:
         if value not in known:
@@ -294,6 +354,43 @@ def _validate_rules(graph: dict, nodes: dict, flows: dict, errors: list[str]) ->
             errors.append(f"{where}.require_checks: expected a list of non-empty strings")
 
 
+def _validate_validation_coverage(nodes: dict, graph: dict, errors: list[str]) -> None:
+    """Require every non-test validation command to be selected by a coverage rule."""
+    rules = graph.get("coverage_rules", [])
+    if not isinstance(rules, list):
+        return
+    declared_checks = {
+        check
+        for rule in rules
+        if isinstance(rule, dict) and isinstance(rule.get("require_checks", []), list)
+        for check in rule.get("require_checks", [])
+        if isinstance(check, str)
+    }
+    for node_id, node in nodes.items():
+        if not isinstance(node, dict):
+            continue
+        validations = node.get("validation", [])
+        if not isinstance(validations, list):
+            continue
+        for check in validations:
+            if isinstance(check, str) and check not in declared_checks:
+                errors.append(
+                    f"nodes.{node_id}.validation: check is not required by any coverage rule: {check!r}"
+                )
+
+
+def coverage_gaps(graph: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return active nodes with neither test files nor a declared validation check."""
+    gaps = []
+    for node_id, node in graph.get("nodes", {}).items():
+        if not isinstance(node, dict) or node.get("status") in _UNFLOWED_STATUSES:
+            continue
+        if node.get("tests") or node.get("validation"):
+            continue
+        gaps.append((str(node_id), str(node.get("criticality", "unknown"))))
+    return sorted(gaps)
+
+
 def validate_graph(graph: Any) -> list[str]:
     """Return structural/schema errors without touching the filesystem."""
     errors: list[str] = []
@@ -309,10 +406,12 @@ def validate_graph(graph: Any) -> list[str]:
     _validate_nodes(nodes, errors)
     _validate_node_reviews(graph, nodes, errors)
     _validate_edges(graph, nodes, errors)
+    _validate_edge_reviews(graph, nodes, errors)
     flows = _validate_flows(graph, nodes, errors)
     _validate_flow_coverage(nodes, flows, errors)
     _validate_variants(graph, nodes, errors)
     _validate_rules(graph, nodes, flows, errors)
+    _validate_validation_coverage(nodes, graph, errors)
     return errors
 
 
@@ -366,6 +465,31 @@ def _audit_repository_paths(graph: dict[str, Any], root: Path) -> list[str]:
                 for pattern in node.get("source", [])
             ):
                 issues.append(f"{where}: evidence path is not covered by nodes.{node_id}.source")
+    for index, review in enumerate(graph.get("edge_reviews", [])):
+        if not isinstance(review, dict):
+            continue
+        source = graph["nodes"].get(review.get("source"), {})
+        target = graph["nodes"].get(review.get("target"), {})
+        endpoint_sources = [
+            pattern
+            for endpoint in (source, target)
+            if isinstance(endpoint, dict)
+            for pattern in endpoint.get("source", [])
+        ]
+        for evidence_index, item in enumerate(review.get("evidence", [])):
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path", "")
+            where = f"edge_reviews[{index}].evidence[{evidence_index}].path"
+            path_issues = _missing_files([path], root, where)
+            issues += path_issues
+            if path_issues:
+                continue
+            if not any(
+                _is_safe_repo_path(pattern) and PurePosixPath(path).match(pattern)
+                for pattern in endpoint_sources
+            ):
+                issues.append(f"{where}: evidence path is not covered by either endpoint source mapping")
     for flow_id, flow in graph.get("flows", {}).items():
         issues += _missing_files(flow.get("tests", []), root, f"flows.{flow_id}.tests")
     for index, variant in enumerate(graph.get("deployment_variants", [])):
@@ -410,6 +534,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--root", type=Path, default=Path.cwd(), help="Repository root")
     parser.add_argument("--strict-paths", action="store_true", help="Return failure for stale source/test references")
+    parser.add_argument(
+        "--strict-coverage", action="store_true",
+        help="Return failure when a critical/high active node has no test or validation",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -425,6 +553,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"Structure OK: {len(graph['nodes'])} nodes, {len(graph['edges'])} edges, {len(graph.get('flows', {}))} flows")
+    gaps = coverage_gaps(graph)
+    if gaps:
+        print("Coverage gaps: " + ", ".join(f"{node_id} [{criticality}]" for node_id, criticality in gaps))
+        if args.strict_coverage and any(level in {"critical", "high"} for _, level in gaps):
+            return 1
+    else:
+        print("Coverage gaps: none")
+    edge_gaps = edge_review_gaps(graph)
+    print(f"Edge review coverage: {len(graph.get('edges', [])) - len(edge_gaps)}/{len(graph.get('edges', []))}; {len(edge_gaps)} unreviewed")
     path_issues = audit_paths(graph, args.root)
     if path_issues:
         level = "ERROR" if args.strict_paths else "DRIFT"

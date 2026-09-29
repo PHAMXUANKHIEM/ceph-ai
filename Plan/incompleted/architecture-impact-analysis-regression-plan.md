@@ -27,7 +27,13 @@
 - [x] Slice metadata node rủi ro cao: thêm `node_reviews` cho auth, cluster scope, action lifecycle, policy, executor và audit; ghi code-area owner, confidence, path/symbol/claim evidence; strict audit xác minh evidence tồn tại và nằm trong source mapping của node. Graph schema lên v3.
 - [x] Validator test review metadata, file evidence và recursive source glob `**`; kiểm tra nhóm architecture/profile/Stream đạt 28 passed, strict audit đạt.
 - [x] Tiếp tục review evidence cho persistence, cluster registry, durable outboxes, RabbitMQ incident queue và action-state event; tổng cộng 12/70 node có review record mức confidence cao. Claims chỉ nêu hành vi thấy trực tiếp trong các symbol được dẫn.
-- [ ] Pha 0 chưa hoàn thành: mới review 12/70 node; chưa có edge-level evidence/review và chưa audit thủ công toàn bộ các mapping/coverage rule. Quy tắc `both` hiện cố ý rộng, chưa tối ưu theo hướng thực tế từng edge. Node chưa có `node_reviews` được xem là unreviewed; selector sau này phải fallback khi impact chạm vùng chưa review.
+- [x] Review thêm request observability, Ceph query cache và Object Storage cache; evidence phân biệt rõ Ceph cache có snapshot disk/pruning còn Object Storage cache hiện chỉ process-local. Tổng cộng 15/70 node đã có review record.
+- [x] Xác minh lát cache/observability: strict path audit đạt; nhóm test cache, rate limit, dashboard status, redaction, architecture/profile và Stream đạt 87 passed.
+- [x] Cải tiến code Pha 0: validator kiểm tra định dạng `validation`, bắt buộc mỗi lệnh validation của node được coverage rule yêu cầu, báo cáo coverage gap và có `--strict-coverage` để fail nếu node critical/high không có test/validation. Gap hiện tại được nêu rõ là `dashboard.ai_tasks_unmounted` (medium), không bị che hoặc gán test giả.
+- [x] Kiểm tra validator mới: 22 test validator và 9 test architecture profile/Stream passed; strict path + strict coverage validation đạt và liệt kê gap medium hiện hữu.
+- [x] Thêm `edge_reviews` và validator kiểm tra cạnh review phải tồn tại trong graph, không trùng, có owner/confidence/evidence; strict path audit buộc evidence thuộc source mapping của ít nhất một endpoint. Báo cáo số cạnh đã/chưa review mà không giả vờ đã audit hết.
+- [x] Review evidence lô đầu cho 6 cạnh của cluster registry, Watcher publisher, RabbitMQ transport/consumer và durable outbox delivery; validator suite đạt 25 passed, strict path + strict coverage đạt.
+- [ ] Pha 0 chưa hoàn thành: 15/70 node và 6/124 cạnh đã review; còn 118 cạnh chưa review, chưa audit thủ công toàn bộ source mappings/coverage rules. Quy tắc `both` vẫn bảo thủ và chưa tối ưu theo từng cạnh. Node/cạnh thiếu review phải được xem là chưa xác minh; selector sau này phải fallback khi impact chạm vùng đó.
 
 ## 2. Luồng đích
 

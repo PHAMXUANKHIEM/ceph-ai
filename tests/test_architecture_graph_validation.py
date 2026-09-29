@@ -3,7 +3,13 @@ from pathlib import Path
 import yaml  # type: ignore[import-untyped]
 import pytest
 
-from scripts.validate_architecture_graph import _load_manifest, audit_paths, validate_graph
+from scripts.validate_architecture_graph import (
+    _load_manifest,
+    audit_paths,
+    coverage_gaps,
+    edge_review_gaps,
+    validate_graph,
+)
 
 
 def _minimal_graph():
@@ -11,6 +17,7 @@ def _minimal_graph():
         "schema_version": 3,
         "edge_kinds": ["calls", "covered_by"],
         "edge_impact": {"calls": "both", "covered_by": "both"},
+        "edge_reviews": [],
         "node_reviews": {},
         "nodes": {
             "api.read": {
@@ -80,6 +87,107 @@ def test_graph_validator_requires_explicit_impact_policy_for_every_edge_kind():
     assert any("missing policy for edge kind 'calls'" in error for error in errors)
     assert any("unknown edge kind 'teleports'" in error for error in errors)
     assert any("edge_impact.covered_by: expected one of" in error for error in errors)
+
+
+def test_coverage_gap_report_exposes_nodes_without_tests_or_validation():
+    graph = _minimal_graph()
+
+    assert coverage_gaps(graph) == [("ui.read", "medium")]
+
+    graph["nodes"]["ui.read"]["validation"] = ["npm run build"]
+    assert coverage_gaps(graph) == []
+
+
+def test_node_validation_must_be_well_formed_and_referenced_by_a_coverage_rule():
+    graph = _minimal_graph()
+    graph["nodes"]["ui.read"]["validation"] = ["npm run build"]
+
+    errors = validate_graph(graph)
+
+    assert any("validation: check is not required by any coverage rule" in error for error in errors)
+
+    graph["coverage_rules"] = [{
+        "id": "rule.frontend",
+        "when_nodes": ["ui.read"],
+        "require_tests": [],
+        "require_checks": ["npm run build"],
+    }]
+    assert validate_graph(graph) == []
+
+
+def test_node_validation_rejects_multiline_or_duplicate_commands():
+    graph = _minimal_graph()
+    graph["nodes"]["ui.read"]["validation"] = ["npm run build", "npm run build"]
+    errors = validate_graph(graph)
+    assert any("nodes.ui.read.validation: duplicate entries" in error for error in errors)
+
+    graph["nodes"]["ui.read"]["validation"] = ["npm run build\npytest"]
+    errors = validate_graph(graph)
+    assert any("single-line non-empty strings" in error for error in errors)
+
+
+def test_edge_review_coverage_tracks_reviewed_and_unreviewed_relations():
+    graph = _minimal_graph()
+    assert edge_review_gaps(graph) == [("api.read", "ui.read", "calls")]
+
+    graph["edge_reviews"] = [{
+        "source": "api.read",
+        "target": "ui.read",
+        "kind": "calls",
+        "owner_area": "api-ui-contract",
+        "confidence": "high",
+        "evidence": [{"path": "dashboard/routes/read.py", "symbol": "read", "claim": "API endpoint is called by this page flow."}],
+    }]
+    assert validate_graph(graph) == []
+    assert edge_review_gaps(graph) == []
+
+
+def test_edge_review_rejects_unknown_duplicate_and_incomplete_records():
+    graph = _minimal_graph()
+    review = {
+        "source": "api.read",
+        "target": "ui.read",
+        "kind": "calls",
+        "owner_area": "review-area",
+        "confidence": "high",
+        "evidence": [{"path": "dashboard/routes/read.py", "symbol": "read", "claim": "verified"}],
+    }
+    unknown = dict(review)
+    unknown["target"] = "api.missing"
+    graph["edge_reviews"] = [review, dict(review), unknown]
+    errors = validate_graph(graph)
+
+    assert any("duplicate edge review" in error for error in errors)
+    assert any("edge is not declared in graph.edges" in error for error in errors)
+
+    graph["edge_reviews"] = [{"source": "api.read", "target": "ui.read", "kind": "calls"}]
+    errors = validate_graph(graph)
+    assert any("reviewed edge requires at least one evidence item" in error for error in errors)
+
+
+def test_edge_evidence_path_must_match_one_endpoint_source_mapping(tmp_path):
+    graph = _minimal_graph()
+    graph["edge_reviews"] = [{
+        "source": "api.read",
+        "target": "ui.read",
+        "kind": "calls",
+        "owner_area": "api-ui-contract",
+        "confidence": "high",
+        "evidence": [{"path": "tests/test_read.py", "symbol": "test_read", "claim": "test only; not endpoint evidence"}],
+    }]
+    (tmp_path / "dashboard/routes").mkdir(parents=True)
+    (tmp_path / "dashboard/routes/read.py").write_text("def read(): pass\n", encoding="utf-8")
+    (tmp_path / "dashboard/templates").mkdir(parents=True)
+    (tmp_path / "dashboard/templates/read.html").write_text("<!-- page -->\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_read.py").write_text("def test_read(): pass\n", encoding="utf-8")
+    (tmp_path / "docs/architecture").mkdir(parents=True)
+    (tmp_path / "docs/architecture/overview.md").write_text(
+        "```mermaid\n%% graph-flow: dashboard-read\n```\n", encoding="utf-8"
+    )
+
+    issues = audit_paths(graph, tmp_path)
+    assert any("not covered by either endpoint source mapping" in issue for issue in issues)
 
 
 def test_graph_validator_rejects_legacy_graph_schema_version():

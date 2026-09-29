@@ -46,6 +46,7 @@ services:
       # and token directories are hidden by tmpfs below; only the dedicated
       # read-only identity is mounted into this container.
       - /root/ceph-ai/dashboard-readonly-id_ed25519:/tmp/readonly-id_ed25519:ro
+      - /root/ceph-ai/dashboard-readonly-id_ed25519.pub:/tmp/readonly-id_ed25519.pub:ro
       # Mount the runtime directory rather than individual heartbeat files.
       # Heartbeats are atomically replaced; a single-file bind mount would
       # keep the old inode and make Dashboard report false stale alerts.
