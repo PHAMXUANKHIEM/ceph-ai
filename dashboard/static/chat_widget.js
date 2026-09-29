@@ -25,6 +25,8 @@
   var contextBadgeEl = document.getElementById("chat-context-badge");
   var panelUnreadBadgeEl = document.getElementById("chat-unread-badge");
   var resizeHandleEl = document.getElementById("chat-resize-handle");
+  var maximizeBtn = document.getElementById("chat-panel-maximize");
+  var newMessagesBtn = document.getElementById("chat-new-messages");
   var recentQuestionsEl = document.getElementById("chat-recent-questions");
   var modeSelectEl = document.getElementById("chat-mode-select");
   if (!panelEl || !bodyEl || !messagesEl || !formEl) {
@@ -66,6 +68,10 @@
   var CHAT_MIN_HEIGHT = 60;
   var CHAT_MAX_HEIGHT = 500;
   var isDashboardInline = panelEl.dataset.dashboardInline === "true";
+  if (isDashboardInline) {
+    MINIMIZED_STORAGE_KEY = "dashboardChatPanelMinimized";
+    CHAT_HEIGHT_STORAGE_KEY = "dashboardChatPanelHeightV1";
+  }
   var dashboardContext = null;
   var LIMIT_WARNING_THRESHOLDS = [5, 10, 15];
   var dualProcessing = false;
@@ -154,9 +160,23 @@
     if (empty) empty.remove();
   }
 
+  function isNearMessageBottom() {
+    return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 72;
+  }
+
+  function showNewMessagesButton(show) {
+    if (newMessagesBtn) newMessagesBtn.hidden = !show;
+  }
+
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    showNewMessagesButton(false);
   }
+
+  messagesEl.addEventListener("scroll", function () {
+    if (isNearMessageBottom()) showNewMessagesButton(false);
+  }, { passive: true });
+  if (newMessagesBtn) newMessagesBtn.addEventListener("click", scrollToBottom);
 
   // --- message bubbles -----------------------------------------------------
 
@@ -496,18 +516,18 @@
     root.querySelectorAll(".chat-msg-assistant").forEach(function (container) {
       if (container.classList.contains("chat-msg-collapsible")) return;
       var bubble = container.querySelector(":scope > .chat-msg-bubble");
-      if (!bubble || bubble.scrollHeight <= 200) return;
+      if (!bubble || bubble.scrollHeight <= 600) return;
       container.classList.add("chat-msg-collapsible", "is-collapsed");
       bubble.classList.add("chat-msg-bubble--collapsible");
       var toggle = document.createElement("button");
       toggle.type = "button";
       toggle.className = "chat-msg-expand";
-      toggle.textContent = "Xem thêm";
+      toggle.textContent = "Xem thêm ▾";
       toggle.setAttribute("aria-expanded", "false");
       toggle.addEventListener("click", function () {
         var expanded = !container.classList.contains("is-collapsed");
         container.classList.toggle("is-collapsed", expanded);
-        toggle.textContent = expanded ? "Xem thêm" : "Thu gọn";
+        toggle.textContent = expanded ? "Xem thêm ▾" : "Thu gọn ▴";
         toggle.setAttribute("aria-expanded", expanded ? "false" : "true");
       });
       container.appendChild(toggle);
@@ -614,6 +634,7 @@
   }
 
   function appendMessage(message) {
+    var wasNearBottom = isNearMessageBottom();
     clearEmptyState();
     messagesEl.appendChild(buildMessage(message));
     enhanceLongMessages(messagesEl);
@@ -621,7 +642,8 @@
       unreadCount += 1;
       updateChatFabBadge();
     }
-    scrollToBottom();
+    if (wasNearBottom) scrollToBottom();
+    else showNewMessagesButton(true);
   }
 
   function appendLimitWarning(provider, limit, threshold) {
@@ -1504,6 +1526,7 @@
   }
 
   function setMinimized(minimized) {
+    if (minimized && panelEl.classList.contains("is-fullscreen")) setFullscreen(false);
     panelEl.classList.toggle("is-minimized", minimized);
     panelEl.setAttribute("aria-hidden", "false");
     if (!minimized) {
@@ -1568,11 +1591,11 @@
   var startMinimized = false;
   try {
     var storedMinimized = localStorage.getItem(MINIMIZED_STORAGE_KEY);
-    // Dashboard keeps the inline section open on first visit. Other pages
-    // expose the bottom-sheet trigger and start collapsed until opened.
-    startMinimized = isDashboardInline ? false : (chatFab
-      ? (storedMinimized === null ? true : storedMinimized === "1")
-      : storedMinimized === "1");
+    // The user's choice applies to the Dashboard too; other pages keep their
+    // established first-visit collapsed behavior.
+    startMinimized = chatFab
+      ? (storedMinimized === null ? !isDashboardInline : storedMinimized === "1")
+      : storedMinimized === "1";
   } catch (e) {
     startMinimized = false;
   }
@@ -1580,17 +1603,35 @@
 
   function setPanelHeight(height) {
     if (!panelEl) return;
-    var next = Math.max(CHAT_MIN_HEIGHT, Math.min(CHAT_MAX_HEIGHT, Math.round(height)));
+    var minHeight = isDashboardInline ? 200 : CHAT_MIN_HEIGHT;
+    var maxHeight = isDashboardInline ? Math.max(minHeight, Math.floor(window.innerHeight * 0.8)) : CHAT_MAX_HEIGHT;
+    var next = Math.max(minHeight, Math.min(maxHeight, Math.round(height)));
     panelEl.style.setProperty("--chat-panel-height", next + "px");
     try { localStorage.setItem(CHAT_HEIGHT_STORAGE_KEY, String(next)); } catch (e) {}
   }
 
   try {
     var storedHeight = parseInt(localStorage.getItem(CHAT_HEIGHT_STORAGE_KEY), 10);
-    if (Number.isFinite(storedHeight)) setPanelHeight(storedHeight);
+    if (Number.isFinite(storedHeight)) {
+      setPanelHeight(storedHeight);
+    } else if (isDashboardInline) {
+      var viewportHeight = window.innerHeight;
+      setPanelHeight(Math.min(viewportHeight * 0.7, Math.max(420, viewportHeight * 0.56)));
+    }
   } catch (e) {}
 
+  window.addEventListener("resize", function () {
+    var currentHeight = parseInt(panelEl.style.getPropertyValue("--chat-panel-height"), 10);
+    if (isDashboardInline && Number.isFinite(currentHeight)) setPanelHeight(currentHeight);
+  });
+
   if (resizeHandleEl) {
+    resizeHandleEl.addEventListener("keydown", function (event) {
+      if (!isDashboardInline || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+      event.preventDefault();
+      var current = panelEl.getBoundingClientRect().height;
+      setPanelHeight(current + (event.key === "ArrowUp" ? 40 : -40));
+    });
     resizeHandleEl.addEventListener("pointerdown", function (event) {
       event.preventDefault();
       var rect = panelEl.getBoundingClientRect();
@@ -1610,6 +1651,29 @@
     });
   }
 
+  function setFullscreen(fullscreen) {
+    if (!isDashboardInline) return;
+    panelEl.classList.toggle("is-fullscreen", fullscreen);
+    document.body.classList.toggle("is-chat-fullscreen", fullscreen);
+    if (maximizeBtn) {
+      maximizeBtn.setAttribute("aria-label", fullscreen ? "Thoát phóng to" : "Phóng to");
+      maximizeBtn.title = fullscreen ? "Thoát phóng to (Esc)" : "Phóng to";
+      maximizeBtn.setAttribute("aria-pressed", fullscreen ? "true" : "false");
+    }
+    if (fullscreen) scrollToBottom();
+  }
+
+  if (maximizeBtn) {
+    maximizeBtn.addEventListener("click", function () {
+      setFullscreen(!panelEl.classList.contains("is-fullscreen"));
+    });
+  }
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && panelEl.classList.contains("is-fullscreen")) {
+      setFullscreen(false);
+    }
+  });
+
   // --- textarea auto-resize + send-button enabled state -----------------------
 
   function autoResizeTextarea() {
@@ -1624,6 +1688,13 @@
   inputEl.addEventListener("input", function () {
     autoResizeTextarea();
     refreshSendEnabled();
+  });
+  inputEl.addEventListener("keydown", function (event) {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      if (typeof formEl.requestSubmit === "function") formEl.requestSubmit();
+      else sendBtn.click();
+    }
   });
   refreshSendEnabled();
 
