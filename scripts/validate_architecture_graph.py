@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterator
 
 import yaml  # type: ignore[import-untyped]
 
@@ -15,6 +15,67 @@ import yaml  # type: ignore[import-untyped]
 DEFAULT_MANIFEST = Path("tests/architecture/graph.yaml")
 DEFAULT_DOC = Path("docs/architecture/overview.md")
 _NODE_ID = re.compile(r"^[a-z][a-z0-9_.-]*$")
+_WINDOWS_DRIVE = re.compile(r"^[a-zA-Z]:")
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects duplicate mapping keys."""
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
+) -> Iterator[dict[Any, Any]]:
+    mapping: dict[Any, Any] = {}
+    yield mapping
+    explicit_key_nodes = {
+        id(key_node)
+        for key_node, _ in node.value
+        if key_node.tag != "tag:yaml.org,2002:merge"
+    }
+    # Expand YAML `<<` merges before checking duplicates. Merge-derived keys may
+    # be overridden by explicit keys, as defined by YAML; only repeated explicit
+    # keys in this mapping are rejected.
+    loader.flatten_mapping(node)
+    explicit_keys: set[Any] = set()
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in explicit_keys
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark,
+                "found an unhashable key", key_node.start_mark,
+            ) from exc
+        is_explicit = id(key_node) in explicit_key_nodes
+        if is_explicit and duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark,
+                f"found duplicate key {key!r}", key_node.start_mark,
+            )
+        value = loader.construct_object(value_node, deep=deep)
+        mapping[key] = value
+        if is_explicit:
+            explicit_keys.add(key)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping)
+
+
+def _is_safe_repo_path(value: str) -> bool:
+    """Accept only non-empty POSIX paths/globs confined lexically to the repo."""
+    if not value or "\\" in value or _WINDOWS_DRIVE.match(value):
+        return False
+    path = PurePosixPath(value)
+    return not path.is_absolute() and ".." not in path.parts
+
+
+def _repo_path_list(value: Any, where: str, errors: list[str]) -> list[str]:
+    paths = _as_path_list(value, where, errors)
+    for path in paths:
+        if not _is_safe_repo_path(path):
+            errors.append(f"{where}: path must be a repo-relative path without '..': {path!r}")
+    return paths
 
 
 def _as_path_list(value: Any, where: str, errors: list[str]) -> list[str]:
@@ -23,11 +84,15 @@ def _as_path_list(value: Any, where: str, errors: list[str]) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         errors.append(f"{where}: expected a list of strings")
         return []
+    if len(value) != len(set(value)):
+        errors.append(f"{where}: duplicate entries are not allowed")
     return value
 
 
 _CRITICALITIES = {"critical", "high", "medium", "low"}
+_REVIEW_CONFIDENCES = {"high", "medium", "low"}
 _UNFLOWED_STATUSES = {"not_implemented_as_shared_event", "not_served", "planned"}
+_EDGE_IMPACT_POLICIES = {"from_to", "to_from", "both", "full_suite"}
 
 
 def _validate_nodes(nodes: dict, errors: list[str]) -> None:
@@ -41,8 +106,43 @@ def _validate_nodes(nodes: dict, errors: list[str]) -> None:
             errors.append(f"nodes.{node_id}.kind: required non-empty string")
         if node.get("criticality") not in _CRITICALITIES:
             errors.append(f"nodes.{node_id}.criticality: expected critical/high/medium/low")
-        _as_path_list(node.get("source"), f"nodes.{node_id}.source", errors)
-        _as_path_list(node.get("tests"), f"nodes.{node_id}.tests", errors)
+        _repo_path_list(node.get("source"), f"nodes.{node_id}.source", errors)
+        _repo_path_list(node.get("tests"), f"nodes.{node_id}.tests", errors)
+
+
+def _validate_node_reviews(graph: dict, nodes: dict, errors: list[str]) -> None:
+    reviews = graph.get("node_reviews")
+    if not isinstance(reviews, dict):
+        errors.append("node_reviews: expected a mapping; unreviewed nodes may be omitted")
+        return
+    for node_id, review in reviews.items():
+        where = f"node_reviews.{node_id}"
+        if node_id not in nodes:
+            errors.append(f"{where}: unknown node")
+        if not isinstance(review, dict):
+            errors.append(f"{where}: expected a mapping")
+            continue
+        owner_area = review.get("owner_area")
+        if not isinstance(owner_area, str) or not _NODE_ID.fullmatch(owner_area):
+            errors.append(f"{where}.owner_area: expected a stable code-area identifier")
+        if review.get("confidence") not in _REVIEW_CONFIDENCES:
+            errors.append(f"{where}.confidence: expected high/medium/low")
+        evidence = review.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            errors.append(f"{where}.evidence: reviewed node requires at least one evidence item")
+            continue
+        for index, item in enumerate(evidence):
+            item_where = f"{where}.evidence[{index}]"
+            if not isinstance(item, dict):
+                errors.append(f"{item_where}: expected a mapping")
+                continue
+            path = item.get("path")
+            if not isinstance(path, str) or not _is_safe_repo_path(path):
+                errors.append(f"{item_where}.path: expected a safe repo-relative path")
+            for field in ("symbol", "claim"):
+                value = item.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"{item_where}.{field}: required non-empty string")
 
 
 def _edge_kinds(graph: dict, errors: list[str]) -> list:
@@ -55,8 +155,29 @@ def _edge_kinds(graph: dict, errors: list[str]) -> list:
     return edge_kinds
 
 
+def _validate_edge_impact(graph: dict, edge_kinds: list[str], errors: list[str]) -> None:
+    policies = graph.get("edge_impact")
+    if not isinstance(policies, dict):
+        errors.append("edge_impact: expected a mapping covering every edge kind")
+        return
+    declared = set(policies)
+    expected = set(edge_kinds)
+    for missing in sorted(expected - declared):
+        errors.append(f"edge_impact: missing policy for edge kind {missing!r}")
+    for unknown in sorted(declared - expected, key=str):
+        errors.append(f"edge_impact: unknown edge kind {unknown!r}")
+    for kind, policy in policies.items():
+        if kind in expected and (
+            not isinstance(policy, str) or policy not in _EDGE_IMPACT_POLICIES
+        ):
+            errors.append(
+                f"edge_impact.{kind}: expected one of {', '.join(sorted(_EDGE_IMPACT_POLICIES))}"
+            )
+
+
 def _validate_edges(graph: dict, nodes: dict, errors: list[str]) -> None:
     edge_kinds = _edge_kinds(graph, errors)
+    _validate_edge_impact(graph, edge_kinds, errors)
     edges = graph.get("edges")
     if not isinstance(edges, list):
         errors.append("edges: expected a list")
@@ -103,7 +224,7 @@ def _validate_flows(graph: dict, nodes: dict, errors: list[str]) -> dict:
             errors.append(f"flows.{flow_id}.diagram: required Mermaid diagram id")
         _unknown_refs(_as_path_list(flow.get("nodes"), f"flows.{flow_id}.nodes", errors), nodes,
                       f"flows.{flow_id}.nodes", "node", errors)
-        _as_path_list(flow.get("tests"), f"flows.{flow_id}.tests", errors)
+        _repo_path_list(flow.get("tests"), f"flows.{flow_id}.tests", errors)
     return flows
 
 
@@ -147,7 +268,7 @@ def _validate_variants(graph: dict, nodes: dict, errors: list[str]) -> None:
             errors.append(f"{where}: expected a mapping")
             continue
         _stable_id(variant.get("id"), where, variant_ids, errors)
-        _as_path_list(variant.get("source"), f"{where}.source", errors)
+        _repo_path_list(variant.get("source"), f"{where}.source", errors)
         _unknown_refs(_as_path_list(variant.get("changes_nodes"), f"{where}.changes_nodes", errors), nodes,
                       f"{where}.changes_nodes", "node", errors)
 
@@ -164,7 +285,7 @@ def _validate_rules(graph: dict, nodes: dict, flows: dict, errors: list[str]) ->
                       f"{where}.when_nodes", "node", errors)
         _unknown_refs(_as_path_list(rule.get("include_flows"), f"{where}.include_flows", errors), flows,
                       f"{where}.include_flows", "flow", errors)
-        _as_path_list(rule.get("require_tests"), f"{where}.require_tests", errors)
+        _repo_path_list(rule.get("require_tests"), f"{where}.require_tests", errors)
         checks = rule.get("require_checks", [])
         if not isinstance(checks, list) or any(not isinstance(check, str) or not check.strip() for check in checks):
             errors.append(f"{where}.require_checks: expected a list of non-empty strings")
@@ -175,14 +296,15 @@ def validate_graph(graph: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(graph, dict):
         return ["manifest: top level must be a mapping"]
-    if graph.get("schema_version") != 1:
-        errors.append("schema_version: expected 1")
+    if graph.get("schema_version") != 3:
+        errors.append("schema_version: expected 3")
 
     nodes = graph.get("nodes")
     if not isinstance(nodes, dict) or not nodes:
         return errors + ["nodes: expected a non-empty mapping"]
 
     _validate_nodes(nodes, errors)
+    _validate_node_reviews(graph, nodes, errors)
     _validate_edges(graph, nodes, errors)
     flows = _validate_flows(graph, nodes, errors)
     _validate_flow_coverage(nodes, flows, errors)
@@ -192,11 +314,34 @@ def validate_graph(graph: Any) -> list[str]:
 
 
 def _missing_files(paths: list[str], root: Path, where: str) -> list[str]:
-    return [f"{where}: missing {path}" for path in paths if not (root / path).is_file()]
+    issues: list[str] = []
+    root_resolved = root.resolve()
+    for path in paths:
+        if not _is_safe_repo_path(path):
+            issues.append(f"{where}: path escapes repository: {path}")
+            continue
+        resolved = (root / path).resolve()
+        if not resolved.is_relative_to(root_resolved):
+            issues.append(f"{where}: path resolves outside repository: {path}")
+        elif not resolved.is_file():
+            issues.append(f"{where}: missing {path}")
+    return issues
 
 
 def _unmatched_globs(patterns: list[str], root: Path, where: str) -> list[str]:
-    return [f"{where}: no match for {pattern}" for pattern in patterns if not any(root.glob(pattern))]
+    issues: list[str] = []
+    root_resolved = root.resolve()
+    for pattern in patterns:
+        if not _is_safe_repo_path(pattern):
+            issues.append(f"{where}: path escapes repository: {pattern}")
+            continue
+        matches = list(root.glob(pattern))
+        safe_matches = [match for match in matches if match.resolve().is_relative_to(root_resolved)]
+        if len(safe_matches) != len(matches):
+            issues.append(f"{where}: path resolves outside repository: {pattern}")
+        elif not safe_matches:
+            issues.append(f"{where}: no match for {pattern}")
+    return issues
 
 
 def _audit_repository_paths(graph: dict[str, Any], root: Path) -> list[str]:
@@ -204,6 +349,20 @@ def _audit_repository_paths(graph: dict[str, Any], root: Path) -> list[str]:
     for node_id, node in graph["nodes"].items():
         issues += _unmatched_globs(node.get("source", []), root, f"nodes.{node_id}.source")
         issues += _missing_files(node.get("tests", []), root, f"nodes.{node_id}.tests")
+    for node_id, review in graph.get("node_reviews", {}).items():
+        node = graph["nodes"].get(node_id, {})
+        for index, item in enumerate(review.get("evidence", [])):
+            where = f"node_reviews.{node_id}.evidence[{index}].path"
+            path = item.get("path", "")
+            path_issues = _missing_files([path], root, where)
+            issues += path_issues
+            if path_issues:
+                continue
+            if not any(
+                _is_safe_repo_path(pattern) and PurePosixPath(path).match(pattern)
+                for pattern in node.get("source", [])
+            ):
+                issues.append(f"{where}: evidence path is not covered by nodes.{node_id}.source")
     for flow_id, flow in graph.get("flows", {}).items():
         issues += _missing_files(flow.get("tests", []), root, f"flows.{flow_id}.tests")
     for index, variant in enumerate(graph.get("deployment_variants", [])):
@@ -237,7 +396,7 @@ def audit_paths(graph: dict[str, Any], root: Path) -> list[str]:
 
 def _load_manifest(path: Path) -> Any:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8"))
+        return yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     except (OSError, yaml.YAMLError) as exc:
         raise ValueError(f"cannot read manifest {path}: {exc}") from exc
 

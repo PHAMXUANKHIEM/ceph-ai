@@ -1,7 +1,7 @@
 # Architecture and regression impact graph.
 # Keep node IDs stable. Update this graph and docs/architecture/overview.md in
 # the same change whenever runtime ownership or a material flow changes.
-schema_version: 1
+schema_version: 3
 snapshot:
   repository: PHAMXUANKHIEM/ceph-ai
   observed_at: 2026-09-28
@@ -30,6 +30,29 @@ edge_kinds:
   - consumed_by
   - uses_transport
   - configured_when
+
+# Conservative test-selection policy, not a claim that all edges are runtime
+# data-flow arrows. `both` propagates impact in either graph direction;
+# `full_suite` forces safe fallback whenever an endpoint of the relation changes.
+edge_impact:
+  serves: both
+  starts: both
+  renders: both
+  calls: both
+  reads: both
+  writes: both
+  publishes: both
+  consumes: both
+  requires_auth: both
+  requires_product: both
+  requires_cluster_scope: both
+  requires_permission: both
+  executes: both
+  not_wired: full_suite
+  covered_by: both
+  consumed_by: both
+  uses_transport: both
+  configured_when: both
 
 nodes:
   browser.ceph_jinja:
@@ -394,6 +417,55 @@ nodes:
     criticality: high
     tests: [tests/test_cluster_events.py, tests/test_dashboard_ws.py]
     notes: Shared cluster-state event persisted after Action transactions commit; browser consumers use it as an invalidation hint and refetch through authenticated APIs.
+
+# Reviewed code-area ownership/evidence. Missing entries intentionally mean
+# `unreviewed`; these functional labels do not imply a named human/team owner.
+node_reviews:
+  dashboard.auth:
+    owner_area: dashboard-authentication
+    confidence: high
+    evidence:
+      - path: dashboard/routes/auth.py
+        symbol: require_login
+        claim: Validates the signed session against the active account and clears invalid session claims before redirecting.
+  dashboard.cluster_scope:
+    owner_area: cluster-access-control
+    confidence: high
+    evidence:
+      - path: dashboard/cluster_scope.py
+        symbol: selected_cluster, cluster_selection
+        claim: Resolves selected active cluster from request/session and enforces request-level cluster authorization.
+  dashboard.actions:
+    owner_area: dashboard-action-lifecycle
+    confidence: high
+    evidence:
+      - path: dashboard/routes/actions.py
+        symbol: _authorize_action_route, _require_admin_for_destructive_approval, approve_action
+        claim: Approval routes enforce cluster approval capability and destructive-action confirmation/admin checks before approving the action.
+  worker.policy:
+    owner_area: worker-action-policy
+    confidence: high
+    evidence:
+      - path: worker/policy/gate.py
+        symbol: classify_action
+        claim: Classifies action risk and supplies policy decisions used by approval and execution paths.
+  worker.executor:
+    owner_area: worker-command-execution
+    confidence: high
+    evidence:
+      - path: worker/executor/commands.py
+        symbol: has_command
+        claim: Resolves whether an action maps to an executable command.
+      - path: worker/executor/ssh_executor.py
+        symbol: execute_command_bytes
+        claim: Runs executor commands over the SSH execution boundary.
+  data.audit:
+    owner_area: shared-audit-contract
+    confidence: high
+    evidence:
+      - path: shared/audit.py
+        symbol: record
+        claim: Centralizes creation of audit entries for security- and operation-relevant events.
 
 flows:
   flow.dashboard_read:
