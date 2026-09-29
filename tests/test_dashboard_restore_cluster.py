@@ -4,6 +4,7 @@ tests/test_dashboard_convert_cluster.py."""
 
 import json
 from datetime import datetime as _dt
+from pathlib import Path
 
 from sqlalchemy.exc import OperationalError
 
@@ -197,3 +198,12 @@ def test_progress_api_returns_latest_action_progress(dashboard_client):
     data = response.json()
     assert data["status"] == "APPROVED"
     assert data["progress"][0]["step"] == "ssh_check"
+
+
+def test_restore_cluster_frontend_does_not_reload_for_terminal_history():
+    source = (Path(__file__).resolve().parents[1] / "dashboard/static/restore_cluster.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "var followAction = FOLLOW_STATUSES.indexOf(initialState.status) !== -1;" in source
+    assert "if (followAction && data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1)" in source

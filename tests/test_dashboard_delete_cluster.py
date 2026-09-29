@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from config.settings import settings
 from shared import db as db_module
@@ -235,3 +236,12 @@ def test_progress_endpoint_formats_real_timestamps_as_vietnam_local_clock(dashbo
         assert pending_step["started_at_display"] is None
         assert pending_step["finished_at_display"] is None
     assert first["progress"][0]["finished_at_display"] == second["progress"][0]["finished_at_display"]
+
+
+def test_delete_cluster_frontend_does_not_reload_for_terminal_history():
+    source = (Path(__file__).resolve().parents[1] / "dashboard/static/delete_cluster.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "var followAction = FOLLOW_STATUSES.indexOf(initialState.status) !== -1;" in source
+    assert "if (followAction && data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1)" in source

@@ -468,6 +468,11 @@ async def propose_patch_install(request: Request, user: str = Depends(require_lo
         )
         session.add(action)
         session.flush()
+        action_response = {
+            "action_id": action.id,
+            "status": action.status,
+            "rationale": action.rationale,
+        }
 
         audit.record(
             session,
@@ -478,4 +483,6 @@ async def propose_patch_install(request: Request, user: str = Depends(require_lo
         )
         session.commit()
 
+    if "application/json" in request.headers.get("accept", ""):
+        return JSONResponse(action_response, status_code=201)
     return RedirectResponse(url="/patch", status_code=303)

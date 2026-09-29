@@ -85,3 +85,50 @@ def test_malformed_pg_id_is_never_sent_to_the_cluster(monkeypatch):
     with pytest.raises(ActionContractError):
         _authorize("pg_repair_force", {"pg_ids": ["2.1f; ceph osd pool rm x"]}, monkeypatch, ceph)
     assert calls == []
+
+
+def _pools(existing):
+    calls = []
+
+    def ceph(*args, **_kwargs):
+        assert args[-1] == "ceph osd pool ls"
+        calls.append(args[-1])
+        return "mon-a", list(existing)
+
+    return ceph, calls
+
+
+@pytest.mark.parametrize(
+    ("action_id", "params"),
+    [
+        ("set_pool_pg_num", {"adjustments": [{"pool_name": "rbd", "pg_num": 128}]}),
+        ("enable_pool_pg_autoscaler", {"pools": ["rbd"]}),
+        ("enable_pool_application", {"pool_name": "rbd", "app_name": "rbd"}),
+    ],
+)
+def test_pool_actions_require_live_pool_membership(action_id, params, monkeypatch):
+    ceph, calls = _pools({"rbd", "images"})
+    _authorize(action_id, params, monkeypatch, ceph)
+    assert calls == ["ceph osd pool ls"]
+
+    ceph, _calls = _pools({"images"})
+    with pytest.raises(ActionContractError, match="target nằm ngoài scope"):
+        _authorize(action_id, params, monkeypatch, ceph)
+
+
+def test_pool_scope_resolution_fails_closed_on_query_error(monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise CephQueryError("MON unavailable")
+
+    with pytest.raises(ActionContractError, match="không resolve được pool target"):
+        _authorize(
+            "enable_pool_pg_autoscaler", {"pools": ["rbd"]}, monkeypatch, unavailable
+        )
+
+
+def test_pool_action_without_concrete_pool_is_refused_before_ceph_query(monkeypatch):
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("pool query must not run without a concrete requested target")
+
+    with pytest.raises(ActionContractError, match="không có target id cụ thể"):
+        _authorize("enable_pool_pg_autoscaler", {"pools": []}, monkeypatch, unexpected)

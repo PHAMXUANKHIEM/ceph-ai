@@ -16,7 +16,7 @@ from worker.policy.gate import classify_action
 
 
 _LEVELS = {f"L{level}": level for level in range(6)}
-_TARGET_SCHEMAS = {"cluster", "host", "osd", "pg", "manual"}
+_TARGET_SCHEMAS = {"cluster", "host", "osd", "pool", "pg", "manual"}
 
 # Closed server-owned hook catalogues.  A contract cannot make an arbitrary
 # string executable by naming it here; adding/removing a hook is a reviewed
@@ -144,11 +144,11 @@ PLAYBOOKS: dict[str, PlaybookContract] = {
         conflict_scope="cluster", postcheck="osd_release_health_telemetry",
     ),
     "set_pool_pg_num": _contract(
-        "set_pool_pg_num", target_schema="cluster", max_autonomy="L2",
+        "set_pool_pg_num", target_schema="pool", max_autonomy="L2",
         conflict_scope="cluster", postcheck="pool_pg_health_telemetry",
     ),
     "enable_pool_pg_autoscaler": _contract(
-        "enable_pool_pg_autoscaler", target_schema="cluster", max_autonomy="L2",
+        "enable_pool_pg_autoscaler", target_schema="pool", max_autonomy="L2",
         conflict_scope="cluster", postcheck="pool_pg_health_telemetry",
     ),
     "reshard_rgw_bucket": _contract(
@@ -160,7 +160,7 @@ PLAYBOOKS: dict[str, PlaybookContract] = {
         conflict_scope="cluster", cooldown_seconds=3600,
     ),
     "enable_pool_application": _contract(
-        "enable_pool_application", target_schema="cluster", max_autonomy="L2",
+        "enable_pool_application", target_schema="pool", max_autonomy="L2",
         conflict_scope="cluster", postcheck="pool_application_health_telemetry",
     ),
     "hard_reboot_node": _contract(

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import bcrypt
 from sqlalchemy.exc import OperationalError
@@ -501,7 +502,7 @@ def test_provision_host_key_route_stores_only_operator_supplied_verified_key(das
     monkeypatch.setattr(
         deploy_cluster_route,
         "provision_host_key",
-        lambda host, host_key: calls.append((host, host_key)) or "ssh-ed25519",
+        lambda host, host_key, note="", added_by="": calls.append((host, host_key, note, added_by)) or "ssh-ed25519",
     )
 
     response = dashboard_client.post(
@@ -511,7 +512,7 @@ def test_provision_host_key_route_stores_only_operator_supplied_verified_key(das
 
     assert response.status_code == 200
     assert response.json()["success"] is True
-    assert calls == [("10.3.55.98", "ssh-ed25519 AAAAverified")]
+    assert calls == [("10.3.55.98", "ssh-ed25519 AAAAverified", "", "admin")]
 
 
 def test_provision_host_key_route_rejects_invalid_key(dashboard_client, monkeypatch):
@@ -519,7 +520,7 @@ def test_provision_host_key_route_rejects_invalid_key(dashboard_client, monkeypa
     monkeypatch.setattr(
         deploy_cluster_route,
         "provision_host_key",
-        lambda _host, _key: (_ for _ in ()).throw(deploy_cluster_route.HostKeyProvisionError("key sai")),
+        lambda _host, _key, _note="", _added_by="": (_ for _ in ()).throw(deploy_cluster_route.HostKeyProvisionError("key sai")),
     )
 
     response = dashboard_client.post(
@@ -587,6 +588,16 @@ def test_deploy_cluster_page_initial_state_includes_is_admin(dashboard_client):
 
     assert response.status_code == 200
     assert '"is_admin": true' in response.text
+
+
+def test_deploy_cluster_frontend_does_not_reload_for_terminal_history():
+    source = (
+        Path(__file__).resolve().parents[1] / "dashboard/static/deploy_cluster.js"
+    ).read_text(encoding="utf-8")
+
+    assert "var followAction = FOLLOW_STATUSES.indexOf(initialState.status) !== -1;" in source
+    assert "if (followAction && data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1)" in source
+    assert "var activeActionId = followAction && initialState.action_id" in source
 
 
 def test_cluster_deploy_incident_excluded_from_cluster_status():

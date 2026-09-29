@@ -308,7 +308,7 @@
   });
 
   var iconByPath = {
-    "/": "⌁", "/nodes": "◫", "/volume-performance": "⌁", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
+    "/": "⌁", "/nodes": "◫", "/stream": "⇢", "/volume-performance": "⌁", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
@@ -405,7 +405,7 @@
     // links from the server (admin-only destinations may not exist), then
     // regroup only those that were actually rendered.
     var navGroups = [
-      { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] },
+      { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map", "/stream"] },
       { label: "Pool", paths: ["/pools", "/pgs"] },
       { label: "Object Storage", paths: ["/object-storage/buckets", "/object-storage/users", "/bucket-access-log"] },
       { label: "Block Storage", paths: ["/block-storage", "/volume-performance", "/trash"] },

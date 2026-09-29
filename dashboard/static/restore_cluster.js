@@ -6,6 +6,10 @@
   var initialState = JSON.parse(initialStateEl.textContent || "{}");
   var POLL_INTERVAL_MS = 2500;
   var TERMINAL_STATUSES = ["EXECUTED", "FAILED"];
+  // Only an action that was active when this page opened may trigger the
+  // one-time terminal refresh.  Historical terminal state must be passive.
+  var FOLLOW_STATUSES = ["PENDING_APPROVAL", "APPROVED", "EXECUTING", "GRACE_PENDING", "INCONCLUSIVE"];
+  var followAction = FOLLOW_STATUSES.indexOf(initialState.status) !== -1;
   var STATUS_GLYPH = { pending: "⏳", running: "🔄", done: "✅", failed: "❌" };
 
   function pad2(n) { return String(n).padStart(2, "0"); }
@@ -195,8 +199,8 @@
     if (logTitle) { if (status === "EXECUTED") logTitle.textContent = "✅ Hoàn tất"; else if (status === "FAILED") logTitle.textContent = "❌ Thất bại"; else if (status === "APPROVED") logTitle.textContent = "Đang khôi phục"; }
   }
   var pollTimer = null;
-  function pollOnce() { fetch("/restore-cluster/progress", { credentials: "same-origin" }).then(function (response) { if (!response.ok) throw new Error("HTTP " + response.status); return response.json(); }).then(function (data) { renderProgress(data.status, data.progress); if (data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1) { if (pollTimer) clearInterval(pollTimer); window.location.reload(); } }).catch(function () {}); }
-  if (logBox) { renderProgress(initialState.status, initialState.progress); if (initialState.status === "APPROVED") { pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS); pollOnce(); } }
+  function pollOnce() { fetch("/restore-cluster/progress", { credentials: "same-origin" }).then(function (response) { if (!response.ok) throw new Error("HTTP " + response.status); return response.json(); }).then(function (data) { renderProgress(data.status, data.progress); if (followAction && data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1) { if (pollTimer) clearInterval(pollTimer); window.location.reload(); } }).catch(function () {}); }
+  if (logBox) { renderProgress(initialState.status, initialState.progress); if (["APPROVED", "EXECUTING", "GRACE_PENDING", "INCONCLUSIVE"].indexOf(initialState.status) !== -1) { pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS); pollOnce(); } }
   if (clearBtn && logBox) clearBtn.addEventListener("click", renderEmptyLog);
   if (copyBtn && logBox) copyBtn.addEventListener("click", function () { var text = logBox.innerText || logBox.textContent || ""; if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text); });
   Array.prototype.forEach.call(document.querySelectorAll("[data-open-restore-log]"), function (button) { button.addEventListener("click", function () { document.body.classList.add("restore-dr-log-drawer-open"); }); });

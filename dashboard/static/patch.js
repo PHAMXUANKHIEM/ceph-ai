@@ -50,7 +50,77 @@
 
   var installForm = document.getElementById("patch-install-form");
   if (installForm) installForm.addEventListener("submit", function (event) {
-    if (!window.confirm("Đề xuất Settings sẽ tạo một hành động áp dụng lên các node Ceph thật. Bạn có muốn tiếp tục không?")) event.preventDefault();
+    event.preventDefault();
+    if (!window.confirm("Đề xuất Settings sẽ tạo một hành động áp dụng lên các node Ceph thật. Bạn có muốn tiếp tục không?")) return;
+
+    var button = document.getElementById("patch-install-button");
+    var actionRow = installForm.closest(".patch-settings-action");
+    var settingsSection = installForm.closest(".patch-settings-step");
+    var statusText = actionRow && actionRow.querySelector("strong");
+    var timeText = actionRow && actionRow.querySelector("span");
+    var errorBox = document.getElementById("patch-install-error");
+    if (button) { button.disabled = true; button.textContent = "Đang tạo đề xuất…"; }
+    if (errorBox) { errorBox.hidden = true; errorBox.textContent = ""; }
+
+    fetch(installForm.action, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Accept": "application/json" }
+    }).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (data) {
+        if (!response.ok) throw new Error(data.detail || "HTTP " + response.status);
+        return data;
+      });
+    }).then(function (data) {
+      if (statusText) statusText.textContent = "Lần gần nhất: PENDING APPROVAL";
+      if (timeText) timeText.textContent = "Đề xuất vừa được tạo";
+      if (button) button.textContent = "Đang chờ duyệt";
+
+      var card = document.createElement("article");
+      card.className = "patch-approval-card";
+      var heading = document.createElement("div");
+      var kicker = document.createElement("span");
+      kicker.className = "patch-kicker";
+      kicker.textContent = "ACTION REQUIRES APPROVAL";
+      var title = document.createElement("h3");
+      title.textContent = "Đề xuất Settings đang chờ duyệt";
+      var status = document.createElement("p");
+      status.textContent = String(data.status || "PENDING_APPROVAL").replace(/_/g, " ");
+      heading.appendChild(kicker);
+      heading.appendChild(title);
+      heading.appendChild(status);
+
+      var actions = document.createElement("div");
+      actions.className = "pending-action-buttons";
+      [["approve", "Duyệt", "btn btn-approve"], ["reject", "Từ chối", "btn btn-reject"]].forEach(function (item) {
+        var form = document.createElement("form");
+        form.method = "post";
+        form.action = "/actions/" + encodeURIComponent(data.action_id) + "/" + item[0];
+        form.className = "inline-form";
+        var submit = document.createElement("button");
+        submit.type = "submit";
+        submit.className = item[2];
+        submit.textContent = item[1];
+        form.appendChild(submit);
+        actions.appendChild(form);
+      });
+
+      var details = document.createElement("details");
+      var summary = document.createElement("summary");
+      summary.textContent = "Xem kế hoạch";
+      var plan = document.createElement("pre");
+      plan.className = "upgrade-plan-text";
+      plan.textContent = data.rationale || "Không có nội dung kế hoạch.";
+      details.appendChild(summary);
+      details.appendChild(plan);
+      card.appendChild(heading);
+      card.appendChild(actions);
+      card.appendChild(details);
+      if (settingsSection) settingsSection.insertBefore(card, actionRow);
+    }).catch(function (err) {
+      if (button) { button.disabled = false; button.textContent = "Đề xuất Settings"; }
+      if (errorBox) { errorBox.textContent = err.message || "Không tạo được đề xuất Settings."; errorBox.hidden = false; }
+    });
   });
 
   var progress = document.getElementById("patch-build-progress");

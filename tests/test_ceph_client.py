@@ -2,6 +2,7 @@ import json
 import threading
 
 import pytest
+import paramiko
 
 import watcher.ceph_client as ceph_client
 from shared.ceph_runner import CephRunnerError
@@ -493,6 +494,49 @@ def test_provision_host_key_replaces_only_the_verified_host_entry(tmp_path, monk
     assert known_hosts.stat().st_mode & 0o777 == 0o600
 
 
+def test_provision_host_key_preserves_other_algorithms_for_the_same_host(tmp_path, monkeypatch):
+    known_hosts = tmp_path / "known_hosts"
+    monkeypatch.setattr(ceph_client, "KNOWN_HOSTS_PATH", str(known_hosts))
+    host = "10.3.55.98"
+    ed25519 = (
+        "ssh-ed25519 "
+        "AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D"
+    )
+    rsa_old = paramiko.RSAKey.generate(bits=1024)
+    rsa_new = paramiko.RSAKey.generate(bits=1024)
+    rsa_old_line = f"ssh-rsa {rsa_old.get_base64()}"
+    rsa_new_line = f"ssh-rsa {rsa_new.get_base64()}"
+
+    ceph_client.provision_host_key(host, ed25519)
+    ceph_client.provision_host_key(host, rsa_old_line)
+    before = {row["key_type"]: row["fingerprint"] for row in ceph_client.list_host_keys()}
+    ceph_client.provision_host_key(host, rsa_new_line)
+    after = {row["key_type"]: row["fingerprint"] for row in ceph_client.list_host_keys()}
+
+    assert set(after) == {"ssh-ed25519", "ssh-rsa"}
+    assert after["ssh-ed25519"] == before["ssh-ed25519"]
+    assert after["ssh-rsa"] != before["ssh-rsa"]
+
+
+def test_forget_host_key_can_remove_one_algorithm_without_losing_other_keys(tmp_path, monkeypatch):
+    known_hosts = tmp_path / "known_hosts"
+    monkeypatch.setattr(ceph_client, "KNOWN_HOSTS_PATH", str(known_hosts))
+    host = "10.3.55.98"
+    ceph_client.provision_host_key(
+        host,
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D",
+    )
+    rsa = paramiko.RSAKey.generate(bits=1024)
+    ceph_client.provision_host_key(host, f"ssh-rsa {rsa.get_base64()}")
+
+    assert ceph_client.forget_host_key(host, "ssh-ed25519") is True
+    rows = ceph_client.list_host_keys()
+    assert [(row["host"], row["key_type"]) for row in rows] == [(host, "ssh-rsa")]
+    assert ceph_client.forget_host_key(host, "ssh-ed25519") is False
+    assert ceph_client.forget_host_key(host) is True
+    assert ceph_client.list_host_keys() == []
+
+
 def test_list_host_keys_returns_fingerprint_without_key_material(tmp_path, monkeypatch):
     known_hosts = tmp_path / "known_hosts"
     known_hosts.write_text(
@@ -506,6 +550,23 @@ def test_list_host_keys_returns_fingerprint_without_key_material(tmp_path, monke
     assert rows[0]["key_type"] == "ssh-ed25519"
     assert rows[0]["fingerprint"].startswith("SHA256:")
     assert "AAAAC3" not in str(rows[0])
+
+
+def test_host_key_note_is_persisted_separately_from_known_hosts(tmp_path, monkeypatch):
+    known_hosts = tmp_path / "known_hosts"
+    monkeypatch.setattr(ceph_client, "KNOWN_HOSTS_PATH", str(known_hosts))
+    public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D"
+
+    ceph_client.provision_host_key("10.3.55.98", public_key, "MON node chính", "ops-admin")
+    listed = ceph_client.list_host_keys()
+
+    assert listed[0]["note"] == "MON node chính"
+    assert listed[0]["added_by"] == "ops-admin"
+    assert listed[0]["created_at"].endswith("+00:00")
+    assert "MON node chính" not in known_hosts.read_text()
+    assert (tmp_path / "known_hosts.notes.json").stat().st_mode & 0o777 == 0o600
+    assert ceph_client.forget_host_key("10.3.55.98")
+    assert ceph_client.list_host_keys() == []
 
 
 def test_provision_host_key_rejects_malformed_input_without_overwriting(tmp_path, monkeypatch):

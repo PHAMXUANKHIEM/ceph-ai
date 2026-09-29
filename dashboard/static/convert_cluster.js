@@ -9,6 +9,10 @@
 
   var POLL_INTERVAL_MS = 2500;
   var TERMINAL_STATUSES = ["EXECUTED", "FAILED"];
+  // Only an action that was active when this page opened may trigger the
+  // one-time terminal refresh.  Historical terminal state must be passive.
+  var FOLLOW_STATUSES = ["PENDING_APPROVAL", "APPROVED", "EXECUTING", "GRACE_PENDING", "INCONCLUSIVE"];
+  var followAction = FOLLOW_STATUSES.indexOf(initialState.status) !== -1;
   var STATUS_GLYPH = { pending: "⏳", running: "🔄", done: "✅", failed: "❌" };
 
   function pad2(n) { return String(n).padStart(2, "0"); }
@@ -176,7 +180,7 @@
       })
       .then(function (data) {
         renderProgress(data.status, data.progress);
-        if (data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1) {
+        if (followAction && data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1) {
           if (pollTimer) clearInterval(pollTimer);
           window.location.reload();
         }
@@ -188,7 +192,7 @@
 
   if (logBox) {
     renderProgress(initialState.status, initialState.progress);
-    if (initialState.status === "APPROVED") {
+    if (["APPROVED", "EXECUTING", "GRACE_PENDING", "INCONCLUSIVE"].indexOf(initialState.status) !== -1) {
       pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
       pollOnce();
     }

@@ -413,7 +413,7 @@ async def deploy_cluster_provision_host_key(request: Request, user: str = Depend
     if not host or not host_key:
         raise HTTPException(status_code=400, detail="Cần địa chỉ node và SSH host public key đã xác minh")
     try:
-        key_type = await asyncio.to_thread(provision_host_key, host, host_key)
+        key_type = await asyncio.to_thread(provision_host_key, host, host_key, "", user)
     except HostKeyProvisionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return JSONResponse(

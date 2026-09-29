@@ -4,6 +4,7 @@ import shlex
 
 from config.settings import settings
 from shared.cluster_nodes import configured_nodes
+from worker.executor.action_contract import ActionContractError, validate_typed_action_params
 from worker.executor.ssh_executor import ExecutorError, execute_command
 
 # v1 (Story 3.2): the lab cluster was torn down mid-development, so this
@@ -1813,6 +1814,12 @@ def get_command(
     raise ExecutorError the same way a missing host does for
     restart_osd_daemon, never a guess.
     """
+    if action_id in {"rbd_copy_volume", "rbd_move_volume", "rbd_move_cleanup_partial"}:
+        try:
+            validate_typed_action_params(action_id, params or {})
+        except ActionContractError as exc:
+            raise ExecutorError(f"typed action contract rejected {action_id}: {exc}") from exc
+
     if action_id == "restart_osd_daemon":
         command = _restart_osd_daemon_command(host, params)
     elif action_id in _MANAGEMENT_COMMAND_BUILDERS:

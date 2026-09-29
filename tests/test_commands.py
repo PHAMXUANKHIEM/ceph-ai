@@ -85,6 +85,30 @@ def test_get_command_raises_for_unknown_action_id():
         get_command("some_action_id_with_no_command")
 
 
+@pytest.mark.parametrize(
+    ("action_id", "params"),
+    [
+        ("rbd_copy_volume", {}),
+        (
+            "rbd_copy_volume",
+            {
+                "pool_name": "rbd_data",
+                "image": "source",
+                "snapshot": "snap-1",
+                "dest_pool": "rbd_data",
+                "dest_image": "copy",
+                "size_bytes": 1024,
+            },
+        ),
+        ("rbd_move_volume", {"pool_name": "rbd", "image": "source"}),
+        ("rbd_move_cleanup_partial", {"pool_name": "rbd", "image": "source"}),
+    ],
+)
+def test_rbd_command_builders_reject_invalid_typed_contract(action_id, params):
+    with pytest.raises(ExecutorError, match="typed action contract rejected"):
+        get_command(action_id, params=params)
+
+
 def test_get_command_restart_osd_daemon_requires_host():
     with pytest.raises(ExecutorError, match="needs a specific host"):
         get_command("restart_osd_daemon")
@@ -826,7 +850,7 @@ def test_rbd_clone_and_flatten_commands_are_closed_schema_and_post_checked():
 
 def test_rbd_copy_command_requires_snapshot_and_other_pool():
     params = {"pool_name": "vms", "image": "vm-old", "snapshot": "gold",
-              "dest_pool": "images", "dest_image": "vm-copy"}
+              "dest_pool": "images", "dest_image": "vm-copy", "size_bytes": 1024}
     command = commands_module.get_command("rbd_copy_volume", params=params)
     assert command == "rbd cp --no-progress vms/vm-old@gold images/vm-copy && rbd info images/vm-copy --format json"
     assert " rm " not in command and "migration commit" not in command

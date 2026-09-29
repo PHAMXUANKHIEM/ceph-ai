@@ -10,10 +10,17 @@
   var deployPage = document.querySelector(".deploy-cluster-page");
   var clusterId = deployPage ? deployPage.dataset.clusterId : "";
   var realtimeAlert = document.getElementById("df-realtime-alert");
-  var activeActionId = initialState.action_id ? String(initialState.action_id) : "";
 
   var POLL_INTERVAL_MS = 2500;
   var TERMINAL_STATUSES = ["EXECUTED", "FAILED"];
+  var FOLLOW_STATUSES = ["PENDING_APPROVAL", "APPROVED", "EXECUTING", "GRACE_PENDING", "INCONCLUSIVE"];
+  // A terminal last_action is displayed as history only. It must not become
+  // the active WebSocket/poll target: the next cluster-state event would
+  // otherwise fetch the same terminal action and reload this page forever.
+  var followAction = FOLLOW_STATUSES.indexOf(initialState.status) !== -1;
+  var activeActionId = followAction && initialState.action_id
+    ? String(initialState.action_id)
+    : "";
 
   var STATUS_GLYPH = { pending: "⏳", running: "🔄", done: "✅", failed: "❌" };
 
@@ -489,7 +496,7 @@
       .then(function (data) {
         if (data.action_id) activeActionId = String(data.action_id);
         renderProgress(data.status, data.progress);
-        if (data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1) {
+        if (followAction && data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1) {
           if (pollTimer) clearInterval(pollTimer);
           window.location.reload();
         }
@@ -503,12 +510,9 @@
 
   if (logBox) {
     renderProgress(initialState.status, initialState.progress);
-    // Only poll (and auto-reload on completion) while a deploy is actually
-    // in-flight (APPROVED — Worker picked it up, running now). Viewing an
-    // already-resolved last_action's log (EXECUTED/FAILED, no pending
-    // Action at all) must render once and stop — polling that case would
-    // immediately see a terminal status again and reload the page forever.
-    if (initialState.status === "APPROVED") {
+    // Poll an action that is still in-flight. A resolved last_action is only
+    // historical output and must never trigger the terminal reload path.
+    if (["APPROVED", "EXECUTING", "GRACE_PENDING", "INCONCLUSIVE"].indexOf(initialState.status) !== -1) {
       pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
       pollOnce();
     }

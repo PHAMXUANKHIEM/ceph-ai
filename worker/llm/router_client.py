@@ -1326,7 +1326,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 classification = ActionClassification.SAFE
             nodes = envelope.get("nodes")
             contract = get_contract(action_id)
-            if contract is not None and contract.target_schema == "cluster" and isinstance(nodes, list):
+            if contract is not None and contract.target_schema in {"cluster", "pool"} and isinstance(nodes, list):
                 # A cluster-wide Ceph CLI command needs one reachable MON,
                 # not one execution per MON mentioned in health detail.
                 nodes = nodes[:1]
@@ -1558,6 +1558,20 @@ def _typed_action_target_ids(
         params = action_params if isinstance(action_params, dict) else {}
         ids = params.get("pg_ids")
         return "pg", [str(value) for value in ids] if isinstance(ids, list) else []
+    if target_schema == "pool":
+        params = action_params if isinstance(action_params, dict) else {}
+        raw_ids: list[object] = []
+        adjustments = params.get("adjustments")
+        pools = params.get("pools")
+        if isinstance(adjustments, list):
+            raw_ids.extend(
+                item.get("pool_name") for item in adjustments if isinstance(item, dict)
+            )
+        elif isinstance(pools, list):
+            raw_ids.extend(pools)
+        elif isinstance(params.get("pool_name"), str):
+            raw_ids.append(params["pool_name"])
+        return "pool", list(dict.fromkeys(value for value in raw_ids if isinstance(value, str)))
     raise ActionContractError(
         f"action_id={action_id!r} có target schema không thực thi được: {target_schema!r}"
     )
@@ -1586,6 +1600,16 @@ def _live_osd_ids(connection: CephConnection) -> set[str]:
         raise CephQueryError("ceph osd ls did not return a list")
     ids = {str(int(value)) for value in payload}
     return ids | {f"osd.{value}" for value in ids}
+
+
+def _live_pool_names(connection: CephConnection) -> set[str]:
+    """Resolve current Ceph pool names; requested params never define scope."""
+    _host, payload = run_ceph_json_command_with(*connection, "ceph osd pool ls")
+    if not isinstance(payload, list) or not all(
+        isinstance(name, str) and name.strip() for name in payload
+    ):
+        raise CephQueryError("ceph osd pool ls did not return a list of pool names")
+    return {name for name in payload if isinstance(name, str)}
 
 
 def _live_pg_ids(connection: CephConnection, requested: list[str]) -> set[str]:
@@ -1645,19 +1669,23 @@ def _authorize_typed_action_before_lease(
     # ID, including one that no longer exists or belongs to another cluster.
     live_osds: set[str] = set()
     live_pgs: set[str] = set()
-    if target_type in {"osd", "pg"}:
+    live_pools: set[str] = set()
+    if target_type in {"osd", "pg", "pool"}:
         connection = _cluster_read_connection(cluster)
         try:
             if target_type == "osd":
                 live_osds = _live_osd_ids(connection)
-            else:
+            elif target_type == "pg":
                 live_pgs = _live_pg_ids(connection, target_ids)
+            else:
+                live_pools = _live_pool_names(connection)
         except CephQueryError as exc:
             raise ActionContractError(f"không resolve được {target_type} target trên cluster: {exc}") from exc
     scope = TargetScope(
         cluster_id=cluster.id,
         nodes={row["host"] for row in configured_nodes(cluster)},
         osds=live_osds,
+        pools=live_pools,
         pgs=live_pgs,
     )
     gateway = TypedActionGateway(

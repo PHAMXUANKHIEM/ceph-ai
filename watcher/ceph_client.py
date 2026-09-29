@@ -10,6 +10,7 @@ import shlex
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from typing import Callable, TypedDict
@@ -1661,11 +1662,64 @@ def _write_host_keys_atomically(host_keys: paramiko.HostKeys) -> None:
             pass
 
 
-def provision_host_key(host: str, public_key: str) -> str:
-    """Atomically pin an operator-verified OpenSSH host public key.
+def _host_key_notes_path() -> str:
+    """Sidecar metadata path; notes never enter OpenSSH known_hosts syntax."""
+    return f"{KNOWN_HOSTS_PATH}.notes.json"
+
+
+def _load_host_key_notes() -> dict[str, dict[str, str]]:
+    path = _host_key_notes_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as source:
+            payload = json.load(source)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HostKeyProvisionError("Không đọc được ghi chú SSH host key") from exc
+    if not isinstance(payload, dict):
+        raise HostKeyProvisionError("Định dạng ghi chú SSH host key không hợp lệ")
+    result: dict[str, dict[str, str]] = {}
+    for host, value in payload.items():
+        if not isinstance(host, str):
+            continue
+        # Migrate sidecar entries created by the initial notes-only version.
+        if isinstance(value, str):
+            result[host] = {"note": value, "added_by": "", "created_at": ""}
+        elif isinstance(value, dict):
+            result[host] = {
+                field: str(value.get(field) or "")
+                for field in ("note", "added_by", "created_at")
+            }
+    return result
+
+
+def _write_host_key_notes_atomically(notes: dict[str, dict[str, str]]) -> None:
+    path = _host_key_notes_path()
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd, temporary_path = tempfile.mkstemp(prefix=".known_hosts_notes.", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as target:
+            json.dump(notes, target, ensure_ascii=False, sort_keys=True, indent=2)
+            target.write("\n")
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, path)
+    finally:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
+def provision_host_key(
+    host: str, public_key: str, note: str = "", added_by: str = ""
+) -> str:
+    """Atomically pin one operator-verified OpenSSH host public key.
 
     The key must be obtained and verified out of band. This function never
-    opens an SSH connection or performs trust-on-first-use.
+    opens an SSH connection or performs trust-on-first-use. A host may have
+    multiple key algorithms; adding a key replaces only the same host/type
+    pair and preserves the other algorithms.
     """
     if not _HOSTNAME_RE.fullmatch(host):
         raise HostKeyProvisionError("IP/hostname không hợp lệ")
@@ -1679,6 +1733,15 @@ def provision_host_key(host: str, public_key: str) -> str:
     if entry is None or entry.key is None:
         raise HostKeyProvisionError("Loại SSH host key không được hỗ trợ")
 
+    note = str(note or "").strip()
+    if len(note) > 500:
+        raise HostKeyProvisionError("Ghi chú không được vượt quá 500 ký tự")
+    if any(ord(char) < 32 and char not in "\t" for char in note):
+        raise HostKeyProvisionError("Ghi chú chứa ký tự điều khiển không hợp lệ")
+    added_by = str(added_by or "").strip()[:128]
+    if any(ord(char) < 32 for char in added_by):
+        raise HostKeyProvisionError("Tên người thêm chứa ký tự không hợp lệ")
+
     with _host_keys_lock():
         host_keys = paramiko.HostKeys()
         if os.path.exists(KNOWN_HOSTS_PATH):
@@ -1686,16 +1749,39 @@ def provision_host_key(host: str, public_key: str) -> str:
                 host_keys.load(KNOWN_HOSTS_PATH)
             except (OSError, paramiko.SSHException) as exc:
                 raise HostKeyProvisionError("Không đọc được kho SSH host key hiện tại") from exc
-        host_keys.pop(host, None)
         host_keys.add(host, entry.key.get_name(), entry.key)
+        notes = _load_host_key_notes()
+        notes[host] = {
+            "note": note,
+            "added_by": added_by,
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
         try:
             _write_host_keys_atomically(host_keys)
+            _write_host_key_notes_atomically(notes)
         except OSError as exc:
             raise HostKeyProvisionError("Không thể lưu SSH host key") from exc
     return entry.key.get_name()
 
 
-def forget_host_key(host: str) -> bool:
+def fingerprint_host_public_key(host: str, public_key: str) -> tuple[str, str]:
+    """Validate an operator-supplied host public key and return type/fingerprint."""
+    if not _HOSTNAME_RE.fullmatch(host):
+        raise HostKeyProvisionError("IP/hostname không hợp lệ")
+    parts = public_key.strip().split()
+    if len(parts) < 2 or not re.fullmatch(r"(?:ssh|ecdsa)-[A-Za-z0-9@._+-]+", parts[0]):
+        raise HostKeyProvisionError("SSH host public key không hợp lệ")
+    try:
+        entry = HostKeyEntry.from_line(f"{host} {parts[0]} {parts[1]}")
+    except (TypeError, ValueError, InvalidHostKey) as exc:
+        raise HostKeyProvisionError("SSH host public key không hợp lệ") from exc
+    if entry is None or entry.key is None:
+        raise HostKeyProvisionError("Loại SSH host key không được hỗ trợ")
+    digest = base64.b64encode(hashlib.sha256(entry.key.asbytes()).digest()).decode("ascii").rstrip("=")
+    return entry.key.get_name(), "SHA256:" + digest
+
+
+def forget_host_key(host: str, key_type: str | None = None) -> bool:
     """Removes `host`'s pinned SSH host key from KNOWN_HOSTS_PATH.
 
     After a node rebuild, the operator must provision its newly verified key
@@ -1703,18 +1789,76 @@ def forget_host_key(host: str) -> bool:
     replacement key.  It remains a surgical recovery mechanism rather than
     a blanket `known_hosts` reset.
 
-    Returns True if a stored entry was found and removed, False if the host
-    had no entry (nothing to do -- not an error, e.g. it was never connected
-    to, or was already cleared)."""
+    If ``key_type`` is supplied, remove only that host/algorithm pair;
+    without it, remove every key for the host for backwards compatibility.
+    Returns True if an entry was found and removed, False otherwise."""
     with _host_keys_lock():
         if not os.path.exists(KNOWN_HOSTS_PATH):
             return False
         host_keys = paramiko.HostKeys()
         host_keys.load(KNOWN_HOSTS_PATH)
-        removed = host_keys.pop(host, None) is not None
+        host_entry = host_keys.lookup(host)
+        if host_entry is None:
+            return False
+        if key_type:
+            if key_type not in host_entry:
+                return False
+            remaining_keys = [
+                (stored_type, key)
+                for stored_type, key in host_entry.items()
+                if stored_type != key_type
+            ]
+            # Paramiko's HostKeys SubDict deletion only mutates its temporary
+            # view. Rebuild this host's entries through the public add/pop API.
+            while host_keys.lookup(host) is not None:
+                host_keys.pop(host, None)
+            for stored_type, key in remaining_keys:
+                host_keys.add(host, stored_type, key)
+            removed = True
+        else:
+            removed = False
+            while host_keys.lookup(host) is not None:
+                host_keys.pop(host, None)
+                removed = True
         if removed:
             _write_host_keys_atomically(host_keys)
+            notes = _load_host_key_notes()
+            # Notes are host-scoped, so keep them while any algorithm for
+            # the node remains and remove them only with the final key.
+            if host_keys.lookup(host) is None and host in notes:
+                notes.pop(host, None)
+                _write_host_key_notes_atomically(notes)
     return removed
+
+
+def update_host_key_note(host: str, note: str) -> bool:
+    """Update only sidecar metadata for a currently pinned host."""
+    if not _HOSTNAME_RE.fullmatch(host):
+        raise HostKeyProvisionError("IP/hostname không hợp lệ")
+    note = str(note or "").strip()
+    if len(note) > 500:
+        raise HostKeyProvisionError("Ghi chú không được vượt quá 500 ký tự")
+    if any(ord(char) < 32 and char not in "\t" for char in note):
+        raise HostKeyProvisionError("Ghi chú chứa ký tự điều khiển không hợp lệ")
+    with _host_keys_lock():
+        if not os.path.exists(KNOWN_HOSTS_PATH):
+            return False
+        host_keys = paramiko.HostKeys()
+        try:
+            host_keys.load(KNOWN_HOSTS_PATH)
+        except (OSError, paramiko.SSHException) as exc:
+            raise HostKeyProvisionError("Không đọc được kho SSH host key hiện tại") from exc
+        if host not in host_keys:
+            return False
+        notes = _load_host_key_notes()
+        current = notes.get(host, {})
+        notes[host] = {
+            "note": note,
+            "added_by": current.get("added_by", ""),
+            "created_at": current.get("created_at", ""),
+        }
+        _write_host_key_notes_atomically(notes)
+    return True
 
 
 def list_host_keys() -> list[dict[str, str]]:
@@ -1726,6 +1870,8 @@ def list_host_keys() -> list[dict[str, str]]:
         host_keys.load(KNOWN_HOSTS_PATH)
     except (OSError, paramiko.SSHException) as exc:
         raise HostKeyProvisionError("Không đọc được kho SSH host key Ceph") from exc
+    with _host_keys_lock():
+        notes = _load_host_key_notes()
     result = []
     for host, keys in sorted(host_keys.items()):
         for key_type, key in sorted(keys.items()):
@@ -1733,6 +1879,9 @@ def list_host_keys() -> list[dict[str, str]]:
                 "host": host,
                 "key_type": key_type,
                 "fingerprint": "SHA256:" + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode("ascii").rstrip("="),
+                "note": notes.get(host, {}).get("note", ""),
+                "added_by": notes.get(host, {}).get("added_by", ""),
+                "created_at": notes.get(host, {}).get("created_at", ""),
             })
     return result
 
