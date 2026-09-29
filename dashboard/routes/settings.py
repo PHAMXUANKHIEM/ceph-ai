@@ -22,7 +22,7 @@ import openai
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
@@ -57,6 +57,7 @@ from shared.ai_limits import normalize_rate_limits
 from shared.models import (
     Action, ActionPolicyOverride, ActionPolicyOverrideAudit, ActionStatus,
     AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, PlaybookStat,
+    SecurityAuditEvent,
 )
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
@@ -64,8 +65,10 @@ from watcher.ceph_client import (
     CephQueryError,
     HostKeyProvisionError,
     forget_host_key,
+    fingerprint_host_public_key,
     list_host_keys,
     provision_host_key,
+    update_host_key_note,
     query_cluster_health_with,
     read_public_key,
     ssh_key_path_error,
@@ -85,6 +88,15 @@ router = APIRouter()
 templates = make_templates()
 
 MASK_VISIBLE_CHARS = 4
+
+
+def _mask_host_fingerprint(value: str) -> str:
+    """Keep only four digest characters at each end for every page render."""
+    prefix = "SHA256:"
+    digest = str(value or "").removeprefix(prefix)
+    if len(digest) <= 8:
+        return prefix + "•" * max(len(digest), 8)
+    return f"{prefix}{digest[:4]}{'•' * max(8, len(digest) - 8)}{digest[-4:]}"
 
 ROUTER_API_KEY_ENV_NAME = "ROUTER_API_KEY"
 ROUTER_MODEL_ENV_NAME = "ROUTER_MODEL"
@@ -1189,6 +1201,8 @@ def _settings_context(
     ceph_host_key_error: str | None = None,
     ceph_host_key_success: str | None = None,
     ceph_host_key_values: dict | None = None,
+    ceph_host_key_search: str = "",
+    ceph_host_key_page: int = 1,
     database_reset_error: str | None = None,
     database_reset_success: str | None = None,
     database_migrate_error: str | None = None,
@@ -1230,14 +1244,82 @@ def _settings_context(
     form's result is never mistakenly shown on another's."""
     masked_key = _mask_key(settings.router_api_key) if settings.router_api_key else None
     try:
-        ceph_host_keys = list_host_keys()
+        # Work on copies so a cached/shared inventory can never be altered by
+        # response masking or by a later request's search/pagination pass.
+        ceph_host_keys = [dict(item) for item in list_host_keys()]
         ceph_host_key_inventory_error = None
     except HostKeyProvisionError as exc:
         ceph_host_keys = []
         ceph_host_key_inventory_error = str(exc)
+    is_admin = auth.is_admin_user(user)
+    fingerprint_hosts: dict[str, set[str]] = {}
+    for item in ceph_host_keys:
+        item["_fingerprint_search"] = str(item.get("fingerprint", ""))
+        fingerprint_hosts.setdefault(str(item.get("fingerprint", "")), set()).add(
+            str(item.get("host", ""))
+        )
+    duplicate_hosts = {
+        host for hosts in fingerprint_hosts.values() if len(hosts) > 1 for host in hosts
+    }
+    for item in ceph_host_keys:
+        item["fingerprint_masked"] = _mask_host_fingerprint(item.get("fingerprint", ""))
+        item["duplicate_hosts"] = sorted(
+            host for host in fingerprint_hosts.get(str(item.get("fingerprint", "")), set())
+            if host != str(item.get("host", ""))
+        )
+        # Fingerprints are deliberately removed before rendering. Admins
+        # reveal a single value through the audited endpoint below.
+        item.pop("fingerprint", None)
+        item.setdefault("added_by", "")
+        item.setdefault("created_at", "")
+        created_at = item.get("created_at", "")
+        try:
+            parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+            item["created_at_display"] = parsed.astimezone(
+                ZoneInfo("Asia/Ho_Chi_Minh")
+            ).strftime("%d/%m/%Y %H:%M:%S")
+        except (TypeError, ValueError):
+            item["created_at_display"] = "Chưa ghi nhận"
+        if not item.get("added_by"):
+            item["added_by_display"] = "Chưa ghi nhận"
+        else:
+            item["added_by_display"] = item["added_by"]
+    # Keep the inventory bounded in the HTML response.  Host keys are
+    # operator-managed data, so filtering is intentionally server-side and
+    # applies before pagination.
+    ceph_host_key_saved_total = len(ceph_host_keys)
+    host_key_search = (ceph_host_key_search or "").strip()
+    if host_key_search:
+        needle = host_key_search.casefold()
+        ceph_host_keys = [
+            item for item in ceph_host_keys
+            if needle in " ".join(
+                str(item.get(field, ""))
+                for field in ("host", "key_type", "_fingerprint_search", "note", "added_by", "created_at")
+            ).casefold()
+        ]
+    if not is_admin and host_key_search.upper().startswith("SHA256:"):
+        # A caller-supplied search term must not be reflected verbatim either.
+        host_key_search = _mask_host_fingerprint(host_key_search)
+    for item in ceph_host_keys:
+        item.pop("_fingerprint_search", None)
+    ceph_host_key_total = len(ceph_host_keys)
+    ceph_host_key_page_size = 5
+    ceph_host_key_total_pages = max(
+        1, math.ceil(ceph_host_key_total / ceph_host_key_page_size)
+    )
+    try:
+        ceph_host_key_page = max(1, int(ceph_host_key_page))
+    except (TypeError, ValueError):
+        ceph_host_key_page = 1
+    ceph_host_key_page = min(ceph_host_key_page, ceph_host_key_total_pages)
+    page_start = (ceph_host_key_page - 1) * ceph_host_key_page_size
+    ceph_host_keys = ceph_host_keys[page_start:page_start + ceph_host_key_page_size]
     context = {
         "user": user,
-        "is_admin": auth.is_admin_user(user),
+        "is_admin": is_admin,
         "masked_key": masked_key,
         "router_model": (
             router_model_value if router_model_value is not None else settings.router_model
@@ -1407,6 +1489,13 @@ def _settings_context(
     # into a NEW cluster's `~/.ssh/authorized_keys`.
     context["ssh_public_key"] = read_public_key(settings.ssh_key_path)
     context["ceph_host_keys"] = ceph_host_keys
+    context["ceph_host_key_search"] = host_key_search
+    context["ceph_host_key_page"] = ceph_host_key_page
+    context["ceph_host_key_page_size"] = ceph_host_key_page_size
+    context["ceph_host_key_total"] = ceph_host_key_total
+    context["ceph_host_key_saved_total"] = ceph_host_key_saved_total
+    context["ceph_host_key_duplicate_hosts"] = sorted(duplicate_hosts)
+    context["ceph_host_key_total_pages"] = ceph_host_key_total_pages
     context["ceph_host_key_inventory_error"] = ceph_host_key_inventory_error
     context["ceph_host_key_error"] = ceph_host_key_error
     context["ceph_host_key_success"] = ceph_host_key_success
@@ -1514,11 +1603,17 @@ async def settings_form(
     user: str = Depends(require_login),
     cost_hours: str | None = None,
 ):
+    try:
+        host_key_page = max(1, int(request.query_params.get("host_key_page", "1")))
+    except ValueError:
+        host_key_page = 1
     context = _settings_context(
         user,
         openstack_cluster_id=request.query_params.get("cluster"),
         ai_cost_hours=_cost_hours(cost_hours),
         ceph_host_key_values={"host": request.query_params.get("host", "")},
+        ceph_host_key_search=request.query_params.get("host_key_search", ""),
+        ceph_host_key_page=host_key_page,
     )
     section = request.query_params.get("section", "")
     if section in {"router", "cost", "cluster", "ceph-host-keys", "openstack", "restart-controls", "action-policy", "database", "server-log", "patch-pipeline", "log-intel", "dual-ai", "code-repair", "backup-targets", "cleanup"}:
@@ -1529,12 +1624,115 @@ async def settings_form(
     )
 
 
+@router.post("/settings/ceph-host-keys/fingerprint")
+async def settings_ceph_host_key_fingerprint(
+    request: Request,
+    user: str = Depends(require_login),
+    host: str = Form(""),
+    key_type: str = Form(""),
+):
+    """Reveal one full fingerprint to an admin and durably audit the view."""
+    _require_admin_privilege(user)
+    host, key_type = host.strip(), key_type.strip()
+    if not host or not key_type:
+        raise HTTPException(status_code=400, detail="Thiếu node hoặc loại SSH key")
+    try:
+        matching = next(
+            (row for row in list_host_keys()
+             if row.get("host") == host and row.get("key_type") == key_type),
+            None,
+        )
+    except HostKeyProvisionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if matching is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy host key đã lưu")
+    try:
+        with db.SessionLocal() as session:
+            session.add(SecurityAuditEvent(
+                actor=str(user)[:64],
+                method="POST",
+                path=f"/settings/ceph-host-keys/{host}/fingerprint"[:255],
+                status_code=200,
+                request_id=str(getattr(request.state, "request_id", ""))[:128],
+            ))
+            session.commit()
+    except SQLAlchemyError as exc:
+        logger.exception("Could not audit SSH host-key fingerprint reveal")
+        raise HTTPException(status_code=503, detail="Không ghi được audit; từ chối hiển thị fingerprint") from exc
+    return JSONResponse({"fingerprint": matching["fingerprint"]})
+
+
+@router.post("/settings/ceph-host-keys/note")
+async def settings_ceph_host_key_note(
+    host: str = Form(""),
+    note: str = Form(""),
+    user: str = Depends(require_login),
+):
+    _require_admin_privilege(user)
+    try:
+        updated = await asyncio.to_thread(update_host_key_note, host.strip(), note)
+    except HostKeyProvisionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Không tìm thấy host key đã lưu")
+    return JSONResponse({"ok": True})
+
+
+@router.post("/settings/ceph-host-keys/compare")
+async def settings_ceph_host_key_compare(
+    request: Request,
+    host: str = Form(""),
+    host_key: str = Form(""),
+    user: str = Depends(require_login),
+):
+    """Return old/new fingerprints to an admin before an explicit replacement."""
+    _require_admin_privilege(user)
+    host, host_key = host.strip(), host_key.strip()
+    if "PRIVATE KEY" in host_key.upper():
+        raise HTTPException(status_code=400, detail="Từ chối nội dung chứa PRIVATE KEY")
+    try:
+        new_type, new_fingerprint = fingerprint_host_public_key(host, host_key)
+        saved_keys = list_host_keys()
+        existing = next(
+            (row for row in saved_keys
+             if row.get("host") == host and row.get("key_type") == new_type),
+            None,
+        )
+        duplicate_hosts = sorted({
+            str(row["host"]) for row in saved_keys
+            if row.get("host") != host and row.get("fingerprint") == new_fingerprint
+        })
+    except HostKeyProvisionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        with db.SessionLocal() as session:
+            session.add(SecurityAuditEvent(
+                actor=str(user)[:64], method="POST",
+                path=f"/settings/ceph-host-keys/{host}/compare"[:255],
+                status_code=200,
+                request_id=str(getattr(request.state, "request_id", ""))[:128],
+            ))
+            session.commit()
+    except SQLAlchemyError as exc:
+        logger.exception("Could not audit SSH host-key replacement comparison")
+        raise HTTPException(status_code=503, detail="Không ghi được audit; từ chối hiển thị fingerprint") from exc
+    return JSONResponse({
+        "old_fingerprint": existing.get("fingerprint") if existing else None,
+        "new_fingerprint": new_fingerprint,
+        "key_type": new_type,
+        "duplicate_hosts": duplicate_hosts,
+    })
+
+
 @router.post("/settings/ceph-host-keys/save", response_class=HTMLResponse)
 async def settings_ceph_host_key_save(
     request: Request,
     user: str = Depends(require_login),
     host: str = Form(""),
     host_key: str = Form(""),
+    note: str = Form(""),
+    host_key_search: str = Form(""),
+    host_key_page: int = Form(1),
 ):
     """Pin an operator-verified Ceph node host key from the Settings page."""
     _require_admin_privilege(user)
@@ -1542,16 +1740,22 @@ async def settings_ceph_host_key_save(
     error = None
     if not host or not host_key:
         error = "Cần nhập node host và SSH host public key đã xác minh."
+    elif "PRIVATE KEY" in host_key.upper():
+        error = "Từ chối nội dung chứa PRIVATE KEY; chỉ nhập SSH host public key."
+    elif not re.match(r"^(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-[A-Za-z0-9-]+)\s+", host_key):
+        error = "Public key phải bắt đầu bằng ssh-ed25519, ssh-rsa hoặc ecdsa-sha2-*."
     else:
         try:
-            key_type = await asyncio.to_thread(provision_host_key, host, host_key)
+            key_type = await asyncio.to_thread(provision_host_key, host, host_key, note, user)
         except HostKeyProvisionError as exc:
             error = str(exc)
     return templates.TemplateResponse(request, "settings.html", _settings_context(
         user,
         ceph_host_key_error=error,
         ceph_host_key_success=None if error else f"Đã lưu host key {key_type} cho {host}.",
-        ceph_host_key_values={"host": host},
+        ceph_host_key_values={"host": host, "note": note},
+        ceph_host_key_search=host_key_search,
+        ceph_host_key_page=host_key_page,
     ))
 
 
@@ -1560,12 +1764,18 @@ async def settings_ceph_host_key_delete(
     request: Request,
     user: str = Depends(require_login),
     host: str = Form(""),
+    key_type: str = Form(""),
+    host_key_search: str = Form(""),
+    host_key_page: int = Form(1),
 ):
     """Remove one Ceph node host key so an operator can pin a replacement."""
     _require_admin_privilege(user)
     host = host.strip()
     try:
-        removed = await asyncio.to_thread(forget_host_key, host)
+        if key_type.strip():
+            removed = await asyncio.to_thread(forget_host_key, host, key_type.strip())
+        else:
+            removed = await asyncio.to_thread(forget_host_key, host)
         success = f"Đã xoá host key của {host}." if removed else f"Không tìm thấy host key của {host}."
         error = None
     except (HostKeyProvisionError, OSError) as exc:
@@ -1575,6 +1785,8 @@ async def settings_ceph_host_key_delete(
         ceph_host_key_error=error,
         ceph_host_key_success=success,
         ceph_host_key_values={"host": host},
+        ceph_host_key_search=host_key_search,
+        ceph_host_key_page=host_key_page,
     ))
 
 
@@ -2024,6 +2236,25 @@ async def openstack_vm_ssh_test(
     }
 
 
+def _normalise_codex_models(catalog: list[dict]) -> list[dict]:
+    """Return a stable, de-duplicated model catalog for the Settings UI."""
+    models: list[dict] = []
+    seen: set[str] = set()
+    for item in catalog:
+        model_id = str(item.get("model") or item.get("id") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        models.append({
+            "id": model_id,
+            "label": str(item.get("displayName") or item.get("name") or model_id),
+            "version": item.get("version"),
+            "is_default": bool(item.get("isDefault")),
+            "is_hidden": bool(item.get("isHidden") or item.get("hidden")),
+        })
+    return models
+
+
 @router.get("/settings/codex/status")
 async def settings_codex_status(user: str = Depends(require_login)):
     executable = codex_executable()
@@ -2032,11 +2263,14 @@ async def settings_codex_status(user: str = Depends(require_login)):
     try:
         await refresh_app_server_after_cli_login()
         account = await codex_app_server.account()
-        model_catalog = await codex_app_server.models() if account else []
+        # The status poll runs immediately after device login completes, so a
+        # live fetch here automatically refreshes the complete catalog.
+        model_catalog = await codex_app_server.models(include_hidden=True) if account else []
         limits = normalize_rate_limits(await codex_app_server.rate_limits()) if account else []
     except CodexAppServerError as exc:
         return {"installed": True, "authenticated": False, "enabled": settings.codex_chat_enabled, "error": str(exc)}
     authenticated = bool(account)
+    models = _normalise_codex_models(model_catalog)
     return {
         "installed": True,
         "authenticated": authenticated,
@@ -2044,10 +2278,9 @@ async def settings_codex_status(user: str = Depends(require_login)):
         "email": account.get("email"),
         "plan_type": account.get("planType") or account.get("plan_type"),
         "model": settings.codex_chat_model,
-        "models": [
-            {"id": item.get("model") or item.get("id"), "label": item.get("displayName") or item.get("model") or item.get("id"), "is_default": bool(item.get("isDefault"))}
-            for item in model_catalog if item.get("model") or item.get("id")
-        ],
+        "models": models,
+        "models_synced": bool(account),
+        "model_count": len(models),
         "limits": limits,
     }
 
@@ -2059,12 +2292,12 @@ async def settings_codex_model(model: str = Form(""), user: str = Depends(requir
     try:
         if not await codex_app_server.account():
             raise HTTPException(status_code=409, detail="Cần đăng nhập Codex trước khi chọn model")
-        catalog = await codex_app_server.models()
+        catalog = await codex_app_server.models(include_hidden=True)
     except HTTPException:
         raise
     except CodexAppServerError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    available = {item.get("model") or item.get("id") for item in catalog}
+    available = {item["id"] for item in _normalise_codex_models(catalog)}
     if submitted and submitted not in available:
         raise HTTPException(status_code=400, detail="Model Codex không khả dụng với tài khoản này")
     _update_env_file(CODEX_CHAT_MODEL_ENV_NAME, submitted)
@@ -2336,7 +2569,14 @@ async def settings_verify_router(
             status_code=400, detail=f"Cần nhập Base URL ({provider_label}) trước khi kiểm tra kết nối"
         )
 
-    is_valid, message, models = await verify_router_connection(submitted_key, submitted_base_url)
+    try:
+        is_valid, message, models = await verify_router_connection(submitted_key, submitted_base_url)
+    except Exception as exc:
+        logger.exception("settings_verify_router: unexpected verification failure")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Không thể kiểm tra AI API: {readable_exception_message(exc)}",
+        ) from exc
     return {"valid": is_valid, "message": message, "models": models}
 
 

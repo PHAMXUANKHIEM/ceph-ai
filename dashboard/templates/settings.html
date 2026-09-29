@@ -869,6 +869,7 @@
                 <div class="ai-test-row"><button type="button" class="btn btn-primary btn-sm" id="codex-login-btn">Đăng nhập bằng Codex</button><button type="button" class="btn btn-sm settings-api-logout" id="codex-logout-btn" hidden>Đăng xuất</button></div>
                 <div id="codex-model-panel" class="ai-inline-model" hidden>
                   <label>Model Codex<select id="codex-model-select"></select></label>
+                  <p id="codex-model-sync-status" class="hint" aria-live="polite"></p>
                   <div class="ai-test-row"><button type="button" class="btn btn-sm settings-api-secondary" id="codex-model-save-btn">Lưu model</button><span id="codex-model-result" class="ai-test-result" hidden></span></div>
                 </div>
                 <div id="codex-limit-panel" class="ai-limit-panel" hidden></div>
@@ -1115,20 +1116,77 @@
     </section>
 
     <section class="card settings-panel" data-panel="ceph-host-keys" {% if active_section != 'ceph-host-keys' %}hidden{% endif %}>
-      <div class="card-header"><h2>SSH host keys của node Ceph</h2></div>
+      <div class="card-header ceph-host-key-title"><h2>SSH host keys của node Ceph <span class="ceph-host-key-count">{{ ceph_host_key_saved_total }} keys</span></h2></div>
       <div class="card-body">
         {% if ceph_host_key_inventory_error %}<p class="error">{{ ceph_host_key_inventory_error }}</p>{% endif %}
         {% if ceph_host_key_error %}<p class="error">{{ ceph_host_key_error }}</p>{% endif %}
         {% if ceph_host_key_success %}<p class="success">{{ ceph_host_key_success }}</p>{% endif %}
         <p class="hint">Đây là host key của các node MON/OSD Ceph, dùng để Dashboard xác minh đúng máy chủ khi SSH. Hãy lấy key từ console node hoặc một máy quản trị đã tin cậy và kiểm tra fingerprint trước khi lưu.</p>
-        <div class="table-wrap"><table><thead><tr><th>Node</th><th>Loại key</th><th>Fingerprint SHA-256</th><th></th></tr></thead><tbody>{% for item in ceph_host_keys %}<tr><td><code>{{ item.host }}</code></td><td>{{ item.key_type }}</td><td><code>{{ item.fingerprint }}</code></td><td><form method="post" action="/settings/ceph-host-keys/delete" class="inline-form" onsubmit="return confirm('Xoá host key của node này?');"><input type="hidden" name="host" value="{{ item.host }}"><button class="btn btn-sm btn-danger">Xoá</button></form></td></tr>{% else %}<tr><td colspan="4" class="empty-state">Chưa có host key Ceph nào được lưu.</td></tr>{% endfor %}</tbody></table></div>
+        {% if ceph_host_key_duplicate_hosts %}<div class="ceph-host-key-duplicate-alert" role="alert">⚠ {{ ceph_host_key_duplicate_hosts|length }} node đang dùng chung một host key — kiểm tra lại xem có phải cùng một máy hoặc key bị copy nhầm.</div>{% endif %}
+        <div class="ceph-host-key-toolbar">
+          <form method="get" action="/settings" class="ceph-host-key-search" role="search" data-host-key-search-form>
+            <input type="hidden" name="section" value="ceph-host-keys">
+            <div class="ceph-host-key-search-row">
+              <input id="ceph-host-key-search-input" type="search" name="host_key_search" value="{{ ceph_host_key_search }}" placeholder="Tìm node, loại key, fingerprint, ghi chú…" autocomplete="off" aria-label="Tìm kiếm host key">
+            </div>
+          </form>
+          {% if ceph_host_key_total_pages > 1 %}<nav class="ceph-host-key-pagination" aria-label="Phân trang SSH host keys"><span>{{ (ceph_host_key_page - 1) * ceph_host_key_page_size + 1 }}–{{ [ceph_host_key_page * ceph_host_key_page_size, ceph_host_key_total]|min }} / {{ ceph_host_key_total }}</span>{% if ceph_host_key_page > 1 %}<a href="/settings?section=ceph-host-keys&amp;host_key_search={{ ceph_host_key_search|urlencode }}&amp;host_key_page={{ ceph_host_key_page - 1 }}" aria-label="Trang trước">‹</a>{% else %}<span class="is-disabled">‹</span>{% endif %}<strong>{{ ceph_host_key_page }}</strong>{% if ceph_host_key_page < ceph_host_key_total_pages %}<a href="/settings?section=ceph-host-keys&amp;host_key_search={{ ceph_host_key_search|urlencode }}&amp;host_key_page={{ ceph_host_key_page + 1 }}" aria-label="Trang sau">›</a>{% else %}<span class="is-disabled">›</span>{% endif %}</nav>{% endif %}
+        </div>
+        <div class="table-wrap ceph-host-key-table-wrap">
+          <table class="ceph-host-key-table">
+            <thead><tr><th>Node</th><th>Loại key</th><th>Fingerprint SHA-256 {% if is_admin %}<button type="button" class="ceph-host-key-toggle-all" data-host-key-toggle-all>Hiện tất cả</button>{% endif %}</th><th>Ghi chú</th><th>Ghi nhận</th><th class="ceph-host-key-actions-heading">Thao tác</th></tr></thead>
+            <tbody>
+              {% for item in ceph_host_keys %}
+                <tr>
+                  <td><code>{{ item.host }}</code></td>
+                  <td><span class="ceph-host-key-type">{{ item.key_type }}</span></td>
+                  <td class="ceph-host-key-fingerprint-cell"><code class="ceph-host-key-fingerprint" data-masked-fingerprint="{{ item.fingerprint_masked }}">{{ item.fingerprint_masked }}</code><span class="ceph-host-key-fingerprint-actions">{% if is_admin %}<button type="button" class="ceph-host-key-icon-button" data-host-key-reveal data-host="{{ item.host }}" data-key-type="{{ item.key_type }}" aria-label="Hiện fingerprint của {{ item.host }}" title="Hiện trong 30 giây">👁</button>{% endif %}<button type="button" class="ceph-host-key-icon-button" data-host-key-copy data-host="{{ item.host }}" data-key-type="{{ item.key_type }}" data-masked="{{ item.fingerprint_masked }}" aria-label="Sao chép fingerprint">📋</button></span>{% if item.duplicate_hosts %}<span class="ceph-host-key-duplicate" title="Trùng với: {{ item.duplicate_hosts|join(', ') }}">⚠ Trùng với {{ item.duplicate_hosts|length }} node khác</span>{% endif %}</td>
+                  <td class="ceph-host-key-note" title="{{ item.note or '' }}">{{ item.note or '—' }}</td>
+                  <td class="ceph-host-key-audit">{{ item.added_by_display }}{% if item.created_at_display != 'Chưa ghi nhận' %}<span>{{ item.created_at_display }}</span>{% endif %}</td>
+                  <td class="ceph-host-key-actions">
+                    {% if is_admin %}<button type="button" class="ceph-host-key-icon-button" data-host-key-edit-note data-host="{{ item.host }}" data-note="{{ item.note or '' }}" aria-label="Sửa ghi chú của {{ item.host }}" title="Sửa ghi chú">✎</button><form method="post" action="/settings/ceph-host-keys/delete" class="inline-form ceph-host-key-delete-form" data-confirm-host="{{ item.host }}">
+                      <input type="hidden" name="host" value="{{ item.host }}">
+                      <input type="hidden" name="key_type" value="{{ item.key_type }}">
+                      <input type="hidden" name="host_key_search" value="{{ ceph_host_key_search }}">
+                      <input type="hidden" name="host_key_page" value="{{ ceph_host_key_page }}">
+                      <button type="submit" class="ceph-host-key-delete-button" title="Xoá host key của {{ item.host }}" aria-label="Xoá host key của {{ item.host }}"><span aria-hidden="true">🗑</span><span>Xoá key</span></button>
+                    </form>{% endif %}
+                  </td>
+                </tr>
+              {% else %}
+                <tr><td colspan="6" class="empty-state">{% if ceph_host_key_search %}Không tìm thấy host key phù hợp với “{{ ceph_host_key_search }}”.{% else %}Chưa có host key Ceph nào được lưu.{% endif %}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
         <h3>Thêm hoặc thay thế host key</h3>
-        <form class="login-box" method="post" action="/settings/ceph-host-keys/save">
+        {% if not is_admin %}<p class="hint">Chỉ admin mới thêm hoặc thay thế host key được.</p>{% else %}<form class="login-box ceph-host-key-form" method="post" action="/settings/ceph-host-keys/save" data-host-key-save-form>
+          <input type="hidden" name="host_key_search" value="{{ ceph_host_key_search }}">
+          <input type="hidden" name="host_key_page" value="{{ ceph_host_key_page }}">
           <label>Node host / IP<input name="host" value="{{ (ceph_host_key_values or {}).host or '' }}" required placeholder="10.3.54.152"></label>
-          <label>SSH host public key<textarea name="host_key" rows="3" required spellcheck="false" placeholder="ssh-ed25519 AAAA... node-host"></textarea></label>
-          <p class="hint">Không nhập public key của Dashboard và không nhập private key. Sau khi lưu, hãy chạy lại Deploy Ceph.</p>
-          <button class="btn btn-primary">Lưu host key đã xác minh</button>
-        </form>
+          <div class="ceph-host-key-security-warning">⚠ <span>Không nhập public key của Dashboard và tuyệt đối không nhập private key. Sau khi lưu, hãy chạy lại Deploy Ceph.</span></div>
+          <label>SSH host public key<textarea name="host_key" rows="3" required spellcheck="false" placeholder="ssh-ed25519 AAAA... node-host" data-host-public-key></textarea><span class="ceph-host-key-validation" data-host-key-validation></span></label>
+          <label>Ghi chú <span class="ceph-host-key-note-hint">Tuỳ chọn, tối đa 500 ký tự</span><textarea name="note" rows="2" maxlength="500" placeholder="Ví dụ: MON node 1, key xác minh ngày 28/09/2026" data-host-key-note>{{ (ceph_host_key_values or {}).note or '' }}</textarea><span class="ceph-host-key-char-count" data-host-key-char-count>0/500</span></label>
+          <button class="btn btn-primary" type="submit" disabled data-host-key-save-button>Lưu host key đã xác minh</button>
+        </form>{% endif %}
+        <dialog class="ceph-host-key-note-dialog" data-host-key-note-dialog><form method="dialog"><h3>Sửa ghi chú host key</h3><p data-note-host></p><textarea maxlength="500" rows="2" data-note-value></textarea><div><button class="btn btn-ghost" value="cancel">Huỷ</button><button class="btn btn-primary" value="save" data-note-save>Lưu ghi chú</button></div></form></dialog>
+        {% if is_admin %}
+        <dialog class="ceph-host-key-delete-dialog" data-host-key-delete-dialog aria-labelledby="host-key-delete-title" aria-describedby="host-key-delete-description">
+          <div class="ceph-host-key-delete-card">
+            <div class="ceph-host-key-delete-heading">
+              <span class="ceph-host-key-delete-icon" aria-hidden="true">!</span>
+              <div><p class="ceph-host-key-delete-eyebrow">Thao tác bảo mật</p><h3 id="host-key-delete-title">Xoá SSH host key?</h3></div>
+              <button type="button" class="ceph-host-key-delete-close" data-delete-close aria-label="Đóng hộp thoại">×</button>
+            </div>
+            <p id="host-key-delete-description" class="ceph-host-key-delete-description">Thao tác này chỉ xoá host key đã ghim trong Dashboard, không xoá key trên node. Kết nối SSH đến node sẽ cần được xác minh và ghim lại.</p>
+            <div class="ceph-host-key-delete-target"><span>Node sẽ xoá</span><code data-delete-host-label></code></div>
+            <label class="ceph-host-key-delete-confirm-label" for="host-key-delete-confirm-input">Nhập chính xác tên node để xác nhận</label>
+            <input id="host-key-delete-confirm-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" data-delete-confirm-input aria-describedby="host-key-delete-error">
+            <p id="host-key-delete-error" class="ceph-host-key-delete-error" data-delete-error role="alert" hidden>Tên node chưa khớp.</p>
+            <div class="ceph-host-key-delete-actions"><button type="button" class="btn btn-ghost" data-delete-cancel>Huỷ</button><button type="button" class="btn btn-danger" data-delete-confirm disabled><span aria-hidden="true">🗑</span> Xoá host key</button></div>
+          </div>
+        </dialog>
+        {% endif %}
       </div>
     </section>
 
@@ -1167,7 +1225,7 @@
     </div>
   </main>
   <script src="/static/pagination.js?v={{ static_version }}"></script>
-  <script src="/static/settings.js?v={{ static_version }}-settings-v7"></script>
+  <script src="/static/settings.js?v={{ static_version }}-settings-v9-delete-dialog"></script>
   <script src="/static/settings_navigation.js?v={{ static_version }}"></script>
   <script src="/static/settings_logs.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>

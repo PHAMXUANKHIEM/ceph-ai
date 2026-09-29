@@ -44,7 +44,14 @@ def build_router_client(api_key: str, base_url: str) -> AsyncOpenAI:
     # 9router addresses usually do not. Accept both operator-facing forms.
     if not normalized_url.endswith("/v1"):
         normalized_url += "/v1"
-    return AsyncOpenAI(api_key=api_key, base_url=normalized_url)
+    # Bound connection time and disable hidden SDK retries so a disconnected
+    # router fails quickly and the caller can show an actionable error.
+    return AsyncOpenAI(
+        api_key=api_key,
+        base_url=normalized_url,
+        timeout=10.0,
+        max_retries=0,
+    )
 
 
 async def list_router_models(api_key: str, base_url: str) -> list[str]:

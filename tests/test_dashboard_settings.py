@@ -13,6 +13,7 @@ from shared import env_config
 from shared.models import (
     ActionPolicyOverride, ActionPolicyOverrideAudit, PlaybookStat,
     AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, User,
+    SecurityAuditEvent,
 )
 from watcher.ceph_client import CephQueryError
 
@@ -75,6 +76,8 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert "BẬT AUTOPILOT" in response.text or "TẮT AUTOPILOT" in response.text
     assert 'data-panel="ceph-host-keys"' in response.text
     assert 'action="/settings/ceph-host-keys/save"' in response.text
+    assert 'name="note"' in response.text
+    assert "Ghi nhận" in response.text
     assert "Autopilot theo cluster" not in response.text
     assert "Phân loại hành động AI" in response.text
     assert 'id="action-policy-search"' in response.text
@@ -1596,12 +1599,12 @@ def test_settings_page_has_no_forget_host_key_form(dashboard_client):
 
 def test_ceph_host_key_settings_can_save_and_delete_key(dashboard_client, monkeypatch):
     calls = []
-    monkeypatch.setattr(settings_route, "provision_host_key", lambda host, key: calls.append(("save", host, key)) or "ssh-ed25519")
+    monkeypatch.setattr(settings_route, "provision_host_key", lambda host, key, note="", added_by="": calls.append(("save", host, key, note, added_by)) or "ssh-ed25519")
     monkeypatch.setattr(settings_route, "forget_host_key", lambda host: calls.append(("delete", host)) or True)
     _login(dashboard_client)
 
     saved = dashboard_client.post("/settings/ceph-host-keys/save", data={
-        "host": "10.3.54.152", "host_key": "ssh-ed25519 AAAAverified",
+        "host": "10.3.54.152", "host_key": "ssh-ed25519 AAAAverified", "note": "MON node chính",
     })
     deleted = dashboard_client.post("/settings/ceph-host-keys/delete", data={"host": "10.3.54.152"})
 
@@ -1610,9 +1613,29 @@ def test_ceph_host_key_settings_can_save_and_delete_key(dashboard_client, monkey
     assert deleted.status_code == 200
     assert "Đã xoá host key của 10.3.54.152" in deleted.text
     assert calls == [
-        ("save", "10.3.54.152", "ssh-ed25519 AAAAverified"),
+        ("save", "10.3.54.152", "ssh-ed25519 AAAAverified", "MON node chính", "admin"),
         ("delete", "10.3.54.152"),
     ]
+
+
+def test_ceph_host_key_delete_uses_typed_confirmation_dialog(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/settings?section=ceph-host-keys")
+
+    assert response.status_code == 200
+    assert 'data-host-key-delete-dialog' in response.text
+    assert 'data-delete-confirm-input' in response.text
+    assert 'data-delete-confirm disabled' in response.text
+    assert 'settings-v9-delete-dialog' in response.text
+
+
+def test_host_key_delete_script_does_not_use_blocking_prompt():
+    from pathlib import Path
+
+    script = Path("dashboard/static/settings.js").read_text(encoding="utf-8")
+    assert 'window.prompt("Nhập lại chính xác tên node để xoá host key:' not in script
+    assert 'form.requestSubmit()' in script
 
 
 def test_ceph_host_key_settings_prefills_host_from_deploy_error_link(dashboard_client):
@@ -1623,6 +1646,175 @@ def test_ceph_host_key_settings_prefills_host_from_deploy_error_link(dashboard_c
     assert response.status_code == 200
     assert 'data-panel="ceph-host-keys"' in response.text
     assert 'value="10.3.54.152"' in response.text
+
+
+def test_ceph_host_key_settings_searches_and_paginates_five_rows(
+    dashboard_client, monkeypatch,
+):
+    _login(dashboard_client)
+    rows = [
+        {
+            "host": f"10.3.54.{index}",
+            "key_type": "ssh-ed25519",
+            "fingerprint": f"SHA256:fingerprint-{index}",
+        }
+        for index in range(1, 8)
+    ]
+    monkeypatch.setattr(settings_route, "list_host_keys", lambda: rows)
+
+    first_page = dashboard_client.get("/settings?section=ceph-host-keys")
+    assert first_page.status_code == 200
+    assert ">7 keys</span>" in first_page.text
+    assert 'value="10.3.54.1"' in first_page.text
+    assert 'value="10.3.54.5"' in first_page.text
+    assert 'value="10.3.54.6"' not in first_page.text
+    assert "1–5 / 7" in first_page.text
+
+    second_page = dashboard_client.get(
+        "/settings?section=ceph-host-keys&host_key_page=2"
+    )
+    assert second_page.status_code == 200
+    assert 'value="10.3.54.6"' in second_page.text
+    assert 'value="10.3.54.7"' in second_page.text
+    assert 'value="10.3.54.1"' not in second_page.text
+
+    filtered = dashboard_client.get(
+        "/settings?section=ceph-host-keys&host_key_search=fingerprint-7"
+    )
+    assert filtered.status_code == 200
+    assert 'value="fingerprint-7"' in filtered.text
+    assert 'value="10.3.54.7"' in filtered.text
+    assert 'value="10.3.54.1"' not in filtered.text
+
+
+def test_ceph_host_key_fingerprint_is_server_masked_for_non_admin(
+    dashboard_client, monkeypatch,
+):
+    _create_user("readonly", "readonly-password")
+    fingerprint = "SHA256:AbCd123456789012345678901234567890abcXYZ"
+    monkeypatch.setattr(settings_route, "list_host_keys", lambda: [{
+        "host": "10.20.1.153", "key_type": "ssh-ed25519", "fingerprint": fingerprint,
+    }])
+    _login_as(dashboard_client, "readonly", "readonly-password")
+
+    response = dashboard_client.get("/settings?section=ceph-host-keys")
+
+    assert response.status_code == 200
+    assert fingerprint not in response.text
+    assert settings_route._mask_host_fingerprint(fingerprint) in response.text
+    assert "data-host-key-reveal" not in response.text
+    assert "Chỉ admin mới thêm hoặc thay thế host key được." in response.text
+
+
+def test_admin_fingerprint_reveal_is_audited(dashboard_client, monkeypatch):
+    fingerprint = "SHA256:AbCd123456789012345678901234567890abcXYZ"
+    monkeypatch.setattr(settings_route, "list_host_keys", lambda: [{
+        "host": "10.20.1.153", "key_type": "ssh-ed25519", "fingerprint": fingerprint,
+    }])
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/ceph-host-keys/fingerprint", data={
+        "host": "10.20.1.153", "key_type": "ssh-ed25519",
+    })
+
+    assert response.status_code == 200
+    assert response.json() == {"fingerprint": fingerprint}
+    with db_module.SessionLocal() as session:
+        audit = session.query(SecurityAuditEvent).filter(
+            SecurityAuditEvent.path == "/settings/ceph-host-keys/10.20.1.153/fingerprint"
+        ).one()
+        assert audit.actor == "admin"
+        assert audit.method == "POST"
+        assert audit.status_code == 200
+
+
+def test_non_admin_cannot_call_fingerprint_reveal(dashboard_client, monkeypatch):
+    _create_user("readonly", "readonly-password")
+    monkeypatch.setattr(settings_route, "list_host_keys", lambda: [{
+        "host": "10.20.1.153", "key_type": "ssh-ed25519", "fingerprint": "SHA256:must-not-leak",
+    }])
+    _login_as(dashboard_client, "readonly", "readonly-password")
+
+    response = dashboard_client.post("/settings/ceph-host-keys/fingerprint", data={
+        "host": "10.20.1.153", "key_type": "ssh-ed25519",
+    })
+
+    assert response.status_code == 403
+    assert "SHA256:must-not-leak" not in response.text
+
+
+def test_admin_compare_returns_old_new_fingerprints_and_audits_node(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings_route, "fingerprint_host_public_key", lambda host, key: (
+        "ssh-ed25519", "SHA256:new-fingerprint",
+    ))
+    monkeypatch.setattr(settings_route, "list_host_keys", lambda: [{
+        "host": "10.20.1.153", "key_type": "ssh-ed25519", "fingerprint": "SHA256:old-fingerprint",
+    }])
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/ceph-host-keys/compare", data={
+        "host": "10.20.1.153", "host_key": "ssh-ed25519 AAAA",
+    })
+
+    assert response.status_code == 200
+    assert response.json()["old_fingerprint"] == "SHA256:old-fingerprint"
+    assert response.json()["new_fingerprint"] == "SHA256:new-fingerprint"
+    assert response.json()["duplicate_hosts"] == []
+    with db_module.SessionLocal() as session:
+        assert session.query(SecurityAuditEvent).filter(
+            SecurityAuditEvent.path == "/settings/ceph-host-keys/10.20.1.153/compare"
+        ).one().actor == "admin"
+
+
+def test_admin_compare_matches_existing_fingerprint_by_host_and_key_type(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings_route, "fingerprint_host_public_key", lambda host, key: (
+        "ssh-ed25519", "SHA256:new-ed25519",
+    ))
+    monkeypatch.setattr(settings_route, "list_host_keys", lambda: [
+        {"host": "10.20.1.153", "key_type": "ssh-rsa", "fingerprint": "SHA256:old-rsa"},
+        {"host": "10.20.1.153", "key_type": "ssh-ed25519", "fingerprint": "SHA256:old-ed25519"},
+    ])
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/ceph-host-keys/compare", data={
+        "host": "10.20.1.153", "host_key": "ssh-ed25519 AAAA",
+    })
+
+    assert response.status_code == 200
+    assert response.json()["old_fingerprint"] == "SHA256:old-ed25519"
+
+
+def test_admin_compare_reports_same_fingerprint_saved_for_other_nodes(dashboard_client, monkeypatch):
+    fingerprint = "SHA256:duplicate-key-material"
+    monkeypatch.setattr(settings_route, "fingerprint_host_public_key", lambda host, key: (
+        "ssh-ed25519", fingerprint,
+    ))
+    monkeypatch.setattr(settings_route, "list_host_keys", lambda: [
+        {"host": "10.20.1.153", "key_type": "ssh-ed25519", "fingerprint": fingerprint},
+        {"host": "10.20.1.39", "key_type": "ssh-ed25519", "fingerprint": fingerprint},
+        {"host": "10.20.1.50", "key_type": "ssh-rsa", "fingerprint": "SHA256:other"},
+    ])
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/ceph-host-keys/compare", data={
+        "host": "10.20.1.153", "host_key": "ssh-ed25519 AAAA",
+    })
+
+    assert response.status_code == 200
+    assert response.json()["duplicate_hosts"] == ["10.20.1.39"]
+
+
+def test_host_key_delete_route_targets_requested_key_type(dashboard_client, monkeypatch):
+    removed = []
+    monkeypatch.setattr(settings_route, "forget_host_key", lambda host, key_type: removed.append((host, key_type)) or True)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/ceph-host-keys/delete", data={
+        "host": "10.20.1.153", "key_type": "ssh-rsa",
+    })
+
+    assert response.status_code == 200
+    assert removed == [("10.20.1.153", "ssh-rsa")]
 
 
 def test_9router_form_submission_does_not_leak_into_cluster_form_state(

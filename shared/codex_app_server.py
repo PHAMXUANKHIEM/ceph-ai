@@ -392,10 +392,19 @@ class CodexAppServer:
     async def logout(self) -> None:
         await self._request("account/logout")
 
-    async def models(self) -> list[dict]:
-        """Return the model picker catalog exposed by the logged-in account."""
-        result = await self._request("model/list", {"includeHidden": False})
-        return result.get("data") or []
+    async def models(self, *, include_hidden: bool = True) -> list[dict]:
+        """Return the complete model catalog exposed by the logged-in account."""
+        try:
+            result = await self._request("model/list", {"includeHidden": include_hidden})
+        except CodexAppServerError:
+            # Older Codex versions may reject the flag.
+            if not include_hidden:
+                raise
+            result = await self._request("model/list", {"includeHidden": False})
+        data = result.get("data")
+        if not isinstance(data, list):
+            data = result.get("models")
+        return [item for item in (data or []) if isinstance(item, dict)]
 
     async def rate_limits(self) -> dict:
         return await self._request("account/rateLimits/read", {})

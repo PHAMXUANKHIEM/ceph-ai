@@ -1,4 +1,245 @@
 (function () {
+  var keySearch = document.querySelector("[data-host-key-search-form]");
+  var searchInput = document.getElementById("ceph-host-key-search-input");
+  var searchTimer = null;
+  if (keySearch && searchInput) {
+    searchInput.addEventListener("input", function () {
+      window.clearTimeout(searchTimer);
+      searchTimer = window.setTimeout(function () { keySearch.requestSubmit(); }, 300);
+    });
+  }
+
+  function postForm(url, values) {
+    var body = new URLSearchParams(values);
+    return fetch(url, { method: "POST", credentials: "same-origin", body: body })
+      .then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          if (!response.ok) throw new Error(data.detail || "Yêu cầu thất bại");
+          return data;
+        });
+      });
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var field = document.createElement("textarea");
+      field.value = text;
+      field.setAttribute("readonly", "");
+      field.style.position = "fixed";
+      field.style.left = "-9999px";
+      document.body.appendChild(field);
+      field.select();
+      var copied = false;
+      try { copied = document.execCommand("copy"); } catch (_error) { copied = false; }
+      field.remove();
+      if (copied) resolve();
+      else reject(new Error("Trình duyệt không cho phép sao chép tự động; hãy chọn và sao chép thủ công."));
+    });
+  }
+
+  var revealTimers = new WeakMap();
+  function revealFingerprint(button) {
+    var cell = button.closest(".ceph-host-key-fingerprint-cell");
+    var value = cell && cell.querySelector(".ceph-host-key-fingerprint");
+    if (!cell || !value) return Promise.reject(new Error("Không tìm thấy fingerprint"));
+    return postForm("/settings/ceph-host-keys/fingerprint", {
+      host: button.dataset.host, key_type: button.dataset.keyType
+    }).then(function (data) {
+      value.textContent = data.fingerprint;
+      value.dataset.fullFingerprint = data.fingerprint;
+      cell.classList.add("is-revealed");
+      window.clearTimeout(revealTimers.get(cell));
+      revealTimers.set(cell, window.setTimeout(function () {
+        value.textContent = value.dataset.maskedFingerprint;
+        delete value.dataset.fullFingerprint;
+        cell.classList.remove("is-revealed");
+      }, 30000));
+      return data.fingerprint;
+    });
+  }
+
+  document.querySelectorAll("[data-host-key-reveal]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var cell = button.closest(".ceph-host-key-fingerprint-cell");
+      if (cell && cell.classList.contains("is-revealed")) {
+        var value = cell.querySelector(".ceph-host-key-fingerprint");
+        window.clearTimeout(revealTimers.get(cell));
+        value.textContent = value.dataset.maskedFingerprint;
+        delete value.dataset.fullFingerprint;
+        cell.classList.remove("is-revealed");
+        return;
+      }
+      revealFingerprint(button).catch(function (error) { window.alert(error.message); });
+    });
+  });
+
+  var toggleAll = document.querySelector("[data-host-key-toggle-all]");
+  if (toggleAll) {
+    toggleAll.addEventListener("click", function () {
+      var reveal = toggleAll.dataset.revealed !== "true";
+      var buttons = Array.from(document.querySelectorAll("[data-host-key-reveal]"));
+      if (!reveal) {
+        buttons.forEach(function (button) {
+          var cell = button.closest(".ceph-host-key-fingerprint-cell");
+          if (!cell) return;
+          var value = cell.querySelector(".ceph-host-key-fingerprint");
+          window.clearTimeout(revealTimers.get(cell));
+          value.textContent = value.dataset.maskedFingerprint;
+          delete value.dataset.fullFingerprint;
+          cell.classList.remove("is-revealed");
+        });
+        toggleAll.dataset.revealed = "false";
+        toggleAll.textContent = "Hiện tất cả";
+        return;
+      }
+      Promise.all(buttons.map(revealFingerprint)).then(function () {
+        toggleAll.dataset.revealed = "true";
+        toggleAll.textContent = "Ẩn tất cả";
+      }).catch(function (error) { window.alert(error.message); });
+    });
+  }
+
+  document.querySelectorAll("[data-host-key-copy]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var cell = button.closest(".ceph-host-key-fingerprint-cell");
+      var revealButton = cell && cell.querySelector("[data-host-key-reveal]");
+      var copy = revealButton ? revealFingerprint(revealButton) : Promise.resolve(button.dataset.masked);
+      copy.then(copyText)
+        .then(function () { button.title = "Đã sao chép"; })
+        .catch(function (error) { window.alert(error.message || "Không sao chép được fingerprint"); });
+    });
+  });
+
+  var noteDialog = document.querySelector("[data-host-key-note-dialog]");
+  var noteEditor = { host: "" };
+  document.querySelectorAll("[data-host-key-edit-note]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      noteEditor.host = button.dataset.host;
+      noteDialog.querySelector("[data-note-host]").textContent = button.dataset.host;
+      noteDialog.querySelector("[data-note-value]").value = button.dataset.note;
+      noteDialog.showModal();
+    });
+  });
+  var noteSave = noteDialog && noteDialog.querySelector("[data-note-save]");
+  if (noteSave) noteSave.addEventListener("click", function (event) {
+    if (noteSave.value === "cancel") return;
+    event.preventDefault();
+    var note = noteDialog.querySelector("[data-note-value]").value;
+    postForm("/settings/ceph-host-keys/note", { host: noteEditor.host, note: note })
+      .then(function () { window.location.reload(); })
+      .catch(function (error) { window.alert(error.message); });
+  });
+
+  var deleteDialog = document.querySelector("[data-host-key-delete-dialog]");
+  var deleteInput = deleteDialog && deleteDialog.querySelector("[data-delete-confirm-input]");
+  var deleteButton = deleteDialog && deleteDialog.querySelector("[data-delete-confirm]");
+  var deleteError = deleteDialog && deleteDialog.querySelector("[data-delete-error]");
+  var pendingDeleteForm = null;
+  function validateDeleteConfirmation() {
+    if (!pendingDeleteForm || !deleteInput || !deleteButton) return;
+    var matches = deleteInput.value === pendingDeleteForm.dataset.confirmHost;
+    deleteButton.disabled = !matches;
+    deleteError.hidden = !deleteInput.value || matches;
+  }
+  document.querySelectorAll("[data-confirm-host]").forEach(function (form) {
+    form.addEventListener("submit", function (event) {
+      if (form.dataset.confirmed === "true") {
+        delete form.dataset.confirmed;
+        return;
+      }
+      event.preventDefault();
+      if (!deleteDialog || !deleteInput || !deleteButton) {
+        window.alert("Không mở được hộp thoại xác nhận. Host key chưa bị xoá.");
+        return;
+      }
+      pendingDeleteForm = form;
+      deleteDialog.querySelector("[data-delete-host-label]").textContent = form.dataset.confirmHost;
+      deleteInput.value = "";
+      deleteError.hidden = true;
+      deleteButton.disabled = true;
+      deleteDialog.showModal();
+      window.setTimeout(function () { deleteInput.focus(); }, 0);
+    });
+  });
+  if (deleteInput) deleteInput.addEventListener("input", validateDeleteConfirmation);
+  if (deleteButton) deleteButton.addEventListener("click", function () {
+    if (!pendingDeleteForm || deleteInput.value !== pendingDeleteForm.dataset.confirmHost) return;
+    var form = pendingDeleteForm;
+    pendingDeleteForm = null;
+    form.dataset.confirmed = "true";
+    deleteDialog.close();
+    form.requestSubmit();
+  });
+  if (deleteDialog) {
+    ["[data-delete-cancel]", "[data-delete-close]"].forEach(function (selector) {
+      var closeButton = deleteDialog.querySelector(selector);
+      if (closeButton) closeButton.addEventListener("click", function () { deleteDialog.close(); });
+    });
+    deleteDialog.addEventListener("close", function () {
+      pendingDeleteForm = null;
+      deleteInput.value = "";
+      deleteButton.disabled = true;
+      deleteError.hidden = true;
+    });
+  }
+
+  var keyForm = document.querySelector("[data-host-key-save-form]");
+  if (keyForm) {
+    var hostField = keyForm.elements.host;
+    var publicKey = keyForm.querySelector("[data-host-public-key]");
+    var validation = keyForm.querySelector("[data-host-key-validation]");
+    var saveButton = keyForm.querySelector("[data-host-key-save-button]");
+    var validKey = false;
+    function validatePublicKey() {
+      var text = publicKey.value.trim();
+      var isPrivate = /PRIVATE KEY/i.test(text);
+      validKey = !isPrivate && /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[A-Za-z0-9-]+)\s+[A-Za-z0-9+/]+={0,2}(?:\s|$)/.test(text);
+      validation.textContent = isPrivate ? "Không nhập private key. Hãy xoá nội dung này ngay." :
+        (text && !validKey ? "Public key phải bắt đầu bằng ssh-ed25519, ssh-rsa hoặc ecdsa-sha2-*." : "");
+      validation.classList.toggle("is-error", !!validation.textContent);
+      saveButton.disabled = !(hostField.value.trim() && validKey);
+    }
+    ["input", "change"].forEach(function (name) {
+      publicKey.addEventListener(name, validatePublicKey);
+      hostField.addEventListener(name, validatePublicKey);
+    });
+    publicKey.addEventListener("input", function () {
+      publicKey.style.height = "auto";
+      publicKey.style.height = Math.max(72, publicKey.scrollHeight) + "px";
+    });
+    var noteField = keyForm.querySelector("[data-host-key-note]");
+    var noteCount = keyForm.querySelector("[data-host-key-char-count]");
+    noteField.addEventListener("input", function () { noteCount.textContent = noteField.value.length + "/500"; });
+    keyForm.addEventListener("submit", function (event) {
+      if (keyForm.dataset.confirmed === "true") {
+        delete keyForm.dataset.confirmed;
+        return;
+      }
+      if (!validKey || !hostField.value.trim()) { event.preventDefault(); return; }
+      event.preventDefault();
+      postForm("/settings/ceph-host-keys/compare", {
+        host: hostField.value.trim(), host_key: publicKey.value.trim()
+      }).then(function (result) {
+        var prompt = result.old_fingerprint
+          ? "Fingerprint cũ:\n" + result.old_fingerprint + "\n\nFingerprint mới:\n" + result.new_fingerprint +
+            "\n\nXác nhận thay thế host key của " + hostField.value.trim() + "?"
+          : "Fingerprint mới:\n" + result.new_fingerprint + "\n\nXác nhận thêm host key cho " + hostField.value.trim() + "?";
+        if (result.duplicate_hosts && result.duplicate_hosts.length) {
+          prompt += "\n\nCẢNH BÁO: Cùng fingerprint này đã được lưu cho node: " +
+            result.duplicate_hosts.join(", ") + ". SSH key comment không làm thay đổi fingerprint. " +
+            "Hãy xác minh lại public key nguồn trước khi tiếp tục.";
+        }
+        if (!window.confirm(prompt)) return;
+        keyForm.dataset.confirmed = "true";
+        keyForm.requestSubmit();
+      }).catch(function (error) { window.alert(error.message); });
+    });
+    validatePublicKey();
+  }
+
   var codexLoginBtn = document.getElementById("codex-login-btn");
   var codexLogoutBtn = document.getElementById("codex-logout-btn");
   var codexStatus = document.getElementById("codex-account-status");
@@ -12,13 +253,29 @@
   var codexModelSelect = document.getElementById("codex-model-select");
   var codexModelSaveBtn = document.getElementById("codex-model-save-btn");
   var codexModelResult = document.getElementById("codex-model-result");
+  var codexModelSyncStatus = document.getElementById("codex-model-sync-status");
   var codexLimitPanel = document.getElementById("codex-limit-panel");
   var codexPollTimer = null;
 
+  function parseApiResponse(response) {
+    return response.text().then(function (raw) {
+      var data = null;
+      try { data = raw ? JSON.parse(raw) : {}; } catch (error) {
+        var fallback = raw && raw.trim() ? raw.trim().slice(0, 180) : "Không có nội dung lỗi";
+        throw new Error("Server trả về lỗi HTTP " + response.status + ": " + fallback);
+      }
+      if (!response.ok) throw new Error(data.detail || data.message || "HTTP " + response.status);
+      return data;
+    });
+  }
+
   function codexRequest(url, options) {
     return fetch(url, Object.assign({ credentials: "same-origin" }, options || {})).then(function (response) {
-      if (!response.ok) return response.json().then(function (data) { throw new Error(data.detail || "HTTP " + response.status); });
-      return response.json();
+      if (response.redirected && response.url.indexOf("/login") !== -1) {
+        window.location.reload();
+        throw new Error("unauthenticated");
+      }
+      return parseApiResponse(response);
     });
   }
 
@@ -40,6 +297,11 @@
       if (codexLoginBtn) codexLoginBtn.hidden = true;
       if (codexLogoutBtn) codexLogoutBtn.hidden = false;
       renderAccountModels(codexModelPanel, codexModelSelect, data.models || [], data.model, true);
+      if (codexModelSyncStatus) {
+        codexModelSyncStatus.textContent = data.models_synced
+          ? "Đã tự động đồng bộ " + (data.model_count || (data.models || []).length) + " model từ tài khoản Codex."
+          : "Chưa đồng bộ catalog model.";
+      }
       renderAiLimits(codexLimitPanel, data.limits || []);
       if (codexFlow) codexFlow.hidden = true;
     } else {
@@ -48,6 +310,7 @@
       if (codexLoginBtn) codexLoginBtn.hidden = false;
       if (codexLogoutBtn) codexLogoutBtn.hidden = true;
       if (codexModelPanel) codexModelPanel.hidden = true;
+      if (codexModelSyncStatus) codexModelSyncStatus.textContent = "";
       if (codexLimitPanel) codexLimitPanel.hidden = true;
     }
   }
@@ -428,14 +691,7 @@
 
     fetch("/settings/9router/verify", { method: "POST", credentials: "same-origin", body: body })
       .then(handleAuthRedirect)
-      .then(function (response) {
-        if (!response.ok) {
-          return response.json().then(function (data) {
-            throw new Error(data.detail || "HTTP " + response.status);
-          });
-        }
-        return response.json();
-      })
+      .then(parseApiResponse)
       .then(function (data) {
         if (!data.valid) {
           showResult(false, data.message || "Kết nối thất bại");
@@ -456,7 +712,14 @@
       })
       .catch(function (err) {
         if (err.message === "unauthenticated") return;
-        showResult(false, "Không thể kết nối " + (baseUrl || providerLabel) + " — kiểm tra host/port");
+        // Preserve the backend's actionable error (missing configuration,
+        // authentication failure, timeout, or unsupported endpoint).
+        showResult(
+          false,
+          err && err.message
+            ? err.message
+            : "Không thể kết nối " + (baseUrl || providerLabel) + " — kiểm tra host/port"
+        );
       })
       .finally(function () {
         verifyBtn.disabled = false;

@@ -144,7 +144,15 @@ class BackoffCircuit:
             self.last_reason = str(reason)[:240]
             if self.failures >= self.failure_threshold:
                 exponent = self.failures - self.failure_threshold
-                cooldown = min(self.max_cooldown_seconds, self.base_cooldown_seconds * (2 ** exponent))
+                # Bound the exponential growth before doing any arithmetic.
+                # A persistent outage can leave ``failures`` very large;
+                # materializing ``2 ** exponent`` would then overflow while
+                # converting the integer to float and hide the real outage.
+                cooldown = self.base_cooldown_seconds
+                for _ in range(max(0, min(exponent, 1024))):
+                    if cooldown >= self.max_cooldown_seconds:
+                        break
+                    cooldown = min(self.max_cooldown_seconds, cooldown * 2.0)
                 # +/- 25% jitter prevents all clusters retrying at once.
                 cooldown *= 0.75 + (self.random_fn() * 0.5)
                 self.open_until = current + min(self.max_cooldown_seconds, cooldown)
