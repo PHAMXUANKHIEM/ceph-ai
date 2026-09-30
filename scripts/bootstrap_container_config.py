@@ -172,7 +172,10 @@ def _ensure_dual_workspace() -> None:
 def _chown_tree(path: Path, *, uid: str) -> None:
     """Give one service account ownership of its dedicated secret tree."""
     for item in (path, *path.rglob("*")):
-        os.chown(item, int(uid), int(uid))
+        # Codex keeps arg0 alias symlinks under tmp/ that point into the
+        # container (/opt/codex-packages/...), so they dangle on the host:
+        # change the link itself instead of following it.
+        os.chown(item, int(uid), int(uid), follow_symlinks=False)
 
 
 def _copy_account_tree(source: Path, target: Path) -> None:
