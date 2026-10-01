@@ -73,3 +73,18 @@ def test_single_full_token_reaches_only_its_caller_and_the_executor():
         if any(source.startswith("/var/lib/ceph-ai/full-executor-secrets/") for source in _sources(name))
     )
     assert holders == ["full-executor", "telegram-ai"]
+
+
+def test_single_full_shares_the_dashboard_ai_logins():
+    """One Settings sign-in must serve Single Full too: the executor mounts the
+    same Codex/Claude homes as the other AI services instead of a copy that
+    silently goes stale."""
+    executor = SERVICES["full-executor"]
+    mounts = dict(_mounts("full-executor"))
+    assert mounts.get("./.codex-account") == "/app/.codex-account"
+    assert mounts.get("./.claude-account") == "/app/.claude-account"
+    assert executor["environment"]["CODEX_HOME"] == "/app/.codex-account"
+    assert executor["environment"]["CLAUDE_CONFIG_DIR"] == "/app/.claude-account"
+    assert "/var/lib/ceph-ai/full-executor-accounts" not in mounts
+    for service in ("dashboard-web", "telegram-ai"):
+        assert dict(_mounts(service)).get("./.codex-account") == "/app/.codex-account"

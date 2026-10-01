@@ -158,9 +158,10 @@ services:
       - /var/lib/ceph-ai:/var/lib/ceph-ai:ro
       - /root/.local:/opt/ai-tools:ro
       - /root/.codex/packages:/opt/codex-packages:ro
-      # Single Full owns this isolated account home and Codex must update its
-      # app-server state, locks and model cache there.
-      - /var/lib/ceph-ai/full-executor-accounts:/opt/full-executor-accounts:rw
+      # Single Full uses the same Codex/Claude login as the Dashboard and the
+      # other AI services: one sign-in in Settings serves every mode.
+      - ./.codex-account:/app/.codex-account:rw
+      - ./.claude-account:/app/.claude-account:rw
       # Writable HOME for Codex PATH aliases, isolated from the application
       # source and from the Dashboard/Watcher account homes.
       - ./full-executor-home:/home/aiagent:rw
@@ -174,8 +175,8 @@ services:
       CEPH_AI_CONTAINERIZED: "true"
       HOME: /home/aiagent
       PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/opt/codex-packages/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      CODEX_HOME: /opt/full-executor-accounts/codex
-      CLAUDE_CONFIG_DIR: /opt/full-executor-accounts/claude
+      CODEX_HOME: /app/.codex-account
+      CLAUDE_CONFIG_DIR: /app/.claude-account
       SSH_KEY_PATH: /tmp/full-executor-id_ed25519
       CEPH_AI_EXECUTOR_SSH_KEY_PATH: /tmp/full-executor-id_ed25519
       SINGLE_FULL_EXECUTOR_TOKEN_FILE: /tmp/single-full-executor.token

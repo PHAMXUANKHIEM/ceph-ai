@@ -19,7 +19,6 @@ RABBITMQ_PASSWORD_FILE = SECRETS_DIR / "rabbitmq-ceph-ai.password"
 DUAL_AGENT_UID = "10001"
 DUAL_WORKSPACE = Path("/var/lib/ceph-ai/dual-workspace")
 FULL_EXECUTOR_UID = "10001"
-FULL_EXECUTOR_ACCOUNT_ROOT = Path("/var/lib/ceph-ai/full-executor-accounts")
 FULL_EXECUTOR_SSH_ROOT = Path("/var/lib/ceph-ai/full-executor-ssh")
 FULL_EXECUTOR_SECRET_ROOT = Path("/var/lib/ceph-ai/full-executor-secrets")
 RUNTIME_UID = "10001"
@@ -169,31 +168,6 @@ def _ensure_dual_workspace() -> None:
     subprocess.run(["chown", "-R", f"{DUAL_AGENT_UID}:{DUAL_AGENT_UID}", str(DUAL_WORKSPACE)], check=True)
 
 
-def _chown_tree(path: Path, *, uid: str) -> None:
-    """Give one service account ownership of its dedicated secret tree."""
-    for item in (path, *path.rglob("*")):
-        # Codex keeps arg0 alias symlinks under tmp/ that point into the
-        # container (/opt/codex-packages/...), so they dangle on the host:
-        # change the link itself instead of following it.
-        os.chown(item, int(uid), int(uid), follow_symlinks=False)
-
-
-def _copy_account_tree(source: Path, target: Path) -> None:
-    """Copy provider auth once into a uid-isolated, read-only container mount."""
-    if not source.is_dir():
-        target.mkdir(mode=0o700, parents=True, exist_ok=True)
-    elif not target.exists():
-        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        shutil.copytree(
-            source,
-            target,
-            ignore=shutil.ignore_patterns("tmp", "shell_snapshots"),
-        )
-    if target.exists():
-        _chown_tree(target, uid=FULL_EXECUTOR_UID)
-        target.chmod(0o700)
-
-
 def _copy_secret_file(source: Path, target: Path) -> None:
     """Install a private SSH key without exposing the host's root path."""
     if not source.is_file():
@@ -207,10 +181,11 @@ def _copy_secret_file(source: Path, target: Path) -> None:
 
 
 def _ensure_full_executor_credentials(values: dict) -> None:
-    """Provision only the credentials needed by the non-root executor."""
-    FULL_EXECUTOR_ACCOUNT_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chown(FULL_EXECUTOR_ACCOUNT_ROOT, int(FULL_EXECUTOR_UID), int(FULL_EXECUTOR_UID))
-    FULL_EXECUTOR_ACCOUNT_ROOT.chmod(0o700)
+    """Provision only the credentials needed by the non-root executor.
+
+    Codex/Claude logins are not copied: the executor mounts the shared
+    .codex-account/.claude-account, so one sign-in serves every AI mode.
+    """
     FULL_EXECUTOR_SSH_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chown(FULL_EXECUTOR_SSH_ROOT, int(FULL_EXECUTOR_UID), int(FULL_EXECUTOR_UID))
     FULL_EXECUTOR_SSH_ROOT.chmod(0o700)
@@ -218,8 +193,6 @@ def _ensure_full_executor_credentials(values: dict) -> None:
     os.chown(FULL_EXECUTOR_SECRET_ROOT, int(FULL_EXECUTOR_UID), int(FULL_EXECUTOR_UID))
     FULL_EXECUTOR_SECRET_ROOT.chmod(0o700)
     _copy_secret_file(EXECUTOR_TOKEN_FILE, FULL_EXECUTOR_SECRET_ROOT / "token")
-    _copy_account_tree(ROOT / ".codex-account", FULL_EXECUTOR_ACCOUNT_ROOT / "codex")
-    _copy_account_tree(ROOT / ".claude-account", FULL_EXECUTOR_ACCOUNT_ROOT / "claude")
     ssh_key = str(values.get("SSH_KEY_PATH") or "").strip()
     if ssh_key:
         source = Path(ssh_key).expanduser()
