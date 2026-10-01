@@ -982,3 +982,17 @@ def test_daily_nudge_can_be_disabled(dashboard_client, monkeypatch):
     _verdict_env(monkeypatch)
     monkeypatch.setattr(bot.settings, "verdict_nudge_enabled", False, raising=False)
     assert bot._maybe_send_verdict_nudges() == 0
+
+
+def test_chat_member_trust_lets_any_member_of_the_cluster_channel_decide(dashboard_client, monkeypatch):
+    _verdict_env(monkeypatch)
+    monkeypatch.setattr(bot.settings, "telegram_approval_user_ids", "1001", raising=False)
+    action_pk = _pending_action("inc-member-trust")
+    _with_case(action_pk)
+    _press(action_pk, "C", sender_id=42)               # allow-list still applies while the switch is off
+    assert _case(action_pk).operator_verdict is None
+    monkeypatch.setattr(bot.settings, "telegram_chat_members_are_operators", True, raising=False)
+    _press(action_pk, "C", chat_id="-100000", sender_id=42)   # wrong chat stays untrusted
+    assert _case(action_pk).operator_verdict is None
+    _press(action_pk, "C", sender_id=42)                # any member of the right chat
+    assert _case(action_pk).operator_verdict == "CORRECT"

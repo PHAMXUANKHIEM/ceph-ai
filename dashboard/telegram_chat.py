@@ -327,7 +327,21 @@ def _full_access_user_ids() -> set[str] | None:
     return values
 
 
+def chat_members_are_operators() -> bool:
+    return bool(getattr(settings, "telegram_chat_members_are_operators", False))
+
+
+def is_real_person(update: dict) -> bool:
+    """A human sender with a numeric id: not a bot, not an anonymous admin
+    (Telegram sends those as a bot) and not a channel post without ``from``."""
+    sender = update.get("from") or {}
+    return str(sender.get("id", "")).isdigit() and not sender.get("is_bot")
+
+
 def _sender_can_use_full_access(update: dict) -> bool:
+    # Callers have already checked that the update comes from a configured chat.
+    if chat_members_are_operators():
+        return is_real_person(update)
     allowed_ids = _full_access_user_ids()
     if not allowed_ids:
         return False
@@ -612,6 +626,8 @@ async def _consume_destructive_confirmation(
 
 
 def _sender_allowed(update: dict, *, chat_type: str) -> bool:
+    if chat_members_are_operators():
+        return is_real_person(update)
     allowed_ids = _allowed_user_ids()
     if allowed_ids is None:
         return False

@@ -759,3 +759,38 @@ def test_cluster_selector_callback_accepts_only_active_clusters(monkeypatch, tmp
     assert "telegram-chat:77" not in chat._session_by_chat
     callback["data"] = f"{chat.CLUSTER_SELECT_PREFIX}missing"
     assert asyncio.run(chat.handle_callback(callback, "123:token")) == "Cụm không tồn tại hoặc đã tắt."
+
+
+def test_chat_members_become_operators_only_when_the_switch_is_on(monkeypatch):
+    _settings(monkeypatch, allowed="77")
+    monkeypatch.setattr(chat.settings, "telegram_chatbox_full_access_user_ids", "77", raising=False)
+    group = {"id": -1001, "type": "supergroup"}
+    newcomer = {"chat": group, "from": {"id": 4242}, "text": "/single-full ceph -s"}
+
+    # Off (default): only the allow-listed operator.
+    monkeypatch.setattr(chat.settings, "telegram_chat_members_are_operators", False, raising=False)
+    assert not chat.is_allowed_message(newcomer, "123:token")
+    assert not chat._sender_can_use_full_access(newcomer)
+
+    # On: any real person in the bot's configured chat gets the same rights.
+    monkeypatch.setattr(chat.settings, "telegram_chat_members_are_operators", True, raising=False)
+    assert chat.is_allowed_message(newcomer, "123:token")
+    assert chat._sender_can_use_full_access(newcomer)
+    assert chat.is_allowed_callback({"message": {"chat": group}, "from": {"id": 4242}}, "123:token")
+
+
+def test_chat_member_trust_still_requires_the_configured_chat_and_a_real_person(monkeypatch):
+    _settings(monkeypatch)
+    monkeypatch.setattr(chat.settings, "telegram_chat_members_are_operators", True, raising=False)
+    group = {"id": -1001, "type": "supergroup"}
+    # Another chat, even with the same bot token, is never trusted.
+    assert not chat.is_allowed_message({"chat": {"id": -1009, "type": "supergroup"}, "from": {"id": 4242}}, "123:token")
+    # Bots, anonymous group admins (sent as GroupAnonymousBot) and channel
+    # posts without a sender cannot act: audit needs a person.
+    for update in (
+        {"chat": group, "from": {"id": 5555, "is_bot": True}},
+        {"chat": group, "from": {"id": 1087968824, "is_bot": True, "username": "GroupAnonymousBot"}},
+        {"chat": group, "sender_chat": {"id": -1001}},
+    ):
+        assert not chat.is_allowed_message(update, "123:token")
+        assert not chat._sender_can_use_full_access(update)

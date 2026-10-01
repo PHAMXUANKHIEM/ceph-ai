@@ -691,6 +691,12 @@ class Settings(BaseSettings):
     # Separate, mandatory allow-list for the unrestricted Telegram
     # /single-full mode. Empty means the mode is disabled for everyone.
     telegram_chatbox_full_access_user_ids: str = ""
+    # Operator choice: when true, every real person (not a bot or an
+    # anonymous admin/channel post) who writes in one of the bot's configured
+    # chats gets the same rights as an allow-listed operator: the chatbox,
+    # /single-full and action approvals. The chat's membership then becomes
+    # the access boundary, so restrict who may add members in Telegram.
+    telegram_chat_members_are_operators: bool = False
     # Optional per-person gate for approval buttons (Duyệt/Từ chối/Hủy).
     # Empty keeps the chat-level trust model; when set, only these numeric
     # Telegram user IDs may decide an action, and a malformed list blocks

@@ -745,6 +745,10 @@ def _approval_user_ids() -> set[str] | None:
 
 def _sender_may_decide(callback_query: dict) -> bool:
     """Per-person approval gate, checked by numeric ID (usernames can change)."""
+    if telegram_chat.chat_members_are_operators():
+        # The caller has already matched the callback's chat to this action's
+        # trusted channel; every real member of it may decide.
+        return telegram_chat.is_real_person(callback_query)
     allowed = _approval_user_ids()
     if allowed is None:
         return False
