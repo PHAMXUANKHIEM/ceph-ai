@@ -15,6 +15,10 @@ RUN apt-get update \
        ca-certificates=20250419 \
        curl=8.14.1-2+deb13u5 \
        git=1:2.47.3-0+deb13u1 \
+       libpcre2-8-0=10.46-1~deb13u3 \
+       libssl3t64=3.5.7-1~deb13u3 \
+       openssl=3.5.7-1~deb13u3 \
+       openssl-provider-legacy=3.5.7-1~deb13u3 \
        openssh-client=1:10.0p1-7+deb13u4 \
        procps=2:4.0.4-9 \
        systemd=257.13-1~deb13u1 \
