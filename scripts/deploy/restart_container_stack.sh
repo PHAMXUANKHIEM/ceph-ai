@@ -145,6 +145,10 @@ install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-container-restart.sock
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-code-repair-supervisor.service" /etc/systemd/system/
 install -m 0755 "$REPO_DIR/scripts/deploy/container_restart_helper.py" /usr/local/libexec/ceph-ai-container-restart
 install -d -m 0750 /run/ceph-ai
+# On an existing directory, install's chmod also lowers the POSIX ACL mask to
+# r-x, which silently removes the app UID's write access (heartbeats, locks)
+# until bootstrap runs again. Restore the grant bootstrap_container_config.py makes.
+setfacl -m u:10001:rwx,m::rwx /run/ceph-ai
 for heartbeat in worker watcher; do
   if [ ! -e "/run/ceph-ai/$heartbeat.json" ]; then
     install -m 0640 /dev/null "/run/ceph-ai/$heartbeat.json"
