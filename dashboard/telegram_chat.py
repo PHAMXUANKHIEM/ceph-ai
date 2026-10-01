@@ -389,9 +389,27 @@ def _mode(actor: str) -> str:
     if current in {"single", "dual", "single-full"}:
         return current
     with _mode_state_file_lock:
-        current = _load_persisted_modes().get(actor, "single")
+        current = _load_persisted_modes().get(actor, _default_mode())
         _mode_by_chat[actor] = current
         return current
+
+
+def _default_mode() -> str:
+    """A newcomer in a chat whose members are operators starts like the
+    operator: in Single Full (each run still needs its confirmation code)."""
+    return "single-full" if chat_members_are_operators() else "single"
+
+
+def _auto_select_only_cluster(actor: str, bot_token: str, chat_id: str) -> bool:
+    """For a chat-member operator without a choice, select the chat's cluster
+    when it is the only one; with several, the operator must pick one."""
+    if not chat_members_are_operators():
+        return False
+    clusters = _active_clusters(bot_token, chat_id)
+    if len(clusters) != 1:
+        return False
+    _set_cluster(actor, str(clusters[0]["id"]))
+    return True
 
 
 def _load_full_run_markers() -> dict[str, dict]:
@@ -1373,6 +1391,8 @@ async def _handle_message_impl(
 
     if cluster_override is _NO_CLUSTER_OVERRIDE:
         cluster = await asyncio.to_thread(_cluster_for_actor, actor)
+        if cluster is None and await asyncio.to_thread(_auto_select_only_cluster, actor, bot_token, chat_id):
+            cluster = await asyncio.to_thread(_cluster_for_actor, actor)
     else:
         cluster = cluster_override
     if cluster is None:

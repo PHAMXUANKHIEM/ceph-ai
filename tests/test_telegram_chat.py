@@ -794,3 +794,38 @@ def test_chat_member_trust_still_requires_the_configured_chat_and_a_real_person(
     ):
         assert not chat.is_allowed_message(update, "123:token")
         assert not chat._sender_can_use_full_access(update)
+
+
+def test_newcomers_start_in_single_full_only_when_members_are_operators(monkeypatch, tmp_path):
+    monkeypatch.setattr(chat, "_MODE_STATE_PATH", tmp_path / "modes.json")
+    chat._mode_by_chat.clear()
+    monkeypatch.setattr(chat.settings, "telegram_chat_members_are_operators", False, raising=False)
+    assert chat._mode("telegram-chat:4242") == "single"
+    chat._mode_by_chat.clear()
+    monkeypatch.setattr(chat.settings, "telegram_chat_members_are_operators", True, raising=False)
+    assert chat._mode("telegram-chat:5353") == "single-full"
+    # An explicit choice always wins over the default.
+    chat._set_mode("telegram-chat:5353", "single")
+    chat._mode_by_chat.clear()
+    assert chat._mode("telegram-chat:5353") == "single"
+    chat._mode_by_chat.clear()
+
+
+def test_a_lone_chat_cluster_is_selected_for_member_operators(monkeypatch, tmp_path):
+    monkeypatch.setattr(chat, "_CLUSTER_STATE_PATH", tmp_path / "clusters.json")
+    chat._cluster_by_chat.clear()
+    one = [{"id": "local:c1", "name": "CS-LAB", "is_default": True}]
+    two = one + [{"id": "local:c2", "name": "Other", "is_default": False}]
+    monkeypatch.setattr(chat.settings, "telegram_chat_members_are_operators", True, raising=False)
+
+    monkeypatch.setattr(chat, "_active_clusters", lambda token, chat_id: two)
+    assert not chat._auto_select_only_cluster("telegram-chat:1", "123:token", "-1001")
+    assert chat._selected_cluster_id("telegram-chat:1") is None   # several: the person must choose
+
+    monkeypatch.setattr(chat, "_active_clusters", lambda token, chat_id: one)
+    assert chat._auto_select_only_cluster("telegram-chat:1", "123:token", "-1001")
+    assert chat._selected_cluster_id("telegram-chat:1") == "local:c1"
+
+    monkeypatch.setattr(chat.settings, "telegram_chat_members_are_operators", False, raising=False)
+    assert not chat._auto_select_only_cluster("telegram-chat:2", "123:token", "-1001")
+    chat._cluster_by_chat.clear()
