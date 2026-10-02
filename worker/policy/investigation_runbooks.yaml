@@ -77,13 +77,17 @@ runbooks:
 
   BLUESTORE_SLOW_OP_ALERT:
     description: BlueStore báo slow operation.
+    # osd_id/host come from the WP1.2 gate's signal evidence.
     collectors:
       - ceph_health_detail
       - ceph_osd_perf
       - {id: ceph_osd_slow_ops, params: {osd_id: "{osd_id}"}}
+      - {id: ceph_osd_metadata, params: {osd_id: "{osd_id}"}}
       - ceph_device_ls
+      - {id: host_uptime, host: incident_host}
     questions:
       - OSD nào báo slow op, có trùng OSD latency cao không?
+      - Các OSD bị ảnh hưởng có chung host hoặc chung thiết bị không?
 
   SLOW_OPS:
     description: Request bị chậm trên OSD/MON.

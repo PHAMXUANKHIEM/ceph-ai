@@ -823,6 +823,26 @@ class AutonomyDecision(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
+class BluestoreSlowOpSample(Base):
+    """One BLUESTORE_SLOW_OP_ALERT observation per cluster (autonomy plan
+    WP1.2), stored at most once per sample interval while the check is
+    active. Feeds the open-incident gate (episode length, affected-OSD P95,
+    several OSDs on one host) and the replay used to tune it."""
+
+    __tablename__ = "bluestore_slow_op_samples"
+    __table_args__ = (
+        Index("ix_bluestore_slow_op_samples_cluster_sampled", "cluster_id", "sampled_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    sampled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    osd_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Sorted osd ids and {osd_id: host} for those the watcher could resolve.
+    osd_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    osd_hosts_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+
 class ObjectStorageAuditEntry(Base):
     """Audit trail for direct RGW mutations that have no Incident parent."""
 

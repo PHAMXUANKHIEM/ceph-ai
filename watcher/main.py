@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from config.settings import settings
 from watcher import (
     bluestore_omap_monitor,
+    bluestore_slow_ops,
     capability_inventory,
     capacity_forecast,
     capacity_evidence,
@@ -748,7 +749,11 @@ def build_and_publish_incident(
 
     envelopes = []
     for ceph_code, check_detail in current_checks.items():
-        if ceph_code in already_open_codes:
+        # WP1.2: sample BlueStore slow ops every poll, open only on trend.
+        skip_slow_op, slow_op_evidence = bluestore_slow_ops.gate_incident(
+            ceph_code, check_detail, cluster_id=cluster_id,
+        )
+        if ceph_code in already_open_codes or skip_slow_op:
             # Vấn đề này đã có Incident đang mở -- operator đã được báo và
             # có thể đang xử lý dở. Một Incident thứ hai cho cùng
             # `ceph_code` không thêm thông tin gì, chỉ nhân đôi thông báo
@@ -776,6 +781,7 @@ def build_and_publish_incident(
             ceph_code, check_detail
         )
         log_excerpt = _append_capacity_context(log_excerpt, signal_evidence_json)
+        signal_evidence_json = bluestore_slow_ops.merge_evidence(signal_evidence_json, slow_op_evidence)
         ceph_check_muted = _ceph_check_is_muted(check_detail)
         notification_event_id = None
 
@@ -1651,7 +1657,10 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
 
     envelopes = []
     for ceph_code, check_detail in current_checks.items():
-        if ceph_code in already_open_codes:
+        skip_slow_op, slow_op_evidence = bluestore_slow_ops.gate_incident(
+            ceph_code, check_detail, cluster_id=cluster.id, cluster=cluster,
+        )
+        if ceph_code in already_open_codes or skip_slow_op:
             continue
         detected_at = utc_now()
         osd_host_map: dict[int, str] = {}
@@ -1662,6 +1671,7 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
             ceph_code, check_detail, cluster=cluster
         )
         log_excerpt = _append_capacity_context(log_excerpt, signal_evidence_json)
+        signal_evidence_json = bluestore_slow_ops.merge_evidence(signal_evidence_json, slow_op_evidence)
         ceph_check_muted = _ceph_check_is_muted(check_detail)
         notification_event_id = None
 

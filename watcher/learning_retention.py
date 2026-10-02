@@ -17,6 +17,7 @@ from sqlalchemy import select
 from config.settings import settings
 from shared import db
 from shared.models import (
+    BluestoreSlowOpSample,
     ForecastModelEvaluation,
     ForecastModelPromotionAudit,
     HostMetricSample,
@@ -83,6 +84,9 @@ def prune_old_rows(now: datetime | None = None) -> dict[str, int]:
             ).delete(synchronize_session=False)
             result["volume_metrics"] = session.query(VolumeMetric).filter(
                 VolumeMetric.polled_at < raw_cutoff,
+            ).delete(synchronize_session=False)
+            result["bluestore_slow_op_samples"] = session.query(BluestoreSlowOpSample).filter(
+                BluestoreSlowOpSample.sampled_at < raw_cutoff,
             ).delete(synchronize_session=False)
 
             # Forecast rows are evidence, not live state. PENDING rows older

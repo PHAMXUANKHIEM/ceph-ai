@@ -495,13 +495,14 @@ def test_capacity_incident_alert_names_pool_osd_and_node(isolated_db, monkeypatc
 def test_failed_incident_does_not_permanently_block_a_fresh_remediation_attempt(
     isolated_db, monkeypatch
 ):
-    _seed_incident("BLUESTORE_SLOW_OP_ALERT", IncidentStatus.FAILED.value)
+    # SLOW_OPS, not BLUESTORE_SLOW_OP_ALERT: the latter has its own WP1.2 gate.
+    _seed_incident("SLOW_OPS", IncidentStatus.FAILED.value)
     # A FAILED Incident may retry only after its failure cooldown has elapsed.
     # Keep creation recent to prove the gate follows the status transition
     # timestamp, not ``created_at``.
     with db_module.SessionLocal() as session:
         failed = session.query(Incident).filter_by(
-            ceph_code="BLUESTORE_SLOW_OP_ALERT"
+            ceph_code="SLOW_OPS"
         ).one()
         failed.updated_at = datetime.utcnow() - timedelta(
             seconds=watcher_main.settings.incident_failed_retry_cooldown_seconds + 1
@@ -522,16 +523,16 @@ def test_failed_incident_does_not_permanently_block_a_fresh_remediation_attempt(
     watcher_main.build_and_publish_incident(None, {
         "status": "HEALTH_WARN",
         "checks": {
-            "BLUESTORE_SLOW_OP_ALERT": {
+            "SLOW_OPS": {
                 "severity": "HEALTH_WARN",
-                "detail": [{"message": "osd.4 observed slow operations in BlueStore"}],
+                "detail": [{"message": "osd.4 has slow ops"}],
             }
         },
     })
 
     assert len(published) == 1
     with db_module.SessionLocal() as session:
-        rows = session.query(Incident).filter_by(ceph_code="BLUESTORE_SLOW_OP_ALERT").all()
+        rows = session.query(Incident).filter_by(ceph_code="SLOW_OPS").all()
         assert len(rows) == 2
         assert sorted(row.status for row in rows) == [
             IncidentStatus.FAILED.value, IncidentStatus.NEW.value,

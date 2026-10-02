@@ -110,6 +110,15 @@ class Settings(BaseSettings):
     ceph_max_concurrency: int = Field(default=8, gt=0, le=128)
     # Open CEPH_HEALTH_UNAVAILABLE once no MON has answered for this long.
     ceph_health_unavailable_alert_seconds: int = Field(default=600, ge=60, le=86400)
+    # BLUESTORE_SLOW_OP_ALERT gate (autonomy plan WP1.2). Ceph keeps the
+    # check for bluestore_slow_ops_warn_lifetime (86400 s by default) after a
+    # single slow op, so only an episode outliving that window is recurrent.
+    bluestore_slow_op_open_after_seconds: int = Field(default=90000, ge=60, le=30 * 86400)
+    bluestore_slow_op_sample_interval_seconds: int = Field(default=300, ge=10, le=3600)
+    bluestore_slow_op_spike_factor: float = Field(default=1.5, ge=1.0, le=10.0)
+    bluestore_slow_op_baseline_days: int = Field(default=14, ge=1, le=90)
+    bluestore_slow_op_min_baseline_samples: int = Field(default=12, ge=1, le=10000)
+    bluestore_slow_op_host_cache_seconds: int = Field(default=1800, ge=60, le=86400)
     ceph_max_retries: int = Field(default=2, ge=0, le=10)
     ceph_retry_base_delay_seconds: float = Field(default=0.25, gt=0, le=60)
     ceph_retry_max_delay_seconds: float = Field(default=5.0, gt=0, le=300)
