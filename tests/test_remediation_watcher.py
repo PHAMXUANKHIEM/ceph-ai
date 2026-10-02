@@ -41,9 +41,12 @@ def test_fast_watcher_polls_and_publishes_every_tick(monkeypatch, tmp_path):
     monkeypatch.setattr(remediation_main.verify, "verify_pending_incidents", lambda checks, **kw: calls.append(("verify", checks, kw)))
     monkeypatch.setattr(remediation_main, "build_and_publish_incident", lambda previous, payload, **kw: calls.append(("publish", previous, payload, kw)))
     monkeypatch.setattr(remediation_main.time, "sleep", lambda _seconds: None)
+    beats = []
+    monkeypatch.setattr(remediation_main.service_health, "record_safe", beats.append)
 
     remediation_main.run(max_iterations=2)
 
+    assert beats == ["remediation-watcher", "remediation-watcher"]
     assert [row[0] for row in calls] == ["resolve", "reconcile", "verify", "publish"] * 2
     assert calls[3][3]["cluster_id"] == "cluster-1"
     assert health_calls[0][0][0] == ["10.0.0.1", "10.0.0.2"]

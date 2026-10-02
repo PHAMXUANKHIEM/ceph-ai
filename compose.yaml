@@ -223,6 +223,45 @@ services:
       timeout: 5s
       retries: 3
 
+  # Creates the default cluster's Ceph health-check Incidents (OSD_DOWN,
+  # PG_DEGRADED, BLUESTORE_SLOW_OP_ALERT...). watcher.main deliberately leaves
+  # that to this one process (see run_all_clusters); without this service no
+  # such Incident was opened from 2026-09-15 to 2026-10-02.
+  remediation-watcher:
+    <<: *app
+    cpus: "0.50"
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 128
+    command: ["python", "-m", "watcher.remediation_main"]
+    volumes:
+      - /run/ceph-ai:/run/ceph-ai:rw
+      - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      - /root/ceph-ai/dashboard-readonly-id_ed25519:/tmp/readonly-id_ed25519:ro
+      # Incident alerts may be humanized by the same AI CLIs as watcher.
+      - /root/.local:/opt/ai-tools:ro
+      - /root/.codex/packages:/opt/codex-packages:ro
+      - ./.codex-account:/app/.codex-account:rw
+      - ./.claude-account:/app/.claude-account:rw
+      - ./dashboard-empty-full-executor-accounts:/var/lib/ceph-ai/full-executor-accounts:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+      - /var/lib/ceph-ai/full-executor-ssh:rw,noexec,nosuid,nodev,size=1m
+      - /var/lib/ceph-ai/full-executor-secrets:rw,noexec,nosuid,nodev,size=1m
+    environment:
+      CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
+      CEPH_AI_RUNTIME_DIR: /run/ceph-ai
+      CEPH_AI_CONTAINERIZED: "true"
+      AI_COST_PRICING_CACHE_PATH: /var/lib/ceph-ai/config/ai-pricing.json
+      SSH_KEY_PATH: /tmp/readonly-id_ed25519
+      CEPH_AI_SSH_IDENTITY_ROLE: read-only
+      PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('remediation-watcher', stale_after_seconds=60)['healthy'])\""]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
   vault-monitor:
     <<: *app
     cpus: "0.25"

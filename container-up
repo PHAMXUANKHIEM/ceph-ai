@@ -24,9 +24,9 @@ fi
 # This unit is the canonical owner for the compose services.  Leaving one of
 # the legacy bare-metal services enabled starts a second Worker/Watcher against
 # the same database and RabbitMQ queues, which can duplicate incident handling
-# and overwrite the shared heartbeat.  Remediation Watcher is intentionally
-# excluded because it has no compose counterpart.
-for legacy_service in ceph-ai-worker.service ceph-ai-watcher.service ceph-ai-dashboard.service; do
+# and overwrite the shared heartbeat.  Remediation Watcher now has a compose
+# counterpart too, so its legacy unit must not run beside it either.
+for legacy_service in ceph-ai-worker.service ceph-ai-watcher.service ceph-ai-remediation-watcher.service ceph-ai-dashboard.service; do
   if systemctl cat "$legacy_service" >/dev/null 2>&1; then
     systemctl disable --now "$legacy_service"
   fi
@@ -36,7 +36,7 @@ done
 # checkout. Never recreate it as part of the immutable runtime stack.
 services=("$@")
 if [ "${#services[@]}" -eq 0 ]; then
-  services=(dashboard-web telegram-ai full-executor watcher worker vault-monitor)
+  services=(dashboard-web telegram-ai full-executor watcher remediation-watcher worker vault-monitor)
 fi
 for service in "${services[@]}"; do
   if [ "$service" = "code-repair" ]; then

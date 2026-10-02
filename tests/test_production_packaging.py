@@ -52,7 +52,7 @@ def test_release_pushes_scanned_artifact_and_deploys_digest_only():
     assert 'mv -f "$image_ref_tmp" "$IMAGE_REF_FILE"' in deploy
     launcher = (ROOT / "container-up").read_text(encoding="utf-8")
     assert "release-artifacts/current-image-ref" in launcher
-    assert "services=(dashboard-web telegram-ai full-executor watcher worker vault-monitor)" in launcher
+    assert "services=(dashboard-web telegram-ai full-executor watcher remediation-watcher worker vault-monitor)" in launcher
     repair_unit = (ROOT / "scripts/deploy/systemd/ceph-ai-code-repair-supervisor.service").read_text()
     assert "Environment=CODE_REPAIR_PUSH=false" in repair_unit
     assert "Environment=CODE_REPAIR_DEPLOY_STAGING=false" in repair_unit

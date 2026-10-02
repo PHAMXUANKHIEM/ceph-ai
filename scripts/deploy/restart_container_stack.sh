@@ -8,7 +8,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEPLOY_REF="${DEPLOY_REF:-origin/main}"
-SERVICES=(dashboard-web full-executor watcher worker telegram-ai)
+SERVICES=(dashboard-web full-executor watcher remediation-watcher worker telegram-ai)
 DEPLOY_IMAGE="${CEPH_AI_IMAGE:-}"
 IMAGE_REF_FILE=/var/lib/ceph-ai/release-artifacts/current-image-ref
 PREVIOUS_IMAGE_REF_FILE=/var/lib/ceph-ai/release-artifacts/previous-image-ref
@@ -149,7 +149,7 @@ install -d -m 0750 /run/ceph-ai
 # r-x, which silently removes the app UID's write access (heartbeats, locks)
 # until bootstrap runs again. Restore the grant bootstrap_container_config.py makes.
 setfacl -m u:10001:rwx,m::rwx /run/ceph-ai
-for heartbeat in worker watcher; do
+for heartbeat in worker watcher remediation-watcher; do
   if [ ! -e "/run/ceph-ai/$heartbeat.json" ]; then
     install -m 0640 /dev/null "/run/ceph-ai/$heartbeat.json"
   fi

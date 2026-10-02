@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from config.settings import settings
-from shared import db
+from shared import db, service_health
 from shared.clusters import get_default_cluster_id
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.models import Cluster
@@ -88,6 +88,7 @@ def _run(max_iterations: Optional[int] = None) -> None:
 
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
+        service_health.record_safe("remediation-watcher")
         started = time.monotonic()
         try:
             # Cluster settings can be changed from the Dashboard while this
