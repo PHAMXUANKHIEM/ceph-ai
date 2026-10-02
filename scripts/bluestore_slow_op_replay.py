@@ -50,10 +50,9 @@ def replay(incidents: list[dict], waves: int = 3) -> dict:
         if covering:
             hosts = {int(osd): host for osds in covering for osd, host in osds}
             osd_ids = tuple(sorted(hosts)) or (-1,)
-            if last_seen is None or now - last_seen > gap:
+            if episode_start is None or last_seen is None or now - last_seen > gap:
                 episode_start, incident_open = now, False
             last_seen = now
-            assert episode_start is not None
             baseline = [
                 count for at, count in samples
                 if now - timedelta(days=settings.bluestore_slow_op_baseline_days) <= at < episode_start
