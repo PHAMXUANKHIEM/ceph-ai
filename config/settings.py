@@ -108,6 +108,8 @@ class Settings(BaseSettings):
     ceph_snapshot_max_crush_nodes: int = Field(default=20_000, ge=100, le=500_000)
     ceph_snapshot_cache_max_bytes: int = Field(default=512_000_000, ge=1_000_000, le=10_000_000_000)
     ceph_max_concurrency: int = Field(default=8, gt=0, le=128)
+    # Open CEPH_HEALTH_UNAVAILABLE once no MON has answered for this long.
+    ceph_health_unavailable_alert_seconds: int = Field(default=600, ge=60, le=86400)
     ceph_max_retries: int = Field(default=2, ge=0, le=10)
     ceph_retry_base_delay_seconds: float = Field(default=0.25, gt=0, le=60)
     ceph_retry_max_delay_seconds: float = Field(default=5.0, gt=0, le=300)

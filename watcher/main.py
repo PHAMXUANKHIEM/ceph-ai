@@ -27,6 +27,7 @@ from watcher import (
     crush_structure_monitor,
     database_capacity_monitor,
     device_health_monitor,
+    health_availability_monitor,
     investigation_scanner,
     log_intel,
     node_health_monitor,
@@ -970,6 +971,7 @@ def run(
     last_priority_refresh_marker: str | None = None
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
+    health_tracker = health_availability_monitor.HealthAvailabilityTracker()
 
     def run_auxiliary_scan(name: str, callback: Callable[[], None]) -> bool:
         """Run slow scans off the critical-health loop in production.
@@ -1019,6 +1021,7 @@ def run(
                     logger.exception("run: failed to publish critical health snapshot")
             _record_heartbeat_safe(True, ceph_client.last_successful_mon_node, None, cluster_id=cluster_id)
             heartbeat_recorded = True
+            health_availability_monitor.on_health_read(health_tracker, cluster_id=cluster_id)
             current_status = health.get("status")
             current_checks = frozenset(health.get("checks", {}).keys())
             muted_ceph_codes = frozenset(
@@ -1095,6 +1098,9 @@ def run(
                 )
             else:
                 logger.exception("run: failed to query cluster health from any MON node")
+                health_availability_monitor.on_health_failure(
+                    health_tracker, str(exc), cluster_id=cluster_id,
+                )
         except Exception as exc:
             # A bug in on_transition (or anything else unexpected) must not
             # permanently kill monitoring — that would defeat the entire
@@ -1868,6 +1874,7 @@ def run_observed_cluster_loop(
     last_priority_refresh_marker: str | None = None
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
+    health_tracker = health_availability_monitor.HealthAvailabilityTracker()
 
     def run_auxiliary_scan(name: str, callback: Callable[[], None]) -> bool:
         """Keep bounded/test loops free of orphan daemon scans.
@@ -1966,6 +1973,9 @@ def run_observed_cluster_loop(
                     sender=telegram_alerts.send_periodic_health_status,
                 )
                 last_health_status_sent_at = status_now
+            health_availability_monitor.on_health_read(
+                health_tracker, cluster_id=cluster.id, include_legacy_null=False,
+            )
             _resolve_recovered_incidents(
                 set(current_checks), cluster_id=cluster.id, include_legacy_null=False
             )
@@ -2138,6 +2148,9 @@ def run_observed_cluster_loop(
         except CephQueryError as exc:
             _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster.id)
             logger.warning("run_observed_cluster_loop(%r): %s", cluster.name, exc)
+            health_availability_monitor.on_health_failure(
+                health_tracker, str(exc), cluster_id=cluster.id, include_legacy_null=False,
+            )
         except Exception:
             _record_heartbeat_safe(False, None, "unexpected error", cluster_id=cluster.id)
             logger.exception("run_observed_cluster_loop(%r): unexpected error during poll iteration", cluster.name)

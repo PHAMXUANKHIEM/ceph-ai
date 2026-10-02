@@ -335,6 +335,36 @@ def test_run_survives_query_failures_without_crashing(monkeypatch):
     assert call_count["n"] == 3
 
 
+def test_watcher_loop_feeds_failures_and_recovery_to_the_tracker(monkeypatch):
+    from watcher.ceph_client import CephQueryError
+
+    events = []
+    outcomes = iter([CephQueryError("deadline exceeded"), CephQueryError("deadline exceeded"), None])
+
+    def fake_query():
+        outcome = next(outcomes)
+        if outcome is not None:
+            raise outcome
+        return {"status": "HEALTH_OK", "checks": {}}
+
+    monkeypatch.setattr(watcher_main, "query_cluster_health", fake_query)
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        watcher_main.health_availability_monitor, "on_health_failure",
+        lambda tracker, error, **kwargs: events.append(("failure", id(tracker), kwargs["cluster_id"])),
+    )
+    monkeypatch.setattr(
+        watcher_main.health_availability_monitor, "on_health_read",
+        lambda tracker, **kwargs: events.append(("read", id(tracker), kwargs["cluster_id"])),
+    )
+
+    watcher_main.run(on_transition=lambda *_: None, max_iterations=3, cluster_id="cluster-a")
+
+    assert [kind for kind, _tracker, _cluster in events] == ["failure", "failure", "read"]
+    assert len({tracker for _kind, tracker, _cluster in events}) == 1
+    assert {cluster for _kind, _tracker, cluster in events} == {"cluster-a"}
+
+
 def test_run_logs_unconfigured_cluster_quietly_not_as_an_error(monkeypatch, caplog):
     # Regression, 2026-07-28 (found on a real first-time install): a fresh
     # install with no CEPH_MON_NODES configured yet logged a full
