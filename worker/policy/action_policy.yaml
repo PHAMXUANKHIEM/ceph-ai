@@ -37,6 +37,9 @@ action_ids:
 # (Incident-diagnosis enum) is untouched by this list's existence.
 management_action_ids:
   - edit_pool
+  # WP1.2: per-device-class BLUESTORE_SLOW_OP_ALERT threshold/lifetime;
+  # preflight refuses an existing override so `ceph config rm` rolls back.
+  - tune_bluestore_slow_ops_warn
   - scrub_pool
   - set_pool_protection
   - execute_node_command
@@ -316,6 +319,8 @@ safe:
   - crash_archive_all
 
 risky:
+  # Changes when the cluster raises BlueStore slow-op warnings: always approved.
+  - tune_bluestore_slow_ops_warn
   # Rebuilds a missing copy from an already verified artifact; it never reads
   # or mutates the live Ceph image, but writes to a backup target.
   - backup_repair_missing_copy

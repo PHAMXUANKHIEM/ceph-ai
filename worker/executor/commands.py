@@ -442,6 +442,47 @@ def _finalize_osd_release_command(params: dict) -> str:
     return f"ceph osd require-osd-release {shlex.quote(release)}"
 
 
+_BLUESTORE_DEVICE_CLASSES = frozenset({"hdd", "ssd", "nvme"})
+_BLUESTORE_SLOW_OPS_THRESHOLD_RANGE = (1, 1000)
+_BLUESTORE_SLOW_OPS_LIFETIME_RANGE = (60, 86400)
+_BLUESTORE_SLOW_OPS_OPTIONS = ("bluestore_slow_ops_warn_threshold", "bluestore_slow_ops_warn_lifetime")
+
+
+def _bluestore_slow_ops_mask(params: dict) -> str:
+    device_class = params.get("device_class")
+    if device_class not in _BLUESTORE_DEVICE_CLASSES:
+        raise ExecutorError(f"invalid or missing device_class: {device_class!r}")
+    return f"osd/class:{device_class}"
+
+
+def _tune_bluestore_slow_ops_warn_command(params: dict) -> str:
+    """Tune BLUESTORE_SLOW_OP_ALERT for one device class (autonomy plan WP1.2).
+
+    Ceph defaults to threshold 1 / lifetime 86400 s: a single slow op keeps
+    the warning for a day. Preflight prints the current overrides for the
+    audit log and refuses when this class already has one, so the rollback
+    (`ceph config rm` of exactly these two keys) restores the prior state.
+    """
+    mask = _bluestore_slow_ops_mask(params)
+    threshold = _require_int(params, "threshold", _BLUESTORE_SLOW_OPS_THRESHOLD_RANGE)
+    lifetime = _require_int(params, "lifetime_seconds", _BLUESTORE_SLOW_OPS_LIFETIME_RANGE)
+    device_class = mask.split(":", 1)[1]
+    return (
+        "ceph config dump | grep -E 'bluestore_slow_ops_warn_(threshold|lifetime)' || true; "
+        f"if ceph config dump | grep -E 'class:{device_class}[[:space:]].*bluestore_slow_ops_warn_' >/dev/null; "
+        f"then echo 'osd/class:{device_class} already overrides bluestore_slow_ops_warn_*; "
+        "refusing so rollback stays exact' >&2; exit 3; fi; "
+        f"ceph config set {mask} {_BLUESTORE_SLOW_OPS_OPTIONS[0]} {threshold} && "
+        f"ceph config set {mask} {_BLUESTORE_SLOW_OPS_OPTIONS[1]} {lifetime}"
+    )
+
+
+def tune_bluestore_slow_ops_warn_rollback_command(params: dict) -> str:
+    """Exact inverse of the tune action: drop both class-scoped overrides."""
+    mask = _bluestore_slow_ops_mask(params)
+    return " && ".join(f"ceph config rm {mask} {option}" for option in _BLUESTORE_SLOW_OPS_OPTIONS)
+
+
 def _rbd_trash_remove_command(params: dict) -> str:
     """Permanently deletes an RBD image an operator already soft-deleted
     into a pool's trash (dashboard/routes/volumes.py's "Xoá" button on the
@@ -849,6 +890,7 @@ def _execute_node_command(params: dict) -> str:
 
 _MANAGEMENT_COMMAND_BUILDERS = {
     "edit_pool": _edit_pool_command,
+    "tune_bluestore_slow_ops_warn": _tune_bluestore_slow_ops_warn_command,
     "scrub_pool": _scrub_pool_command,
     "set_pool_protection": _set_pool_protection_command,
     "execute_node_command": _execute_node_command,
@@ -904,6 +946,7 @@ _CEPH_RUNTIME_ACTION_IDS = frozenset({
     "enable_pool_application",
     "finalize_pacific_osd_release",
     "finalize_osd_release",
+    "tune_bluestore_slow_ops_warn",
     "rbd_trash_remove",
     "rbd_create_volume",
     "rbd_resize_volume",

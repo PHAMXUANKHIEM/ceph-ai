@@ -160,6 +160,7 @@ _ACTION_SOLUTION_LABELS = {
     "restart_osd_daemon": "Khởi động lại daemon OSD bị lỗi.",
     "resync_ntp": "Đồng bộ lại thời gian hệ thống bằng chrony.",
     "enable_mon_msgr2": "Bật giao thức Ceph Messenger v2 cho MON.",
+    "tune_bluestore_slow_ops_warn": "Đổi ngưỡng và thời gian giữ cảnh báo BlueStore slow op cho một loại đĩa.",
     "crash_archive_all": "Lưu trữ các crash report đã được kiểm tra.",
     "pg_repair_force": "Kiểm tra PG và thực hiện repair thủ công sau khi xác minh dữ liệu.",
     "investigate_manually": "Điều tra thủ công; chưa có thao tác tự động đủ an toàn.",

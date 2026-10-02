@@ -521,6 +521,9 @@ def system_prompt(
     "pg_repair_force) VÀ hành động quản lý cluster: create_pool (cần "
     "pool_name, pg_num), delete_pool (cần pool_name — KHÔNG THỂ HOÀN TÁC, "
     "hỏi lại operator để chắc chắn đúng tên pool trước khi đề xuất), "
+    "tune_bluestore_slow_ops_warn (cần device_class hdd/ssd/nvme, threshold, "
+    "lifetime_seconds — đổi ngưỡng/thời gian giữ cảnh báo BLUESTORE_SLOW_OP_ALERT "
+    "cho một loại đĩa; Ceph mặc định 1 slow op giữ cảnh báo 86400 giây), "
     "set_pool_size (cần pool_name, size), set_pool_pg_num (cần pool_name, "
     "pg_num), mark_osd_out/mark_osd_in/mark_osd_down (cần osd_id), "
     "enable_pool_application (cần pool_name, app_name — dùng để xoá cảnh "
@@ -828,6 +831,8 @@ def _tool_schemas(*, is_admin: bool = False, cluster=None) -> list[dict]:
             "pool_name+app_name (clears Ceph's POOL_APP_NOT_ENABLED warning — "
             "app_name is usually rbd/cephfs/rgw, but any name is accepted). "
             "finalize_pacific_osd_release needs no parameter. "
+            "tune_bluestore_slow_ops_warn needs device_class (hdd/ssd/nvme)+"
+            "threshold (1-1000)+lifetime_seconds (60-86400). "
             "bluestore_omap_quick_fix needs osd_id and the host that owns it. "
             "Leave unused parameters null.",
             {
@@ -861,6 +866,18 @@ def _tool_schemas(*, is_admin: bool = False, cluster=None) -> list[dict]:
                         "type": ["string", "null"],
                         "description": "Pool application tag (rbd/cephfs/rgw/custom) — required for enable_pool_application, else null.",
                     },
+                    "device_class": {
+                        "type": ["string", "null"],
+                        "description": "OSD device class hdd/ssd/nvme — required for tune_bluestore_slow_ops_warn, else null.",
+                    },
+                    "threshold": {
+                        "type": ["integer", "null"],
+                        "description": "Slow ops before BlueStore warns (1-1000) — required for tune_bluestore_slow_ops_warn, else null.",
+                    },
+                    "lifetime_seconds": {
+                        "type": ["integer", "null"],
+                        "description": "How long the BlueStore slow-op warning lasts (60-86400 s) — required for tune_bluestore_slow_ops_warn, else null.",
+                    },
                 },
                 "required": [
                     "action_id",
@@ -871,6 +888,9 @@ def _tool_schemas(*, is_admin: bool = False, cluster=None) -> list[dict]:
                     "size",
                     "osd_id",
                     "app_name",
+                    "device_class",
+                    "threshold",
+                    "lifetime_seconds",
                 ],
                 "additionalProperties": False,
             },
@@ -1094,6 +1114,7 @@ _MANAGEMENT_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
     "enable_pool_application": ("pool_name", "app_name"),
     "finalize_pacific_osd_release": (),
     "bluestore_omap_quick_fix": ("osd_id",),
+    "tune_bluestore_slow_ops_warn": ("device_class", "threshold", "lifetime_seconds"),
 }
 _MANAGEMENT_PARAM_IS_INT: dict[str, bool] = {
     "pool_name": False,
@@ -1101,6 +1122,9 @@ _MANAGEMENT_PARAM_IS_INT: dict[str, bool] = {
     "size": True,
     "osd_id": True,
     "app_name": False,
+    "device_class": False,
+    "threshold": True,
+    "lifetime_seconds": True,
 }
 
 
