@@ -1,7 +1,7 @@
 # Autonomous Self-Learning Operations Plan — Ceph AI
 
 **Ngày lập:** 26/09/2026
-**Trạng thái:** `IN-PROGRESS` — code WP0–WP4 đã merge (xem bảng log cuối file); **chưa deploy**, nên mọi con số giảm nhiễu hiện là replay, chưa phải đo sau deploy. Tính năng thu evidence mặc định TẮT (`INVESTIGATION_ENABLED=false`), bật theo cluster canary bằng `INVESTIGATION_CLUSTER_IDS`.
+**Trạng thái:** `IN-PROGRESS` — code WP0–WP4, WP6.1–6.3, báo cáo tuần và WP1.2 đã merge (xem bảng log cuối file); đã deploy immutable lên CS-LAB từ 29/09, nhưng **incident từ health check của cụm mặc định không được tạo từ 15/09 tới 02/10** (thiếu service `remediation-watcher` trong Compose, sửa ở `fbceb4dc`), nên KPI sau deploy phải đo lại từ 02/10. Tính năng thu evidence mặc định TẮT (`INVESTIGATION_ENABLED=false`), bật theo cluster canary bằng `INVESTIGATION_CLUSTER_IDS`.
 **Liên quan:** `Plan/incompleted/strict-production-readiness-closure-plan-2026-09-25.md` (§7 AI/online learning, §5.3 live read-only, §6 safety)
 **Mục tiêu:** đưa Ceph AI từ "đề xuất `investigate_manually` rồi bị từ chối" sang "tự điều tra, tự học từ nhãn thật, tự xử lý trong ngân sách rủi ro đã duyệt" — theo đúng thứ tự: **giảm nhiễu → có nhãn → có bằng chứng → có quyết định an toàn**.
 
@@ -107,21 +107,20 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 **Phát hiện 28/09:** 1.025/1.040 incident BlueStore xảy ra **trong một ngày (06/09)**, chồng lên nhau (tạo trùng khi incident trước còn mở) — một đợt bão lịch sử, nay đã bị chặn bởi unique index in-flight (`uq_incidents_inflight_cluster_code`); sau đó ~1 incident/ngày. Nhiễu **hiện tại** (7 ngày: 1.833 incident) là `NODE_UNREACHABLE` 1.157 (WP1.1), `CRUSH_SKEW_PG/USE` 369 (WP1.4 mới), `OSD_LATENCY_HIGH` 256.
 
 - [x] `OSD_LATENCY_HIGH`: incident chỉ sống ~2 phút (mở sau 2 scan, đóng sau 1 scan tốt). Thêm `osd_latency_open_scans=4`, `osd_latency_recovery_scans=3`; replay 7 ngày **256 → 48 (−81%)**; test `tests/test_osd_latency_monitor.py` (16 passed).
-- [!] Phần BlueStore dưới đây **tạm hoãn**: không còn là nguồn nhiễu; chỉ làm nếu WP0 cho thấy tăng lại.
+- [x] Phần BlueStore dưới đây đã làm ngày 02/10 theo yêu cầu operator (trước đó hoãn vì không còn là nguồn nhiễu).
 
-#### (Hoãn) BlueStore: từ incident lặp sang tín hiệu xu hướng
+#### BlueStore: từ incident lặp sang tín hiệu xu hướng
 
 **Hiện trạng:** 1.040 incident/30 ngày; router có nhánh self-heal restart OSD có điều kiện (`router_client.py` ~1204).
 
-- [ ] Collector đọc `ceph health detail` → trích `osd.N` + số slow op; lưu chuỗi thời gian theo OSD (tận dụng bảng metric hiện có hoặc bảng `bluestore_slow_op_samples`).
-- [ ] Quy tắc mở incident mới (thay vì mỗi lần health check xuất hiện):
-  - chỉ mở khi slow op/OSD vượt `P95 lịch sử × k` **hoặc** kéo dài > `T` phút **hoặc** ≥ 2 OSD cùng host,
-  - nếu không → cập nhật "xu hướng" trên incident mở sẵn hoặc chỉ lưu metric.
-- [ ] Action mới **approval-required, RISKY**: `tune_bluestore_slow_ops_warn` (đặt `bluestore_slow_ops_warn_threshold`/`lifetime` theo device class HDD/SSD bằng `ceph config set osd/class:hdd ...`), có preflight đọc giá trị hiện tại, rollback về giá trị cũ, audit. Đăng ký trong `worker/policy/action_policy.yaml`, `worker/executor/commands.py`, typed contract.
-- [ ] Liên kết với WP3: mỗi incident BlueStore tự thu `dump_historic_slow_ops` và SMART của đĩa liên quan.
-- [ ] Test: ngưỡng xu hướng, nhiều OSD cùng host, contract action (params hợp lệ/không hợp lệ), rollback plan.
+- [x] Mẫu theo cluster trong bảng mới `bluestore_slow_op_samples` (migration `m20261002bluestoreslowops`, giữ 30 ngày): OSD bị ảnh hưởng + host đã tra thật, tối đa 1 mẫu/5 phút trừ khi tập OSD đổi (`4c788fe3`). **Điều chỉnh:** Ceph bản này không ghi số slow op trong `health detail` (chỉ "osd.N observed slow operation indications"), nên xu hướng tính theo **số OSD bị ảnh hưởng**; số op cụ thể lấy qua runbook WP3.
+- [x] Quy tắc mở (`watcher/bluestore_slow_ops.py`, gắn vào cả vòng cụm mặc định lẫn cụm observed): ≥ 2 OSD cùng host, **hoặc** số OSD > P95 nền 14 ngày × 1,5 (≥ 2 OSD, cần ≥ 12 mẫu nền), **hoặc** đợt kéo dài > 25 giờ. **Lý do T = 25 giờ:** CS-LAB dùng `bluestore_slow_ops_warn_lifetime=86400`, `threshold=1` — một slow op đơn lẻ giữ cảnh báo 24 giờ, nên chỉ đợt vượt một vòng lifetime mới là slow op tái diễn. Không đạt → chỉ lưu mẫu. Đợt được khôi phục từ mẫu sau restart; lỗi bất kỳ của bộ lọc → mở incident như cũ (fail-open).
+- [x] Action `tune_bluestore_slow_ops_warn` (`49b6cba3`): management action RISKY qua Chat, tham số đóng (`device_class` hdd/ssd/nvme, `threshold` 1–1000, `lifetime_seconds` 60–86400), `ceph config set osd/class:<class> …`. Preflight in giá trị hiện tại vào output thực thi và **từ chối nếu class đã có override**, nên rollback `ceph config rm` đúng 2 khoá luôn trả về trạng thái cũ (`tune_bluestore_slow_ops_warn_rollback_command`). Không đăng ký vào playbook incident: LLM chẩn đoán không có nguồn tham số xác định; operator đề xuất qua Chat.
+- [x] Liên kết WP3: evidence của incident có `osd_id`/`host`, nên runbook BlueStore nay thật sự thu `dump_historic_slow_ops` (trước đó luôn bị bỏ qua vì thiếu `osd_id`), `ceph osd metadata` và tải host. SMART: như WP4, đĩa virtio của CS-LAB không có SMART thật — chưa thêm.
+- [x] Test: `tests/test_bluestore_slow_ops.py` (14), `tests/test_tune_bluestore_slow_ops_warn.py` (14), `tests/test_bluestore_slow_op_replay.py` (3).
 
 **Nghiệm thu:** incident BlueStore giảm ≥ 70% mà không bỏ sót trường hợp slow op tăng đột biến (test replay với 3 đợt thật trong dữ liệu).
+**Kết quả replay (02/10, `scripts/bluestore_slow_op_replay.py` → `docs/benchmark/bluestore-slow-op-replay-2026-10-02.json`):** 1.040 → 8 incident (−99,2%), cả 3 đợt (06/09, 07/09, 14/09) vẫn được báo. **Lưu ý trung thực:** mức giảm này gần như toàn bộ đến từ "một incident mỗi đợt" — unique index in-flight hiện có cũng cho đúng 8; mọi đợt lịch sử đều có 2 OSD cùng host nên `same_host` luôn mở. Bộ lọc chỉ bớt thêm slow op đơn lẻ 1 OSD (giả lập 1 OSD/đợt: 3 incident, cố ý không báo 2 đợt ngắn 07/09 và 14/09). Cần đo lại sau deploy.
 **Ước lượng:** 2 ngày.
 
 ### WP1.4 (mới, 28/09) — Gom `CRUSH_SKEW_PG/USE` theo cluster
@@ -400,6 +399,9 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 28/09/2026 | WP6.3 Chính sách shadow execute/escalate | Luật ràng buộc rủi ro gắn khuyến nghị + lý do vào mỗi quyết định, FRR theo cluster, savepoint để lỗi không ảnh hưởng chẩn đoán; báo cáo tuần có mục shadow | 17 test mới, 183 passed | Done (shadow; bandit học chờ ≥ 200 nhãn) |
 | 28/09/2026 | Actor audit | Cắt actor về VARCHAR(32) ở audit/timeline (luồng Duyệt cũ có thể fail trên PostgreSQL) | `6b924ba9` | Accepted |
 | 28/09/2026 | Gate mypy | FORCE_COLOR làm budget/quality gate đọc 0 lỗi mypy; sửa + fail-closed | budget 827/152 | Accepted |
+| 02/10/2026 | Sự cố — không có incident health check | Cụm mặc định không tạo incident từ health check (OSD_DOWN, PG_DEGRADED, BLUESTORE…) từ 15/09: `watcher.main` giao việc này cho `watcher.remediation_main` nhưng Compose không có service đó; tiến trình `remediation_main` sót từ test (SQLite + MON giả) còn giữ khoá. Thêm service `remediation-watcher` | `fbceb4dc` | Done (chờ deploy) |
+| 02/10/2026 | Cảnh báo mất health | Watcher mất health cả cụm 2,5 giờ (MON leader quá tải) mà không ai được báo; nay mở `CEPH_HEALTH_UNAVAILABLE` sau 10 phút, tự đóng khi đọc lại được | `81fe97ee` | Done (chờ deploy) |
+| 02/10/2026 | WP1.2 BlueStore | Mẫu + bộ lọc xu hướng + action tune có rollback + nối runbook WP3; replay 1.040 → 8 (bằng mức của unique index) | `4c788fe3`, `49b6cba3`, replay JSON | Done (chờ deploy + migrate) |
 
 ## 13. Quy tắc trạng thái
 

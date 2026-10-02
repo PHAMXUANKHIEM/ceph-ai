@@ -1,0 +1,128 @@
+{
+  "generated_at": "2026-10-02",
+  "source": "1,040 BLUESTORE_SLOW_OP_ALERT Incidents of CS-LAB, 2026-09-06..2026-09-15 (presence = detected_at..updated_at, OSDs from log-excerpt headers)",
+  "settings": {
+    "sample_interval_seconds": 300,
+    "open_after_seconds": 90000,
+    "spike_factor": 1.5,
+    "baseline_days": 14,
+    "min_baseline_samples": 12
+  },
+  "result": {
+    "incidents_before": 1040,
+    "incidents_after": 8,
+    "reduction_percent": 99.2,
+    "open_reasons": {
+      "same_host": 8,
+      "spike": 1
+    },
+    "waves": {
+      "2026-09-06": true,
+      "2026-09-07": true,
+      "2026-09-14": true
+    }
+  },
+  "opened": [
+    {
+      "at": "2026-09-06T09:41:50.326744",
+      "reasons": [
+        "same_host"
+      ],
+      "osd_ids": [
+        0,
+        3
+      ]
+    },
+    {
+      "at": "2026-09-06T16:06:50.326744",
+      "reasons": [
+        "same_host",
+        "spike"
+      ],
+      "osd_ids": [
+        1,
+        2,
+        4,
+        5
+      ]
+    },
+    {
+      "at": "2026-09-07T01:31:50.326744",
+      "reasons": [
+        "same_host"
+      ],
+      "osd_ids": [
+        1,
+        5
+      ]
+    },
+    {
+      "at": "2026-09-07T08:11:50.326744",
+      "reasons": [
+        "same_host"
+      ],
+      "osd_ids": [
+        0,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "at": "2026-09-09T22:11:50.326744",
+      "reasons": [
+        "same_host"
+      ],
+      "osd_ids": [
+        0,
+        3
+      ]
+    },
+    {
+      "at": "2026-09-10T18:06:50.326744",
+      "reasons": [
+        "same_host"
+      ],
+      "osd_ids": [
+        2,
+        4
+      ]
+    },
+    {
+      "at": "2026-09-14T02:31:50.326744",
+      "reasons": [
+        "same_host"
+      ],
+      "osd_ids": [
+        0,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "at": "2026-09-14T04:16:50.326744",
+      "reasons": [
+        "same_host"
+      ],
+      "osd_ids": [
+        2,
+        4
+      ]
+    }
+  ],
+  "episodes_with_unique_index_only": 8,
+  "if_every_episode_had_one_osd": {
+    "incidents_after": 3,
+    "open_reasons": {
+      "spike": 1,
+      "persisted": 2
+    },
+    "waves": {
+      "2026-09-06": true,
+      "2026-09-07": false,
+      "2026-09-14": false
+    }
+  },
+  "note": "Every historical episode had two OSDs on one host (2 OSDs per node), so same_host opened each episode: the gate adds no reduction over the in-flight unique index on this data. It suppresses only isolated single-OSD slow ops."
+}
