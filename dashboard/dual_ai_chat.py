@@ -817,6 +817,16 @@ async def run_single_full_access_chat(
         selected_scope = normalize_scope(cluster_context)
     except ValueError as exc:
         raise DualAIChatError(f"Single Full bị từ chối: scope cụm không hợp lệ ({exc})") from exc
+    ssh_key_path = os.environ.get(
+        "CEPH_AI_EXECUTOR_SSH_KEY_PATH",
+        selected_scope.get("ssh_key_path", ""),
+    )
+    # The prompt must name the key this container really holds; the stored
+    # cluster path belongs to the read-only plane and is not mounted here.
+    prompt_scope = {
+        key: value for key, value in selected_scope.items() if key != "database_url"
+    }
+    prompt_scope["ssh_key_path"] = ssh_key_path
     scope = (
             "<authoritative_cluster_scope>\n"
             "Đây là context cụm do control-plane truyền vào sau khi operator "
@@ -827,7 +837,7 @@ async def run_single_full_access_chat(
             "được đoán kết quả.\n"
             # DATABASE_URL may contain credentials. It is passed only through
             # the child process environment, never into the model prompt.
-            f"{json.dumps({key: value for key, value in selected_scope.items() if key != 'database_url'}, ensure_ascii=False, sort_keys=True)}\n"
+            f"{json.dumps(prompt_scope, ensure_ascii=False, sort_keys=True)}\n"
             "</authoritative_cluster_scope>\n\n"
         )
     scope_env = {
@@ -845,10 +855,7 @@ async def run_single_full_access_chat(
         "CEPH_RGW_CONTAINER_NAME": selected_scope.get("ceph_rgw_container_name", ""),
         "CEPH_KEYRING_PATH": selected_scope.get("ceph_keyring_path", ""),
         "SSH_USER": selected_scope.get("ssh_user", ""),
-        "SSH_KEY_PATH": os.environ.get(
-            "CEPH_AI_EXECUTOR_SSH_KEY_PATH",
-            selected_scope.get("ssh_key_path", ""),
-        ),
+        "SSH_KEY_PATH": ssh_key_path,
         "CEPH_AI_SELECTED_DATABASE_SOURCE": selected_scope["database_source"],
         "DATABASE_URL": selected_scope["database_url"],
     }

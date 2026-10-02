@@ -717,6 +717,39 @@ def test_single_full_prompt_reasserts_safety_after_untrusted_input(monkeypatch):
     assert "sqlite:///tmp/ceph-ai-test.db" not in captured["prompt"]
     assert "RANH GIỚI THỰC THI BẮT BUỘC" in captured["prompt"]
 
+
+def test_single_full_prompt_names_the_executor_ssh_key(monkeypatch):
+    captured = {}
+
+    async def ask(_role, prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["kwargs"] = kwargs
+        return {"provider": "codex", "content": "ok"}
+
+    monkeypatch.setenv("CEPH_AI_EXECUTOR_SSH_KEY_PATH", "/tmp/full-executor-id_ed25519")
+    monkeypatch.setattr(dual_ai_chat, "_acquire_execution_lock", lambda: object())
+    monkeypatch.setattr(dual_ai_chat, "_release_execution_lock", lambda _handle: None)
+    monkeypatch.setattr(dual_ai_chat, "_ask", ask)
+
+    asyncio.run(dual_ai_chat.run_single_full_access_chat(
+        "kiểm tra cụm",
+        [],
+        cluster_context={
+            "cluster_id": "cluster-1",
+            "cluster_ref": "local:cluster-1",
+            "name": "CS-LAB",
+            "database_source": "local",
+            "database_url": "sqlite:///tmp/ceph-ai-test.db",
+            "ceph_mon_nodes": "10.3.53.1",
+            "ssh_key_path": "/tmp/readonly-id_ed25519",
+        },
+    ))
+
+    assert captured["kwargs"]["extra_env"]["SSH_KEY_PATH"] == "/tmp/full-executor-id_ed25519"
+    assert '"ssh_key_path": "/tmp/full-executor-id_ed25519"' in captured["prompt"]
+    assert "/tmp/readonly-id_ed25519" not in captured["prompt"]
+
+
 def test_telegram_cluster_choice_persists_and_starts_a_new_session(monkeypatch, tmp_path):
     monkeypatch.setattr(chat, "_CLUSTER_STATE_PATH", tmp_path / "clusters.json")
     chat._cluster_by_chat.clear()
