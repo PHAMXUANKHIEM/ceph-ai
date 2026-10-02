@@ -99,6 +99,7 @@ def test_management_action_ids_loaded_from_policy_yaml():
             "reshard_rgw_bucket",
             "deep_scrub_omap_pg",
         "edit_pool",
+        "tune_bluestore_slow_ops_warn",
         "scrub_pool",
         "set_pool_protection",
         "mark_osd_out",
