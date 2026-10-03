@@ -172,3 +172,6 @@ EVENT_RISKY_ACTION_AUTO_CANCELLED_INCIDENT_RESOLVED = (
 EVENT_INCIDENT_FIX_VERIFIED = "incident_fix_verified"
 EVENT_INCIDENT_FIX_NOT_EFFECTIVE = "incident_fix_not_effective"
 EVENT_INCIDENT_FIX_GAVE_UP = "incident_fix_gave_up"
+# WP1.3: a resolved-looking health check came back during the resolve
+# grace, so the open Incident was kept instead of reopening a new one.
+EVENT_INCIDENT_RECURRED = "incident_recurred"

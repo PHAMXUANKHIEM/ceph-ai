@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     ceph_max_concurrency: int = Field(default=8, gt=0, le=128)
     # Open CEPH_HEALTH_UNAVAILABLE once no MON has answered for this long.
     ceph_health_unavailable_alert_seconds: int = Field(default=600, ge=60, le=86400)
+    # WP1.3: keep a generic health-check Incident open this long after its
+    # check disappears, so a flapping check reuses it (0 = resolve at once).
+    incident_resolve_grace_seconds: int = Field(default=1800, ge=0, le=86400)
     # BLUESTORE_SLOW_OP_ALERT gate (autonomy plan WP1.2). Ceph keeps the
     # check for bluestore_slow_ops_warn_lifetime (86400 s by default) after a
     # single slow op, so only an episode outliving that window is recurrent.

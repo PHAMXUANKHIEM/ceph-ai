@@ -139,6 +139,10 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "router_base_url", TEST_ROUTER_BASE_URL)
     monkeypatch.setattr(settings, "router_enabled", True)
     monkeypatch.setattr(settings, "codex_chat_enabled", False)
+    # Recovery tests expect immediate resolution; WP1.3 grace tests opt in.
+    monkeypatch.setattr(settings, "incident_resolve_grace_seconds", 0)
+    from watcher import resolve_grace
+    resolve_grace.reset()
     monkeypatch.setattr(settings, "ceph_mon_nodes", TEST_CEPH_MON_NODES)
     monkeypatch.setattr(settings, "ceph_mon_hostnames", TEST_CEPH_MON_HOSTNAMES)
     monkeypatch.setattr(settings, "ceph_container_name", TEST_CEPH_CONTAINER_NAME)

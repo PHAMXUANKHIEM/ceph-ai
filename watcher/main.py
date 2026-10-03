@@ -34,6 +34,7 @@ from watcher import (
     node_health_monitor,
     osd_latency_monitor,
     publisher,
+    resolve_grace,
     trash_capacity_monitor,
     verify,
     volume_monitor,
@@ -422,6 +423,7 @@ def _resolve_recovered_incidents(
     # expires Cluster attributes and the session closes before Telegram is
     # sent; retaining Cluster here caused DetachedInstanceError every poll.
     recovered: dict[tuple[str | None, str], str] = {}
+    grace_decisions: dict[tuple[str | None, str], str] = {}
     with db.SessionLocal() as session:
         cluster_filter = (
             or_(Incident.cluster_id == cluster_id, Incident.cluster_id.is_(None))
@@ -550,10 +552,19 @@ def _resolve_recovered_incidents(
                 # is only ever one database) -- still functionally the
                 # same guard, just no colon-prefixed family to match.
                 continue
-            if incident.ceph_code not in current_codes:
+            key = (incident.cluster_id, incident.ceph_code)
+            if key not in grace_decisions:
+                grace_decisions[key] = resolve_grace.decide(
+                    incident.cluster_id, incident.ceph_code, incident.ceph_code in current_codes,
+                )
+            if grace_decisions[key] == resolve_grace.RECURRED:
+                audit.record(
+                    session, incident_id=incident.id, action_id=None,
+                    event_type=audit.EVENT_INCIDENT_RECURRED, actor=audit.ACTOR_SYSTEM,
+                )
+            if grace_decisions[key] == resolve_grace.RESOLVE:
                 incident.status = IncidentStatus.RESOLVED.value
                 cancel_pending_actions(session, incident.id)
-                key = (incident.cluster_id, incident.ceph_code)
                 if key not in recovered:
                     recovered[key] = telegram_outbox.enqueue_incident_verified_alert(
                         session,
