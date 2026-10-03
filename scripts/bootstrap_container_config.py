@@ -86,9 +86,13 @@ def _configure_container_rabbitmq(values: dict) -> None:
     if not any(line.split() and line.split()[0] == username for line in users):
         subprocess.run(["podman", "exec", "rabbitmq", "rabbitmqctl", "add_user", username, password], check=True)
     resource_pattern = r"^(incidents|incidents\.dlx|incidents\.dlq|ai\.delegated\.tasks|ai\.delegated\.tasks\.exchange|ai\.delegated\.tasks\.dlx|ai\.delegated\.tasks\.dlq)$"
+    # watcher/publisher.py publishes Incidents through the default exchange,
+    # which RabbitMQ authorises as a write to "amq.default". Without it every
+    # Incident publish was refused (ACCESS_REFUSED) in the container stack.
+    write_pattern = resource_pattern.replace("^(", r"^(amq\.default|", 1)
     subprocess.run(
         ["podman", "exec", "rabbitmq", "rabbitmqctl", "set_permissions", "-p", "/", username,
-         resource_pattern, resource_pattern, resource_pattern],
+         resource_pattern, write_pattern, resource_pattern],
         check=True,
     )
     set_key(
