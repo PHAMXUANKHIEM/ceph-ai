@@ -134,10 +134,11 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 ### WP1.3 `OSD_LATENCY_HIGH:N` và health check tái mở
 
 - [x] Hysteresis cho `OSD_LATENCY_HIGH:*` đã làm trong WP1.2 (mở 4 scan, đóng 3 scan).
-- [!] Reopen suppression chung: đo 30 ngày cho thấy mở lại < 5 phút chỉ 5,7% với health check khác (38% trước đây do `NODE_UNREACHABLE`, đã xử lý ở WP1.1) → ưu tiên thấp, đánh giá lại sau khi deploy WP1.1/WP1.2.
-- [ ] Test: reopen trong/ngoài cửa sổ, khác cluster không gộp, audit ghi `REOPENED`.
+- [x] Đánh giá lại 03/10: `NODE_UNREACHABLE` sau WP1.1 chỉ còn 3–26 incident/ngày (853/980 lần mở lại trong 7 ngày đều rơi vào 26–29/09, trước deploy). Nhưng khi incident health check chạy lại (02/10), health check chung mở lại 55% trong 30 phút trong đêm ceph1 chập chờn (`MON_DOWN` 32/14, `SLOW_OPS` 32/11, `OSD_DOWN`, `PG_DEGRADED`…) — con số 5,7% trước đây đo khi incident chung gần như không được tạo.
+- [x] Reopen suppression chung bằng **trì hoãn đóng** thay vì mở lại incident cũ (`watcher/resolve_grace.py`, `b8250a2d`): incident chung chỉ RESOLVED khi check vắng mặt liên tục `incident_resolve_grace_seconds` (mặc định 1800; 0 = như cũ); check quay lại trong grace → giữ incident đang mở, không alert/chẩn đoán mới, ghi audit `incident_recurred`. Mô phỏng grace trên dữ liệu 26 giờ: 0/10/30 phút → mở lại 74/45/19 (−74% ở 30 phút), incident 135/99/61. Đồng hồ theo (cluster, mã) trong RAM; restart chỉ làm đóng chậm tối đa 1 grace. Đánh đổi: thông báo "đã khắc phục" và việc huỷ action chờ duyệt chậm tối đa 30 phút.
+- [x] Test (`tests/test_resolve_grace.py`, 6): trong/ngoài cửa sổ, quay lại rồi đếm lại từ đầu, khác cluster/mã không gộp, grace 0, audit `incident_recurred` (thay cho tên `REOPENED` trong plan cũ vì incident không bị mở lại).
 
-**Nghiệm thu:** tỉ lệ tái mở (WP0) giảm ≥ 60%.
+**Nghiệm thu:** tỉ lệ tái mở (WP0) giảm ≥ 60%. **Kết quả:** replay −74% số lần mở lại (tỉ lệ 54,8% → 31,1%); cần đo KPI thật 7 ngày sau deploy.
 **Ước lượng:** 1,5 ngày.
 
 ---
@@ -402,6 +403,7 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 | 02/10/2026 | Sự cố — không có incident health check | Cụm mặc định không tạo incident từ health check (OSD_DOWN, PG_DEGRADED, BLUESTORE…) từ 15/09: `watcher.main` giao việc này cho `watcher.remediation_main` nhưng Compose không có service đó; tiến trình `remediation_main` sót từ test (SQLite + MON giả) còn giữ khoá. Thêm service `remediation-watcher` | `fbceb4dc` | Done (chờ deploy) |
 | 02/10/2026 | Cảnh báo mất health | Watcher mất health cả cụm 2,5 giờ (MON leader quá tải) mà không ai được báo; nay mở `CEPH_HEALTH_UNAVAILABLE` sau 10 phút, tự đóng khi đọc lại được | `81fe97ee` | Done (chờ deploy) |
 | 02/10/2026 | WP1.2 BlueStore | Mẫu + bộ lọc xu hướng + action tune có rollback + nối runbook WP3; replay 1.040 → 8 (bằng mức của unique index) | `4c788fe3`, `49b6cba3`, replay JSON | Done (chờ deploy + migrate) |
+| 03/10/2026 | WP1.3 Reopen chung | Trì hoãn đóng incident chung 30 phút; replay 26 giờ: mở lại 74 → 19, incident 135 → 61 | `b8250a2d`, 6 test | Done (chờ deploy + đo 7 ngày) |
 
 ## 13. Quy tắc trạng thái
 
