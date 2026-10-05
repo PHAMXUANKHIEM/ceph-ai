@@ -315,8 +315,8 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ## WP7 — Online learning forecasting (tiếp nối, ưu tiên P1)
 
-- [ ] Sau deploy `0670de30`: xác nhận `online_learner_cycle_audit` không còn `update_failed`, có `READY_TO_LEARN` và `update_applied=true` (log đã có traceback nếu lỗi).
-- [ ] Chạy `scripts/river_v2_promotion_evidence.py` hằng tuần, lưu JSON; theo dõi verified/scored/self-labelled.
+- [~] Sau deploy `0670de30` (05/10): **không còn `update_failed`** từ 29/09 (5 lần cuối ngày 28/09, trước deploy immutable). Nhưng **`applied = 0` ở mọi chu kỳ từ 19/09**: 6.313 mẫu, 1.592 nhãn `READY` khớp đúng mẫu, 0 nhãn được dùng. Nguyên nhân: watcher đưa mỗi mẫu vào **một lần** lúc quan sát, nhãn tới sau ~13 giây, còn nhánh học chỉ chạy khi cùng `sample_id` được đưa lại — không bao giờ xảy ra. Sửa ở `5c3f9ca4`: `apply_ready_labels()` mỗi lượt quét node đưa lại các mẫu đã có nhãn (cũ nhất trước, chất lượng tính theo `observed_at` của mẫu), mọi lần thử áp nhãn được ghi vào mẫu để không lặp. Chờ deploy rồi xác nhận `update_applied=true`.
+- [~] Chạy lần đầu 05/10 (lưu ngoài repo vì có IP: `/var/lib/ceph-ai/learning-evidence/river-v2-promotion-evidence-2026-10-05-before-label-fix.json`): 12 scope, verified 1.592, scored 0, `ready_to_learn_ratio` 0.0 ở mọi scope (hệ quả lỗi trên), verdict `KEEP_SHADOW` (còn vì chỉ có 1 cluster < 2). Chưa tự động hằng tuần.
 - [ ] Khi ≥ 20 verified outcome/scope ở ≥ 3 scope: mở rộng canary online learning từ 1 host/cpu sang 1 cluster (cpu+memory), vẫn SHADOW_ONLY.
 - [ ] Theo dõi `paired_holdout` (`scripts/river_linear_v2_runtime_replay.py`): chỉ đề xuất promotion khi verdict `CANDIDATE_BETTER` ổn định ≥ 2 tuần.
 - [ ] Gắn sự kiện forecast vào WP6 như feature (dự báo đầy disk/CPU).
