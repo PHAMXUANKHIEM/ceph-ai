@@ -274,11 +274,23 @@ def delivery_stats() -> dict[str, int]:
         return counts
 
 
+# A DEAD delivery of a still-NEW Incident is retried once per this period.
+REDRIVE_DEAD_AFTER = timedelta(hours=1)
+
+
 def reconcile_stale(*, max_age_seconds: int = 300) -> dict[str, int]:
-    """Find committed incidents that have no usable RabbitMQ delivery row."""
-    cutoff = utc_now() - timedelta(seconds=max(1, int(max_age_seconds)))
+    """Find committed incidents that have no usable RabbitMQ delivery row.
+
+    A DEAD delivery whose Incident is still NEW gets a fresh round of
+    attempts once its last failure is REDRIVE_DEAD_AFTER old: otherwise a
+    broker outage (ACCESS_REFUSED on 2026-10-02) leaves the Incident
+    undiagnosed forever while reminders keep repeating it.
+    """
+    now = utc_now()
+    cutoff = now - timedelta(seconds=max(1, int(max_age_seconds)))
     missing_delivery = 0
     stale_pending = 0
+    redriven = 0
     with db.SessionLocal() as session:
         incidents = session.query(Incident).filter(
             Incident.status == IncidentStatus.NEW.value,
@@ -297,8 +309,15 @@ def reconcile_stale(*, max_age_seconds: int = 300) -> dict[str, int]:
                 IncidentOutboxStatus.PROCESSING.value,
             } and row.created_at <= cutoff:
                 stale_pending += 1
-        session.rollback()
-    result = {"missing_delivery": missing_delivery, "stale_pending": stale_pending}
+            elif row.status == IncidentOutboxStatus.DEAD.value and row.updated_at <= now - REDRIVE_DEAD_AFTER:
+                row.status = IncidentOutboxStatus.PENDING.value
+                row.attempts = 0
+                row.next_attempt_at = now
+                row.updated_at = now
+                redriven += 1
+                logger.warning("incident outbox reconciler: re-driving dead delivery %s", row.event_id)
+        session.commit()
+    result = {"missing_delivery": missing_delivery, "stale_pending": stale_pending, "redriven": redriven}
     if any(result.values()):
         logger.warning("incident outbox reconciler found stale delivery: %s", result)
     return result

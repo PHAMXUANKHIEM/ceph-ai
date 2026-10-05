@@ -114,4 +114,49 @@ def test_reconciler_reports_new_incident_without_delivery(monkeypatch):
         session.commit()
 
     result = incident_outbox.reconcile_stale(max_age_seconds=60)
-    assert result == {"missing_delivery": 1, "stale_pending": 0}
+    assert result == {"missing_delivery": 1, "stale_pending": 0, "redriven": 0}
+
+
+def _kill_delivery(event_id, failed_ago):
+    with db.SessionLocal() as session:
+        row = session.query(IncidentOutbox).filter_by(event_id=event_id).one()
+        row.status = IncidentOutboxStatus.DEAD.value
+        row.attempts = 8
+        row.created_at = utc_now() - failed_ago
+        row.updated_at = utc_now() - failed_ago
+        session.commit()
+
+
+def _age_incident(incident_id, ago):
+    with db.SessionLocal() as session:
+        session.get(Incident, incident_id).created_at = utc_now() - ago
+        session.commit()
+
+
+def test_reconciler_redrives_a_dead_delivery_of_a_new_incident_after_an_hour(monkeypatch):
+    _isolated_db(monkeypatch)
+    incident_id, event_id = _enqueue_one()
+    _age_incident(incident_id, timedelta(hours=3))
+    _kill_delivery(event_id, timedelta(hours=2))
+
+    assert incident_outbox.reconcile_stale(max_age_seconds=60)["redriven"] == 1
+
+    with db.SessionLocal() as session:
+        row = session.query(IncidentOutbox).filter_by(event_id=event_id).one()
+        assert row.status == IncidentOutboxStatus.PENDING.value
+        assert row.attempts == 0
+
+
+def test_reconciler_waits_before_redriving_and_ignores_handled_incidents(monkeypatch):
+    _isolated_db(monkeypatch)
+    handled_id, handled_event = _enqueue_one()
+    _age_incident(handled_id, timedelta(hours=3))
+    _kill_delivery(handled_event, timedelta(hours=2))
+    with db.SessionLocal() as session:
+        session.get(Incident, handled_id).status = IncidentStatus.RESOLVED.value
+        session.commit()
+    recent_id, recent_event = _enqueue_one()
+    _age_incident(recent_id, timedelta(hours=3))
+    _kill_delivery(recent_event, timedelta(minutes=20))
+
+    assert incident_outbox.reconcile_stale(max_age_seconds=60)["redriven"] == 0

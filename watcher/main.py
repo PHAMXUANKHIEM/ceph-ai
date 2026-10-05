@@ -250,6 +250,9 @@ def _is_inflight_incident_duplicate(error: IntegrityError) -> bool:
     return getattr(diagnostic, "constraint_name", None) == _INFLIGHT_INCIDENT_UNIQUE_INDEX
 
 
+_STALE_REMINDER_AGE = timedelta(hours=24)
+
+
 def send_due_incident_reminders(
     now: datetime | None = None,
     *,
@@ -266,12 +269,16 @@ def send_due_incident_reminders(
     now = now or utc_now()
     interval = max(60, settings.telegram_incident_reminder_interval_seconds)
     cutoff = now - timedelta(seconds=interval)
+    stale_after = now - _STALE_REMINDER_AGE
+    stale_cutoff = now - max(timedelta(seconds=interval), _STALE_REMINDER_AGE)
     sent = 0
     pending_event_ids: list[str] = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
-            .filter(Incident.status.in_(_RECOVERABLE_STATUSES))
+            # FAILED already sent its final alert; reminding it hourly kept
+            # one RBD_VOLUME_TRASH_MOVE from 2026-09-15 in Telegram for weeks.
+            .filter(Incident.status.in_(_RECOVERABLE_STATUSES - {IncidentStatus.FAILED.value}))
             .filter(Incident.ceph_code.notin_(_REMINDER_EXCLUDED_CODES))
             .filter(~Incident.ceph_code.like(f"{PERFORMANCE_RCA_PREFIX}%"))
             .filter(or_(Incident.muted_until.is_(None), Incident.muted_until <= now))
@@ -292,7 +299,9 @@ def send_due_incident_reminders(
                 continue
             seen.add(key)
             reminder_baseline = incident.telegram_reminded_at or incident.created_at
-            if reminder_baseline <= cutoff:
+            # Past its first day an open Incident is reminded once a day.
+            due_cutoff = cutoff if incident.created_at > stale_after else stale_cutoff
+            if reminder_baseline <= due_cutoff:
                 incidents.append(incident)
         clusters = {
             cluster.id: cluster

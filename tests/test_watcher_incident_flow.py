@@ -613,7 +613,7 @@ def test_open_incident_is_reminded_hourly_until_resolved(isolated_db, monkeypatc
     with db_module.SessionLocal() as session:
         due = Incident(
             ceph_code="OSD_DOWN",
-            status=IncidentStatus.FAILED.value,
+            status=IncidentStatus.PENDING_APPROVAL.value,
             severity="HEALTH_ERR",
             log_excerpt="osd.2 down",
             diagnosis_text="OSD.2 đã dừng do tiến trình bị lỗi.",
@@ -661,6 +661,47 @@ def test_open_incident_is_reminded_hourly_until_resolved(isolated_db, monkeypatc
         assert session.get(Incident, due_id).telegram_reminded_at == now + timedelta(hours=1)
 
 
+def _reminder_incident(status, created_ago, now, code="OSD_DOWN"):
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=code, status=status, severity="HEALTH_WARN", log_excerpt="x",
+            detected_at=now - created_ago, created_at=now - created_ago,
+        )
+        session.add(incident)
+        session.commit()
+        return incident.id
+
+
+def _count_reminders(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        watcher_main.telegram_alerts, "send_incident_alert", lambda *a, **k: calls.append(a),
+    )
+    monkeypatch.setattr(watcher_main.settings, "telegram_incident_reminder_interval_seconds", 3600)
+    return calls
+
+
+def test_failed_incidents_are_not_reminded(isolated_db, monkeypatch):
+    now = datetime(2026, 10, 5, 2, 0, 0)
+    _reminder_incident(IncidentStatus.FAILED.value, timedelta(days=20), now, code="RBD_VOLUME_TRASH_MOVE")
+    _count_reminders(monkeypatch)
+
+    assert watcher_main.send_due_incident_reminders(now) == 0
+
+
+def test_incidents_older_than_a_day_are_reminded_daily(isolated_db, monkeypatch):
+    now = datetime(2026, 10, 5, 2, 0, 0)
+    old_id = _reminder_incident(IncidentStatus.PENDING_APPROVAL.value, timedelta(days=26), now, code="LOG_ANOMALY:81b4")
+    _count_reminders(monkeypatch)
+
+    assert watcher_main.send_due_incident_reminders(now) == 1
+    assert watcher_main.send_due_incident_reminders(now + timedelta(hours=1)) == 0
+    assert watcher_main.send_due_incident_reminders(now + timedelta(hours=23)) == 0
+    assert watcher_main.send_due_incident_reminders(now + timedelta(hours=24)) == 1
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, old_id).telegram_reminded_at == now + timedelta(hours=24)
+
+
 def test_reminders_exclude_upgrade_and_collapse_duplicate_cluster_health_rows(
     isolated_db, monkeypatch
 ):
@@ -680,7 +721,10 @@ def test_reminders_exclude_upgrade_and_collapse_duplicate_cluster_health_rows(
                 Incident(
                     cluster_id=cluster.id,
                     ceph_code="POOL_APP_NOT_ENABLED",
-                    status=IncidentStatus.FAILED.value,
+                    status=IncidentStatus.PENDING_APPROVAL.value,
+                    # A distinct dedupe_key is how two in-flight rows of
+                    # one code can coexist (e.g. the OSD_DOWN retry path).
+                    dedupe_key="older-attempt",
                     log_excerpt="old duplicate",
                     detected_at=now - timedelta(hours=3),
                     created_at=now - timedelta(hours=3),
@@ -688,7 +732,7 @@ def test_reminders_exclude_upgrade_and_collapse_duplicate_cluster_health_rows(
                 Incident(
                     cluster_id=cluster.id,
                     ceph_code="POOL_APP_NOT_ENABLED",
-                    status=IncidentStatus.FAILED.value,
+                    status=IncidentStatus.PENDING_APPROVAL.value,
                     log_excerpt="newest evidence",
                     detected_at=now - timedelta(hours=2),
                     created_at=now - timedelta(hours=2),
@@ -1006,7 +1050,7 @@ def test_ceph_muted_check_still_creates_an_incident_but_sends_no_reminder(
     with db_module.SessionLocal() as session:
         muted = Incident(
             ceph_code="AUTH_INSECURE_KEYS_ALLOWED",
-            status=IncidentStatus.FAILED.value,
+            status=IncidentStatus.PENDING_APPROVAL.value,
             severity="HEALTH_WARN",
             log_excerpt="insecure cipher aes allowed for auth",
             detected_at=now - timedelta(hours=2),
