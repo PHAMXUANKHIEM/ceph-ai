@@ -67,7 +67,7 @@ from worker.executor.action_contract import (
 )
 from worker.policy import gate
 from worker.policy.playbook_registry import evaluate_auto_execution, get_contract
-from worker.preflight import run_preflight
+from worker.preflight import PreflightResult, run_preflight
 from worker.operational_gate import evaluate as evaluate_operational_gate
 from worker.autonomy_runtime import (
     acquire_lease, check_limits, reconcile_expired_executions, release_lease,
@@ -77,6 +77,8 @@ from worker.redaction import default_redactor
 from worker.llm import evidence_gate
 
 logger = logging.getLogger(__name__)
+# Approval-gated, command-less fallback when a proposal cannot run.
+_MANUAL_ACTION_ID = "investigate_manually"
 
 _TYPED_CAPABILITY_PREFIX = "playbook."
 
@@ -1180,17 +1182,19 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             # proposal — see worker/preflight.py's own module docstring for
             # what the 3 checks cover. Enforcement defaults on: unknown or
             # stale compatibility evidence must fail closed.
-            preflight = run_preflight(session, cluster_id=incident.cluster_id, action_id=action_id)
+            # investigate_manually runs no command, so there is no
+            # capability to check.
+            preflight = (
+                PreflightResult(True)
+                if action_id == _MANUAL_ACTION_ID
+                else run_preflight(session, cluster_id=incident.cluster_id, action_id=action_id)
+            )
             if not preflight.allowed:
                 if settings.ai_preflight_enforcement_enabled:
                     logger.warning(
                         "diagnose_incident: preflight BLOCKED action_id=%s for incident %s: %s",
                         action_id, incident_id, preflight.reason,
                     )
-                    incident.diagnosis_text = (
-                        f"{diagnosis_text}\n\n[Preflight — Pha 0.3] Bị chặn: {preflight.reason}"
-                    )
-                    incident.status = IncidentStatus.FAILED.value
                     audit.record(
                         session,
                         incident_id=incident_id,
@@ -1198,17 +1202,23 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                         event_type=audit.EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT,
                         actor=audit.ACTOR_SYSTEM,
                     )
-                    session.commit()
-                    # Preflight is an execution guard, never an alert
-                    # guard. Operators still need the AI diagnosis and the
-                    # exact reason Autopilot declined to act.
-                    if not alert_lifecycle.is_active_mute(incident):
-                        send_ai_incident_alert(
-                            alert_ceph_code, alert_severity, incident.diagnosis_text, rationale,
-                            cluster_name=alert_cluster_name, bot_token=alert_bot_token,
-                            chat_id=alert_chat_id, enabled=alert_enabled,
-                        )
-                    return
+                    # Fall back to an approval-gated investigate_manually
+                    # instead of FAILED. FAILED was retried every
+                    # incident_failed_retry_cooldown_seconds while the check
+                    # stayed active, and with an empty capability matrix
+                    # (Ceph 20, 2026-10-05) every proposal looped: 366
+                    # blocks and two Telegram messages per loop per day.
+                    # The open Incident keeps the diagnosis, the blocked
+                    # action and its parameters for the operator.
+                    diagnosis_text = (
+                        f"{diagnosis_text}\n\n[Preflight — Pha 0.3] Bị chặn {action_id}: {preflight.reason}"
+                    )
+                    incident.diagnosis_text = diagnosis_text
+                    rationale = (
+                        f"Không thể đề xuất {action_id}: {preflight.reason} "
+                        f"Cần operator kiểm tra thủ công. {rationale}"
+                    )
+                    action_id = _MANUAL_ACTION_ID
                 logger.warning(
                     "diagnose_incident: preflight WOULD block action_id=%s for incident %s "
                     "(ai_preflight_enforcement_enabled=false, allowing) — %s",

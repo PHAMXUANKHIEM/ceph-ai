@@ -102,12 +102,14 @@ def _fake_ceph_json(*args, **_kwargs):
     }
 
 
-def _create_incident(incident_id: str, *, dedupe_key: str | None = None) -> None:
+def _create_incident(
+    incident_id: str, *, dedupe_key: str | None = None, ceph_code: str = "MON_CLOCK_SKEW",
+) -> None:
     with db_module.SessionLocal() as session:
         session.add(
             Incident(
                 id=incident_id,
-                ceph_code="MON_CLOCK_SKEW",
+                ceph_code=ceph_code,
                 dedupe_key=dedupe_key,
                 status=IncidentStatus.DIAGNOSING.value,
                 detected_at=datetime.utcnow(),
@@ -3236,15 +3238,42 @@ def test_diagnose_incident_blocks_action_when_preflight_fails_and_enforcement_en
 
     with db_module.SessionLocal() as session:
         incident = session.get(Incident, "incident-preflight-enabled")
-        assert incident.status == IncidentStatus.FAILED.value
-        assert "capability matrix has no entry for resync_ntp" in incident.diagnosis_text
-        assert session.query(Action).filter_by(incident_id="incident-preflight-enabled").count() == 0
+        # Not FAILED: FAILED was recreated every retry cooldown, forever.
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+        assert "Bị chặn resync_ntp: capability matrix has no entry for resync_ntp" in incident.diagnosis_text
+        actions = session.query(Action).filter_by(incident_id="incident-preflight-enabled").all()
+        assert [a.action_id for a in actions] == ["investigate_manually"]
+        assert actions[0].status == ActionStatus.PENDING_APPROVAL.value
+        assert "Không thể đề xuất resync_ntp" in actions[0].rationale
         audit_entries = session.query(AuditEntry).filter_by(
             incident_id="incident-preflight-enabled"
         ).all()
         assert any(
             e.event_type == audit.EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT for e in audit_entries
         )
+
+
+def test_investigate_manually_skips_the_capability_preflight(isolated_db, monkeypatch):
+    # LARGE_OMAP_OBJECTS without a bucket or PG to act on resolves
+    # deterministically to investigate_manually.
+    def must_not_run(*_args, **_kwargs):
+        raise AssertionError("investigate_manually has no command to preflight")
+
+    monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", True)
+    monkeypatch.setattr(router_client, "run_preflight", must_not_run)
+
+    _create_incident("incident-manual", ceph_code="LARGE_OMAP_OBJECTS")
+    envelope = dict(
+        ENVELOPE, incident_id="incident-manual", ceph_code="LARGE_OMAP_OBJECTS",
+        cluster_snapshot={"checks": {"LARGE_OMAP_OBJECTS": {"detail": []}}},
+    )
+    asyncio.run(router_client.diagnose_incident("incident-manual", envelope))
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, "incident-manual").status == IncidentStatus.PENDING_APPROVAL.value
+        assert [a.action_id for a in session.query(Action).filter_by(incident_id="incident-manual")] == [
+            "investigate_manually"
+        ]
 
 
 def test_diagnose_incident_creates_action_when_preflight_passes_and_enforcement_enabled(
