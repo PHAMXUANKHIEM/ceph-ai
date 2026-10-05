@@ -327,10 +327,10 @@ Tất cả KPI được tính bởi `scripts/autonomy_kpi_report.py` (WP0) và h
 
 ## WP8 — Quan sát, quản trị và tài liệu
 
-- [ ] Trang `/ai-learning`: thẻ KPI (WP0), chất lượng LF (WP2.3), evidence coverage (WP3), OPE/FRR (WP6).
+- [x] Trang `/ai-learning`: thẻ KPI (WP0) và chất lượng LF (WP2.3) có từ trước; 05/10 thêm thẻ "Tiến độ tự vận hành · 7 ngày" (`/api/ai-learning/autonomy-status`, `shared/autonomy_status.py`): online learning WP7 (đã học/đã xác minh, verdict nâng cấp), evidence WP3 (incident đã điều tra, độ phủ luật triage), quyết định WP6 (nguồn, khuyến nghị shadow), FRR shadow và OPE 90 ngày. Mỗi mục lỗi riêng. Chạy thử trên dữ liệu production 05/10: 12 mẫu đã học / 1.693 xác minh; evidence 0 (điều tra đang tắt); quyết định 0.
 - [x] Báo cáo tuần tự động: mục "🤖 Tự vận hành" ghép vào digest AI Ops thứ Hai sẵn có (`worker/ai_ops_digest.py`, lịch `AI_OPS_WEEKLY_DIGEST_*`), mỗi cluster: nhiễu (incident, top family, tỉ lệ mở lại, investigate_manually), verdict mới + tiến độ tới 200 nhãn, bằng chứng + độ phủ luật, nguồn quyết định, playbook đủ/gần ngưỡng Trust Engine (`shared/weekly_autonomy_report.py`). Mỗi mục lỗi riêng (rollback, ghi "Thiếu mục") không chặn digest. JSON: `AI_OPS_WEEKLY_REPORT_DIR` (mặc định tắt) hoặc `scripts/weekly_autonomy_report.py` chạy tay. Chạy thật 28/09 (`docs/benchmark/weekly-autonomy-2026-W40.json`): 1.842 incident/7 ngày, mở lại ≤30 phút 60,2%, investigate_manually 97,2%, 3/200 verdict; evidence/decisions báo thiếu vì production chưa migrate.
-- [ ] `docs/ai-evaluation.md`, `docs/production-release-runbook.md`: bổ sung quy trình verdict, chaos, nâng quyền.
-- [ ] Mỗi WP thêm browser acceptance check nếu có UI; static-analysis budget/coverage gate phải pass; critical-path coverage không giảm.
+- [x] `docs/ai-evaluation.md`: quy trình verdict (Telegram, Alert Center, nhắc hằng ngày, mốc 20/200 nhãn), online learning và tiêu chí nâng cấp model, chaos (ghi rõ **chưa có**, kèm điều kiện bắt buộc). `docs/production-release-runbook.md`: capability matrix trước khi có action, quy trình nâng quyền tự thực thi 5 bước.
+- [~] Browser acceptance: thêm check `autonomy_status` (thẻ hiện và đủ 4 ô) và `test_progress` (`/test-progress` hiện cả hai phần); chưa chạy được vì cần mật khẩu dashboard. Budget/quality gate pass ở mọi commit 02–05/10.
 
 ---
 

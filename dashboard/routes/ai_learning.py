@@ -18,6 +18,7 @@ from dashboard.routes.auth import is_admin_user, require_login
 from dashboard.templating import make_templates
 from shared import (
     autonomy_kpi,
+    autonomy_status,
     ai_evaluation,
     auto_labels,
     canary,
@@ -988,6 +989,20 @@ async def autonomy_kpi_api(request: Request, days: int = 30, user: str = Depends
         report = autonomy_kpi.collect(
             session, days=days, cluster_id=cluster.id, include_unscoped=bool(cluster.is_default),
         )
+        session.rollback()
+    return report
+
+
+@router.get("/api/ai-learning/autonomy-status")
+async def autonomy_status_api(request: Request, days: int = 7, user: str = Depends(require_login)):
+    """Read-only self-learning progress (plan WP8): evidence, decisions,
+    FRR, OPE and online learning for the selected cluster."""
+    _require_admin(user)
+    if not 1 <= days <= 31:
+        raise HTTPException(status_code=400, detail="days phải trong khoảng 1–31")
+    _clusters, cluster = cluster_selection(request)
+    with db.SessionLocal() as session:
+        report = autonomy_status.build(session, cluster, period_days=days)
         session.rollback()
     return report
 

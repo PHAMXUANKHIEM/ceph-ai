@@ -220,6 +220,53 @@ await guarded("alert_verdicts", async () => {
   await page.close();
 });
 
+// 8. Self-learning progress card (autonomy plan WP8): the card fetches
+// /api/ai-learning/autonomy-status and becomes visible with its four tiles
+// filled in. Read-only.
+await guarded("autonomy_status", async () => {
+  const page = await authed.newPage();
+  await page.goto(`${baseUrl}/ai-learning`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => {
+    const grid = document.getElementById("autonomy-status");
+    return grid && !grid.hidden;
+  }, null, { timeout: 30000 }).catch(() => {});
+  const state = await page.evaluate(() => {
+    const grid = document.getElementById("autonomy-status");
+    const tiles = grid ? [...grid.querySelectorAll("[data-status]")] : [];
+    return {
+      present: Boolean(grid),
+      visible: Boolean(grid && !grid.hidden),
+      filled: tiles.filter((node) => node.textContent.trim() && node.textContent.trim() !== "—").length,
+      tiles: tiles.length,
+      learning: grid?.querySelector('[data-status="ol-scored"]')?.textContent.trim(),
+    };
+  });
+  const ok = state.present && state.visible && state.filled >= 4;
+  record("autonomy_status", ok ? "PASSED" : "FAILED",
+    `present=${state.present} visible=${state.visible} filled=${state.filled}/${state.tiles} learning=${state.learning}`);
+  await page.close();
+});
+
+// 9. Test and CI progress page (/test-progress): both sections render after
+// the first poll. Read-only.
+await guarded("test_progress", async () => {
+  const page = await authed.newPage();
+  await page.goto(`${baseUrl}/test-progress`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => {
+    const runs = document.querySelectorAll("#ci-runs tr");
+    return runs.length && !runs[0].textContent.includes("Đang tải");
+  }, null, { timeout: 30000 }).catch(() => {});
+  const state = await page.evaluate(() => ({
+    local: !document.getElementById("local")?.hidden || !document.getElementById("local-empty")?.hidden,
+    ciRows: document.querySelectorAll("#ci-runs tr").length,
+    ciError: document.getElementById("ci-error")?.hidden === false,
+  }));
+  const ok = state.local && state.ciRows > 0;
+  record("test_progress", ok ? "PASSED" : "FAILED",
+    `local_section=${state.local} ci_rows=${state.ciRows} ci_error=${state.ciError}`);
+  await page.close();
+});
+
 await browser.close();
 const failed = checks.filter((item) => item.status === "FAILED");
 const report = {

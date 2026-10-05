@@ -111,6 +111,14 @@
         <div class="ai-overview-tile"><span class="hint">Đề xuất “investigate_manually”</span><strong data-kpi="placeholder">—</strong><small>mục tiêu ≤ 40%</small></div>
         <div class="ai-overview-tile"><span class="hint">Operator verdict</span><strong data-kpi="verdicts">—</strong><small data-kpi="verified">—</small></div>
       </div>
+      <h3>Tiến độ tự vận hành · 7 ngày</h3>
+      <div class="ai-overview-grid" id="autonomy-status" data-endpoint="/api/ai-learning/autonomy-status?days=7" hidden>
+        <div class="ai-overview-tile"><span class="hint">Online learning (WP7)</span><strong data-status="ol-scored">—</strong><small data-status="ol-detail">—</small></div>
+        <div class="ai-overview-tile"><span class="hint">Điều tra evidence (WP3)</span><strong data-status="ev-investigated">—</strong><small data-status="ev-detail">—</small></div>
+        <div class="ai-overview-tile"><span class="hint">Quyết định đã ghi (WP6)</span><strong data-status="dec-total">—</strong><small data-status="dec-detail">—</small></div>
+        <div class="ai-overview-tile"><span class="hint">False-release rate shadow</span><strong data-status="frr">—</strong><small data-status="ope">—</small></div>
+      </div>
+      <div class="ai-tip" id="autonomy-status-errors" hidden></div>
       <div class="ai-tip">“Độ chính xác ước tính” = 100 − MAE, chỉ để dễ đọc. Chỉ đánh dấu đáng tin khi có ít nhất 20 outcome và đạt từ 80%.</div>
     </div></section>
   </div>
@@ -377,6 +385,7 @@
 <script src="/static/app.js?v={{ static_version }}"></script>
 <script src="/static/model_quality_report.js?v={{ static_version }}"></script>
 <script src="/static/autonomy_kpi.js?v={{ static_version }}"></script>
+<script src="/static/autonomy_status.js?v={{ static_version }}"></script>
 <script>
 async function guardedPromotion(modelId, action) {
   const labels = {"promotion-request": "đề xuất promotion", promote: "promote model", rollback: "rollback model"};

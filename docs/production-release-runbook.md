@@ -109,3 +109,34 @@ River v2 and other candidate models remain shadow-only until independent
 verified outcomes, paired evaluation, operator approval, audit evidence and a
 rollback rehearsal are present. The release process must not enable
 autonomous remediation merely because unit tests or a benchmark fixture pass.
+
+## Capability matrix trước khi có action
+
+Preflight (`worker/preflight.py`) chặn mọi đề xuất có lệnh khi capability matrix
+không có entry cho đúng Ceph major của cluster; đề xuất bị chặn trở thành
+`investigate_manually` chờ duyệt (không còn FAILED rồi tạo lại). Sau khi nâng
+Ceph major (ví dụ lên 20.2.x), kiểm tra `/capability-matrix` và duyệt entry cho
+major mới trước khi trông đợi đề xuất thật. Seed AI cần router đã cấu hình; nếu
+không, tạo proposal có trích dẫn nguyên văn từ docs.ceph.com và duyệt trên trang.
+
+## Nâng quyền tự thực thi
+
+Không bật tự thực thi cho một action chỉ vì test hoặc benchmark pass. Thứ tự bắt
+buộc (autonomy plan WP6.4):
+
+1. Shadow ít nhất 30 ngày: policy chỉ ghi khuyến nghị execute/escalate vào
+   `autonomy_decisions`, không có đường nào từ shadow tới thực thi.
+2. Đánh giá off-policy (`scripts/ope_report.py`, DR có khoảng tin cậy 95%) cho
+   thấy false-release rate ≤ ngân sách (`SHADOW_FRR_BUDGET`) khi propensity đã đủ
+   đa dạng; logging tất định (propensity 1.0) không đủ chứng minh.
+3. Operator duyệt canary cho **1 action × 1 cluster**, có audit như promotion
+   model registry.
+4. Canary 14 ngày: theo dõi FRR thật, `regressed_24h`, số escalation; vi phạm thì
+   tự hạ về APPROVAL_REQUIRED.
+5. Kill switch và guardrail của autopilot luôn thắng lựa chọn của policy.
+
+`AUTOPILOT_ENABLED` hiện chỉ cho các action được phân loại SAFE trong
+`worker/policy/action_policy.yaml` (và ngoại lệ đã kiểm chứng như restart OSD cho
+`BLUESTORE_SLOW_OP_ALERT` khi mọi `osd.N` đã ánh xạ được host). Thay đổi danh sách
+SAFE là quyết định vận hành phải ghi lại trong release notes.
+
