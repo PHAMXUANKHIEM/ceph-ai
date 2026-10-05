@@ -34,7 +34,7 @@ from shared import alert_lifecycle, audit, db, telegram_outbox
 from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
-from shared.online_learning_consumer import consume_samples
+from shared.online_learning_consumer import apply_ready_labels, consume_samples
 from shared.telegram_alerts import send_node_alert
 from watcher import ceph_client, node_metrics, node_resource_forecast
 from worker.policy import gate
@@ -434,7 +434,18 @@ def check_node_resources(
                 "source": metrics.get("source", "loki"),
                 "consecutive_scans": _consecutive_high_scans[host],
             }
+    _apply_ready_labels_safely()
     return flagged
+
+
+def _apply_ready_labels_safely() -> None:
+    """Learn from labels verified since the last scan (WP7); advisory only."""
+    if not settings.online_learning_enabled:
+        return
+    try:
+        apply_ready_labels()
+    except Exception:
+        logger.warning("check_node_resources: applying verified online-learning labels failed", exc_info=True)
 
 
 def _rationale_for(detail: dict) -> str:

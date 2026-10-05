@@ -8,14 +8,14 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import desc, select
+from sqlalchemy import and_, desc, select
 
 from config.settings import settings
 from shared import db
 from shared.clusters import get_default_cluster_id
 from shared.learning_runtime import evaluate, resolve_update_target
 from shared.online_learning_controls import get_control
-from shared.models import OnlineLearnerAudit, OnlineLearnerCycleAudit
+from shared.models import OnlineLearnerAudit, OnlineLearnerCycleAudit, OnlineLearnerLabel
 from shared.online_learning import (
     BACKEND_NAME,
     BACKEND_VERSION,
@@ -37,6 +37,7 @@ from shared.online_learning_gate import (
 )
 from shared.forecast_flags import candidate_enabled
 from shared.online_learning_labels import (
+    READY,
     enqueue_verified_outcomes,
     label_policy_paused,
     mark_consumed,
@@ -250,7 +251,10 @@ def _consume_one(
                         runtime_mode=runtime.mode,
                         update_applied=True,
                     )
-                if not quality.allowed:
+                # Record every label attempt, applied or not: a sample
+                # outside the canary scope passes quality but may not
+                # update, and apply_ready_labels() must not pick it again.
+                if not update.applied:
                     existing.label = ready_label.label_value
                     existing.quality_status = quality.status
                     existing.quality_reason = quality.reason
@@ -267,7 +271,6 @@ def _consume_one(
                         runtime_mode=runtime.mode,
                         update_applied=False,
                     )
-                session.commit()
             else:
                 session.commit()
             return ConsumedSample(
@@ -435,6 +438,54 @@ def consume_samples(samples: Iterable[dict]) -> list[ConsumedSample]:
             ))
             session.commit()
     return results
+
+
+def apply_ready_labels(limit: int | None = None) -> list[ConsumedSample]:
+    """Feed verified labels back to the samples they verify (autonomy plan WP7).
+
+    The watcher consumes each telemetry sample once, when it is observed,
+    and the forecast evaluator writes that sample's verified label seconds
+    later. The learning branch in _consume_one only runs when a sample is
+    consumed again, which never happened: on 2026-10-05 all 1,592 READY
+    labels matched a sample, none was consumed, and no update was ever
+    applied. This sweep re-submits the oldest labelled samples that have
+    not had a label attempt yet, in observation order; quality is judged at
+    the sample's own observed_at, so a late sweep is not "stale".
+    """
+    if not settings.online_learning_enabled:
+        return []
+    limit = limit or settings.online_learning_max_samples_per_cycle
+    with db.SessionLocal() as session:
+        rows = session.execute(
+            select(
+                OnlineLearnerAudit.cluster_key, OnlineLearnerAudit.host, OnlineLearnerAudit.metric,
+                OnlineLearnerAudit.value, OnlineLearnerAudit.observed_at, OnlineLearnerAudit.sample_id,
+            )
+            .join(OnlineLearnerLabel, and_(
+                OnlineLearnerLabel.cluster_key == OnlineLearnerAudit.cluster_key,
+                OnlineLearnerLabel.host == OnlineLearnerAudit.host,
+                OnlineLearnerLabel.metric == OnlineLearnerAudit.metric,
+                OnlineLearnerLabel.sample_id == OnlineLearnerAudit.sample_id,
+            ))
+            .where(
+                OnlineLearnerLabel.status == READY,
+                OnlineLearnerAudit.update_applied.is_(False),
+                OnlineLearnerAudit.label.is_(None),
+            )
+            .order_by(OnlineLearnerAudit.observed_at)
+            .limit(limit)
+        ).all()
+    return consume_samples(
+        {
+            "cluster_id": None if row.cluster_key == "__default__" else row.cluster_key,
+            "host": row.host,
+            "metric": row.metric,
+            "value": row.value,
+            "observed_at": row.observed_at,
+            "sample_id": row.sample_id,
+        }
+        for row in rows
+    ) if rows else []
 
 
 def consume_sample(**sample) -> ConsumedSample | None:

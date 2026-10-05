@@ -383,3 +383,85 @@ def test_control_database_failure_fails_closed(monkeypatch):
         cycle = session.query(OnlineLearnerCycleAudit).order_by(OnlineLearnerCycleAudit.created_at.desc()).first()
         assert cycle is not None
         assert cycle.failed == 1
+
+
+def _labelled_sample(factory, now, *, sample_id, host="node-1", healthy=True, label_value=43.0):
+    """A sample consumed earlier as NO_LABEL whose verified label arrived later."""
+    with factory() as session:
+        if session.get(Cluster, "cluster-a") is None:
+            session.add(Cluster(id="cluster-a", name="CS-LAB", ceph_mon_nodes="", ssh_user="root", ssh_key_path="/tmp/key"))
+        if healthy and session.get(WatcherHeartbeat, 1) is None:
+            session.add(WatcherHeartbeat(
+                id=1, cluster_id="cluster-a", success=True, mon_node="mon-1",
+                error_message=None, polled_at=now, consecutive_failures=0, last_success_at=now,
+            ))
+        session.add(OnlineLearnerAudit(
+            cluster_key="cluster-a", host=host, metric="cpu", sample_id=sample_id,
+            observed_at=now.replace(tzinfo=None), value=label_value, label=None,
+            quality_status="NO_LABEL", quality_reason="verified label is required",
+            runtime_mode="AUDIT_ONLY", runtime_reason="initial audit", update_applied=False,
+            model_version="river-mean-v1",
+        ))
+        session.add(NodeResourceForecastRun(
+            id=f"run-{sample_id}", cluster_name="CS-LAB", host=host, metric="cpu",
+            algorithm="linear", window_hours=24, predicted_at=now.replace(tzinfo=None),
+            target_at=now.replace(tzinfo=None), current_percent=42.0,
+            predicted_percent=45.0, confidence=0.9, actual_percent=label_value,
+            absolute_error=2.0, status="EVALUATED", idempotency_key=f"key-{sample_id}",
+            evaluated_at=now.replace(tzinfo=None), consensus_status="CONSENSUS",
+        ))
+        session.add(OnlineLearnerLabel(
+            cluster_key="cluster-a", host=host, metric="cpu", sample_id=sample_id,
+            source_run_id=f"run-{sample_id}", observed_at=now.replace(tzinfo=None),
+            label_value=label_value, status="READY", reason="verified forecast outcome",
+            verified_at=now.replace(tzinfo=None), outcome="VERIFIED_SUCCESS", evidence_count=1,
+        ))
+        session.commit()
+
+
+def _learning_settings(monkeypatch):
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_enabled", True)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_mode", "SHADOW_ONLY")
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_require_verified_label", True)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_min_verified_evidence", 1)
+
+
+def test_ready_labels_are_applied_without_the_sample_being_observed_again(monkeypatch):
+    factory = _session(monkeypatch)
+    _learning_settings(monkeypatch)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    _labelled_sample(factory, now, sample_id="s-late-label")
+
+    results = consumer_module.apply_ready_labels()
+
+    assert [r.update_applied for r in results] == [True]
+    with factory() as session:
+        audit = session.query(OnlineLearnerAudit).filter_by(sample_id="s-late-label").one()
+        label = session.query(OnlineLearnerLabel).filter_by(sample_id="s-late-label").one()
+        assert audit.update_applied is True
+        assert label.status == "CONSUMED"
+    assert consumer_module.apply_ready_labels() == []
+
+
+def test_a_label_that_cannot_update_is_recorded_and_not_retried(monkeypatch):
+    factory = _session(monkeypatch)
+    _learning_settings(monkeypatch)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    # No watcher heartbeat: the runtime refuses updates although the label is valid.
+    _labelled_sample(factory, now, sample_id="s-no-runtime", healthy=False)
+
+    first = consumer_module.apply_ready_labels()
+
+    assert [r.update_applied for r in first] == [False]
+    with factory() as session:
+        audit = session.query(OnlineLearnerAudit).filter_by(sample_id="s-no-runtime").one()
+        assert audit.label == 43.0
+        assert audit.update_applied is False
+    assert consumer_module.apply_ready_labels() == []
+
+
+def test_ready_label_sweep_is_off_with_online_learning(monkeypatch):
+    _session(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_enabled", False)
+
+    assert consumer_module.apply_ready_labels() == []
