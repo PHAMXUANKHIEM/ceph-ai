@@ -182,6 +182,9 @@ def build_report(session, *, now: datetime, stale_days: float = 7.0, audit_windo
     """The full evidence report; reads only."""
     from config.settings import settings
 
+    # The digest passes shared.time.utc_now() (naive UTC); labels compare
+    # against an aware clock.
+    now = _utc(now) or datetime.now(timezone.utc)
     scopes, blocked = collect(
         session, now=now, stale_after=timedelta(days=stale_days),
         audit_window=timedelta(days=audit_window_days),

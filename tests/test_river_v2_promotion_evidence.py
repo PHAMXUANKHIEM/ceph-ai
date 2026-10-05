@@ -106,3 +106,16 @@ def test_single_cluster_is_never_eligible():
     result = module.verdict(one_cluster, **THRESHOLDS)
     assert result["decision"] == "KEEP_SHADOW"
     assert result["reasons"] == ["clusters covered 1 < 2"]
+
+
+def test_build_report_accepts_the_naive_utc_clock_of_the_digest():
+    from shared.river_v2_evidence import build_report
+
+    session = _session()
+    _label(session, 1, status="READY")
+    session.commit()
+
+    report = build_report(session, now=NOW.replace(tzinfo=None))
+
+    assert report["totals"]["verified"] == 1
+    assert report["generated_at"].endswith("+00:00")
