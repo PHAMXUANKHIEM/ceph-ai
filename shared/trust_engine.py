@@ -252,8 +252,8 @@ def recompute_playbook_stats(session, *, now: datetime | None = None) -> int:
                 setattr(stat, key, value)
             changed += 1
     for stat in session.query(PlaybookStat).all():
-        key = (stat.playbook_id, stat.playbook_version, stat.scope_key)
-        if key in active_keys:
+        stat_key = (stat.playbook_id, stat.playbook_version, stat.scope_key)
+        if stat_key in active_keys:
             continue
         empty_values = {
             "proposed_count": 0, "executed_count": 0, "verified_count": 0,
