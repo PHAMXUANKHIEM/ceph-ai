@@ -40,6 +40,7 @@ from dashboard.routes import (
     object_storage_users,
     storage_audit,
     capability_matrix as capability_matrix_routes,
+    test_progress as test_progress_routes,
     capacity_forecast as capacity_forecast_routes,
     disk_risk as disk_risk_routes,
     event_timeline,
@@ -632,6 +633,7 @@ def create_app() -> FastAPI:
     application.include_router(telegram_alerts.router)
     application.include_router(crush_map.router)
     application.include_router(capability_matrix_routes.router)
+    application.include_router(test_progress_routes.router)
     application.include_router(capacity_forecast_routes.router)
     application.include_router(performance_rca_routes.router)
     application.include_router(event_timeline.router)

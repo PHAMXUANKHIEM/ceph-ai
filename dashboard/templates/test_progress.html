@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tiến độ test — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  {% include "_nav.html" %}
+
+  <main class="page">
+    <section class="card">
+      <div class="card-header"><h2>Test trên máy (trước khi push)</h2></div>
+      <div class="card-body">
+        <p class="hint">Bộ test đầy đủ chạy trên máy trước mỗi lần push. Trang tự cập nhật mỗi 5 giây.</p>
+        <div id="local-empty" class="empty-state" hidden>Chưa có lượt test nào ghi tiến độ.</div>
+        <div id="local" hidden>
+          <p><span id="local-status" class="status-pill status-unknown"><span class="dot"></span><strong></strong></span>
+             <span id="local-label" class="hint"></span></p>
+          <div class="progress-bar"><div id="local-bar" class="progress-bar-fill" style="width:0%"></div></div>
+          <p id="local-counts"></p>
+          <p class="hint" id="local-times"></p>
+          <p class="hint" id="local-current"></p>
+          <div id="local-failures" hidden>
+            <h3>Test lỗi</h3>
+            <ul id="local-failure-list"></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>CI trên GitHub ({{ ci_repo }}, nhánh main)</h2></div>
+      <div class="card-body">
+        <p class="hint">Cache 90 giây để không vượt giới hạn API GitHub.</p>
+        <p id="ci-error" class="hint" hidden></p>
+        <div id="ci-jobs"></div>
+        <div class="table-wrap"><table><thead><tr><th>Commit</th><th>Tiêu đề</th><th>Trạng thái</th><th>Bắt đầu</th><th>Link</th></tr></thead>
+          <tbody id="ci-runs"><tr><td colspan="5" class="empty-state">Đang tải…</td></tr></tbody></table></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+  (function () {
+    const LABELS = {collecting: "Đang thu thập test", running: "Đang chạy", passed: "Pass", failed: "Có lỗi", stalled: "Đã dừng giữa chừng"};
+    const PILL = {collecting: "status-warn", running: "status-warn", passed: "status-ok", failed: "status-err", stalled: "status-err"};
+    function el(id) { return document.getElementById(id); }
+    function duration(seconds) {
+      if (seconds === null || seconds === undefined) return "—";
+      const m = Math.floor(seconds / 60), s = seconds % 60;
+      return m ? m + " phút " + s + " giây" : s + " giây";
+    }
+    function when(iso) { return iso ? new Date(iso).toLocaleString("vi-VN") : "—"; }
+    function ciState(run) {
+      if (run.status !== "completed") return ["status-warn", run.status === "in_progress" ? "Đang chạy" : "Đang chờ"];
+      return run.conclusion === "success" ? ["status-ok", "Pass"] : ["status-err", run.conclusion || "?"];
+    }
+    function pill(cls, text) {
+      const span = document.createElement("span");
+      span.className = "status-pill " + cls;
+      const dot = document.createElement("span"); dot.className = "dot";
+      const strong = document.createElement("strong"); strong.textContent = text;
+      span.append(dot, strong);
+      return span;
+    }
+    function renderLocal(run) {
+      el("local-empty").hidden = !!run; el("local").hidden = !run;
+      if (!run) return;
+      const status = el("local-status");
+      status.className = "status-pill " + (PILL[run.status] || "status-unknown");
+      status.querySelector("strong").textContent = LABELS[run.status] || run.status;
+      el("local-label").textContent = " " + (run.label || "");
+      el("local-bar").style.width = (run.percent || 0) + "%";
+      el("local-counts").textContent = run.done + " / " + run.total + " test (" + run.percent + "%) · pass " + run.passed +
+        " · lỗi " + run.failed + " · error " + run.errors + " · skip " + run.skipped;
+      el("local-times").textContent = "Bắt đầu " + when(run.started_at) + " · đã chạy " + duration(run.elapsed_seconds) +
+        (run.eta_seconds !== null && run.eta_seconds !== undefined ? " · còn khoảng " + duration(run.eta_seconds) : "") +
+        (run.finished_at ? " · kết thúc " + when(run.finished_at) : "");
+      el("local-current").textContent = run.current ? "Đang chạy: " + run.current : "";
+      const list = el("local-failure-list"); list.replaceChildren();
+      (run.failures || []).forEach(function (f) {
+        const li = document.createElement("li"); const code = document.createElement("code");
+        code.textContent = f.nodeid + (f.when !== "call" ? " (" + f.when + ")" : ""); li.append(code); list.append(li);
+      });
+      el("local-failures").hidden = !(run.failures || []).length;
+    }
+    function renderCi(ci) {
+      el("ci-error").hidden = !ci.error; el("ci-error").textContent = ci.error ? "Không đọc được GitHub: " + ci.error : "";
+      const jobs = el("ci-jobs"); jobs.replaceChildren();
+      const latest = (ci.runs || [])[0];
+      if (latest && latest.jobs) {
+        const p = document.createElement("p"); p.append("Job của lượt mới nhất: ");
+        latest.jobs.forEach(function (job) {
+          const state = job.status !== "completed" ? ["status-warn", job.status === "in_progress" ? "đang chạy" : "chờ"]
+            : (job.conclusion === "success" ? ["status-ok", "pass"] : (job.conclusion === "skipped" ? ["status-unknown", "bỏ qua"] : ["status-err", job.conclusion]));
+          p.append(pill(state[0], job.name + ": " + state[1]), " ");
+        });
+        jobs.append(p);
+      }
+      const body = el("ci-runs"); body.replaceChildren();
+      (ci.runs || []).forEach(function (run) {
+        const tr = document.createElement("tr");
+        const cells = [run.sha, run.title, null, when(run.created_at), null];
+        cells.forEach(function (value, i) {
+          const td = document.createElement("td");
+          if (i === 0) { const c = document.createElement("code"); c.textContent = value; td.append(c); }
+          else if (i === 2) { const s = ciState(run); td.append(pill(s[0], s[1])); }
+          else if (i === 4) { const a = document.createElement("a"); a.href = run.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Mở CI"; td.append(a); }
+          else td.textContent = value;
+          tr.append(td);
+        });
+        body.append(tr);
+      });
+      if (!(ci.runs || []).length && !ci.error) body.innerHTML = '<tr><td colspan="5" class="empty-state">Chưa có lượt CI.</td></tr>';
+    }
+    async function refresh() {
+      try {
+        const response = await fetch("/api/test-progress", {credentials: "same-origin"});
+        if (!response.ok) return;
+        const data = await response.json();
+        renderLocal(data.local); renderCi(data.ci);
+      } catch (e) { /* keep the last view; retry next tick */ }
+    }
+    refresh(); setInterval(refresh, 5000);
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,136 @@
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+
+from config.settings import settings
+from dashboard.routes import test_progress as route
+from scripts import pytest_progress
+from shared import test_progress
+
+T0 = datetime(2026, 10, 5, 3, 0, 0, tzinfo=timezone.utc)
+
+
+def _report(nodeid, when, outcome):
+    return SimpleNamespace(
+        nodeid=nodeid, when=when,
+        passed=outcome == "passed", failed=outcome == "failed", skipped=outcome == "skipped",
+    )
+
+
+def test_reporter_counts_outcomes_and_writes_atomically(tmp_path):
+    path = tmp_path / "runs" / "current.json"
+    reporter = pytest_progress.ProgressReporter(path, "pre-push abc123")
+    reporter.pytest_collection_finish(SimpleNamespace(items=[1, 2, 3, 4]))
+    reporter.pytest_runtest_logstart("t::ok", None)
+    reporter.pytest_runtest_logreport(_report("t::ok", "setup", "passed"))
+    reporter.pytest_runtest_logreport(_report("t::ok", "call", "passed"))
+    reporter.pytest_runtest_logreport(_report("t::bad", "call", "failed"))
+    reporter.pytest_runtest_logreport(_report("t::skip", "setup", "skipped"))
+    reporter.pytest_runtest_logreport(_report("t::broken", "setup", "failed"))
+    reporter.pytest_sessionfinish(None, 1)
+
+    state = json.loads(path.read_text())
+    assert (state["total"], state["done"], state["passed"], state["failed"], state["skipped"], state["errors"]) == (4, 4, 1, 1, 1, 1)
+    assert state["status"] == "failed"
+    assert state["label"] == "pre-push abc123"
+    assert [f["nodeid"] for f in state["failures"]] == ["t::bad", "t::broken"]
+    assert list(path.parent.iterdir()) == [path]  # no temporary file left behind
+
+
+def test_plugin_is_inert_without_the_environment_variable(monkeypatch):
+    monkeypatch.delenv(pytest_progress.ENV_FILE, raising=False)
+    registered = []
+    config = SimpleNamespace(pluginmanager=SimpleNamespace(register=lambda *a: registered.append(a)))
+
+    pytest_progress.pytest_configure(config)
+
+    assert registered == []
+
+
+def _write(path: Path, **state):
+    path.write_text(json.dumps(state))
+
+
+def test_running_state_has_percent_and_eta(tmp_path):
+    path = tmp_path / "current.json"
+    _write(path, status="running", started_at=T0.isoformat(), updated_at=(T0 + timedelta(minutes=10)).isoformat(),
+           total=4000, done=1000)
+
+    run = test_progress.read_local_run(path, now=T0 + timedelta(minutes=10))
+
+    assert run["percent"] == 25.0
+    assert run["elapsed_seconds"] == 600
+    assert run["eta_seconds"] == 1800
+
+
+def test_a_silent_running_file_is_reported_as_stalled(tmp_path):
+    path = tmp_path / "current.json"
+    _write(path, status="running", started_at=T0.isoformat(), updated_at=T0.isoformat(), total=10, done=3)
+
+    assert test_progress.read_local_run(path, now=T0 + timedelta(minutes=5))["status"] == "stalled"
+
+
+def test_missing_or_corrupt_file_reads_as_no_run(tmp_path):
+    assert test_progress.read_local_run(tmp_path / "absent.json") is None
+    (tmp_path / "bad.json").write_text("{")
+    assert test_progress.read_local_run(tmp_path / "bad.json") is None
+
+
+def _github(handler):
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_ci_runs_include_jobs_of_the_newest_run_and_are_cached(monkeypatch):
+    test_progress._ci_cache.clear()
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path.endswith("/jobs"):
+            return httpx.Response(200, json={"jobs": [{"name": "quality", "status": "in_progress", "conclusion": None}]})
+        return httpx.Response(200, json={"workflow_runs": [
+            {"id": 2, "html_url": "https://ci/2", "head_sha": "1ecd9ead0000", "display_title": "docs", "status": "in_progress"},
+            {"id": 1, "html_url": "https://ci/1", "head_sha": "94e7e55f0000", "status": "completed", "conclusion": "success"},
+        ]})
+
+    first = test_progress.fetch_ci_runs("owner/repo", client=_github(handler))
+    second = test_progress.fetch_ci_runs("owner/repo", client=_github(handler))
+
+    assert first is second
+    assert [run["sha"] for run in first["runs"]] == ["1ecd9ead", "94e7e55f"]
+    assert first["runs"][0]["jobs"][0]["name"] == "quality"
+    assert "jobs" not in first["runs"][1]
+    assert len(calls) == 2
+
+
+def test_ci_errors_are_reported_not_raised():
+    test_progress._ci_cache.clear()
+
+    result = test_progress.fetch_ci_runs("owner/repo", client=_github(lambda request: httpx.Response(403)))
+
+    assert result["runs"] == []
+    assert result["error"].startswith("HTTPStatusError")
+
+
+def _login(client):
+    client.post("/login", data={"username": "admin", "password": "admin"})
+
+
+def test_page_and_api_are_admin_only(dashboard_client, monkeypatch, tmp_path):
+    path = tmp_path / "current.json"
+    _write(path, status="passed", started_at=T0.isoformat(), updated_at=T0.isoformat(), total=2, done=2)
+    monkeypatch.setattr(settings, "test_progress_file", str(path))
+    monkeypatch.setattr(route.test_progress, "fetch_ci_runs", lambda repo: {"repo": repo, "runs": [], "error": None})
+    _login(dashboard_client)
+
+    assert dashboard_client.get("/test-progress").status_code == 200
+    payload = dashboard_client.get("/api/test-progress").json()
+    assert payload["local"]["percent"] == 100.0
+    assert payload["ci"]["repo"] == settings.ci_github_repo
+
+    monkeypatch.setattr(route.auth, "is_admin_user", lambda _user: False)
+    assert dashboard_client.get("/test-progress").status_code == 403
+    assert dashboard_client.get("/api/test-progress").status_code == 403

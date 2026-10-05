@@ -76,7 +76,7 @@
       {% if is_admin %}<a href="/telegram-alerts" data-initial="AT" class="nav-link{{ ' active' if nav_path.startswith('/telegram-alerts') else '' }}">Alert Telegram</a>{% endif %}
       {% if is_admin %}<a href="/users" data-initial="U" class="nav-link{{ ' active' if nav_path == '/users' else '' }}">Users</a>{% endif %}
       {% if is_admin %}<a href="/clusters" data-initial="CL" class="nav-link{{ ' active' if nav_path == '/clusters' else '' }}">Clusters</a>{% endif %}
-      {% if is_admin %}<a href="/crush-map" data-initial="CM" class="nav-link{{ ' active' if nav_path == '/crush-map' else '' }}">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" data-initial="CX" class="nav-link{{ ' active' if nav_path == '/capability-matrix' else '' }}">Capability Matrix</a>{% endif %}
+      {% if is_admin %}<a href="/crush-map" data-initial="CM" class="nav-link{{ ' active' if nav_path == '/crush-map' else '' }}">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" data-initial="CX" class="nav-link{{ ' active' if nav_path == '/capability-matrix' else '' }}">Capability Matrix</a>{% endif %}{% if is_admin %}<a href="/test-progress" data-initial="TP" class="nav-link{{ ' active' if nav_path == '/test-progress' else '' }}">Tiến độ test</a>{% endif %}
     </nav>
     {% if clusters|length > 1 %}
     <!-- Multi-cluster observability Phase 1: only shown once a 2nd

@@ -113,6 +113,9 @@ class Settings(BaseSettings):
     # WP1.3: keep a generic health-check Incident open this long after its
     # check disappears, so a flapping check reuses it (0 = resolve at once).
     incident_resolve_grace_seconds: int = Field(default=1800, ge=0, le=86400)
+    # /test-progress: the local test run file and the GitHub repo whose CI to show.
+    test_progress_file: str = "/var/lib/ceph-ai/test-runs/current.json"
+    ci_github_repo: str = "PHAMXUANKHIEM/ceph-ai"
     # BLUESTORE_SLOW_OP_ALERT gate (autonomy plan WP1.2). Ceph keeps the
     # check for bluestore_slow_ops_warn_lifetime (86400 s by default) after a
     # single slow op, so only an episode outliving that window is recurrent.
