@@ -465,3 +465,23 @@ def test_ready_label_sweep_is_off_with_online_learning(monkeypatch):
     monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_enabled", False)
 
     assert consumer_module.apply_ready_labels() == []
+
+
+def test_ready_label_sweep_only_takes_the_canary_scope(monkeypatch):
+    factory = _session(monkeypatch)
+    _learning_settings(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_canary_enabled", True)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_canary_cluster_id", "cluster-a")
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_canary_host", "node-canary")
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_canary_metrics", "cpu")
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    # The older label belongs to another host and must not use the budget.
+    _labelled_sample(factory, now.replace(second=0) if now.second else now, sample_id="s-other", host="node-other")
+    _labelled_sample(factory, now, sample_id="s-canary", host="node-canary")
+
+    results = consumer_module.apply_ready_labels(limit=1)
+
+    assert [r.sample_id for r in results] == ["s-canary"]
+    with factory() as session:
+        other = session.query(OnlineLearnerAudit).filter_by(sample_id="s-other").one()
+        assert other.label is None

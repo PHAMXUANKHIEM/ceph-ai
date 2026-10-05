@@ -13,7 +13,7 @@ from sqlalchemy import and_, desc, select
 from config.settings import settings
 from shared import db
 from shared.clusters import get_default_cluster_id
-from shared.learning_runtime import evaluate, resolve_update_target
+from shared.learning_runtime import canary_scope_allows, evaluate, resolve_update_target
 from shared.online_learning_controls import get_control
 from shared.models import OnlineLearnerAudit, OnlineLearnerCycleAudit, OnlineLearnerLabel
 from shared.online_learning import (
@@ -455,26 +455,44 @@ def apply_ready_labels(limit: int | None = None) -> list[ConsumedSample]:
     if not settings.online_learning_enabled:
         return []
     limit = limit or settings.online_learning_max_samples_per_cycle
+    query = (
+        select(
+            OnlineLearnerAudit.cluster_key, OnlineLearnerAudit.host, OnlineLearnerAudit.metric,
+            OnlineLearnerAudit.value, OnlineLearnerAudit.observed_at, OnlineLearnerAudit.sample_id,
+        )
+        .join(OnlineLearnerLabel, and_(
+            OnlineLearnerLabel.cluster_key == OnlineLearnerAudit.cluster_key,
+            OnlineLearnerLabel.host == OnlineLearnerAudit.host,
+            OnlineLearnerLabel.metric == OnlineLearnerAudit.metric,
+            OnlineLearnerLabel.sample_id == OnlineLearnerAudit.sample_id,
+        ))
+        .where(
+            OnlineLearnerLabel.status == READY,
+            OnlineLearnerAudit.update_applied.is_(False),
+            OnlineLearnerAudit.label.is_(None),
+        )
+    )
+    if settings.online_learning_canary_enabled:
+        # Only the canary scope may update. Without this the oldest labels,
+        # mostly from other hosts, used each cycle's time budget (5 s, three
+        # samples on 2026-10-05) and the canary's own labels were never reached.
+        metrics = {
+            normalize_metric(item.strip())
+            for item in str(settings.online_learning_canary_metrics or "").split(",")
+            if item.strip()
+        }
+        query = query.where(
+            OnlineLearnerAudit.cluster_key == str(settings.online_learning_canary_cluster_id or "").strip(),
+            OnlineLearnerAudit.host == str(settings.online_learning_canary_host or "").strip(),
+            OnlineLearnerAudit.metric.in_(metrics),
+        )
     with db.SessionLocal() as session:
-        rows = session.execute(
-            select(
-                OnlineLearnerAudit.cluster_key, OnlineLearnerAudit.host, OnlineLearnerAudit.metric,
-                OnlineLearnerAudit.value, OnlineLearnerAudit.observed_at, OnlineLearnerAudit.sample_id,
-            )
-            .join(OnlineLearnerLabel, and_(
-                OnlineLearnerLabel.cluster_key == OnlineLearnerAudit.cluster_key,
-                OnlineLearnerLabel.host == OnlineLearnerAudit.host,
-                OnlineLearnerLabel.metric == OnlineLearnerAudit.metric,
-                OnlineLearnerLabel.sample_id == OnlineLearnerAudit.sample_id,
-            ))
-            .where(
-                OnlineLearnerLabel.status == READY,
-                OnlineLearnerAudit.update_applied.is_(False),
-                OnlineLearnerAudit.label.is_(None),
-            )
-            .order_by(OnlineLearnerAudit.observed_at)
-            .limit(limit)
-        ).all()
+        rows = [
+            row for row in session.execute(
+                query.order_by(OnlineLearnerAudit.observed_at).limit(limit)
+            ).all()
+            if canary_scope_allows(row.cluster_key, row.host, row.metric)
+        ]
     return consume_samples(
         {
             "cluster_id": None if row.cluster_key == "__default__" else row.cluster_key,
