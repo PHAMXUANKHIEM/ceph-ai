@@ -12,7 +12,7 @@ from shared.time import utc_now
 from sqlalchemy import or_
 
 from config.settings import settings
-from shared import db, telegram_outbox, weekly_autonomy_report
+from shared import db, river_v2_evidence, telegram_outbox, weekly_autonomy_report
 from shared.ai_cost import summary as ai_cost_summary
 from shared.clusters import list_active_clusters
 from shared.models import BackupJob, CephCapacitySample, Cluster, Incident
@@ -53,8 +53,48 @@ def _autonomy_report(cluster: Cluster, now: datetime, period_days: int) -> dict 
         return None
 
 
+def _learning_evidence(now: datetime) -> dict | None:
+    """River v2 promotion evidence (plan WP7) in its own read-only session."""
+    try:
+        with db.SessionLocal() as session:
+            report = river_v2_evidence.build_report(session, now=now)
+            session.rollback()
+            return report
+    except Exception:
+        logger.exception("AI Ops digest: online-learning evidence unavailable")
+        return None
+
+
+def _cluster_scopes(evidence: dict | None, cluster: Cluster) -> list[dict]:
+    if not evidence:
+        return []
+    keys = {cluster.id, "__default__"} if cluster.is_default else {cluster.id}
+    return [scope for scope in evidence.get("scopes", []) if scope.get("cluster_key") in keys]
+
+
+def learning_lines(cluster: Cluster, evidence: dict | None, previous: dict | None = None) -> list[str]:
+    """Weekly online-learning lines for one cluster, with the change since
+    last week's saved evidence when there is one."""
+    if evidence is None:
+        return []
+    scopes = _cluster_scopes(evidence, cluster)
+    verified = sum(int(scope.get("verified") or 0) for scope in scopes)
+    scored = sum(int(scope.get("scored") or 0) for scope in scopes)
+    line = f"Online learning ({evidence.get('execution_mode')}): {verified} kết quả đã xác minh · {scored} đã học"
+    if previous is not None:
+        before = sum(int(scope.get("scored") or 0) for scope in _cluster_scopes(previous, cluster))
+        line += f" ({scored - before:+d} so với tuần trước)"
+    verdict = evidence.get("verdict") or {}
+    reasons = verdict.get("reasons") or []
+    decision = f"Đánh giá nâng cấp mô hình: {verdict.get('decision', '?')}"
+    if reasons:
+        decision += f" — {str(reasons[0])[:120]}"
+    return [line, decision]
+
+
 def build_digest(*, now: datetime | None = None, period_days: int = 7,
-                 reports: list[dict] | None = None) -> list[tuple[str, str]]:
+                 reports: list[dict] | None = None, learning_evidence: dict | None = None,
+                 previous_learning: dict | None = None) -> list[tuple[str, str]]:
     """Digest texts per cluster; ``reports`` (if given) collects the
     autonomy report dicts for the JSON artifact."""
     now = now or utc_now()
@@ -108,6 +148,7 @@ def build_digest(*, now: datetime | None = None, period_days: int = 7,
             f"Dung lượng cao nhất trong mẫu gần nhất: {capacity}",
             f"AI toàn hệ thống: {ai['calls']} lượt gọi · {ai['errors']} lỗi · {ai['input_tokens'] + ai['output_tokens']} tokens ước tính",
             *(weekly_autonomy_report.format_lines(autonomy) if autonomy is not None else ()),
+            *learning_lines(data["cluster"], learning_evidence, previous_learning),
             "Chỉ là báo cáo tổng hợp từ dữ liệu đã lưu; không tự thực thi thao tác.",
         ))
         messages.append((name, text))
@@ -129,12 +170,45 @@ def write_reports(reports: list[dict], directory: str, now: datetime) -> Path | 
     return path
 
 
+def _evidence_path(directory: str, moment: datetime) -> Path:
+    year, week, _ = moment.isocalendar()
+    return Path(directory) / f"river-v2-evidence-{year}-W{week:02d}.json"
+
+
+def write_learning_evidence(evidence: dict | None, directory: str, now: datetime) -> Path | None:
+    """Keep one evidence JSON per ISO week (plan WP7: weekly, saved)."""
+    if not directory or evidence is None:
+        return None
+    path = _evidence_path(directory, now)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(evidence, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    except OSError:
+        logger.exception("AI Ops digest: cannot write the online-learning evidence to %s", path)
+        return None
+    return path
+
+
+def previous_learning_evidence(directory: str, now: datetime) -> dict | None:
+    if not directory:
+        return None
+    try:
+        return json.loads(_evidence_path(directory, now - timedelta(days=7)).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
 def run_digest() -> None:
     if not settings.ai_ops_weekly_digest_enabled:
         return
     now = utc_now()
     reports: list[dict] = []
-    for cluster_name, text in build_digest(now=now, reports=reports):
+    evidence = _learning_evidence(now)
+    previous = previous_learning_evidence(settings.learning_evidence_report_dir, now)
+    for cluster_name, text in build_digest(
+        now=now, reports=reports, learning_evidence=evidence, previous_learning=previous,
+    ):
         send_ai_ops_digest_alert(text, cluster_name=cluster_name)
         logger.info("AI Ops weekly digest sent for cluster=%s", cluster_name)
     write_reports(reports, settings.ai_ops_weekly_report_dir, now)
+    write_learning_evidence(evidence, settings.learning_evidence_report_dir, now)

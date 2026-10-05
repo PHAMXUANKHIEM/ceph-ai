@@ -421,6 +421,8 @@ class Settings(BaseSettings):
     # Autonomy plan WP8: the weekly digest also writes its autonomy section
     # as JSON here (one file per ISO week). Empty disables the file.
     ai_ops_weekly_report_dir: str = ""
+    # WP7: weekly River v2 promotion evidence JSON (outside the repo: it names hosts).
+    learning_evidence_report_dir: str = "/var/lib/ceph-ai/learning-evidence"
     # Autonomy plan WP2.2: once a day (Asia/Ho_Chi_Minh), ask for verdicts on
     # the few remediation cases that would teach the learning loop the most.
     verdict_nudge_enabled: bool = True
