@@ -2735,12 +2735,20 @@ def test_execute_approved_action_skips_non_approved_action(isolated_db, monkeypa
 def _approved_cluster_deploy_action(session, incident_id: str, action_params: dict | None) -> Action:
     import json as _json
 
+    if isinstance(action_params, dict) and not action_params.get("nodes"):
+        action_params = dict(action_params)
+        action_params["nodes"] = [{"ip": "10.20.1.112", "roles": ["mon", "mgr", "osd"]}]
+    target_nodes = (
+        [node["ip"] for node in action_params["nodes"]]
+        if isinstance(action_params, dict) and action_params.get("nodes")
+        else ["10.20.1.112"]
+    )
     action = Action(
         incident_id=incident_id,
         action_id="deploy_cluster_cephadm",
         classification=ActionClassification.RISKY.value,
         status=ActionStatus.APPROVED.value,
-        target_nodes=_json.dumps(["10.20.1.112"]),
+        target_nodes=_json.dumps(target_nodes),
         action_params=_json.dumps(action_params) if action_params is not None else None,
     )
     session.add(action)
@@ -3963,7 +3971,7 @@ def test_approved_action_target_guard_persists_failure_progress(isolated_db, mon
     monkeypatch.setattr(
         router_client,
         "_live_action_target_safety_reason",
-        lambda cluster, nodes, key_path: "target node không thuộc cấu hình cluster hiện tại: 203.0.113.9",
+        lambda cluster, nodes, key_path, **kwargs: "target node không thuộc cấu hình cluster hiện tại: 203.0.113.9",
     )
     monkeypatch.setattr(
         router_client,
@@ -3977,6 +3985,7 @@ def test_approved_action_target_guard_persists_failure_progress(isolated_db, mon
             "incident-target-guard-progress",
             {"version": "18.2.8", "nodes": []},
         )
+        action.action_id = "resync_ntp"
         action.target_nodes = json.dumps(["203.0.113.9"])
         action_pk = action.id
 
@@ -3989,6 +3998,51 @@ def test_approved_action_target_guard_persists_failure_progress(isolated_db, mon
         assert progress[0]["step"] == "preflight"
         assert progress[0]["status"] == "failed"
         assert "203.0.113.9" in progress[0]["message"]
+
+
+
+
+def test_cluster_deploy_target_guard_allows_new_nodes_but_keeps_ssh_key_checks(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    assert router_client._live_action_target_safety_reason(
+        None,
+        ["203.0.113.9"],
+        "/root/.ssh/ceph_aiops",
+        allow_unregistered_targets=True,
+    ) is None
+    assert router_client._live_action_target_safety_reason(
+        None,
+        ["203.0.113.9"],
+        "",
+        allow_unregistered_targets=True,
+    ) == "cluster chưa cấu hình SSH key"
+
+
+def test_cluster_deploy_rejects_target_list_changed_after_approval(isolated_db, monkeypatch):
+    monkeypatch.setattr(
+        router_client.cluster_deploy,
+        "run",
+        lambda *args, **kwargs: pytest.fail("changed targets must be rejected before deploy"),
+    )
+    _create_incident("incident-deploy-target-mismatch")
+    with db_module.SessionLocal() as session:
+        action = _approved_cluster_deploy_action(
+            session,
+            "incident-deploy-target-mismatch",
+            {"version": "18.2.8", "nodes": [{"ip": "10.20.1.112", "roles": ["mon", "mgr", "osd"]}]},
+        )
+        action.target_nodes = json.dumps(["203.0.113.9"])
+        action_pk = action.id
+        session.commit()
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.FAILED.value
+        progress = json.loads(action.execution_progress)
+        assert "không khớp" in progress[0]["message"]
 
 
 def test_action_target_guard_rejects_a_test_fixture_ssh_key(monkeypatch):

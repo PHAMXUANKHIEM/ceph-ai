@@ -87,7 +87,13 @@ OPERATIONAL_TELEMETRY_RETRY_SECONDS = 3.0
 INCIDENT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN = 2
 
 
-def _live_action_target_safety_reason(cluster: Cluster | None, nodes: list[str], ssh_key_path: str | None) -> str | None:
+def _live_action_target_safety_reason(
+    cluster: Cluster | None,
+    nodes: list[str],
+    ssh_key_path: str | None,
+    *,
+    allow_unregistered_targets: bool = False,
+) -> str | None:
     """Reject test/stale action targets before opening a production SSH session.
 
     Cổng này từng là `CEPH_AI_CONTAINERIZED != "true"`, tức chốt an toàn chỉ
@@ -102,13 +108,14 @@ def _live_action_target_safety_reason(cluster: Cluster | None, nodes: list[str],
     """
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return None
-    allowed_hosts = {row["host"] for row in configured_nodes(cluster)}
-    unexpected = [host for host in nodes if host not in allowed_hosts]
-    if unexpected:
-        return (
-            "target node không thuộc cấu hình cluster hiện tại: "
-            + ", ".join(unexpected)
-        )
+    if not allow_unregistered_targets:
+        allowed_hosts = {row["host"] for row in configured_nodes(cluster)}
+        unexpected = [host for host in nodes if host not in allowed_hosts]
+        if unexpected:
+            return (
+                "target node không thuộc cấu hình cluster hiện tại: "
+                + ", ".join(unexpected)
+            )
     if not ssh_key_path:
         return "cluster chưa cấu hình SSH key"
     try:
@@ -3576,7 +3583,42 @@ def _execute_approved_action(action_pk: str) -> None:
         }])
         _record_approved_execution_result(action_pk, command=None, succeeded=False)
         return
-    safety_reason = _live_action_target_safety_reason(cluster, nodes, ssh_key_path)
+    try:
+        action_params = json.loads(action_params_raw) if action_params_raw else None
+    except (TypeError, ValueError):
+        action_params = None
+
+    is_cluster_deploy = action_id_str in cluster_deploy.CLUSTER_DEPLOY_ACTION_IDS
+    if is_cluster_deploy:
+        proposed_nodes = action_params.get("nodes") if isinstance(action_params, dict) else None
+        proposed_ips = (
+            [node.get("ip") for node in proposed_nodes]
+            if isinstance(proposed_nodes, list)
+            and all(isinstance(node, dict) and isinstance(node.get("ip"), str) for node in proposed_nodes)
+            else None
+        )
+        if not proposed_ips or proposed_ips != nodes:
+            failure_message = (
+                "Từ chối thực thi: target_nodes không khớp danh sách node trong kế hoạch Deploy Cluster đã duyệt."
+            )
+            failed_at = utc_now().isoformat()
+            _write_action_progress(action_pk, [{
+                "step": "preflight",
+                "label": "Đối chiếu node với kế hoạch đã duyệt",
+                "pct": 0,
+                "status": "failed",
+                "message": failure_message,
+                "finished_at": failed_at,
+            }])
+            _record_approved_execution_result(action_pk, command=None, succeeded=False)
+            return
+
+    safety_reason = _live_action_target_safety_reason(
+        cluster,
+        nodes,
+        ssh_key_path,
+        allow_unregistered_targets=is_cluster_deploy,
+    )
     if safety_reason:
         logger.error(
             "_execute_approved_action: blocked unsafe target for action %s: %s",
@@ -3594,10 +3636,6 @@ def _execute_approved_action(action_pk: str) -> None:
         }])
         _record_approved_execution_result(action_pk, command=None, succeeded=False)
         return
-    try:
-        action_params = json.loads(action_params_raw) if action_params_raw else None
-    except (TypeError, ValueError):
-        action_params = None
     # RBD trash actions are destructive: re-read their live state after the
     # approval wait, then use the dedicated per-ID executor for bulk purges.
     if action_id_str == "rbd_trash_remove":
