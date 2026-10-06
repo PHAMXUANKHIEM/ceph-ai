@@ -147,7 +147,7 @@ def _read_deploy_public_key() -> str | None:
         return None
     try:
         base64.b64decode(fields[1], validate=True)
-    except (ValueError, base64.binascii.Error):
+    except ValueError:  # binascii.Error is a ValueError
         return None
     return lines[0]
 
