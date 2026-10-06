@@ -1,47 +1,11 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-if [ "$REPO_DIR" != "/root/ceph-ai" ]; then
-  echo "ERROR: production units are scoped to /root/ceph-ai; got $REPO_DIR" >&2
-  exit 2
-fi
-
-install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-*.service /etc/systemd/system/
-install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-container-restart.socket /etc/systemd/system/
-install -m 0755 "$REPO_DIR"/scripts/deploy/container_restart_helper.py /usr/local/libexec/ceph-ai-container-restart
-install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-ai-pricing.timer /etc/systemd/system/
-install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-ai-task-cleanup.timer /etc/systemd/system/
-install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement.timer /etc/systemd/system/
-install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement-report.timer /etc/systemd/system/
-install -m 0644 "$REPO_DIR/scripts/deploy/logrotate/ceph-ai" /etc/logrotate.d/ceph-ai
-systemctl daemon-reload
-install -d -m 0750 /run/ceph-ai
-# On an existing directory, install's chmod also lowers the POSIX ACL mask to
-# r-x, which silently removes the app UID's write access (heartbeats, locks)
-# until bootstrap runs again. Restore the grant bootstrap_container_config.py makes.
-setfacl -m u:10001:rwx,m::rwx /run/ceph-ai
-for heartbeat in worker watcher; do
-  if [ ! -e "/run/ceph-ai/$heartbeat.json" ]; then
-    install -m 0640 /dev/null "/run/ceph-ai/$heartbeat.json"
-  fi
-done
-# Retire the legacy template that exposed host systemd/D-Bus control. It is
-# intentionally removed even when upgrading from an older installation.
-while read -r legacy_unit; do
-  [ -n "$legacy_unit" ] || continue
-  systemctl disable --now "$legacy_unit" || true
-done < <(systemctl list-units --all --plain --no-legend 'ceph-ai-container-restart@*.service' | awk '{print $1}')
-rm -f /etc/systemd/system/ceph-ai-container-restart@.service
-systemctl daemon-reload
-systemctl enable --now ceph-ai-container-restart.socket
-systemctl enable ceph-ai-watcher ceph-ai-worker ceph-ai-dashboard ceph-ai-ai-pricing.timer ceph-ai-ai-task-cleanup.timer ceph-ai-nightly-ai-improvement.timer ceph-ai-nightly-ai-improvement-report.timer
-systemctl start ceph-ai-ai-task-cleanup.timer
-systemctl start ceph-ai-nightly-ai-improvement.timer ceph-ai-nightly-ai-improvement-report.timer
-# Retire the legacy nohup processes before systemd takes ownership. Anchored
-# command patterns cannot match this installer shell itself.
-pkill -TERM -f '^/root/ceph-ai/.venv/bin/python -m watcher.main$' || true
-pkill -TERM -f '^/root/ceph-ai/.venv/bin/python -m worker.main$' || true
-pkill -TERM -f '^/root/ceph-ai/.venv/bin/python -m uvicorn dashboard.app:app --host 0.0.0.0 --port 8000$' || true
-sleep 3
-systemctl restart ceph-ai-watcher ceph-ai-worker ceph-ai-dashboard
+# Retired 2026-10-06 (plan SM5). This installer predates the container stack:
+# it enabled and restarted the bare-metal ceph-ai-watcher/worker/dashboard
+# units, which would run a second Watcher/Worker beside the containers
+# against the same database and queues.
+#
+# Production units are installed by the deploy itself:
+#   scripts/deploy/restart_container_stack.sh (runtime_setup phase)
+# See docs/immutable-production-release.md.
+echo "install_system_services.sh is retired: production units come from scripts/deploy/restart_container_stack.sh (docs/immutable-production-release.md)." >&2
+exit 2

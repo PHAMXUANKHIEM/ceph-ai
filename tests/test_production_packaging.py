@@ -100,3 +100,10 @@ def test_a_reboot_brings_rabbitmq_back_before_the_stack():
     assert "systemd/ceph-ai-rabbitmq.service\" /etc/systemd/system/" in deploy
     assert "systemd/ceph-ai-containers.service\" /etc/systemd/system/" in deploy
     assert "systemctl enable ceph-ai-rabbitmq.service ceph-ai-containers.service" in deploy
+
+
+def test_the_bare_metal_installer_is_retired():
+    """It enabled bare-metal Watcher/Worker units beside the container stack."""
+    installer = (ROOT / "scripts" / "deploy" / "install_system_services.sh").read_text(encoding="utf-8")
+    assert "exit 2" in installer
+    assert "systemctl enable ceph-ai-watcher" not in installer and "systemctl restart" not in installer
