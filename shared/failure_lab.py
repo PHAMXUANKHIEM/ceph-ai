@@ -15,10 +15,15 @@ from collections.abc import Callable
 from typing import Any
 
 from shared.models import Action, Cluster, Incident, IncidentStatus
-from shared.synthetic_incidents import cleanup, create, score_replay_report
+from shared.synthetic_incidents import cleanup, create, is_synthetic_evidence, scenarios, score_replay_report
 
 # The Worker has finished with an Incident once it left these states.
 _DIAGNOSING_STATES = {IncidentStatus.NEW.value, IncidentStatus.DIAGNOSING.value}
+_OPEN_STATES = {
+    IncidentStatus.NEW.value, IncidentStatus.DIAGNOSING.value, IncidentStatus.PENDING_APPROVAL.value,
+    IncidentStatus.APPROVED.value, IncidentStatus.EXECUTING.value, IncidentStatus.GRACE_PENDING.value,
+    IncidentStatus.VERIFYING.value,
+}
 
 
 def diagnosis_ready(incident: Incident | None) -> bool:
@@ -89,13 +94,39 @@ def run_replay(
     return {"run_id": run_id, "incident_id": incident_id, "scenario_id": scenario_id, "observed": outcome}
 
 
+def open_real_incident_codes(session, cluster_id: str) -> set[str]:
+    """Codes of real (not synthetic) Incidents still open on the cluster.
+
+    A synthetic Incident with the same code would collide with the in-flight
+    uniqueness rule, and would also be confused with the real one.
+    """
+    rows = (
+        session.query(Incident.ceph_code, Incident.signal_evidence_json)
+        .filter(Incident.cluster_id == cluster_id, Incident.status.in_(sorted(_OPEN_STATES)))
+        .all()
+    )
+    return {code for code, evidence in rows if not is_synthetic_evidence(evidence)}
+
+
 def run_campaign(session_factory: Callable[[], Any], *, cluster_id: str, scenario_ids: list[str],
                  campaign_id: str, publish: Callable[[dict], None], **wait: Any) -> dict[str, Any]:
-    """Run scenarios one after another and score them as one campaign report."""
+    """Run scenarios one after another and score them as one campaign report.
+
+    Scenarios whose code matches a real open Incident are skipped and listed.
+    """
+    with session_factory() as session:
+        busy = open_real_incident_codes(session, cluster_id)
+    catalog = scenarios()
+    skipped = [{"scenario_id": scenario_id, "reason": f"real {catalog[scenario_id].ceph_code} incident is open"}
+               for scenario_id in scenario_ids if catalog[scenario_id].ceph_code in busy]
     runs = [run_replay(session_factory, cluster_id=cluster_id, scenario_id=scenario_id, publish=publish, **wait)
-            for scenario_id in scenario_ids]
+            for scenario_id in scenario_ids if catalog[scenario_id].ceph_code not in busy]
+    if not runs:
+        return {"campaign_id": campaign_id, "run_count": 0, "passed_count": 0, "results": [], "runs": [],
+                "skipped": skipped}
     report = score_replay_report({"schema_version": 1, "campaign_id": campaign_id, "runs": runs})
     report["runs"] = runs
+    report["skipped"] = skipped
     return report
 
 

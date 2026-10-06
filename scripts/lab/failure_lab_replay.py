@@ -57,6 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     path = args.output_dir / f"{campaign_id}.json"
     path.write_text(report_json(report) + "\n", encoding="utf-8")
     print(f"{campaign_id}: {report['passed_count']}/{report['run_count']} passed -> {path}")
+    for item in report.get("skipped", []):
+        print(f"  {item['scenario_id']}: SKIPPED ({item['reason']})")
     for result in report["results"]:
         failed = [stage for stage, ok in result["stages"].items() if ok is False]
         print(f"  {result['scenario_id']}: {'PASS' if result['passed'] else 'FAIL ' + ', '.join(failed)}")

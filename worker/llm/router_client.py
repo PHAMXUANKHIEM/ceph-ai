@@ -1465,6 +1465,10 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     with db.SessionLocal() as alert_session:
         latest_incident = alert_session.get(Incident, incident_id)
         notification_muted = latest_incident is not None and alert_lifecycle.is_active_mute(latest_incident)
+    # Failure Lab replay incidents are simulations: they must never reach the
+    # operator's real incident channel as if a cluster were failing.
+    if envelope.get("synthetic_injection") is True:
+        notification_muted = True
     if not notification_muted:
         send_ai_incident_alert(
             alert_ceph_code,

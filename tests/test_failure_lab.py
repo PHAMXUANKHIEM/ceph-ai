@@ -1,5 +1,7 @@
 """Failure Lab replay campaigns (FL1): inject, read the Worker's outcome, score, clean up."""
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -87,3 +89,19 @@ def test_a_production_cluster_is_refused():
     with pytest.raises(SyntheticInjectionError):
         failure_lab.run_replay(factory, cluster_id=cluster_id, scenario_id="osd_down",
                                publish=lambda envelope: pytest.fail("must not publish"), wait_seconds=1)
+
+
+def test_scenarios_clashing_with_a_real_open_incident_are_skipped():
+    factory, cluster_id = _lab()
+    with factory() as session:
+        session.add(Incident(cluster_id=cluster_id, ceph_code="OSD_DOWN", status=IncidentStatus.PENDING_APPROVAL.value,
+                             signal_evidence_json='{"status": "HEALTH_WARN"}', detected_at=datetime.utcnow()))
+        session.commit()
+
+    report = failure_lab.run_campaign(
+        factory, cluster_id=cluster_id, scenario_ids=["osd_down", "mon_clock_skew"], campaign_id="c3",
+        publish=_worker(factory, "Đồng hồ của mon.a lệch 250 ms"), wait_seconds=10, sleep=lambda seconds: None,
+    )
+
+    assert report["skipped"] == [{"scenario_id": "osd_down", "reason": "real OSD_DOWN incident is open"}]
+    assert [run["scenario_id"] for run in report["runs"]] == ["mon_clock_skew"]

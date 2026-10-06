@@ -4241,3 +4241,19 @@ def test_approved_action_with_empty_target_nodes_fails_with_a_readable_reason(is
     assert "target_nodes thiếu hoặc không hợp lệ" in rows[0]["message"]
     with db_module.SessionLocal() as session:
         assert session.get(Action, action_pk).status == ActionStatus.FAILED.value
+
+
+def test_synthetic_failure_lab_incidents_never_send_the_incident_alert(isolated_db, monkeypatch):
+    alerts = []
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
+    monkeypatch.setattr(router_client, "send_ai_incident_alert", lambda *args, **kwargs: alerts.append(args))
+    _create_incident("incident-synthetic-replay")
+
+    asyncio.run(router_client.diagnose_incident(
+        "incident-synthetic-replay", dict(ENVELOPE, incident_id="incident-synthetic-replay", synthetic_injection=True),
+    ))
+
+    assert alerts == []
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-synthetic-replay").one()
+        assert action.status != ActionStatus.AUTO_EXECUTED.value  # still shadow-only
