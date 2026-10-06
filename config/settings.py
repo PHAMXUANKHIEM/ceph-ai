@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     # /test-progress: the local test run file and the GitHub repo whose CI to show.
     test_progress_file: str = "/var/lib/ceph-ai/test-runs/current.json"
     ci_github_repo: str = "PHAMXUANKHIEM/ceph-ai"
+    # Dashboard "Chạy CI" / "Deploy bản CI xanh" buttons (shared/ci_control.py).
+    ci_github_workflow: str = "ci-cd.yml"
+    ci_github_token_file: str = "/var/lib/ceph-ai/config/github-ci-token"
+    deploy_request_dir: str = "/var/lib/ceph-ai/deploy-requests"
     # BLUESTORE_SLOW_OP_ALERT gate (autonomy plan WP1.2). Ceph keeps the
     # check for bluestore_slow_ops_warn_lifetime (86400 s by default) after a
     # single slow op, so only an episode outliving that window is recurrent.

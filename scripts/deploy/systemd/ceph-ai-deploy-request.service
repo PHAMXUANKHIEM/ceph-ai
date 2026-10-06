@@ -1,0 +1,11 @@
+[Unit]
+Description=Run a deploy an admin requested from the Ceph AI Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ceph-ai
+ExecStart=/usr/bin/python3.11 /root/ceph-ai/scripts/deploy/deploy_request_runner.py
+# preflight + restart_container_stack.sh, each bounded to an hour.
+TimeoutStartSec=7500

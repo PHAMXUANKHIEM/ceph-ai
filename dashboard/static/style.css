@@ -7466,3 +7466,16 @@ body:not(.dashboard-page-shell) .chat-fab,
 @media (prefers-reduced-motion: reduce) {
   .dashboard-page-shell .chat-panel-inline { transition: none; }
 }
+
+/* Test progress: CI and deploy buttons. */
+.ci-control { display: grid; gap: 12px; }
+.ci-control-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.ci-control-row label { display: grid; gap: 4px; min-width: 0; }
+.ci-control-row input[type="text"], .ci-control-row input[type="password"] { min-width: 220px; max-width: 100%; padding: 8px 10px; border-radius: 8px; }
+.ci-control-flash { margin: 0 0 12px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border); }
+.ci-control-flash.is-ok { border-color: var(--success, #2f9e63); }
+.ci-control-flash.is-error { border-color: var(--danger, #d64545); }
+@media (max-width: 680px) {
+  .ci-control-row input[type="text"], .ci-control-row input[type="password"] { min-width: 0; width: 100%; }
+  .ci-control-row label { width: 100%; }
+}

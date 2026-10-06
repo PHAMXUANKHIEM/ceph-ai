@@ -149,6 +149,8 @@ install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-rabbitmq.service" /etc
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-containers.service" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-selfcheck.service" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-selfcheck.timer" /etc/systemd/system/
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-deploy-request.path" /etc/systemd/system/
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-deploy-request.service" /etc/systemd/system/
 install -m 0755 "$REPO_DIR/scripts/deploy/container_restart_helper.py" /usr/local/libexec/ceph-ai-container-restart
 install -d -m 0750 /run/ceph-ai
 # On an existing directory, install's chmod also lowers the POSIX ACL mask to
@@ -175,6 +177,8 @@ systemctl enable --now ceph-ai-container-restart.socket
 systemctl enable ceph-ai-rabbitmq.service ceph-ai-containers.service
 # Host self-check, independent of the stack (plan SM3).
 systemctl enable --now ceph-ai-selfcheck.timer
+# Deploys requested by an admin from the Dashboard ("Deploy bản CI xanh").
+systemctl enable --now ceph-ai-deploy-request.path
 finish_phase
 
 # Pull the registry manifest that passed CI. The immutable reference is the

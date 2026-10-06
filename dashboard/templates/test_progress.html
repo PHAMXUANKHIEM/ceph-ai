@@ -10,6 +10,34 @@
   {% include "_nav.html" %}
 
   <main class="page">
+    {% if notice %}<p class="ci-control-flash is-ok" role="status">{{ notice }}</p>{% endif %}
+    {% if error %}<p class="ci-control-flash is-error" role="alert">{{ error }}</p>{% endif %}
+    <section class="card">
+      <div class="card-header"><h2>Chạy CI &amp; deploy</h2></div>
+      <div class="card-body ci-control">
+        <form method="post" action="/test-progress/ci-run" class="ci-control-row">
+          <label>Nhánh <input type="text" name="ref" value="main" maxlength="100" required></label>
+          <button class="btn btn-primary" type="submit" {% if not token_configured %}disabled{% endif %}>Chạy CI trên GitHub</button>
+          <span class="hint">Chạy lại toàn bộ CI (test, integration, quality, release gate); kết quả hiện ở thẻ CI bên dưới.</span>
+        </form>
+        <form method="post" action="/test-progress/deploy" class="ci-control-row" id="deploy-form">
+          <input type="hidden" name="sha" id="deploy-sha">
+          <span id="deploy-target" class="hint">Đang tìm commit có CI xanh…</span>
+          <label>Xác nhận <input type="text" name="confirmation" id="deploy-confirmation" autocomplete="off" placeholder="DEPLOY xxxxxxxx" required></label>
+          <button class="btn btn-danger" type="submit" id="deploy-button" disabled>Deploy bản CI xanh</button>
+        </form>
+        <p class="hint" id="deploy-request"></p>
+        <details {% if not token_configured %}open{% endif %}>
+          <summary>{{ "Đổi GitHub token" if token_configured else "Cần GitHub token để chạy CI" }}</summary>
+          <form method="post" action="/test-progress/ci-token" class="ci-control-row">
+            <label>Token <input type="password" name="token" autocomplete="off" required placeholder="github_pat_…"></label>
+            <button class="btn" type="submit">Lưu token</button>
+          </form>
+          <p class="hint">Tạo fine-grained token chỉ cho repo {{ ci_repo }}, quyền <strong>Actions: Read and write</strong>. Token được lưu trên server (file 0600), không bao giờ hiện lại ở đây.</p>
+        </details>
+      </div>
+    </section>
+
     <section class="card">
       <div class="card-header"><h2>Test trên máy (trước khi push)</h2></div>
       <div class="card-body">
@@ -134,6 +162,21 @@
         return (item.status === "PASSED" ? "✓ " : "✗ ") + item.sha + " (" + when(item.at) + ")";
       }).join(" · ") : "";
     }
+    function renderControls(data) {
+      const sha = data.latest_green_sha;
+      el("deploy-sha").value = sha || "";
+      el("deploy-target").textContent = sha
+        ? "Commit mới nhất có CI xanh: " + sha.slice(0, 8) + " — gõ DEPLOY " + sha.slice(0, 8) + " để xác nhận."
+        : "Lượt CI mới nhất trên main chưa xanh (hoặc đang chạy): chưa có gì để deploy.";
+      el("deploy-confirmation").placeholder = sha ? "DEPLOY " + sha.slice(0, 8) : "DEPLOY xxxxxxxx";
+      const request = data.deploy_request || {};
+      const queued = request.queued && request.queued.sha;
+      const running = request.state === "running";
+      el("deploy-button").disabled = !sha || !!queued || running;
+      el("deploy-request").textContent = queued
+        ? "Đã gửi yêu cầu deploy " + queued.slice(0, 8) + ", chờ server nhận…"
+        : (request.state ? "Yêu cầu gần nhất: " + (request.sha || "").slice(0, 8) + " — " + request.state + (request.message ? " (" + request.message + ")" : "") : "");
+    }
     function renderCi(ci) {
       el("ci-error").hidden = !ci.error; el("ci-error").textContent = ci.error ? "Không đọc được GitHub: " + ci.error : "";
       const jobs = el("ci-jobs"); jobs.replaceChildren();
@@ -169,6 +212,7 @@
         if (!response.ok) return;
         const data = await response.json();
         renderLocal(data.local); renderDeploy(data.deploy); renderCi(data.ci);
+        renderControls(data);
       } catch (e) { /* keep the last view; retry next tick */ }
     }
     refresh(); setInterval(refresh, 5000);

@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a deploy requested from the Ceph AI Dashboard
+
+[Path]
+PathExists=/var/lib/ceph-ai/deploy-requests/pending.json
+Unit=ceph-ai-deploy-request.service
+
+[Install]
+WantedBy=multi-user.target

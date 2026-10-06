@@ -147,12 +147,19 @@ def _summarise_run(run: dict) -> dict[str, Any]:
         "id": run.get("id"),
         "url": run.get("html_url"),
         "sha": str(run.get("head_sha") or "")[:8],
+        "head_sha": str(run.get("head_sha") or ""),
         "title": str(run.get("display_title") or "")[:120],
         "status": run.get("status"),
         "conclusion": run.get("conclusion"),
         "created_at": run.get("created_at"),
         "updated_at": run.get("updated_at"),
     }
+
+
+def clear_ci_cache() -> None:
+    """Forget cached CI runs (after starting a run, show it on the next refresh)."""
+    with _ci_lock:
+        _ci_cache.clear()
 
 
 def fetch_ci_runs(repo: str, *, branch: str = "main", limit: int = 5, client: httpx.Client | None = None) -> dict[str, Any]:
