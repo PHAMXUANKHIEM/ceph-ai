@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, RemediationCase
 from worker.policy.playbook_registry import get_contract
@@ -200,6 +200,71 @@ def backfill_missing_cases(session, *, limit: int = 200) -> int:
         created += 1
     session.commit()
     return created
+
+
+_CLOSED_ACTION_OUTCOMES = {
+    ActionStatus.REJECTED.value: "REJECTED",
+    ActionStatus.FAILED.value: "EXECUTION_FAILED",
+    ActionStatus.INCONCLUSIVE.value: "INCONCLUSIVE",
+}
+
+
+# An executed Action is left alone this long: record_execution/record_verified
+# may still be on their way, and an early EXECUTED_UNVERIFIED would block them.
+_EXECUTED_SETTLE = timedelta(hours=24)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    return value.replace(tzinfo=timezone.utc) if value is not None and value.tzinfo is None else value
+
+
+def _closed_outcome(action: Action, incident: Incident | None, now: datetime) -> str | None:
+    """The outcome a still-PROPOSED case should have, or None while it is open."""
+    if action.status in _CLOSED_ACTION_OUTCOMES:
+        return _CLOSED_ACTION_OUTCOMES[action.status]
+    if action.status in {ActionStatus.AUTO_EXECUTED.value, ActionStatus.EXECUTED.value}:
+        ran_at = _as_utc(action.executed_at or action.created_at)
+        if ran_at is None or now - ran_at < _EXECUTED_SETTLE:
+            return None
+        if incident is not None and incident.status == IncidentStatus.VERIFYING.value:
+            return "EXECUTED_PENDING_VERIFY"  # verification may still record a result
+        # Ran, but no verification was ever recorded: never a trusted success.
+        return "EXECUTED_UNVERIFIED"
+    return None
+
+
+def reconcile_closed_proposals(session, *, now: datetime, limit: int = 500) -> int:
+    """Close cases left PROPOSED after their Action ended.
+
+    Rejection happens in many places (Dashboard, Telegram, backups, incident
+    close-out) and none of them updated the case, so on 2026-10-06 3,857 of
+    3,872 PROPOSED cases belonged to rejected Actions of resolved incidents.
+    Only the case outcome changes; the Action and Incident are untouched.
+    """
+    rows = (
+        session.query(RemediationCase, Action)
+        .join(Action, Action.id == RemediationCase.action_id)
+        .filter(RemediationCase.outcome == "PROPOSED")
+        .filter(Action.status.in_(sorted(set(_CLOSED_ACTION_OUTCOMES) | {
+            ActionStatus.AUTO_EXECUTED.value, ActionStatus.EXECUTED.value})))
+        .order_by(RemediationCase.created_at, RemediationCase.id)
+        .limit(max(1, limit))
+        .all()
+    )
+    closed = 0
+    for case, action in rows:
+        outcome = _closed_outcome(action, session.get(Incident, case.incident_id), _as_utc(now) or now)
+        if outcome is None:
+            continue
+        case.outcome = outcome
+        case.executed_at = case.executed_at or action.executed_at
+        side_effects = _safe_load(case.side_effects_json, {})
+        side_effects = side_effects if isinstance(side_effects, dict) else {}
+        side_effects["reconciled"] = {"at": now.isoformat(), "action_status": action.status}
+        case.side_effects_json = _json(side_effects)
+        closed += 1
+    session.commit()
+    return closed
 
 
 _REGRESSION_WINDOWS = (

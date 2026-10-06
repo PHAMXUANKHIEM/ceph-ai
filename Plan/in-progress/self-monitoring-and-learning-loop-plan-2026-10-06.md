@@ -95,8 +95,10 @@ Cảnh báo trong máy không thể báo khi chính máy chết. Cần một bê
 Thứ tự theo nút thắt thật, không theo thứ tự công cụ của báo cáo.
 
 ### LL0 — Cho vòng học có dữ liệu (điều kiện của mọi bước sau)
-- [ ] Phân tích 3.872 case `PROPOSED`: bao nhiêu thuộc incident đã tự hết, bao nhiêu là đề xuất lặp của cùng một incident dao động, bao nhiêu thật sự chờ người duyệt. Đóng case mồ côi bằng outcome mới `EXPIRED` (không tính là thành công hay thất bại).
-- [ ] Gom đề xuất lặp: một incident đang mở chỉ giữ một case đề xuất cho mỗi playbook.
+- [x] Phân tích 3.872 case `PROPOSED` (06/10): **không phải chờ duyệt** — 3.857 có Action đã `REJECTED` và incident `RESOLVED`, 2 Action đã chạy nhưng không bao giờ được xác minh, chỉ 13 thật sự chờ duyệt; mỗi incident đúng một case (không có đề xuất lặp). Nguyên nhân: không có đường nào cập nhật case khi Action bị từ chối (6 nơi từ chối: Dashboard, Telegram, backup, đóng incident…); 1.064 case `REJECTED` hiện có chỉ đến từ backfill cũ.
+- [x] `remediation_cases.reconcile_closed_proposals` trong vòng định kỳ của Worker: Action `REJECTED`/`FAILED`/`INCONCLUSIVE` → case cùng nghĩa; Action đã chạy > 24 giờ mà chưa xác minh → `EXECUTED_UNVERIFIED` (không bao giờ là thành công; chờ 24 giờ để không chặn bước xác minh đang tới). Không đổi Action/Incident. Chạy thử chỉ đếm trên production: 3.857 → `REJECTED`, 2 → `EXECUTED_UNVERIFIED`, 13 giữ nguyên. `REJECTED`/`EXECUTED_UNVERIFIED` không ảnh hưởng Trust Engine, phần thưởng hay change risk. Không cần outcome `EXPIRED`.
+- [ ] **Nút thắt thật kế tiếp:** 3.741/3.872 đề xuất (97 %) là `investigate_manually` — AI không đưa ra playbook cụ thể. Cần đo theo mã lỗi xem vì sao (preflight chặn → fallback, capability matrix thiếu, hay không có playbook cho mã đó) trước khi làm LL1+.
+- [x] Gom đề xuất lặp: không cần — dữ liệu cho thấy mỗi incident đúng một case.
 - [ ] 1.064 case `NODE_UNREACHABLE` bị `REJECTED`: xác định ai/cái gì từ chối (preflight, operator, auto) và có đúng không.
 - [ ] Action SAFE đã chạy: tự xác minh kết quả theo hậu kiểm (post-state) để có `VERIFIED_SUCCESS`/`INEFFECTIVE` mà không cần chờ người.
 - [ ] Chỉ số trên `/ai-learning`: số case đã xác minh mỗi tuần, tỉ lệ đề xuất được xử lý, số verdict. Mục tiêu đặt sau khi có số tuần đầu.

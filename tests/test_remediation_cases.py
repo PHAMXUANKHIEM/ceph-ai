@@ -9,7 +9,7 @@ from shared.db import Base
 from shared.models import Action, Incident, RemediationCase
 from shared.remediation_cases import (
     backfill_missing_cases, create_for_action, record_execution, record_inconclusive,
-    evaluate_regressions, record_verified, scrub_existing_case_memory,
+    evaluate_regressions, reconcile_closed_proposals, record_verified, scrub_existing_case_memory,
 )
 
 
@@ -235,3 +235,67 @@ def test_regression_requires_same_fault_and_entity_and_sets_true_immediately():
 
     assert evaluate_regressions(session, now=verified_at + timedelta(minutes=31)) >= 1
     assert (original.regressed_1h, original.regressed_24h, original.regressed_7d) == (True, True, True)
+
+
+_COUNTER = iter(range(10_000))
+
+
+def _proposed_case(session, *, action_status, incident_status="RESOLVED", executed_hours_ago=None):
+    incident = Incident(ceph_code=f"OSD_DOWN_{next(_COUNTER)}", status=incident_status,
+                        detected_at=datetime.utcnow() - timedelta(days=3))
+    session.add(incident)
+    session.flush()
+    action = Action(incident_id=incident.id, action_id="restart_osd_daemon", classification="RISKY",
+                    status=action_status, target_nodes='["node-a"]')
+    if executed_hours_ago is not None:
+        action.executed_at = datetime.utcnow() - timedelta(hours=executed_hours_ago)
+    session.add(action)
+    session.flush()
+    create_for_action(session, incident=incident, action=action,
+                      redacted_envelope={"nodes": ["node-a"], "cluster_snapshot": {}},
+                      diagnosis="d", model_provider=None)
+    session.commit()
+    return session.query(RemediationCase).filter_by(action_id=action.id).one()
+
+
+def test_closed_actions_close_their_proposed_cases():
+    """Rejection never updated the case: 3,857 of 3,872 PROPOSED cases on
+    2026-10-06 belonged to rejected Actions of resolved incidents."""
+    session = _session()
+    rejected = _proposed_case(session, action_status="REJECTED")
+    failed = _proposed_case(session, action_status="FAILED")
+    inconclusive = _proposed_case(session, action_status="INCONCLUSIVE")
+    ran_long_ago = _proposed_case(session, action_status="EXECUTED", executed_hours_ago=48)
+    verifying = _proposed_case(session, action_status="AUTO_EXECUTED", incident_status="VERIFYING", executed_hours_ago=30)
+    pending = _proposed_case(session, action_status="PENDING_APPROVAL", incident_status="PENDING_APPROVAL")
+
+    assert reconcile_closed_proposals(session, now=datetime.utcnow()) == 5
+
+    outcomes = {case.id: session.get(RemediationCase, case.id).outcome for case in
+                (rejected, failed, inconclusive, ran_long_ago, verifying, pending)}
+    assert outcomes == {
+        rejected.id: "REJECTED", failed.id: "EXECUTION_FAILED", inconclusive.id: "INCONCLUSIVE",
+        ran_long_ago.id: "EXECUTED_UNVERIFIED", verifying.id: "EXECUTED_PENDING_VERIFY", pending.id: "PROPOSED",
+    }
+    assert json.loads(session.get(RemediationCase, rejected.id).side_effects_json)["reconciled"]["action_status"] == "REJECTED"
+    assert reconcile_closed_proposals(session, now=datetime.utcnow()) == 0  # idempotent
+
+
+def test_a_freshly_executed_action_is_left_for_verification():
+    session = _session()
+    case = _proposed_case(session, action_status="EXECUTED", executed_hours_ago=1)
+
+    assert reconcile_closed_proposals(session, now=datetime.utcnow()) == 0
+    assert session.get(RemediationCase, case.id).outcome == "PROPOSED"
+    record_verified(session, incident_id=case.incident_id, succeeded=True,  # still allowed
+                    verified_at=datetime.utcnow(), post_state={"status": "HEALTH_OK"})
+    assert session.get(RemediationCase, case.id).outcome == "VERIFIED_SUCCESS"
+
+
+def test_reconcile_is_bounded():
+    session = _session()
+    for _ in range(3):
+        _proposed_case(session, action_status="REJECTED")
+
+    assert reconcile_closed_proposals(session, now=datetime.utcnow(), limit=2) == 2
+    assert reconcile_closed_proposals(session, now=datetime.utcnow(), limit=2) == 1

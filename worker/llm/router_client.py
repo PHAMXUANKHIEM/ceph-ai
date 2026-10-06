@@ -3131,6 +3131,7 @@ def _process_approved_actions_once() -> None:
     with db.SessionLocal() as session:
         recovered = reconcile_expired_executions(session, now=utc_now())
         backfilled = remediation_cases.backfill_missing_cases(session, limit=200)
+        remediation_cases.reconcile_closed_proposals(session, now=utc_now(), limit=500)
         evaluated = remediation_cases.evaluate_regressions(
             session, now=utc_now(), limit=200,
         )
