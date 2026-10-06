@@ -56,6 +56,7 @@
         <div class="settings-nav-group-items" {% if active_section != 'cleanup' %}hidden{% endif %}>
           <a href="/backups" class="settings-nav-item">Sao lưu &amp; khôi phục</a>
           <button type="button" class="settings-nav-item {% if active_section == 'cleanup' %}active{% endif %}" data-section="cleanup">Bảo trì hệ thống</button>
+          {% if is_admin %}<a href="/test-progress" class="settings-nav-item">Tiến độ test</a>{% endif %}
         </div>
       </section>
     </nav>

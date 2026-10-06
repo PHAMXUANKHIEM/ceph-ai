@@ -134,3 +134,16 @@ def test_page_and_api_are_admin_only(dashboard_client, monkeypatch, tmp_path):
     monkeypatch.setattr(route.auth, "is_admin_user", lambda _user: False)
     assert dashboard_client.get("/test-progress").status_code == 403
     assert dashboard_client.get("/api/test-progress").status_code == 403
+
+
+def test_settings_maintenance_links_to_the_page_for_admins(dashboard_client, monkeypatch):
+    # The sidebar is rebuilt from a fixed path list in app.js, so the page is
+    # reached from Settings → Bảo trì.
+    from dashboard.routes import settings as settings_route
+
+    _login(dashboard_client)
+    link = '<a href="/test-progress" class="settings-nav-item">Tiến độ test</a>'
+    assert link in dashboard_client.get("/settings").text
+
+    monkeypatch.setattr(settings_route.auth, "is_admin_user", lambda _user: False)
+    assert link not in dashboard_client.get("/settings").text
