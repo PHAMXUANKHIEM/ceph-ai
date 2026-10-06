@@ -1,4 +1,5 @@
 import logging
+import re
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -82,6 +83,10 @@ def ensure_default_cluster(session: Session) -> Cluster:
     return cluster
 
 
+# Name of an additional monitored cluster (Deploy Cluster "đăng ký giám sát").
+MONITORED_CLUSTER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
+
+
 def sync_default_cluster_from_settings(session: Session) -> Cluster:
     """Persist the current .env-backed default-cluster connection in DB.
 
@@ -114,9 +119,11 @@ def sync_default_cluster_from_env(session: Session) -> Cluster:
         # string.
         if hasattr(cluster, field) and env_name in values:
             setattr(cluster, field, values.get(env_name, ""))
-    # ssh_key_path is intentionally not part of CLUSTER_ENV_NAMES; it is a
-    # process/server setting rather than lifecycle-managed cluster metadata.
-    cluster.ssh_key_path = settings.ssh_key_path
+    # ssh_key_path is not lifecycle-managed and is left as it is. Copying the
+    # calling process's settings.ssh_key_path here handed the Worker's
+    # mutation key path to the read-only Watcher (whose copy of that file is
+    # an empty placeholder), which broke every inventory query after a
+    # deploy on 2026-10-06.
     session.commit()
     return cluster
 

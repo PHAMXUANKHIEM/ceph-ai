@@ -16,10 +16,10 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
 from shared import audit, db, env_config
-from shared.clusters import get_default_cluster_id
+from shared.clusters import MONITORED_CLUSTER_NAME_RE, get_default_cluster_id
 from shared.ceph_releases import codenames_oldest_first, versions_by_codename
 from shared.cluster_nodes import configured_nodes
-from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
 from watcher.ceph_client import HostKeyProvisionError, forget_host_key, provision_host_key
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
@@ -150,6 +150,23 @@ def _read_deploy_public_key() -> str | None:
     except ValueError:  # binascii.Error is a ValueError
         return None
     return lines[0]
+
+
+def _monitoring_choice(body: dict) -> dict:
+    """Whether to add the new cluster as an extra monitored cluster.
+
+    Off by default: deploying a cluster never changes what Ceph AI monitors
+    unless the operator asks, and then only as an additional cluster.
+    """
+    if not body.get("register_monitoring"):
+        return {"register_monitoring": False}
+    name = str(body.get("monitor_cluster_name", "")).strip()
+    if not MONITORED_CLUSTER_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Tên cụm giám sát: 1–64 ký tự chữ, số, khoảng trắng, . _ -")
+    with db.SessionLocal() as session:
+        if session.query(Cluster).filter(Cluster.name == name).first() is not None:
+            raise HTTPException(status_code=400, detail=f"Đã có cụm tên {name!r}; chọn tên khác")
+    return {"register_monitoring": True, "monitor_cluster_name": name}
 
 
 def _is_valid_ip(ip: str) -> bool:
@@ -585,6 +602,7 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
     }
     if method == "rpm-local":
         action_params["rpm_path"] = rpm_path
+    action_params.update(_monitoring_choice(body))
     action_params["_cluster_config_fingerprint"] = env_config.current_cluster_config_fingerprint()
 
     target_nodes = [n["ip"] for n in nodes]

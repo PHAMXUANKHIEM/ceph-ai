@@ -668,3 +668,49 @@ def test_cluster_deploy_incident_excluded_from_cluster_status():
     # already-monitored) cluster's own health badge to ERR — it's excluded
     # from real_incidents entirely, so with no other incidents this is "OK".
     assert incidents_route.compute_cluster_status([incident], heartbeat_stale=False) == "OK"
+
+
+def test_deploy_does_not_register_monitoring_unless_asked(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/deploy-cluster/propose", json=_valid_payload())
+
+    with db_module.SessionLocal() as session:
+        params = json.loads(session.get(Action, response.json()["action_id"]).action_params)
+    assert params["register_monitoring"] is False and "monitor_cluster_name" not in params
+
+
+def test_deploy_can_register_the_new_cluster_as_a_second_monitored_cluster(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/deploy-cluster/propose", json=_valid_payload(
+        register_monitoring=True, monitor_cluster_name="CS-NEW"))
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        params = json.loads(session.get(Action, response.json()["action_id"]).action_params)
+    assert params["register_monitoring"] is True and params["monitor_cluster_name"] == "CS-NEW"
+
+
+def test_monitoring_name_must_be_valid_and_unused(dashboard_client):
+    from shared.models import Cluster
+
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        session.add(Cluster(name="Taken", is_default=False, is_active=True, ceph_mon_nodes="10.0.0.1",
+                            ssh_user="root", ssh_key_path="/tmp/k"))
+        session.commit()
+
+    for name, message in (("", "Tên cụm giám sát"), ("bad/name", "Tên cụm giám sát"), ("Taken", "Đã có cụm")):
+        response = dashboard_client.post("/deploy-cluster/propose", json=_valid_payload(
+            register_monitoring=True, monitor_cluster_name=name))
+        assert response.status_code == 400 and message in response.json()["detail"], name
+
+
+def test_deploy_page_offers_the_monitoring_option_off_by_default(dashboard_client):
+    _login(dashboard_client)
+
+    page = dashboard_client.get("/deploy-cluster").text
+
+    assert 'id="df-register-monitoring"' in page and "checked" not in page.split('id="df-register-monitoring"')[1][:40]
+    assert "Đăng ký cụm mới làm cụm giám sát thứ hai" in page

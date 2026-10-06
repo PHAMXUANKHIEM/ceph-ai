@@ -272,7 +272,7 @@ def test_verify_phase_fails_on_health_err(monkeypatch):
 # --- Happy path + .env write -----------------------------------------------
 
 
-def test_cephadm_happy_path_all_phases_succeed_and_writes_env(monkeypatch):
+def test_cephadm_happy_path_all_phases_succeed_and_leaves_the_monitored_cluster_alone(monkeypatch):
     monkeypatch.setattr(cluster_deploy_module, "execute_command", _default_fake_execute)
     write_progress, calls = _make_recording_progress_writer()
 
@@ -285,10 +285,9 @@ def test_cephadm_happy_path_all_phases_succeed_and_writes_env(monkeypatch):
 
     assert result is True
     assert all(step["status"] == "done" for step in calls[-1][1])
-    assert written_fields["CEPH_MON_NODES"] == "10.20.1.112,10.20.1.95,10.20.1.21"
-    assert written_fields["CEPH_MGR_NODES"] == "10.20.1.112,10.20.1.95"
-    assert written_fields["CEPH_OSD_NODES"] == "10.20.1.95,10.20.1.21"
-    assert written_fields["CEPH_EXEC_MODE"] == "cephadm"
+    # Deploying a new cluster no longer rewrites the monitored cluster's
+    # config (2026-10-06: it silently moved all monitoring onto the new one).
+    assert written_fields == {}
 
 
 def test_completed_steps_get_frozen_started_and_finished_timestamps(monkeypatch):
@@ -833,7 +832,7 @@ def test_cephadm_orch_apply_rgw_happy_path(monkeypatch):
     assert "--port=7480" in apply_rgw_cmd
 
 
-def test_cephadm_happy_path_with_rgw_writes_rgw_nodes_to_env(monkeypatch):
+def test_cephadm_happy_path_with_rgw_does_not_touch_env(monkeypatch):
     monkeypatch.setattr(cluster_deploy_module, "execute_command", _default_fake_execute)
     write_progress, _calls = _make_recording_progress_writer()
 
@@ -846,7 +845,7 @@ def test_cephadm_happy_path_with_rgw_writes_rgw_nodes_to_env(monkeypatch):
     )
 
     assert result is True
-    assert written_fields["CEPH_RGW_NODES"] == "10.20.1.201"
+    assert written_fields == {}
 
 
 # --- ceph-deploy method (Story 8.2) ----------------------------------------
@@ -867,7 +866,7 @@ def _ceph_deploy_fake_execute(host, command):
     return _default_fake_execute(host, command)
 
 
-def test_ceph_deploy_happy_path_installs_role_specific_packages_and_writes_env(monkeypatch):
+def test_ceph_deploy_happy_path_installs_role_specific_packages(monkeypatch):
     seen_install_commands: dict[str, list[str]] = {}
 
     def fake(host, command):
@@ -915,8 +914,7 @@ def test_ceph_deploy_happy_path_installs_role_specific_packages_and_writes_env(m
     )
     assert "ceph-volume" not in seen_install_commands["10.20.1.112"][0]  # no osd role there
 
-    assert written_fields["CEPH_EXEC_MODE"] == "none"
-    assert written_fields["CEPH_MON_NODES"] == "10.20.1.112,10.20.1.95,10.20.1.21"
+    assert written_fields == {}
 
 
 def test_ceph_deploy_osd_create_runs_one_lvm_create_per_disk_on_same_node(monkeypatch):
@@ -1384,7 +1382,7 @@ def _rpm_local_fake_execute(host, command):
     return _ceph_deploy_fake_execute(host, command)
 
 
-def test_rpm_local_happy_path_builds_local_repo_installs_packages_and_writes_env(monkeypatch):
+def test_rpm_local_happy_path_builds_local_repo_and_installs_packages(monkeypatch):
     seen_repo_commands: dict[str, list[str]] = {}
 
     def fake(host, command):
@@ -1412,7 +1410,7 @@ def test_rpm_local_happy_path_builds_local_repo_installs_packages_and_writes_env
         assert all("download.ceph.com" not in c for c in commands)
         assert all("/opt/ceph-rpms" in c for c in commands)
 
-    assert written_fields["CEPH_EXEC_MODE"] == "none"
+    assert written_fields == {}
 
 
 def test_rpm_local_fails_when_rpm_path_missing_on_one_node(monkeypatch):
@@ -3262,3 +3260,102 @@ def test_run_recover_failure_cleanup_unblocks_a_later_prepare_attempt(gate_db, m
 
     with gate_db() as session:
         assert claim_node_upgrade_gate_lock(session, "new-gate-id") is True
+
+
+# --- 2026-10-06: deploying a new cluster never takes over monitoring ------------
+
+def _cluster_db(monkeypatch):
+    from shared.models import Cluster
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(cluster_deploy_module.db, "SessionLocal", session_factory)
+    with session_factory() as session:
+        session.add(Cluster(name="CS-LAB", is_default=True, is_active=True,
+                            ceph_mon_nodes="10.3.54.118,10.3.53.69,10.3.53.1", ceph_osd_nodes="10.20.1.39",
+                            ssh_user="root", ssh_key_path="/tmp/readonly-id_ed25519", ceph_exec_mode="cephadm"))
+        session.commit()
+    return session_factory
+
+
+def _clusters(session_factory):
+    from shared.models import Cluster
+
+    with session_factory() as session:
+        return {row.name: {"default": row.is_default, "mon": row.ceph_mon_nodes, "osd": row.ceph_osd_nodes,
+                           "key": row.ssh_key_path, "mode": row.ceph_exec_mode}
+                for row in session.query(Cluster).all()}
+
+
+def test_new_cluster_deploy_registers_a_second_cluster_only_when_asked(monkeypatch):
+    sessions = _cluster_db(monkeypatch)
+    writes = {}
+    monkeypatch.setattr(cluster_deploy_module.env_config, "update_env_file_batch", writes.update)
+
+    cluster_deploy_module._apply_config_epilogue("deploy_cluster_cephadm", _cephadm_params())
+    assert set(_clusters(sessions)) == {"CS-LAB"} and writes == {}  # default: nothing registered
+
+    params = _cephadm_params(register_monitoring=True, monitor_cluster_name="CS-NEW")
+    cluster_deploy_module._apply_config_epilogue("deploy_cluster_cephadm", params)
+
+    clusters = _clusters(sessions)
+    assert clusters["CS-LAB"] == {"default": True, "mon": "10.3.54.118,10.3.53.69,10.3.53.1", "osd": "10.20.1.39",
+                                  "key": "/tmp/readonly-id_ed25519", "mode": "cephadm"}
+    assert clusters["CS-NEW"] == {"default": False, "mon": "10.20.1.112,10.20.1.95,10.20.1.21",
+                                  "osd": "10.20.1.95,10.20.1.21", "key": "/tmp/readonly-id_ed25519", "mode": "cephadm"}
+    assert writes == {}
+
+
+def test_a_taken_name_or_bad_name_is_not_registered(monkeypatch):
+    sessions = _cluster_db(monkeypatch)
+
+    for name in ("CS-LAB", "", "x" * 65, "bad/name"):
+        cluster_deploy_module._apply_config_epilogue(
+            "deploy_cluster_cephadm", _cephadm_params(register_monitoring=True, monitor_cluster_name=name))
+
+    assert set(_clusters(sessions)) == {"CS-LAB"}
+
+
+def test_deleting_another_cluster_keeps_the_monitored_config(monkeypatch):
+    sessions = _cluster_db(monkeypatch)
+    writes = {}
+    monkeypatch.setattr(cluster_deploy_module.env_config, "update_env_file_batch", writes.update)
+    synced = []
+    monkeypatch.setattr(cluster_deploy_module, "sync_default_cluster_from_env", synced.append)
+
+    cluster_deploy_module._apply_config_epilogue("delete_cluster_cephadm", {"nodes": _NODES})
+    assert writes == {} and synced == []
+
+    monitored = [{"ip": ip, "roles": ["mon"]} for ip in ("10.3.53.1", "10.3.53.69", "10.3.54.118")]
+    cluster_deploy_module._apply_config_epilogue("delete_cluster_cephadm", {"nodes": monitored})
+    assert writes["CEPH_MON_NODES"] == "" and len(synced) == 1
+    assert _clusters(sessions)["CS-LAB"]["default"] is True
+
+
+def test_convert_still_updates_the_monitored_cluster(monkeypatch):
+    _cluster_db(monkeypatch)
+    writes = {}
+    monkeypatch.setattr(cluster_deploy_module.env_config, "update_env_file_batch", writes.update)
+    monkeypatch.setattr(cluster_deploy_module, "sync_default_cluster_from_env", lambda session: None)
+
+    cluster_deploy_module._apply_config_epilogue("convert_cluster_to_cephadm", _cephadm_params())
+
+    assert writes["CEPH_EXEC_MODE"] == "cephadm"
+
+
+def test_syncing_the_default_cluster_keeps_its_ssh_key(monkeypatch, tmp_path):
+    from shared import clusters as clusters_module, env_config
+    from shared.models import Cluster
+
+    sessions = _cluster_db(monkeypatch)
+    env_file = tmp_path / ".env"
+    env_file.write_text("CEPH_MON_NODES=10.3.54.118\n", encoding="utf-8")
+    monkeypatch.setattr(env_config, "ENV_PATH", env_file)
+    monkeypatch.setattr(clusters_module.settings, "ssh_key_path", "/run/ceph-ai/credentials/mutation/id_ed25519")
+
+    with sessions() as session:
+        clusters_module.sync_default_cluster_from_env(session)
+        default = session.query(Cluster).filter_by(is_default=True).one()
+        assert default.ceph_mon_nodes == "10.3.54.118"
+        assert default.ssh_key_path == "/tmp/readonly-id_ed25519"  # never the Worker's mutation key

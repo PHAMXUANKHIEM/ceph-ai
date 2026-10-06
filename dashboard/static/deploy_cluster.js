@@ -311,6 +311,11 @@
         osd_pool_default_size: parseInt(document.getElementById("df-pool-size").value, 10) || 3,
         osd_pool_default_min_size: parseInt(document.getElementById("df-pool-min-size").value, 10) || 2
       };
+      var registerBox = document.getElementById("df-register-monitoring");
+      if (registerBox && registerBox.checked) {
+        payload.register_monitoring = true;
+        payload.monitor_cluster_name = document.getElementById("df-monitor-name").value.trim();
+      }
 
       fetch("/deploy-cluster/propose", {
         method: "POST",
@@ -349,6 +354,11 @@
       });
       if (document.getElementById("df-rpm-path")) document.getElementById("df-rpm-path").value = params.rpm_path || "";
       if (document.getElementById("df-public-network")) document.getElementById("df-public-network").value = params.public_network || "";
+      if (document.getElementById("df-register-monitoring")) {
+        document.getElementById("df-register-monitoring").checked = !!params.register_monitoring;
+        document.getElementById("df-monitor-name").value = params.monitor_cluster_name || "";
+        document.getElementById("df-monitor-name-field").hidden = !params.register_monitoring;
+      }
       if (document.getElementById("df-cluster-network")) document.getElementById("df-cluster-network").value = params.cluster_network || "";
       onMethodChange();
       if (nodeRowsEl) {
@@ -579,4 +589,13 @@
     });
     window.addEventListener("pagehide", function () { if (unsubscribe) unsubscribe(); });
   }
+})();
+
+// Deploy Cluster: the monitored-cluster name is only asked when the operator
+// chooses to register the new cluster as an additional monitored cluster.
+(function () {
+  var box = document.getElementById("df-register-monitoring");
+  var field = document.getElementById("df-monitor-name-field");
+  if (!box || !field) return;
+  box.addEventListener("change", function () { field.hidden = !box.checked; });
 })();

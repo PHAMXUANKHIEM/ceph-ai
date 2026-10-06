@@ -263,3 +263,21 @@
   .deploy-log-card .card-header { align-items: flex-start; }
   .deploy-last-action-card time { display: block; margin-top: 4px; }
 }
+
+/* "Đăng ký cụm mới làm cụm giám sát thứ hai" (off by default). */
+.deploy-monitoring-choice {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.deploy-monitoring-choice .deploy-monitoring-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.deploy-monitoring-choice .deploy-monitoring-toggle input { width: auto; margin: 0; }
+.deploy-monitoring-choice .hint { margin: 0; }

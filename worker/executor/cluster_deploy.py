@@ -28,7 +28,7 @@ from shared.time import utc_now
 from config.settings import settings
 from sqlalchemy.exc import OperationalError
 from shared import db, env_config
-from shared.clusters import sync_default_cluster_from_env
+from shared.clusters import MONITORED_CLUSTER_NAME_RE, sync_default_cluster_from_env
 from shared.ceph_releases import codename_for_version, major_version, repo_path_version
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import Cluster, Incident, NodeUpgradeGate, NodeUpgradeGateState
@@ -3954,12 +3954,95 @@ def _make_step(step_key: str, label: str, pct: int) -> dict:
     }
 
 
+# Building a NEW cluster never touches the cluster Ceph AI already monitors.
+# Before 2026-10-06 every successful deploy rewrote the default cluster's
+# .env node lists (and the DB mirror) with the new cluster's nodes, so
+# deploying a second cluster silently moved all monitoring onto it and the
+# production cluster stopped being watched. The new cluster is monitored only
+# when the operator ticks "đăng ký giám sát" in Deploy Cluster, and then as
+# its own, additional cluster record.
+NEW_CLUSTER_DEPLOY_ACTION_IDS = frozenset(
+    {"deploy_cluster_cephadm", "deploy_cluster_ceph_deploy", "deploy_cluster_rpm_local"}
+)
+
+
+def _deployed_exec_mode(action_id: str) -> str:
+    return "cephadm" if action_id in ("deploy_cluster_cephadm", "convert_cluster_to_cephadm") else "none"
+
+
+def _register_monitored_cluster(action_params: dict, action_id: str) -> str | None:
+    """Add the freshly deployed cluster as an extra monitored cluster, if asked.
+
+    Returns the new cluster id, or None when not requested or not possible.
+    The default cluster is never modified. The new record uses the same
+    read-only SSH identity as the default cluster: the Watcher is a read-only
+    service and must never be handed the Worker's mutation key.
+    """
+    if not action_params.get("register_monitoring"):
+        return None
+    name = str(action_params.get("monitor_cluster_name") or "").strip()
+    nodes = action_params.get("nodes") or []
+    if not MONITORED_CLUSTER_NAME_RE.match(name) or not _node_ips_with_role(nodes, "mon"):
+        logger.warning("cluster_deploy: not registering the new cluster: invalid name or no MON node")
+        return None
+    with db.SessionLocal() as session:
+        if session.query(Cluster).filter(Cluster.name == name).first() is not None:
+            logger.warning("cluster_deploy: a cluster named %r already exists; not registering", name)
+            return None
+        default = session.query(Cluster).filter(Cluster.is_default.is_(True)).first()
+        cluster = Cluster(
+            name=name,
+            is_default=False,
+            is_active=True,
+            ceph_mon_nodes=",".join(_node_ips_with_role(nodes, "mon")),
+            ceph_mgr_nodes=",".join(_node_ips_with_role(nodes, "mgr")),
+            ceph_osd_nodes=",".join(_node_ips_with_role(nodes, "osd")),
+            ceph_rgw_nodes=",".join(_node_ips_with_role(nodes, "rgw")),
+            ceph_container_name="",
+            ceph_exec_mode=_deployed_exec_mode(action_id),
+            ceph_keyring_path=_REMOTE_ADMIN_KEYRING_PATH,
+            ssh_user=default.ssh_user if default is not None else "root",
+            ssh_key_path=default.ssh_key_path if default is not None else "",
+        )
+        session.add(cluster)
+        session.commit()
+        return cluster.id
+
+
+def _deleted_cluster_is_default(action_params: dict) -> bool:
+    """True only when the deleted MON nodes are the monitored default cluster's."""
+    deleted = set(_node_ips_with_role(action_params.get("nodes") or [], "mon"))
+    with db.SessionLocal() as session:
+        default = session.query(Cluster).filter(Cluster.is_default.is_(True)).first()
+        monitored = {ip.strip() for ip in (default.ceph_mon_nodes if default else "").split(",") if ip.strip()}
+    return bool(deleted) and deleted == monitored
+
+
+def _apply_config_epilogue(action_id: str, action_params: dict) -> None:
+    """Record what a successful lifecycle action changed in Ceph AI's own config."""
+    if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
+        return
+    if action_id in NEW_CLUSTER_DEPLOY_ACTION_IDS:
+        _register_monitored_cluster(action_params, action_id)
+        return
+    if action_id in _DELETE_CLUSTER_ACTION_IDS:
+        if not _deleted_cluster_is_default(action_params):
+            logger.info("cluster_deploy: deleted cluster is not the monitored default; config unchanged")
+            return
+        _clear_cluster_config()
+    else:
+        # convert_cluster_to_cephadm converts the monitored cluster in place.
+        _write_cluster_config(action_params, action_id)
+    with db.SessionLocal() as session:
+        sync_default_cluster_from_env(session)
+
+
 def _write_cluster_config(action_params: dict, action_id: str) -> None:
     nodes = action_params.get("nodes") or []
     # convert_cluster_to_cephadm (2026-07-28): same node list as before
     # (mon/mgr/osd unchanged — this doesn't add/remove any node), only
     # CEPH_EXEC_MODE actually changes, from "none" to "cephadm".
-    exec_mode = "cephadm" if action_id in ("deploy_cluster_cephadm", "convert_cluster_to_cephadm") else "none"
+    exec_mode = _deployed_exec_mode(action_id)
     fields = {
         env_config.CLUSTER_ENV_NAMES["ceph_mon_nodes"]: ",".join(_node_ips_with_role(nodes, "mon")),
         env_config.CLUSTER_ENV_NAMES["ceph_mgr_nodes"]: ",".join(_node_ips_with_role(nodes, "mgr")),
@@ -4073,14 +4156,7 @@ def run(
         write_progress(action_pk, progress)
 
     try:
-        if action_id in _DELETE_CLUSTER_ACTION_IDS:
-            _clear_cluster_config()
-        elif action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
-            pass
-        else:
-            _write_cluster_config(action_params, action_id)
-        with db.SessionLocal() as session:
-            sync_default_cluster_from_env(session)
+        _apply_config_epilogue(action_id, action_params)
     except Exception:
         # The cluster itself is up and healthy (verify already passed) —
         # a failure writing the convenience .env shortcut must not turn a

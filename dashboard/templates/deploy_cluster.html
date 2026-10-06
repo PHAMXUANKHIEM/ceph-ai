@@ -155,6 +155,18 @@
               </label>
             </div>
 
+            <div class="deploy-monitoring-choice">
+              <label class="deploy-monitoring-toggle">
+                <input type="checkbox" id="df-register-monitoring" name="register_monitoring">
+                Đăng ký cụm mới làm cụm giám sát thứ hai
+              </label>
+              <label id="df-monitor-name-field" hidden>
+                Tên cụm giám sát
+                <input type="text" id="df-monitor-name" name="monitor_cluster_name" maxlength="64" placeholder="CS-NEW">
+              </label>
+              <p class="hint">Mặc định tắt: dựng cụm <strong>không</strong> thay đổi cụm Ceph AI đang giám sát. Bật thì cụm mới được thêm thành một cụm riêng, cụm đang giám sát giữ nguyên. Cụm mới dùng khóa SSH chỉ-đọc của Ceph AI, nên cần thêm khóa đó vào các node mới.</p>
+            </div>
+
             <details>
               <summary>Tùy chọn nâng cao</summary>
               <label>
