@@ -335,7 +335,18 @@ def _collect_node_summary(cluster) -> dict:
         if host and node_name:
             identities.setdefault(host, node_name)
     collapsed = collapse_nodes(nodes, identities)
-    return {"nodes": collapsed, "total": len(collapsed)}
+    return {"nodes": collapsed, "total": len(collapsed), "networks": _network_config(cluster)}
+
+
+def _network_config(cluster) -> dict | None:
+    """Best effort: a failed ``config get`` must not cost the nodes section."""
+    from watcher.inventory_queries import collect_network_config
+
+    try:
+        return collect_network_config(cluster)
+    except Exception:
+        logger.warning("snapshot collector: Ceph network config unavailable", exc_info=True)
+        return None
 
 
 class CephSnapshotCollector:

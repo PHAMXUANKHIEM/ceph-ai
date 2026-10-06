@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import ipaddress
 import json
 from datetime import datetime, timedelta
 from shared.time import utc_now
@@ -137,6 +138,39 @@ def _format_bytes(value) -> str:
             break
         amount /= 1024
     return f"{amount:.0f} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
+
+
+def parse_network_list(raw: str | None) -> list[str]:
+    """CIDRs from a Ceph ``*_network`` value ("a/b, c/d"); anything else is dropped."""
+    networks: list[str] = []
+    for part in re.split(r"[,\s]+", str(raw or "").strip()):
+        if not part or "/" not in part:
+            continue
+        try:
+            network = str(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            continue
+        if network not in networks:
+            networks.append(network)
+    return networks
+
+
+def collect_network_config(cluster) -> dict:
+    """Ceph's configured public and cluster networks (read-only ``config get``).
+
+    An empty cluster list means replication shares the public network.
+    """
+    nodes, container_name, ssh_user, ssh_key_path, exec_mode = _cluster_connection(cluster)
+    values = {}
+    for key, inner in (
+        ("public", "ceph config get mon public_network"),
+        ("cluster", "ceph config get osd cluster_network"),
+    ):
+        _host, output = ceph_client.run_ceph_text_command_with(
+            nodes, container_name, ssh_user, ssh_key_path, exec_mode, inner,
+        )
+        values[key] = parse_network_list(output)
+    return values
 
 
 def collect_pool_rows(cluster) -> list[dict]:
