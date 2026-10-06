@@ -11,6 +11,7 @@ Two sources, both read-only:
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -68,6 +69,71 @@ def read_local_run(path: Path = DEFAULT_PROGRESS_FILE, now: datetime | None = No
     elif state.get("status") == "preparing" and silent > PREPARING_STALE_AFTER_SECONDS:
         state["status"] = "stalled"
     return state
+
+
+DEFAULT_DEPLOY_LOG = Path("/var/lib/ceph-ai/release-artifacts/deploy-phases.log")
+# restart_container_stack.sh bounds each step; a deploy silent this long died.
+DEPLOY_STALE_AFTER_SECONDS = 3600
+_DEPLOY_LINE = re.compile(r"^(?P<at>\S+) phase=(?P<phase>[a-z_]+) status=(?P<status>[A-Z]+) detail=(?P<detail>.*)$")
+
+
+def _deploy_events(path: Path) -> list[dict[str, str]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()[-2000:]
+    except OSError:
+        return []
+    return [match.groupdict() for match in map(_DEPLOY_LINE.match, lines) if match]
+
+
+def _deploy_status(phases: list[dict[str, Any]], complete: dict[str, str] | None, last_at: datetime | None,
+                   now: datetime) -> str:
+    if complete is not None:
+        return "passed" if complete["status"] == "PASSED" else "failed"
+    if any(phase["status"] == "FAILED" for phase in phases):
+        return "failed"
+    if last_at and (now - last_at).total_seconds() > DEPLOY_STALE_AFTER_SECONDS:
+        return "stalled"
+    return "running"
+
+
+def read_latest_deploy(path: Path = DEFAULT_DEPLOY_LOG, now: datetime | None = None) -> dict[str, Any] | None:
+    """The newest deploy (from its preflight to complete) and the few before it.
+
+    restart_container_stack.sh appends `<time> phase=<p> status=<s> detail=<d>`
+    to the deploy event log; a deploy starts at `phase=preflight status=STARTED`.
+    """
+    events = _deploy_events(path)
+    starts = [index for index, event in enumerate(events)
+              if event["phase"] == "preflight" and event["status"] == "STARTED"]
+    if not starts:
+        return None
+    now = now or datetime.now(timezone.utc)
+    current = events[starts[-1]:]
+    phases: dict[str, dict[str, Any]] = {}
+    for event in current:
+        if event["phase"] == "complete":
+            continue
+        entry = phases.setdefault(event["phase"], {"name": event["phase"], "started_at": event["at"]})
+        entry["status"] = event["status"]
+        entry["detail"] = event["detail"] or None
+        if event["status"] != "STARTED":
+            entry["finished_at"] = event["at"]
+    complete = next((event for event in reversed(current) if event["phase"] == "complete"), None)
+    ordered = list(phases.values())
+    status = _deploy_status(ordered, complete, _parse_time(current[-1]["at"]), now)
+    sha = (complete or {}).get("detail", "").removeprefix("sha=") or None
+    completed = [{"at": event["at"], "status": event["status"], "sha": event["detail"].removeprefix("sha=")[:8]}
+                 for event in events if event["phase"] == "complete"]
+    history = (completed[:-1] if complete else completed)[-5:]  # the deploys before this one
+    return {
+        "status": status,
+        "started_at": current[0]["at"],
+        "finished_at": complete["at"] if complete else None,
+        "sha": sha,
+        "phases": ordered,
+        "current": next((phase["name"] for phase in reversed(ordered) if phase["status"] == "STARTED"), None),
+        "previous": list(reversed(history)),
+    }
 
 
 def _get_json(client: httpx.Client, url: str) -> Any:

@@ -207,3 +207,54 @@ def test_cli_is_inert_without_the_environment_variable(monkeypatch, tmp_path):
     assert pytest_progress.main(["step", "Budget"]) == 0
     assert pytest_progress.main(["oops"]) == 2
     assert not list(tmp_path.glob("*.json"))
+
+
+def _deploy_log(path, *lines):
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_latest_deploy_lists_its_phases_and_the_previous_deploys(tmp_path):
+    log = tmp_path / "deploy-phases.log"
+    _deploy_log(
+        log,
+        "2026-10-05T12:30:00Z phase=preflight status=STARTED detail=",
+        "2026-10-05T12:35:01Z phase=complete status=PASSED detail=sha=e8b8331312826648201cad12611869919c37b0c9",
+        "2026-10-06T07:48:49Z phase=preflight status=STARTED detail=",
+        "2026-10-06T07:48:51Z phase=preflight status=PASSED detail=",
+        "2026-10-06T07:49:20Z phase=migration status=STARTED detail=",
+        "garbage line",
+    )
+
+    deploy = test_progress.read_latest_deploy(log, now=datetime(2026, 10, 6, 7, 50, tzinfo=timezone.utc))
+
+    assert deploy["status"] == "running" and deploy["current"] == "migration" and deploy["sha"] is None
+    assert [(phase["name"], phase["status"]) for phase in deploy["phases"]] == [("preflight", "PASSED"), ("migration", "STARTED")]
+    assert deploy["previous"] == [{"at": "2026-10-05T12:35:01Z", "status": "PASSED", "sha": "e8b83313"}]
+
+
+def test_finished_failed_and_silent_deploys(tmp_path):
+    log = tmp_path / "deploy-phases.log"
+    _deploy_log(log, "2026-10-06T07:48:49Z phase=preflight status=STARTED detail=",
+                "2026-10-06T07:52:51Z phase=complete status=PASSED detail=sha=3f081af70b16ed52ff5c97f404ec0eb912aab806")
+    done = test_progress.read_latest_deploy(log)
+    assert done["status"] == "passed" and done["sha"].startswith("3f081af7") and done["previous"] == []
+
+    _deploy_log(log, "2026-10-06T07:48:49Z phase=preflight status=STARTED detail=",
+                "2026-10-06T07:49:20Z phase=migration status=FAILED detail=alembic exited 1")
+    assert test_progress.read_latest_deploy(log)["status"] == "failed"
+
+    _deploy_log(log, "2026-10-06T07:48:49Z phase=preflight status=STARTED detail=")
+    later = datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc)
+    assert test_progress.read_latest_deploy(log, now=later)["status"] == "stalled"
+    assert test_progress.read_latest_deploy(tmp_path / "missing.log") is None
+
+
+def test_api_returns_the_latest_deploy(dashboard_client, monkeypatch, tmp_path):
+    log = tmp_path / "deploy-phases.log"
+    _deploy_log(log, "2026-10-06T07:48:49Z phase=preflight status=STARTED detail=")
+    original = test_progress.read_latest_deploy
+    monkeypatch.setattr(route.test_progress, "read_latest_deploy", lambda: original(log))
+    monkeypatch.setattr(route.test_progress, "fetch_ci_runs", lambda repo: {"repo": repo, "runs": [], "error": None})
+    _login(dashboard_client)
+
+    assert dashboard_client.get("/api/test-progress").json()["deploy"]["phases"][0]["name"] == "preflight"

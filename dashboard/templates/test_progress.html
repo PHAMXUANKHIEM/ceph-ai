@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tiến độ test — Ceph AIOps</title>
+  <title>Tiến độ test & deploy — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -32,6 +32,21 @@
     </section>
 
     <section class="card">
+      <div class="card-header"><h2>Deploy lên production</h2></div>
+      <div class="card-body">
+        <p class="hint">Từ nhật ký deploy trên máy (<code>deploy-phases.log</code>): preflight → checkout → kéo image → migration → khởi động lại → kiểm tra.</p>
+        <div id="deploy-empty" class="empty-state" hidden>Chưa có lượt deploy nào được ghi.</div>
+        <div id="deploy" hidden>
+          <p><span id="deploy-status" class="status-pill status-unknown"><span class="dot"></span><strong></strong></span>
+             <span id="deploy-sha" class="hint"></span></p>
+          <p id="deploy-steps"></p>
+          <p class="hint" id="deploy-times"></p>
+          <p class="hint" id="deploy-previous"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-header"><h2>CI trên GitHub ({{ ci_repo }}, nhánh main)</h2></div>
       <div class="card-body">
         <p class="hint">Cache 90 giây để không vượt giới hạn API GitHub.</p>
@@ -50,6 +65,11 @@
     const PILL = {preparing: "status-warn", collecting: "status-warn", running: "status-warn", passed: "status-ok",
       failed: "status-err", stalled: "status-err", aborted: "status-err"};
     const STEP_MARK = {ok: "✓", running: "▶", failed: "✗"};
+    const DEPLOY_LABELS = {running: "Đang deploy", passed: "Deploy xong", failed: "Deploy lỗi", stalled: "Deploy dừng giữa chừng"};
+    const DEPLOY_PILL = {running: "status-warn", passed: "status-ok", failed: "status-err", stalled: "status-err"};
+    const PHASE_NAMES = {preflight: "Preflight", checkout: "Checkout", runtime_setup: "Cài unit", registry_pull: "Kéo image",
+      migration: "Migration DB", restart: "Khởi động lại", health: "Health", consumer: "Hàng đợi", smoke: "Smoke test"};
+    const PHASE_MARK = {PASSED: "✓", STARTED: "▶", FAILED: "✗"};
     function el(id) { return document.getElementById(id); }
     function duration(seconds) {
       if (seconds === null || seconds === undefined) return "—";
@@ -98,6 +118,22 @@
       });
       el("local-failures").hidden = !(run.failures || []).length;
     }
+    function renderDeploy(deploy) {
+      el("deploy-empty").hidden = !!deploy; el("deploy").hidden = !deploy;
+      if (!deploy) return;
+      const status = el("deploy-status");
+      status.className = "status-pill " + (DEPLOY_PILL[deploy.status] || "status-unknown");
+      status.querySelector("strong").textContent = DEPLOY_LABELS[deploy.status] || deploy.status;
+      el("deploy-sha").textContent = deploy.sha ? " commit " + deploy.sha.slice(0, 8) : "";
+      el("deploy-steps").textContent = deploy.phases.map(function (phase) {
+        return (PHASE_MARK[phase.status] || "·") + " " + (PHASE_NAMES[phase.name] || phase.name);
+      }).join("  ·  ");
+      el("deploy-times").textContent = "Bắt đầu " + when(deploy.started_at) +
+        (deploy.finished_at ? " · kết thúc " + when(deploy.finished_at) : (deploy.current ? " · đang ở bước " + (PHASE_NAMES[deploy.current] || deploy.current) : ""));
+      el("deploy-previous").textContent = (deploy.previous || []).length ? "Các lần trước: " + deploy.previous.map(function (item) {
+        return (item.status === "PASSED" ? "✓ " : "✗ ") + item.sha + " (" + when(item.at) + ")";
+      }).join(" · ") : "";
+    }
     function renderCi(ci) {
       el("ci-error").hidden = !ci.error; el("ci-error").textContent = ci.error ? "Không đọc được GitHub: " + ci.error : "";
       const jobs = el("ci-jobs"); jobs.replaceChildren();
@@ -132,7 +168,7 @@
         const response = await fetch("/api/test-progress", {credentials: "same-origin"});
         if (!response.ok) return;
         const data = await response.json();
-        renderLocal(data.local); renderCi(data.ci);
+        renderLocal(data.local); renderDeploy(data.deploy); renderCi(data.ci);
       } catch (e) { /* keep the last view; retry next tick */ }
     }
     refresh(); setInterval(refresh, 5000);

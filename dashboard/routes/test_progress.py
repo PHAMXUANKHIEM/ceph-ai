@@ -1,4 +1,4 @@
-"""Live progress of the pre-push test run and of CI on main (admin only)."""
+"""Live progress of the pre-push test run, the latest production deploy and CI on main (admin only)."""
 
 from __future__ import annotations
 
@@ -37,4 +37,4 @@ async def test_progress_api(user: str = Depends(require_login)) -> dict:
     _require_admin(user)
     local = test_progress.read_local_run(Path(settings.test_progress_file))
     ci = await asyncio.to_thread(test_progress.fetch_ci_runs, settings.ci_github_repo)
-    return {"local": local, "ci": ci}
+    return {"local": local, "deploy": test_progress.read_latest_deploy(), "ci": ci}
