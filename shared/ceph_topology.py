@@ -8,7 +8,8 @@ the page never runs a Ceph command.
 * status: the health snapshot (checks with details, muted ones ignored) and
   the ``status`` section (``ceph -s``);
 * hosts: the ``nodes`` section (roles, addresses, configured public/cluster
-  networks) and the ``crush`` section (OSDs per host, grouped by host);
+  networks, MON/OSD daemon addresses from ``mon dump``/``osd dump``) and the
+  ``crush`` section (OSDs per host, grouped by host);
 * clients: the ``pools`` section's applications (rbd, rgw, cephfs).
 
 A snapshot older than its stale limit turns every status into ``unknown``
@@ -136,6 +137,93 @@ def _in_networks(address: str, cidrs: list[str]) -> bool:
     return any(ip in ipaddress.ip_network(cidr, strict=False) for cidr in cidrs)
 
 
+def _ip_of(addr: str) -> str:
+    """``10.0.0.1:6800`` or ``[fd00::1]:6800`` -> the bare IP."""
+    host = addr.rsplit(":", 1)[0]
+    return host[1:-1] if host.startswith("[") and host.endswith("]") else host
+
+
+def _addr_text(addrvec: list[dict]) -> str:
+    return " · ".join(f"{item['type']} {item['addr']}" for item in addrvec) or "—"
+
+
+def _daemons(nodes_payload: dict) -> tuple[list[dict], list[dict]] | None:
+    daemons = nodes_payload.get("daemons")
+    if not isinstance(daemons, dict):
+        return None
+    mons = [mon for mon in daemons.get("mons") or [] if isinstance(mon, dict)]
+    osds = [osd for osd in daemons.get("osds") or [] if isinstance(osd, dict) and isinstance(osd.get("id"), int)]
+    return mons, osds
+
+
+def _outside(addrvecs: list[list[dict]], cidrs: list[str]) -> list[str]:
+    """Addresses not inside any of ``cidrs`` (empty when no CIDR is configured)."""
+    if not cidrs:
+        return []
+    return [item["addr"] for addrvec in addrvecs for item in addrvec if not _in_networks(_ip_of(item["addr"]), cidrs)]
+
+
+def _slow_ping_facts(check: dict | None, limit: int = 5) -> list[str]:
+    """The OSD pairs of an ``OSD_SLOW_PING_TIME_*`` check (detail lines)."""
+    detail = [str(item.get("message", "")).strip() for item in (check or {}).get("detail") or [] if isinstance(item, dict)]
+    detail = [line for line in detail if line]
+    facts = [f"Heartbeat chậm: {line}" for line in detail[:limit]]
+    if len(detail) > limit:
+        facts.append(f"… và {len(detail) - limit} cặp OSD khác")
+    return facts
+
+
+def _mon_address_facts(mon_daemons: list[dict], quorum: list[str]) -> list[str]:
+    in_quorum = {_short_host(name) for name in quorum}
+    facts = []
+    for mon in mon_daemons:
+        name = _short_host(mon.get("name"))
+        suffix = "" if name in in_quorum else " (ngoài quorum)"
+        facts.append(f"mon.{name}: {_addr_text(mon.get('public') or [])}{suffix}")
+    return facts
+
+
+def _host_daemon_facts(name: str, mon_daemons: list[dict], osd_ids: list[int], osd_addrs: dict[int, dict]) -> list[str]:
+    facts = [f"mon.{name}: {_addr_text(mon.get('public') or [])}"
+             for mon in mon_daemons if _short_host(mon.get("name")) == name]
+    for osd in osd_ids:
+        if osd in osd_addrs:
+            public_text = _addr_text(osd_addrs[osd].get("public") or [])
+            cluster_text = _addr_text(osd_addrs[osd].get("cluster") or [])
+            facts.append(f"osd.{osd}: public {public_text} | cluster {cluster_text}")
+    return facts
+
+
+def _network_nodes(public_nets: list[str], cluster_nets: list[str],
+                   daemons: tuple[list[dict], list[dict]] | None) -> list[dict]:
+    """Public/cluster network nodes; flags daemon addresses outside the configured CIDRs."""
+    mon_daemons, osd_daemons = daemons or ([], [])
+    outside_public = _outside([mon.get("public") or [] for mon in mon_daemons]
+                              + [osd.get("public") or [] for osd in osd_daemons], public_nets)
+    outside_cluster = _outside([osd.get("cluster") or [] for osd in osd_daemons], cluster_nets)
+    nodes = []
+    if public_nets:
+        facts = ["Client ↔ MON/OSD/RGW", "Theo cấu hình Ceph public_network"]
+        if daemons:
+            facts.append(f"Daemon lắng nghe: MON ×{len(mon_daemons)}, OSD ×{len(osd_daemons)}")
+        if outside_public:
+            facts.append(f"Địa chỉ ngoài public_network: {', '.join(outside_public)}")
+        if not cluster_nets:
+            facts.append("Không có cluster_network: replication đi chung public network")
+        nodes.append(_node("net_public", "networks", "network", "Public network", ", ".join(public_nets),
+                           WARN if outside_public else OK, facts))
+    if cluster_nets:
+        facts = ["OSD ↔ OSD: replication, recovery, heartbeat", "Theo cấu hình Ceph cluster_network"]
+        if daemons:
+            facts.append(f"Daemon lắng nghe: OSD ×{len(osd_daemons)}")
+        if outside_cluster:
+            # OSDs that fell back to the public address replicate there instead.
+            facts.append(f"Địa chỉ cluster ngoài cluster_network: {', '.join(outside_cluster)}")
+        nodes.append(_node("net_cluster", "networks", "network", "Cluster network", ", ".join(cluster_nets),
+                           WARN if outside_cluster else OK, facts))
+    return nodes
+
+
 def _down_osds(checks: dict[str, dict]) -> set[int]:
     down: set[int] = set()
     for code in ("OSD_DOWN", "OSD_HOST_DOWN"):
@@ -212,6 +300,14 @@ def build(cluster, *, now: datetime | None = None, sections: dict[str, dict | No
     public_nets, cluster_nets = _networks(nodes_payload)
     osds_by_host = _osds_by_host(crush)
     down_osds = _down_osds(checks)
+    daemons = _daemons(nodes_payload)
+    mon_daemons, osd_daemons = daemons or ([], [])
+    osd_addrs = {osd["id"]: osd for osd in osd_daemons}
+    # Health (refreshed every minute) stays the primary source for down OSDs;
+    # the inventory's osd dump only names the ones a truncated detail left out.
+    if osd_total and len(down_osds) < osd_total - osd_up:
+        down_osds |= {osd["id"] for osd in osd_daemons if not osd.get("up")}
+    out_osds = sorted(osd["id"] for osd in osd_daemons if not osd.get("in"))
     rgw = _rgw_daemons(status)
     apps = _pool_applications(pools)
     mds_up = [rank for rank in fsmap.get("by_rank") or [] if isinstance(rank, dict)]
@@ -229,6 +325,7 @@ def build(cluster, *, now: datetime | None = None, sections: dict[str, dict | No
     out_nodes.append(_node("mon", "control", "mon", "MON quorum", f"{len(quorum)}/{num_mons} trong quorum", mon_status, [
         f"Quorum: {', '.join(quorum) or 'chưa rõ'}",
         f"Monmap epoch {monmap.get('epoch', '?')} · {monmap.get('min_mon_release_name', '?')}",
+        *_mon_address_facts(mon_daemons, quorum),
     ], mon_checks, "/nodes"))
     mgr_status, mgr_checks = _component_status("mgr", checks)
     if mgrmap and not mgrmap.get("available"):
@@ -254,6 +351,7 @@ def build(cluster, *, now: datetime | None = None, sections: dict[str, dict | No
     out_nodes.append(_node("osd", "data", "osd", "OSD", f"{osd_up}/{osd_total} up · {osd_in}/{osd_total} in", osd_status, [
         f"Osdmap epoch {osdmap.get('epoch', '?')}",
         f"OSD down: {', '.join(f'osd.{osd}' for osd in sorted(down_osds)) or 'không có'}",
+        *([f"OSD out: {', '.join(f'osd.{osd}' for osd in out_osds) or 'không có'}"] if daemons else []),
     ], osd_checks, "/crush-map"))
     pool_status, pool_checks = _component_status("pools", checks)
     if pg_total and active_clean < pg_total:
@@ -302,25 +400,20 @@ def build(cluster, *, now: datetime | None = None, sections: dict[str, dict | No
             edge(node_id, "osd", "đọc / ghi dữ liệu", "data")
 
     # Networks.
-    if public_nets:
-        out_nodes.append(_node("net_public", "networks", "network", "Public network", ", ".join(public_nets), OK,
-                               ["Client ↔ MON/OSD/RGW", "Theo cấu hình Ceph public_network"]))
-    if cluster_nets:
-        out_nodes.append(_node("net_cluster", "networks", "network", "Cluster network", ", ".join(cluster_nets), OK,
-                               ["OSD ↔ OSD: replication, recovery, heartbeat", "Theo cấu hình Ceph cluster_network"]))
-    elif public_nets:
-        out_nodes[-1]["facts"].append("Không có cluster_network: replication đi chung public network")
+    out_nodes.extend(_network_nodes(public_nets, cluster_nets, daemons))
     front = checks.get("OSD_SLOW_PING_TIME_FRONT")
     back = checks.get("OSD_SLOW_PING_TIME_BACK")
-    for node_id, check, code in (("net_public", front, "OSD_SLOW_PING_TIME_FRONT"),
-                                 ("net_cluster" if cluster_nets else "net_public", back, "OSD_SLOW_PING_TIME_BACK")):
+    for node_id, slow_check, code in (("net_public", front, "OSD_SLOW_PING_TIME_FRONT"),
+                                      ("net_cluster" if cluster_nets else "net_public", back, "OSD_SLOW_PING_TIME_BACK")):
         target = next((node for node in out_nodes if node["id"] == node_id), None)
-        if target is not None and check:
+        if target is not None and slow_check:
             target["status"] = _worst(target["status"], WARN)
-            target["checks"].append(_check_view(code, check))
+            target["checks"].append(_check_view(code, slow_check))
+            target["facts"].extend(_slow_ping_facts(slow_check))
+    mon_ports = sorted({item["addr"].rsplit(":", 1)[1] for mon in mon_daemons for item in mon.get("public") or []})
     if public_nets:
-        edge("osd", "net_public", "client I/O", "network")
-        edge("mon", "net_public", "lắng nghe", "network")
+        edge("osd", "net_public", "client I/O" if cluster_nets else "client I/O · replication", "network")
+        edge("mon", "net_public", f"lắng nghe :{', :'.join(mon_ports)}" if mon_ports else "lắng nghe", "network")
     if cluster_nets:
         edge("osd", "net_cluster", "replication · recovery", "network")
 
@@ -349,6 +442,7 @@ def build(cluster, *, now: datetime | None = None, sections: dict[str, dict | No
                                    "Địa chỉ public: " + (", ".join(public_addr) or "—"),
                                    *(["Địa chỉ cluster: " + ", ".join(cluster_addr)] if cluster_nets else []),
                                    "Địa chỉ khác (quản trị): " + (", ".join(other_addr) or "—"),
+                                   *_host_daemon_facts(name, mon_daemons, osd_ids, osd_addrs),
                                ], host_checks, "/nodes"))
         if osd_ids:
             edge(node_id, "osd", f"{len(osd_ids)} OSD", "data")

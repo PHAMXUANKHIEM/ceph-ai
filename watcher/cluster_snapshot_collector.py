@@ -335,7 +335,12 @@ def _collect_node_summary(cluster) -> dict:
         if host and node_name:
             identities.setdefault(host, node_name)
     collapsed = collapse_nodes(nodes, identities)
-    return {"nodes": collapsed, "total": len(collapsed), "networks": _network_config(cluster)}
+    return {
+        "nodes": collapsed,
+        "total": len(collapsed),
+        "networks": _network_config(cluster),
+        "daemons": _daemon_addresses(cluster),
+    }
 
 
 def _network_config(cluster) -> dict | None:
@@ -346,6 +351,17 @@ def _network_config(cluster) -> dict | None:
         return collect_network_config(cluster)
     except Exception:
         logger.warning("snapshot collector: Ceph network config unavailable", exc_info=True)
+        return None
+
+
+def _daemon_addresses(cluster) -> dict | None:
+    """Best effort, like ``_network_config``: the Stream view falls back to host addresses."""
+    from watcher.inventory_queries import collect_daemon_addresses
+
+    try:
+        return collect_daemon_addresses(cluster)
+    except Exception:
+        logger.warning("snapshot collector: Ceph daemon addresses unavailable", exc_info=True)
         return None
 
 

@@ -10,8 +10,24 @@ def _osd(osd_id, host):
     return {"id": osd_id, "name": f"osd.{osd_id}", "type": "osd", "host": host}
 
 
+def _addrs(ip, *ports):
+    return [{"type": kind, "addr": f"{ip}:{port}"} for kind, port in zip(("v2", "v1"), ports)]
+
+
+def _daemons(*, down=(), out=(), cluster_ip=lambda n: f"198.51.100.1{n}"):
+    hosts = {0: 1, 3: 1, 1: 2, 4: 2, 2: 3, 5: 3}
+    return {
+        "mons": [{"name": f"node{n}", "rank": n - 1, "in_quorum": True,
+                  "public": _addrs(f"198.51.100.1{n}", 3300, 6789)} for n in (1, 2, 3)],
+        "osds": [{"id": osd, "up": osd not in down, "in": osd not in out,
+                  "public": _addrs(f"198.51.100.1{host}", 6800 + 4 * (osd // 3), 6801 + 4 * (osd // 3)),
+                  "cluster": _addrs(cluster_ip(host), 6802 + 4 * (osd // 3), 6803 + 4 * (osd // 3))}
+                 for osd, host in sorted(hosts.items())],
+    }
+
+
 def _sections(*, checks=None, stale=False, cluster_network=None, quorum=3, osd_up=6, pg_clean=100,
-              pool_apps=(("rbd",), ("rgw",))):
+              pool_apps=(("rbd",), ("rgw",)), daemons=None):
     hosts = [("node1", ["192.0.2.11", "198.51.100.11"]), ("node2", ["192.0.2.12", "198.51.100.12"]),
              ("node3", ["192.0.2.13", "198.51.100.13"])]
     status = {
@@ -34,6 +50,7 @@ def _sections(*, checks=None, stale=False, cluster_network=None, quorum=3, osd_u
         "nodes": {"collected_at": "2026-10-06T03:00:00Z", "nodes": {
             "nodes": [{"host": addrs[0], "node_name": name, "roles": ["MON", "OSD"], "aliases": addrs} for name, addrs in hosts],
             "networks": {"public": ["198.51.100.0/24"], "cluster": cluster_network or []},
+            **({"daemons": daemons} if daemons is not None else {}),
         }},
         "crush": {"crush": {"roots": [{"type": "root", "name": "default", "children": [
             {"type": "host", "name": "node1~hdd", "children": [_osd(0, "node1"), _osd(3, "node1")]},
@@ -97,6 +114,61 @@ def test_slow_heartbeats_mark_the_network_they_travel_on():
     assert _node(split_network, "net_cluster")["status"] == "warn"
     assert _node(split_network, "net_public")["status"] == "ok"
     assert "net_management" not in {node["id"] for node in split_network["nodes"]}
+
+
+def test_daemon_addresses_show_on_hosts_mon_and_networks():
+    topology = ceph_topology.build(CLUSTER, sections=_sections(daemons=_daemons(out=(5,))))
+
+    host_facts = _node(topology, "host_node2")["facts"]
+    assert "mon.node2: v2 198.51.100.12:3300 · v1 198.51.100.12:6789" in host_facts
+    assert "osd.1: public v2 198.51.100.12:6800 · v1 198.51.100.12:6801 | cluster v2 198.51.100.12:6802 · v1 198.51.100.12:6803" in host_facts
+    assert "mon.node1: v2 198.51.100.11:3300 · v1 198.51.100.11:6789" in _node(topology, "mon")["facts"]
+    assert "OSD out: osd.5" in _node(topology, "osd")["facts"]
+    public = _node(topology, "net_public")
+    assert public["status"] == "ok" and "Daemon lắng nghe: MON ×3, OSD ×6" in public["facts"]
+    labels = {(edge["from"], edge["to"]): edge["label"] for edge in topology["edges"]}
+    assert labels[("mon", "net_public")] == "lắng nghe :3300, :6789"
+    assert labels[("osd", "net_public")] == "client I/O · replication"
+
+
+def test_osd_dump_names_down_osds_missing_from_a_truncated_health_detail():
+    checks = {"OSD_DOWN": {"severity": "HEALTH_WARN", "summary": {"message": "1 osds down"}}}
+
+    topology = ceph_topology.build(CLUSTER, sections=_sections(checks=checks, osd_up=5, daemons=_daemons(down=(4,))))
+
+    assert "osd.4 (down)" in _node(topology, "host_node2")["facts"][0]
+    assert _node(topology, "host_node2")["status"] == "error"
+    assert _node(topology, "host_node1")["status"] == "ok"
+
+
+def test_an_old_osd_dump_does_not_override_fresh_health():
+    # The inventory still lists osd.4 down but health says every OSD is up again.
+    topology = ceph_topology.build(CLUSTER, sections=_sections(daemons=_daemons(down=(4,))))
+
+    assert _node(topology, "host_node2")["status"] == "ok"
+    assert "(down)" not in _node(topology, "host_node2")["facts"][0]
+
+
+def test_cluster_addresses_outside_cluster_network_are_flagged():
+    daemons = _daemons(cluster_ip=lambda n: "192.0.2.11" if n == 1 else f"198.51.100.1{n}")
+
+    topology = ceph_topology.build(CLUSTER, sections=_sections(cluster_network=["192.0.2.0/24"], daemons=daemons))
+
+    cluster = _node(topology, "net_cluster")
+    assert cluster["status"] == "warn"
+    outside = next(fact for fact in cluster["facts"] if fact.startswith("Địa chỉ cluster ngoài"))
+    assert "198.51.100.12:6802" in outside and "192.0.2.11" not in outside
+
+
+def test_slow_ping_details_list_the_osd_pairs():
+    detail = [{"message": f"Slow OSD heartbeats on back from osd.{i} to osd.{i + 1} 1200 msec"} for i in range(7)]
+    checks = {"OSD_SLOW_PING_TIME_BACK": {"severity": "HEALTH_WARN", "summary": {"message": "slow back"},
+                                          "detail": detail}}
+
+    facts = _node(ceph_topology.build(CLUSTER, sections=_sections(checks=checks)), "net_public")["facts"]
+
+    assert "Heartbeat chậm: Slow OSD heartbeats on back from osd.0 to osd.1 1200 msec" in facts
+    assert "… và 2 cặp OSD khác" in facts
 
 
 def test_muted_checks_do_not_colour_the_graph():

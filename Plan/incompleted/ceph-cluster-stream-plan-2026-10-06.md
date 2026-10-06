@@ -1,7 +1,7 @@
 # Kế hoạch: luồng dịch vụ cụm Ceph trên trang Stream
 
 **Ngày lập:** 06/10/2026
-**Trạng thái:** `IN-PROGRESS` — CS0–CS3 xong trên nhánh `ceph-stream`, chờ CS5 (test đầy đủ, CI, deploy). CS4 để sau theo quyết định operator.
+**Trạng thái:** `IN-PROGRESS` — CS0–CS3 xong trên nhánh `ceph-stream`; CS4 (địa chỉ daemon, heartbeat chậm) xong trên `ceph-stream-cs4`; còn client thật (`ceph auth ls`, chờ operator) và CS5 (deploy).
 **Liên quan:** trang `/stream` (luồng cấu hình hệ thống Ceph AI, `ceph-health-dashboard/src/components/InstallationStream.tsx`), `Plan/incompleted/architecture-impact-analysis-regression-plan.md`.
 **Mục tiêu:** bên cạnh luồng của hệ thống Ceph AI, trang Stream có thêm một luồng tương tự cho **chính cụm Ceph**: các dịch vụ (MON, MGR, OSD, PG/pool, RGW, MDS), các host, **đường mạng** (public / cluster network) và các client, kèm trạng thái sống, để operator nhìn một chỗ thấy dữ liệu đi qua đâu và chỗ nào đang hỏng.
 
@@ -72,10 +72,13 @@ Component hiện tại: một file React ~580 dòng; phần vẽ (canvas, kéo t
 - [x] Tự làm mới 30 giây, dừng khi tab ẩn.
 - [x] Build Node 20; render Chromium headless: tab Ceph 13 node / 21 cạnh / 5 nhóm, không lỗi JS, không tràn ở 1440 và 390 px.
 
-### CS4 — Mở rộng (làm sau, cần đồng ý)
-- [ ] Địa chỉ từng daemon (MON v1/v2, OSD public/cluster addr) từ `ceph mon dump`/`ceph osd dump` để vẽ chính xác daemon nằm mạng nào.
-- [ ] Client thực tế từ `ceph auth ls` (chỉ tên entity, không key) và session RBD/RGW nếu có nguồn chỉ-đọc phù hợp.
-- [ ] Lớp độ trễ/lỗi mạng (heartbeat chậm, `OSD_SLOW_PING_TIME_*`) tô lên cạnh mạng.
+### CS4 — Mở rộng
+- [x] Địa chỉ từng daemon: section `nodes.daemons` từ `ceph mon dump` + `ceph osd dump` **gộp một lần SSH** (`collect_daemon_addresses`), chỉ giữ tên, địa chỉ v1/v2 (bỏ nonce, địa chỉ không đúng dạng bị loại), up/in; lỗi lệnh không làm mất section. CS-LAB: ~1,9 KB/snapshot.
+  - Host: từng `mon.X` và `osd.N` kèm địa chỉ public/cluster; MON: địa chỉ từng MON, đánh dấu MON ngoài quorum; OSD: danh sách OSD out.
+  - OSD down: health (1 phút) vẫn là nguồn chính; `osd dump` (chu kỳ inventory) chỉ bổ sung tên OSD khi detail của health bị cắt, để dump cũ không vẽ đỏ OSD đã lên lại.
+  - Mạng: số daemon lắng nghe, cạnh MON → public ghi port (`:3300, :6789`); địa chỉ daemon nằm ngoài `public_network`/`cluster_network` ⇒ mạng đó `warn` kèm danh sách địa chỉ.
+- [ ] (chờ operator: `ceph auth ls` trả cả key) Client thực tế từ `ceph auth ls` (chỉ tên entity, không key) và session RBD/RGW nếu có nguồn chỉ-đọc phù hợp.
+- [x] Heartbeat chậm (`OSD_SLOW_PING_TIME_FRONT/BACK`): mạng tương ứng `warn`, chi tiết liệt kê tối đa 5 cặp OSD chậm (+ số còn lại).
 
 ### CS5 — Kiểm thử và phát hành
 - [ ] Chạy thử read model trên dữ liệu production trước khi báo xong.
@@ -89,7 +92,7 @@ Component hiện tại: một file React ~580 dòng; phần vẽ (canvas, kéo t
 | Tách component làm hỏng luồng hệ thống đang dùng | CS2 tách riêng, không đổi giao diện; test + browser check trước khi thêm luồng Ceph |
 | Snapshot cũ khiến sơ đồ "trông khỏe" | Trạng thái `unknown` + thời điểm snapshot khi quá hạn |
 | Cụm lớn (nhiều host/OSD) làm sơ đồ rối | Gom OSD theo host; bố cục tự động theo cột; thu gọn nhóm |
-| Thêm lệnh Ceph vào collector | Chỉ 2 lệnh `config get` chỉ-đọc, cùng chu kỳ inventory, lỗi không chặn section |
+| Thêm lệnh Ceph vào collector | 2 lệnh `config get` + `mon dump`/`osd dump` (một lần SSH), đều chỉ-đọc, cùng chu kỳ inventory, lỗi không chặn section |
 | Lộ địa chỉ nội bộ | Trang admin-only; không đưa keyring/token |
 
 ## 5. Định nghĩa hoàn thành
@@ -111,3 +114,4 @@ Component hiện tại: một file React ~580 dòng; phần vẽ (canvas, kéo t
 |---|---|---|---|---|
 | 06/10/2026 | Khảo sát | Snapshot `status`/`nodes`/`crush` đủ cho dịch vụ và host; thiếu public/cluster network và địa chỉ daemon | khảo sát CS-LAB | Done |
 | 06/10/2026 | CS0–CS3 | Thu mạng Ceph, read model + API, tách StreamCanvas, tab Cụm Ceph | `518f2ac1`, `81fcd836`, `d6dd45be`; render Chromium | Done (chờ CS5) |
+| 06/10/2026 | CS4 | Địa chỉ daemon, OSD out, địa chỉ ngoài mạng cấu hình, cặp OSD heartbeat chậm | nhánh `ceph-stream-cs4`; 26 test; chạy read model trên snapshot + dump thật CS-LAB (11 node / 18 cạnh vì bản lưu không có section pools, MON :3300/:6789, mỗi OSD public+cluster trên 10.20.1.x) | Done (chờ CS5) |

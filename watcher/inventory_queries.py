@@ -175,6 +175,64 @@ def collect_network_config(cluster) -> dict:
     return values
 
 
+def _addrvec(value) -> list[dict]:
+    """``{type, addr}`` pairs of a Ceph addrvec; nonces and junk are dropped."""
+    entries = value.get("addrvec") if isinstance(value, dict) else None
+    result = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        kind, addr = str(entry.get("type") or ""), str(entry.get("addr") or "")
+        if kind in {"v1", "v2"} and re.fullmatch(r"[0-9A-Fa-f.:\[\]]+:\d+", addr):
+            result.append({"type": kind, "addr": addr})
+    return result
+
+
+def parse_daemon_addresses(mon_dump, osd_dump) -> dict:
+    """Trim ``ceph mon dump`` / ``ceph osd dump`` to daemon names, addresses and up/in.
+
+    Everything else in the dumps (pools, upmaps, blocklist, auth ciphers) is
+    left out of the snapshot.
+    """
+    mon_dump = mon_dump if isinstance(mon_dump, dict) else {}
+    osd_dump = osd_dump if isinstance(osd_dump, dict) else {}
+    quorum = {rank for rank in mon_dump.get("quorum") or [] if isinstance(rank, int)}
+    mons = [
+        {
+            "name": str(mon.get("name") or ""),
+            "rank": mon.get("rank"),
+            "in_quorum": mon.get("rank") in quorum,
+            "public": _addrvec(mon.get("public_addrs")),
+        }
+        for mon in mon_dump.get("mons") or []
+        if isinstance(mon, dict) and mon.get("name")
+    ]
+    osds = [
+        {
+            "id": osd["osd"],
+            "up": bool(osd.get("up")),
+            "in": bool(osd.get("in")),
+            "public": _addrvec(osd.get("public_addrs")),
+            "cluster": _addrvec(osd.get("cluster_addrs")),
+        }
+        for osd in osd_dump.get("osds") or []
+        if isinstance(osd, dict) and isinstance(osd.get("osd"), int)
+    ]
+    return {"mons": mons, "osds": sorted(osds, key=lambda row: row["id"])}
+
+
+def collect_daemon_addresses(cluster) -> dict:
+    """MON and OSD addresses plus OSD up/in, both dumps in one SSH call."""
+    nodes, container_name, ssh_user, ssh_key_path, exec_mode = _cluster_connection(cluster)
+    _host, payloads = ceph_client.run_ceph_json_batch_command_with(
+        nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        ["ceph mon dump --format json", "ceph osd dump --format json"],
+    )
+    if len(payloads) != 2 or any(payload is None for payload in payloads):
+        raise CephQueryError("ceph mon dump / osd dump failed")
+    return parse_daemon_addresses(*payloads)
+
+
 def collect_pool_rows(cluster) -> list[dict]:
     """Collect and normalize Pool inventory for one cluster."""
     commands = (
