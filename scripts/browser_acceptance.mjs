@@ -267,6 +267,24 @@ await guarded("test_progress", async () => {
   await page.close();
 });
 
+// Ceph cluster stream (Plan/incompleted/ceph-cluster-stream-plan-2026-10-06.md):
+// /stream#ceph opens the cluster tab with its service graph. Read-only.
+await guarded("ceph_cluster_stream", async () => {
+  const page = await authed.newPage();
+  await page.goto(`${baseUrl}/stream#ceph`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".ceph-cluster-stream [data-node-id]", { timeout: 30000 }).catch(() => {});
+  const state = await page.evaluate(() => ({
+    active: document.querySelector(".stream-tabs button.is-active")?.textContent || "",
+    nodes: document.querySelectorAll(".ceph-cluster-stream [data-node-id]").length,
+    groups: document.querySelectorAll(".ceph-cluster-stream .installation-stream__group-label").length,
+    overflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+  }));
+  const ok = state.active.startsWith("Cụm Ceph") && state.nodes > 0 && state.groups > 0 && !state.overflow;
+  record("ceph_cluster_stream", ok ? "PASSED" : "FAILED",
+    `tab=${state.active} nodes=${state.nodes} groups=${state.groups} overflow=${state.overflow}`);
+  await page.close();
+});
+
 await browser.close();
 const failed = checks.filter((item) => item.status === "FAILED");
 const report = {

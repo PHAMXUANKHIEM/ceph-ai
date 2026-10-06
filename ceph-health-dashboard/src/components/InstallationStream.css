@@ -210,3 +210,61 @@
 @media (prefers-reduced-motion: reduce) {
   .installation-stream *, .installation-stream *::before, .installation-stream *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
+
+/* Ceph cluster view: live status of a service, host or network, and the
+   kind of each connection (see CephClusterStream.tsx). */
+.installation-stream { --stream-ok: #22c55e; --stream-warn: #f59e0b; --stream-error: #ef4444; --stream-network: #a78bfa; }
+.installation-stream__node.is-ok { border-color: rgba(34,197,94,.65); }
+.installation-stream__node.is-warn { border-color: rgba(245,158,11,.8); }
+.installation-stream__node.is-error { border: 1px solid rgba(239,68,68,.9); box-shadow: 0 0 0 1px rgba(239,68,68,.35); }
+.installation-stream__node.is-unknown { border: 1px dashed #64748b; }
+.installation-stream__node.is-ok .installation-stream__status-dot { background: var(--stream-ok); }
+.installation-stream__node.is-warn .installation-stream__status-dot { background: var(--stream-warn); }
+.installation-stream__node.is-error .installation-stream__status-dot { background: var(--stream-error); }
+.installation-stream__node.is-unknown .installation-stream__status-dot { background: var(--stream-off); }
+.installation-stream__node.is-ok .installation-stream__node-icon { color: #4ade80; }
+.installation-stream__node.is-warn .installation-stream__node-icon { color: #fbbf24; }
+.installation-stream__node.is-error .installation-stream__node-icon { color: #f87171; }
+.installation-stream__node.is-unknown .installation-stream__node-icon { color: #94a3b8; }
+.installation-stream__detail-icon.is-ok { background: #13321f; color: #4ade80; }
+.installation-stream__detail-icon.is-warn { background: #3a2a0c; color: #fbbf24; }
+.installation-stream__detail-icon.is-error { background: #3b1414; color: #f87171; }
+.installation-stream__detail-icon.is-unknown { background: #252b37; color: #94a3b8; }
+.installation-stream__detail-status.is-ok { background: rgba(34,197,94,.15); color: #86efac; }
+.installation-stream__detail-status.is-warn { background: rgba(245,158,11,.16); color: #fcd34d; }
+.installation-stream__detail-status.is-error { background: rgba(239,68,68,.18); color: #fca5a5; }
+.installation-stream__detail-status.is-unknown { background: rgba(100,116,139,.18); color: #cbd5e1; }
+.installation-stream__minimap .minimap-node.is-ok { stroke: #22c55e; }
+.installation-stream__minimap .minimap-node.is-warn { stroke: #f59e0b; }
+.installation-stream__minimap .minimap-node.is-error { stroke: #ef4444; }
+.installation-stream__minimap .minimap-node.is-unknown { stroke: #64748b; stroke-dasharray: 4 3; }
+.installation-stream__edge-group.is-data > path:not(.installation-stream__edge-hit) { stroke: #22d3ee; }
+.installation-stream__edge-group.is-control > path:not(.installation-stream__edge-hit) { stroke: #3b82f6; stroke-dasharray: 7 5; }
+.installation-stream__edge-group.is-network > path:not(.installation-stream__edge-hit) { stroke: var(--stream-network); stroke-dasharray: 2 4; }
+.installation-stream__edge-group.is-management > path:not(.installation-stream__edge-hit) { stroke: #475569; stroke-dasharray: 4 5; }
+.installation-stream__edge-group.is-data circle { fill: #22d3ee; }
+.installation-stream__edge-group.is-control circle { fill: #3b82f6; }
+.installation-stream__edge-group.is-network circle { fill: var(--stream-network); }
+.installation-stream__edge-group.is-management circle { fill: #475569; }
+.installation-stream__edges .arrow-data { fill: #22d3ee; stroke: none; }
+.installation-stream__edges .arrow-control { fill: #3b82f6; stroke: none; }
+.installation-stream__edges .arrow-network { fill: var(--stream-network); stroke: none; }
+.installation-stream__edges .arrow-management { fill: #475569; stroke: none; }
+.installation-stream__minimap .minimap-edge.is-data { stroke: #22d3ee; }
+.installation-stream__minimap .minimap-edge.is-control { stroke: #3b82f6; stroke-dasharray: 5 4; }
+.installation-stream__minimap .minimap-edge.is-network { stroke: var(--stream-network); stroke-dasharray: 2 4; }
+.installation-stream__minimap .minimap-edge.is-management { stroke: #475569; stroke-dasharray: 4 5; }
+.installation-stream__legend i.is-data { background: #22d3ee; }
+.installation-stream__legend i.is-control { background: transparent; height: 0; border-top: 2px dashed #3b82f6; }
+.installation-stream__legend i.is-network { background: transparent; height: 0; border-top: 2px dotted var(--stream-network); }
+.installation-stream__legend i.is-management { background: transparent; height: 0; border-top: 1px dashed #475569; }
+.ceph-cluster-stream__stale { align-items: center; background: rgba(245,158,11,.12); border: 1px solid rgba(245,158,11,.35); border-radius: 8px; color: #fcd34d; display: flex; font-size: 13px; gap: 8px; margin: 0 0 14px; padding: 9px 12px; }
+.ceph-cluster-stream__health.is-ok { color: #4ade80; }
+.ceph-cluster-stream__health.is-warn { color: #fbbf24; }
+.ceph-cluster-stream__health.is-error { color: #f87171; }
+.ceph-cluster-stream__health.is-unknown { color: #94a3b8; }
+.stream-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+.stream-tabs button { background: #182235; border: 1px solid #334155; border-radius: 8px; color: #cbd5e1; cursor: pointer; font-size: 13px; font-weight: 600; padding: 8px 14px; }
+.stream-tabs button.is-active { background: rgba(34,211,238,.1); border-color: rgba(34,211,238,.45); color: #67e8f9; }
+.stream-tabs button:disabled { cursor: not-allowed; opacity: .55; }
+.stream-tabs button:focus-visible { outline: 2px solid #22d3ee; outline-offset: 2px; }

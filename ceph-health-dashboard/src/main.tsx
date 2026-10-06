@@ -2,7 +2,9 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { CephDashboard, type DashboardHealth } from "./components/CephDashboard";
 import { PoolsPage } from "./components/PoolsPage";
-import { InstallationStream, type InstallationProfile } from "./components/InstallationStream";
+import type { InstallationProfile } from "./components/InstallationStream";
+import type { CephTopology } from "./components/CephClusterStream";
+import { StreamPage } from "./components/StreamPage";
 import "./styles.css";
 
 const root = document.getElementById("ceph-dashboard-root");
@@ -31,7 +33,14 @@ const streamData = document.getElementById("installation-stream-bootstrap");
 if (streamRoot && streamData?.textContent) {
   try {
     const profile = JSON.parse(streamData.textContent) as InstallationProfile;
-    createRoot(streamRoot).render(<React.StrictMode><InstallationStream profile={profile} /></React.StrictMode>);
+    let topology: CephTopology | null = null;
+    try {
+      topology = JSON.parse(document.getElementById("ceph-topology-bootstrap")?.textContent || "null") as CephTopology | null;
+    } catch (error) {
+      // The system stream still renders; the Ceph tab stays disabled.
+      console.error("Invalid ceph-topology bootstrap data", error);
+    }
+    createRoot(streamRoot).render(<React.StrictMode><StreamPage profile={profile} topology={topology} /></React.StrictMode>);
   } catch (error) {
     console.error("Invalid installation-stream bootstrap data", error);
     streamRoot.textContent = "Không đọc được profile cấu hình. Hãy tải lại trang.";
