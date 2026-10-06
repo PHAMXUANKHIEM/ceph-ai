@@ -60,7 +60,7 @@ def test_a_wrong_diagnosis_or_action_fails_the_run():
 
     report = failure_lab.run_campaign(
         factory, cluster_id=cluster_id, scenario_ids=["osd_down"], campaign_id="c2",
-        publish=_worker(factory, "mạng chậm", action_id="restart_osd_daemon"),
+        publish=_worker(factory, "mạng chậm", action_id="enable_pool_pg_autoscaler"),
         wait_seconds=10, sleep=lambda seconds: None,
     )
 
@@ -105,3 +105,14 @@ def test_scenarios_clashing_with_a_real_open_incident_are_skipped():
 
     assert report["skipped"] == [{"scenario_id": "osd_down", "reason": "real OSD_DOWN incident is open"}]
     assert [run["scenario_id"] for run in report["runs"]] == ["mon_clock_skew"]
+
+
+def test_operator_reviewed_action_expectations():
+    """Operator review of the first campaign (2026-10-06)."""
+    from shared.synthetic_incidents import scenarios
+
+    catalog = scenarios()
+    assert set(catalog["osd_down"].acceptable_action_ids) == {"investigate_manually", "restart_osd_daemon"}
+    for scenario_id in ("osd_nearfull", "crush_skew", "pg_degraded", "slow_heartbeat"):
+        assert "enable_pool_pg_autoscaler" not in catalog[scenario_id].acceptable_action_ids
+        assert "restart_osd_daemon" not in catalog[scenario_id].acceptable_action_ids

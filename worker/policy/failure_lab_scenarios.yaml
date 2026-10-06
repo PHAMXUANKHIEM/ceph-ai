@@ -3,6 +3,10 @@ schema_version: 1
 # expect.diagnosis_markers: every entry is one required concept; "a|b|c"
 # accepts any spelling of it, because diagnoses are written in Vietnamese or
 # English (e.g. "down|dừng|ngừng").
+# expect.acceptable_action_ids: operator review 2026-10-06 after the first
+# campaign — restarting the down OSD's daemon is acceptable for osd_down;
+# a PG autoscaler change for nearfull/CRUSH skew and an OSD restart for PG
+# degraded/slow heartbeat are wrong, so those stay investigate-only.
 scenarios:
   - id: osd_down
     mode: replay
@@ -14,7 +18,7 @@ scenarios:
       metrics: {osd_up: 2, osd_in: 3}
     expect:
       diagnosis_markers: ["osd.0", "down|dừng|ngừng"]
-      acceptable_action_ids: ["investigate_manually"]
+      acceptable_action_ids: ["investigate_manually", "restart_osd_daemon"]
       detection_timeout_seconds: 60
     provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
   - id: mon_clock_skew
