@@ -632,6 +632,21 @@ def test_deploy_cluster_page_initial_state_includes_is_admin(dashboard_client):
     assert '"is_admin": true' in response.text
 
 
+def test_deploy_cluster_page_shows_worker_public_key_only(dashboard_client, tmp_path, monkeypatch):
+    _login(dashboard_client)
+    public_key = "ssh-ed25519 AAA= ceph-ai-deploy"
+    key_file = tmp_path / "worker-deploy.pub"
+    key_file.write_text(public_key)
+    monkeypatch.setattr(deploy_cluster_route.settings, "deploy_ssh_public_key_path", str(key_file))
+
+    response = dashboard_client.get("/deploy-cluster")
+
+    assert response.status_code == 200
+    assert public_key in response.text
+    assert "Copy public key" in response.text
+    assert "Private key được giữ trong Worker" in response.text
+
+
 def test_deploy_cluster_frontend_does_not_reload_for_terminal_history():
     source = (
         Path(__file__).resolve().parents[1] / "dashboard/static/deploy_cluster.js"

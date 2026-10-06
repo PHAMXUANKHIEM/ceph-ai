@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     # actually connecting to.
     ssh_key_path: str = ""
     ssh_user: str = "root"
+    # Dashboard receives only the Worker's deployment public key (never its
+    # private half) through a read-only bind mount for the Deploy Cluster UI.
+    deploy_ssh_public_key_path: str = "/tmp/deploy-id_ed25519.pub"
     ceph_mon_nodes: str = ""
     ceph_mon_hostnames: str = ""
     ceph_container_name: str = ""

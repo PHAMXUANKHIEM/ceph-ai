@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -119,6 +120,36 @@ def _reconcile_stale_deploy_incidents(session) -> None:
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 _RPM_PATH_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
 _VALID_ROLES = ("mon", "mgr", "osd", "mds", "rgw")
+_PUBLIC_SSH_KEY_TYPES = {
+    "ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521", "sk-ssh-ed25519@openssh.com",
+    "sk-ecdsa-sha2-nistp256@openssh.com",
+}
+
+
+def _read_deploy_public_key() -> str | None:
+    """Read only a well-formed public key mounted from the Worker identity."""
+    path = settings.deploy_ssh_public_key_path
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="ascii") as key_file:
+            value = key_file.read(16_385)
+    except (OSError, UnicodeError):
+        return None
+    if len(value) > 16_384:
+        return None
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    if len(lines) != 1:
+        return None
+    fields = lines[0].split()
+    if len(fields) < 2 or fields[0] not in _PUBLIC_SSH_KEY_TYPES:
+        return None
+    try:
+        base64.b64decode(fields[1], validate=True)
+    except (ValueError, base64.binascii.Error):
+        return None
+    return lines[0]
 
 
 def _is_valid_ip(ip: str) -> bool:
@@ -434,7 +465,7 @@ async def deploy_cluster_page(request: Request, user: str = Depends(require_logi
             "codenames": codenames_oldest_first(),
             "versions_by_codename": versions_by_codename(),
             "default_ssh_user": settings.ssh_user,
-            "default_ssh_key_path": settings.ssh_key_path,
+            "default_ssh_public_key": _read_deploy_public_key(),
             "not_yet_supported_methods": sorted(_NOT_YET_SUPPORTED_METHODS),
             "pending_action": pending_action,
             "last_action": last_action,

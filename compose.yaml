@@ -323,3 +323,6 @@ services:
       interval: 20s
       timeout: 5s
       retries: 3
+    image: localhost/ceph-ai:deploy-ssh-public-key-20261006
+      # Share only the Worker deploy identity\x27s public half with Dashboard.
+      - /var/lib/ceph-ai/full-executor-ssh/id_ed25519.pub:/tmp/deploy-id_ed25519.pub:ro

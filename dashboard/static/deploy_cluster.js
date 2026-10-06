@@ -22,6 +22,27 @@
     ? String(initialState.action_id)
     : "";
 
+  var copySshPublicKeyButton = document.getElementById("df-copy-ssh-public-key");
+  if (copySshPublicKeyButton) copySshPublicKeyButton.addEventListener("click", function () {
+    var publicKey = document.getElementById("df-ssh-public-key");
+    var status = document.getElementById("df-ssh-key-copy-status");
+    if (!publicKey) return;
+    function copied() {
+      if (status) status.textContent = "Đã copy public key. Thêm key này vào authorized_keys của SSH User trên từng node.";
+      copySshPublicKeyButton.textContent = "Đã copy ✓";
+    }
+    function selectForManualCopy() {
+      publicKey.focus(); publicKey.select();
+      if (status) status.textContent = "Clipboard không khả dụng; public key đã được chọn để copy thủ công.";
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(publicKey.value).then(copied).catch(selectForManualCopy);
+    } else {
+      try { publicKey.focus(); publicKey.select(); if (document.execCommand("copy")) copied(); else selectForManualCopy(); }
+      catch (_err) { selectForManualCopy(); }
+    }
+  });
+
   var STATUS_GLYPH = { pending: "⏳", running: "🔄", done: "✅", failed: "❌" };
 
   // Only show the Settings link for host-key failures. A plain refused or

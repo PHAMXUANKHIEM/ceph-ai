@@ -55,6 +55,17 @@
 .deploy-field-grid > label { min-width: 0; }
 .deploy-cluster-page label > input,
 .deploy-cluster-page label > select { margin-top: 6px; }
+.deploy-cluster-page .deploy-ssh-key-card { margin: 12px 0 18px; padding: 14px; border: 1px solid var(--border-strong); border-radius: 10px; background: rgba(2,6,23,.24); }
+.deploy-cluster-page .deploy-ssh-key-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.deploy-cluster-page .deploy-ssh-key-heading strong { color: var(--text); font-size: .8rem; }
+.deploy-cluster-page .deploy-ssh-key-heading .hint { margin: 4px 0 0; font-size: .69rem; }
+.deploy-cluster-page .deploy-key-state { flex: 0 0 auto; padding: 4px 8px; border: 1px solid var(--warning-border); border-radius: 999px; color: var(--warning); background: var(--warning-bg); font-size: .64rem; font-weight: 700; }
+.deploy-cluster-page .deploy-key-state.is-ready { border-color: var(--healthy-border); color: var(--healthy); background: var(--healthy-bg); }
+.deploy-cluster-page .deploy-public-key-row { display: flex; align-items: stretch; gap: 8px; }
+.deploy-cluster-page .deploy-public-key-row textarea { flex: 1 1 auto; min-width: 0; resize: vertical; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--bg); font: .68rem/1.5 var(--font-mono); overflow-wrap: anywhere; }
+.deploy-cluster-page .deploy-public-key-row button { align-self: flex-start; white-space: nowrap; }
+.deploy-cluster-page .deploy-key-note, .deploy-cluster-page .deploy-key-missing { margin: 8px 0 0; color: var(--text-faint); font-size: .67rem; }
+.deploy-cluster-page .deploy-key-missing { color: var(--warning); }
 
 .deploy-cluster-page .table-wrap {
   overflow-x: auto;
