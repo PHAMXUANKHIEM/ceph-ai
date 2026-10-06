@@ -22,7 +22,7 @@ import httpx
 
 DEFAULT_PROGRESS_FILE = Path("/var/lib/ceph-ai/test-runs/current.json")
 GITHUB_API = "https://api.github.com"
-CI_CACHE_SECONDS = 90
+CI_CACHE_SECONDS = 120
 # A running file not updated for this long belongs to a killed run.
 STALE_AFTER_SECONDS = 180
 # The quality gate and budget write nothing while they work (up to 25 min each).
