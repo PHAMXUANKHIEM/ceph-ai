@@ -30,7 +30,7 @@ def _secret_sources(service):
     """Mount sources, leaving out the read-only deployment public key."""
     return [
         str(volume).split(":", 1)[0] for volume in SERVICES[service].get("volumes", [])
-        if str(volume) != f"{DEPLOY_PUBLIC_KEY}:/tmp/deploy-id_ed25519.pub:ro"
+        if str(volume) != f"{DEPLOY_PUBLIC_KEY}:/etc/ceph-ai/deploy-id_ed25519.pub:ro"
     ]
 
 
@@ -122,7 +122,7 @@ def test_single_full_shares_the_dashboard_ai_logins():
 def test_only_the_dashboard_gets_the_deployment_public_key_and_only_read_only():
     holders = {name: [str(volume) for volume in SERVICES[name].get("volumes", []) if str(volume).startswith(DEPLOY_PUBLIC_KEY)]
                for name in READ_ONLY_SERVICES}
-    assert holders["dashboard-web"] == [f"{DEPLOY_PUBLIC_KEY}:/tmp/deploy-id_ed25519.pub:ro"]
+    assert holders["dashboard-web"] == [f"{DEPLOY_PUBLIC_KEY}:/etc/ceph-ai/deploy-id_ed25519.pub:ro"]
     assert not any(holders[name] for name in READ_ONLY_SERVICES if name != "dashboard-web")
     # The private half never travels with it.
     for name in READ_ONLY_SERVICES:
