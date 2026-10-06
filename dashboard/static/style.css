@@ -3519,7 +3519,11 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 
 @media (max-width: 1023px) {
   .app-shell .topbar { height: var(--shell-bar); }
-  .app-shell .topbar-inner { height: var(--shell-bar); max-width: none; padding: 0 16px; flex-wrap: nowrap; }
+  /* The console shell further down makes .topbar-inner a column for the
+     desktop rail; the mobile bar must lay its items out in one row or they
+     stack over the page content. */
+  .app-shell .topbar-inner { height: var(--shell-bar); max-width: none; padding: 0 16px; flex-direction: row; align-items: center; flex-wrap: nowrap; }
+  .app-shell .topbar-context { order: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .app-shell .brand { margin-right: auto; }
   .app-shell .brand-copy small { display: none; }
   .app-shell .bizfly-logo-plate { width: 143px; height: 40px; border-radius: 10px; }
@@ -3561,6 +3565,7 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 @media (max-width: 680px) {
   .app-shell .brand-copy strong { font-size: .88rem; }
   .app-shell .topbar-cluster-switcher { display: none; }
+  .app-shell .topbar-context { display: none; }
   .app-shell .topbar-user .btn { min-width: 0; font-size: 0; }
   .app-shell .topbar-user .btn::before { content: "↪"; font-size: 1rem; }
   .app-shell .page { padding: 18px 12px 34px; gap: 13px; }
@@ -3583,8 +3588,11 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 /* A tablet-width Ceph shell uses the same 64px rail as an intentionally
    collapsed desktop shell.  Keep the rail usable: labels are removed from
    layout, every group is expanded, and the icon remains the only visible
-   navigation target.  The drawer remains the mobile pattern below 561px. */
-@media (min-width: 561px) and (max-width: 900px) {
+   navigation target.  The drawer remains the mobile pattern below 561px.
+   The rail reaches 1023px, where the desktop rail starts: between 901px and
+   1023px the console shell's 240px column and the mobile drawer used to mix
+   (logo mid-rail, a half-open drawer over the content). */
+@media (min-width: 561px) and (max-width: 1023px) {
   .app-shell .topbar {
     width: 64px;
     min-height: 100vh;

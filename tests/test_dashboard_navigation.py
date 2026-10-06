@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -263,10 +264,22 @@ def test_dynamic_navigation_labels_have_a_real_hideable_element():
 def test_tablet_rail_is_static_and_mobile_restores_full_labels():
     css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
 
-    assert "@media (min-width: 561px) and (max-width: 900px)" in css
+    # The rail runs up to the desktop breakpoint; 901-1023px used to mix the
+    # console's 240px column with the mobile drawer.
+    assert "@media (min-width: 561px) and (max-width: 1023px)" in css
     assert "position: static;" in css
     assert "@media (max-width: 560px)" in css
     assert ".app-shell .nav-link-label { display: inline; }" in css
+
+
+def test_phone_bar_lays_its_items_out_in_one_row():
+    # The console shell makes .topbar-inner a column for the desktop rail;
+    # without this override the menu button and logout stacked over the page.
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+    phone = css[css.index("@media (max-width: 1023px) {"):]
+    phone = phone[:phone.index("\n}\n")]
+
+    assert re.search(r"\.app-shell \.topbar-inner \{[^}]*flex-direction: row;", phone)
 
 
 def test_sidebar_collapse_feature_is_removed_without_pseudo_fragments():
