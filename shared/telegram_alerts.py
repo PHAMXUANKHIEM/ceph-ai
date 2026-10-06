@@ -1002,12 +1002,20 @@ def send_code_repair_alert(text: str) -> bool:
     )
 
 
-def send_ai_ops_digest_alert(text: str, *, cluster_name: str | None = None) -> bool:
-    """Send a periodic read-only operations digest through the incident channel."""
+def send_ai_ops_digest_alert(
+    text: str, *, cluster_name: str | None = None,
+    bot_token: str | None = None, chat_id: str | None = None, enabled: bool | None = None,
+) -> bool:
+    """Send a periodic read-only operations digest through the cluster's
+    channel when the outbox provides one, else the incident channel.
+
+    Without the channel arguments every outbox delivery failed with
+    TypeError: the weekly digests of 2026-09-28 and 2026-10-05 never arrived.
+    """
     return _send(
-        settings.telegram_incident_bot_token,
-        settings.telegram_incident_chat_id,
-        settings.telegram_incident_enabled,
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
         text,
         cluster_name,
         category="incident", severity="info",
@@ -1689,8 +1697,17 @@ def send_log_finding_resolved_alert(
 def send_log_finding_recovery_pending_alert(
     title: str, summary: str, live_facts: tuple[str, ...] | list[str], *,
     cluster_name: str | None = None, verification_code: str | None = None,
+    bot_token: str | None = None, chat_id: str | None = None, enabled: bool | None = None,
 ) -> None:
-    """RGW recovery gate failed; rate limiting is persisted by LogFinding."""
+    """RGW recovery gate failed; rate limiting is persisted by LogFinding.
+
+    The outbox passes the cluster's channel (bot_token/chat_id/enabled) to
+    every cluster-channel alert. Like send_log_finding_resolved_alert for an
+    RGW finding, this one always goes to the RGW channel; without accepting
+    those arguments every delivery failed with TypeError (1,768 DEAD rows
+    from 2026-09-28 to 2026-10-06).
+    """
+    del bot_token, chat_id, enabled
     lines = [
         f"⚠️ RGW CHƯA XÁC NHẬN PHỤC HỒI: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}",
         f"Kết luận: {_natural(summary)}",

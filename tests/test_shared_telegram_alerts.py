@@ -1341,3 +1341,59 @@ def test_real_log_lines_are_not_mistaken_for_statistics():
     ]
     for line in kept:
         assert not telegram_alerts._is_stats_noise(line), line
+
+
+def test_every_cluster_channel_alert_accepts_the_injected_channel():
+    """The outbox adds bot_token/chat_id/enabled to every cluster-channel
+    call; a sender without them failed with TypeError on every delivery
+    (send_log_finding_recovery_pending_alert, 2026-09-28..10-06)."""
+    import inspect
+
+    from shared import telegram_alerts, telegram_outbox
+
+    for name in telegram_outbox._CLUSTER_CHANNEL_ALERTS:
+        function = getattr(telegram_alerts, name, None)
+        if function is None:
+            continue
+        parameters = inspect.signature(function).parameters
+        accepts_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+        for argument in ("bot_token", "chat_id", "enabled", "cluster_name"):
+            assert accepts_any or argument in parameters, f"{name} does not accept {argument}"
+
+
+def test_recovery_pending_alert_is_deliverable_through_the_outbox(monkeypatch):
+    from shared import telegram_alerts, telegram_outbox
+
+    sent = []
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: sent.append(args))
+    monkeypatch.setattr(telegram_outbox, "_cluster_channel_kwargs", lambda payload: {
+        "cluster_name": "CS-LAB", "bot_token": "cluster-token", "chat_id": "1", "enabled": True,
+    })
+
+    telegram_outbox._deliver({
+        "kind": "alert_call",
+        "function": "send_log_finding_recovery_pending_alert",
+        "args": ["RGW Vault key lookup failed", "token lookup returned 403", []],
+        "kwargs": {"verification_code": "VAULT_RECOVERY_UNVERIFIED"},
+        "cluster_id": "c1",
+    })
+
+    assert len(sent) == 1
+    assert sent[0][0] == telegram_alerts.settings.telegram_rgw_bot_token
+
+
+def test_weekly_digest_uses_the_cluster_channel_from_the_outbox(monkeypatch):
+    from shared import telegram_alerts, telegram_outbox
+
+    sent = []
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: sent.append(args) or True)
+    monkeypatch.setattr(telegram_outbox, "_cluster_channel_kwargs", lambda payload: {
+        "cluster_name": "CS-LAB", "bot_token": "cluster-token", "chat_id": "42", "enabled": True,
+    })
+
+    telegram_outbox._deliver({
+        "kind": "alert_call", "function": "send_ai_ops_digest_alert",
+        "args": ["📊 Báo cáo Ceph AIOps 7 ngày"], "kwargs": {}, "cluster_id": "c1",
+    })
+
+    assert sent[0][:3] == ("cluster-token", "42", True)

@@ -946,7 +946,6 @@ _ALERTABLE_SEVERITIES = frozenset({
     LogFindingSeverity.WARNING.value,
     LogFindingSeverity.CRITICAL.value,
 })
-_RECOVERY_PENDING_NOTIFY_INTERVAL = timedelta(minutes=10)
 
 
 def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster | None) -> None:
@@ -1065,7 +1064,9 @@ def resolve_stale_findings(
                         should_notify = (
                             finding.recovery_notified_at is None
                             or previous_code != verification.code
-                            or finding.recovery_notified_at <= window_start - _RECOVERY_PENDING_NOTIFY_INTERVAL
+                            or finding.recovery_notified_at <= window_start - timedelta(
+                                seconds=settings.log_recovery_pending_notify_interval_seconds,
+                            )
                         )
                         finding.recovery_check_code = verification.code
                         finding.recovery_check_summary = verification.summary

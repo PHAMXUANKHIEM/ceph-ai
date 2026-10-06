@@ -636,3 +636,25 @@ def test_resolution_works_without_ai_enabled(isolated_db, sent, monkeypatch):
 
     later = WINDOW_START + timedelta(days=1)
     assert log_analysis.resolve_stale_findings(cluster_id, later) == 1
+
+
+def test_recovery_pending_cadence_is_a_setting(isolated_db, sent, monkeypatch):
+    from watcher import ceph_finding_verifier
+    cluster_id, run_id = isolated_db
+    with db_module.SessionLocal() as session:
+        pattern = session.get(LogPattern, "pat-1")
+        pattern.daemon_type = "rgw"
+        pattern.template = "failed to retrieve actual key from Vault"
+        session.commit()
+    _make_open_finding(cluster_id, run_id, title="RGW Vault key lookup failed")
+    blocked = ceph_finding_verifier.VerificationResult("VAULT_RECOVERY_UNVERIFIED", "403", (), False)
+    monkeypatch.setattr(ceph_finding_verifier, "verify_vault_recovery", lambda *args: blocked)
+    monkeypatch.setattr(log_analysis.settings, "log_recovery_pending_notify_interval_seconds", 6 * 3600)
+    later = WINDOW_START + timedelta(days=1)
+
+    log_analysis.resolve_stale_findings(cluster_id, later)
+    log_analysis.resolve_stale_findings(cluster_id, later + timedelta(minutes=15))
+    assert len(sent["recovery_pending"]) == 1
+
+    log_analysis.resolve_stale_findings(cluster_id, later + timedelta(hours=6, minutes=1))
+    assert len(sent["recovery_pending"]) == 2
