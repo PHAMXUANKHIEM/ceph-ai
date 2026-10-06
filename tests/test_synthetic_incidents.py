@@ -99,7 +99,7 @@ scenarios:
 """,
         encoding="utf-8",
     )
-    with pytest.raises(SyntheticInjectionError, match="must agree"):
+    with pytest.raises(SyntheticInjectionError, match="agrees with provenance.source"):
         load_scenario_catalog(path)
 
 def test_replay_score_marks_only_complete_correct_observations_as_passed():
@@ -114,7 +114,9 @@ def test_replay_score_marks_only_complete_correct_observations_as_passed():
     })
     assert result["passed"] is True
     assert result["golden_set_eligible"] is False
-    assert all(result["stages"].values())
+    # Replay changes nothing on the cluster: recovery and cleanup do not apply.
+    assert result["stages"]["recovery"] is None and result["stages"]["cleanup"] is None
+    assert all(value for value in result["stages"].values() if value is not None)
 
 
 def test_replay_score_rejects_late_detection_wrong_diagnosis_and_action():
@@ -251,3 +253,39 @@ def test_admin_dashboard_page_is_registered(dashboard_client):
     page = dashboard_client.get("/synthetic-incidents")
     assert page.status_code == 200
     assert "Synthetic Incident Tests" in page.text
+
+
+def test_replay_diagnosis_accepts_vietnamese_spellings():
+    observed = {"detected_ceph_code": "OSD_DOWN", "detection_seconds": 5, "action_id": "investigate_manually",
+                "unexpected_health_codes": []}
+
+    vietnamese = score_replay("osd_down", {**observed, "diagnosis_text": "osd.0 trên node 10.20.1.39 đang bị dừng"})
+    missing_concept = score_replay("osd_down", {**observed, "diagnosis_text": "osd.0 có vấn đề"})
+
+    assert vietnamese["stages"]["diagnosis"] is True and vietnamese["passed"] is True
+    assert missing_concept["stages"]["diagnosis"] is False
+
+
+def test_a_broken_catalog_cannot_stop_watcher_or_worker(monkeypatch, tmp_path):
+    """Watcher and Worker import this module for is_synthetic_evidence(): the
+    catalog is read on first use, never at import time."""
+    import ast
+    from pathlib import Path
+
+    import shared.synthetic_incidents as module
+
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    module_level_calls = [node for node in tree.body if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+                          and getattr(node.value.func, "id", "") == "load_scenario_catalog"]
+    assert module_level_calls == [] and not hasattr(module, "SCENARIOS")
+
+    broken = tmp_path / "catalog.yaml"
+    broken.write_text("schema_version: 1\nscenarios: [{id: x}]\n", encoding="utf-8")
+    monkeypatch.setattr(module, "CATALOG_PATH", broken)
+    module.scenarios.cache_clear()
+    try:
+        assert module.is_synthetic_evidence('{"synthetic_injection": true}') is True
+        with pytest.raises(SyntheticInjectionError):
+            module.scenarios()
+    finally:
+        module.scenarios.cache_clear()

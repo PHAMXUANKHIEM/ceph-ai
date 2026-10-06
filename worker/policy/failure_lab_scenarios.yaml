@@ -1,4 +1,8 @@
 schema_version: 1
+# Failure Lab replay catalog (Plan/in-progress/failure-lab-plan-2026-10-06.md).
+# expect.diagnosis_markers: every entry is one required concept; "a|b|c"
+# accepts any spelling of it, because diagnoses are written in Vietnamese or
+# English (e.g. "down|dừng|ngừng").
 scenarios:
   - id: osd_down
     mode: replay
@@ -9,7 +13,7 @@ scenarios:
       log_excerpt: "fixture=synthetic osd.0 state=down; no live daemon was stopped"
       metrics: {osd_up: 2, osd_in: 3}
     expect:
-      diagnosis_markers: ["osd.0", "down"]
+      diagnosis_markers: ["osd.0", "down|dừng|ngừng"]
       acceptable_action_ids: ["investigate_manually"]
       detection_timeout_seconds: 60
     provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
@@ -22,7 +26,7 @@ scenarios:
       log_excerpt: "fixture=synthetic mon.a clock offset exceeds configured tolerance"
       metrics: {clock_offset_ms: 250, tolerance_ms: 50}
     expect:
-      diagnosis_markers: ["clock", "skew"]
+      diagnosis_markers: ["clock|đồng hồ|thời gian", "skew|lệch"]
       acceptable_action_ids: ["investigate_manually"]
       detection_timeout_seconds: 60
     provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
@@ -35,7 +39,7 @@ scenarios:
       log_excerpt: "fixture=synthetic pg=1.2 state=active+undersized"
       metrics: {degraded_pgs: 1, total_pgs: 128}
     expect:
-      diagnosis_markers: ["pg", "degraded"]
+      diagnosis_markers: ["pg", "degraded|undersized|suy giảm"]
       acceptable_action_ids: ["investigate_manually"]
       detection_timeout_seconds: 60
     provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
@@ -48,7 +52,7 @@ scenarios:
       log_excerpt: "fixture=synthetic osd.2 utilization=88%"
       metrics: {osd_utilization_percent: 88, nearfull_threshold_percent: 85}
     expect:
-      diagnosis_markers: ["osd.2", "near full"]
+      diagnosis_markers: ["osd.2", "near full|nearfull|gần đầy|sắp đầy"]
       acceptable_action_ids: ["investigate_manually"]
       detection_timeout_seconds: 60
     provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
@@ -62,7 +66,7 @@ scenarios:
       log_excerpt: "fixture=synthetic OSD_SLOW_PING_TIME_FRONT osd.0 -> osd.1"
       metrics: {heartbeat_latency_ms: 1800, warning_threshold_ms: 1000}
     expect:
-      diagnosis_markers: ["heartbeat", "latency"]
+      diagnosis_markers: ["heartbeat", "latency|độ trễ|chậm"]
       acceptable_action_ids: ["investigate_manually"]
       detection_timeout_seconds: 60
     provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
@@ -76,7 +80,7 @@ scenarios:
       log_excerpt: "fixture=synthetic node=lab-node-01 ssh=unreachable"
       metrics: {ssh_consecutive_failures: 3}
     expect:
-      diagnosis_markers: ["lab-node-01", "ssh"]
+      diagnosis_markers: ["lab-node-01", "ssh|kết nối|không phản hồi|unreachable"]
       acceptable_action_ids: ["investigate_manually"]
       detection_timeout_seconds: 60
     provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
@@ -90,7 +94,7 @@ scenarios:
       log_excerpt: "fixture=synthetic osd=0 commit_latency_ms=1200 apply_latency_ms=900"
       metrics: {commit_latency_ms: 1200, apply_latency_ms: 900}
     expect:
-      diagnosis_markers: ["osd", "latency"]
+      diagnosis_markers: ["osd", "latency|độ trễ|chậm"]
       acceptable_action_ids: ["investigate_manually"]
       detection_timeout_seconds: 60
     provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
@@ -104,7 +108,7 @@ scenarios:
       log_excerpt: "fixture=synthetic CRUSH_SKEW_USE:root utilization_skew=2.4"
       metrics: {max_subtree_utilization_percent: 72, min_subtree_utilization_percent: 30}
     expect:
-      diagnosis_markers: ["crush", "skew"]
+      diagnosis_markers: ["crush", "skew|lệch|không đều"]
       acceptable_action_ids: ["investigate_manually"]
       detection_timeout_seconds: 60
     provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}

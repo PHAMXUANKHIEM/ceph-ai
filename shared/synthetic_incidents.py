@@ -8,13 +8,14 @@ and the Worker can fail closed before any executor is reached.
 
 from __future__ import annotations
 
+import functools
 import json
 import uuid
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from shared.time import utc_now
 
@@ -39,16 +40,117 @@ class Scenario:
     message: str
     log_excerpt: str
     metrics: dict
-    diagnosis_markers: tuple[str, ...]
+    diagnosis_markers: tuple[tuple[str, ...], ...]
     acceptable_action_ids: tuple[str, ...]
     detection_timeout_seconds: int
     verified_real_incident: bool
 
 
-def load_scenario_catalog(path: Path | None = None) -> dict[str, Scenario]:
-    catalog_path = path or Path(__file__).resolve().parents[1] / "worker/policy/failure_lab_scenarios.yaml"
+CATALOG_PATH = Path(__file__).resolve().parents[1] / "worker/policy/failure_lab_scenarios.yaml"
+_PROVENANCE_SOURCES = {"synthetic_fixture", "anonymized_incident"}
+
+
+def _fail(scenario_id: object, message: str) -> SyntheticInjectionError:
+    return SyntheticInjectionError(f"{scenario_id}: {message}")
+
+
+def _scenario_code(entry: dict) -> tuple[str, str | None]:
+    """(ceph_code, prefix): a fixed code, or a prefix plus a sample suffix."""
+    scenario_id, prefix, suffix = entry.get("id"), entry.get("ceph_code_prefix"), entry.get("sample_suffix", "")
+    if ("ceph_code" in entry) == (prefix is not None):
+        raise _fail(scenario_id, "define exactly one of ceph_code or ceph_code_prefix")
+    if prefix is not None and (not isinstance(prefix, str) or not prefix):
+        raise _fail(scenario_id, "ceph_code_prefix must be a non-empty string")
+    if not isinstance(suffix, str):
+        raise _fail(scenario_id, "sample_suffix must be a string")
+    code = entry.get("ceph_code") or f"{prefix}{suffix}"
+    if not isinstance(code, str) or not code:
+        raise _fail(scenario_id, "invalid ceph_code")
+    return code, prefix
+
+
+def _replay_fields(entry: dict) -> tuple[str, dict]:
+    replay, scenario_id = entry.get("replay"), entry.get("id")
+    if not isinstance(replay, dict) or not isinstance(replay.get("log_excerpt"), str) or not replay["log_excerpt"]:
+        raise _fail(scenario_id, "replay.log_excerpt is required")
+    if not isinstance(replay.get("metrics"), dict):
+        raise _fail(scenario_id, "replay.metrics must be a mapping")
+    return replay["log_excerpt"], dict(replay["metrics"])
+
+
+def _marker_groups(raw: object, scenario_id: object) -> tuple[tuple[str, ...], ...]:
+    """Each marker is one required concept; "a|b|c" accepts any spelling of it
+    (diagnoses are written in Vietnamese or English)."""
+    if not isinstance(raw, list) or not raw or not all(isinstance(item, str) and item.strip() for item in raw):
+        raise _fail(scenario_id, "at least one diagnosis marker is required")
+    return tuple(tuple(part.strip() for part in item.split("|") if part.strip()) for item in raw)
+
+
+def _expect_fields(entry: dict) -> tuple[tuple[tuple[str, ...], ...], tuple[str, ...], int]:
+    expect, scenario_id = entry.get("expect"), entry.get("id")
+    if not isinstance(expect, dict):
+        raise _fail(scenario_id, "expect is required")
+    actions, timeout = expect.get("acceptable_action_ids"), expect.get("detection_timeout_seconds")
+    if not isinstance(actions, list) or not all(isinstance(item, str) and item for item in actions):
+        raise _fail(scenario_id, "acceptable_action_ids must be strings")
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 3600:
+        raise _fail(scenario_id, "detection timeout must be in [1, 3600]")
+    return _marker_groups(expect.get("diagnosis_markers"), scenario_id), tuple(actions), timeout
+
+
+def _reviewed_at_ok(value: object) -> bool:
     try:
-        document = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
+        reviewed_at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return reviewed_at.tzinfo is not None
+
+
+def _verified_provenance(entry: dict) -> bool:
+    """True for a reviewed anonymized incident; the catalog never grants golden approval."""
+    provenance, scenario_id = entry.get("provenance"), entry.get("id")
+    if not isinstance(provenance, dict) or provenance.get("source") not in _PROVENANCE_SOURCES:
+        raise _fail(scenario_id, "provenance.source is required")
+    verified = provenance.get("verified_real_incident")
+    if not isinstance(verified, bool) or verified != (provenance["source"] == "anonymized_incident"):
+        raise _fail(scenario_id, "verified_real_incident must be a boolean that agrees with provenance.source")
+    if provenance.get("golden_set_approved") is not False:
+        raise _fail(scenario_id, "golden-set approval cannot be granted by the scenario catalog")
+    if verified:
+        for field in ("source_incident_ref", "reviewed_by", "reviewed_at"):
+            if not isinstance(provenance.get(field), str) or not provenance[field].strip():
+                raise _fail(scenario_id, f"anonymized incidents require provenance.{field}")
+        if not _reviewed_at_ok(provenance["reviewed_at"]):
+            raise _fail(scenario_id, "provenance.reviewed_at must be an ISO-8601 timestamp with a timezone")
+    return verified
+
+
+def _scenario(entry: object, seen: dict) -> Scenario:
+    if not isinstance(entry, dict):
+        raise SyntheticInjectionError("Every Failure Lab scenario must be a mapping")
+    scenario_id = entry.get("id")
+    if not isinstance(scenario_id, str) or not scenario_id or scenario_id in seen:
+        raise SyntheticInjectionError("Scenario ids must be non-empty and unique")
+    if entry.get("mode") != "replay":
+        raise _fail(scenario_id, "only replay scenarios are enabled in this catalog")
+    if entry.get("severity") not in {"HEALTH_WARN", "HEALTH_ERR"}:
+        raise _fail(scenario_id, "invalid health severity")
+    if not isinstance(entry.get("message"), str) or not entry["message"].strip():
+        raise _fail(scenario_id, "message is required")
+    code, prefix = _scenario_code(entry)
+    log_excerpt, metrics = _replay_fields(entry)
+    markers, actions, timeout = _expect_fields(entry)
+    return Scenario(
+        id=scenario_id, ceph_code=code, ceph_code_prefix=prefix, severity=entry["severity"],
+        message=entry["message"], log_excerpt=log_excerpt, metrics=metrics,
+        diagnosis_markers=markers, acceptable_action_ids=actions, detection_timeout_seconds=timeout,
+        verified_real_incident=_verified_provenance(entry),
+    )
+
+
+def load_scenario_catalog(path: Path | None = None) -> dict[str, Scenario]:
+    try:
+        document = yaml.safe_load((path or CATALOG_PATH).read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise SyntheticInjectionError(f"Failure Lab scenario catalog cannot be loaded: {exc}") from exc
     if not isinstance(document, dict) or document.get("schema_version") != 1:
@@ -56,99 +158,27 @@ def load_scenario_catalog(path: Path | None = None) -> dict[str, Scenario]:
     entries = document.get("scenarios")
     if not isinstance(entries, list) or not entries:
         raise SyntheticInjectionError("Failure Lab scenario catalog must contain scenarios")
-
-    scenarios = {}
+    loaded: dict[str, Scenario] = {}
     for entry in entries:
-        if not isinstance(entry, dict):
-            raise SyntheticInjectionError("Every Failure Lab scenario must be a mapping")
-        scenario_id = entry.get("id")
-        prefix = entry.get("ceph_code_prefix")
-        suffix = entry.get("sample_suffix", "")
-        if prefix is not None and (not isinstance(prefix, str) or not prefix):
-            raise SyntheticInjectionError("ceph_code_prefix must be a non-empty string")
-        if not isinstance(suffix, str):
-            raise SyntheticInjectionError("sample_suffix must be a string")
-        code = entry.get("ceph_code") or (f"{prefix}{suffix}" if prefix else None)
-        replay = entry.get("replay")
-        expect = entry.get("expect")
-        provenance = entry.get("provenance")
-        if not isinstance(scenario_id, str) or not scenario_id or scenario_id in scenarios:
-            raise SyntheticInjectionError("Scenario ids must be non-empty and unique")
-        if entry.get("mode") != "replay":
-            raise SyntheticInjectionError(f"{scenario_id}: only replay scenarios are enabled in this catalog")
-        if not isinstance(code, str) or not code or (prefix is not None and not code.startswith(prefix)):
-            raise SyntheticInjectionError(f"{scenario_id}: invalid ceph_code or ceph_code_prefix")
-        if entry.get("severity") not in {"HEALTH_WARN", "HEALTH_ERR"}:
-            raise SyntheticInjectionError(f"{scenario_id}: invalid health severity")
-        if not isinstance(replay, dict) or not isinstance(replay.get("log_excerpt"), str) or not replay["log_excerpt"]:
-            raise SyntheticInjectionError(f"{scenario_id}: replay.log_excerpt is required")
-        if not isinstance(replay.get("metrics"), dict):
-            raise SyntheticInjectionError(f"{scenario_id}: replay.metrics must be a mapping")
-        if not isinstance(expect, dict):
-            raise SyntheticInjectionError(f"{scenario_id}: expect is required")
-        markers, actions = expect.get("diagnosis_markers"), expect.get("acceptable_action_ids")
-        timeout = expect.get("detection_timeout_seconds")
-        if not isinstance(markers, list) or not markers or not all(isinstance(x, str) and x for x in markers):
-            raise SyntheticInjectionError(f"{scenario_id}: at least one diagnosis marker is required")
-        if not isinstance(actions, list) or not all(isinstance(x, str) and x for x in actions):
-            raise SyntheticInjectionError(f"{scenario_id}: acceptable_action_ids must be strings")
-        if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 3600:
-            raise SyntheticInjectionError(f"{scenario_id}: detection timeout must be in [1, 3600]")
-        if not isinstance(provenance, dict) or provenance.get("source") not in {"synthetic_fixture", "anonymized_incident"}:
-            raise SyntheticInjectionError(f"{scenario_id}: provenance.source is required")
-        verified = provenance.get("verified_real_incident")
-        if not isinstance(verified, bool):
-            raise SyntheticInjectionError(f"{scenario_id}: provenance verification flag is required")
-        if verified != (provenance["source"] == "anonymized_incident"):
-            raise SyntheticInjectionError(
-                f"{scenario_id}: verified_real_incident must agree with provenance.source"
-            )
-        golden_set_approved = provenance.get("golden_set_approved")
-        if not isinstance(golden_set_approved, bool):
-            raise SyntheticInjectionError(f"{scenario_id}: provenance.golden_set_approved must be boolean")
-        if golden_set_approved:
-            raise SyntheticInjectionError(
-                f"{scenario_id}: golden-set approval cannot be granted by the scenario catalog"
-            )
-        if verified:
-            for field in ("source_incident_ref", "reviewed_by", "reviewed_at"):
-                value = provenance.get(field)
-                if not isinstance(value, str) or not value.strip():
-                    raise SyntheticInjectionError(
-                        f"{scenario_id}: anonymized incidents require provenance.{field}"
-                    )
-            try:
-                reviewed_at = datetime.fromisoformat(provenance["reviewed_at"].replace("Z", "+00:00"))
-            except ValueError as exc:
-                raise SyntheticInjectionError(
-                    f"{scenario_id}: provenance.reviewed_at must be an ISO-8601 timestamp"
-                ) from exc
-            if reviewed_at.tzinfo is None:
-                raise SyntheticInjectionError(
-                    f"{scenario_id}: provenance.reviewed_at must include a timezone"
-                )
-        if ("ceph_code" in entry) == (prefix is not None):
-            raise SyntheticInjectionError(f"{scenario_id}: define exactly one of ceph_code or ceph_code_prefix")
-        if not isinstance(entry.get("message"), str) or not entry["message"].strip():
-            raise SyntheticInjectionError(f"{scenario_id}: message is required")
-        scenarios[scenario_id] = Scenario(
-            id=scenario_id, ceph_code=code, ceph_code_prefix=prefix,
-            severity=entry["severity"], message=str(entry.get("message") or ""),
-            log_excerpt=replay["log_excerpt"], metrics=dict(replay["metrics"]),
-            diagnosis_markers=tuple(markers), acceptable_action_ids=tuple(actions),
-            detection_timeout_seconds=timeout,
-            verified_real_incident=provenance["verified_real_incident"],
-        )
-    return scenarios
+        scenario = _scenario(entry, loaded)
+        loaded[scenario.id] = scenario
+    return loaded
 
 
-SCENARIOS = load_scenario_catalog()
+@functools.cache
+def scenarios() -> dict[str, Scenario]:
+    """The catalog, read on first use.
+
+    Watcher and Worker import this module for is_synthetic_evidence(); reading
+    the YAML at import time would let one bad catalog edit stop them both.
+    """
+    return load_scenario_catalog()
 
 
-def score_replay(scenario_id: str, observed: dict) -> dict:
+def score_replay(scenario_id: object, observed: object) -> dict:
     if not isinstance(scenario_id, str):
         raise SyntheticInjectionError("Scenario id must be a string")
-    scenario = SCENARIOS.get(scenario_id)
+    scenario = scenarios().get(scenario_id)
     if scenario is None:
         raise SyntheticInjectionError("Unknown synthetic scenario")
     if not isinstance(observed, dict):
@@ -168,26 +198,30 @@ def score_replay(scenario_id: str, observed: dict) -> dict:
     )
     diagnosis_text = observed.get("diagnosis_text")
     diagnosis = diagnosis_text.casefold() if isinstance(diagnosis_text, str) else ""
-    diagnosis_correct = all(marker.casefold() in diagnosis for marker in scenario.diagnosis_markers)
+    diagnosis_correct = all(
+        any(spelling.casefold() in diagnosis for spelling in group) for group in scenario.diagnosis_markers
+    )
     action_id = observed.get("action_id")
     proposal_correct = action_id in scenario.acceptable_action_ids
     stages = {
         "detection": bool(detected),
         "diagnosis": bool(diagnosis_correct),
         "proposal": bool(proposal_correct),
-        "recovery": observed.get("recovered") is True,
+        # Replay changes nothing on the cluster: there is nothing to recover
+        # or clean up, so these stages only apply to fault-mode runs (FL2).
+        "recovery": None,
         "side_effects": (
             isinstance(observed.get("unexpected_health_codes", []), list)
             and all(isinstance(code, str) for code in observed.get("unexpected_health_codes", []))
             and observed.get("unexpected_health_codes", []) == []
         ),
-        "cleanup": observed.get("cleanup_verified") is True,
+        "cleanup": None,
     }
     return {
         "kind": "replay",
         "scenario_id": scenario.id,
         "stages": stages,
-        "passed": all(stages.values()),
+        "passed": all(result for result in stages.values() if result is not None),
         # Scenario YAML is not an independent approval authority. Keep this
         # false until a separately controlled approval registry is implemented.
         "golden_set_eligible": False,
@@ -196,7 +230,7 @@ def score_replay(scenario_id: str, observed: dict) -> dict:
     }
 
 
-def score_replay_report(document: dict) -> dict:
+def score_replay_report(document: object) -> dict:
     """Score recorded replay outcomes into an offline campaign report."""
     if not isinstance(document, dict) or document.get("schema_version") != 1:
         raise SyntheticInjectionError("Replay report input schema_version must be 1")
@@ -234,7 +268,7 @@ def score_replay_report(document: dict) -> dict:
     }
 
 
-def score_replay_control(observed: dict) -> dict:
+def score_replay_control(observed: object) -> dict:
     """Score a no-fault control; any fabricated incident/action is a false positive."""
     if not isinstance(observed, dict):
         raise SyntheticInjectionError("Control outcome must be a mapping")
@@ -281,7 +315,7 @@ def create(session, *, cluster: Cluster, scenario_id: str, actor: str) -> tuple[
     is accepted.  The returned envelope is marked shadow-only; callers may
     publish it to RabbitMQ, but no command is ever allowed to run for it.
     """
-    scenario = SCENARIOS.get(scenario_id)
+    scenario = scenarios().get(scenario_id)
     if scenario is None:
         raise SyntheticInjectionError("Unknown synthetic scenario")
     if not cluster.is_active:

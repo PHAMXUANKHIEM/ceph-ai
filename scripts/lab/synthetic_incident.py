@@ -22,7 +22,7 @@ import sys
 
 from shared import db
 from shared.models import Cluster
-from shared.synthetic_incidents import SCENARIOS, SyntheticInjectionError, cleanup, create
+from shared.synthetic_incidents import SyntheticInjectionError, cleanup, create, scenarios
 from watcher import publisher
 
 
@@ -30,7 +30,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="list available scenarios")
     parser.add_argument("--cluster-id", help="active lab cluster UUID")
-    parser.add_argument("--scenario", choices=sorted(SCENARIOS), help="scenario to inject")
+    parser.add_argument("--scenario", choices=sorted(scenarios()), help="scenario to inject")
     parser.add_argument("--publish", action="store_true", help="publish to the AI RabbitMQ queue")
     parser.add_argument("--cleanup", action="store_true", help="close synthetic incidents only")
     parser.add_argument("--run-id", help="cleanup one injection run only")
@@ -40,7 +40,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.list:
-        for scenario in SCENARIOS.values():
+        for scenario in scenarios().values():
             print(f"{scenario.id}\t{scenario.ceph_code}\t{scenario.message}")
         return 0
     if not args.cluster_id:

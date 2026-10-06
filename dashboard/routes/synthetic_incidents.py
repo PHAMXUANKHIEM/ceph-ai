@@ -10,7 +10,7 @@ from dashboard.templating import make_templates
 from shared import db
 from shared.clusters import list_active_clusters
 from shared.models import Cluster, Incident
-from shared.synthetic_incidents import SCENARIOS, SyntheticInjectionError, cleanup, create
+from shared.synthetic_incidents import SyntheticInjectionError, cleanup, create, scenarios
 from watcher import publisher
 
 router = APIRouter()
@@ -38,7 +38,7 @@ def _page_context(request: Request, user: str, *, message: str = "", error: str 
                          "scenario": evidence.get("scenario", "-"), "run_id": evidence.get("run_id", "-")})
     selected = next((c for c in clusters if c.is_default), clusters[0] if clusters else None)
     return {"user": user, "is_admin": auth.is_admin_user(user), "clusters": clusters,
-            "selected_cluster": selected, "scenarios": list(SCENARIOS.values()),
+            "selected_cluster": selected, "scenarios": list(scenarios().values()),
             "synthetic_rows": rows, "message": message, "error": error}
 
 
