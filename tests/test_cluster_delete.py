@@ -51,6 +51,9 @@ def _never_blocked(incident_id):
 
 
 def test_delete_cephadm_uses_same_phases_as_manual(monkeypatch):
+    # These nodes are the monitored cluster here; whether a deletion is the
+    # monitored cluster is covered in test_cluster_deploy.py.
+    monkeypatch.setattr(cluster_deploy_module, "_deleted_cluster_is_default", lambda params: True)
     monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, cmd: "")
     write_progress, calls = _make_recording_progress_writer()
 
@@ -189,6 +192,9 @@ def test_delete_cephadm_ssh_check_failure_stops_before_teardown(monkeypatch):
 
 
 def test_delete_manual_happy_path_stops_daemons_and_removes_state_but_keeps_disks(monkeypatch):
+    # These nodes are the monitored cluster here; whether a deletion is the
+    # monitored cluster is covered in test_cluster_deploy.py.
+    monkeypatch.setattr(cluster_deploy_module, "_deleted_cluster_is_default", lambda params: True)
     seen_commands = []
 
     def fake(host, command):
