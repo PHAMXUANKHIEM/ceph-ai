@@ -64,18 +64,18 @@ Những điều báo cáo bỏ sót (quan trọng hơn):
 
 ### SM2 — Tự chữa khi container hỏng mà không thoát
 - [x] podman-compose 1.0.6 không truyền được `--health-on-failure` và `podman update` 4.9 không đặt được, nên selfcheck tự restart container unhealthy 3 phút liên tiếp, tối đa 3 lần/6 giờ rồi chỉ báo; không bao giờ tự restart Full Executor (có thể đang chạy remediation) và RabbitMQ (`7b999c3b`).
-- [ ] Thêm healthcheck cho `vault-monitor` (cần heartbeat riêng; hiện selfcheck chỉ kiểm tra container đang chạy).
+- [x] `vault-monitor` ghi heartbeat 15 giây/lần trong lúc ngủ (chu kỳ quét cấu hình được) vào `/tmp` của chính container; compose có healthcheck; test bắt buộc mọi service có healthcheck (`4a9f63b0`).
 - [x] Mỗi lần tự restart (hoặc hết lượt) gửi Telegram ngay trong cùng lần chạy selfcheck.
 
 ### SM3 — Cảnh báo đẩy, không phụ thuộc stack
-- [x] `ceph-ai-selfcheck.timer` + `scripts/selfcheck/ceph_ai_selfcheck.py` (chỉ thư viện chuẩn, `/usr/bin/python3.11`): 8 container, 4 heartbeat, RabbitMQ ping, DB TCP, Dashboard, 3 phân vùng đĩa — 18 kiểm tra, chạy thử trên production đều đạt (`8aa7a485`). Outbox Telegram tồn đọng chưa kiểm tra (cần đọc DB).
+- [x] `ceph-ai-selfcheck.timer` + `scripts/selfcheck/ceph_ai_selfcheck.py` (chỉ thư viện chuẩn, `/usr/bin/python3.11`): 8 container, 4 heartbeat, RabbitMQ ping, DB TCP, Dashboard, 3 phân vùng đĩa (`8aa7a485`) và outbox Telegram — chỉ đếm tin chờ > 15 phút và tin DEAD trong 1 giờ theo nhóm, không đọc nội dung (`05b359f9`). Chạy thử trên production: 19 kiểm tra, phát hiện 3 tin DEAD nhóm `log-intelligence`.
 - [x] Gửi thẳng Bot API bằng bot kênh node có sẵn trong `.env` (không thêm khóa mới: Settings `extra=forbid`); báo sau 2 lần lỗi liên tiếp, nhắc mỗi 6 giờ, báo hồi phục; gửi thất bại thì giữ để lần sau gửi lại.
 - [x] Heartbeat cũ (> 180 giây) do selfcheck tự đọc file trong `/run/ceph-ai`, không cần mở trang System Health.
 - [x] Một bản tóm tắt mỗi lần khởi động lại máy (theo `boot_id`), gửi sau 10 phút ân hạn cho stack lên; lần cài đầu tiên không tính là reboot.
 
 ### SM4 — Tín hiệu từ bên ngoài máy (dead-man switch)
 Cảnh báo trong máy không thể báo khi chính máy chết. Cần một bên ngoài chờ "nhịp tim" và báo khi mất:
-- [ ] Endpoint nhẹ `/healthz` (đã có hoặc thêm) trả tổng trạng thái, không lộ chi tiết nội bộ.
+- [x] `/healthz` không cần đăng nhập: chỉ `ok/degraded` và tên phần lỗi (4 heartbeat, DB `SELECT 1`), 503 khi lỗi, không cache (`2bfc01f2`).
 - [ ] Bên kiểm tra theo lựa chọn ở mục 6 (máy khác trong mạng nội bộ chạy cron curl + Telegram, hoặc dịch vụ dead-man bên ngoài nhận ping đi ra). Cảnh báo khi quá 5 phút không có nhịp tim.
 
 ### SM5 — Diễn tập và tài liệu
@@ -83,8 +83,8 @@ Cảnh báo trong máy không thể báo khi chính máy chết. Cần một bê
 - [ ] Diễn tập lỗi đơn lẻ (dừng RabbitMQ, kill watcher, làm DB không kết nối được) trên lab: mỗi lỗi phải có cảnh báo trong 2 phút và tự hồi phục nếu thuộc SM2.
 - [x] README mục 8 ghi rõ chỉ dùng cho dev/lab, trỏ tới cách production chạy (systemd + container + selfcheck); bỏ hướng dẫn `nohup` và câu "Repo không dùng systemd unit".
 - [ ] Dọn tiến trình chạy tay còn sót (cần operator xác nhận từng cái không còn dùng).
-- [ ] Giới hạn API GitHub không xác thực (60/giờ) bị dùng hết khi pipeline và trang Tiến độ test cùng hỏi CI (06/10): dùng token chỉ đọc hoặc tăng cache.
-- [ ] `scripts/deploy/install_system_services.sh` còn enable/restart các unit chạy trần cũ (`ceph-ai-watcher/worker/dashboard`), mâu thuẫn với stack container: sửa hoặc bỏ.
+- [x] Cache trạng thái CI trên trang Tiến độ test 2 phút (`314601b1`); operator không cần tối ưu thêm theo giới hạn lượt gọi.
+- [x] `install_system_services.sh` (bật unit chạy trần song song với container) đã ngừng dùng: chạy là từ chối và chỉ sang quy trình deploy container (`4cd64c75`).
 
 **Chỉ số hoàn thành phần A:** reboot drill thành công; mỗi lỗi đơn lẻ có cảnh báo Telegram ≤ 2 phút; máy tắt có cảnh báo từ bên ngoài ≤ 5 phút; 0 container chạy unhealthy quá 5 phút mà không có cảnh báo.
 
