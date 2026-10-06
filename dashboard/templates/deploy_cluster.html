@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Deploy Cluster — Ceph AIOps</title>
-  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&lifecycle_layout=4">
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&lifecycle_layout=5">
   <link rel="stylesheet" href="/static/custom_selects.css?v={{ static_version }}">
-  <link rel="stylesheet" href="/static/deploy_cluster_redesign.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/deploy_cluster_redesign.css?v={{ static_version }}&ssh_keypair=1">
 </head>
 <body>
   {% include "_nav.html" %}
@@ -108,11 +108,23 @@
                 <input type="text" id="df-ssh-user" value="{{ default_ssh_user }}" disabled>
               </label>
               <label>
-                SSH Key Path
-                <input type="text" id="df-ssh-key-path" value="{{ default_ssh_key_path }}" disabled>
+                SSH identity
+                <input type="text" id="df-ssh-key-path" value="Private key được giữ trong Worker" disabled>
               </label>
             </div>
-            <p class="hint">SSH User/Key Path lấy từ <a href="/settings">Settings</a> — sửa tại đó nếu cần đổi.</p>
+            <section class="deploy-ssh-key-card" aria-labelledby="df-ssh-key-title">
+              <div class="deploy-ssh-key-heading">
+                <div><strong id="df-ssh-key-title">Public key mà Worker dùng để deploy</strong><p class="hint">Cài public key này vào <code>~{{ default_ssh_user }}/.ssh/authorized_keys</code> trên từng node đích.</p></div>
+                <span class="deploy-key-state {{ 'is-ready' if default_ssh_public_key else 'is-missing' }}">{{ 'Đã nạp key' if default_ssh_public_key else 'Chưa có key' }}</span>
+              </div>
+              {% if default_ssh_public_key %}
+              <div class="deploy-public-key-row"><textarea id="df-ssh-public-key" rows="2" readonly aria-label="SSH public key">{{ default_ssh_public_key }}</textarea><button type="button" class="btn btn-sm" id="df-copy-ssh-public-key">Copy public key</button></div>
+              <p class="deploy-key-note" id="df-ssh-key-copy-status" role="status" aria-live="polite">Đây là public key của Worker. Private key không được mount vào Dashboard và không hiển thị trên trình duyệt.</p>
+              {% else %}
+              <p class="deploy-key-missing" role="alert">Dashboard chưa đọc được public key Worker. Kiểm tra file public key được mount read-only tại <code>/tmp/deploy-id_ed25519.pub</code>. Không copy private key vào đây.</p>
+              {% endif %}
+            </section>
+            <p class="hint">SSH user lấy từ <a href="/settings">Settings</a>. Deploy Cluster chạy bằng SSH identity của Worker, không phải key read-only của Dashboard.</p>
 
             <label>Nodes trong cụm</label>
             <div class="table-wrap">
@@ -221,7 +233,7 @@
     {{ last_action_params|tojson }}
   </script>
   <script src="/static/app.js?v={{ static_version }}"></script>
-  <script src="/static/deploy_cluster.js?v={{ static_version }}"></script>
+  <script src="/static/deploy_cluster.js?v={{ static_version }}&ssh_keypair=1"></script>
   <script src="/static/custom_selects.js?v={{ static_version }}"></script>
 </body>
 </html>
