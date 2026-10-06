@@ -1,7 +1,7 @@
 # Kế hoạch: giám sát chính Ceph AI và mở nút thắt vòng tự học
 
 **Ngày lập:** 06/10/2026
-**Trạng thái:** `PLANNED` — chưa bắt đầu; chờ operator chốt các quyết định ở mục 6.
+**Trạng thái:** `IN-PROGRESS` — SM1, SM2, SM3 và phần README của SM5 đã có code + test trên nhánh `self-monitoring` (chưa deploy); SM4, diễn tập và LL* chờ quyết định ở mục 6.
 **Nguồn:** báo cáo "Nâng cấp cơ chế tự học của Ceph AIOps" (06/10/2026) và nhận xét "không có systemd, chỉ chạy bằng nohup", đối chiếu với code `main` (`3f081af7`) và production CS-LAB ngày 06/10/2026.
 **Liên quan:** `Plan/in-progress/autonomous-self-learning-operations-plan-2026-09-26.md` (roadmap 4.3), `docs/immutable-production-release.md`, `docs/operations/reliability-slo.md`.
 
@@ -57,21 +57,21 @@ Những điều báo cáo bỏ sót (quan trọng hơn):
 ## 2. Phần A — giám sát chính hệ thống giám sát
 
 ### SM1 — Khởi động lại máy phải tự lên đủ
-- [ ] Đưa RabbitMQ vào vòng đời của stack: service `rabbitmq` trong `compose.yaml` (giữ volume dữ liệu và user hiện có) hoặc ít nhất `container-up`/`container-down` khởi động nó trước `watcher`/`worker`; restart policy `always`. Không tạo lại container trước khi sao lưu định nghĩa queue/user (`rabbitmqctl export_definitions`).
-- [ ] `container-up` chờ RabbitMQ và DB sẵn sàng (có timeout) trước khi bật service phụ thuộc; log rõ lý do nếu không lên.
-- [ ] Bật `podman-restart.service` hoặc xác nhận `ceph-ai-containers.service` đủ thay thế; ghi lại lựa chọn.
-- [ ] Test tĩnh: mọi container mà stack cần đều được `container-up` bật (kiểm tra danh sách so với compose + RabbitMQ).
+- [x] Không tạo lại container RabbitMQ (node name `rabbit@<id>` và dữ liệu nằm trong volume không tên gắn với container đó). Thay vào đó `ceph-ai-rabbitmq.service` bật container có sẵn trước stack (`04be8fcf`). Đưa hẳn vào Compose để sau, cần export definitions + cửa sổ bảo trì.
+- [x] `container-up` bật RabbitMQ nếu cần và chờ `rabbitmq-diagnostics ping` (120 giây), thất bại thì exit 5 thay vì bật stack không có queue; đã chạy thử với podman giả (2 trường hợp) và probe thật trên production. DB không chờ ở đây (máy khác); selfcheck báo nếu mất kết nối.
+- [x] Không cần `podman-restart.service`: `ceph-ai-containers.service` (trước đây chỉ có trên máy, nay đưa vào repo) bật cả stack lúc boot, sau `ceph-ai-rabbitmq.service`; deploy cài và enable cả hai.
+- [x] Test tĩnh thứ tự start → ping → compose, nội dung unit và bước cài khi deploy (`tests/test_production_packaging.py`).
 
 ### SM2 — Tự chữa khi container hỏng mà không thoát
-- [ ] `HealthcheckOnFailureAction=restart` (podman 4.9 hỗ trợ `--health-on-failure`) cho service có healthcheck; giới hạn số lần restart để không lặp vô hạn.
-- [ ] Thêm healthcheck cho `vault-monitor`.
-- [ ] Ghi sự kiện "container tự restart vì unhealthy" để phần SM3 báo ra ngoài.
+- [x] podman-compose 1.0.6 không truyền được `--health-on-failure` và `podman update` 4.9 không đặt được, nên selfcheck tự restart container unhealthy 3 phút liên tiếp, tối đa 3 lần/6 giờ rồi chỉ báo; không bao giờ tự restart Full Executor (có thể đang chạy remediation) và RabbitMQ (`7b999c3b`).
+- [ ] Thêm healthcheck cho `vault-monitor` (cần heartbeat riêng; hiện selfcheck chỉ kiểm tra container đang chạy).
+- [x] Mỗi lần tự restart (hoặc hết lượt) gửi Telegram ngay trong cùng lần chạy selfcheck.
 
 ### SM3 — Cảnh báo đẩy, không phụ thuộc stack
-- [ ] `ceph-ai-selfcheck.timer` (systemd, mỗi 1 phút, ngoài container) chạy một script độc lập: container nào thiếu/unhealthy, heartbeat trong `/run/ceph-ai` cũ, RabbitMQ không trả lời, DB không kết nối được, outbox Telegram tồn đọng, đĩa đầy.
-- [ ] Gửi Telegram **trực tiếp** (curl tới Bot API bằng token đọc từ `.env`, không qua `telegram-ai`/outbox/RabbitMQ); chống spam: chỉ báo khi đổi trạng thái, nhắc lại theo chu kỳ, báo "đã hồi phục".
-- [ ] Đưa `service_heartbeat_stale` và các cảnh báo critical của `collect_reliability()` vào cùng kênh (hiện chỉ hiện khi mở trang).
-- [ ] Thông báo lúc khởi động: "Ceph AI vừa khởi động lại lúc … · service đã lên: …" để mọi lần reboot đều có dấu vết.
+- [x] `ceph-ai-selfcheck.timer` + `scripts/selfcheck/ceph_ai_selfcheck.py` (chỉ thư viện chuẩn, `/usr/bin/python3.11`): 8 container, 4 heartbeat, RabbitMQ ping, DB TCP, Dashboard, 3 phân vùng đĩa — 18 kiểm tra, chạy thử trên production đều đạt (`8aa7a485`). Outbox Telegram tồn đọng chưa kiểm tra (cần đọc DB).
+- [x] Gửi thẳng Bot API bằng bot kênh node có sẵn trong `.env` (không thêm khóa mới: Settings `extra=forbid`); báo sau 2 lần lỗi liên tiếp, nhắc mỗi 6 giờ, báo hồi phục; gửi thất bại thì giữ để lần sau gửi lại.
+- [x] Heartbeat cũ (> 180 giây) do selfcheck tự đọc file trong `/run/ceph-ai`, không cần mở trang System Health.
+- [x] Một bản tóm tắt mỗi lần khởi động lại máy (theo `boot_id`), gửi sau 10 phút ân hạn cho stack lên; lần cài đầu tiên không tính là reboot.
 
 ### SM4 — Tín hiệu từ bên ngoài máy (dead-man switch)
 Cảnh báo trong máy không thể báo khi chính máy chết. Cần một bên ngoài chờ "nhịp tim" và báo khi mất:
@@ -81,8 +81,10 @@ Cảnh báo trong máy không thể báo khi chính máy chết. Cần một bê
 ### SM5 — Diễn tập và tài liệu
 - [ ] Diễn tập khởi động lại máy trong cửa sổ bảo trì: đo thời gian từ boot tới khi mọi service healthy, xác nhận nhận được thông báo SM3 và cảnh báo SM4 lúc máy tắt. Lưu biên bản vào `docs/operations/`.
 - [ ] Diễn tập lỗi đơn lẻ (dừng RabbitMQ, kill watcher, làm DB không kết nối được) trên lab: mỗi lỗi phải có cảnh báo trong 2 phút và tự hồi phục nếu thuộc SM2.
-- [ ] Sửa README mục 8: tách "chạy thử local (dev)" khỏi "production (systemd + container)", bỏ câu "Repo không dùng systemd unit".
+- [x] README mục 8 ghi rõ chỉ dùng cho dev/lab, trỏ tới cách production chạy (systemd + container + selfcheck); bỏ hướng dẫn `nohup` và câu "Repo không dùng systemd unit".
 - [ ] Dọn tiến trình chạy tay còn sót (cần operator xác nhận từng cái không còn dùng).
+- [ ] Giới hạn API GitHub không xác thực (60/giờ) bị dùng hết khi pipeline và trang Tiến độ test cùng hỏi CI (06/10): dùng token chỉ đọc hoặc tăng cache.
+- [ ] `scripts/deploy/install_system_services.sh` còn enable/restart các unit chạy trần cũ (`ceph-ai-watcher/worker/dashboard`), mâu thuẫn với stack container: sửa hoặc bỏ.
 
 **Chỉ số hoàn thành phần A:** reboot drill thành công; mỗi lỗi đơn lẻ có cảnh báo Telegram ≤ 2 phút; máy tắt có cảnh báo từ bên ngoài ≤ 5 phút; 0 container chạy unhealthy quá 5 phút mà không có cảnh báo.
 
@@ -155,3 +157,4 @@ Không dùng LangChain, LlamaIndex, GraphRAG.
 | Ngày | Hạng mục | Kết quả | Bằng chứng | Trạng thái |
 |---|---|---|---|---|
 | 06/10/2026 | Khảo sát | Xác nhận 3 lỗ hổng tự giám sát (RabbitMQ không tự lên, cảnh báo chỉ khi mở trang, không có tín hiệu ngoài máy) và nút thắt dữ liệu của vòng học (1/4.953 case đã xác minh) | mục 1 | Done |
+| 06/10/2026 | SM1, SM2, SM3, README | Unit RabbitMQ + stack, chờ RabbitMQ trong `container-up`, selfcheck 18 kiểm tra + tự restart có giới hạn, README dev-only | `04be8fcf`, `8aa7a485`, `7b999c3b`; 15 test; chạy thử selfcheck trên production | Code xong, chờ push/deploy |

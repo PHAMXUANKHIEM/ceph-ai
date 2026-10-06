@@ -256,10 +256,16 @@ Lệnh này cũng tạo/cập nhật các bảng phục vụ tính năng mới, 
 Object Storage Audit. Sau mỗi lần `git pull`, luôn chạy lại
 `alembic upgrade head` trước khi restart dịch vụ.
 
-## 8. Chạy 3 tiến trình
+## 8. Chạy 3 tiến trình (chỉ để phát triển / lab)
 
-Mở 3 terminal (hoặc dùng `nohup ... & disown` để chạy nền), đều từ thư mục
-gốc repo với venv đã activate:
+> **Production không chạy như mục này.** Production chạy các container từ
+> image đã qua CI, do systemd quản lý: `ceph-ai-rabbitmq.service` →
+> `ceph-ai-containers.service` (`container-up`) lúc khởi động máy, và
+> `ceph-ai-selfcheck.timer` tự kiểm tra mỗi phút, báo thẳng Telegram khi có
+> container/heartbeat/RabbitMQ/DB/Dashboard lỗi. Quy trình deploy:
+> [`docs/immutable-production-release.md`](docs/immutable-production-release.md).
+
+Mở 3 terminal, đều từ thư mục gốc repo với venv đã activate:
 
 > Chưa cấu hình `CEPH_MON_NODES` ở bước 6 (vd chưa có cụm)? Watcher log dòng
 > `run: no MON nodes configured (...) — cấu hình CEPH_MON_NODES (.env hoặc
@@ -280,15 +286,6 @@ python -m worker.main
 python -m uvicorn dashboard.app:app --host 0.0.0.0 --port 8000
 ```
 
-Chạy nền có log ra file (giống cách server hiện tại đang chạy):
-
-```bash
-nohup python -m watcher.main >> /var/log/ceph-aiops-watcher.log 2>&1 & disown
-nohup python -m worker.main  >> /var/log/ceph-aiops-worker.log  2>&1 & disown
-nohup python -m uvicorn dashboard.app:app --host 0.0.0.0 --port 8000 \
-  >> /var/log/ceph-aiops-dashboard.log 2>&1 & disown
-```
-
 Truy cập Dashboard tại `http://<ip-máy>:8000`, đăng nhập bằng
 `DASHBOARD_USERNAME`/mật khẩu đã tạo hash ở bước 5. Đăng nhập thành công là
 coi như cài đặt xong — mọi cấu hình còn lại (cụm Ceph, API AI) làm được
@@ -299,18 +296,9 @@ ngay trong Dashboard, không cần SSH vào server nữa (xem bước 9).
 > máy có cho phép cổng 8000 không (`sudo ufw allow 8000` trên
 > Ubuntu nếu có bật ufw).
 >
-> Repo không dùng systemd unit — cả 3 tiến trình đều là background process
-> thuần. Muốn restart, `pkill -f "python -m watcher.main"` (tương tự cho
-> `worker.main` / `uvicorn dashboard.app`) rồi chạy lại lệnh `nohup` ở
-> trên. `scripts/deploy/restart_services.sh` đã đóng gói sẵn toàn bộ quy
-> trình này (pull code mới nhất + migrate + restart) — dùng lại được cho
-> máy mới nếu muốn.
->
-> **Quan trọng khi cập nhật code:** không chỉ chạy `git pull`. Uvicorn không
-> tự nạp router Python mới, vì vậy menu từ static JS có thể đã xuất hiện
-> nhưng endpoint mới (ví dụ `/pgs`) vẫn trả 404. Luôn chạy từ repo root:
-> `bash scripts/deploy/restart_services.sh`. Script sẽ kiểm tra `/pgs` sau
-> khi khởi động và chỉ báo deploy thành công khi Dashboard đã nạp route mới.
+> Ba tiến trình chạy tay ở trên không tự khởi động lại khi máy reboot và
+> không có gì giám sát chúng — chỉ dùng để phát triển. Khi cập nhật code
+> trong môi trường lab, khởi động lại cả ba (Uvicorn không tự nạp router mới).
 
 ## 9. Cấu hình cụm Ceph / AI qua Dashboard (thay vì `.env`)
 
@@ -327,11 +315,9 @@ Ceph và API AI mà không cần SSH vào server:
   chính tiến trình Dashboard (cần thiết vì nó không thể tự restart giữa
   chừng một request như Worker/Watcher).
 
-Nói cách khác: sau lần chạy tay ban đầu (bước 8), **hầu hết các thay đổi
-cấu hình sau này không cần SSH/`nohup` thủ công nữa** — chỉ cần vào Cài đặt
-và lưu. Bước 8 vẫn cần thiết cho lần khởi động đầu tiên trên máy mới, và
-cho các thay đổi CODE (không phải cấu hình) — khi đó dùng lại
-`scripts/deploy/restart_services.sh` hoặc lệnh `nohup` thủ công.
+Nói cách khác: **hầu hết các thay đổi cấu hình không cần SSH** — chỉ cần
+vào Cài đặt và lưu. Thay đổi CODE trên production đi qua CI và quy trình
+deploy immutable (`docs/immutable-production-release.md`), không chạy tay.
 
 ## 10. Kiểm tra hoạt động
 
