@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 import httpx
 from config.settings import settings
-from shared import env_config, telegram_outbox
+from shared import env_config, service_health, telegram_outbox
 from shared.vault_alerts import send_vault_alert as _send_vault_alert_direct
 
 logger = logging.getLogger(__name__)
@@ -152,10 +152,28 @@ class VaultMonitor:
             try:
                 config = _live_config()
                 self.check_once()
-                time.sleep(config["interval"])
+                _sleep_with_heartbeat(config["interval"])
             except Exception:
                 logger.exception("Vault security monitor cycle failed")
-                time.sleep(60)
+                _sleep_with_heartbeat(60)
+
+
+HEARTBEAT_EVERY_SECONDS = 15
+
+
+def _sleep_with_heartbeat(seconds: float) -> None:
+    """Sleep in short steps, recording a heartbeat for the container healthcheck.
+
+    The poll interval is configurable (minutes are fine), so the heartbeat
+    cannot ride on the poll itself without making the healthcheck flap.
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        service_health.record_safe("vault-monitor")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(HEARTBEAT_EVERY_SECONDS, remaining))
 
 
 def main() -> None:

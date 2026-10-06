@@ -273,6 +273,14 @@ services:
     memswap_limit: 256m
     pids_limit: 128
     command: ["python", "-m", "watcher.vault_monitor"]
+    # Heartbeat written every 15 s while it sleeps (watcher/vault_monitor.py),
+    # in the container's own /tmp: this service does not mount /run/ceph-ai.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('vault-monitor', stale_after_seconds=90)['healthy'])\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     volumes:
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
       - /etc/ceph-ai-secrets:/etc/ceph-ai-secrets:ro
