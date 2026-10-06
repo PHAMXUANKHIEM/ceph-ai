@@ -11,6 +11,11 @@ Checks: expected containers running and not unhealthy, service heartbeats in
 disk space. A problem is reported after two failed runs in a row, reminded
 every six hours while it lasts, and a recovery is reported once. After a host
 reboot the stack gets a grace period, then one boot summary is sent.
+
+Self-heal (plan SM2): podman-compose 1.0.6 cannot pass --health-on-failure,
+so a container that stays unhealthy for three runs is restarted here, at
+most three times in six hours; after that it is only reported. Full Executor
+is never restarted automatically: it may be in the middle of a remediation.
 """
 
 from __future__ import annotations
@@ -52,6 +57,10 @@ FAILURES_BEFORE_ALERT = 2
 REMIND_SECONDS = 6 * 3600
 BOOT_GRACE_SECONDS = 600
 COMMAND_TIMEOUT_SECONDS = 20
+UNHEALTHY_RUNS_BEFORE_RESTART = 3
+MAX_RESTARTS = 3
+RESTART_WINDOW_SECONDS = 6 * 3600
+NEVER_AUTO_RESTART = frozenset({"rabbitmq", "ceph-ai_full-executor_1"})
 
 
 # --- inputs -----------------------------------------------------------------
@@ -237,6 +246,36 @@ def evaluate(results: dict[str, str | None], state: dict, now: float, *, in_grac
     return lines
 
 
+def heal(results: dict[str, str | None], state: dict, now: float, *, in_grace: bool) -> list[str]:
+    """Restart containers that stay unhealthy, within the restart budget."""
+    if in_grace:
+        return []
+    lines: list[str] = []
+    restarts = state.setdefault("restarts", {})
+    for name, problem in sorted(results.items()):
+        container = name.removeprefix("container:")
+        entry = state.get("checks", {}).get(name) or {}
+        if (not name.startswith("container:") or problem != "unhealthy" or container in NEVER_AUTO_RESTART
+                or int(entry.get("failures") or 0) < UNHEALTHY_RUNS_BEFORE_RESTART):
+            continue
+        recent = [at for at in restarts.get(container, []) if now - at < RESTART_WINDOW_SECONDS]
+        if len(recent) >= MAX_RESTARTS:
+            if entry.get("budget_spent") != recent[-1]:
+                lines.append(f"⛔ {container}: đã tự restart {MAX_RESTARTS} lần trong 6 giờ, không tự restart nữa")
+                entry["budget_spent"] = recent[-1]
+            continue
+        try:
+            done = _podman("restart", "-t", "30", container).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            done = False
+        recent.append(now)
+        restarts[container] = recent
+        entry["failures"] = 0  # give it time to become healthy again
+        lines.append(f"🔧 {container}: unhealthy {UNHEALTHY_RUNS_BEFORE_RESTART} phút → "
+                     + (f"đã restart (lần {len(recent)}/{MAX_RESTARTS} trong 6 giờ)" if done else "restart thất bại"))
+    return lines
+
+
 def boot_lines(results: dict[str, str | None], state: dict, current_boot: str, *, in_grace: bool) -> list[str]:
     """One summary per boot, sent once the grace period is over."""
     if not current_boot or state.get("boot_reported") == current_boot or in_grace:
@@ -280,6 +319,7 @@ def main() -> int:
     in_grace = uptime_seconds() < BOOT_GRACE_SECONDS
     results = run_checks(env, now)
     lines = boot_lines(results, state, boot_id(), in_grace=in_grace) + evaluate(results, state, now, in_grace=in_grace)
+    lines += heal(results, state, now, in_grace=in_grace)
     failing = sorted(name for name, problem in results.items() if problem)
     print(f"selfcheck: {len(results)} checks, failing: {', '.join(failing) or 'none'}")
     if lines and not send_telegram(env, "Ceph AI tự kiểm tra\n" + "\n".join(lines)):

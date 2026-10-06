@@ -1,10 +1,12 @@
-"""Host self-check (plan SM3): alert rules, checks and packaging."""
+"""Host self-check (plans SM2, SM3): alert rules, self-heal, checks and packaging."""
 
 import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from scripts.selfcheck import ceph_ai_selfcheck as selfcheck
 
@@ -140,3 +142,42 @@ def test_the_script_uses_only_the_standard_library():
     source = (ROOT / "scripts" / "selfcheck" / "ceph_ai_selfcheck.py").read_text(encoding="utf-8")
     imports = {line.split()[1].split(".")[0] for line in source.splitlines() if line.startswith(("import ", "from "))}
     assert imports <= {"__future__", "http", "json", "os", "shutil", "socket", "subprocess", "sys", "time", "datetime", "pathlib", "urllib"}
+
+
+def _unhealthy_runs(state, name, runs, start=T0):
+    lines = []
+    for run in range(runs):
+        now = start + 60 * run
+        results = {f"container:{name}": "unhealthy"}
+        selfcheck.evaluate(results, state, now, in_grace=False)
+        lines += selfcheck.heal(results, state, now, in_grace=False)
+    return lines
+
+
+def test_an_unhealthy_container_is_restarted_after_three_runs_within_budget(monkeypatch):
+    restarted = []
+    monkeypatch.setattr(selfcheck, "_podman", lambda *args: restarted.append(args) or SimpleNamespace(returncode=0))
+    state: dict = {}
+
+    lines = _unhealthy_runs(state, "ceph-ai_worker_1", 3)
+
+    assert restarted == [("restart", "-t", "30", "ceph-ai_worker_1")]
+    assert lines == ["🔧 ceph-ai_worker_1: unhealthy 3 phút → đã restart (lần 1/3 trong 6 giờ)"]
+
+    more = _unhealthy_runs(state, "ceph-ai_worker_1", 9, start=T0 + 180)
+    assert len(restarted) == 3
+    assert more[-1] == "⛔ ceph-ai_worker_1: đã tự restart 3 lần trong 6 giờ, không tự restart nữa"
+    assert _unhealthy_runs(state, "ceph-ai_worker_1", 3, start=T0 + 900) == []  # limit reported once
+
+    _unhealthy_runs(state, "ceph-ai_worker_1", 3, start=T0 + selfcheck.RESTART_WINDOW_SECONDS + 600)
+    assert len(restarted) == 4  # the window moved on
+
+
+def test_full_executor_and_rabbitmq_are_never_restarted_automatically(monkeypatch):
+    monkeypatch.setattr(selfcheck, "_podman", lambda *args: pytest.fail("must not restart"))
+    state: dict = {}
+
+    assert _unhealthy_runs(state, "ceph-ai_full-executor_1", 5) == []
+    assert selfcheck.heal({"container:ceph-ai_worker_1": "unhealthy"}, {}, T0, in_grace=True) == []
+    assert selfcheck.heal({"container:ceph-ai_worker_1": "không chạy (exited)"},
+                          {"checks": {"container:ceph-ai_worker_1": {"failures": 9}}}, T0, in_grace=False) == []
