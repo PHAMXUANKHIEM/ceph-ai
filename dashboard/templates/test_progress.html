@@ -19,6 +19,7 @@
           <p><span id="local-status" class="status-pill status-unknown"><span class="dot"></span><strong></strong></span>
              <span id="local-label" class="hint"></span></p>
           <div class="progress-bar"><div id="local-bar" class="progress-bar-fill" style="width:0%"></div></div>
+          <p id="local-steps" class="hint" hidden></p>
           <p id="local-counts"></p>
           <p class="hint" id="local-times"></p>
           <p class="hint" id="local-current"></p>
@@ -44,8 +45,11 @@
 
   <script>
   (function () {
-    const LABELS = {collecting: "Đang thu thập test", running: "Đang chạy", passed: "Pass", failed: "Có lỗi", stalled: "Đã dừng giữa chừng"};
-    const PILL = {collecting: "status-warn", running: "status-warn", passed: "status-ok", failed: "status-err", stalled: "status-err"};
+    const LABELS = {preparing: "Đang chuẩn bị", collecting: "Đang thu thập test", running: "Đang chạy", passed: "Pass",
+      failed: "Có lỗi", stalled: "Đã dừng giữa chừng", aborted: "Pipeline dừng"};
+    const PILL = {preparing: "status-warn", collecting: "status-warn", running: "status-warn", passed: "status-ok",
+      failed: "status-err", stalled: "status-err", aborted: "status-err"};
+    const STEP_MARK = {ok: "✓", running: "▶", failed: "✗"};
     function el(id) { return document.getElementById(id); }
     function duration(seconds) {
       if (seconds === null || seconds === undefined) return "—";
@@ -73,12 +77,20 @@
       status.querySelector("strong").textContent = LABELS[run.status] || run.status;
       el("local-label").textContent = " " + (run.label || "");
       el("local-bar").style.width = (run.percent || 0) + "%";
+      const steps = run.steps || [];
+      el("local-steps").hidden = !steps.length;
+      el("local-steps").textContent = "Các bước: " + steps.map(function (step) {
+        return (STEP_MARK[step.state] || "·") + " " + step.name;
+      }).join("  ·  ") + (run.status === "aborted" && run.stage ? " — dừng vì: " + run.stage : "");
+      // Before the test step starts there is nothing to count yet.
+      el("local-counts").hidden = !run.total;
       el("local-counts").textContent = run.done + " / " + run.total + " test (" + run.percent + "%) · pass " + run.passed +
         " · lỗi " + run.failed + " · error " + run.errors + " · skip " + run.skipped;
       el("local-times").textContent = "Bắt đầu " + when(run.started_at) + " · đã chạy " + duration(run.elapsed_seconds) +
         (run.eta_seconds !== null && run.eta_seconds !== undefined ? " · còn khoảng " + duration(run.eta_seconds) : "") +
         (run.finished_at ? " · kết thúc " + when(run.finished_at) : "");
-      el("local-current").textContent = run.current ? "Đang chạy: " + run.current : "";
+      el("local-current").textContent = run.current ? "Đang chạy: " + run.current
+        : (run.status === "preparing" && run.stage ? "Đang chạy bước: " + run.stage : "");
       const list = el("local-failure-list"); list.replaceChildren();
       (run.failures || []).forEach(function (f) {
         const li = document.createElement("li"); const code = document.createElement("code");

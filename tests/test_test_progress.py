@@ -147,3 +147,63 @@ def test_settings_maintenance_links_to_the_page_for_admins(dashboard_client, mon
 
     monkeypatch.setattr(settings_route.auth, "is_admin_user", lambda _user: False)
     assert link not in dashboard_client.get("/settings").text
+
+
+def _steps(path):
+    return [(step["name"], step["state"]) for step in json.loads(path.read_text())["steps"]]
+
+
+def test_pipeline_steps_continue_into_the_test_run(tmp_path):
+    path = tmp_path / "current.json"
+    pytest_progress.record_pipeline(path, "begin", "pre-push abc123")
+    pytest_progress.record_pipeline(path, "step", "Quality gate")
+    pytest_progress.record_pipeline(path, "step", "Budget")
+    assert json.loads(path.read_text())["status"] == "preparing"
+    assert _steps(path) == [("Quality gate", "ok"), ("Budget", "running")]
+
+    reporter = pytest_progress.ProgressReporter(path, "pre-push abc123")
+    reporter.pytest_collection_finish(SimpleNamespace(items=[1]))
+    reporter.pytest_sessionfinish(None, 0)
+    pytest_progress.record_pipeline(path, "step", "Push + CI")
+    pytest_progress.record_pipeline(path, "finish", "-")
+
+    state = json.loads(path.read_text())
+    assert state["status"] == "passed" and state["total"] == 1
+    assert _steps(path) == [("Quality gate", "ok"), ("Budget", "ok"), ("Test", "ok"), ("Push + CI", "ok")]
+
+
+def test_a_failed_step_ends_the_run_with_its_reason(tmp_path):
+    path = tmp_path / "current.json"
+    pytest_progress.record_pipeline(path, "begin", "pre-push abc123")
+    pytest_progress.record_pipeline(path, "step", "Budget")
+    pytest_progress.record_pipeline(path, "fail", "bandit 149 > 148")
+
+    state = json.loads(path.read_text())
+    assert state["status"] == "aborted" and state["stage"] == "bandit 149 > 148" and state["finished_at"]
+    assert _steps(path) == [("Budget", "failed")]
+
+
+def test_a_test_run_with_another_label_starts_fresh(tmp_path):
+    path = tmp_path / "current.json"
+    pytest_progress.record_pipeline(path, "begin", "pre-push old")
+    pytest_progress.record_pipeline(path, "step", "Quality gate")
+
+    pytest_progress.ProgressReporter(path, "pre-push new")
+
+    assert _steps(path) == [("Test", "running")]
+
+
+def test_preparing_runs_get_longer_before_they_count_as_stalled(tmp_path):
+    path = tmp_path / "current.json"
+    _write(path, status="preparing", started_at=T0.isoformat(), updated_at=T0.isoformat())
+
+    assert test_progress.read_local_run(path, now=T0 + timedelta(minutes=20))["status"] == "preparing"
+    assert test_progress.read_local_run(path, now=T0 + timedelta(minutes=31))["status"] == "stalled"
+
+
+def test_cli_is_inert_without_the_environment_variable(monkeypatch, tmp_path):
+    monkeypatch.delenv(pytest_progress.ENV_FILE, raising=False)
+
+    assert pytest_progress.main(["step", "Budget"]) == 0
+    assert pytest_progress.main(["oops"]) == 2
+    assert not list(tmp_path.glob("*.json"))

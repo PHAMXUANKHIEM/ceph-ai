@@ -24,6 +24,8 @@ GITHUB_API = "https://api.github.com"
 CI_CACHE_SECONDS = 90
 # A running file not updated for this long belongs to a killed run.
 STALE_AFTER_SECONDS = 180
+# The quality gate and budget write nothing while they work (up to 25 min each).
+PREPARING_STALE_AFTER_SECONDS = 1800
 _HTTP_TIMEOUT_SECONDS = 10
 
 _ci_cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -60,7 +62,10 @@ def read_local_run(path: Path = DEFAULT_PROGRESS_FILE, now: datetime | None = No
         if elapsed and done and total > done and state.get("status") == "running"
         else None
     )
-    if state.get("status") in {"running", "collecting"} and updated and (now - updated).total_seconds() > STALE_AFTER_SECONDS:
+    silent = (now - updated).total_seconds() if updated else 0
+    if state.get("status") in {"running", "collecting"} and silent > STALE_AFTER_SECONDS:
+        state["status"] = "stalled"
+    elif state.get("status") == "preparing" and silent > PREPARING_STALE_AFTER_SECONDS:
         state["status"] = "stalled"
     return state
 
