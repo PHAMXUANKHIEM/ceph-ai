@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
@@ -274,211 +275,276 @@ def _node(node_id: str, group: str, kind: str, title: str, subtitle: str, status
             "status": status, "facts": facts, "checks": checks or [], "href": href}
 
 
-def build(cluster, *, now: datetime | None = None, sections: dict[str, dict | None] | None = None) -> dict:
-    """The topology of one cluster from its stored snapshots."""
-    now = now or utc_now()
-    sections = sections if sections is not None else _read(str(cluster.id))
+@dataclass
+class _Inputs:
+    """The snapshot values the graph is drawn from."""
+
+    checks: dict[str, dict]
+    status: dict
+    nodes_payload: dict
+    quorum: list[str]
+    num_mons: int
+    osd_total: int
+    osd_up: int
+    osd_in: int
+    pg_states: dict
+    pg_total: int
+    active_clean: int
+    used_pct: float | None
+    public_nets: list[str]
+    cluster_nets: list[str]
+    osds_by_host: dict[str, list[int]]
+    down_osds: set[int]
+    daemons: tuple[list[dict], list[dict]] | None
+    out_osds: list[int]
+    rgw: list[dict]
+    apps: set[str]
+
+    @property
+    def mon_daemons(self) -> list[dict]:
+        return self.daemons[0] if self.daemons else []
+
+    @property
+    def osd_daemons(self) -> list[dict]:
+        return self.daemons[1] if self.daemons else []
+
+
+@dataclass
+class _Graph:
+    nodes: list[dict] = field(default_factory=list)
+    edges: list[dict] = field(default_factory=list)
+
+    def edge(self, source: str, target: str, label: str, kind: str) -> None:
+        self.edges.append({"from": source, "to": target, "label": label, "kind": kind})
+
+    def find(self, node_id: str) -> dict | None:
+        return next((node for node in self.nodes if node["id"] == node_id), None)
+
+
+def _inputs(sections: dict[str, dict | None]) -> _Inputs:
     health_section = sections.get("health") or {}
     status = _payload(sections.get("status"), "status") or {}
     nodes_payload = _payload(sections.get("nodes"), "nodes") or {}
-    crush = _payload(sections.get("crush"), "crush") or {}
-    pools = _payload(sections.get("pools"), "pools")
     checks = _active_checks(health_section.get("health") or status.get("health") or {})
-    stale = bool(not health_section or health_section.get("stale") or not status
-                 or (sections.get("status") or {}).get("stale"))
-
     monmap, osdmap, pgmap = status.get("monmap") or {}, status.get("osdmap") or {}, status.get("pgmap") or {}
-    mgrmap, fsmap = status.get("mgrmap") or {}, status.get("fsmap") or {}
     quorum = list(status.get("quorum_names") or [])
-    num_mons = int(monmap.get("num_mons") or len(quorum))
     osd_total, osd_up, osd_in = (int(osdmap.get(key) or 0) for key in ("num_osds", "num_up_osds", "num_in_osds"))
     pg_states = {row.get("state_name"): int(row.get("count") or 0) for row in pgmap.get("pgs_by_state") or [] if isinstance(row, dict)}
-    pg_total = int(pgmap.get("num_pgs") or sum(pg_states.values()))
-    active_clean = pg_states.get("active+clean", 0)
-    used_pct = (round(100 * pgmap["bytes_used"] / pgmap["bytes_total"], 1)
-                if pgmap.get("bytes_total") else None)
     public_nets, cluster_nets = _networks(nodes_payload)
-    osds_by_host = _osds_by_host(crush)
-    down_osds = _down_osds(checks)
     daemons = _daemons(nodes_payload)
-    mon_daemons, osd_daemons = daemons or ([], [])
-    osd_addrs = {osd["id"]: osd for osd in osd_daemons}
+    osd_daemons = daemons[1] if daemons else []
+    down_osds = _down_osds(checks)
     # Health (refreshed every minute) stays the primary source for down OSDs;
     # the inventory's osd dump only names the ones a truncated detail left out.
     if osd_total and len(down_osds) < osd_total - osd_up:
         down_osds |= {osd["id"] for osd in osd_daemons if not osd.get("up")}
-    out_osds = sorted(osd["id"] for osd in osd_daemons if not osd.get("in"))
-    rgw = _rgw_daemons(status)
-    apps = _pool_applications(pools)
-    mds_up = [rank for rank in fsmap.get("by_rank") or [] if isinstance(rank, dict)]
+    return _Inputs(
+        checks=checks, status=status, nodes_payload=nodes_payload, quorum=quorum,
+        num_mons=int(monmap.get("num_mons") or len(quorum)),
+        osd_total=osd_total, osd_up=osd_up, osd_in=osd_in,
+        pg_states=pg_states, pg_total=int(pgmap.get("num_pgs") or sum(pg_states.values())),
+        active_clean=pg_states.get("active+clean", 0),
+        used_pct=round(100 * pgmap["bytes_used"] / pgmap["bytes_total"], 1) if pgmap.get("bytes_total") else None,
+        public_nets=public_nets, cluster_nets=cluster_nets,
+        osds_by_host=_osds_by_host(_payload(sections.get("crush"), "crush") or {}),
+        down_osds=down_osds, daemons=daemons,
+        out_osds=sorted(osd["id"] for osd in osd_daemons if not osd.get("in")),
+        rgw=_rgw_daemons(status), apps=_pool_applications(_payload(sections.get("pools"), "pools")),
+    )
 
-    out_nodes: list[dict] = []
-    edges: list[dict] = []
 
-    def edge(source: str, target: str, label: str, kind: str) -> None:
-        edges.append({"from": source, "to": target, "label": label, "kind": kind})
-
-    # Control plane.
+def _control_plane(graph: _Graph, inputs: _Inputs) -> None:
+    status, checks, quorum = inputs.status, inputs.checks, inputs.quorum
+    monmap, mgrmap, fsmap = status.get("monmap") or {}, status.get("mgrmap") or {}, status.get("fsmap") or {}
     mon_status, mon_checks = _component_status("mon", checks)
-    if quorum and len(quorum) < num_mons:
+    if quorum and len(quorum) < inputs.num_mons:
         mon_status = ERROR
-    out_nodes.append(_node("mon", "control", "mon", "MON quorum", f"{len(quorum)}/{num_mons} trong quorum", mon_status, [
+    graph.nodes.append(_node("mon", "control", "mon", "MON quorum", f"{len(quorum)}/{inputs.num_mons} trong quorum", mon_status, [
         f"Quorum: {', '.join(quorum) or 'chưa rõ'}",
         f"Monmap epoch {monmap.get('epoch', '?')} · {monmap.get('min_mon_release_name', '?')}",
-        *_mon_address_facts(mon_daemons, quorum),
+        *_mon_address_facts(inputs.mon_daemons, quorum),
     ], mon_checks, "/nodes"))
     mgr_status, mgr_checks = _component_status("mgr", checks)
     if mgrmap and not mgrmap.get("available"):
         mgr_status = ERROR
     services = mgrmap.get("services") or {}
-    out_nodes.append(_node("mgr", "control", "mgr", "MGR", f"active + {mgrmap.get('num_standbys', 0)} standby", mgr_status, [
+    graph.nodes.append(_node("mgr", "control", "mgr", "MGR", f"active + {mgrmap.get('num_standbys', 0)} standby", mgr_status, [
         f"Module: {', '.join(mgrmap.get('modules') or []) or 'chưa rõ'}",
         f"Dịch vụ: {', '.join(sorted(services)) or 'không có'}",
     ], mgr_checks))
-    edge("mgr", "mon", "trạng thái · module", "control")
-    if mds_up or "cephfs" in apps:
+    graph.edge("mgr", "mon", "trạng thái · module", "control")
+    mds_up = [rank for rank in fsmap.get("by_rank") or [] if isinstance(rank, dict)]
+    if mds_up or "cephfs" in inputs.apps:
         mds_status, mds_checks = _component_status("mds", checks)
-        out_nodes.append(_node("mds", "control", "mds", "MDS (CephFS)", f"{len(mds_up)} rank đang chạy",
-                               mds_status if mds_up else _worst(mds_status, WARN),
-                               [f"FSMap epoch {fsmap.get('epoch', '?')}"], mds_checks))
-        edge("mds", "mon", "fsmap", "control")
-        edge("mds", "osd", "metadata pool", "data")
+        graph.nodes.append(_node("mds", "control", "mds", "MDS (CephFS)", f"{len(mds_up)} rank đang chạy",
+                                 mds_status if mds_up else _worst(mds_status, WARN),
+                                 [f"FSMap epoch {fsmap.get('epoch', '?')}"], mds_checks))
+        graph.edge("mds", "mon", "fsmap", "control")
+        graph.edge("mds", "osd", "metadata pool", "data")
 
-    # Gateway and data.
-    osd_status, osd_checks = _component_status("osd", checks)
-    if osd_total and osd_up < osd_total:
+
+def _data_path(graph: _Graph, inputs: _Inputs) -> None:
+    osdmap, pgmap = inputs.status.get("osdmap") or {}, inputs.status.get("pgmap") or {}
+    osd_status, osd_checks = _component_status("osd", inputs.checks)
+    if inputs.osd_total and inputs.osd_up < inputs.osd_total:
         osd_status = ERROR
-    out_nodes.append(_node("osd", "data", "osd", "OSD", f"{osd_up}/{osd_total} up · {osd_in}/{osd_total} in", osd_status, [
+    total = inputs.osd_total
+    graph.nodes.append(_node("osd", "data", "osd", "OSD", f"{inputs.osd_up}/{total} up · {inputs.osd_in}/{total} in", osd_status, [
         f"Osdmap epoch {osdmap.get('epoch', '?')}",
-        f"OSD down: {', '.join(f'osd.{osd}' for osd in sorted(down_osds)) or 'không có'}",
-        *([f"OSD out: {', '.join(f'osd.{osd}' for osd in out_osds) or 'không có'}"] if daemons else []),
+        f"OSD down: {', '.join(f'osd.{osd}' for osd in sorted(inputs.down_osds)) or 'không có'}",
+        *([f"OSD out: {', '.join(f'osd.{osd}' for osd in inputs.out_osds) or 'không có'}"] if inputs.daemons else []),
     ], osd_checks, "/crush-map"))
-    pool_status, pool_checks = _component_status("pools", checks)
-    if pg_total and active_clean < pg_total:
+    pool_status, pool_checks = _component_status("pools", inputs.checks)
+    if inputs.pg_total and inputs.active_clean < inputs.pg_total:
         pool_status = _worst(pool_status, WARN)
-    out_nodes.append(_node("pools", "data", "pools", "Pool · PG",
-                           f"{active_clean}/{pg_total} PG active+clean · {pgmap.get('num_pools', '?')} pool",
-                           pool_status, [
-                               "PG theo trạng thái: " + (", ".join(f"{state} {count}" for state, count in pg_states.items()) or "chưa rõ"),
-                               f"Dung lượng đã dùng: {used_pct}%" if used_pct is not None else "Dung lượng: chưa rõ",
-                               f"Object: {pgmap.get('num_objects', '?')}",
-                           ], pool_checks, "/pools"))
-    edge("osd", "pools", "lưu PG", "data")
-    edge("osd", "mon", "osdmap · heartbeat", "control")
-    if rgw:
-        rgw_status, rgw_checks = _component_status("rgw", checks)
-        for code, check in checks.items():
-            if code == "CEPHADM_FAILED_DAEMON" and any("rgw" in message for message in _messages(check)):
-                rgw_status = ERROR
-                rgw_checks.append(_check_view(code, check))
-        out_nodes.append(_node("rgw", "data", "rgw", "RGW (S3)", f"{len(rgw)} daemon", rgw_status, [
-            f"{daemon['host'] or '?'} · {daemon['frontend'] or '?'} · zonegroup {daemon['zonegroup'] or '?'}" for daemon in rgw
-        ], rgw_checks, "/object-storage/buckets"))
-        edge("rgw", "osd", "object data", "data")
-        edge("rgw", "mon", "cluster map", "control")
+    used = inputs.used_pct
+    graph.nodes.append(_node("pools", "data", "pools", "Pool · PG",
+                             f"{inputs.active_clean}/{inputs.pg_total} PG active+clean · {pgmap.get('num_pools', '?')} pool",
+                             pool_status, [
+                                 "PG theo trạng thái: " + (", ".join(f"{state} {count}" for state, count in inputs.pg_states.items()) or "chưa rõ"),
+                                 f"Dung lượng đã dùng: {used}%" if used is not None else "Dung lượng: chưa rõ",
+                                 f"Object: {pgmap.get('num_objects', '?')}",
+                             ], pool_checks, "/pools"))
+    graph.edge("osd", "pools", "lưu PG", "data")
+    graph.edge("osd", "mon", "osdmap · heartbeat", "control")
+    _rgw_node(graph, inputs)
 
-    # Clients (from pool applications) and Ceph AI itself.
-    out_nodes.append(_node("ceph_ai", "clients", "client", "Ceph AI", "watcher · worker", OK, [
+
+def _rgw_node(graph: _Graph, inputs: _Inputs) -> None:
+    if not inputs.rgw:
+        return
+    rgw_status, rgw_checks = _component_status("rgw", inputs.checks)
+    for code, check in inputs.checks.items():
+        if code == "CEPHADM_FAILED_DAEMON" and any("rgw" in message for message in _messages(check)):
+            rgw_status = ERROR
+            rgw_checks.append(_check_view(code, check))
+    graph.nodes.append(_node("rgw", "data", "rgw", "RGW (S3)", f"{len(inputs.rgw)} daemon", rgw_status, [
+        f"{daemon['host'] or '?'} · {daemon['frontend'] or '?'} · zonegroup {daemon['zonegroup'] or '?'}" for daemon in inputs.rgw
+    ], rgw_checks, "/object-storage/buckets"))
+    graph.edge("rgw", "osd", "object data", "data")
+    graph.edge("rgw", "mon", "cluster map", "control")
+
+
+_CLIENT_SPECS = (
+    ("rbd", "rbd_clients", "RBD client", "OpenStack / Kubernetes / VM"),
+    ("rgw", "s3_clients", "S3 client", "ứng dụng qua RGW"),
+    ("cephfs", "cephfs_clients", "CephFS client", "mount CephFS"),
+)
+
+
+def _clients(graph: _Graph, inputs: _Inputs) -> None:
+    """Clients from pool applications, plus Ceph AI itself."""
+    graph.nodes.append(_node("ceph_ai", "clients", "client", "Ceph AI", "watcher · worker", OK, [
         "Đọc health/telemetry qua SSH chỉ-đọc", "Lệnh đã duyệt chạy bằng khóa riêng",
     ]))
-    edge("ceph_ai", "mon", "ceph status (SSH)", "control")
-    client_specs = (
-        ("rbd", "rbd_clients", "RBD client", "OpenStack / Kubernetes / VM"),
-        ("rgw", "s3_clients", "S3 client", "ứng dụng qua RGW"),
-        ("cephfs", "cephfs_clients", "CephFS client", "mount CephFS"),
-    )
-    for app, node_id, title, subtitle in client_specs:
-        if app not in apps:
+    graph.edge("ceph_ai", "mon", "ceph status (SSH)", "control")
+    for app, node_id, title, subtitle in _CLIENT_SPECS:
+        if app not in inputs.apps:
             continue
-        out_nodes.append(_node(node_id, "clients", "client", title, subtitle, OK,
-                               [f"Có pool với ứng dụng '{app}'"]))
-        if app == "rgw":
-            if rgw:
-                edge(node_id, "rgw", "S3 / HTTP", "data")
-        else:
-            edge(node_id, "mon", "cluster map", "control")
-            edge(node_id, "osd", "đọc / ghi dữ liệu", "data")
+        graph.nodes.append(_node(node_id, "clients", "client", title, subtitle, OK,
+                                 [f"Có pool với ứng dụng '{app}'"]))
+        if app != "rgw":
+            graph.edge(node_id, "mon", "cluster map", "control")
+            graph.edge(node_id, "osd", "đọc / ghi dữ liệu", "data")
+        elif inputs.rgw:
+            graph.edge(node_id, "rgw", "S3 / HTTP", "data")
 
-    # Networks.
-    out_nodes.extend(_network_nodes(public_nets, cluster_nets, daemons))
-    front = checks.get("OSD_SLOW_PING_TIME_FRONT")
-    back = checks.get("OSD_SLOW_PING_TIME_BACK")
-    for node_id, slow_check, code in (("net_public", front, "OSD_SLOW_PING_TIME_FRONT"),
-                                      ("net_cluster" if cluster_nets else "net_public", back, "OSD_SLOW_PING_TIME_BACK")):
-        target = next((node for node in out_nodes if node["id"] == node_id), None)
+
+def _networks_layer(graph: _Graph, inputs: _Inputs) -> None:
+    public_nets, cluster_nets = inputs.public_nets, inputs.cluster_nets
+    graph.nodes.extend(_network_nodes(public_nets, cluster_nets, inputs.daemons))
+    slow = (("net_public", "OSD_SLOW_PING_TIME_FRONT"),
+            ("net_cluster" if cluster_nets else "net_public", "OSD_SLOW_PING_TIME_BACK"))
+    for node_id, code in slow:
+        target, slow_check = graph.find(node_id), inputs.checks.get(code)
         if target is not None and slow_check:
             target["status"] = _worst(target["status"], WARN)
             target["checks"].append(_check_view(code, slow_check))
             target["facts"].extend(_slow_ping_facts(slow_check))
-    mon_ports = sorted({item["addr"].rsplit(":", 1)[1] for mon in mon_daemons for item in mon.get("public") or []})
+    mon_ports = sorted({item["addr"].rsplit(":", 1)[1] for mon in inputs.mon_daemons for item in mon.get("public") or []})
     if public_nets:
-        edge("osd", "net_public", "client I/O" if cluster_nets else "client I/O · replication", "network")
-        edge("mon", "net_public", f"lắng nghe :{', :'.join(mon_ports)}" if mon_ports else "lắng nghe", "network")
+        graph.edge("osd", "net_public", "client I/O" if cluster_nets else "client I/O · replication", "network")
+        graph.edge("mon", "net_public", f"lắng nghe :{', :'.join(mon_ports)}" if mon_ports else "lắng nghe", "network")
     if cluster_nets:
-        edge("osd", "net_cluster", "replication · recovery", "network")
+        graph.edge("osd", "net_cluster", "replication · recovery", "network")
 
-    # Hosts, OSDs grouped by host.
-    management_hosts = []
-    for entry in nodes_payload.get("nodes") or []:
-        if not isinstance(entry, dict):
-            continue
-        name = _short_host(entry.get("node_name") or entry.get("host"))
-        addresses = [str(address) for address in entry.get("aliases") or [entry.get("host")] if address]
-        osd_ids = osds_by_host.get(name, [])
-        host_checks = _host_mentions(checks, name, osd_ids)
-        down = sorted(set(osd_ids) & down_osds)
-        host_status = OK
-        if down or any(check["code"] == "OSD_HOST_DOWN" for check in host_checks):
-            host_status = ERROR
-        elif host_checks:
-            host_status = WARN
-        node_id = f"host_{re.sub(r'[^A-Za-z0-9_]', '_', name)}"
-        public_addr = [address for address in addresses if _in_networks(address, public_nets)]
-        cluster_addr = [address for address in addresses if _in_networks(address, cluster_nets)]
-        other_addr = [address for address in addresses if address not in public_addr and address not in cluster_addr]
-        out_nodes.append(_node(node_id, "hosts", "host", name, " · ".join(entry.get("roles") or []) or "chưa rõ vai trò",
-                               host_status, [
-                                   "OSD: " + (", ".join(f"osd.{osd}{' (down)' if osd in down else ''}" for osd in osd_ids) or "không có"),
-                                   "Địa chỉ public: " + (", ".join(public_addr) or "—"),
-                                   *(["Địa chỉ cluster: " + ", ".join(cluster_addr)] if cluster_nets else []),
-                                   "Địa chỉ khác (quản trị): " + (", ".join(other_addr) or "—"),
-                                   *_host_daemon_facts(name, mon_daemons, osd_ids, osd_addrs),
-                               ], host_checks, "/nodes"))
-        if osd_ids:
-            edge(node_id, "osd", f"{len(osd_ids)} OSD", "data")
-        if public_addr:
-            edge(node_id, "net_public", "public", "network")
-        if cluster_addr:
-            edge(node_id, "net_cluster", "cluster", "network")
-        if other_addr:
-            management_hosts.append(node_id)
-    if management_hosts:
-        out_nodes.append(_node("net_management", "networks", "network", "Mạng quản trị",
-                               "địa chỉ ngoài public/cluster network", OK,
-                               ["SSH của Ceph AI và operator", "Không mang dữ liệu Ceph"]))
-        edge("ceph_ai", "net_management", "SSH", "management")
-        for node_id in management_hosts:
-            edge(node_id, "net_management", "SSH", "management")
 
+def _host_status(down: list[int], host_checks: list[dict]) -> str:
+    if down or any(check["code"] == "OSD_HOST_DOWN" for check in host_checks):
+        return ERROR
+    return WARN if host_checks else OK
+
+
+def _host_node(graph: _Graph, inputs: _Inputs, entry: dict) -> bool:
+    """One host node and its edges; True when it also has a management address."""
+    name = _short_host(entry.get("node_name") or entry.get("host"))
+    addresses = [str(address) for address in entry.get("aliases") or [entry.get("host")] if address]
+    osd_ids = inputs.osds_by_host.get(name, [])
+    host_checks = _host_mentions(inputs.checks, name, osd_ids)
+    down = sorted(set(osd_ids) & inputs.down_osds)
+    node_id = f"host_{re.sub(r'[^A-Za-z0-9_]', '_', name)}"
+    public_addr = [address for address in addresses if _in_networks(address, inputs.public_nets)]
+    cluster_addr = [address for address in addresses if _in_networks(address, inputs.cluster_nets)]
+    other_addr = [address for address in addresses if address not in public_addr and address not in cluster_addr]
+    osd_addrs = {osd["id"]: osd for osd in inputs.osd_daemons}
+    graph.nodes.append(_node(node_id, "hosts", "host", name, " · ".join(entry.get("roles") or []) or "chưa rõ vai trò",
+                             _host_status(down, host_checks), [
+                                 "OSD: " + (", ".join(f"osd.{osd}{' (down)' if osd in down else ''}" for osd in osd_ids) or "không có"),
+                                 "Địa chỉ public: " + (", ".join(public_addr) or "—"),
+                                 *(["Địa chỉ cluster: " + ", ".join(cluster_addr)] if inputs.cluster_nets else []),
+                                 "Địa chỉ khác (quản trị): " + (", ".join(other_addr) or "—"),
+                                 *_host_daemon_facts(name, inputs.mon_daemons, osd_ids, osd_addrs),
+                             ], host_checks, "/nodes"))
+    for present, target, label, kind in ((osd_ids, "osd", f"{len(osd_ids)} OSD", "data"),
+                                         (public_addr, "net_public", "public", "network"),
+                                         (cluster_addr, "net_cluster", "cluster", "network"),
+                                         (other_addr, "net_management", "SSH", "management")):
+        if present:
+            graph.edge(node_id, target, label, kind)
+    return bool(other_addr)
+
+
+def _hosts(graph: _Graph, inputs: _Inputs) -> None:
+    """Hosts, OSDs grouped by host, and the management network they share."""
+    entries = [entry for entry in inputs.nodes_payload.get("nodes") or [] if isinstance(entry, dict)]
+    management = [_host_node(graph, inputs, entry) for entry in entries]
+    if any(management):
+        graph.nodes.append(_node("net_management", "networks", "network", "Mạng quản trị",
+                                 "địa chỉ ngoài public/cluster network", OK,
+                                 ["SSH của Ceph AI và operator", "Không mang dữ liệu Ceph"]))
+        graph.edge("ceph_ai", "net_management", "SSH", "management")
+
+
+def build(cluster, *, now: datetime | None = None, sections: dict[str, dict | None] | None = None) -> dict:
+    """The topology of one cluster from its stored snapshots."""
+    now = now or utc_now()
+    sections = sections if sections is not None else _read(str(cluster.id))
+    health_section = sections.get("health") or {}
+    inputs = _inputs(sections)
+    stale = bool(not health_section or health_section.get("stale") or not inputs.status
+                 or (sections.get("status") or {}).get("stale"))
+    graph = _Graph()
+    for layer in (_control_plane, _data_path, _clients, _networks_layer, _hosts):
+        layer(graph, inputs)
     if stale:
-        for node in out_nodes:
+        for node in graph.nodes:
             node["status"] = UNKNOWN
-    snapshot_times = {name: (sections.get(name) or {}).get("collected_at") for name in ("health", "status", "nodes", "crush")}
+    node_ids = {node["id"] for node in graph.nodes}
     return {
         "schema": SCHEMA,
         "cluster": {"id": str(cluster.id), "name": getattr(cluster, "name", "")},
         "generated_at": now.isoformat(),
         "stale": stale,
-        "snapshots": snapshot_times,
+        "snapshots": {name: (sections.get(name) or {}).get("collected_at") for name in ("health", "status", "nodes", "crush")},
         "summary": {
-            "health": (health_section.get("health") or {}).get("status") or (status.get("health") or {}).get("status"),
-            "mons_in_quorum": len(quorum), "mons": num_mons,
-            "osds_up": osd_up, "osds_in": osd_in, "osds": osd_total,
-            "pgs_active_clean": active_clean, "pgs": pg_total,
-            "used_percent": used_pct,
-            "public_network": public_nets, "cluster_network": cluster_nets,
+            "health": (health_section.get("health") or {}).get("status") or (inputs.status.get("health") or {}).get("status"),
+            "mons_in_quorum": len(inputs.quorum), "mons": inputs.num_mons,
+            "osds_up": inputs.osd_up, "osds_in": inputs.osd_in, "osds": inputs.osd_total,
+            "pgs_active_clean": inputs.active_clean, "pgs": inputs.pg_total,
+            "used_percent": inputs.used_pct,
+            "public_network": inputs.public_nets, "cluster_network": inputs.cluster_nets,
         },
         "groups": GROUPS,
-        "nodes": out_nodes,
-        "edges": [item for item in edges if {item["from"], item["to"]} <= {node["id"] for node in out_nodes}],
+        "nodes": graph.nodes,
+        "edges": [item for item in graph.edges if {item["from"], item["to"]} <= node_ids],
     }
