@@ -21,7 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 
-from sqlalchemy import inspect, text
+from sqlalchemy import case, column, func, inspect, select, text
+from sqlalchemy import table as sql_table
 
 from config.settings import settings
 from shared.online_learning_gate import effective_max_gap_seconds
@@ -45,38 +46,47 @@ def _table_names(session) -> set[str]:
         return set()
 
 
-def _rows(session, tables: set[str], table: str, query: str, params: dict | None = None) -> list[dict]:
+def _rows(session, tables: set[str], table: str, query, params: dict | None = None) -> list[dict]:
     if table not in tables:
         return []
-    return [dict(row) for row in session.execute(text(query), params or {}).mappings()]
+    statement = text(query) if isinstance(query, str) else query
+    return [dict(row) for row in session.execute(statement, params or {}).mappings()]
+
+
+_FORECAST_SCOPES = {
+    True: ("cluster_name", "host", "metric", "horizon_hours", "algorithm"),
+    False: ("cluster_id", "pool", "image", "metric", "horizon_hours", "algorithm"),
+}
 
 
 def _forecast_metrics(session, tables: set[str], table: str, *, node: bool) -> list[dict]:
+    """Accuracy per forecast series, built with SQLAlchemy Core (no SQL strings)."""
     if table not in tables:
         return []
-    scope = (
-        "cluster_name, host, metric, horizon_hours, algorithm"
-        if node else "cluster_id, pool, image, metric, horizon_hours, algorithm"
+    names = _FORECAST_SCOPES[node]
+    actual_name = "actual_percent" if node else "actual_value"
+    predicted_name = "predicted_percent" if node else "predicted_value"
+    runs = sql_table(table, *(column(name) for name in (*names, actual_name, predicted_name, "status")))
+    scope = [runs.c[name] for name in names]
+    actual, predicted, status = runs.c[actual_name], runs.c[predicted_name], runs.c["status"]
+    error = predicted - actual
+    evaluated = (status == "EVALUATED") & actual.isnot(None)
+    magnitude = func.abs(predicted) + func.abs(actual)
+    query = (
+        select(
+            *scope,
+            func.count().label("total"),
+            func.sum(case((evaluated, 1), else_=0)).label("evaluated"),
+            func.sum(case((status == "PENDING", 1), else_=0)).label("pending"),
+            func.sum(case((status.notin_(["EVALUATED", "PENDING"]), 1), else_=0)).label("skipped"),
+            func.avg(case((evaluated, func.abs(error)))).label("mae"),
+            func.sqrt(func.avg(case((evaluated, error * error)))).label("rmse"),
+            func.avg(case((evaluated, case((magnitude == 0, 0), else_=200.0 * func.abs(error) / magnitude)))).label("smape"),
+            func.avg(case((evaluated, error))).label("bias"),
+        )
+        .group_by(*scope)
+        .order_by(*scope)
     )
-    actual = "actual_percent" if node else "actual_value"
-    predicted = "predicted_percent" if node else "predicted_value"
-    error = f"({predicted} - {actual})"
-    query = f"""
-        SELECT {scope},
-               COUNT(*) AS total,
-               SUM(CASE WHEN status='EVALUATED' AND {actual} IS NOT NULL THEN 1 ELSE 0 END) AS evaluated,
-               SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending,
-               SUM(CASE WHEN status NOT IN ('EVALUATED', 'PENDING') THEN 1 ELSE 0 END) AS skipped,
-               AVG(CASE WHEN status='EVALUATED' AND {actual} IS NOT NULL THEN ABS({error}) END) AS mae,
-               SQRT(AVG(CASE WHEN status='EVALUATED' AND {actual} IS NOT NULL THEN {error} * {error} END)) AS rmse,
-               AVG(CASE WHEN status='EVALUATED' AND {actual} IS NOT NULL
-                   THEN CASE WHEN ABS({predicted}) + ABS({actual}) = 0 THEN 0
-                   ELSE 200.0 * ABS({error}) / (ABS({predicted}) + ABS({actual})) END END) AS smape,
-               AVG(CASE WHEN status='EVALUATED' AND {actual} IS NOT NULL THEN {error} END) AS bias
-        FROM {table}
-        GROUP BY {scope}
-        ORDER BY {scope}
-    """
     return _rows(session, tables, table, query)
 
 
@@ -129,7 +139,9 @@ def _sample_intervals(session, tables: set[str]) -> list[dict]:
 
 
 def _count_by(session, tables: set[str], table: str, field: str) -> dict[str, int | str]:
-    rows = _rows(session, tables, table, f"SELECT {field} AS key, COUNT(*) AS value FROM {table} GROUP BY {field}")
+    counted = sql_table(table, column(field)).c[field]
+    query = select(counted.label("key"), func.count().label("value")).group_by(counted)
+    rows = _rows(session, tables, table, query)
     return {str(row["key"]): int(row["value"] or 0) for row in rows}
 
 
