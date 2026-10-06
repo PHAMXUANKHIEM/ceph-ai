@@ -81,7 +81,7 @@ Một máy trạng thái, mỗi bước ghi audit: kiểm tra môi trường →
 ### FL1 — Replay có bằng chứng + chấm điểm (không đụng cụm)
 - [ ] Mở rộng bộ giả lập: envelope có health detail, log line và metric mẫu lấy từ sự cố thật đã ghi (đã ẩn danh) thay vì một câu thông báo.
 - [~] Danh mục YAML + validator cho 9 replay scenario đã có. Fixture hiện là dữ liệu tổng hợp, có provenance `synthetic_fixture`; chưa thay bằng log/metric sự cố thật đã ẩn danh nên chưa đủ điều kiện golden/learning.
-- [~] Scorer cho detection/diagnosis/proposal/recovery/side effects/cleanup đã có; campaign JSON/CLI hỗ trợ chấm cả replay và no-fault control. Chưa có bộ tự chạy lượt đối chứng hay tự thu outcome từ Worker.
+- [~] Scorer cho detection/diagnosis/proposal/recovery/side effects/cleanup đã có; campaign JSON/CLI hỗ trợ chấm cả replay và no-fault control. Bộ chạy chiến dịch `scripts/lab/failure_lab_replay.py` (`shared/failure_lab.py`) tự tạo incident giả lập, chờ Worker chẩn đoán, đọc chẩn đoán/đề xuất, chấm và dọn đúng `run_id`; báo cáo ở `/var/lib/ceph-ai/failure-lab/`. Còn thiếu: lượt đối chứng tự động (cần FL2/cụm thật) và chạy thật trên CS-LAB (cần FL0: `autonomy_environment=lab`).
 - [ ] Chạy trong CI như golden set chẩn đoán đầu tiên.
 
 ### FL2 — Lỗi thật trên CS-LAB
