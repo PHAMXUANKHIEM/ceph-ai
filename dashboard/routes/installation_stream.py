@@ -10,8 +10,11 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from scripts.architecture_profile import _load_installation_data, build_installation_profile
-from shared import ceph_topology
+import logging
 
+from shared import ai_flow, ceph_topology
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
 templates = make_templates()
 
@@ -39,6 +42,25 @@ async def ceph_topology_api(request: Request, user: str = Depends(require_login)
     return topology
 
 
+def _ai_flow() -> dict | None:
+    """The AI flow overview; a broken count must not take the Stream page down."""
+    try:
+        return ai_flow.build()
+    except Exception:
+        logger.exception("stream: AI flow overview unavailable")
+        return None
+
+
+@router.get("/api/stream/ai-flow")
+async def ai_flow_api(user: str = Depends(require_login)) -> dict:
+    """Read-only overview of the AI loop with 24-hour counts; no Ceph command runs."""
+    _require_admin(user)
+    flow = _ai_flow()
+    if flow is None:
+        raise HTTPException(status_code=503, detail="Chưa đọc được số liệu luồng AI")
+    return flow
+
+
 @router.get("/stream", response_class=HTMLResponse)
 async def installation_stream_page(request: Request, user: str = Depends(require_login)):
     """Render the current install's architecture; never probe external services."""
@@ -56,5 +78,6 @@ async def installation_stream_page(request: Request, user: str = Depends(require
             "selected_cluster": selected,
             "installation_profile": profile,
             "ceph_topology": _topology(selected),
+            "ai_flow": _ai_flow(),
         },
     )

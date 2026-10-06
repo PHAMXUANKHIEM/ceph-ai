@@ -80,6 +80,11 @@ Component hiện tại: một file React ~580 dòng; phần vẽ (canvas, kéo t
 - [ ] (chờ operator: `ceph auth ls` trả cả key) Client thực tế từ `ceph auth ls` (chỉ tên entity, không key) và session RBD/RGW nếu có nguồn chỉ-đọc phù hợp.
 - [x] Heartbeat chậm (`OSD_SLOW_PING_TIME_FRONT/BACK`): mạng tương ứng `warn`, chi tiết liệt kê tối đa 5 cặp OSD chậm (+ số còn lại).
 
+### CS6 — Tab "Luồng AI" (operator yêu cầu 06/10/2026)
+- [x] `shared/ai_flow.py` + `GET /api/stream/ai-flow` (admin): 16 bước phát hiện → incident → thu bằng chứng → chẩn đoán → policy/preflight → duyệt/autopilot → thực thi → xác minh → Case Memory/Trust/online learning/Failure Lab, kèm số liệu 24 giờ từ DB và báo cáo Failure Lab mới nhất; bước có số liệu xấu tô `warn`/`error`. Chỉ đọc, không chạy lệnh Ceph; lỗi đọc số liệu không làm hỏng trang (tab bị khóa).
+- [x] `AiFlowStream.tsx` (tái dùng `StreamCanvas`, bố cục theo cột), tab thứ ba `#ai`, tự làm mới 30 giây. Render Chromium trên số liệu thật: 16 bước, 18 cạnh, không lỗi JS, không tràn ngang ở 1440/390 px.
+- Số liệu thật ngày 06/10 đã chỉ ra: thu bằng chứng = 0 dù có 49 incident; 5/7 lần thực thi lỗi; 30 action chờ duyệt; 1 case đã xác minh; Failure Lab 2/8.
+
 ### CS5 — Kiểm thử và phát hành
 - [ ] Chạy thử read model trên dữ liệu production trước khi báo xong.
 - [ ] Browser acceptance: tab Cụm Ceph hiện đủ nhóm, không lỗi JS, không tràn ngang ở 390/1280/1920 px.

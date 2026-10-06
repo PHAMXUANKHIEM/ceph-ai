@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { CephDashboard, type DashboardHealth } from "./components/CephDashboard";
 import { PoolsPage } from "./components/PoolsPage";
 import type { InstallationProfile } from "./components/InstallationStream";
+import type { AiFlow } from "./components/AiFlowStream";
 import type { CephTopology } from "./components/CephClusterStream";
 import { StreamPage } from "./components/StreamPage";
 import "./styles.css";
@@ -40,7 +41,14 @@ if (streamRoot && streamData?.textContent) {
       // The system stream still renders; the Ceph tab stays disabled.
       console.error("Invalid ceph-topology bootstrap data", error);
     }
-    createRoot(streamRoot).render(<React.StrictMode><StreamPage profile={profile} topology={topology} /></React.StrictMode>);
+    let aiFlow: AiFlow | null = null;
+    try {
+      aiFlow = JSON.parse(document.getElementById("ai-flow-bootstrap")?.textContent || "null") as AiFlow | null;
+    } catch (error) {
+      // The other tabs still render; the AI tab stays disabled.
+      console.error("Invalid ai-flow bootstrap data", error);
+    }
+    createRoot(streamRoot).render(<React.StrictMode><StreamPage profile={profile} topology={topology} aiFlow={aiFlow} /></React.StrictMode>);
   } catch (error) {
     console.error("Invalid installation-stream bootstrap data", error);
     streamRoot.textContent = "Không đọc được profile cấu hình. Hãy tải lại trang.";

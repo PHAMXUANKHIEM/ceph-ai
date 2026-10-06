@@ -69,7 +69,9 @@ function iconFor(node: TopologyNode): LucideIcon {
 
 // Left-to-right flow: one column per group (client → control plane →
 // gateway/data → hosts → networks), nodes stacked in their column.
-export function layoutPositions(topology: CephTopology): { positions: Record<string, Point>; labels: Record<string, Point> } {
+type ColumnGraph = { groups: Array<{ id: string }>; nodes: Array<{ id: string; group: string }> };
+
+export function layoutPositions(topology: ColumnGraph): { positions: Record<string, Point>; labels: Record<string, Point> } {
   const positions: Record<string, Point> = {};
   const labels: Record<string, Point> = {};
   let column = 0;
