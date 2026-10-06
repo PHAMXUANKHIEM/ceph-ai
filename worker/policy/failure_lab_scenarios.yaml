@@ -1,0 +1,123 @@
+schema_version: 1
+scenarios:
+  - id: osd_down
+    mode: replay
+    ceph_code: OSD_DOWN
+    severity: HEALTH_WARN
+    message: "Fixture only: osd.0 is reported down."
+    replay:
+      log_excerpt: "fixture=synthetic osd.0 state=down; no live daemon was stopped"
+      metrics: {osd_up: 2, osd_in: 3}
+    expect:
+      diagnosis_markers: ["osd.0", "down"]
+      acceptable_action_ids: ["investigate_manually"]
+      detection_timeout_seconds: 60
+    provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
+  - id: mon_clock_skew
+    mode: replay
+    ceph_code: MON_CLOCK_SKEW
+    severity: HEALTH_WARN
+    message: "Fixture only: monitor clock skew is reported."
+    replay:
+      log_excerpt: "fixture=synthetic mon.a clock offset exceeds configured tolerance"
+      metrics: {clock_offset_ms: 250, tolerance_ms: 50}
+    expect:
+      diagnosis_markers: ["clock", "skew"]
+      acceptable_action_ids: ["investigate_manually"]
+      detection_timeout_seconds: 60
+    provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
+  - id: pg_degraded
+    mode: replay
+    ceph_code: PG_DEGRADED
+    severity: HEALTH_WARN
+    message: "Fixture only: placement groups are degraded."
+    replay:
+      log_excerpt: "fixture=synthetic pg=1.2 state=active+undersized"
+      metrics: {degraded_pgs: 1, total_pgs: 128}
+    expect:
+      diagnosis_markers: ["pg", "degraded"]
+      acceptable_action_ids: ["investigate_manually"]
+      detection_timeout_seconds: 60
+    provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
+  - id: osd_nearfull
+    mode: replay
+    ceph_code: OSD_NEARFULL
+    severity: HEALTH_WARN
+    message: "Fixture only: an OSD is near full."
+    replay:
+      log_excerpt: "fixture=synthetic osd.2 utilization=88%"
+      metrics: {osd_utilization_percent: 88, nearfull_threshold_percent: 85}
+    expect:
+      diagnosis_markers: ["osd.2", "near full"]
+      acceptable_action_ids: ["investigate_manually"]
+      detection_timeout_seconds: 60
+    provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
+  - id: slow_heartbeat
+    mode: replay
+    ceph_code_prefix: OSD_SLOW_PING_TIME
+    sample_suffix: _FRONT
+    severity: HEALTH_WARN
+    message: "Fixture only: slow heartbeat between OSDs."
+    replay:
+      log_excerpt: "fixture=synthetic OSD_SLOW_PING_TIME_FRONT osd.0 -> osd.1"
+      metrics: {heartbeat_latency_ms: 1800, warning_threshold_ms: 1000}
+    expect:
+      diagnosis_markers: ["heartbeat", "latency"]
+      acceptable_action_ids: ["investigate_manually"]
+      detection_timeout_seconds: 60
+    provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
+  - id: node_unreachable
+    mode: replay
+    ceph_code_prefix: "NODE_UNREACHABLE:"
+    sample_suffix: lab-node-01
+    severity: HEALTH_WARN
+    message: "Fixture only: a lab node is unreachable over SSH."
+    replay:
+      log_excerpt: "fixture=synthetic node=lab-node-01 ssh=unreachable"
+      metrics: {ssh_consecutive_failures: 3}
+    expect:
+      diagnosis_markers: ["lab-node-01", "ssh"]
+      acceptable_action_ids: ["investigate_manually"]
+      detection_timeout_seconds: 60
+    provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
+  - id: osd_latency_high
+    mode: replay
+    ceph_code_prefix: "OSD_LATENCY_HIGH:"
+    sample_suffix: "0"
+    severity: HEALTH_WARN
+    message: "Fixture only: OSD commit/apply latency is elevated."
+    replay:
+      log_excerpt: "fixture=synthetic osd=0 commit_latency_ms=1200 apply_latency_ms=900"
+      metrics: {commit_latency_ms: 1200, apply_latency_ms: 900}
+    expect:
+      diagnosis_markers: ["osd", "latency"]
+      acceptable_action_ids: ["investigate_manually"]
+      detection_timeout_seconds: 60
+    provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
+  - id: crush_skew
+    mode: replay
+    ceph_code_prefix: "CRUSH_SKEW_USE:"
+    sample_suffix: root
+    severity: HEALTH_WARN
+    message: "Fixture only: CRUSH subtree utilization is skewed."
+    replay:
+      log_excerpt: "fixture=synthetic CRUSH_SKEW_USE:root utilization_skew=2.4"
+      metrics: {max_subtree_utilization_percent: 72, min_subtree_utilization_percent: 30}
+    expect:
+      diagnosis_markers: ["crush", "skew"]
+      acceptable_action_ids: ["investigate_manually"]
+      detection_timeout_seconds: 60
+    provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
+  - id: large_omap
+    mode: replay
+    ceph_code: LARGE_OMAP_OBJECTS
+    severity: HEALTH_WARN
+    message: "Fixture only: a test RGW index object has a large OMAP."
+    replay:
+      log_excerpt: "fixture=synthetic bucket=test-lab object=.dir.fixture keys=6200 threshold=5000"
+      metrics: {omap_keys: 6200, warning_threshold: 5000, shard_count: 1}
+    expect:
+      diagnosis_markers: ["omap", "test-lab"]
+      acceptable_action_ids: ["investigate_manually"]
+      detection_timeout_seconds: 60
+    provenance: {source: synthetic_fixture, verified_real_incident: false, golden_set_approved: false}
