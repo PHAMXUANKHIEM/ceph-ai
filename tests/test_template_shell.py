@@ -30,3 +30,9 @@ def test_page_main_element_activates_the_shell(template):
     classes = re.search(r'class="([^"]*)"', main.group(0))
     tokens = re.sub(r"\{[%{].*?[%}]\}", " ", classes.group(1) if classes else "").split()
     assert "page" in tokens, f"{template.name}: <main> needs class 'page' for the app shell"
+
+
+@pytest.mark.parametrize("template", PAGES, ids=lambda path: path.name)
+def test_page_loads_the_script_that_builds_the_sidebar(template):
+    # Without app.js the shared navigation renders as an unstyled link list.
+    assert 'src="/static/app.js' in template.read_text(encoding="utf-8"), f"{template.name} does not load /static/app.js"

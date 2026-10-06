@@ -32,5 +32,6 @@
       <footer class="dashboard-pagination"><span>Hiển thị {{ ((audit_page.page - 1) * audit_page.page_size + 1) if audit_page.total else 0 }}–{{ [audit_page.page * audit_page.page_size, audit_page.total]|min }} / {{ audit_page.total }}</span><span>Trang {{ audit_page.page }}/{{ audit_page.pages }}</span></footer>
     </section>
   </main>
+  <script src="/static/app.js?v={{ static_version }}"></script>
 </body>
 </html>
