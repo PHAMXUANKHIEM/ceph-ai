@@ -742,6 +742,16 @@ def test_no_command_sent_with_all_available_devices_flag(monkeypatch):
     assert any("orch daemon add osd" in cmd and "/dev/vdb" in cmd for cmd in seen_commands)
 
 
+
+def test_cephadm_osd_wait_fails_with_count_when_timeout_expires(monkeypatch):
+    monkeypatch.setattr(cluster_deploy_module, "_QUORUM_DEFAULT_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda *args: "[]")
+
+    with pytest.raises(DeployPhaseError, match="0/2 daemon"):
+        cluster_deploy_module._wait_for_cephadm_osd_service(
+            "mon-host", "osd.test-service", "osd-host", 2
+        )
+
 def test_cephadm_orch_apply_osd_creates_one_osd_per_disk_on_same_node(monkeypatch):
     """The feature this all exists for: a single node can carry multiple
     OSD disks (e.g. /dev/vdc AND /dev/vdd), each becoming its OWN OSD via
@@ -773,6 +783,99 @@ def test_cephadm_orch_apply_osd_creates_one_osd_per_disk_on_same_node(monkeypatc
     assert any("10-20-1-95.lab:/dev/vdd" in cmd for cmd in add_osd_commands)
     # 2 disks on 10.20.1.95 + 1 disk on 10.20.1.21 = 3 total OSD-create calls.
     assert len(add_osd_commands) == 3
+
+
+
+
+def test_run_rejects_non_boolean_persisted_osd_encryption_before_phases(monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("must reject malformed persisted config before side effects")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", unexpected)
+    write_progress, calls = _make_recording_progress_writer()
+
+    result = run(
+        "action-malformed",
+        "deploy_cluster_cephadm",
+        _cephadm_params(osd_encryption="false"),
+        "incident-1",
+        write_progress,
+        _never_blocked,
+    )
+
+    assert result is False
+    assert calls == []
+
+def test_cephadm_encrypted_osd_cleans_spec_when_dry_run_rejects_selection(monkeypatch):
+    seen_commands = []
+    host_updates = []
+
+    monkeypatch.setattr(cluster_deploy_module, "_write_remote_file", lambda *args: None)
+
+    def fake(host, command):
+        seen_commands.append(command)
+        if "--dry-run" in command:
+            return "wrong-host /dev/vdc"
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    nodes = [{"ip": "10.20.1.95", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdc"]}]
+    with pytest.raises(DeployPhaseError, match="không xác nhận host/đĩa"):
+        cluster_deploy_module._phase_cephadm_orch_apply_osd(
+            nodes, {"osd_encryption": True, "_node_hostnames": {"10.20.1.95": "node-a"}},
+            lambda value: host_updates.append(value),
+        )
+
+    assert any(command.startswith("rm -f ") for command in seen_commands)
+    assert not any("orch apply -i" in command and "--dry-run" not in command
+                   for command in seen_commands)
+    assert host_updates[-1][0]["status"] == "failed"
+
+def test_cephadm_encrypted_osd_waits_for_all_requested_daemons(monkeypatch):
+    seen_commands = []
+    written_specs = []
+
+    written_paths = []
+
+    def write_remote(host, path, content):
+        written_paths.append(path)
+        written_specs.append(json.loads(content))
+
+    def fake(host, command):
+        seen_commands.append(command)
+        if "--dry-run" in command:
+            return "node-a /dev/vdc /dev/vdd"
+        if "orch ps" in command:
+            return json.dumps([
+                {"daemon_type": "osd", "hostname": "node-a", "status_desc": "running"},
+                {"daemon_type": "osd", "hostname": "node-a", "status_desc": "running"},
+            ])
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "_write_remote_file", write_remote)
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    nodes = [{"ip": "10.20.1.95", "roles": ["mon", "osd"],
+              "osd_disks": ["/dev/vdc", "/dev/vdd"]}]
+    statuses = []
+    cluster_deploy_module._phase_cephadm_orch_apply_osd(
+        nodes, {"osd_encryption": True, "_node_hostnames": {"10.20.1.95": "node-a"}},
+        lambda value: statuses.append(value),
+    )
+
+    assert len(written_specs) == 1
+    spec = written_specs[0]
+    assert spec["spec"]["encrypted"] is True
+    assert spec["placement"]["hosts"] == ["node-a"]
+    assert spec["spec"]["data_devices"]["paths"] == ["/dev/vdc", "/dev/vdd"]
+    assert any("--dry-run" in command for command in seen_commands)
+    assert any("orch ps" in command and "--refresh" in command for command in seen_commands)
+    assert statuses[-1][0]["status"] == "done"
+    # The spec lives in root's home (not /tmp) and is mounted into the
+    # cephadm shell container, which does not see host files otherwise.
+    assert written_paths and not written_paths[0].startswith("/tmp/")
+    applies = [command for command in seen_commands if "orch apply -i" in command]
+    assert applies and all(f"--mount {written_paths[0]}:/mnt/ceph-ai-osd-spec.json" in command
+                           and "-i /mnt/ceph-ai-osd-spec.json" in command for command in applies)
 
 
 # --- RGW (optional role) ----------------------------------------------------
@@ -952,6 +1055,30 @@ def test_ceph_deploy_osd_create_runs_one_lvm_create_per_disk_on_same_node(monkey
     assert len(lvm_create_commands) == 2
     assert all("/usr/sbin" in cmd and "/sbin" in cmd for cmd in lvm_create_commands)
 
+
+
+def test_ceph_deploy_osd_create_enables_dmcrypt_for_each_selected_disk(monkeypatch):
+    commands = []
+    monkeypatch.setattr(cluster_deploy_module, "_write_remote_file", lambda *args: None)
+    monkeypatch.setattr(cluster_deploy_module, "_write_remote_file_b64", lambda *args: None)
+    monkeypatch.setattr(
+        cluster_deploy_module, "execute_command",
+        lambda host, command: commands.append((host, command)) or "",
+    )
+    nodes = [{"ip": "10.20.1.95", "roles": ["osd"],
+              "osd_disks": ["/dev/vdc", "/dev/vdd"]}]
+    cluster_deploy_module._phase_ceph_deploy_osd_create(
+        nodes,
+        {"_ceph_conf": "[global]\n", "_bootstrap_osd_keyring_b64": "a2V5",
+         "osd_encryption": True},
+        lambda _status: None,
+    )
+
+    creates = [command for _host, command in commands if "ceph-volume lvm create" in command]
+    assert len(creates) == 2
+    assert all("--dmcrypt" in command for command in creates)
+    assert any("--data /dev/vdc" in command for command in creates)
+    assert any("--data /dev/vdd" in command for command in creates)
 
 def test_ceph_deploy_packages_verifies_ceph_volume_with_system_sbin_path(monkeypatch):
     """Non-login Paramiko shells may omit /usr/sbin, where RPM installs

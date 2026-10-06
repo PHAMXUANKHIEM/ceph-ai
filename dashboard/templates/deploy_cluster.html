@@ -177,6 +177,8 @@
                 osd_pool_default_min_size
                 <input type="number" id="df-pool-min-size" value="2" min="1">
               </label>
+              <label class="deploy-option-toggle"><input type="checkbox" id="df-osd-encryption"> Mã hóa ổ đĩa OSD bằng dm-crypt (LUKS)</label>
+              <p class="form-hint">Ceph quản lý khóa mã hóa; không nhập hoặc lưu passphrase tại đây. Tạo OSD vẫn sẽ ghi dữ liệu lên các đĩa đã chọn.</p>
             </details>
 
             <div class="deploy-submit-bar">

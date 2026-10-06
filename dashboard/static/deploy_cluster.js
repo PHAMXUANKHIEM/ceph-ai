@@ -309,7 +309,8 @@
         public_network: document.getElementById("df-public-network").value.trim(),
         cluster_network: document.getElementById("df-cluster-network").value.trim(),
         osd_pool_default_size: parseInt(document.getElementById("df-pool-size").value, 10) || 3,
-        osd_pool_default_min_size: parseInt(document.getElementById("df-pool-min-size").value, 10) || 2
+        osd_pool_default_min_size: parseInt(document.getElementById("df-pool-min-size").value, 10) || 2,
+        osd_encryption: Boolean(document.getElementById("df-osd-encryption") && document.getElementById("df-osd-encryption").checked)
       };
       var registerBox = document.getElementById("df-register-monitoring");
       if (registerBox && registerBox.checked) {

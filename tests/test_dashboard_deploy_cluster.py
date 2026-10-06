@@ -47,6 +47,7 @@ def _valid_payload(**overrides):
         "cluster_network": "10.20.1.0/24",
         "osd_pool_default_size": 3,
         "osd_pool_default_min_size": 2,
+        "osd_encryption": False,
     }
     payload.update(overrides)
     return payload
@@ -99,6 +100,8 @@ def test_propose_creates_pending_action_for_cephadm(dashboard_client):
         assert action.classification == "RISKY"
         params = json.loads(action.action_params)
         assert params["version"] == "18.2.8"
+        assert params["osd_encryption"] is False
+        assert "dm-crypt/LUKS: TẮT" in action.rationale
         assert len(params["nodes"]) == 3
         target_nodes = json.loads(action.target_nodes)
         assert target_nodes == ["10.20.1.112", "10.20.1.95", "10.20.1.21"]
@@ -106,6 +109,26 @@ def test_propose_creates_pending_action_for_cephadm(dashboard_client):
         incident = session.get(Incident, action.incident_id)
         assert incident.ceph_code == "CLUSTER_DEPLOY"
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+
+
+def test_propose_persists_osd_encryption_for_operator_approval(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/deploy-cluster/propose", json=_valid_payload(osd_encryption=True)
+    )
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert json.loads(action.action_params)["osd_encryption"] is True
+        assert "dm-crypt/LUKS: BẬT" in action.rationale
+
+
+def test_propose_rejects_non_boolean_osd_encryption(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/deploy-cluster/propose", json=_valid_payload(osd_encryption="yes")
+    )
+    assert response.status_code == 400
 
 
 def test_propose_rejects_invalid_version(dashboard_client):

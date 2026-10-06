@@ -279,7 +279,10 @@ này (giống lưu ý Story 7.1 đã nêu cho luồng nâng cấp bằng gói c�
 tiên nên được operator theo dõi sát, không nên để chạy không giám sát."""
 
 
-def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: str | None = None) -> str:
+def _deploy_plan_text(
+    method: str, version: str, nodes: list[dict], rpm_path: str | None = None,
+    osd_encryption: bool = False,
+) -> str:
     mon = [n["ip"] for n in nodes if "mon" in n["roles"]]
     mgr = [n["ip"] for n in nodes if "mgr" in n["roles"]]
     # Per-node disk LIST (vd node1 /dev/vdc + /dev/vdd, node2 /dev/vdb) shown
@@ -295,6 +298,7 @@ def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: st
         f"MON: {', '.join(mon)}\nMGR: {', '.join(mgr)}\nOSD: {', '.join(osd)}\n"
         f"RGW: {', '.join(rgw) if rgw else '(không có)'}"
     )
+    node_summary += "\nMã hóa OSD dm-crypt/LUKS: " + ("BẬT" if osd_encryption else "TẮT")
     rgw_note = (
         f" (kèm {len(rgw)} node RGW)" if rgw else " (không có node RGW — bỏ qua bước tạo RGW)"
     )
@@ -582,6 +586,9 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
 
     public_network = str(body.get("public_network", "")).strip()
     cluster_network = str(body.get("cluster_network", "")).strip() or public_network
+    osd_encryption = body.get("osd_encryption", False)
+    if not isinstance(osd_encryption, bool):
+        raise HTTPException(status_code=400, detail="osd_encryption phải là giá trị boolean")
 
     try:
         osd_pool_default_size = int(body.get("osd_pool_default_size", 3))
@@ -599,6 +606,7 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
         "cluster_network": cluster_network,
         "osd_pool_default_size": osd_pool_default_size,
         "osd_pool_default_min_size": osd_pool_default_min_size,
+        "osd_encryption": osd_encryption,
     }
     if method == "rpm-local":
         action_params["rpm_path"] = rpm_path
@@ -649,7 +657,7 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
             action_id=action_id,
             classification=gate.classify_action(action_id).value,  # always RISKY (AD-5)
             status=ActionStatus.PENDING_APPROVAL.value,
-            rationale=_deploy_plan_text(method, version, nodes, rpm_path),
+            rationale=_deploy_plan_text(method, version, nodes, rpm_path, osd_encryption),
             target_nodes=json.dumps(target_nodes),
             action_params=json.dumps(action_params),
             proposed_command=preview_command,

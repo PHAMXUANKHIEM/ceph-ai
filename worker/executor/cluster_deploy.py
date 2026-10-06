@@ -64,6 +64,10 @@ _REMOTE_CEPH_CONF_PATH = "/etc/ceph/ceph.conf"
 _REMOTE_MON_KEYRING_PATH = "/tmp/ceph-aiops-mon.keyring"
 _REMOTE_MONMAP_PATH = "/tmp/ceph-aiops.monmap"
 _REMOTE_ADMIN_KEYRING_PATH = "/etc/ceph/ceph.client.admin.keyring"
+# Encrypted OSD ServiceSpec: host file (root's home, not world-writable /tmp)
+# and the path it is mounted at inside `cephadm shell`.
+_REMOTE_SPEC_DIR = "/root/.ceph-ai"
+_CONTAINER_SPEC_PATH = "/mnt/ceph-ai-osd-spec.json"
 _REMOTE_BOOTSTRAP_OSD_KEYRING_PATH = "/var/lib/ceph/bootstrap-osd/ceph.keyring"
 
 # Story 9.7 (DR restore, Task 2) — scratch paths for metadata artifacts
@@ -487,6 +491,50 @@ def _phase_cephadm_orch_apply_mgr(nodes: list[dict], action_params: dict, on_hos
     on_host_update(list(host_status))
 
 
+
+def _wait_for_cephadm_osd_service(
+    first_mon: str, service_name: str, hostname: str, expected_count: int
+) -> None:
+    """Wait until cephadm reports every explicitly requested OSD daemon running."""
+    timeout = _QUORUM_DEFAULT_TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout
+    last_observed = 0
+    last_error = None
+    while True:
+        try:
+            output = execute_command(
+                first_mon,
+                "cephadm shell -- ceph orch ps "
+                f"--service_name={shlex.quote(service_name)} "
+                "--format json --refresh",
+            )
+            daemons = json.loads(output or "[]")
+            if not isinstance(daemons, list):
+                raise ValueError("expected a JSON list of orchestrator daemons")
+            last_observed = sum(
+                1
+                for daemon in daemons
+                if isinstance(daemon, dict)
+                and daemon.get("daemon_type") == "osd"
+                and (daemon.get("hostname") or daemon.get("host")) == hostname
+                and str(daemon.get("status_desc") or "").lower() == "running"
+            )
+            last_error = None
+            if last_observed >= expected_count:
+                return
+        except (ExecutorError, TypeError, ValueError) as exc:
+            last_error = str(exc)
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            detail = f"; lỗi kiểm tra gần nhất: {last_error}" if last_error else ""
+            raise DeployPhaseError(
+                f"Timeout sau {timeout}s: OSD service {service_name} trên {hostname} "
+                f"chỉ có {last_observed}/{expected_count} daemon ở trạng thái running{detail}"
+            )
+        time.sleep(min(_QUORUM_POLL_INTERVAL_SECONDS, remaining))
+
+
 def _phase_cephadm_orch_apply_osd(nodes: list[dict], action_params: dict, on_host_update) -> None:
     first_mon = _first_mon_ip(nodes)
     hostnames: dict[str, str] = action_params.get("_node_hostnames", {})
@@ -517,23 +565,61 @@ def _phase_cephadm_orch_apply_osd(nodes: list[dict], action_params: dict, on_hos
         on_host_update(list(host_status))
         current_disk = osd_disks[0]
         try:
-            for osd_disk in osd_disks:
-                current_disk = osd_disk
-                # Explicit device — never --all-available-devices — so only
-                # the operator's chosen osd_disk is ever touched (already
-                # proven safe-to-use by the ssh_check phase's read-only disk
-                # check).
-                execute_command(
-                    first_mon,
-                    f"cephadm shell -- ceph orch daemon add osd "
-                    f"{shlex.quote(hostname)}:{shlex.quote(osd_disk)}",
+            if action_params.get("osd_encryption", False):
+                service_id = "ceph_ai_" + uuid.uuid5(uuid.NAMESPACE_DNS, hostname).hex[:12]
+                # Written on the MON host, then mounted into the cephadm shell
+                # container (which does not see the host's files otherwise).
+                spec_path = f"{_REMOTE_SPEC_DIR}/osd-spec-{service_id}.json"
+                spec = {
+                    "service_type": "osd",
+                    "service_id": service_id,
+                    "placement": {"hosts": [hostname]},
+                    "spec": {
+                        "data_devices": {"paths": osd_disks},
+                        "encrypted": True,
+                    },
+                }
+                spec_arg = shlex.quote(spec_path)
+                mounted = f"cephadm shell --mount {shlex.quote(spec_path)}:{_CONTAINER_SPEC_PATH} --"
+                try:
+                    _write_remote_file(first_mon, spec_path, json.dumps(spec, sort_keys=True))
+                    preview = execute_command(
+                        first_mon,
+                        f"{mounted} ceph orch apply -i {_CONTAINER_SPEC_PATH} --dry-run",
+                    )
+                    missing = [value for value in [hostname, *osd_disks] if value not in preview]
+                    if missing:
+                        raise DeployPhaseError(
+                            f"Ceph OSD dry-run không xác nhận host/đĩa đã chọn ({', '.join(missing)}); "
+                            "đã dừng trước khi áp dụng ServiceSpec mã hóa."
+                        )
+                    execute_command(first_mon, f"{mounted} ceph orch apply -i {_CONTAINER_SPEC_PATH}")
+                finally:
+                    try:
+                        execute_command(first_mon, f"rm -f {spec_arg}")
+                    except ExecutorError:
+                        logger.warning("Could not remove temporary encrypted OSD spec %s", spec_path)
+                _wait_for_cephadm_osd_service(
+                    first_mon, f"osd.{service_id}", hostname, len(osd_disks)
                 )
+            else:
+                for osd_disk in osd_disks:
+                    current_disk = osd_disk
+                    execute_command(
+                        first_mon,
+                        f"cephadm shell -- ceph orch daemon add osd "
+                        f"{shlex.quote(hostname)}:{shlex.quote(osd_disk)}",
+                    )
         except ExecutorError as exc:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
             raise DeployPhaseError(
                 f"Tạo OSD trên {hostname} ({current_disk}) thất bại: {exc}"
             ) from exc
+        except DeployPhaseError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{hostname}: {exc}") from exc
         host_status[i]["status"] = "done"
         on_host_update(list(host_status))
 
@@ -1321,7 +1407,9 @@ def _phase_ceph_deploy_osd_create(nodes: list[dict], action_params: dict, on_hos
                 execute_command(
                     ip,
                     f"{_CEPH_VOLUME_PATH_PREFIX} && "
-                    f"ceph-volume lvm create --data {shlex.quote(osd_disk)}",
+                    f"ceph-volume lvm create "
+                    f"{'--dmcrypt ' if action_params.get('osd_encryption', False) else ''}"
+                    f"--data {shlex.quote(osd_disk)}",
                 )
         except (ExecutorError, DeployPhaseError) as exc:
             host_status[i]["status"] = "failed"
@@ -4080,6 +4168,17 @@ def run(
     Action.status EXECUTED/FAILED the same way it already does for the
     generic per-host loop's own True/False result.
     """
+    if (
+        action_id in {"deploy_cluster_cephadm", "deploy_cluster_ceph_deploy"}
+        and "osd_encryption" in action_params
+        and not isinstance(action_params["osd_encryption"], bool)
+    ):
+        logger.error(
+            "cluster_deploy.run: refusing malformed osd_encryption for action=%s",
+            action_pk,
+        )
+        return False
+
     if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
         # The persisted action_params intentionally contains only JSON data;
         # resolve the Incident's cluster here in the Worker and keep the ORM
