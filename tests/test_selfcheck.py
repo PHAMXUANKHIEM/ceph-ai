@@ -181,3 +181,27 @@ def test_full_executor_and_rabbitmq_are_never_restarted_automatically(monkeypatc
     assert selfcheck.heal({"container:ceph-ai_worker_1": "unhealthy"}, {}, T0, in_grace=True) == []
     assert selfcheck.heal({"container:ceph-ai_worker_1": "không chạy (exited)"},
                           {"checks": {"container:ceph-ai_worker_1": {"failures": 9}}}, T0, in_grace=False) == []
+
+
+def test_telegram_outbox_counts_stuck_and_dead_messages(monkeypatch):
+    replies = iter([
+        json.dumps({"pending_old": 0, "dead_1h": {}}),
+        json.dumps({"pending_old": 2, "dead_1h": {"log-intelligence": 3, "rgw": 1}}),
+    ])
+    monkeypatch.setattr(selfcheck, "_podman", lambda *args: SimpleNamespace(stdout="noise\n" + next(replies), returncode=0))
+
+    assert selfcheck.check_telegram_outbox() == {"telegram_outbox": None}
+    assert selfcheck.check_telegram_outbox() == {"telegram_outbox":
+        "2 tin chờ gửi quá 15 phút; 4 tin gửi thất bại hẳn (DEAD) trong 1 giờ: log-intelligence 3, rgw 1"}
+
+
+def test_telegram_outbox_check_never_reads_message_contents():
+    query = selfcheck._OUTBOX_QUERY
+    assert "last_error" not in query and "payload" not in query
+    assert "T.category" in query and ".count()" in query
+
+
+def test_an_unreachable_worker_does_not_double_report(monkeypatch):
+    monkeypatch.setattr(selfcheck, "_podman", lambda *args: SimpleNamespace(stdout="", returncode=125))
+
+    assert selfcheck.check_telegram_outbox() == {"telegram_outbox": None}

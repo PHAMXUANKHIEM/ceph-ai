@@ -8,7 +8,7 @@ standard library only.
 
 Checks: expected containers running and not unhealthy, service heartbeats in
 /run/ceph-ai, RabbitMQ answering, database TCP reachable, Dashboard answering,
-disk space. A problem is reported after two failed runs in a row, reminded
+disk space, Telegram outbox (counts only: stuck or DEAD messages). A problem is reported after two failed runs in a row, reminded
 every six hours while it lasts, and a recovery is reported once. After a host
 reboot the stack gets a grace period, then one boot summary is sent.
 
@@ -178,6 +178,42 @@ def check_dashboard() -> dict[str, str | None]:
     return {"dashboard": None if status < 500 else f"HTTP {status}"}
 
 
+# Counts only (status, category, age): the self-check never reads message
+# bodies or last_error. Runs inside the Worker container, which has the DB.
+_OUTBOX_QUERY = (
+    "import json\n"
+    "from collections import Counter\n"
+    "from datetime import timedelta\n"
+    "from shared import db\n"
+    "from shared.models import TelegramOutbox as T\n"
+    "from shared.time import utc_now\n"
+    "now = utc_now()\n"
+    "with db.SessionLocal() as s:\n"
+    "    old = s.query(T).filter(T.status == 'PENDING', T.created_at < now - timedelta(minutes=15)).count()\n"
+    "    dead = s.query(T.category).filter(T.status == 'DEAD', T.updated_at > now - timedelta(hours=1)).all()\n"
+    "print(json.dumps({'pending_old': old, 'dead_1h': dict(Counter(r[0] for r in dead))}))\n"
+)
+
+
+def check_telegram_outbox() -> dict[str, str | None]:
+    """Messages stuck for 15 minutes, or given up on in the last hour."""
+    try:
+        result = _podman("exec", "ceph-ai_worker_1", "python", "-c", _OUTBOX_QUERY)
+        counts = json.loads(result.stdout.strip().splitlines()[-1]) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        counts = None
+    if not isinstance(counts, dict):
+        return {"telegram_outbox": None}  # the Worker container check already reports a dead Worker
+    problems = []
+    if counts.get("pending_old"):
+        problems.append(f"{counts['pending_old']} tin chờ gửi quá 15 phút")
+    dead = counts.get("dead_1h") or {}
+    if dead:
+        detail = ", ".join(f"{category} {count}" for category, count in sorted(dead.items()))
+        problems.append(f"{sum(dead.values())} tin gửi thất bại hẳn (DEAD) trong 1 giờ: {detail}")
+    return {"telegram_outbox": "; ".join(problems) or None}
+
+
 def check_disks() -> dict[str, str | None]:
     results: dict[str, str | None] = {}
     for path in DISK_PATHS:
@@ -193,7 +229,7 @@ def check_disks() -> dict[str, str | None]:
 def run_checks(env: dict[str, str], now: float) -> dict[str, str | None]:
     results: dict[str, str | None] = {}
     for part in (check_containers(), check_heartbeats(now), check_rabbitmq(),
-                 check_database(env), check_dashboard(), check_disks()):
+                 check_database(env), check_dashboard(), check_disks(), check_telegram_outbox()):
         results.update(part)
     return results
 
