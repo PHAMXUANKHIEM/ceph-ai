@@ -1,0 +1,12 @@
+[Unit]
+Description=Ceph AI host self-check (alerts straight to Telegram)
+# Deliberately independent of the stack it watches: no After/Requires on
+# ceph-ai-containers.service, so it also runs when the stack is down.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3.11 /root/ceph-ai/scripts/selfcheck/ceph_ai_selfcheck.py
+TimeoutStartSec=90
+Nice=5

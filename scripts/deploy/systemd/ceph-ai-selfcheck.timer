@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Ceph AI host self-check every minute
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=10
+Persistent=false
+
+[Install]
+WantedBy=timers.target
