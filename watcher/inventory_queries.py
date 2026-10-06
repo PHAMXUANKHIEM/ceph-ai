@@ -123,6 +123,8 @@ def _normalize_pool_rows(
             "objects": df_stats.get("objects", 0) or 0,
             "read_iops": io_stats.get("read_op_per_sec", io_stats.get("read_iops", 0)) or 0,
             "write_iops": io_stats.get("write_op_per_sec", io_stats.get("write_iops", 0)) or 0,
+            # rbd / rgw / cephfs: which kind of client uses this pool.
+            "applications": sorted(pool.get("application_metadata") or {}),
         })
     return sorted(rows, key=lambda row: row["name"])
 

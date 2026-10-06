@@ -12,6 +12,7 @@
   <div class="app-body">
   <main class="page installation-stream-page">
     <script id="installation-stream-bootstrap" type="application/json">{{ installation_profile|tojson }}</script>
+    <script id="ceph-topology-bootstrap" type="application/json">{{ ceph_topology|tojson }}</script>
     <div id="installation-stream-root" aria-live="polite"></div>
   </main>
   </div>
