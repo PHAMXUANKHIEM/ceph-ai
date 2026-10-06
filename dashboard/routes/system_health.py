@@ -2,6 +2,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from config.settings import settings
 from dashboard.routes import auth
@@ -125,6 +126,34 @@ def system_health():
     return JSONResponse(
         {"status": "ok" if healthy else "degraded", "services": services},
         status_code=200 if healthy else 503,
+    )
+
+
+HEALTHZ_SERVICES = ("watcher", "worker", "remediation-watcher", "telegram-ai")
+
+
+def _database_answers() -> bool:
+    try:
+        with db.SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+        return True
+    except Exception:  # any driver/network error means "not healthy"
+        return False
+
+
+@router.get("/healthz")
+def healthz():
+    """Liveness for checks from outside this host (plan SM4).
+
+    No login, no internal detail: only which parts are failing, by name.
+    """
+    failing = [name for name in HEALTHZ_SERVICES if not status(name)["healthy"]]
+    if not _database_answers():
+        failing.append("database")
+    return JSONResponse(
+        {"status": "degraded" if failing else "ok", "failing": failing},
+        status_code=503 if failing else 200,
+        headers={"Cache-Control": "no-store"},
     )
 
 
