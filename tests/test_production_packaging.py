@@ -74,3 +74,29 @@ def test_production_migration_runs_from_approved_image():
     assert 'if [ "$image_head" != "$head_revision" ]; then' in script
     deploy = (ROOT / "scripts/deploy/restart_container_stack.sh").read_text(encoding="utf-8")
     assert 'export CEPH_AI_IMAGE="$DEPLOY_IMAGE"' in deploy
+
+
+def test_a_reboot_brings_rabbitmq_back_before_the_stack():
+    """RabbitMQ is a long-lived container outside Compose with no restart
+    policy; after a reboot nothing started it (plan SM1)."""
+    launcher = (ROOT / "container-up").read_text(encoding="utf-8")
+    start = launcher.index("podman start rabbitmq")
+    wait = launcher.index("rabbitmq-diagnostics -q ping")
+    compose = launcher.index("podman-compose up")
+    assert start < wait < compose
+    assert "exit 5" in launcher[wait:compose]  # no queue -> do not start Watcher/Worker
+
+    systemd = ROOT / "scripts" / "deploy" / "systemd"
+    rabbitmq = (systemd / "ceph-ai-rabbitmq.service").read_text(encoding="utf-8")
+    stack = (systemd / "ceph-ai-containers.service").read_text(encoding="utf-8")
+    assert "ExecStart=/usr/bin/podman start rabbitmq" in rabbitmq
+    assert "Before=ceph-ai-containers.service" in rabbitmq
+    assert "WantedBy=multi-user.target" in rabbitmq
+    assert "After=network-online.target ceph-ai-rabbitmq.service" in stack
+    assert "Wants=network-online.target ceph-ai-rabbitmq.service" in stack
+    assert "ExecStart=/root/ceph-ai/container-up" in stack
+
+    deploy = (ROOT / "scripts" / "deploy" / "restart_container_stack.sh").read_text(encoding="utf-8")
+    assert "systemd/ceph-ai-rabbitmq.service\" /etc/systemd/system/" in deploy
+    assert "systemd/ceph-ai-containers.service\" /etc/systemd/system/" in deploy
+    assert "systemctl enable ceph-ai-rabbitmq.service ceph-ai-containers.service" in deploy

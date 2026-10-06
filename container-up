@@ -46,5 +46,30 @@ for service in "${services[@]}"; do
 done
 podman stop ceph-ai_code-repair_1 >/dev/null 2>&1 || true
 
+# RabbitMQ is a long-lived container created outside Compose (its node name
+# and data are tied to that container, so it is never recreated here). After
+# a host reboot nothing else starts it, and Watcher/Worker would come up with
+# no queue. Start it if needed and wait until it answers before the stack.
+rabbitmq_wait_seconds="${CEPH_AI_RABBITMQ_WAIT_SECONDS:-120}"
+if podman container exists rabbitmq; then
+  if [ "$(podman inspect rabbitmq --format '{{.State.Running}}')" != "true" ]; then
+    echo "Starting RabbitMQ container" >&2
+    podman start rabbitmq >/dev/null
+  fi
+  deadline=$((SECONDS + rabbitmq_wait_seconds))
+  until podman exec rabbitmq rabbitmq-diagnostics -q ping >/dev/null 2>&1; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "RabbitMQ did not answer within ${rabbitmq_wait_seconds}s; not starting the stack" >&2
+      exit 5
+    fi
+    sleep 3
+  done
+elif [ "$environment" = production ]; then
+  echo "Production needs the rabbitmq container; it does not exist" >&2
+  exit 5
+else
+  echo "No rabbitmq container; continuing (development)" >&2
+fi
+
 # Recreate processes from the approved image reference.
 exec podman-compose up -d --force-recreate "${services[@]}"

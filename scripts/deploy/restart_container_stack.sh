@@ -143,6 +143,10 @@ start_phase runtime_setup
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-container-restart.service" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-container-restart.socket" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-code-repair-supervisor.service" /etc/systemd/system/
+# The stack unit and the RabbitMQ unit it starts after: a host reboot must
+# bring RabbitMQ back before Watcher/Worker (it is not a Compose service).
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-rabbitmq.service" /etc/systemd/system/
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-containers.service" /etc/systemd/system/
 install -m 0755 "$REPO_DIR/scripts/deploy/container_restart_helper.py" /usr/local/libexec/ceph-ai-container-restart
 install -d -m 0750 /run/ceph-ai
 # On an existing directory, install's chmod also lowers the POSIX ACL mask to
@@ -164,6 +168,9 @@ rm -f /etc/systemd/system/ceph-ai-container-restart@.service
 systemctl daemon-reload
 systemctl reset-failed ceph-ai-container-restart.service || true
 systemctl enable --now ceph-ai-container-restart.socket
+# enable only: RabbitMQ is already running here, and the stack is restarted
+# later in this script.
+systemctl enable ceph-ai-rabbitmq.service ceph-ai-containers.service
 finish_phase
 
 # Pull the registry manifest that passed CI. The immutable reference is the

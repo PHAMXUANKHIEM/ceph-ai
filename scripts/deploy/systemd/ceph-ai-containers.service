@@ -1,0 +1,17 @@
+[Unit]
+Description=Ceph AI container stack
+After=network-online.target ceph-ai-rabbitmq.service
+Wants=network-online.target ceph-ai-rabbitmq.service
+RequiresMountsFor=/var/lib/containers
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ceph-ai
+ExecStart=/root/ceph-ai/container-up
+ExecStop=/root/ceph-ai/container-down
+RemainAfterExit=yes
+TimeoutStartSec=360
+TimeoutStopSec=360
+
+[Install]
+WantedBy=multi-user.target
