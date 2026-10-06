@@ -16,8 +16,22 @@ SECRET_DIRS = (
 READ_ONLY_SERVICES = ("dashboard-web", "telegram-ai", "watcher", "remediation-watcher")
 
 
+# The Deploy Cluster page shows the Worker's deployment public key so the
+# operator can install it on new nodes; only that file, read-only, may leave
+# the mutation key directory.
+DEPLOY_PUBLIC_KEY = "/var/lib/ceph-ai/full-executor-ssh/id_ed25519.pub"
+
+
 def _sources(service):
     return [str(volume).split(":", 1)[0] for volume in SERVICES[service].get("volumes", [])]
+
+
+def _secret_sources(service):
+    """Mount sources, leaving out the read-only deployment public key."""
+    return [
+        str(volume).split(":", 1)[0] for volume in SERVICES[service].get("volumes", [])
+        if str(volume) != f"{DEPLOY_PUBLIC_KEY}:/tmp/deploy-id_ed25519.pub:ro"
+    ]
 
 
 def _mounts(service):
@@ -64,7 +78,7 @@ def test_services_mounting_the_state_dir_mask_every_secret_dir(service):
 
 @pytest.mark.parametrize("service", READ_ONLY_SERVICES)
 def test_read_only_services_never_receive_the_mutation_key_or_executor_accounts(service):
-    for source in _sources(service):
+    for source in _secret_sources(service):
         assert not source.startswith("/var/lib/ceph-ai/full-executor-ssh"), service
         assert not source.startswith("/var/lib/ceph-ai/full-executor-accounts/"), service
     key_path = SERVICES[service]["environment"]["SSH_KEY_PATH"]
@@ -76,7 +90,7 @@ def test_read_only_services_never_receive_the_mutation_key_or_executor_accounts(
 def test_only_the_worker_and_single_full_executor_hold_the_mutation_key():
     holders = sorted(
         name for name in SERVICES
-        if any(source.startswith("/var/lib/ceph-ai/full-executor-ssh/") for source in _sources(name))
+        if any(source.startswith("/var/lib/ceph-ai/full-executor-ssh/") for source in _secret_sources(name))
     )
     assert holders == ["full-executor", "worker"]
     assert SERVICES["worker"]["environment"]["SSH_KEY_PATH"] == "/run/ceph-ai/credentials/mutation/id_ed25519"
@@ -103,3 +117,13 @@ def test_single_full_shares_the_dashboard_ai_logins():
     assert "/var/lib/ceph-ai/full-executor-accounts" not in mounts
     for service in ("dashboard-web", "telegram-ai"):
         assert dict(_mounts(service)).get("./.codex-account") == "/app/.codex-account"
+
+
+def test_only_the_dashboard_gets_the_deployment_public_key_and_only_read_only():
+    holders = {name: [str(volume) for volume in SERVICES[name].get("volumes", []) if str(volume).startswith(DEPLOY_PUBLIC_KEY)]
+               for name in READ_ONLY_SERVICES}
+    assert holders["dashboard-web"] == [f"{DEPLOY_PUBLIC_KEY}:/tmp/deploy-id_ed25519.pub:ro"]
+    assert not any(holders[name] for name in READ_ONLY_SERVICES if name != "dashboard-web")
+    # The private half never travels with it.
+    for name in READ_ONLY_SERVICES:
+        assert not any(source == DEPLOY_PUBLIC_KEY.removesuffix(".pub") for source in _sources(name)), name

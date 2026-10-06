@@ -42,6 +42,8 @@ services:
     ports: ["8000:8000"]
     volumes:
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      # The host collector writes Podman stdout logs here for Settings -> Log Server.
+      - /var/log/ceph-ai-server:/var/log:rw
       # Dashboard is read-only with respect to Ceph.  The full-executor key
       # and token directories are hidden by tmpfs below; only the dedicated
       # read-only identity is mounted into this container.

@@ -1,0 +1,15 @@
+[Unit]
+Description=Collect Ceph AI container logs for the Settings log viewer
+After=ceph-ai-containers.service
+Wants=ceph-ai-containers.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/ceph-ai
+ExecStart=/root/ceph-ai/scripts/ceph-ai-container-log-collector.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
