@@ -8,7 +8,7 @@ Regular plans remain under:
 
 - `Plan/in-progress/` for plans with open work or acceptance gates.
 - `Plan/completed/` only after all work and acceptance requirements are closed.
-- `Plan/incompleted/` for the canonical strict production-readiness closure
+- `Plan/in-progress/` for the canonical strict production-readiness closure
   plan.
 
 Exact duplicate content was checked on 2026-09-25. No regular duplicate was

@@ -2,7 +2,7 @@
 
 **Ngày lập:** 26/09/2026
 **Trạng thái:** `IN-PROGRESS` — code WP0–WP4, WP6.1–6.3, báo cáo tuần và WP1.2 đã merge (xem bảng log cuối file); đã deploy immutable lên CS-LAB từ 29/09, nhưng **incident từ health check của cụm mặc định không được tạo từ 15/09 tới 02/10** (thiếu service `remediation-watcher` trong Compose, sửa ở `fbceb4dc`), nên KPI sau deploy phải đo lại từ 02/10. Tính năng thu evidence mặc định TẮT (`INVESTIGATION_ENABLED=false`), bật theo cluster canary bằng `INVESTIGATION_CLUSTER_IDS`.
-**Liên quan:** `Plan/incompleted/strict-production-readiness-closure-plan-2026-09-25.md` (§7 AI/online learning, §5.3 live read-only, §6 safety)
+**Liên quan:** `Plan/in-progress/strict-production-readiness-closure-plan-2026-09-25.md` (§7 AI/online learning, §5.3 live read-only, §6 safety)
 **Mục tiêu:** đưa Ceph AI từ "đề xuất `investigate_manually` rồi bị từ chối" sang "tự điều tra, tự học từ nhãn thật, tự xử lý trong ngân sách rủi ro đã duyệt" — theo đúng thứ tự: **giảm nhiễu → có nhãn → có bằng chứng → có quyết định an toàn**.
 
 ---

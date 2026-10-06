@@ -267,7 +267,7 @@ await guarded("test_progress", async () => {
   await page.close();
 });
 
-// Ceph cluster stream (Plan/incompleted/ceph-cluster-stream-plan-2026-10-06.md):
+// Ceph cluster stream (Plan/in-progress/ceph-cluster-stream-plan-2026-10-06.md):
 // /stream#ceph opens the cluster tab with its service graph. Read-only.
 await guarded("ceph_cluster_stream", async () => {
   const page = await authed.newPage();

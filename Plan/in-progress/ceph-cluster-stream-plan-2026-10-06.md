@@ -2,7 +2,7 @@
 
 **Ngày lập:** 06/10/2026
 **Trạng thái:** `IN-PROGRESS` — CS0–CS3 xong trên nhánh `ceph-stream`; CS4 (địa chỉ daemon, heartbeat chậm) xong trên `ceph-stream-cs4`; còn client thật (`ceph auth ls`, chờ operator) và CS5 (deploy).
-**Liên quan:** trang `/stream` (luồng cấu hình hệ thống Ceph AI, `ceph-health-dashboard/src/components/InstallationStream.tsx`), `Plan/incompleted/architecture-impact-analysis-regression-plan.md`.
+**Liên quan:** trang `/stream` (luồng cấu hình hệ thống Ceph AI, `ceph-health-dashboard/src/components/InstallationStream.tsx`), `Plan/in-progress/architecture-impact-analysis-regression-plan.md`.
 **Mục tiêu:** bên cạnh luồng của hệ thống Ceph AI, trang Stream có thêm một luồng tương tự cho **chính cụm Ceph**: các dịch vụ (MON, MGR, OSD, PG/pool, RGW, MDS), các host, **đường mạng** (public / cluster network) và các client, kèm trạng thái sống, để operator nhìn một chỗ thấy dữ liệu đi qua đâu và chỗ nào đang hỏng.
 
 ---

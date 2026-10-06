@@ -1,7 +1,7 @@
 # Ceph AI — trạng thái bàn giao
 
 > Snapshot lịch sử; trạng thái release hiện tại phải đối chiếu với
-> [`Plan/incompleted/strict-production-readiness-closure-plan-2026-09-25.md`](../Plan/incompleted/strict-production-readiness-closure-plan-2026-09-25.md),
+> [`Plan/in-progress/strict-production-readiness-closure-plan-2026-09-25.md`](../Plan/in-progress/strict-production-readiness-closure-plan-2026-09-25.md),
 > [`docs/production-release-runbook.md`](production-release-runbook.md) và
 > [`docs/ceph-capability-matrix.md`](ceph-capability-matrix.md).
 

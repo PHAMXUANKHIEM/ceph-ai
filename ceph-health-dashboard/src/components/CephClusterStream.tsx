@@ -7,7 +7,7 @@ import "./InstallationStream.css";
 import { StreamCanvas } from "./StreamCanvas";
 import type { CanvasEdge, CanvasFilter, CanvasGroup, CanvasNode, Point } from "./StreamCanvas";
 
-// Ceph cluster view of the Stream page (Plan/incompleted/ceph-cluster-stream-
+// Ceph cluster view of the Stream page (Plan/in-progress/ceph-cluster-stream-
 // plan-2026-10-06.md): services, hosts (OSDs grouped by host) and the Ceph
 // networks with live status from the stored snapshots. Read-only; refreshed
 // every 30 s through /api/stream/ceph-topology while the tab is visible.

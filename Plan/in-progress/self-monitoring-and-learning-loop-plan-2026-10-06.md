@@ -3,7 +3,7 @@
 **Ngày lập:** 06/10/2026
 **Trạng thái:** `PLANNED` — chưa bắt đầu; chờ operator chốt các quyết định ở mục 6.
 **Nguồn:** báo cáo "Nâng cấp cơ chế tự học của Ceph AIOps" (06/10/2026) và nhận xét "không có systemd, chỉ chạy bằng nohup", đối chiếu với code `main` (`3f081af7`) và production CS-LAB ngày 06/10/2026.
-**Liên quan:** `Plan/incompleted/autonomous-self-learning-operations-plan-2026-09-26.md` (roadmap 4.3), `docs/immutable-production-release.md`, `docs/operations/reliability-slo.md`.
+**Liên quan:** `Plan/in-progress/autonomous-self-learning-operations-plan-2026-09-26.md` (roadmap 4.3), `docs/immutable-production-release.md`, `docs/operations/reliability-slo.md`.
 
 Hai phần độc lập, làm phần A trước: một hệ thống giám sát chết im lặng nguy hiểm hơn một AI học chậm.
 
