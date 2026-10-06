@@ -4045,6 +4045,25 @@ def test_cluster_deploy_rejects_target_list_changed_after_approval(isolated_db, 
         assert "không khớp" in progress[0]["message"]
 
 
+def test_only_new_cluster_deploys_skip_the_configured_node_guard():
+    """The plan-node check is for building a cluster on unregistered hosts.
+
+    Applying it to every cluster_deploy action rejected node_os_gate_prepare
+    (no ``nodes[].ip`` in its params), so a cluster upgrade stayed PREPARING
+    (tests/test_epic11_full_flow.py); delete/convert/restore act on the
+    configured cluster and keep the normal guard.
+    """
+    from worker.policy.gate import VALID_CLUSTER_DEPLOY_ACTION_IDS
+
+    assert router_client.NEW_CLUSTER_DEPLOY_ACTION_IDS == {
+        action_id for action_id in VALID_CLUSTER_DEPLOY_ACTION_IDS if action_id.startswith("deploy_cluster_")
+    }
+    for action_id in ("node_os_gate_prepare", "node_os_gate_abort", "node_os_gate_recover", "delete_cluster_cephadm",
+                      "delete_cluster_manual", "convert_cluster_to_cephadm", "restore_cluster_from_backup"):
+        assert action_id in VALID_CLUSTER_DEPLOY_ACTION_IDS
+        assert action_id not in router_client.NEW_CLUSTER_DEPLOY_ACTION_IDS
+
+
 def test_action_target_guard_rejects_a_test_fixture_ssh_key(monkeypatch):
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     allowed = settings.ceph_mon_nodes.split(",")[0]

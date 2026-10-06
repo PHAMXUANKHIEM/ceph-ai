@@ -84,6 +84,15 @@ _TYPED_CAPABILITY_PREFIX = "playbook."
 
 OPERATIONAL_TELEMETRY_ATTEMPTS = 5
 OPERATIONAL_TELEMETRY_RETRY_SECONDS = 3.0
+# Only these build a cluster on hosts that are not configured yet, so only they
+# may target unregistered nodes, and only the nodes of the approved plan.
+# Delete/convert/restore and the node OS gate act on the configured cluster
+# and keep the normal "target must be a configured node" guard.
+NEW_CLUSTER_DEPLOY_ACTION_IDS = frozenset({
+    "deploy_cluster_cephadm",
+    "deploy_cluster_ceph_deploy",
+    "deploy_cluster_rpm_local",
+})
 INCIDENT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN = 2
 
 
@@ -3588,8 +3597,8 @@ def _execute_approved_action(action_pk: str) -> None:
     except (TypeError, ValueError):
         action_params = None
 
-    is_cluster_deploy = action_id_str in cluster_deploy.CLUSTER_DEPLOY_ACTION_IDS
-    if is_cluster_deploy:
+    is_new_cluster_deploy = action_id_str in NEW_CLUSTER_DEPLOY_ACTION_IDS
+    if is_new_cluster_deploy:
         proposed_nodes = action_params.get("nodes") if isinstance(action_params, dict) else None
         proposed_ips = (
             [node.get("ip") for node in proposed_nodes]
@@ -3617,7 +3626,7 @@ def _execute_approved_action(action_pk: str) -> None:
         cluster,
         nodes,
         ssh_key_path,
-        allow_unregistered_targets=is_cluster_deploy,
+        allow_unregistered_targets=is_new_cluster_deploy,
     )
     if safety_reason:
         logger.error(
