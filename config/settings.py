@@ -427,8 +427,10 @@ class Settings(BaseSettings):
     # WP7: weekly River v2 promotion evidence JSON (outside the repo: it names hosts).
     learning_evidence_report_dir: str = "/var/lib/ceph-ai/learning-evidence"
     # Re-send 'RGW chưa xác nhận phục hồi' for an unchanged finding at most this
-    # often. 10 minutes is the operator's requested cadence (was hard-coded).
-    log_recovery_pending_notify_interval_seconds: int = Field(default=600, ge=60, le=7 * 86400)
+    # often. Operator decision 2026-10-06: every 6 hours (was a hard-coded
+    # 10 minutes, ~12 messages/hour for three open findings). The first
+    # notice and any change of verification code are still sent at once.
+    log_recovery_pending_notify_interval_seconds: int = Field(default=21600, ge=60, le=7 * 86400)
     # Autonomy plan WP2.2: once a day (Asia/Ho_Chi_Minh), ask for verdicts on
     # the few remediation cases that would teach the learning loop the most.
     verdict_nudge_enabled: bool = True

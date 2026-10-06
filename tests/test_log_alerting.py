@@ -478,8 +478,11 @@ def test_rgw_vault_finding_only_resolves_after_live_recovery_gate(
     assert sent["resolved"] == []
     assert len(sent["recovery_pending"]) == 1
 
-    # Operator requested a progress reminder every 10 minutes while still open.
+    # Operator decision 2026-10-06: an unchanged finding is reminded every
+    # 6 hours (it was every 10 minutes).
     assert log_analysis.resolve_stale_findings(cluster_id, later + timedelta(minutes=15)) == 0
+    assert len(sent["recovery_pending"]) == 1
+    assert log_analysis.resolve_stale_findings(cluster_id, later + timedelta(hours=6, minutes=1)) == 0
     assert len(sent["recovery_pending"]) == 2
 
     verified = ceph_finding_verifier.VerificationResult(
