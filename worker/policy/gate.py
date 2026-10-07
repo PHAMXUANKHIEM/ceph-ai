@@ -115,6 +115,8 @@ CLUSTER_LIFECYCLE_ACTION_IDS = frozenset(
         "delete_cluster_manual",
         "convert_cluster_to_cephadm",
         "restore_cluster_from_backup",
+        "remove_cluster_nodes",
+        "finish_remove_cluster_nodes",
     }
 )
 CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY = "cluster-lifecycle-in-flight"

@@ -299,8 +299,9 @@ def test_diagnose_incident_saves_diagnosis_text_on_valid_response(isolated_db, m
     asyncio.run(router_client.diagnose_incident("incident-1", envelope))
 
     assert len(redact_calls) == 1  # AC #1: exactly one redaction pass, after retrieval enrichment
-    assert {key: value for key, value in redact_calls[0].items() if key != "verified_case_references"} == envelope
-    assert redact_calls[0]["verified_case_references"] == []
+    added = {"verified_case_references", "proposal_history"}
+    assert {key: value for key, value in redact_calls[0].items() if key not in added} == envelope
+    assert redact_calls[0]["verified_case_references"] == [] and redact_calls[0]["proposal_history"] == []
     with db_module.SessionLocal() as session:
         incident = session.get(Incident, "incident-1")
         assert incident.diagnosis_text == "MON clock is skewed beyond threshold; likely NTP drift."
@@ -4195,6 +4196,37 @@ def test_low_confidence_rule_falls_back_to_the_llm(isolated_db, monkeypatch):
     assert gate.decided is False and "[E1] ceph_osd_perf" in gate.prompt_block
 
 
+def test_a_skipped_evidence_collection_is_logged_with_its_reason(isolated_db, monkeypatch, caplog):
+    from worker.llm import evidence_gate
+
+    monkeypatch.setattr(settings, "investigation_enabled", True)
+    monkeypatch.setattr(settings, "investigation_cluster_ids", "some-other-cluster")
+    _create_incident("evidence-skip")
+
+    with caplog.at_level(logging.INFO, logger=evidence_gate.__name__):
+        gate = asyncio.run(evidence_gate.prepare("evidence-skip", "OSD_DOWN"))
+
+    assert gate.prompt_block == "" and gate.decided is False
+    assert "no evidence for evidence-skip" in caplog.text and "INVESTIGATION_CLUSTER_IDS" in caplog.text
+
+
+def test_failure_lab_incidents_get_no_real_cluster_evidence(isolated_db, monkeypatch, caplog):
+    from shared.synthetic_incidents import SYNTHETIC_EVIDENCE_KEY
+    from worker.llm import evidence_gate
+
+    monkeypatch.setattr(settings, "investigation_enabled", True)
+    monkeypatch.setattr(settings, "investigation_cluster_ids", "")
+    _create_incident("evidence-lab")
+    with db_module.SessionLocal() as session:
+        session.get(Incident, "evidence-lab").signal_evidence_json = json.dumps({SYNTHETIC_EVIDENCE_KEY: True})
+        session.commit()
+
+    with caplog.at_level(logging.INFO, logger=evidence_gate.__name__):
+        gate = asyncio.run(evidence_gate.prepare("evidence-lab", "OSD_DOWN"))
+
+    assert gate.prompt_block == "" and "Failure Lab incident" in caplog.text
+
+
 def test_every_new_case_logs_a_decision_with_its_source(isolated_db, monkeypatch):
     from shared.models import AutonomyDecision
 
@@ -4257,3 +4289,25 @@ def test_synthetic_failure_lab_incidents_never_send_the_incident_alert(isolated_
     with db_module.SessionLocal() as session:
         action = session.query(Action).filter_by(incident_id="incident-synthetic-replay").one()
         assert action.status != ActionStatus.AUTO_EXECUTED.value  # still shadow-only
+
+
+def test_a_failure_lab_fault_run_holds_safe_actions_and_keeps_alerts_off_the_real_channel(isolated_db, monkeypatch):
+    from shared import failure_lab_fault
+
+    alerts = []
+    monkeypatch.setattr(settings, "autopilot_enabled", True)
+    monkeypatch.setattr(settings, "failure_lab_telegram_chat_id", "")
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
+    monkeypatch.setattr(router_client, "send_ai_incident_alert", lambda *args, **kwargs: alerts.append(kwargs))
+    monkeypatch.setattr(router_client, "execute_command", lambda *a, **k: pytest.fail("must not execute"))
+    monkeypatch.setattr(failure_lab_fault, "holding_run", lambda cluster_id, detected_at: {"run_id": "fault-1"})
+    _create_incident("incident-lab-fault")
+
+    asyncio.run(router_client.diagnose_incident("incident-lab-fault", dict(ENVELOPE, incident_id="incident-lab-fault")))
+
+    assert alerts and all(alert["enabled"] is False for alert in alerts)  # no lab chat configured: muted
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-lab-fault").one()
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        events = {row.event_type for row in session.query(AuditEntry).filter_by(incident_id="incident-lab-fault")}
+        assert "failure_lab_execution_held" in events

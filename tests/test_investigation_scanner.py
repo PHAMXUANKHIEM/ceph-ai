@@ -190,3 +190,16 @@ def test_raw_evidence_output_is_admin_only(dashboard_client, monkeypatch):
     monkeypatch.setattr(auth, "is_admin_user", lambda user: False)
     page = dashboard_client.get("/incidents/ev-private/timeline").text
     assert "SECRET-LOOKING-OUTPUT" not in page and "chỉ admin xem được" in page
+
+
+def test_failure_lab_incidents_are_not_investigated_on_the_real_cluster():
+    from shared.synthetic_incidents import SYNTHETIC_EVIDENCE_KEY
+
+    factory = _factory()
+    _incident(factory, "OSD_DOWN", evidence={SYNTHETIC_EVIDENCE_KEY: True, "run_id": "lab-1"})
+    real = _incident(factory, "NODE_UNREACHABLE:10.3.53.9", age=timedelta(minutes=1))
+    transport = FakeTransport()
+
+    done = _run(factory, transport)
+
+    assert [row["incident_id"] for row in done] == [real]

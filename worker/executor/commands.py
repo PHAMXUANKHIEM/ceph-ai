@@ -1734,6 +1734,18 @@ def _node_os_gate_recover_preview_command(host: str | None, params: dict) -> str
     )
 
 
+def _remove_cluster_nodes_preview_command(host: str | None, params: dict) -> str:
+    targets = ", ".join(params.get("targets") or [])
+    zap = " --zap-osd-devices" if params.get("zap_devices") else ""
+    return (f"# kiểm tra an toàn, rồi với từng host ({targets}): ceph orch host drain <hostname>{zap}; "
+            "chờ dời dữ liệu tối đa 20 phút; ceph orch host rm <hostname>")
+
+
+def _finish_remove_cluster_nodes_preview_command(host: str | None, params: dict) -> str:
+    return (f"# kiểm tra drain đã xong cho {', '.join(params.get('targets') or [])}; "
+            "ceph orch host rm <hostname>")
+
+
 _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "deploy_cluster_cephadm": _deploy_cluster_cephadm_preview_command,
     "deploy_cluster_ceph_deploy": _deploy_cluster_ceph_deploy_preview_command,
@@ -1745,6 +1757,8 @@ _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "node_os_gate_prepare": _node_os_gate_prepare_preview_command,
     "node_os_gate_abort": _node_os_gate_abort_preview_command,
     "node_os_gate_recover": _node_os_gate_recover_preview_command,
+    "remove_cluster_nodes": _remove_cluster_nodes_preview_command,
+    "finish_remove_cluster_nodes": _finish_remove_cluster_nodes_preview_command,
 }
 
 

@@ -436,3 +436,157 @@ def test_delete_cluster_action_ids_registered_in_policy():
 
     assert "delete_cluster_cephadm" in VALID_CLUSTER_DEPLOY_ACTION_IDS
     assert "delete_cluster_manual" in VALID_CLUSTER_DEPLOY_ACTION_IDS
+
+
+# --- dm-crypt / LUKS (osd_encryption) ------------------------------------------------
+#
+# Encrypted OSDs keep a dm-crypt mapping open over their ceph-volume LV after
+# the daemon stops; it holds the LV busy and outlives the cluster.
+
+def test_stop_daemons_closes_only_ceph_osd_dmcrypt_mappings(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, cmd: seen.append(cmd) or "")
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "delete_cluster_cephadm", _delete_params(), "incident-1", write_progress, _never_blocked)
+
+    stop = next(cmd for cmd in seen if "systemctl list-units" in cmd)
+    assert "dmsetup ls --target crypt" in stop and "*ceph--*osd--*) dmsetup remove --retry" in stop
+    assert stop.index("systemctl stop") < stop.index("dmsetup remove")  # daemons first, then their mappings
+
+
+def test_wiping_an_encrypted_disk_closes_dmcrypt_and_erases_the_luks_header(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, cmd: seen.append((host, cmd)) or "")
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "delete_cluster_cephadm", _delete_params(wipe_osd_disks=True), "incident-1",
+        write_progress, _never_blocked)
+
+    wipe = next(cmd for host, cmd in seen if host == "10.20.1.21" and "lvm zap" in cmd)
+    assert wipe.index("lsblk -nr -o NAME,TYPE /dev/vdb") < wipe.index("lvm zap --destroy /dev/vdb")
+    assert "blkid -p /dev/vdb" in wipe and "wipefs -a /dev/vdb" in wipe
+    assert "|| exit 1;" in wipe  # a failed zap is not masked by the LUKS check after it
+
+
+def test_dmcrypt_teardown_shell_is_valid():
+    import subprocess
+
+    for command in (cluster_deploy_module._CLOSE_CEPH_DMCRYPT,
+                    cluster_deploy_module._wipe_disk_command("/dev/disk/by-id/x y")):
+        assert subprocess.run(["bash", "-n", "-c", command]).returncode == 0
+
+
+# --- deleting a non-default monitored cluster ------------------------------------------
+
+@pytest.fixture
+def clusters_db(monkeypatch):
+    from datetime import datetime
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from shared.db import Base
+    from shared.models import Cluster, Incident
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(cluster_deploy_module.db, "SessionLocal", factory)
+    with factory() as session:
+        session.add_all([
+            Cluster(id="default", name="CS-LAB", ceph_mon_nodes="10.3.54.118", ssh_user="root", ssh_key_path="/k",
+                    is_default=True, is_active=True),
+            Cluster(id="lab", name="LAB-VM", ceph_mon_nodes="10.20.1.112,10.20.1.95,10.20.1.21",
+                    ceph_osd_nodes="10.20.1.95,10.20.1.21", ceph_exec_mode="cephadm", ssh_user="root",
+                    ssh_key_path="/k", is_default=False, is_active=True),
+            Incident(id="incident-1", ceph_code="CLUSTER_DELETE", detected_at=datetime.utcnow()),
+        ])
+        session.commit()
+    return factory
+
+
+def test_deleting_the_lab_cluster_stops_monitoring_it_and_leaves_the_default_alone(clusters_db, monkeypatch):
+    from shared.clusters import cluster_config_fingerprint
+    from shared.models import Cluster
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, cmd: "")
+    written = {}
+    monkeypatch.setattr(cluster_deploy_module.env_config, "update_env_file_batch", written.update)
+    with clusters_db() as session:
+        fingerprint = cluster_config_fingerprint(session.get(Cluster, "lab"))
+    write_progress, _calls = _make_recording_progress_writer()
+
+    result = run("action-1", "delete_cluster_cephadm",
+                 _delete_params(_cluster_id="lab", _cluster_config_fingerprint=fingerprint),
+                 "incident-1", write_progress, _never_blocked)
+
+    assert result is True and written == {}  # .env (the default cluster) untouched
+    with clusters_db() as session:
+        assert session.get(Cluster, "lab").is_active is False
+        assert session.get(Cluster, "default").is_active is True
+
+
+def test_a_lab_cluster_changed_after_the_proposal_is_not_deleted(clusters_db, monkeypatch):
+    commands = []
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, cmd: commands.append(cmd) or "")
+    write_progress, calls = _make_recording_progress_writer()
+
+    result = run("action-1", "delete_cluster_cephadm",
+                 _delete_params(_cluster_id="lab", _cluster_config_fingerprint="stale"),
+                 "incident-1", write_progress, _never_blocked)
+
+    assert result is False and commands == []
+    assert "đã thay đổi sau khi đề xuất" in calls[-1][1][0]["message"]
+
+
+# --- deleting a cluster Ceph AI does not monitor ---------------------------------------------
+
+_FSID = "0b4f1c2e-1111-4222-8333-944455556666"
+
+
+def _unregistered_run(monkeypatch, node_fsids, monitored=(set(), [])):
+    commands = []
+
+    def fake(host, command):
+        commands.append((host, command))
+        return node_fsids.get(host, "") if "ls -1 /var/lib/ceph" in command else ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    monkeypatch.setattr(cluster_deploy_module, "_monitored_fsids", lambda: monitored)
+    written = {}
+    monkeypatch.setattr(cluster_deploy_module.env_config, "update_env_file_batch", written.update)
+    write_progress, calls = _make_recording_progress_writer()
+    nodes = [{"ip": "10.3.54.145", "roles": ["mon", "osd"], "osd_disks": []},
+             {"ip": "10.3.54.146", "roles": ["mon"], "osd_disks": []}]
+    result = run("action-1", "delete_cluster_cephadm", {"nodes": nodes, "wipe_osd_disks": False,
+                                                        "_expected_fsid": _FSID}, "incident-1",
+                 write_progress, _never_blocked)
+    teardown = [cmd for _host, cmd in commands if "systemctl list-units" in cmd]
+    return result, calls[-1][1][0], teardown, written
+
+
+def test_every_node_must_belong_to_the_named_cluster(monkeypatch):
+    ok, _step, teardown, written = _unregistered_run(
+        monkeypatch, {"10.3.54.145": _FSID + "\n", "10.3.54.146": _FSID + "\n"})
+    assert ok is True and teardown and written == {}
+
+    refused, step, teardown, _written = _unregistered_run(
+        monkeypatch, {"10.3.54.145": _FSID + "\n", "10.3.54.146": "ffffffff-1111-4222-8333-944455556666\n"})
+    assert refused is False and teardown == [] and "từ chối xoá" in step["message"]
+
+
+def test_a_monitored_fsid_or_an_unreadable_default_cluster_stops_before_teardown(monkeypatch):
+    nodes = {"10.3.54.145": _FSID, "10.3.54.146": _FSID}
+    refused, step, teardown, _ = _unregistered_run(monkeypatch, nodes, monitored=({_FSID}, []))
+    assert refused is False and teardown == [] and "đang được giám sát" in step["message"]
+
+    refused, step, teardown, _ = _unregistered_run(monkeypatch, nodes, monitored=(set(), ["CS-LAB (mặc định)"]))
+    assert refused is False and teardown == [] and "cụm mặc định" in step["message"]
+
+
+def test_node_fsid_discovery_shell_is_valid():
+    import subprocess
+
+    assert subprocess.run(["bash", "-n", "-c", cluster_deploy_module._NODE_FSIDS_COMMAND]).returncode == 0

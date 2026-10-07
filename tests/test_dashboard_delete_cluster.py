@@ -245,3 +245,87 @@ def test_delete_cluster_frontend_does_not_reload_for_terminal_history():
 
     assert "var followAction = FOLLOW_STATUSES.indexOf(initialState.status) !== -1;" in source
     assert "if (followAction && data.status && TERMINAL_STATUSES.indexOf(data.status) !== -1)" in source
+
+
+# --- deleting a non-default monitored cluster (e.g. a lab cluster from Deploy Cluster) ---
+
+def _lab_cluster():
+    from shared.models import Cluster
+
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(name="LAB-VM", ceph_mon_nodes="10.3.54.145", ceph_mgr_nodes="10.3.54.145",
+                          ceph_osd_nodes="10.3.54.145", ssh_user="root", ssh_key_path="/keys/ro",
+                          ceph_exec_mode="cephadm", is_default=False, is_active=True)
+        session.add(cluster)
+        session.commit()
+        return cluster.id
+
+
+def test_the_selected_lab_cluster_is_deleted_never_the_default(dashboard_client):
+    _login(dashboard_client)
+    lab_id = _lab_cluster()
+
+    page = dashboard_client.get(f"/delete-cluster?cluster={lab_id}")
+    assert page.status_code == 200 and "10.3.54.145" in page.text and "10.20.1.150" not in page.text
+
+    response = dashboard_client.post("/delete-cluster/propose", json={"wipe_osd_disks": False,
+                                                                      "confirmation": "LAB-VM"})
+    assert response.status_code == 201, response.text
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        params = json.loads(action.action_params)
+        assert {node["ip"] for node in params["nodes"]} == {"10.3.54.145"}
+        assert params["_cluster_id"] == lab_id and action.action_id == "delete_cluster_cephadm"
+        assert session.get(Incident, action.incident_id).cluster_id == lab_id
+        assert "cụm mặc định KHÔNG bị đụng tới" in action.rationale
+
+
+def test_the_lab_cluster_needs_its_own_name_as_confirmation(dashboard_client):
+    _login(dashboard_client)
+    lab_id = _lab_cluster()
+    dashboard_client.get(f"/delete-cluster?cluster={lab_id}")
+
+    response = dashboard_client.post("/delete-cluster/propose", json={"wipe_osd_disks": False,
+                                                                      "confirmation": _confirmation()})
+
+    assert response.status_code == 400 and "LAB-VM" in response.json()["detail"]
+
+
+# --- a cluster Ceph AI does not monitor -------------------------------------------------
+
+FSID = "0b4f1c2e-1111-4222-8333-944455556666"
+
+
+def _unregistered(client, **overrides):
+    body = {"nodes": [{"ip": "10.3.54.145", "osd_disks": ["/dev/vdb"]}], "fsid": FSID, "confirmation": FSID,
+            "exec_mode": "cephadm", "wipe_osd_disks": True}
+    body.update(overrides)
+    return client.post("/delete-cluster/propose-unregistered", json=body)
+
+
+def test_an_unmonitored_cluster_is_proposed_with_its_fsid_as_the_approval_text(dashboard_client):
+    _login(dashboard_client)
+
+    response = _unregistered(dashboard_client)
+
+    assert response.status_code == 201, response.text
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        params = json.loads(action.action_params)
+        assert params["_expected_fsid"] == FSID and params["_approval_confirmation"] == FSID
+        assert params["nodes"] == [{"ip": "10.3.54.145", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdb"]}]
+        assert "_cluster_id" not in params and session.get(Incident, action.incident_id).cluster_id is None
+        assert f"fsid {FSID}" in action.rationale and "không có cấu hình nào của Ceph AI thay đổi" in action.rationale
+    assert f"<code>{FSID}</code>" in dashboard_client.get("/delete-cluster").text
+
+
+def test_a_monitored_ip_a_bad_fsid_or_a_wrong_confirmation_is_refused(dashboard_client):
+    _login(dashboard_client)
+
+    monitored = _unregistered(dashboard_client, nodes=[{"ip": "10.20.1.150"}], wipe_osd_disks=False)
+    assert monitored.status_code == 400 and "đang giám sát" in monitored.json()["detail"]
+    assert _unregistered(dashboard_client, fsid="not-a-fsid", confirmation="not-a-fsid").status_code == 400
+    assert _unregistered(dashboard_client, confirmation="something else").status_code == 400
+    assert _unregistered(dashboard_client, nodes=[{"ip": "10.3.54.145; rm -rf /"}]).status_code == 400
+    with db_module.SessionLocal() as session:
+        assert session.query(Action).count() == 0

@@ -28,7 +28,7 @@ from shared.time import utc_now
 from config.settings import settings
 from sqlalchemy.exc import OperationalError
 from shared import db, env_config
-from shared.clusters import MONITORED_CLUSTER_NAME_RE, sync_default_cluster_from_env
+from shared.clusters import MONITORED_CLUSTER_NAME_RE, cluster_config_fingerprint, sync_default_cluster_from_env
 from shared.ceph_releases import codename_for_version, major_version, repo_path_version
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import Cluster, Incident, NodeUpgradeGate, NodeUpgradeGateState
@@ -1579,6 +1579,118 @@ def _phase_delete_ssh_check(nodes: list[dict], action_params: dict, on_host_upda
             raise DeployPhaseError(f"Không kết nối được SSH tới {host}: {exc}") from exc
         host_status[i]["status"] = "done"
         on_host_update(list(host_status))
+    expected_fsid = action_params.get("_expected_fsid")
+    if expected_fsid:
+        _verify_unregistered_target(nodes, str(expected_fsid), host_status, on_host_update)
+
+
+# A cluster that Ceph AI does not monitor is deleted from operator-typed IPs,
+# so before any teardown every node must prove it belongs to the cluster the
+# operator named (its fsid), and that fsid must not be any monitored cluster's.
+_NODE_FSIDS_COMMAND = (
+    "{ ls -1 /var/lib/ceph 2>/dev/null | grep -E '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; "
+    "sed -n 's/^[[:space:]]*fsid[[:space:]]*=[[:space:]]*//p' /etc/ceph/ceph.conf 2>/dev/null; } | sort -u"
+)
+
+
+def _read_fsid(mon: str, command: str, user: str, key_path: str) -> str:
+    """One MON's answer to `ceph fsid`, or "" if it cannot be read."""
+    try:
+        return str(json.loads(execute_command(mon, command, user=user, key_path=key_path)).get("fsid", ""))
+    except (ExecutorError, ValueError, AttributeError) as exc:
+        logger.info("cluster_deploy: could not read fsid from %s: %s", mon, exc)
+        return ""
+
+
+def _monitored_fsids() -> tuple[set[str], list[str]]:
+    """fsids of every monitored cluster, and the names whose fsid could not be read."""
+    from shared.clusters import list_active_clusters
+    from worker.executor.commands import wrap_ceph_runtime_command
+
+    found: set[str] = set()
+    unreadable: list[str] = []
+    with db.SessionLocal() as session:
+        clusters = list_active_clusters(session)
+        session.expunge_all()
+    for cluster in clusters:
+        user, key_path, exec_mode, container = resolve_ssh_creds(None if cluster.is_default else cluster)
+        raw = settings.ceph_mon_nodes if cluster.is_default else cluster.ceph_mon_nodes
+        mons = [node.strip() for node in str(raw or "").split(",") if node.strip()]
+        command = wrap_ceph_runtime_command("ceph fsid --format json", exec_mode=exec_mode, container_name=container)
+        fsid = next((value for value in (_read_fsid(mon, command, user, key_path) for mon in mons) if value), "")
+        if fsid:
+            found.add(fsid.lower())
+        else:
+            unreadable.append(f"{cluster.name}{' (mặc định)' if cluster.is_default else ''}")
+    return found, unreadable
+
+
+def _verify_unregistered_target(nodes: list[dict], expected_fsid: str, host_status: list[dict],
+                                on_host_update) -> None:
+    expected = expected_fsid.lower()
+    monitored, unreadable = _monitored_fsids()
+    if expected in monitored:
+        raise DeployPhaseError(f"fsid {expected} là của một cụm đang được giám sát — từ chối xoá.")
+    if any(name.endswith("(mặc định)") for name in unreadable):
+        raise DeployPhaseError("Không đọc được fsid của cụm mặc định để đối chiếu — từ chối xoá cho an toàn.")
+    for i, node in enumerate(nodes):
+        try:
+            fsids = {line.strip().lower() for line in execute_command(node["ip"], _NODE_FSIDS_COMMAND).splitlines()
+                     if line.strip()}
+        except ExecutorError as exc:
+            raise DeployPhaseError(f"{node['ip']}: không đọc được fsid: {exc}") from exc
+        if fsids != {expected}:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            seen = ", ".join(sorted(fsids)) or "không có cụm Ceph nào"
+            raise DeployPhaseError(f"{node['ip']} thuộc cụm {seen}, không phải {expected} — từ chối xoá.")
+        host_status[i]["message"] = f"fsid {expected[:8]} khớp"
+        on_host_update(list(host_status))
+
+
+# OSDs deployed with osd_encryption (dm-crypt/LUKS) keep an open
+# device-mapper "crypt" mapping on top of their ceph-volume LV after the
+# daemon stops; it holds the LV busy, so zap/vgremove fail. Only mappings
+# whose backing device is a ceph-volume OSD LV are closed — never an OS or
+# other encrypted volume. dmsetup (lvm2) is present even where cryptsetup
+# is not (a cephadm host opens them from inside the OSD container).
+_CLOSE_CEPH_DMCRYPT = (
+    "closed=''; "
+    "for m in $(dmsetup ls --target crypt 2>/dev/null | awk '$1 != \"No\" {print $1}'); do "
+    "case \"$(dmsetup deps -o devname \"$m\" 2>/dev/null)\" in "
+    "*ceph--*osd--*) dmsetup remove --retry \"$m\" "
+    "|| { echo \"Khong dong duoc dm-crypt $m\" >&2; exit 1; }; closed=\"$closed $m\";; "
+    "esac; done; "
+    "[ -z \"$closed\" ] || echo \"Da dong dm-crypt (LUKS):$closed\""
+)
+
+
+def _wipe_disk_command(osd_disk: str) -> str:
+    """Close any dm-crypt mapping on the disk, zap it, then make sure no LUKS
+    header is left (raw-mode encrypted OSDs put it straight on the device)."""
+    disk = shlex.quote(osd_disk)
+    close = (
+        f"for m in $(lsblk -nr -o NAME,TYPE {disk} 2>/dev/null | awk '$2 == \"crypt\" {{print $1}}'); do "
+        f"dmsetup remove --retry \"$m\" || {{ echo \"Khong dong duoc dm-crypt $m tren {disk}\" >&2; exit 1; }}; done; "
+    )
+    zap = (
+        "if command -v ceph-volume >/dev/null 2>&1; then "
+        f"ceph-volume lvm zap --destroy {disk}; "
+        "elif command -v cephadm >/dev/null 2>&1; then "
+        f"cephadm ceph-volume -- lvm zap --destroy {disk}; "
+        "else cephadm_script=$(find /var/lib/ceph -mindepth 2 -maxdepth 2 -type f "
+        "-name 'cephadm.*' -printf '%T@ %p\\n' 2>/dev/null "
+        "| sort -nr | sed -n '1s/^[^ ]* //p'); "
+        "if [ -n \"$cephadm_script\" ]; then "
+        f"python3 \"$cephadm_script\" ceph-volume -- lvm zap --destroy {disk}; "
+        "else echo 'no ceph-volume (native or via cephadm) found' >&2; exit 1; fi; fi"
+    )
+    verify = (
+        f"if blkid -p {disk} 2>/dev/null | grep -q crypto_LUKS; then wipefs -a {disk} >/dev/null || exit 1; fi; "
+        f"if lsblk -nr -o TYPE {disk} 2>/dev/null | grep -qx crypt; then "
+        f"echo \"van con dm-crypt tren {disk}\" >&2; exit 1; fi"
+    )
+    return f"{close}{zap} || exit 1; {verify}"
 
 
 def _phase_delete_manual_stop_daemons(nodes: list[dict], action_params: dict, on_host_update) -> None:
@@ -1594,9 +1706,10 @@ def _phase_delete_manual_stop_daemons(nodes: list[dict], action_params: dict, on
     on_host_update(list(host_status))
     command = (
         "units=$(systemctl list-units --all --plain --no-legend 'ceph-*' 2>/dev/null | awk '{print $1}'); "
-        "if [ -z \"$units\" ]; then echo 'Khong tim thay daemon Ceph nao tren node nay'; exit 0; fi; "
+        "if [ -z \"$units\" ]; then echo 'Khong tim thay daemon Ceph nao tren node nay'; else "
         "for u in $units; do systemctl stop \"$u\" 2>/dev/null; systemctl disable \"$u\" 2>/dev/null; done; "
-        "echo \"Da dung: $units\""
+        "echo \"Da dung: $units\"; fi; "
+        + _CLOSE_CEPH_DMCRYPT
     )
     for i, node in enumerate(nodes):
         host = node["ip"]
@@ -1834,21 +1947,8 @@ def _phase_delete_manual_wipe_osd_disk(nodes: list[dict], action_params: dict, o
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         for osd_disk in osd_disks:
-            quoted_disk = shlex.quote(osd_disk)
-            zap_command = (
-                "if command -v ceph-volume >/dev/null 2>&1; then "
-                f"ceph-volume lvm zap --destroy {quoted_disk}; "
-                "elif command -v cephadm >/dev/null 2>&1; then "
-                f"cephadm ceph-volume -- lvm zap --destroy {quoted_disk}; "
-                "else cephadm_script=$(find /var/lib/ceph -mindepth 2 -maxdepth 2 -type f "
-                "-name 'cephadm.*' -printf '%T@ %p\\n' 2>/dev/null "
-                "| sort -nr | sed -n '1s/^[^ ]* //p'); "
-                "if [ -n \"$cephadm_script\" ]; then "
-                f"python3 \"$cephadm_script\" ceph-volume -- lvm zap --destroy {quoted_disk}; "
-                "else echo 'no ceph-volume (native or via cephadm) found' >&2; exit 1; fi; fi"
-            )
             try:
-                _execute_zap_with_connect_retry(ip, zap_command)
+                _execute_zap_with_connect_retry(ip, _wipe_disk_command(osd_disk))
             except ExecutorError as exc:
                 host_status[i]["status"] = "failed"
                 on_host_update(list(host_status))
@@ -4106,14 +4206,73 @@ def _deleted_cluster_is_default(action_params: dict) -> bool:
     return bool(deleted) and deleted == monitored
 
 
+def _extra_cluster(action_params: dict) -> Cluster | None:
+    """The non-default monitored cluster a lifecycle action targets, if any."""
+    cluster_id = action_params.get("_cluster_id")
+    if not cluster_id:
+        return None
+    with db.SessionLocal() as session:
+        cluster = session.get(Cluster, cluster_id)
+        if cluster is not None:
+            session.expunge(cluster)
+    return cluster if cluster is not None and not cluster.is_default else None
+
+
+def _current_config_fingerprint(action_params: dict) -> str:
+    if action_params.get("_cluster_id"):
+        extra = _extra_cluster(action_params)
+        if extra is not None:
+            return cluster_config_fingerprint(extra)
+        with db.SessionLocal() as session:
+            if session.get(Cluster, action_params["_cluster_id"]) is None:
+                return ""  # the cluster row is gone: never run against a guess
+    return env_config.current_cluster_config_fingerprint()
+
+
+def _stop_monitoring_deleted_extra_cluster(action_params: dict) -> bool:
+    """After deleting a non-default cluster, stop monitoring it (soft-deactivate,
+    the row stays for history). Returns False when the target is the default."""
+    extra = _extra_cluster(action_params)
+    if extra is None:
+        return False
+    deleted = set(_node_ips_with_role(action_params.get("nodes") or [], "mon"))
+    monitored = {ip.strip() for ip in (extra.ceph_mon_nodes or "").split(",") if ip.strip()}
+    if not deleted or deleted != monitored:
+        logger.warning("cluster_deploy: deleted MONs %s are not cluster %s's; monitoring unchanged", deleted, extra.id)
+        return True
+    with db.SessionLocal() as session:
+        row = session.get(Cluster, extra.id)
+        row.is_active = False
+        session.commit()
+    logger.info("cluster_deploy: cluster %s deleted, no longer monitored", extra.id)
+    return True
+
+
+def _node_removal_phases(action_id: str) -> list | None:
+    """Phase lists of worker/executor/node_removal.py (imported late: it imports this module)."""
+    from worker.executor import node_removal
+
+    return node_removal.PHASES.get(action_id)
+
+
 def _apply_config_epilogue(action_id: str, action_params: dict) -> None:
     """Record what a successful lifecycle action changed in Ceph AI's own config."""
     if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
+        return
+    if action_id in {"remove_cluster_nodes", "finish_remove_cluster_nodes"}:
+        from worker.executor import node_removal
+
+        node_removal.apply_config(action_params)
         return
     if action_id in NEW_CLUSTER_DEPLOY_ACTION_IDS:
         _register_monitored_cluster(action_params, action_id)
         return
     if action_id in _DELETE_CLUSTER_ACTION_IDS:
+        if action_params.get("_expected_fsid"):
+            logger.info("cluster_deploy: deleted an unmonitored cluster; config unchanged")
+            return
+        if _stop_monitoring_deleted_extra_cluster(action_params):
+            return
         if not _deleted_cluster_is_default(action_params):
             logger.info("cluster_deploy: deleted cluster is not the monitored default; config unchanged")
             return
@@ -4193,7 +4352,7 @@ def run(
             return False
 
     nodes = action_params.get("nodes") or []
-    phases = _PHASES_BY_ACTION_ID.get(action_id)
+    phases = _PHASES_BY_ACTION_ID.get(action_id) or _node_removal_phases(action_id)
     if not phases:
         logger.error("cluster_deploy.run: no phase sequence registered for action_id=%s", action_id)
         return False
@@ -4202,7 +4361,7 @@ def run(
     write_progress(action_pk, progress)
 
     expected_fingerprint = action_params.get("_cluster_config_fingerprint")
-    if expected_fingerprint and expected_fingerprint != env_config.current_cluster_config_fingerprint():
+    if expected_fingerprint and expected_fingerprint != _current_config_fingerprint(action_params):
         progress[0]["status"] = "failed"
         progress[0]["message"] = "Cấu hình cụm đã thay đổi sau khi đề xuất; tạo proposal mới trước khi chạy."
         progress[0]["finished_at"] = utc_now().isoformat()

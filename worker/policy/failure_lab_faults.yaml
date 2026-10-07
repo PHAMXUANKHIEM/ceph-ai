@@ -1,0 +1,26 @@
+# Failure Lab FL2: reversible real faults on the lab cluster
+# (Plan/in-progress/failure-lab-plan-2026-10-06.md, section 3 and FL2).
+#
+# Each fault reuses the expectations (diagnosis markers, acceptable actions)
+# of the replay scenario named in `expect_from`, so a replay and a real run of
+# the same failure are scored the same way. The runner only knows the kinds
+# below; there is no free-form command anywhere in this file.
+#
+# Operator decisions (07/10/2026): start with these two; SAFE actions proposed
+# during a run wait for approval; scheduled runs only inside
+# FAILURE_LAB_WINDOW; netem is not allowed yet.
+schema_version: 1
+faults:
+  - id: osd_down_fault
+    kind: stop_osd           # ceph orch daemon stop/start osd.N (cephadm)
+    expect_from: osd_down
+    # Codes a stopped OSD is expected to raise; anything else is a side effect.
+    expected_health_codes: [OSD_DOWN, PG_DEGRADED, OSD_HOST_DOWN]
+    max_seconds: 300         # must stay below mon_osd_down_out_interval (checked)
+    recovery_seconds: 600
+  - id: osd_nearfull_fault
+    kind: nearfull_ratio     # ceph osd set-nearfull-ratio below current use, then restore
+    expect_from: osd_nearfull
+    expected_health_codes: [OSD_NEARFULL, POOL_NEARFULL]
+    max_seconds: 300
+    recovery_seconds: 300

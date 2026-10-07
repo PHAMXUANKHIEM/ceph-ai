@@ -21,8 +21,9 @@ from shared.autopilot_guardrails import (
     cluster_configured_mode,
     effective_runtime_mode,
 )
+from shared import failure_lab_fault
 from shared.synthetic_incidents import is_synthetic_evidence
-from shared.case_retrieval import find_verified_cases
+from shared import case_references
 from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
 from shared.ai_routing import choose_model
 from shared.ai_output import output_budget_instruction, trim_text_to_token_budget
@@ -570,18 +571,8 @@ def _previous_attempts_block(payload: dict) -> str:
 
 
 def _verified_cases_block(payload: dict) -> str:
-    cases = payload.get("verified_case_references") or []
-    if not cases:
-        return ""
-    lines = [
-        "Các Case tham khảo đã verify cùng fault/scope/entity (chỉ tham khảo; không cấp quyền thực thi):"
-    ]
-    for case in cases:
-        lines.append(
-            f"  - case={case.get('case_id')} playbook={case.get('playbook_id')}@"
-            f"{case.get('playbook_version')}: {case.get('diagnosis')}"
-        )
-    return "\n".join(lines) + "\n"
+    return (case_references.references_block(payload.get("verified_case_references") or [])
+            + case_references.history_block(payload.get("proposal_history") or []))
 
 
 def _bound_incident_context(text: str) -> str:
@@ -857,15 +848,27 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     ceph_version = snapshot.get("ceph_version") or snapshot.get("version")
     with db.SessionLocal() as retrieval_session:
         incident_for_retrieval = retrieval_session.get(Incident, incident_id)
-        enriched_envelope["verified_case_references"] = find_verified_cases(
+        retrieval_cluster_id = (incident_for_retrieval.cluster_id if incident_for_retrieval
+                                else envelope.get("cluster_id"))
+        retrieval_cluster = retrieval_session.get(Cluster, retrieval_cluster_id) if retrieval_cluster_id else None
+        include_unscoped = bool(retrieval_cluster is not None and retrieval_cluster.is_default)
+        retrieval_code = str(envelope.get("ceph_code") or "")
+        # Learning plan LL1/LL6: past cases of the same fault family and how
+        # earlier proposals ended. Context only; never authorization.
+        enriched_envelope["verified_case_references"] = case_references.find_reference_cases(
             retrieval_session,
             incident_id=incident_id,
-            cluster_id=incident_for_retrieval.cluster_id if incident_for_retrieval else envelope.get("cluster_id"),
-            fault_family=str(envelope.get("ceph_code") or ""),
             nodes=envelope.get("nodes") if isinstance(envelope.get("nodes"), list) else None,
             ceph_version=ceph_version if isinstance(ceph_version, str) else None,
             deployment_mode=envelope.get("ceph_exec_mode"),
             limit=3,
+            cluster_id=retrieval_cluster_id,
+            include_unscoped=include_unscoped,
+            ceph_code=retrieval_code,
+        )
+        enriched_envelope["proposal_history"] = case_references.proposal_history(
+            retrieval_session, cluster_id=retrieval_cluster_id, include_unscoped=include_unscoped,
+            ceph_code=retrieval_code,
         )
     payload = default_redactor.redact(enriched_envelope)
     user_content = _build_user_content(payload)
@@ -1077,6 +1080,11 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     alert_bot_token = alert_cluster.telegram_bot_token
                     alert_chat_id = alert_cluster.telegram_chat_id
                     alert_enabled = alert_cluster.telegram_enabled
+        # Failure Lab FL2: an incident raised by a lab fault run alerts the
+        # lab chat (or nobody) and its SAFE action waits for approval.
+        lab_run = failure_lab_fault.holding_run(incident.cluster_id, incident.detected_at)
+        if lab_run is not None:
+            alert_bot_token, alert_chat_id, alert_enabled = _failure_lab_alert_target()
 
         # Guard against duplicate/conflicting Action rows if this incident
         # gets diagnosed more than once (e.g. a message redelivered after
@@ -1491,6 +1499,14 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             event_type=audit.EVENT_SYNTHETIC_EXECUTION_BLOCKED,
         )
         logger.info("diagnose_incident: synthetic run %s kept shadow-only", incident_id)
+        return
+
+    if lab_run is not None and classification == ActionClassification.SAFE:
+        _route_safe_to_approval(
+            incident_id, action_pk, resolved_action_id, event_type=audit.EVENT_FAILURE_LAB_EXECUTION_HELD,
+        )
+        logger.info("diagnose_incident: %s raised by Failure Lab run %s, SAFE action held", incident_id,
+                    lab_run.get("run_id"))
         return
 
     if classification == ActionClassification.SAFE:
@@ -3045,6 +3061,13 @@ def _auto_reject_risky_during_cluster_operation(
                 actor=audit.ACTOR_SYSTEM,
             )
         session.commit()
+
+
+def _failure_lab_alert_target() -> tuple[str, str, bool]:
+    """(bot token, chat id, enabled) for a lab fault run's alerts: the lab chat
+    when configured, otherwise muted — never the real incident channel."""
+    chat_id = settings.failure_lab_telegram_chat_id.strip()
+    return settings.telegram_incident_bot_token, chat_id, bool(chat_id)
 
 
 def _route_safe_to_approval(

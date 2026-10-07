@@ -29,6 +29,7 @@ from shared.deterministic_triage import Triage
 from shared.autonomy_kpi import fault_family
 from shared.evidence_collectors import EvidenceRunner, SshTransport
 from shared.models import Cluster, Incident, IncidentEvidence
+from shared.synthetic_incidents import is_synthetic_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,13 @@ def _transport(session, cluster_id: str | None) -> SshTransport:
     return SshTransport(None if cluster is None or cluster.is_default else cluster)
 
 
+def _skipped(incident_id: str, reason: str) -> list[IncidentEvidence]:
+    # Every skip is logged: "0 evidence" on the AI flow must be explainable
+    # from the Worker log without reading code.
+    logger.info("evidence_gate: no evidence for %s: %s", incident_id, reason)
+    return []
+
+
 def _collect_if_missing(incident_id: str) -> list[IncidentEvidence]:
     from watcher.investigation_scanner import runner_for, signal_evidence
 
@@ -59,7 +67,9 @@ def _collect_if_missing(incident_id: str) -> list[IncidentEvidence]:
             return []
         cluster_id = incident.cluster_id or session.query(Cluster.id).filter(Cluster.is_default.is_(True)).scalar()
         if not incident_evidence.investigation_allowed(cluster_id):
-            return []
+            return _skipped(incident_id, f"cluster {cluster_id} is not in INVESTIGATION_CLUSTER_IDS")
+        if is_synthetic_evidence(incident.signal_evidence_json):
+            return _skipped(incident_id, "Failure Lab incident (the real cluster would contradict the scenario)")
         rows = incident_evidence.for_incident(session, incident_id)
         if rows:
             return rows
@@ -67,12 +77,12 @@ def _collect_if_missing(incident_id: str) -> list[IncidentEvidence]:
         code, cluster_key = incident.ceph_code, incident.cluster_id or "default"
         signal = signal_evidence(incident.signal_evidence_json)
     if signal.get("flapping"):
-        return []          # the scanner marks flapping repeats; no SSH for them
+        return _skipped(incident_id, "flapping repeat (the scanner marks it, no SSH)")
     if not transport.mon_nodes:
-        return []
+        return _skipped(incident_id, "the cluster has no MON node to read from")
     runner = runner_for(f"worker:{cluster_key}", lambda: EvidenceRunner(transport))
     if not runner.claim(f"{cluster_key}:{fault_family(code)}"):
-        return []          # a similar incident was investigated moments ago
+        return _skipped(incident_id, f"{fault_family(code)} was investigated on this cluster moments ago")
     plan = investigation_runbooks.plan(code, investigation_runbooks.context_for(code, signal),
                                        mon_host=transport.mon_nodes[0])
     results = runner.run(plan.requests)
