@@ -39,6 +39,25 @@
     </section>
 
     <section class="card">
+      <div class="card-header"><h2>Ứng viên chờ đưa vào main (PR)</h2></div>
+      <div class="card-body">
+        <p class="hint">Mỗi thay đổi nằm trên một nhánh <code>cand/*</code> riêng, có Pull Request và CI riêng. Tích những PR muốn đưa vào, gõ xác nhận rồi bấm Merge: các PR được squash-merge vào main theo thứ tự trên danh sách, CI trên main build bản deploy, sau đó deploy ở thẻ trên. PR chưa chọn cứ để chờ. Tóm tắt do AI viết từ commit và diff (cache theo commit).</p>
+        <form method="post" action="/test-progress/candidates/open-prs" class="ci-control-row">
+          <button class="btn" type="submit" id="open-prs-button" hidden>Mở PR cho nhánh chưa có PR</button>
+        </form>
+        <p id="cand-error" class="hint" hidden></p>
+        <form method="post" action="/test-progress/candidates/merge" id="merge-form">
+          <div id="cand-list"><p class="empty-state">Đang tải…</p></div>
+          <div class="ci-control-row">
+            <label>Xác nhận <input type="text" name="confirmation" id="merge-confirmation" autocomplete="off" placeholder="MERGE 1" required></label>
+            <button class="btn btn-primary" type="submit" id="merge-button" disabled>Merge PR đã chọn vào main</button>
+            <span class="hint" id="merge-hint"></span>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-header"><h2>Test trên máy (trước khi push)</h2></div>
       <div class="card-body">
         <p class="hint">Bộ test đầy đủ chạy trên máy trước mỗi lần push. Trang tự cập nhật mỗi 5 giây.</p>
@@ -215,6 +234,67 @@
         renderControls(data);
       } catch (e) { /* keep the last view; retry next tick */ }
     }
+    function candidateRow(c) {
+      const box = document.createElement("div"); box.className = "cand-item";
+      const head = document.createElement("label"); head.className = "cand-head";
+      const pick = document.createElement("input"); pick.type = "checkbox"; pick.name = "pick";
+      const ready = c.pull && c.ci.conclusion === "success" && c.pull.mergeable !== false;
+      pick.disabled = !ready;
+      if (c.pull) pick.value = c.pull.number + ":" + c.head_sha;
+      const title = document.createElement("strong"); title.textContent = " " + c.title;
+      head.append(pick, title);
+      const meta = document.createElement("p"); meta.className = "hint";
+      const ciPill = c.ci.status === "none" ? pill("status-unknown", c.pull ? "CI chưa chạy" : "chưa có PR")
+        : (c.ci.status !== "completed" ? pill("status-warn", "CI đang chạy")
+          : (c.ci.conclusion === "success" ? pill("status-ok", "CI xanh") : pill("status-err", "CI " + c.ci.conclusion)));
+      meta.append(ciPill, " ");
+      if (c.pull) {
+        const a = document.createElement("a"); a.href = c.pull.url; a.target = "_blank"; a.rel = "noopener";
+        a.textContent = "PR #" + c.pull.number; meta.append(a, " · ");
+        if (c.pull.mergeable === false) meta.append(pill("status-err", "xung đột với main"), " · ");
+      }
+      const plus = c.files.reduce(function (n, f) { return n + f.additions; }, 0);
+      const minus = c.files.reduce(function (n, f) { return n + f.deletions; }, 0);
+      meta.append(c.branch + " · " + c.commits.length + " commit · " + c.files.length + " file (+" + plus + "/-" + minus + ")" +
+        (c.behind_by ? " · main đã đi trước " + c.behind_by + " commit" : "") + " · " + when(c.updated_at));
+      const summary = document.createElement("div"); summary.className = "cand-summary";
+      summary.textContent = c.summary ? c.summary.text : "AI đang tóm tắt…";
+      const source = document.createElement("p"); source.className = "hint";
+      source.textContent = c.summary ? (c.summary.source === "ai" ? "Tóm tắt bởi AI" : "AI không trả lời được: hiện commit message") : "";
+      const details = document.createElement("details");
+      const sum = document.createElement("summary"); sum.textContent = "Commit và file";
+      const list = document.createElement("ul");
+      c.commits.forEach(function (commit) { const li = document.createElement("li"); const code = document.createElement("code");
+        code.textContent = commit.sha.slice(0, 8); li.append(code, " " + commit.message.split("\n")[0]); list.append(li); });
+      c.files.forEach(function (f) { const li = document.createElement("li"); li.textContent = f.status + " " + f.name + " (+" + f.additions + "/-" + f.deletions + ")"; list.append(li); });
+      details.append(sum, list);
+      box.append(head, meta, summary, source, details);
+      return box;
+    }
+    function updateMergeControls() {
+      const count = document.querySelectorAll('#cand-list input[name="pick"]:checked').length;
+      el("merge-button").disabled = !count;
+      el("merge-confirmation").placeholder = "MERGE " + (count || 1);
+      el("merge-hint").textContent = count ? "Gõ MERGE " + count + " để merge " + count + " PR." : "Chỉ chọn được PR có CI xanh và không xung đột.";
+    }
+    async function refreshCandidates() {
+      try {
+        const response = await fetch("/api/test-progress/candidates", {credentials: "same-origin"});
+        if (!response.ok) return;
+        const data = await response.json();
+        const checked = new Set(Array.from(document.querySelectorAll('#cand-list input[name="pick"]:checked')).map(function (i) { return i.value; }));
+        el("cand-error").hidden = !data.error; el("cand-error").textContent = data.error ? "Không đọc được GitHub: " + data.error : "";
+        const list = el("cand-list"); list.replaceChildren();
+        data.candidates.forEach(function (c) { list.append(candidateRow(c)); });
+        if (!data.candidates.length && !data.error) list.innerHTML = '<p class="empty-state">Không có nhánh cand/* nào chờ merge.</p>';
+        document.querySelectorAll('#cand-list input[name="pick"]').forEach(function (input) {
+          input.checked = checked.has(input.value) && !input.disabled; input.addEventListener("change", updateMergeControls);
+        });
+        el("open-prs-button").hidden = !data.token_configured || !data.candidates.some(function (c) { return !c.pull; });
+        updateMergeControls();
+      } catch (e) { /* keep the last view */ }
+    }
+    refreshCandidates(); setInterval(refreshCandidates, 30000);
     refresh(); setInterval(refresh, 5000);
   })();
   </script>

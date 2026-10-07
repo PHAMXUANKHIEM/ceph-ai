@@ -228,7 +228,7 @@ def _grant_runtime_service_access() -> None:
             subprocess.run(["setfacl", "-m", f"u:{RUNTIME_UID}:rw,m::rw", str(path)], check=True)
         elif path.is_file():
             subprocess.run(["setfacl", "-x", f"u:{RUNTIME_UID}", str(path)], check=False)
-    for relative in ("cache", "ai-tasks", "backups", "backups_missing", "release-artifacts", "ssh", "failure-lab", "deploy-requests"):
+    for relative in ("cache", "ai-tasks", "backups", "backups_missing", "release-artifacts", "ssh", "failure-lab", "deploy-requests", "release-notes"):
         path = RUNTIME_ROOT / relative
         path.mkdir(mode=0o750, parents=True, exist_ok=True)
         subprocess.run(["setfacl", "-Rm", f"u:{RUNTIME_UID}:rwX,m::rwX", str(path)], check=True)
