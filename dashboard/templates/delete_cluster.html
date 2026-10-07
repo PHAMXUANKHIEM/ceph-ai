@@ -157,6 +157,52 @@
       </section>
     </div>
     {% endif %}
+
+    {% if not pending_action %}
+    <section class="card lifecycle-panel">
+      <details class="dc-unregistered">
+        <summary><strong>Xoá một cụm CHƯA được giám sát (nhập IP)</strong></summary>
+        <div class="card-body">
+          <p class="hint">Cho cụm Ceph AI không theo dõi (ví dụ cụm lab cũ). Trước khi xoá, Worker SSH vào từng node để đọc fsid: mọi node phải thuộc đúng fsid bạn nhập, và fsid đó không được là của cụm nào đang giám sát. IP của cụm đang giám sát bị từ chối ngay — xoá cụm đó bằng cách chọn nó trên thanh chọn cụm.</p>
+          <form id="dcu-form" class="dcu-form">
+            <label>Node, mỗi dòng một node: <code>IP</code> hoặc <code>IP /dev/vdb,/dev/vdc</code> (đĩa OSD, chỉ cần khi xoá dữ liệu đĩa)
+              <textarea id="dcu-nodes" rows="4" spellcheck="false" placeholder="10.3.54.145 /dev/vdb,/dev/vdc,/dev/vdd"></textarea></label>
+            <label>fsid của cụm <input type="text" id="dcu-fsid" autocomplete="off" spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label>
+            <label>Cụm được dựng bằng
+              <select id="dcu-mode"><option value="cephadm">cephadm</option><option value="manual">package/ceph-deploy</option></select></label>
+            <label class="dcu-check"><input type="checkbox" id="dcu-wipe"> Xoá dữ liệu đĩa OSD (kể cả LUKS) — không thể hoàn tác</label>
+            <label>Gõ lại fsid để xác nhận <input type="text" id="dcu-confirm" autocomplete="off" spellcheck="false"></label>
+            <p class="dc-modal-error" id="dcu-error" hidden></p>
+            <button type="submit" class="btn dc-delete-button" id="dcu-submit">Tạo đề xuất xoá cụm này</button>
+          </form>
+        </div>
+      </details>
+    </section>
+    <script>
+    (function () {
+      const form = document.getElementById("dcu-form");
+      if (!form) return;
+      form.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        const error = document.getElementById("dcu-error");
+        const nodes = document.getElementById("dcu-nodes").value.split("\n").map(function (line) { return line.trim(); })
+          .filter(Boolean).map(function (line) {
+            const parts = line.split(/\s+/);
+            return {ip: parts[0], osd_disks: parts[1] ? parts[1].split(",").map(function (d) { return d.trim(); }).filter(Boolean) : []};
+          });
+        const body = {nodes: nodes, fsid: document.getElementById("dcu-fsid").value.trim(),
+          exec_mode: document.getElementById("dcu-mode").value, wipe_osd_disks: document.getElementById("dcu-wipe").checked,
+          confirmation: document.getElementById("dcu-confirm").value.trim()};
+        const response = await fetch("/delete-cluster/propose-unregistered", {method: "POST", credentials: "same-origin",
+          headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+        if (response.ok) { window.location.reload(); return; }
+        let detail = "Không tạo được đề xuất";
+        try { detail = (await response.json()).detail || detail; } catch (e) { /* keep the default */ }
+        error.textContent = typeof detail === "string" ? detail : JSON.stringify(detail); error.hidden = false;
+      });
+    })();
+    </script>
+    {% endif %}
   </main>
 
   <script type="application/json" id="delete-initial-state">

@@ -7479,3 +7479,9 @@ body:not(.dashboard-page-shell) .chat-fab,
   .ci-control-row input[type="text"], .ci-control-row input[type="password"] { min-width: 0; width: 100%; }
   .ci-control-row label { width: 100%; }
 }
+
+.dc-unregistered summary { cursor: pointer; padding: 14px 18px; }
+.dcu-form { display: grid; gap: 12px; max-width: 720px; }
+.dcu-form label { display: grid; gap: 4px; }
+.dcu-form textarea, .dcu-form input[type="text"], .dcu-form select { width: 100%; max-width: 100%; padding: 8px 10px; border-radius: 8px; font-family: inherit; }
+.dcu-form .dcu-check { display: flex; gap: 8px; align-items: center; }

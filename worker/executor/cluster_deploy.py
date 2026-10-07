@@ -1579,6 +1579,62 @@ def _phase_delete_ssh_check(nodes: list[dict], action_params: dict, on_host_upda
             raise DeployPhaseError(f"Không kết nối được SSH tới {host}: {exc}") from exc
         host_status[i]["status"] = "done"
         on_host_update(list(host_status))
+    expected_fsid = action_params.get("_expected_fsid")
+    if expected_fsid:
+        _verify_unregistered_target(nodes, str(expected_fsid), host_status, on_host_update)
+
+
+# A cluster that Ceph AI does not monitor is deleted from operator-typed IPs,
+# so before any teardown every node must prove it belongs to the cluster the
+# operator named (its fsid), and that fsid must not be any monitored cluster's.
+_NODE_FSIDS_COMMAND = (
+    "{ ls -1 /var/lib/ceph 2>/dev/null | grep -E '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; "
+    "sed -n 's/^[[:space:]]*fsid[[:space:]]*=[[:space:]]*//p' /etc/ceph/ceph.conf 2>/dev/null; } | sort -u"
+)
+
+
+def _monitored_fsids() -> tuple[set[str], list[str]]:
+    """fsids of every monitored cluster, and the names whose fsid could not be read."""
+    from shared.clusters import list_active_clusters
+    from watcher.ceph_client import run_ceph_json_command_with
+
+    found, unreadable = set(), []
+    with db.SessionLocal() as session:
+        clusters = list_active_clusters(session)
+        session.expunge_all()
+    for cluster in clusters:
+        user, key_path, exec_mode, container = resolve_ssh_creds(None if cluster.is_default else cluster)
+        raw = settings.ceph_mon_nodes if cluster.is_default else cluster.ceph_mon_nodes
+        mons = [node.strip() for node in str(raw or "").split(",") if node.strip()]
+        try:
+            payload = run_ceph_json_command_with(mons, container, user, key_path, exec_mode, "ceph fsid")[1]
+            found.add(str(payload.get("fsid", "") if isinstance(payload, dict) else "").lower())
+        except Exception:  # noqa: BLE001 - reported to the caller, which decides
+            unreadable.append(f"{cluster.name}{' (mặc định)' if cluster.is_default else ''}")
+    return found, unreadable
+
+
+def _verify_unregistered_target(nodes: list[dict], expected_fsid: str, host_status: list[dict],
+                                on_host_update) -> None:
+    expected = expected_fsid.lower()
+    monitored, unreadable = _monitored_fsids()
+    if expected in monitored:
+        raise DeployPhaseError(f"fsid {expected} là của một cụm đang được giám sát — từ chối xoá.")
+    if any(name.endswith("(mặc định)") for name in unreadable):
+        raise DeployPhaseError("Không đọc được fsid của cụm mặc định để đối chiếu — từ chối xoá cho an toàn.")
+    for i, node in enumerate(nodes):
+        try:
+            fsids = {line.strip().lower() for line in execute_command(node["ip"], _NODE_FSIDS_COMMAND).splitlines()
+                     if line.strip()}
+        except ExecutorError as exc:
+            raise DeployPhaseError(f"{node['ip']}: không đọc được fsid: {exc}") from exc
+        if fsids != {expected}:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            seen = ", ".join(sorted(fsids)) or "không có cụm Ceph nào"
+            raise DeployPhaseError(f"{node['ip']} thuộc cụm {seen}, không phải {expected} — từ chối xoá.")
+        host_status[i]["message"] = f"fsid {expected[:8]} khớp"
+        on_host_update(list(host_status))
 
 
 # OSDs deployed with osd_encryption (dm-crypt/LUKS) keep an open
@@ -4189,6 +4245,9 @@ def _apply_config_epilogue(action_id: str, action_params: dict) -> None:
         _register_monitored_cluster(action_params, action_id)
         return
     if action_id in _DELETE_CLUSTER_ACTION_IDS:
+        if action_params.get("_expected_fsid"):
+            logger.info("cluster_deploy: deleted an unmonitored cluster; config unchanged")
+            return
         if _stop_monitoring_deleted_extra_cluster(action_params):
             return
         if not _deleted_cluster_is_default(action_params):

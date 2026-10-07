@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import logging
 import re
@@ -78,6 +79,16 @@ def _delete_target(request: Request) -> tuple[Cluster, list[dict], str, str]:
         name = settings.cluster_name.strip() or _DEFAULT_CLUSTER_NAME
         return cluster, _normalize_configured_nodes(), name, settings.ceph_exec_mode
     return cluster, _normalize_configured_nodes(cluster), cluster.name, cluster.ceph_exec_mode or "none"
+
+
+def _pending_confirmation(action: Action | None) -> str | None:
+    """What the approver must type for this exact proposal (an unmonitored
+    cluster's fsid, not the selected cluster's first MON)."""
+    try:
+        params = json.loads(action.action_params) if action is not None and action.action_params else {}
+    except (TypeError, ValueError):
+        return None
+    return str(params.get("_approval_confirmation") or "") or None
 
 
 def _latest_delete_action(session, cluster: Cluster) -> Action | None:
@@ -208,12 +219,79 @@ async def delete_cluster_page(request: Request, user: str = Depends(require_logi
             "osd_nodes": osd_nodes,
             "has_configured_cluster": bool(nodes),
             "cluster_name": cluster_name,
-            "confirm_text": first_mon_ip,
+            "confirm_text": _pending_confirmation(pending_action) or first_mon_ip,
             "pending_action": pending_action,
             "last_action": last_action,
             "progress": progress,
         },
     )
+
+
+def _create_delete_proposal(user: str, action_id: str, nodes: list[dict], action_params: dict, rationale: str, *,
+                            cluster_id: str | None, log_excerpt: str) -> JSONResponse:
+    """Insert the CLUSTER_DELETE incident + DESTRUCTIVE action awaiting approval (one lifecycle at a time)."""
+    target_nodes = [n["ip"] for n in nodes]
+    try:
+        preview_command = executor_commands.get_command(action_id, target_nodes[0], action_params)
+    except ExecutorError as exc:
+        raise HTTPException(status_code=400, detail=f"Không tạo được lệnh xem trước: {exc}")
+
+    with db.SessionLocal() as session:
+        existing = (
+            session.query(Action)
+            .filter(Action.action_id.in_(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS))
+            .filter(Action.status.in_(_IN_FLIGHT_ACTION_STATUSES))
+            .first()
+        )
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Đã có một đề xuất xoá cụm đang chờ duyệt hoặc đã duyệt — không thể tạo thêm.",
+            )
+
+        incident = Incident(
+            cluster_id=cluster_id,
+            ceph_code=CLUSTER_DELETE_CEPH_CODE,
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=log_excerpt,
+            detected_at=utc_now(),
+        )
+        session.add(incident)
+        session.flush()  # assigns incident.id, needed by the Action FK below
+
+        action = Action(
+            incident_id=incident.id,
+            action_id=action_id,
+            classification=gate.classify_action(action_id).value,  # always RISKY (AD-5)
+            status=ActionStatus.PENDING_APPROVAL.value,
+            rationale=rationale,
+            target_nodes=json.dumps(target_nodes),
+            action_params=json.dumps(action_params),
+            proposed_command=preview_command,
+            expires_at=utc_now() + timedelta(hours=max(1, settings.action_approval_expiry_hours)),
+            idempotency_key=gate.CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY,
+        )
+        session.add(action)
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Đã có một lifecycle action khác vừa được tạo; không thể tạo thêm proposal.",
+            ) from exc
+
+        audit.record(
+            session,
+            incident_id=incident.id,
+            action_id=action.id,
+            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
+            actor=user,
+        )
+        session.commit()
+        action_pk = action.id
+
+    return JSONResponse({"action_id": action_pk}, status_code=201)
 
 
 @router.post("/delete-cluster/propose")
@@ -273,69 +351,10 @@ async def propose_delete(request: Request, user: str = Depends(require_login)):
         "_approval_confirmation": next(n["ip"] for n in nodes if "mon" in n["roles"]),
     }
 
-    target_nodes = [n["ip"] for n in nodes]
-    try:
-        preview_command = executor_commands.get_command(action_id, target_nodes[0], action_params)
-    except ExecutorError as exc:
-        raise HTTPException(status_code=400, detail=f"Không tạo được lệnh xem trước: {exc}")
-
-    with db.SessionLocal() as session:
-        existing = (
-            session.query(Action)
-            .filter(Action.action_id.in_(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS))
-            .filter(Action.status.in_(_IN_FLIGHT_ACTION_STATUSES))
-            .first()
-        )
-        if existing is not None:
-            raise HTTPException(
-                status_code=409,
-                detail="Đã có một đề xuất xoá cụm đang chờ duyệt hoặc đã duyệt — không thể tạo thêm.",
-            )
-
-        incident = Incident(
-            cluster_id=cluster.id,
-            ceph_code=CLUSTER_DELETE_CEPH_CODE,
-            status=IncidentStatus.PENDING_APPROVAL.value,
-            log_excerpt=f"Đề xuất xoá cụm Ceph {expected_cluster_name!r} bởi {user} — {len(nodes)} node",
-            detected_at=utc_now(),
-        )
-        session.add(incident)
-        session.flush()  # assigns incident.id, needed by the Action FK below
-
-        action = Action(
-            incident_id=incident.id,
-            action_id=action_id,
-            classification=gate.classify_action(action_id).value,  # always RISKY (AD-5)
-            status=ActionStatus.PENDING_APPROVAL.value,
-            rationale=_delete_plan_text(exec_mode, nodes, wipe_osd_disks, cluster_name=expected_cluster_name,
-                                        is_default=cluster.is_default),
-            target_nodes=json.dumps(target_nodes),
-            action_params=json.dumps(action_params),
-            proposed_command=preview_command,
-            expires_at=utc_now() + timedelta(hours=max(1, settings.action_approval_expiry_hours)),
-            idempotency_key=gate.CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY,
-        )
-        session.add(action)
-        try:
-            session.flush()
-        except IntegrityError as exc:
-            session.rollback()
-            raise HTTPException(
-                status_code=409,
-                detail="Đã có một lifecycle action khác vừa được tạo; không thể tạo thêm proposal.",
-            ) from exc
-
-        audit.record(
-            session,
-            incident_id=incident.id,
-            action_id=action.id,
-            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
-            actor=user,
-        )
-        session.commit()
-        action_pk = action.id
-
-    return JSONResponse({"action_id": action_pk}, status_code=201)
+    rationale = _delete_plan_text(exec_mode, nodes, wipe_osd_disks, cluster_name=expected_cluster_name,
+                                  is_default=cluster.is_default)
+    return _create_delete_proposal(user, action_id, nodes, action_params, rationale, cluster_id=cluster.id,
+                                   log_excerpt=f"Đề xuất xoá cụm Ceph {expected_cluster_name!r} bởi {user} — {len(nodes)} node")
 
 
 @router.get("/delete-cluster/progress")
@@ -351,3 +370,87 @@ async def delete_cluster_progress(request: Request, user: str = Depends(require_
             progress = []
         progress = _with_step_display_times(progress)
         return JSONResponse({"status": action.status, "progress": progress})
+
+
+# --- a cluster Ceph AI does not monitor, named by its node IPs and fsid -------------------
+
+_FSID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_MAX_UNREGISTERED_NODES = 20
+
+
+def _monitored_ips() -> set[str]:
+    """Every node IP of every monitored cluster (default from .env, others from their rows)."""
+    from shared.clusters import list_active_clusters
+
+    with db.SessionLocal() as session:
+        clusters = list_active_clusters(session)
+        session.expunge_all()
+    ips = {node["host"] for node in configured_nodes()}
+    for cluster in clusters:
+        if not cluster.is_default:
+            ips |= {node["host"] for node in configured_nodes(cluster)}
+    return ips
+
+
+def _unregistered_nodes(raw: object, wipe_osd_disks: bool) -> list[dict]:
+    if not isinstance(raw, list) or not 1 <= len(raw) <= _MAX_UNREGISTERED_NODES:
+        raise HTTPException(status_code=400, detail=f"Cần 1–{_MAX_UNREGISTERED_NODES} node")
+    nodes: list[dict] = []
+    for item in raw:
+        ip_text = str((item or {}).get("ip") if isinstance(item, dict) else "").strip()
+        try:
+            ip = str(ipaddress.ip_address(ip_text))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"IP không hợp lệ: {ip_text!r}") from None
+        disks = [str(d).strip() for d in (item.get("osd_disks") or []) if str(d).strip()]
+        bad = [disk for disk in disks if not _OSD_DISK_RE.match(disk)]
+        if bad or len(set(disks)) != len(disks):
+            raise HTTPException(status_code=400, detail=f"Đĩa OSD không hợp lệ hoặc trùng cho {ip}")
+        roles = ["mon", "osd"] if disks else ["mon"]
+        nodes.append({"ip": ip, "roles": roles, "osd_disks": disks if wipe_osd_disks else []})
+    if len({node["ip"] for node in nodes}) != len(nodes):
+        raise HTTPException(status_code=400, detail="IP bị trùng")
+    if wipe_osd_disks and not any(node["osd_disks"] for node in nodes):
+        raise HTTPException(status_code=400, detail="Đã chọn xoá đĩa OSD nhưng chưa nhập đĩa nào")
+    return nodes
+
+
+def _unregistered_plan_text(exec_mode: str, nodes: list[dict], fsid: str, wipe_osd_disks: bool) -> str:
+    plan = _delete_plan_text(exec_mode, nodes, wipe_osd_disks, cluster_name=f"chưa giám sát, fsid {fsid}",
+                             is_default=False)
+    return plan.replace(
+        "1. Kiểm tra kết nối SSH tới từng node.",
+        f"1. Kiểm tra kết nối SSH tới từng node; MỌI node phải thuộc đúng cụm fsid {fsid}, và fsid này không được "
+        "trùng với bất kỳ cụm nào đang giám sát — sai một node là dừng, chưa xoá gì.",
+    ).replace(f"cụm 'chưa giám sát, fsid {fsid}' được gỡ khỏi danh sách giám sát; ",
+              "không có cấu hình nào của Ceph AI thay đổi; ")
+
+
+@router.post("/delete-cluster/propose-unregistered")
+async def propose_delete_unregistered(request: Request, user: str = Depends(require_login)):
+    """Delete a cluster Ceph AI does not monitor (e.g. a leftover lab cluster), named by IPs + fsid."""
+    selected_cluster(request)  # same access check as the page
+    body = await request.json()
+    wipe_osd_disks = bool(body.get("wipe_osd_disks"))
+    nodes = _unregistered_nodes(body.get("nodes"), wipe_osd_disks)
+    fsid = str(body.get("fsid") or "").strip().lower()
+    if not _FSID_RE.match(fsid):
+        raise HTTPException(status_code=400, detail="fsid không hợp lệ (dạng xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)")
+    if str(body.get("confirmation") or "").strip().lower() != fsid:
+        raise HTTPException(status_code=400, detail="Gõ lại đúng fsid để xác nhận")
+    monitored = sorted({node["ip"] for node in nodes} & _monitored_ips())
+    if monitored:
+        raise HTTPException(status_code=400, detail=f"{', '.join(monitored)} thuộc một cụm đang giám sát — "
+                                                    "chọn cụm đó trên thanh chọn cụm để xoá theo cách thông thường")
+    exec_mode = "cephadm" if body.get("exec_mode") == "cephadm" else "none"
+    action_id = DELETE_CEPHADM_ACTION_ID if exec_mode == "cephadm" else DELETE_MANUAL_ACTION_ID
+    action_params = {
+        "nodes": nodes,
+        "wipe_osd_disks": wipe_osd_disks,
+        "_expected_fsid": fsid,
+        "_approval_confirmation": fsid,
+    }
+    return _create_delete_proposal(
+        user, action_id, nodes, action_params, _unregistered_plan_text(exec_mode, nodes, fsid, wipe_osd_disks),
+        cluster_id=None, log_excerpt=f"Đề xuất xoá cụm CHƯA giám sát fsid {fsid} bởi {user} — {len(nodes)} node",
+    )

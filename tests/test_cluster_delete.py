@@ -539,3 +539,54 @@ def test_a_lab_cluster_changed_after_the_proposal_is_not_deleted(clusters_db, mo
 
     assert result is False and commands == []
     assert "đã thay đổi sau khi đề xuất" in calls[-1][1][0]["message"]
+
+
+# --- deleting a cluster Ceph AI does not monitor ---------------------------------------------
+
+_FSID = "0b4f1c2e-1111-4222-8333-944455556666"
+
+
+def _unregistered_run(monkeypatch, node_fsids, monitored=(set(), [])):
+    commands = []
+
+    def fake(host, command):
+        commands.append((host, command))
+        return node_fsids.get(host, "") if "ls -1 /var/lib/ceph" in command else ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    monkeypatch.setattr(cluster_deploy_module, "_monitored_fsids", lambda: monitored)
+    written = {}
+    monkeypatch.setattr(cluster_deploy_module.env_config, "update_env_file_batch", written.update)
+    write_progress, calls = _make_recording_progress_writer()
+    nodes = [{"ip": "10.3.54.145", "roles": ["mon", "osd"], "osd_disks": []},
+             {"ip": "10.3.54.146", "roles": ["mon"], "osd_disks": []}]
+    result = run("action-1", "delete_cluster_cephadm", {"nodes": nodes, "wipe_osd_disks": False,
+                                                        "_expected_fsid": _FSID}, "incident-1",
+                 write_progress, _never_blocked)
+    teardown = [cmd for _host, cmd in commands if "systemctl list-units" in cmd]
+    return result, calls[-1][1][0], teardown, written
+
+
+def test_every_node_must_belong_to_the_named_cluster(monkeypatch):
+    ok, _step, teardown, written = _unregistered_run(
+        monkeypatch, {"10.3.54.145": _FSID + "\n", "10.3.54.146": _FSID + "\n"})
+    assert ok is True and teardown and written == {}
+
+    refused, step, teardown, _written = _unregistered_run(
+        monkeypatch, {"10.3.54.145": _FSID + "\n", "10.3.54.146": "ffffffff-1111-4222-8333-944455556666\n"})
+    assert refused is False and teardown == [] and "từ chối xoá" in step["message"]
+
+
+def test_a_monitored_fsid_or_an_unreadable_default_cluster_stops_before_teardown(monkeypatch):
+    nodes = {"10.3.54.145": _FSID, "10.3.54.146": _FSID}
+    refused, step, teardown, _ = _unregistered_run(monkeypatch, nodes, monitored=({_FSID}, []))
+    assert refused is False and teardown == [] and "đang được giám sát" in step["message"]
+
+    refused, step, teardown, _ = _unregistered_run(monkeypatch, nodes, monitored=(set(), ["CS-LAB (mặc định)"]))
+    assert refused is False and teardown == [] and "cụm mặc định" in step["message"]
+
+
+def test_node_fsid_discovery_shell_is_valid():
+    import subprocess
+
+    assert subprocess.run(["bash", "-n", "-c", cluster_deploy_module._NODE_FSIDS_COMMAND]).returncode == 0
