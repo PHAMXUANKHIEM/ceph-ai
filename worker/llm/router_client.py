@@ -21,6 +21,7 @@ from shared.autopilot_guardrails import (
     cluster_configured_mode,
     effective_runtime_mode,
 )
+from shared import failure_lab_fault
 from shared.synthetic_incidents import is_synthetic_evidence
 from shared.case_retrieval import find_verified_cases
 from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
@@ -1077,6 +1078,11 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     alert_bot_token = alert_cluster.telegram_bot_token
                     alert_chat_id = alert_cluster.telegram_chat_id
                     alert_enabled = alert_cluster.telegram_enabled
+        # Failure Lab FL2: an incident raised by a lab fault run alerts the
+        # lab chat (or nobody) and its SAFE action waits for approval.
+        lab_run = failure_lab_fault.holding_run(incident.cluster_id, incident.detected_at)
+        if lab_run is not None:
+            alert_bot_token, alert_chat_id, alert_enabled = _failure_lab_alert_target()
 
         # Guard against duplicate/conflicting Action rows if this incident
         # gets diagnosed more than once (e.g. a message redelivered after
@@ -1491,6 +1497,14 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             event_type=audit.EVENT_SYNTHETIC_EXECUTION_BLOCKED,
         )
         logger.info("diagnose_incident: synthetic run %s kept shadow-only", incident_id)
+        return
+
+    if lab_run is not None and classification == ActionClassification.SAFE:
+        _route_safe_to_approval(
+            incident_id, action_pk, resolved_action_id, event_type=audit.EVENT_FAILURE_LAB_EXECUTION_HELD,
+        )
+        logger.info("diagnose_incident: %s raised by Failure Lab run %s, SAFE action held", incident_id,
+                    lab_run.get("run_id"))
         return
 
     if classification == ActionClassification.SAFE:
@@ -3045,6 +3059,13 @@ def _auto_reject_risky_during_cluster_operation(
                 actor=audit.ACTOR_SYSTEM,
             )
         session.commit()
+
+
+def _failure_lab_alert_target() -> tuple[str, str, bool]:
+    """(bot token, chat id, enabled) for a lab fault run's alerts: the lab chat
+    when configured, otherwise muted — never the real incident channel."""
+    chat_id = settings.failure_lab_telegram_chat_id.strip()
+    return settings.telegram_incident_bot_token, chat_id, bool(chat_id)
 
 
 def _route_safe_to_approval(

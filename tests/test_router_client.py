@@ -4257,3 +4257,25 @@ def test_synthetic_failure_lab_incidents_never_send_the_incident_alert(isolated_
     with db_module.SessionLocal() as session:
         action = session.query(Action).filter_by(incident_id="incident-synthetic-replay").one()
         assert action.status != ActionStatus.AUTO_EXECUTED.value  # still shadow-only
+
+
+def test_a_failure_lab_fault_run_holds_safe_actions_and_keeps_alerts_off_the_real_channel(isolated_db, monkeypatch):
+    from shared import failure_lab_fault
+
+    alerts = []
+    monkeypatch.setattr(settings, "autopilot_enabled", True)
+    monkeypatch.setattr(settings, "failure_lab_telegram_chat_id", "")
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
+    monkeypatch.setattr(router_client, "send_ai_incident_alert", lambda *args, **kwargs: alerts.append(kwargs))
+    monkeypatch.setattr(router_client, "execute_command", lambda *a, **k: pytest.fail("must not execute"))
+    monkeypatch.setattr(failure_lab_fault, "holding_run", lambda cluster_id, detected_at: {"run_id": "fault-1"})
+    _create_incident("incident-lab-fault")
+
+    asyncio.run(router_client.diagnose_incident("incident-lab-fault", dict(ENVELOPE, incident_id="incident-lab-fault")))
+
+    assert alerts and all(alert["enabled"] is False for alert in alerts)  # no lab chat configured: muted
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-lab-fault").one()
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        events = {row.event_type for row in session.query(AuditEntry).filter_by(incident_id="incident-lab-fault")}
+        assert "failure_lab_execution_held" in events

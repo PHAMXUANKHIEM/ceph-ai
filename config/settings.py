@@ -451,6 +451,16 @@ class Settings(BaseSettings):
     investigation_scan_interval_seconds: int = Field(default=60, ge=30, le=3600)
     investigation_max_age_minutes: int = Field(default=30, ge=5, le=1440)
     investigation_incidents_per_scan: int = Field(default=2, ge=1, le=10)
+    # Failure Lab FL2 (Plan/in-progress/failure-lab-plan-2026-10-06.md):
+    # reversible real faults on the lab cluster. Off by default; a run also
+    # needs autonomy_environment=lab and the cluster's fsid pinned here.
+    # Scheduled runs stay inside FAILURE_LAB_WINDOW (Asia/Ho_Chi_Minh);
+    # lab notices go to FAILURE_LAB_TELEGRAM_CHAT_ID (incident bot) or are
+    # muted when it is empty.
+    failure_lab_fault_enabled: bool = False
+    failure_lab_cluster_fsid: str = ""
+    failure_lab_window: str = Field(default="02:00-05:00", pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$")
+    failure_lab_telegram_chat_id: str = ""
     # Collected command output is deleted after this many days (retention
     # sweep in watcher/learning_retention.py).
     incident_evidence_retention_days: int = Field(default=30, ge=1, le=365)
