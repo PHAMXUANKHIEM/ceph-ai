@@ -182,11 +182,15 @@
       }).join(" · ") : "";
     }
     function renderControls(data) {
-      const sha = data.latest_green_sha;
+      const deployed = data.deployed_sha;
+      const green = data.latest_green_sha;
+      const sha = green && green !== deployed ? green : null;
       el("deploy-sha").value = sha || "";
       el("deploy-target").textContent = sha
-        ? "Commit mới nhất có CI xanh: " + sha.slice(0, 8) + " — gõ DEPLOY " + sha.slice(0, 8) + " để xác nhận."
-        : "Lượt CI mới nhất trên main chưa xanh (hoặc đang chạy): chưa có gì để deploy.";
+        ? "Commit mới nhất có CI xanh: " + sha.slice(0, 8) + (deployed ? " (đang chạy: " + deployed.slice(0, 8) + ")" : "") +
+          " — gõ DEPLOY " + sha.slice(0, 8) + " để xác nhận."
+        : (green ? "Bản mới nhất có CI xanh (" + green.slice(0, 8) + ") đã được deploy và đang chạy: chưa có bản mới hơn để deploy."
+          : "Lượt CI mới nhất trên main chưa xanh (hoặc đang chạy): chưa có gì để deploy.");
       el("deploy-confirmation").placeholder = sha ? "DEPLOY " + sha.slice(0, 8) : "DEPLOY xxxxxxxx";
       const request = data.deploy_request || {};
       const queued = request.queued && request.queued.sha;

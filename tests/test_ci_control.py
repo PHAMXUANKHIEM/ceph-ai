@@ -207,3 +207,14 @@ def test_find_dispatched_run_waits_for_github_to_create_it():
                                             client=httpx.Client(transport=httpx.MockTransport(handler)))
 
     assert url == "new"
+
+
+def test_the_running_revision_is_not_offered_again(admin, monkeypatch):
+    monkeypatch.setattr(route.test_progress, "read_latest_deploy", lambda: {"status": "passed", "sha": SHA})
+
+    data = admin.get("/api/test-progress").json()
+    response = admin.post("/test-progress/deploy", data={"sha": SHA, "confirmation": "DEPLOY aaaaaaaa"},
+                          follow_redirects=False)
+
+    assert data["latest_green_sha"] == SHA and data["deployed_sha"] == SHA
+    assert "err=" in response.headers["location"] and "đang chạy" in admin.get(response.headers["location"]).text

@@ -45,9 +45,15 @@ async def test_progress_api(user: str = Depends(require_login)) -> dict:
     _require_admin(user)
     local = test_progress.read_local_run(Path(settings.test_progress_file))
     ci = await asyncio.to_thread(test_progress.fetch_ci_runs, settings.ci_github_repo)
-    return {"local": local, "deploy": test_progress.read_latest_deploy(), "ci": ci,
+    deploy = test_progress.read_latest_deploy()
+    return {"local": local, "deploy": deploy, "ci": ci,
             "deploy_request": ci_control.read_deploy_status(Path(settings.deploy_request_dir)),
-            "latest_green_sha": _latest_green_sha(ci)}
+            "latest_green_sha": _latest_green_sha(ci), "deployed_sha": _deployed_sha(deploy)}
+
+
+def _deployed_sha(deploy: dict | None) -> str | None:
+    """The revision production runs: the newest deploy that completed successfully."""
+    return deploy["sha"] if deploy and deploy.get("status") == "passed" and deploy.get("sha") else None
 
 
 def _latest_green_sha(ci: dict) -> str | None:
@@ -103,6 +109,8 @@ async def request_deploy(sha: str = Form(""), confirmation: str = Form(""), user
     ci = await asyncio.to_thread(test_progress.fetch_ci_runs, settings.ci_github_repo)
     if sha != _latest_green_sha(ci):
         return _back(err="Chỉ deploy được commit mới nhất trên main có CI xanh.")
+    if sha == _deployed_sha(test_progress.read_latest_deploy()):
+        return _back(err=f"{sha[:8]} đã được deploy và đang chạy; chưa có bản mới hơn.")
     try:
         ci_control.request_deploy(Path(settings.deploy_request_dir), sha=sha, confirmation=confirmation, user=user)
     except (ci_control.CiControlError, OSError) as exc:
