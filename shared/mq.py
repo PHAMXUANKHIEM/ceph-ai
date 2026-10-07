@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 import aio_pika
 from aio_pika.abc import AbstractChannel, AbstractConnection
@@ -18,7 +19,7 @@ DELEGATED_DLQ_NAME = "ai.delegated.tasks.dlq"
 CONNECT_TIMEOUT_SECONDS = 10
 
 
-def request_headers() -> dict[str, str]:
+def request_headers() -> dict[str, Any]:
     """Return safe AMQP headers for the current request context."""
     request_id = get_request_id()
     return {REQUEST_ID_HEADER: request_id} if request_id else {}
