@@ -29,6 +29,7 @@ from shared.deterministic_triage import Triage
 from shared.autonomy_kpi import fault_family
 from shared.evidence_collectors import EvidenceRunner, SshTransport
 from shared.models import Cluster, Incident, IncidentEvidence
+from shared.synthetic_incidents import is_synthetic_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,8 @@ def _collect_if_missing(incident_id: str) -> list[IncidentEvidence]:
         cluster_id = incident.cluster_id or session.query(Cluster.id).filter(Cluster.is_default.is_(True)).scalar()
         if not incident_evidence.investigation_allowed(cluster_id):
             return _skipped(incident_id, f"cluster {cluster_id} is not in INVESTIGATION_CLUSTER_IDS")
+        if is_synthetic_evidence(incident.signal_evidence_json):
+            return _skipped(incident_id, "Failure Lab incident (the real cluster would contradict the scenario)")
         rows = incident_evidence.for_incident(session, incident_id)
         if rows:
             return rows
