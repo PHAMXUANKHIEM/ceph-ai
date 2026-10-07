@@ -47,7 +47,9 @@ cd "$REPO_DIR"
 # still blocks deployment. The trap also restores the file when deployment
 # fails, so a failed release cannot discard the operator's work.
 ALLOWED_DIRTY_PATHS="${CEPH_AI_DEPLOY_ALLOWED_DIRTY_PATHS:-}"
-PRESERVED_DIRTY_ROOT=""
+# Set when the pre-checkout stage hands over to the deployed revision of this
+# script (see run_until_checkout below).
+PRESERVED_DIRTY_ROOT="${CEPH_AI_DEPLOY_PRESERVED_ROOT:-}"
 restore_allowed_dirty_files() {
   local exit_status=$?
   local failed_phase="$CURRENT_DEPLOY_PHASE"
@@ -87,54 +89,78 @@ restore_allowed_dirty_files() {
 }
 trap restore_allowed_dirty_files EXIT
 
-start_phase preflight
-CEPH_AI_DEPLOY_DIR="$REPO_DIR" \
-  "$REPO_DIR/scripts/deploy/deploy_preflight.sh"
-finish_phase
+# Stage 1 runs from the checkout that existed before this deploy. It is a
+# function so bash has read all of it before `git reset` rewrites this very
+# file (bash otherwise keeps reading a running script from disk, and would
+# continue with the deployed revision's bytes at the old offset). It ends by
+# handing over to the deployed revision of this script, so new units and
+# steps added in that revision take effect in the same deploy.
+run_until_checkout() {
+  start_phase preflight
+  CEPH_AI_DEPLOY_DIR="$REPO_DIR" \
+    "$REPO_DIR/scripts/deploy/deploy_preflight.sh"
+  finish_phase
 
-start_phase checkout
-dirty_status="$(git status --porcelain --untracked-files=all)"
-if [ -n "$dirty_status" ]; then
-  PRESERVED_DIRTY_ROOT="$(mktemp -d /tmp/ceph-ai-deploy-preserved.XXXXXX)"
-  : > "$PRESERVED_DIRTY_ROOT/paths"
-  while IFS= read -r dirty_line; do
-    [ -n "$dirty_line" ] || continue
-    dirty_path="${dirty_line:3}"
-    case ",$ALLOWED_DIRTY_PATHS," in
-      *,"$dirty_path",*)
-        printf '%s\n' "$dirty_path" >> "$PRESERVED_DIRTY_ROOT/paths"
-        if [ -e "$REPO_DIR/$dirty_path" ] || [ -L "$REPO_DIR/$dirty_path" ]; then
-          mkdir -p "$PRESERVED_DIRTY_ROOT/$(dirname "$dirty_path")"
-          cp -a "$REPO_DIR/$dirty_path" "$PRESERVED_DIRTY_ROOT/$dirty_path"
-          : > "$PRESERVED_DIRTY_ROOT/$dirty_path.present"
-          rm -f "$REPO_DIR/$dirty_path"
-        fi
-        ;;
-      *)
-        echo "ERROR: refusing to replace a dirty checkout: $dirty_path" >&2
-        exit 3
-        ;;
-    esac
-  done <<< "$dirty_status"
+  start_phase checkout
+  dirty_status="$(git status --porcelain --untracked-files=all)"
+  if [ -n "$dirty_status" ]; then
+    PRESERVED_DIRTY_ROOT="$(mktemp -d /tmp/ceph-ai-deploy-preserved.XXXXXX)"
+    : > "$PRESERVED_DIRTY_ROOT/paths"
+    while IFS= read -r dirty_line; do
+      [ -n "$dirty_line" ] || continue
+      dirty_path="${dirty_line:3}"
+      case ",$ALLOWED_DIRTY_PATHS," in
+        *,"$dirty_path",*)
+          printf '%s\n' "$dirty_path" >> "$PRESERVED_DIRTY_ROOT/paths"
+          if [ -e "$REPO_DIR/$dirty_path" ] || [ -L "$REPO_DIR/$dirty_path" ]; then
+            mkdir -p "$PRESERVED_DIRTY_ROOT/$(dirname "$dirty_path")"
+            cp -a "$REPO_DIR/$dirty_path" "$PRESERVED_DIRTY_ROOT/$dirty_path"
+            : > "$PRESERVED_DIRTY_ROOT/$dirty_path.present"
+            rm -f "$REPO_DIR/$dirty_path"
+          fi
+          ;;
+        *)
+          echo "ERROR: refusing to replace a dirty checkout: $dirty_path" >&2
+          exit 3
+          ;;
+      esac
+    done <<< "$dirty_status"
+  fi
+
+  if [[ "$DEPLOY_REF" == origin/* ]]; then
+    git fetch --prune origin "${DEPLOY_REF#origin/}"
+  elif [[ ! "$DEPLOY_REF" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "ERROR: DEPLOY_REF must be origin/<branch> or a full commit SHA" >&2
+    exit 2
+  else
+    git fetch --prune origin main
+    git cat-file -e "${DEPLOY_REF}^{commit}"
+  fi
+
+  if [ "$DEPLOY_REF" = "origin/main" ]; then
+    git checkout -B main origin/main
+  else
+    git checkout --detach "$DEPLOY_REF"
+  fi
+  git reset --hard "$DEPLOY_REF"
+  finish_phase
+
+  export CEPH_AI_DEPLOY_STAGE=after-checkout
+  export CEPH_AI_DEPLOY_EXPECTED_HEAD
+  CEPH_AI_DEPLOY_EXPECTED_HEAD="$(git rev-parse HEAD)"
+  export CEPH_AI_DEPLOY_PRESERVED_ROOT="$PRESERVED_DIRTY_ROOT"
+  exec "$REPO_DIR/scripts/deploy/restart_container_stack.sh"
+}
+
+if [ "${CEPH_AI_DEPLOY_STAGE:-}" != "after-checkout" ]; then
+  run_until_checkout
 fi
-
-if [[ "$DEPLOY_REF" == origin/* ]]; then
-  git fetch --prune origin "${DEPLOY_REF#origin/}"
-elif [[ ! "$DEPLOY_REF" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "ERROR: DEPLOY_REF must be origin/<branch> or a full commit SHA" >&2
+# Stage 2: the deployed revision of this script, continuing after checkout.
+CURRENT_DEPLOY_PHASE="checkout"
+if [ "$(git rev-parse HEAD)" != "${CEPH_AI_DEPLOY_EXPECTED_HEAD:-}" ]; then
+  echo "ERROR: checkout moved between deploy stages" >&2
   exit 2
-else
-  git fetch --prune origin main
-  git cat-file -e "${DEPLOY_REF}^{commit}"
 fi
-
-if [ "$DEPLOY_REF" = "origin/main" ]; then
-  git checkout -B main origin/main
-else
-  git checkout --detach "$DEPLOY_REF"
-fi
-git reset --hard "$DEPLOY_REF"
-finish_phase
 
 # Keep the narrow per-container restart helper in sync with the deployed
 # checkout. The Dashboard talks to its Unix socket; no host D-Bus is exposed
