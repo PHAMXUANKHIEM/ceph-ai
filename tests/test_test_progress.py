@@ -123,7 +123,7 @@ def test_page_and_api_are_admin_only(dashboard_client, monkeypatch, tmp_path):
     path = tmp_path / "current.json"
     _write(path, status="passed", started_at=T0.isoformat(), updated_at=T0.isoformat(), total=2, done=2)
     monkeypatch.setattr(settings, "test_progress_file", str(path))
-    monkeypatch.setattr(route.test_progress, "fetch_ci_runs", lambda repo: {"repo": repo, "runs": [], "error": None})
+    monkeypatch.setattr(route.test_progress, "fetch_ci_runs", lambda repo, **_kwargs: {"repo": repo, "runs": [], "error": None})
     _login(dashboard_client)
 
     assert dashboard_client.get("/test-progress").status_code == 200
@@ -134,6 +134,21 @@ def test_page_and_api_are_admin_only(dashboard_client, monkeypatch, tmp_path):
     monkeypatch.setattr(route.auth, "is_admin_user", lambda _user: False)
     assert dashboard_client.get("/test-progress").status_code == 403
     assert dashboard_client.get("/api/test-progress").status_code == 403
+
+
+def test_deploy_log_download_is_admin_only(dashboard_client, monkeypatch, tmp_path):
+    log = tmp_path / "deploy-phases.log"
+    log.write_text("deploy log\n", encoding="utf-8")
+    monkeypatch.setattr(route.test_progress, "DEFAULT_DEPLOY_LOG", log)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/test-progress/deploy-log")
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].endswith('filename="deploy-phases.log"')
+    assert response.text == "deploy log\n"
+    monkeypatch.setattr(route.auth, "is_admin_user", lambda _user: False)
+    assert dashboard_client.get("/api/test-progress/deploy-log").status_code == 403
 
 
 def test_settings_maintenance_links_to_the_page_for_admins(dashboard_client, monkeypatch):
@@ -254,7 +269,21 @@ def test_api_returns_the_latest_deploy(dashboard_client, monkeypatch, tmp_path):
     _deploy_log(log, "2026-10-06T07:48:49Z phase=preflight status=STARTED detail=")
     original = test_progress.read_latest_deploy
     monkeypatch.setattr(route.test_progress, "read_latest_deploy", lambda: original(log))
-    monkeypatch.setattr(route.test_progress, "fetch_ci_runs", lambda repo: {"repo": repo, "runs": [], "error": None})
+    monkeypatch.setattr(route.test_progress, "fetch_ci_runs", lambda repo, **_kwargs: {"repo": repo, "runs": [], "error": None})
     _login(dashboard_client)
 
     assert dashboard_client.get("/api/test-progress").json()["deploy"]["phases"][0]["name"] == "preflight"
+
+
+def test_redesigned_page_keeps_the_candidate_card_and_the_ci_link(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ci_github_token_file", str(tmp_path / "token"))
+    _login(dashboard_client)
+    run_url = f"https://github.com/{settings.ci_github_repo}/actions/runs/42"
+
+    page = dashboard_client.get("/test-progress?ok=Đã+chạy+CI&url=" + run_url).text
+
+    assert 'id="cand-list"' in page and "/test-progress/candidates/merge" in page
+    assert f'href="{run_url}"' in page
+    # A notice with a link, and every error, stays until it is closed.
+    assert "data-auto-dismiss" not in page.split('class="ci-toast is-ok"')[1].split(">")[0]
+    assert "Contents và Pull requests" in page

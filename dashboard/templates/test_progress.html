@@ -1,305 +1,200 @@
 <!doctype html>
 <html lang="vi">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tiến độ test & deploy — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
   {% include "_nav.html" %}
+  <main class="page ci-dashboard" data-ci-token="{{ '1' if token_configured else '0' }}" data-token-hint="{{ token_hint or '' }}">
+    {% if notice %}<div class="ci-toast is-ok" role="status" data-toast{% if not notice_url %} data-auto-dismiss{% endif %}>{{ notice }}{% if notice_url %} <a href="{{ notice_url }}" target="_blank" rel="noopener">Mở lượt CI trên GitHub</a>{% endif %}<button type="button" aria-label="Đóng thông báo" data-dismiss-toast>×</button></div>{% endif %}
+    {% if error %}<div class="ci-toast is-error" role="alert" data-toast>{{ error }}<button type="button" aria-label="Đóng thông báo" data-dismiss-toast>×</button></div>{% endif %}
 
-  <main class="page">
-    {% if notice %}<p class="ci-control-flash is-ok" role="status">{{ notice }}{% if notice_url %} <a href="{{ notice_url }}" target="_blank" rel="noopener">Mở lượt CI trên GitHub</a>{% endif %}</p>{% endif %}
-    {% if error %}<p class="ci-control-flash is-error" role="alert">{{ error }}</p>{% endif %}
-    <section class="card">
+    <section class="ci-summary" aria-label="Tóm tắt trạng thái">
+      <div class="ci-summary-card"><span class="ci-summary-dot" id="summary-local-dot"></span><div><small>Test trên máy</small><strong id="summary-local">Đang tải…</strong></div></div>
+      <div class="ci-summary-card"><span class="ci-summary-dot" id="summary-ci-dot"></span><div><small>CI GitHub</small><strong id="summary-ci">Đang tải…</strong></div></div>
+      <div class="ci-summary-card"><span class="ci-summary-dot" id="summary-deploy-dot"></span><div><small>Deploy production</small><strong id="summary-deploy">Đang tải…</strong></div></div>
+      <div class="ci-summary-card"><span class="ci-summary-dot is-info"></span><div><small>Nhánh đang theo dõi</small><strong>main</strong></div></div>
+      <div class="ci-summary-refresh"><button class="btn" type="button" id="refresh-all">⟳ Làm mới</button><small>Cập nhật lúc <time id="updated-at">—</time></small></div>
+    </section>
+
+    <section class="card ci-card">
       <div class="card-header"><h2>Chạy CI &amp; deploy</h2></div>
       <div class="card-body ci-control">
-        <form method="post" action="/test-progress/ci-run" class="ci-control-row">
-          <label>Nhánh <input type="text" name="ref" value="main" maxlength="100" required></label>
-          <button class="btn btn-primary" type="submit" {% if not token_configured %}disabled{% endif %}>Chạy CI trên GitHub</button>
-          <span class="hint">Chạy lại toàn bộ CI (test, integration, quality, release gate); kết quả hiện ở thẻ CI bên dưới.</span>
-        </form>
-        <form method="post" action="/test-progress/deploy" class="ci-control-row" id="deploy-form">
-          <input type="hidden" name="sha" id="deploy-sha">
-          <span id="deploy-target" class="hint">Đang tìm commit có CI xanh…</span>
-          <label>Xác nhận <input type="text" name="confirmation" id="deploy-confirmation" autocomplete="off" placeholder="DEPLOY xxxxxxxx" required></label>
-          <button class="btn btn-danger" type="submit" id="deploy-button" disabled>Deploy bản CI xanh</button>
-        </form>
-        <p class="hint" id="deploy-request"></p>
-        <details {% if not token_configured %}open{% endif %}>
-          <summary>{{ "Đổi GitHub token" if token_configured else "Cần GitHub token để chạy CI" }}</summary>
-          <form method="post" action="/test-progress/ci-token" class="ci-control-row">
-            <label>Token <input type="password" name="token" autocomplete="off" required placeholder="github_pat_…"></label>
-            <button class="btn" type="submit">Lưu token</button>
+        <section class="ci-subsection">
+          <h3>Chạy CI</h3>
+          <form method="post" action="/test-progress/ci-run" class="ci-run-form">
+            <label>Nhánh
+              <span class="ci-branch-picker"><input type="hidden" name="ref" value="main"><button type="button" class="ci-branch-trigger" aria-expanded="false">main <span aria-hidden="true">⌄</span></button><span class="ci-branch-menu" hidden><button type="button" data-branch="main">main</button></span></span>
+            </label>
+            <button class="btn btn-primary" type="submit" {% if not token_configured %}disabled title="Cần lưu GitHub token trước"{% endif %}>Chạy CI trên GitHub</button>
           </form>
-          <p class="hint">Tạo fine-grained token chỉ cho repo {{ ci_repo }}, quyền <strong>Actions: Read and write</strong>. Token được lưu trên server (file 0600), không bao giờ hiện lại ở đây.</p>
+          <p class="hint">Chạy lại toàn bộ CI (test, integration, quality, release gate); kết quả sẽ xuất hiện ở khối CI bên dưới.</p>
+        </section>
+        <section class="ci-subsection ci-deploy-box">
+          <h3>Deploy bản CI xanh</h3>
+          <div id="deploy-target" class="ci-deploy-alert is-waiting" role="status">Đang kiểm tra điều kiện deploy…</div>
+          <form method="post" action="/test-progress/deploy" class="ci-deploy-form" id="deploy-form">
+            <input type="hidden" name="sha" id="deploy-sha-input">
+            <label for="deploy-confirmation">Xác nhận deploy</label>
+            <div class="ci-confirm-row"><input type="text" name="confirmation" id="deploy-confirmation" autocomplete="off" placeholder="DEPLOY <commit>" required>
+              <button class="btn ci-deploy-button" type="submit" id="deploy-button" disabled title="Chưa có commit mới nhất trên main đạt CI xanh">⚠ Deploy bản CI xanh</button></div>
+            <div class="ci-confirm-hint"><span id="deploy-confirm-hint">Chỉ bật khi CI của commit mới nhất trên main thành công.</span><button type="button" id="copy-deploy-confirm" hidden>Copy</button></div>
+          </form>
+          <p class="hint" id="deploy-request"></p>
+        </section>
+        <details class="ci-token-details" {% if not token_configured %}open{% endif %}>
+          <summary>{% if token_configured %}<span class="ci-token-badge">● Token đã lưu · ****{{ token_hint }}</span><span>Thay token</span>{% else %}Cấu hình GitHub token{% endif %}</summary>
+          <div class="ci-token-content">
+            <div class="ci-token-tip">ⓘ Tạo fine-grained token cho repo <strong>{{ ci_repo }}</strong>, cấp quyền <strong>Actions, Contents và Pull requests: Read and write</strong> (chạy CI, mở và merge PR ứng viên). Token được lưu trên server với quyền file 0600 và không hiển thị lại.</div>
+            <form method="post" action="/test-progress/ci-token" class="ci-run-form"><label>GitHub token
+              <span class="ci-secret-field"><input type="password" name="token" autocomplete="new-password" required placeholder="github_pat_…"><button type="button" data-toggle-secret aria-label="Hiện token">◉</button></span>
+            </label><button class="btn" type="submit">Lưu token</button></form>
+          </div>
         </details>
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-header"><h2>Ứng viên chờ đưa vào main (PR)</h2></div>
+    <section class="card ci-card">
+      <div class="card-header"><h2>Ứng viên chờ đưa vào main <span class="ci-subtitle">(PR)</span></h2>
+        <form method="post" action="/test-progress/candidates/open-prs"><button class="btn" type="submit" id="open-prs-button" hidden>Mở PR cho nhánh chưa có PR</button></form></div>
       <div class="card-body">
-        <p class="hint">Mỗi thay đổi nằm trên một nhánh <code>cand/*</code> riêng, có Pull Request và CI riêng. Tích những PR muốn đưa vào, gõ xác nhận rồi bấm Merge: các PR được squash-merge vào main theo thứ tự trên danh sách, CI trên main build bản deploy, sau đó deploy ở thẻ trên. PR chưa chọn cứ để chờ. Tóm tắt do AI viết từ commit và diff (cache theo commit).</p>
-        <form method="post" action="/test-progress/candidates/open-prs" class="ci-control-row">
-          <button class="btn" type="submit" id="open-prs-button" hidden>Mở PR cho nhánh chưa có PR</button>
-        </form>
+        <p class="hint">Mỗi thay đổi nằm trên một nhánh <code>cand/*</code> riêng, có Pull Request và CI riêng. Tích những PR muốn đưa vào, gõ xác nhận rồi bấm Merge: các PR được squash-merge vào main theo thứ tự danh sách, CI trên main build bản deploy, rồi deploy ở thẻ trên. Tóm tắt do AI viết từ commit và diff.</p>
         <p id="cand-error" class="hint" hidden></p>
         <form method="post" action="/test-progress/candidates/merge" id="merge-form">
           <div id="cand-list"><p class="empty-state">Đang tải…</p></div>
-          <div class="ci-control-row">
-            <label>Xác nhận <input type="text" name="confirmation" id="merge-confirmation" autocomplete="off" placeholder="MERGE 1" required></label>
+          <div class="ci-confirm-row">
+            <input type="text" name="confirmation" id="merge-confirmation" autocomplete="off" placeholder="MERGE 1" required aria-label="Xác nhận merge">
             <button class="btn btn-primary" type="submit" id="merge-button" disabled>Merge PR đã chọn vào main</button>
-            <span class="hint" id="merge-hint"></span>
           </div>
+          <p class="hint" id="merge-hint"></p>
         </form>
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-header"><h2>Test trên máy (trước khi push)</h2></div>
+    <section class="card ci-card">
+      <div class="card-header"><h2>Test trên máy <span class="ci-subtitle">(trước khi push)</span></h2><div class="ci-auto-refresh"><span class="ci-live-dot" id="live-dot"></span><span id="auto-refresh-label">Tự cập nhật mỗi 5 giây</span><button type="button" id="pause-refresh" aria-pressed="false">Tạm dừng</button></div></div>
       <div class="card-body">
-        <p class="hint">Bộ test đầy đủ chạy trên máy trước mỗi lần push. Trang tự cập nhật mỗi 5 giây.</p>
         <div id="local-empty" class="empty-state" hidden>Chưa có lượt test nào ghi tiến độ.</div>
         <div id="local" hidden>
-          <p><span id="local-status" class="status-pill status-unknown"><span class="dot"></span><strong></strong></span>
-             <span id="local-label" class="hint"></span></p>
-          <div class="progress-bar"><div id="local-bar" class="progress-bar-fill" style="width:0%"></div></div>
-          <p id="local-steps" class="hint" hidden></p>
-          <p id="local-counts"></p>
-          <p class="hint" id="local-times"></p>
-          <p class="hint" id="local-current"></p>
-          <div id="local-failures" hidden>
-            <h3>Test lỗi</h3>
-            <ul id="local-failure-list"></ul>
-          </div>
+          <div class="ci-run-heading"><span id="local-status" class="status-pill status-unknown"><span class="dot"></span><strong></strong></span><span id="local-label" class="hint"></span></div>
+          <div class="ci-metrics" id="local-metrics"></div>
+          <div class="ci-progress-line"><div class="progress-bar"><div id="local-bar" class="progress-bar-fill" style="width:0%"></div></div><strong id="local-percent">0%</strong></div>
+          <div id="local-steps" class="ci-stepper" hidden></div>
+          <p class="hint ci-run-time" id="local-times"></p><p class="hint" id="local-current"></p>
+          <div id="local-failures" hidden><h3>Test lỗi</h3><ul id="local-failure-list"></ul></div>
         </div>
       </div>
     </section>
 
-    <section class="card">
+    <section class="card ci-card">
       <div class="card-header"><h2>Deploy lên production</h2></div>
       <div class="card-body">
-        <p class="hint">Từ nhật ký deploy trên máy (<code>deploy-phases.log</code>): preflight → checkout → kéo image → migration → khởi động lại → kiểm tra.</p>
+        <p class="hint">Theo dõi các bước deploy từ nhật ký production: <a href="/api/test-progress/deploy-log" target="_blank" rel="noopener">deploy-phases.log ↗</a></p>
         <div id="deploy-empty" class="empty-state" hidden>Chưa có lượt deploy nào được ghi.</div>
         <div id="deploy" hidden>
-          <p><span id="deploy-status" class="status-pill status-unknown"><span class="dot"></span><strong></strong></span>
-             <span id="deploy-sha" class="hint"></span></p>
-          <p id="deploy-steps"></p>
-          <p class="hint" id="deploy-times"></p>
-          <p class="hint" id="deploy-previous"></p>
+          <div class="ci-run-heading"><span id="deploy-status" class="status-pill status-unknown"><span class="dot"></span><strong></strong></span><code id="deploy-sha-label" class="ci-code-chip"></code><strong id="deploy-duration"></strong></div>
+          <div id="deploy-steps" class="ci-stepper ci-deploy-stepper"></div>
+          <p class="hint ci-run-time" id="deploy-times"></p>
+          <h3 class="ci-history-title">5 lần deploy gần nhất</h3><div class="table-wrap"><table class="ci-history-table"><thead><tr><th>Commit</th><th>Thời gian</th><th>Trạng thái</th><th>Log</th></tr></thead><tbody id="deploy-previous"></tbody></table></div>
+          <a class="btn ci-history-link" href="/api/test-progress/deploy-log">Tải lịch sử deploy đầy đủ ↓</a>
         </div>
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-header"><h2>CI trên GitHub ({{ ci_repo }}, nhánh main)</h2></div>
+    <section class="card ci-card">
+      <div class="card-header ci-github-header"><h2>CI trên GitHub</h2><span class="ci-repo-badge">{{ ci_repo }} · main</span><span class="ci-cache-note">Dữ liệu cache 2 phút · <button type="button" id="refresh-ci">Làm mới</button></span></div>
       <div class="card-body">
-        <p class="hint">Cache 2 phút.</p>
-        <p id="ci-error" class="hint" hidden></p>
-        <div id="ci-jobs"></div>
-        <div class="table-wrap"><table><thead><tr><th>Commit</th><th>Tiêu đề</th><th>Trạng thái</th><th>Bắt đầu</th><th>Link</th></tr></thead>
-          <tbody id="ci-runs"><tr><td colspan="5" class="empty-state">Đang tải…</td></tr></tbody></table></div>
+        <p id="ci-error" class="hint" hidden></p><div id="ci-jobs" class="ci-jobs"></div>
+        <div class="ci-table-toolbar"><label class="ci-search">Tìm commit<input type="search" id="ci-search" placeholder="Hash hoặc tiêu đề…"></label><div class="ci-filter" role="group" aria-label="Lọc trạng thái CI">
+          <button type="button" data-ci-filter="all" class="is-active">Tất cả</button><button type="button" data-ci-filter="success">Pass</button><button type="button" data-ci-filter="failure">Failure</button><button type="button" data-ci-filter="running">Đang chạy</button>
+        </div><div class="ci-pagination" id="ci-pagination-top"></div></div>
+        <div class="table-wrap ci-run-table-wrap"><table><thead><tr><th>Commit</th><th>Tiêu đề</th><th>Trạng thái</th><th>Bắt đầu</th><th>Link</th></tr></thead><tbody id="ci-runs"><tr><td colspan="5" class="empty-state">Đang tải…</td></tr></tbody></table></div>
+        <div class="ci-pagination ci-pagination-bottom" id="ci-pagination-bottom"></div>
       </div>
     </section>
   </main>
-
   <script>
   (function () {
-    const LABELS = {preparing: "Đang chuẩn bị", collecting: "Đang thu thập test", running: "Đang chạy", passed: "Pass",
-      failed: "Có lỗi", stalled: "Đã dừng giữa chừng", aborted: "Pipeline dừng"};
-    const PILL = {preparing: "status-warn", collecting: "status-warn", running: "status-warn", passed: "status-ok",
-      failed: "status-err", stalled: "status-err", aborted: "status-err"};
-    const STEP_MARK = {ok: "✓", running: "▶", failed: "✗"};
-    const DEPLOY_LABELS = {running: "Đang deploy", passed: "Deploy xong", failed: "Deploy lỗi", stalled: "Deploy dừng giữa chừng"};
-    const DEPLOY_PILL = {running: "status-warn", passed: "status-ok", failed: "status-err", stalled: "status-err"};
-    const PHASE_NAMES = {preflight: "Preflight", checkout: "Checkout", runtime_setup: "Cài unit", registry_pull: "Kéo image",
-      migration: "Migration DB", restart: "Khởi động lại", health: "Health", consumer: "Hàng đợi", smoke: "Smoke test"};
-    const PHASE_MARK = {PASSED: "✓", STARTED: "▶", FAILED: "✗"};
-    function el(id) { return document.getElementById(id); }
-    function duration(seconds) {
-      if (seconds === null || seconds === undefined) return "—";
-      const m = Math.floor(seconds / 60), s = seconds % 60;
-      return m ? m + " phút " + s + " giây" : s + " giây";
+    const LABELS={preparing:"Đang chuẩn bị",collecting:"Đang thu thập test",running:"Đang chạy",passed:"Pass",failed:"Có lỗi",stalled:"Đã dừng giữa chừng",aborted:"Pipeline dừng"};
+    const PILL={preparing:"status-warn",collecting:"status-warn",running:"status-warn",passed:"status-ok",failed:"status-err",stalled:"status-err",aborted:"status-err"};
+    const PHASE_NAMES={preflight:"Preflight",checkout:"Checkout",runtime_setup:"Cài unit",registry_pull:"Kéo image",migration:"Migration DB",restart:"Khởi động lại",health:"Health",consumer:"Hàng đợi",smoke:"Smoke test"};
+    const PHASE_ORDER=Object.keys(PHASE_NAMES); let paused=false, refreshing=false, ciRuns=[], ciFilter="all", ciPage=1, lastCi=null, currentDeployRequest={};
+    const el=id=>document.getElementById(id);
+    function duration(seconds){if(seconds==null)return "";const m=Math.floor(seconds/60),s=seconds%60;return m?`${m} phút ${s} giây`:`${s} giây`;}
+    function absolute(iso){if(!iso)return "—";const d=new Date(iso);return Number.isNaN(d.getTime())?"—":new Intl.DateTimeFormat("vi-VN",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).format(d);}
+    function when(iso){if(!iso)return "—";const d=new Date(iso);if(Number.isNaN(d.getTime()))return "—";const diff=Date.now()-d.getTime();if(diff>=0&&diff<86400000){const n=Math.max(1,Math.floor(diff/3600000));return `<time title="${absolute(iso)}">${n} giờ trước</time>`;}return absolute(iso);}
+    function whenText(iso){const s=document.createElement("span");s.innerHTML=when(iso);return s.textContent;}
+    function safeTime(iso){const s=document.createElement("span");s.innerHTML=when(iso);return s;}
+    function ciState(run){if(run.status!=="completed")return ["running",run.status==="in_progress"?"Đang chạy":"Đang chờ"];return run.conclusion==="success"?["success","Pass"]:["failure",run.conclusion||"Failure"];}
+    function pill(cls,text){const s=document.createElement("span");s.className="ci-state-badge is-"+cls;const d=document.createElement("span");d.className=cls==="running"?"ci-spinner":"ci-state-dot";const t=document.createElement("strong");t.textContent=text;s.append(d,t);return s;}
+    function summary(id,text,state){el(id).textContent=text;const dot=el(id+"-dot");dot.className="ci-summary-dot is-"+(state||"unknown");}
+    function renderLocal(run){el("local-empty").hidden=!!run;el("local").hidden=!run;if(!run){summary("summary-local","Chưa có lượt test","unknown");return;}
+      const status=el("local-status");status.className="status-pill "+(PILL[run.status]||"status-unknown");status.querySelector("strong").textContent=LABELS[run.status]||run.status;el("local-label").textContent=run.label||"";
+      const done=Number(run.done||0),total=Number(run.total||0),passed=Number(run.passed||0),failed=Number(run.failed||0)+Number(run.errors||0),skip=Number(run.skipped||0);
+      const metrics=[["Tổng test",total,""],["Pass",passed,"success"],["Lỗi",failed,"danger"],["Skip",skip,"muted"]];const box=el("local-metrics");box.replaceChildren();metrics.forEach(([name,n,cls])=>{const c=document.createElement("div");c.className="ci-metric is-"+cls;c.innerHTML="<small></small><strong></strong>";c.querySelector("small").textContent=name;c.querySelector("strong").textContent=Number(n).toLocaleString("vi-VN");box.append(c);});
+      const pct=Math.max(0,Math.min(100,Number(run.percent||0)));el("local-bar").style.width=pct+"%";el("local-bar").classList.toggle("is-failed",failed>0||["failed","aborted","stalled"].includes(run.status));el("local-percent").textContent=pct+"%";
+      const steps=run.steps||[],stepBox=el("local-steps");stepBox.hidden=!steps.length;stepBox.replaceChildren();steps.forEach((step,i)=>addStep(stepBox,step.name,step.state,i,steps.length));
+      el("local-times").textContent=(run.started_at?absolute(run.started_at):"—")+(run.finished_at?" → "+absolute(run.finished_at):"")+(run.elapsed_seconds!=null?" · "+duration(run.elapsed_seconds):"");el("local-current").textContent=run.current?"Đang chạy: "+run.current:(run.eta_seconds!=null?"Còn khoảng "+duration(run.eta_seconds):"");
+      const list=el("local-failure-list");list.replaceChildren();(run.failures||[]).forEach(f=>{const li=document.createElement("li"),c=document.createElement("code");c.textContent=f.nodeid+(f.when!=="call"?" ("+f.when+")":"");li.append(c);list.append(li);});el("local-failures").hidden=!(run.failures||[]).length;
+      summary("summary-local",`${LABELS[run.status]||run.status} · ${passed}/${total}`,run.status==="passed"?"success":failed?"danger":"running");
     }
-    function when(iso) { return iso ? new Date(iso).toLocaleString("vi-VN") : "—"; }
-    function ciState(run) {
-      if (run.status !== "completed") return ["status-warn", run.status === "in_progress" ? "Đang chạy" : "Đang chờ"];
-      return run.conclusion === "success" ? ["status-ok", "Pass"] : ["status-err", run.conclusion || "?"];
+    function addStep(parent,name,state,index,total){const item=document.createElement("div");item.className="ci-step is-"+({ok:"done",PASSED:"done",running:"active",STARTED:"active",failed:"failed",FAILED:"failed"}[state]||"pending");const mark=document.createElement("span");mark.className="ci-step-mark";mark.textContent=item.classList.contains("is-done")?"✓":item.classList.contains("is-active")?"":"";const label=document.createElement("span");label.textContent=name;item.append(mark,label);if(index<total-1){const line=document.createElement("i");line.className="ci-step-line";item.append(line);}parent.append(item);}
+    function renderDeploy(deploy){el("deploy-empty").hidden=!!deploy;el("deploy").hidden=!deploy;if(!deploy){summary("summary-deploy","Chưa có lần deploy","unknown");return;}
+      const status=el("deploy-status"),labels={running:"Đang deploy",passed:"Deploy xong",failed:"Deploy lỗi",stalled:"Deploy dừng giữa chừng"};status.className="status-pill "+({running:"status-warn",passed:"status-ok",failed:"status-err",stalled:"status-err"}[deploy.status]||"status-unknown");status.querySelector("strong").textContent=labels[deploy.status]||deploy.status;
+      el("deploy-sha-label").textContent=deploy.sha?deploy.sha.slice(0,8):"Commit chưa xác định";el("deploy-duration").textContent=deploy.finished_at&&deploy.started_at?"· "+duration(Math.max(0,Math.round((new Date(deploy.finished_at)-new Date(deploy.started_at))/1000))):"";
+      const box=el("deploy-steps");box.replaceChildren();PHASE_ORDER.forEach((name,i)=>{const phase=(deploy.phases||[]).find(p=>p.name===name);addStep(box,PHASE_NAMES[name],phase?phase.status:"pending",i,PHASE_ORDER.length);});
+      el("deploy-times").textContent="Bắt đầu "+absolute(deploy.started_at)+(deploy.finished_at?" → "+absolute(deploy.finished_at):(deploy.current?" · đang ở bước "+(PHASE_NAMES[deploy.current]||deploy.current):""));
+      const body=el("deploy-previous");body.replaceChildren();(deploy.previous||[]).slice(0,5).forEach(item=>{const tr=document.createElement("tr"),sha=document.createElement("td"),time=document.createElement("td"),state=document.createElement("td"),log=document.createElement("td"),code=document.createElement("button");code.type="button";code.className="ci-code-chip";code.textContent=item.sha||"—";code.title="Sao chép commit";code.addEventListener("click",()=>navigator.clipboard&&navigator.clipboard.writeText(item.sha||""));sha.append(code);time.textContent=absolute(item.at);state.append(pill(item.status==="PASSED"?"success":"failure",item.status==="PASSED"?"Pass":"Failure"));const a=document.createElement("a");a.href="/api/test-progress/deploy-log";a.target="_blank";a.rel="noopener";a.textContent="Mở log ↗";log.append(a);tr.append(sha,time,state,log);body.append(tr);});
+      summary("summary-deploy",(labels[deploy.status]||deploy.status)+(deploy.sha?" · "+deploy.sha.slice(0,8):"")+(deploy.finished_at?" · "+whenText(deploy.finished_at):""),deploy.status==="passed"?"success":deploy.status==="failed"||deploy.status==="stalled"?"danger":"running");
     }
-    function pill(cls, text) {
-      const span = document.createElement("span");
-      span.className = "status-pill " + cls;
-      const dot = document.createElement("span"); dot.className = "dot";
-      const strong = document.createElement("strong"); strong.textContent = text;
-      span.append(dot, strong);
-      return span;
+    let lastData=null;
+    function renderControls(data){lastData=data;const green=data.latest_green_sha,deployed=data.deployed_sha,sha=green&&green!==deployed?green:null,request=data.deploy_request||{},queued=request.queued&&request.queued.sha,running=request.state==="running",ready=!!sha&&!queued&&!running;currentDeployRequest=request;
+      el("deploy-sha-input").value=sha||"";const target=el("deploy-target");target.className="ci-deploy-alert "+(ready?"is-ready":"is-waiting");target.textContent=ready?`Đủ điều kiện: commit ${sha.slice(0,8)} là CI xanh mới nhất trên main${deployed?` (đang chạy: ${deployed.slice(0,8)})`:""}.`:(queued?`Đang chờ xử lý yêu cầu deploy ${queued.slice(0,8)}.`:running?"Một yêu cầu deploy đang chạy.":green&&green===deployed?`Bản CI xanh mới nhất (${green.slice(0,8)}) đã được deploy và đang chạy: chưa có bản mới hơn.`:"Chưa đủ điều kiện: CI của commit mới nhất trên main chưa thành công.");
+      const input=el("deploy-confirmation"),button=el("deploy-button"),hint=el("deploy-confirm-hint"),copy=el("copy-deploy-confirm");input.placeholder=sha?`DEPLOY ${sha.slice(0,8)}`:"DEPLOY <commit>";hint.textContent=sha?`Gõ DEPLOY ${sha.slice(0,8)} để xác nhận.`:(green&&green===deployed?"Không có bản mới để deploy.":"Chưa có commit xanh để xác nhận deploy.");copy.hidden=!sha;copy.onclick=()=>navigator.clipboard&&navigator.clipboard.writeText(`DEPLOY ${sha.slice(0,8)}`);button.disabled=!ready||input.value.trim()!==`DEPLOY ${sha?sha.slice(0,8):""}`;button.title=ready?"Nhập đúng chuỗi xác nhận để bật deploy production":"Chưa có commit mới nhất trên main đạt CI xanh";
+      el("deploy-request").textContent=queued?`Đã gửi yêu cầu deploy ${queued.slice(0,8)}, chờ server nhận…`:(request.state?`Yêu cầu gần nhất: ${(request.sha||"").slice(0,8)} — ${request.state}${request.message?" ("+request.message+")":""}`:"");
     }
-    function renderLocal(run) {
-      el("local-empty").hidden = !!run; el("local").hidden = !run;
-      if (!run) return;
-      const status = el("local-status");
-      status.className = "status-pill " + (PILL[run.status] || "status-unknown");
-      status.querySelector("strong").textContent = LABELS[run.status] || run.status;
-      el("local-label").textContent = " " + (run.label || "");
-      el("local-bar").style.width = (run.percent || 0) + "%";
-      const steps = run.steps || [];
-      el("local-steps").hidden = !steps.length;
-      el("local-steps").textContent = "Các bước: " + steps.map(function (step) {
-        return (STEP_MARK[step.state] || "·") + " " + step.name;
-      }).join("  ·  ") + (run.status === "aborted" && run.stage ? " — dừng vì: " + run.stage : "");
-      // Before the test step starts there is nothing to count yet.
-      el("local-counts").hidden = !run.total;
-      el("local-counts").textContent = run.done + " / " + run.total + " test (" + run.percent + "%) · pass " + run.passed +
-        " · lỗi " + run.failed + " · error " + run.errors + " · skip " + run.skipped;
-      el("local-times").textContent = "Bắt đầu " + when(run.started_at) + " · đã chạy " + duration(run.elapsed_seconds) +
-        (run.eta_seconds !== null && run.eta_seconds !== undefined ? " · còn khoảng " + duration(run.eta_seconds) : "") +
-        (run.finished_at ? " · kết thúc " + when(run.finished_at) : "");
-      el("local-current").textContent = run.current ? "Đang chạy: " + run.current
-        : (run.status === "preparing" && run.stage ? "Đang chạy bước: " + run.stage : "");
-      const list = el("local-failure-list"); list.replaceChildren();
-      (run.failures || []).forEach(function (f) {
-        const li = document.createElement("li"); const code = document.createElement("code");
-        code.textContent = f.nodeid + (f.when !== "call" ? " (" + f.when + ")" : ""); li.append(code); list.append(li);
-      });
-      el("local-failures").hidden = !(run.failures || []).length;
+    function renderCi(ci){lastCi=ci;el("ci-error").hidden=!ci.error;el("ci-error").textContent=ci.error?"Không đọc được GitHub: "+ci.error:"";ciRuns=ci.runs||[];
+      const jobs=el("ci-jobs");jobs.replaceChildren();const latest=ciRuns[0];if(latest&&latest.jobs){const label=document.createElement("strong");label.textContent="Job của lượt mới nhất";jobs.append(label);latest.jobs.forEach(job=>{const state=job.status!=="completed"?["running",job.status==="in_progress"?"Đang chạy":"Chờ"]:job.conclusion==="success"?["success","Pass"]:job.conclusion==="skipped"?["muted","Bỏ qua"]:["failure",job.conclusion||"Failure"];jobs.append(pill(state[0],job.name+": "+state[1]));});}
+      renderCiTable();summary("summary-ci",latest?(ciState(latest)[1]+" · "+latest.sha):"Chưa có lượt CI",latest?(ciState(latest)[0]==="success"?"success":ciState(latest)[0]==="failure"?"danger":"running"):"unknown");}
+    function renderCiTable(){const query=el("ci-search").value.trim().toLowerCase(),rows=ciRuns.filter(run=>{const state=ciState(run)[0],matches=ciFilter==="all"||state===ciFilter;return matches&&(`${run.sha} ${run.head_sha} ${run.title}`).toLowerCase().includes(query);});const pages=Math.max(1,Math.ceil(rows.length/10));ciPage=Math.min(ciPage,pages);const pageRows=rows.slice((ciPage-1)*10,ciPage*10),body=el("ci-runs");body.replaceChildren();pageRows.forEach(run=>{const tr=document.createElement("tr"),state=ciState(run);if(state[0]==="failure")tr.classList.add("is-failure");const commit=document.createElement("td"),chip=document.createElement("button");chip.type="button";chip.className="ci-code-chip";chip.textContent=run.sha;chip.title="Sao chép commit hash";chip.onclick=()=>navigator.clipboard&&navigator.clipboard.writeText(run.head_sha||run.sha);commit.append(chip);const title=document.createElement("td");title.textContent=run.title;const status=document.createElement("td");status.append(pill(state[0],state[1]));const time=document.createElement("td");time.append(safeTime(run.created_at));const link=document.createElement("td"),a=document.createElement("a");a.className="ci-open-link";a.href=run.url;a.target="_blank";a.rel="noopener";a.setAttribute("aria-label","Mở CI trong tab mới");a.textContent="↗";link.append(a);tr.append(commit,title,status,time,link);body.append(tr);});if(!pageRows.length){const tr=document.createElement("tr"),td=document.createElement("td");td.colSpan=5;td.className="empty-state";td.textContent="Không có lượt CI phù hợp.";tr.append(td);body.append(tr);}const start=rows.length?(ciPage-1)*10+1:0,end=Math.min(ciPage*10,rows.length);["ci-pagination-top","ci-pagination-bottom"].forEach(id=>{const p=el(id);p.replaceChildren();const info=document.createElement("span");info.textContent=`${start}–${end} / ${rows.length}`;p.append(info);const prev=document.createElement("button");prev.type="button";prev.textContent="‹";prev.disabled=ciPage<=1;prev.onclick=()=>{ciPage--;renderCiTable();};p.append(prev);for(let n=1;n<=pages;n++){if(pages>5&&n>2&&n<pages-1&&Math.abs(n-ciPage)>1){if(n===3||n===pages-2){const dots=document.createElement("span");dots.textContent="…";p.append(dots);}continue;}const b=document.createElement("button");b.type="button";b.textContent=n;b.classList.toggle("is-current",n===ciPage);b.onclick=()=>{ciPage=n;renderCiTable();};p.append(b);}const next=document.createElement("button");next.type="button";next.textContent="›";next.disabled=ciPage>=pages;next.onclick=()=>{ciPage++;renderCiTable();};p.append(next);});}
+    async function refresh(force){if(refreshing)return;refreshing=true;try{const response=await fetch("/api/test-progress"+(force?"?refresh=1":""),{credentials:"same-origin",cache:force?"no-store":"default"});if(!response.ok)return;const data=await response.json();renderLocal(data.local);renderDeploy(data.deploy);renderCi(data.ci);renderControls(data);el("updated-at").textContent=new Intl.DateTimeFormat("vi-VN",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).format(new Date());}catch(e){/* retain last successful snapshot */}finally{refreshing=false;}}
+    el("refresh-all").onclick=()=>refresh(true);el("refresh-ci").onclick=()=>refresh(true);el("ci-search").addEventListener("input",()=>{ciPage=1;renderCiTable();});document.querySelectorAll("[data-ci-filter]").forEach(b=>b.onclick=()=>{ciFilter=b.dataset.ciFilter;ciPage=1;document.querySelectorAll("[data-ci-filter]").forEach(x=>x.classList.toggle("is-active",x===b));renderCiTable();});
+    el("deploy-confirmation").addEventListener("input",()=>{if(lastData)renderControls(lastData);});
+    el("pause-refresh").onclick=function(){paused=!paused;this.textContent=paused?"Tiếp tục":"Tạm dừng";this.setAttribute("aria-pressed",String(paused));el("auto-refresh-label").textContent=paused?"Tự cập nhật đang tạm dừng":"Tự cập nhật mỗi 5 giây";el("live-dot").classList.toggle("is-paused",paused);};
+    document.querySelectorAll("[data-toggle-secret]").forEach(b=>b.onclick=()=>{const input=b.parentElement.querySelector("input");input.type=input.type==="password"?"text":"password";b.setAttribute("aria-label",input.type==="password"?"Hiện token":"Ẩn token");});
+    document.querySelectorAll(".ci-branch-picker").forEach(p=>{const trigger=p.querySelector(".ci-branch-trigger"),menu=p.querySelector(".ci-branch-menu");trigger.onclick=()=>{menu.hidden=!menu.hidden;trigger.setAttribute("aria-expanded",String(!menu.hidden));};menu.querySelectorAll("[data-branch]").forEach(option=>option.onclick=()=>{p.querySelector('input[name="ref"]').value=option.dataset.branch;trigger.firstChild.textContent=option.dataset.branch+" ";menu.hidden=true;trigger.setAttribute("aria-expanded","false");});document.addEventListener("click",e=>{if(!p.contains(e.target)){menu.hidden=true;trigger.setAttribute("aria-expanded","false");}});});
+    document.querySelectorAll("[data-dismiss-toast]").forEach(b=>b.onclick=()=>b.closest("[data-toast]").remove());setTimeout(()=>document.querySelectorAll("[data-auto-dismiss]").forEach(t=>t.classList.add("is-leaving")),3500);setTimeout(()=>document.querySelectorAll("[data-auto-dismiss]").forEach(t=>t.remove()),4100);
+    function candidateRow(c){
+      const box=document.createElement("div");box.className="cand-item";
+      const head=document.createElement("label");head.className="cand-head";
+      const pick=document.createElement("input");pick.type="checkbox";pick.name="pick";
+      pick.disabled=!(c.pull&&c.ci.conclusion==="success"&&c.pull.mergeable!==false);
+      if(c.pull)pick.value=c.pull.number+":"+c.head_sha;
+      const title=document.createElement("strong");title.textContent=" "+c.title;head.append(pick,title);
+      const meta=document.createElement("p");meta.className="hint cand-meta";
+      meta.append(c.ci.status==="none"?pill("muted",c.pull?"CI chưa chạy":"Chưa có PR"):c.ci.status!=="completed"?pill("running","CI đang chạy"):c.ci.conclusion==="success"?pill("success","CI xanh"):pill("failure","CI "+c.ci.conclusion));
+      if(c.pull){const a=document.createElement("a");a.href=c.pull.url;a.target="_blank";a.rel="noopener";a.textContent="PR #"+c.pull.number;meta.append(" ",a);if(c.pull.mergeable===false)meta.append(" ",pill("failure","Xung đột với main"));}
+      const plus=c.files.reduce((n,f)=>n+f.additions,0),minus=c.files.reduce((n,f)=>n+f.deletions,0);
+      meta.append(` · ${c.branch} · ${c.commits.length} commit · ${c.files.length} file (+${plus}/-${minus})`+(c.behind_by?` · main đã đi trước ${c.behind_by} commit`:"")+" · "+absolute(c.updated_at));
+      const summaryBox=document.createElement("div");summaryBox.className="cand-summary";summaryBox.textContent=c.summary?c.summary.text:"AI đang tóm tắt…";
+      const source=document.createElement("p");source.className="hint";source.textContent=c.summary?(c.summary.source==="ai"?"Tóm tắt bởi AI":"AI không trả lời được: hiện commit message"):"";
+      const details=document.createElement("details"),sum=document.createElement("summary"),list=document.createElement("ul");sum.textContent="Commit và file";
+      c.commits.forEach(commit=>{const li=document.createElement("li"),code=document.createElement("code");code.textContent=commit.sha.slice(0,8);li.append(code," "+commit.message.split("\n")[0]);list.append(li);});
+      c.files.forEach(f=>{const li=document.createElement("li");li.textContent=`${f.status} ${f.name} (+${f.additions}/-${f.deletions})`;list.append(li);});
+      details.append(sum,list);box.append(head,meta,summaryBox,source,details);return box;
     }
-    function renderDeploy(deploy) {
-      el("deploy-empty").hidden = !!deploy; el("deploy").hidden = !deploy;
-      if (!deploy) return;
-      const status = el("deploy-status");
-      status.className = "status-pill " + (DEPLOY_PILL[deploy.status] || "status-unknown");
-      status.querySelector("strong").textContent = DEPLOY_LABELS[deploy.status] || deploy.status;
-      el("deploy-sha").textContent = deploy.sha ? " commit " + deploy.sha.slice(0, 8) : "";
-      el("deploy-steps").textContent = deploy.phases.map(function (phase) {
-        return (PHASE_MARK[phase.status] || "·") + " " + (PHASE_NAMES[phase.name] || phase.name);
-      }).join("  ·  ");
-      el("deploy-times").textContent = "Bắt đầu " + when(deploy.started_at) +
-        (deploy.finished_at ? " · kết thúc " + when(deploy.finished_at) : (deploy.current ? " · đang ở bước " + (PHASE_NAMES[deploy.current] || deploy.current) : ""));
-      el("deploy-previous").textContent = (deploy.previous || []).length ? "Các lần trước: " + deploy.previous.map(function (item) {
-        return (item.status === "PASSED" ? "✓ " : "✗ ") + item.sha + " (" + when(item.at) + ")";
-      }).join(" · ") : "";
-    }
-    function renderControls(data) {
-      const deployed = data.deployed_sha;
-      const green = data.latest_green_sha;
-      const sha = green && green !== deployed ? green : null;
-      el("deploy-sha").value = sha || "";
-      el("deploy-target").textContent = sha
-        ? "Commit mới nhất có CI xanh: " + sha.slice(0, 8) + (deployed ? " (đang chạy: " + deployed.slice(0, 8) + ")" : "") +
-          " — gõ DEPLOY " + sha.slice(0, 8) + " để xác nhận."
-        : (green ? "Bản mới nhất có CI xanh (" + green.slice(0, 8) + ") đã được deploy và đang chạy: chưa có bản mới hơn để deploy."
-          : "Lượt CI mới nhất trên main chưa xanh (hoặc đang chạy): chưa có gì để deploy.");
-      el("deploy-confirmation").placeholder = sha ? "DEPLOY " + sha.slice(0, 8) : "DEPLOY xxxxxxxx";
-      const request = data.deploy_request || {};
-      const queued = request.queued && request.queued.sha;
-      const running = request.state === "running";
-      el("deploy-button").disabled = !sha || !!queued || running;
-      el("deploy-request").textContent = queued
-        ? "Đã gửi yêu cầu deploy " + queued.slice(0, 8) + ", chờ server nhận…"
-        : (request.state ? "Yêu cầu gần nhất: " + (request.sha || "").slice(0, 8) + " — " + request.state + (request.message ? " (" + request.message + ")" : "") : "");
-    }
-    function renderCi(ci) {
-      el("ci-error").hidden = !ci.error; el("ci-error").textContent = ci.error ? "Không đọc được GitHub: " + ci.error : "";
-      const jobs = el("ci-jobs"); jobs.replaceChildren();
-      const latest = (ci.runs || [])[0];
-      if (latest && latest.jobs) {
-        const p = document.createElement("p"); p.append("Job của lượt mới nhất: ");
-        latest.jobs.forEach(function (job) {
-          const state = job.status !== "completed" ? ["status-warn", job.status === "in_progress" ? "đang chạy" : "chờ"]
-            : (job.conclusion === "success" ? ["status-ok", "pass"] : (job.conclusion === "skipped" ? ["status-unknown", "bỏ qua"] : ["status-err", job.conclusion]));
-          p.append(pill(state[0], job.name + ": " + state[1]), " ");
-        });
-        jobs.append(p);
-      }
-      const body = el("ci-runs"); body.replaceChildren();
-      (ci.runs || []).forEach(function (run) {
-        const tr = document.createElement("tr");
-        const cells = [run.sha, run.title, null, when(run.created_at), null];
-        cells.forEach(function (value, i) {
-          const td = document.createElement("td");
-          if (i === 0) { const c = document.createElement("code"); c.textContent = value; td.append(c); }
-          else if (i === 2) { const s = ciState(run); td.append(pill(s[0], s[1])); }
-          else if (i === 4) { const a = document.createElement("a"); a.href = run.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Mở CI"; td.append(a); }
-          else td.textContent = value;
-          tr.append(td);
-        });
-        body.append(tr);
-      });
-      if (!(ci.runs || []).length && !ci.error) body.innerHTML = '<tr><td colspan="5" class="empty-state">Chưa có lượt CI.</td></tr>';
-    }
-    async function refresh() {
-      try {
-        const response = await fetch("/api/test-progress", {credentials: "same-origin"});
-        if (!response.ok) return;
-        const data = await response.json();
-        renderLocal(data.local); renderDeploy(data.deploy); renderCi(data.ci);
-        renderControls(data);
-      } catch (e) { /* keep the last view; retry next tick */ }
-    }
-    function candidateRow(c) {
-      const box = document.createElement("div"); box.className = "cand-item";
-      const head = document.createElement("label"); head.className = "cand-head";
-      const pick = document.createElement("input"); pick.type = "checkbox"; pick.name = "pick";
-      const ready = c.pull && c.ci.conclusion === "success" && c.pull.mergeable !== false;
-      pick.disabled = !ready;
-      if (c.pull) pick.value = c.pull.number + ":" + c.head_sha;
-      const title = document.createElement("strong"); title.textContent = " " + c.title;
-      head.append(pick, title);
-      const meta = document.createElement("p"); meta.className = "hint";
-      const ciPill = c.ci.status === "none" ? pill("status-unknown", c.pull ? "CI chưa chạy" : "chưa có PR")
-        : (c.ci.status !== "completed" ? pill("status-warn", "CI đang chạy")
-          : (c.ci.conclusion === "success" ? pill("status-ok", "CI xanh") : pill("status-err", "CI " + c.ci.conclusion)));
-      meta.append(ciPill, " ");
-      if (c.pull) {
-        const a = document.createElement("a"); a.href = c.pull.url; a.target = "_blank"; a.rel = "noopener";
-        a.textContent = "PR #" + c.pull.number; meta.append(a, " · ");
-        if (c.pull.mergeable === false) meta.append(pill("status-err", "xung đột với main"), " · ");
-      }
-      const plus = c.files.reduce(function (n, f) { return n + f.additions; }, 0);
-      const minus = c.files.reduce(function (n, f) { return n + f.deletions; }, 0);
-      meta.append(c.branch + " · " + c.commits.length + " commit · " + c.files.length + " file (+" + plus + "/-" + minus + ")" +
-        (c.behind_by ? " · main đã đi trước " + c.behind_by + " commit" : "") + " · " + when(c.updated_at));
-      const summary = document.createElement("div"); summary.className = "cand-summary";
-      summary.textContent = c.summary ? c.summary.text : "AI đang tóm tắt…";
-      const source = document.createElement("p"); source.className = "hint";
-      source.textContent = c.summary ? (c.summary.source === "ai" ? "Tóm tắt bởi AI" : "AI không trả lời được: hiện commit message") : "";
-      const details = document.createElement("details");
-      const sum = document.createElement("summary"); sum.textContent = "Commit và file";
-      const list = document.createElement("ul");
-      c.commits.forEach(function (commit) { const li = document.createElement("li"); const code = document.createElement("code");
-        code.textContent = commit.sha.slice(0, 8); li.append(code, " " + commit.message.split("\n")[0]); list.append(li); });
-      c.files.forEach(function (f) { const li = document.createElement("li"); li.textContent = f.status + " " + f.name + " (+" + f.additions + "/-" + f.deletions + ")"; list.append(li); });
-      details.append(sum, list);
-      box.append(head, meta, summary, source, details);
-      return box;
-    }
-    function updateMergeControls() {
-      const count = document.querySelectorAll('#cand-list input[name="pick"]:checked').length;
-      el("merge-button").disabled = !count;
-      el("merge-confirmation").placeholder = "MERGE " + (count || 1);
-      el("merge-hint").textContent = count ? "Gõ MERGE " + count + " để merge " + count + " PR." : "Chỉ chọn được PR có CI xanh và không xung đột.";
-    }
-    async function refreshCandidates() {
-      try {
-        const response = await fetch("/api/test-progress/candidates", {credentials: "same-origin"});
-        if (!response.ok) return;
-        const data = await response.json();
-        const checked = new Set(Array.from(document.querySelectorAll('#cand-list input[name="pick"]:checked')).map(function (i) { return i.value; }));
-        el("cand-error").hidden = !data.error; el("cand-error").textContent = data.error ? "Không đọc được GitHub: " + data.error : "";
-        const list = el("cand-list"); list.replaceChildren();
-        data.candidates.forEach(function (c) { list.append(candidateRow(c)); });
-        if (!data.candidates.length && !data.error) list.innerHTML = '<p class="empty-state">Không có nhánh cand/* nào chờ merge.</p>';
-        document.querySelectorAll('#cand-list input[name="pick"]').forEach(function (input) {
-          input.checked = checked.has(input.value) && !input.disabled; input.addEventListener("change", updateMergeControls);
-        });
-        el("open-prs-button").hidden = !data.token_configured || !data.candidates.some(function (c) { return !c.pull; });
-        updateMergeControls();
-      } catch (e) { /* keep the last view */ }
-    }
-    refreshCandidates(); setInterval(refreshCandidates, 30000);
-    refresh(); setInterval(refresh, 5000);
+    function updateMergeControls(){const count=document.querySelectorAll('#cand-list input[name="pick"]:checked').length;el("merge-button").disabled=!count;el("merge-confirmation").placeholder="MERGE "+(count||1);el("merge-hint").textContent=count?`Gõ MERGE ${count} để merge ${count} PR.`:"Chỉ chọn được PR có CI xanh và không xung đột.";}
+    async function refreshCandidates(){try{const response=await fetch("/api/test-progress/candidates",{credentials:"same-origin"});if(!response.ok)return;const data=await response.json();
+      const checked=new Set(Array.from(document.querySelectorAll('#cand-list input[name="pick"]:checked')).map(i=>i.value));
+      el("cand-error").hidden=!data.error;el("cand-error").textContent=data.error?"Không đọc được GitHub: "+data.error:"";
+      const list=el("cand-list");list.replaceChildren();data.candidates.forEach(c=>list.append(candidateRow(c)));
+      if(!data.candidates.length&&!data.error){const p=document.createElement("p");p.className="empty-state";p.textContent="Không có nhánh cand/* nào chờ merge.";list.append(p);}
+      document.querySelectorAll('#cand-list input[name="pick"]').forEach(input=>{input.checked=checked.has(input.value)&&!input.disabled;input.addEventListener("change",updateMergeControls);});
+      el("open-prs-button").hidden=!data.token_configured||!data.candidates.some(c=>!c.pull);updateMergeControls();}catch(e){/* keep the last view */}}
+    refreshCandidates();setInterval(()=>{if(!paused)refreshCandidates();},30000);
+    refresh(false);setInterval(()=>{if(!paused)refresh(false);},5000);
   })();
   </script>
   <script src="/static/app.js?v={{ static_version }}"></script>

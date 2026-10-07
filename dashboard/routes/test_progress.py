@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from config.settings import settings
 from dashboard.routes import auth
@@ -31,20 +31,23 @@ def _require_admin(user: str) -> None:
 @router.get("/test-progress", response_class=HTMLResponse)
 async def test_progress_page(request: Request, user: str = Depends(require_login)):
     _require_admin(user)
+    token = ci_control.read_token(Path(settings.ci_github_token_file))
     return templates.TemplateResponse(
         request, "test_progress.html",
         {"user": user, "is_admin": True, "ci_repo": settings.ci_github_repo,
-         "token_configured": ci_control.read_token(Path(settings.ci_github_token_file)) is not None,
+         "token_configured": token is not None, "token_hint": token[-4:] if token else "",
          "notice": request.query_params.get("ok"), "error": request.query_params.get("err"),
          "notice_url": _github_url(request.query_params.get("url"))},
     )
 
 
 @router.get("/api/test-progress")
-async def test_progress_api(user: str = Depends(require_login)) -> dict:
+async def test_progress_api(request: Request, user: str = Depends(require_login)) -> dict:
     _require_admin(user)
     local = test_progress.read_local_run(Path(settings.test_progress_file))
-    ci = await asyncio.to_thread(test_progress.fetch_ci_runs, settings.ci_github_repo)
+    if request.query_params.get("refresh") == "1":
+        test_progress.clear_ci_cache()
+    ci = await asyncio.to_thread(test_progress.fetch_ci_runs, settings.ci_github_repo, limit=100)
     deploy = test_progress.read_latest_deploy()
     return {"local": local, "deploy": deploy, "ci": ci,
             "deploy_request": ci_control.read_deploy_status(Path(settings.deploy_request_dir)),
@@ -54,6 +57,15 @@ async def test_progress_api(user: str = Depends(require_login)) -> dict:
 def _deployed_sha(deploy: dict | None) -> str | None:
     """The revision production runs: the newest deploy that completed successfully."""
     return deploy["sha"] if deploy and deploy.get("status") == "passed" and deploy.get("sha") else None
+
+
+@router.get("/api/test-progress/deploy-log")
+async def download_deploy_log(user: str = Depends(require_login)):
+    _require_admin(user)
+    path = test_progress.DEFAULT_DEPLOY_LOG
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Chưa có deploy-phases.log")
+    return FileResponse(path, media_type="text/plain; charset=utf-8", filename="deploy-phases.log")
 
 
 def _latest_green_sha(ci: dict) -> str | None:
