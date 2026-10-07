@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from config.settings import settings
 
@@ -86,7 +86,7 @@ def load_cached_prices() -> list[dict]:
         return []
 
 
-def merge_with_defaults(default_prices: Iterable[object]) -> list[object]:
+def merge_with_defaults(default_prices: Iterable[Any]) -> list[Any]:
     """Overlay cached records by provider/model while retaining safe defaults."""
     defaults = tuple(default_prices)
     cached = {

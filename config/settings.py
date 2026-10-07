@@ -123,6 +123,8 @@ class Settings(BaseSettings):
     ci_github_workflow: str = "ci-cd.yml"
     ci_github_token_file: str = "/var/lib/ceph-ai/config/github-ci-token"
     deploy_request_dir: str = "/var/lib/ceph-ai/deploy-requests"
+    # PR release flow: AI summaries of candidate branches, one JSON per head commit.
+    release_notes_dir: str = "/var/lib/ceph-ai/release-notes"
     # BLUESTORE_SLOW_OP_ALERT gate (autonomy plan WP1.2). Ceph keeps the
     # check for bluestore_slow_ops_warn_lifetime (86400 s by default) after a
     # single slow op, so only an episode outliving that window is recurrent.

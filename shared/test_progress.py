@@ -14,7 +14,7 @@ import json
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +154,31 @@ def _summarise_run(run: dict) -> dict[str, Any]:
         "created_at": run.get("created_at"),
         "updated_at": run.get("updated_at"),
     }
+
+
+def find_dispatched_run(repo: str, ref: str, since: datetime, *, attempts: int = 6, wait_seconds: float = 2,
+                        client: httpx.Client | None = None, sleep=time.sleep) -> str | None:
+    """URL of the workflow_dispatch run GitHub creates a few seconds after a
+    dispatch on ``ref`` (the dispatch API itself returns nothing)."""
+    own_client = client is None
+    http = client or httpx.Client(timeout=_HTTP_TIMEOUT_SECONDS)
+    try:
+        for attempt in range(attempts):
+            try:
+                payload = _get_json(http, f"{GITHUB_API}/repos/{repo}/actions/runs?event=workflow_dispatch"
+                                          f"&branch={ref}&per_page=3")
+            except (httpx.HTTPError, ValueError):
+                payload = {}
+            for run in payload.get("workflow_runs", []):
+                created = _parse_time(run.get("created_at"))
+                if created is not None and created >= since - timedelta(seconds=5):
+                    return str(run.get("html_url") or "") or None
+            if attempt + 1 < attempts:
+                sleep(wait_seconds)
+        return None
+    finally:
+        if own_client:
+            http.close()
 
 
 def clear_ci_cache() -> None:
