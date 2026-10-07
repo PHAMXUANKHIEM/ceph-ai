@@ -47,7 +47,7 @@ async def test_progress_api(request: Request, user: str = Depends(require_login)
     local = test_progress.read_local_run(Path(settings.test_progress_file))
     if request.query_params.get("refresh") == "1":
         test_progress.clear_ci_cache()
-    ci = await asyncio.to_thread(test_progress.fetch_ci_runs, settings.ci_github_repo, limit=100)
+    ci = await asyncio.to_thread(test_progress.fetch_ci_runs, settings.ci_github_repo, limit=100, token=_token())
     deploy = test_progress.read_latest_deploy()
     return {"local": local, "deploy": deploy, "ci": ci,
             "deploy_request": ci_control.read_deploy_status(Path(settings.deploy_request_dir)),
@@ -69,11 +69,17 @@ async def download_deploy_log(user: str = Depends(require_login)):
 
 
 def _latest_green_sha(ci: dict) -> str | None:
-    """The newest run on main, only if it is green (never an older green one)."""
-    runs = ci.get("runs") or []
-    newest = runs[0] if runs else None
-    if newest and newest.get("status") == "completed" and newest.get("conclusion") == "success":
-        return newest.get("head_sha") or None
+    """main's head commit, only if its push run is green (only push runs build the deploy image).
+
+    Never an older green commit: if main's head has no green push run yet,
+    nothing is offered.
+    """
+    head = ci.get("head_sha")
+    if not head:
+        return None
+    pushed = [run for run in ci.get("runs") or [] if run.get("head_sha") == head and run.get("event") == "push"]
+    if pushed and pushed[0].get("status") == "completed" and pushed[0].get("conclusion") == "success":
+        return head
     return None
 
 
@@ -108,7 +114,8 @@ async def run_ci(ref: str = Form("main"), user: str = Depends(require_login)):
                                 branch, token)
     except ci_control.CiControlError as exc:
         return _back(err=str(exc))
-    url = await asyncio.to_thread(test_progress.find_dispatched_run, settings.ci_github_repo, branch, started)
+    url = await asyncio.to_thread(test_progress.find_dispatched_run, settings.ci_github_repo, branch, started,
+                                  token=token)
     test_progress.clear_ci_cache()
     if url:
         return _back(ok=f"Đã chạy CI cho nhánh {branch}.", url=url)
@@ -118,7 +125,7 @@ async def run_ci(ref: str = Form("main"), user: str = Depends(require_login)):
 @router.post("/test-progress/deploy")
 async def request_deploy(sha: str = Form(""), confirmation: str = Form(""), user: str = Depends(require_login)):
     _require_admin(user)
-    ci = await asyncio.to_thread(test_progress.fetch_ci_runs, settings.ci_github_repo)
+    ci = await asyncio.to_thread(test_progress.fetch_ci_runs, settings.ci_github_repo, limit=100, token=_token())
     if sha != _latest_green_sha(ci):
         return _back(err="Chỉ deploy được commit mới nhất trên main có CI xanh.")
     if sha == _deployed_sha(test_progress.read_latest_deploy()):

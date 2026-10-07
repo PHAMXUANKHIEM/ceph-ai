@@ -63,7 +63,8 @@ def test_a_deploy_request_needs_the_typed_confirmation_and_is_one_at_a_time(tmp_
 
 
 def _ci(conclusion="success", status="completed"):
-    return {"runs": [{"head_sha": SHA, "status": status, "conclusion": conclusion}], "error": None}
+    return {"head_sha": SHA, "runs": [{"head_sha": SHA, "event": "push", "status": status, "conclusion": conclusion}],
+            "error": None}
 
 
 @pytest.fixture
@@ -178,7 +179,7 @@ def test_run_ci_links_to_the_run_github_created(admin, monkeypatch, tmp_path):
     ci_control.save_token(tmp_path / "token", TOKEN)
     monkeypatch.setattr(route.ci_control, "dispatch_ci", lambda *args, **kwargs: None)
     run_url = f"https://github.com/{settings.ci_github_repo}/actions/runs/42"
-    monkeypatch.setattr(route.test_progress, "find_dispatched_run", lambda repo, ref, since: run_url)
+    monkeypatch.setattr(route.test_progress, "find_dispatched_run", lambda repo, ref, since, **_kwargs: run_url)
 
     response = admin.post("/test-progress/ci-run", data={"ref": "main"}, follow_redirects=False)
     page = admin.get(response.headers["location"]).text
@@ -197,8 +198,9 @@ def test_find_dispatched_run_waits_for_github_to_create_it():
     from shared import test_progress
 
     since = datetime(2026, 10, 7, 7, 0, 45, tzinfo=timezone.utc)
-    answers = [[], [{"created_at": "2026-10-07T07:00:30Z", "html_url": "old"}],
-               [{"created_at": "2026-10-07T07:00:47Z", "html_url": "new"}]]
+    answers = [[], [{"created_at": "2026-10-07T07:00:30Z", "html_url": "old", "head_branch": "main"}],
+               [{"created_at": "2026-10-07T07:00:47Z", "html_url": "other branch", "head_branch": "cand/x"},
+                {"created_at": "2026-10-07T07:00:47Z", "html_url": "new", "head_branch": "main"}]]
 
     def handler(request):
         return httpx.Response(200, json={"workflow_runs": answers.pop(0)})
@@ -218,3 +220,17 @@ def test_the_running_revision_is_not_offered_again(admin, monkeypatch):
 
     assert data["latest_green_sha"] == SHA and data["deployed_sha"] == SHA
     assert "err=" in response.headers["location"] and "đang chạy" in admin.get(response.headers["location"]).text
+
+
+def test_only_main_head_with_a_green_push_run_is_offered():
+    head, old = "b" * 40, "c" * 40
+    green_push = {"head_sha": head, "event": "push", "status": "completed", "conclusion": "success"}
+    assert route._latest_green_sha({"head_sha": head, "runs": [green_push]}) == head
+    # main moved on and its new head has no green push run yet: never an older green commit
+    stale = {"head_sha": old, "event": "push", "status": "completed", "conclusion": "success"}
+    assert route._latest_green_sha({"head_sha": head, "runs": [stale]}) is None
+    # a green manual re-run does not build the image; the failed push run decides
+    rerun = {"head_sha": head, "event": "workflow_dispatch", "status": "completed", "conclusion": "success"}
+    failed = dict(green_push, conclusion="failure")
+    assert route._latest_green_sha({"head_sha": head, "runs": [rerun, failed]}) is None
+    assert route._latest_green_sha({"head_sha": None, "runs": [green_push]}) is None

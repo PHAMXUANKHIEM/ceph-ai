@@ -91,19 +91,27 @@ def test_ci_runs_include_jobs_of_the_newest_run_and_are_cached(monkeypatch):
         calls.append(request.url.path)
         if request.url.path.endswith("/jobs"):
             return httpx.Response(200, json={"jobs": [{"name": "quality", "status": "in_progress", "conclusion": None}]})
+        if request.url.path.endswith("/branches/main"):
+            return httpx.Response(200, json={"commit": {"sha": "1ecd9ead0000"}})
+        assert "branch" not in request.url.params  # GitHub's branch filter returned stale runs (07/10/2026)
         return httpx.Response(200, json={"workflow_runs": [
-            {"id": 2, "html_url": "https://ci/2", "head_sha": "1ecd9ead0000", "display_title": "docs", "status": "in_progress"},
-            {"id": 1, "html_url": "https://ci/1", "head_sha": "94e7e55f0000", "status": "completed", "conclusion": "success"},
+            {"id": 9, "head_sha": "77770000", "head_branch": "cand/x", "event": "pull_request",
+             "created_at": "2026-10-07T10:00:00Z", "status": "completed", "conclusion": "success"},
+            {"id": 1, "html_url": "https://ci/1", "head_sha": "94e7e55f0000", "head_branch": "main", "event": "push",
+             "created_at": "2026-10-03T04:24:41Z", "status": "completed", "conclusion": "success"},
+            {"id": 2, "html_url": "https://ci/2", "head_sha": "1ecd9ead0000", "head_branch": "main", "event": "push",
+             "created_at": "2026-10-07T09:29:32Z", "display_title": "docs", "status": "in_progress"},
         ]})
 
     first = test_progress.fetch_ci_runs("owner/repo", client=_github(handler))
     second = test_progress.fetch_ci_runs("owner/repo", client=_github(handler))
 
     assert first is second
-    assert [run["sha"] for run in first["runs"]] == ["1ecd9ead", "94e7e55f"]
+    assert [run["sha"] for run in first["runs"]] == ["1ecd9ead", "94e7e55f"]  # main only, newest first
+    assert first["head_sha"] == "1ecd9ead0000"
     assert first["runs"][0]["jobs"][0]["name"] == "quality"
     assert "jobs" not in first["runs"][1]
-    assert len(calls) == 2
+    assert len(calls) == 3
 
 
 def test_ci_errors_are_reported_not_raised():
