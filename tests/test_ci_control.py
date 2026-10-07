@@ -234,3 +234,15 @@ def test_only_main_head_with_a_green_push_run_is_offered():
     failed = dict(green_push, conclusion="failure")
     assert route._latest_green_sha({"head_sha": head, "runs": [rerun, failed]}) is None
     assert route._latest_green_sha({"head_sha": None, "runs": [green_push]}) is None
+
+
+def test_runner_judges_the_push_run_not_a_newer_manual_rerun(monkeypatch):
+    path = runner.WORKFLOW_PATH
+    runs = [{"path": path, "event": "workflow_dispatch", "status": "in_progress", "conclusion": None},
+            {"path": path, "event": "push", "status": "completed", "conclusion": "success"}]
+    monkeypatch.setattr(runner, "_https", lambda *a, **k: (200, {"workflow_runs": runs}, None))
+    runner.ci_green(SHA)  # green push run: accepted although a manual re-run is still going
+
+    runs[1]["conclusion"] = "failure"
+    with pytest.raises(runner.Refused, match="push"):
+        runner.ci_green(SHA)

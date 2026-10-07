@@ -99,9 +99,13 @@ def ci_green(sha: str) -> None:
                                 {"Accept": "application/vnd.github+json"})
     if status != 200:
         raise Refused(f"không đọc được CI trên GitHub (HTTP {status})")
-    runs = [run for run in payload.get("workflow_runs") or [] if run.get("path") == WORKFLOW_PATH]
+    # Only push runs build the deploy image. A manual re-run (workflow_dispatch)
+    # on the same commit is newer but proves nothing about the image; on
+    # 07/10/2026 one still running made this refuse a green, built bb7c7682.
+    runs = [run for run in payload.get("workflow_runs") or []
+            if run.get("path") == WORKFLOW_PATH and run.get("event") == "push"]
     if not runs or runs[0].get("status") != "completed" or runs[0].get("conclusion") != "success":
-        raise Refused(f"CI của {sha[:8]} chưa xanh")
+        raise Refused(f"CI (push) của {sha[:8]} chưa xanh")
 
 
 def running_revision() -> str | None:
