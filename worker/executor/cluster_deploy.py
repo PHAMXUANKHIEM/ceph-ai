@@ -1593,6 +1593,15 @@ _NODE_FSIDS_COMMAND = (
 )
 
 
+def _read_fsid(mon: str, command: str, user: str, key_path: str) -> str:
+    """One MON's answer to `ceph fsid`, or "" if it cannot be read."""
+    try:
+        return str(json.loads(execute_command(mon, command, user=user, key_path=key_path)).get("fsid", ""))
+    except (ExecutorError, ValueError, AttributeError) as exc:
+        logger.info("cluster_deploy: could not read fsid from %s: %s", mon, exc)
+        return ""
+
+
 def _monitored_fsids() -> tuple[set[str], list[str]]:
     """fsids of every monitored cluster, and the names whose fsid could not be read."""
     from shared.clusters import list_active_clusters
@@ -1607,15 +1616,8 @@ def _monitored_fsids() -> tuple[set[str], list[str]]:
         user, key_path, exec_mode, container = resolve_ssh_creds(None if cluster.is_default else cluster)
         raw = settings.ceph_mon_nodes if cluster.is_default else cluster.ceph_mon_nodes
         mons = [node.strip() for node in str(raw or "").split(",") if node.strip()]
-        fsid = ""
-        for mon in mons:
-            try:
-                command = wrap_ceph_runtime_command("ceph fsid --format json", exec_mode=exec_mode,
-                                                    container_name=container)
-                fsid = str(json.loads(execute_command(mon, command, user=user, key_path=key_path)).get("fsid", ""))
-                break
-            except Exception:  # noqa: BLE001 - try the next MON, then report it unreadable
-                continue
+        command = wrap_ceph_runtime_command("ceph fsid --format json", exec_mode=exec_mode, container_name=container)
+        fsid = next((value for value in (_read_fsid(mon, command, user, key_path) for mon in mons) if value), "")
         if fsid:
             found.add(fsid.lower())
         else:
