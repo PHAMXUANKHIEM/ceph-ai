@@ -28,8 +28,13 @@
     var status = document.getElementById("df-ssh-key-copy-status");
     if (!publicKey) return;
     function copied() {
+      var originalText = "📋 Copy public key";
       if (status) status.textContent = "Đã copy public key. Thêm key này vào authorized_keys của SSH User trên từng node.";
       copySshPublicKeyButton.textContent = "Đã copy ✓";
+      window.setTimeout(function () {
+        copySshPublicKeyButton.textContent = originalText;
+        if (status) status.textContent = "Đây là public key của Worker. Private key không được mount vào Dashboard và không hiển thị trên trình duyệt.";
+      }, 2000);
     }
     function selectForManualCopy() {
       publicKey.focus(); publicKey.select();
@@ -68,13 +73,13 @@
     var row = document.createElement("tr");
     row.innerHTML =
       '<td class="node-ip-cell"><input type="text" class="node-ip" placeholder="' + suggestedIp + '" value="' + escapeHtml(ip || "") + '" inputmode="decimal" autocomplete="off"><small class="node-field-error" hidden></small></td>' +
-      '<td><input type="checkbox" class="node-role" value="mon"></td>' +
-      '<td><input type="checkbox" class="node-role" value="mgr"></td>' +
-      '<td><input type="checkbox" class="node-role node-role-osd" value="osd"></td>' +
-      '<td><input type="checkbox" class="node-role" value="mds"></td>' +
-      '<td><input type="checkbox" class="node-role" value="rgw"></td>' +
-      '<td><input type="text" class="node-osd-disk" placeholder="/dev/vdc, /dev/vdd" disabled></td>' +
-      '<td><button type="button" class="btn btn-sm btn-ghost node-remove">×</button></td>';
+      '<td><label class="node-role-chip role-mon"><input type="checkbox" class="node-role" value="mon"><span>MON</span></label></td>' +
+      '<td><label class="node-role-chip role-mgr"><input type="checkbox" class="node-role" value="mgr"><span>MGR</span></label></td>' +
+      '<td><label class="node-role-chip role-osd"><input type="checkbox" class="node-role node-role-osd" value="osd"><span>OSD</span></label></td>' +
+      '<td><label class="node-role-chip role-mds"><input type="checkbox" class="node-role" value="mds"><span>MDS</span></label></td>' +
+      '<td><label class="node-role-chip role-rgw"><input type="checkbox" class="node-role" value="rgw"><span>RGW</span></label></td>' +
+      '<td><input type="text" class="node-osd-disk" placeholder="/dev/vdc, /dev/vdd" disabled aria-label="Ổ đĩa OSD"></td>' +
+      '<td><button type="button" class="btn btn-sm btn-ghost node-remove" aria-label="Xóa node" title="Xóa node">🗑</button></td>';
     row.querySelector(".node-remove").addEventListener("click", function () {
       row.remove();
       validateNodes(false);
@@ -92,7 +97,10 @@
       updateSubmitState();
     });
     Array.prototype.forEach.call(row.querySelectorAll(".node-role"), function (checkbox) {
-      checkbox.addEventListener("change", updateSubmitState);
+      checkbox.addEventListener("change", function () {
+        checkbox.closest(".node-role-chip").classList.toggle("is-selected", checkbox.checked);
+        updateSubmitState();
+      });
     });
     nodeRowsEl.appendChild(row);
   }
@@ -204,7 +212,16 @@
       return row.querySelector(".node-ip") && row.querySelector(".node-ip").value.trim();
     });
     var hasMon = !!(nodeRowsEl && nodeRowsEl.querySelector('.node-role[value="mon"]:checked'));
-    submitButton.disabled = !(hasVersion && hasNodeIp && hasMon && validateNodes(false));
+    var poolSize = Number(document.getElementById("df-pool-size").value);
+    var poolMinSize = Number(document.getElementById("df-pool-min-size").value);
+    var poolValid = Number.isInteger(poolSize) && Number.isInteger(poolMinSize)
+      && poolSize >= 1 && poolMinSize >= 1 && poolMinSize <= poolSize;
+    var poolError = document.getElementById("df-pool-error");
+    if (poolError) poolError.hidden = poolValid;
+    document.getElementById("df-pool-min-size").classList.toggle("is-invalid", !poolValid);
+    var valid = hasVersion && hasNodeIp && hasMon && validateNodes(false) && poolValid;
+    submitButton.disabled = !valid;
+    return valid;
   }
 
   // --- Method radio -> rpm-path field + not-yet-supported note --------
@@ -220,6 +237,9 @@
   function onMethodChange() {
     var method = currentMethod();
     if (rpmPathLabel) rpmPathLabel.hidden = method !== "rpm-local";
+    Array.prototype.forEach.call(document.querySelectorAll(".deploy-method-card"), function (card) {
+      card.classList.toggle("is-selected", !!card.querySelector("input[type=radio]:checked"));
+    });
   }
 
   Array.prototype.forEach.call(document.querySelectorAll('input[name="method"]'), function (radio) {
@@ -249,8 +269,10 @@
         versionSelect.disabled = true;
         var placeholder = document.createElement("option");
         placeholder.value = "";
-        placeholder.textContent = "— Chọn dòng release trước —";
+        placeholder.textContent = "— Chọn phiên bản —";
         versionSelect.appendChild(placeholder);
+        if (versionInput) versionInput.value = "";
+        updateSubmitState();
         return;
       }
       versionSelect.disabled = false;
@@ -263,6 +285,7 @@
         versionSelect.appendChild(option);
       }
       if (versionInput) versionInput.value = versions[versions.length - 1];
+      updateSubmitState();
     });
 
     versionSelect.addEventListener("change", function () {
@@ -272,38 +295,51 @@
   }
 
   if (versionInput) versionInput.addEventListener("input", updateSubmitState);
+  ["df-pool-size", "df-pool-min-size"].forEach(function (id) {
+    var input = document.getElementById(id);
+    if (input) input.addEventListener("input", updateSubmitState);
+  });
+  var luksToggle = document.getElementById("df-osd-encryption");
+  if (luksToggle) luksToggle.addEventListener("change", function () {
+    document.getElementById("df-luks-warning").hidden = !luksToggle.checked;
+  });
+  var monitoringToggle = document.getElementById("df-register-monitoring");
+  if (monitoringToggle) monitoringToggle.addEventListener("change", function () {
+    var nameField = document.getElementById("df-monitor-name-field");
+    var nameInput = document.getElementById("df-monitor-name");
+    nameField.hidden = !monitoringToggle.checked;
+    nameInput.required = monitoringToggle.checked;
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-dialog-close]"), function (button) {
+    button.addEventListener("click", function () {
+      var dialog = button.closest("dialog");
+      if (dialog) dialog.close();
+    });
+  });
+  var restartDialog = document.getElementById("deploy-restart-dialog");
+  var restartForm = document.getElementById("df-restart-form");
+  var restartMessage = document.getElementById("df-restart-message");
+  document.querySelectorAll("[data-restart-service]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var service = button.dataset.restartService;
+      if (["worker", "watcher"].indexOf(service) === -1 || !restartDialog || !restartForm) return;
+      restartForm.action = "/settings/restart-" + service;
+      restartMessage.textContent = "Bạn có chắc muốn khởi động lại " + service.toUpperCase() + "? Dịch vụ có thể tạm ngừng xử lý trong lúc khởi động.";
+      var menu = button.closest("details");
+      if (menu) menu.open = false;
+      restartDialog.showModal();
+    });
+  });
   updateSubmitState();
 
-  // --- Propose submit ---------------------------------------------------
+  var deployDialog = document.getElementById("deploy-confirm-dialog");
+  var confirmWord = document.getElementById("df-confirm-word");
+  var confirmSubmit = document.getElementById("df-confirm-submit");
 
-  if (form) {
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      if (errorEl) { errorEl.hidden = true; errorEl.textContent = ""; }
-
-      if (!versionInput || !versionInput.value.trim()) {
-        if (errorEl) { errorEl.textContent = "Chọn hoặc nhập phiên bản Ceph trước khi tiếp tục."; errorEl.hidden = false; }
-        updateSubmitState();
-        return;
-      }
-      if (!validateNodes(true)) {
-        if (errorEl) { errorEl.textContent = "Kiểm tra lại IP node và chọn ít nhất một node MON."; errorEl.hidden = false; }
-        updateSubmitState();
-        return;
-      }
-
-      var method = currentMethod();
-      if (notYetSupported.indexOf(method) !== -1) {
-        if (errorEl) {
-          errorEl.textContent = "Phương thức này chưa được hỗ trợ tự động — chọn cephadm.";
-          errorEl.hidden = false;
-        }
-        return;
-      }
-
-      var payload = {
+  function collectPayload() {
+    var payload = {
         version: versionInput ? versionInput.value.trim() : "",
-        method: method,
+        method: currentMethod(),
         rpm_path: document.getElementById("df-rpm-path") ? document.getElementById("df-rpm-path").value.trim() : "",
         nodes: collectNodes(),
         public_network: document.getElementById("df-public-network").value.trim(),
@@ -317,7 +353,10 @@
         payload.register_monitoring = true;
         payload.monitor_cluster_name = document.getElementById("df-monitor-name").value.trim();
       }
+    return payload;
+  }
 
+  function sendProposal(payload) {
       fetch("/deploy-cluster/propose", {
         method: "POST",
         credentials: "same-origin",
@@ -341,6 +380,70 @@
             errorEl.hidden = false;
           }
         });
+  }
+
+  function showDeploySummary(payload) {
+    var summary = document.getElementById("df-confirm-summary");
+    if (!summary) return;
+    summary.replaceChildren();
+    var nodeText = payload.nodes.map(function (node) {
+      return node.ip + " (" + node.roles.map(function (role) { return role.toUpperCase(); }).join(", ") + ")";
+    }).join("; ");
+    var items = [
+      ["Ceph", payload.version],
+      ["Phương thức", payload.method],
+      ["Nodes / roles", nodeText],
+      ["Public / Cluster network", payload.public_network + " / " + (payload.cluster_network || payload.public_network)],
+      ["dm-crypt (LUKS)", payload.osd_encryption ? "Bật" : "Tắt"]
+    ];
+    if (payload.register_monitoring) items.push(["Giám sát", payload.monitor_cluster_name || "Cụm thứ hai"]);
+    items.forEach(function (item) {
+      var term = document.createElement("dt");
+      var value = document.createElement("dd");
+      term.textContent = item[0];
+      value.textContent = item[1] || "—";
+      summary.append(term, value);
+    });
+  }
+
+  if (confirmWord && confirmSubmit) {
+    confirmWord.addEventListener("input", function () {
+      confirmSubmit.disabled = confirmWord.value.trim() !== "DEPLOY";
+    });
+    confirmSubmit.addEventListener("click", function () {
+      if (confirmWord.value.trim() !== "DEPLOY") return;
+      deployDialog.close();
+      sendProposal(collectPayload());
+    });
+  }
+
+  if (form) {
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (errorEl) { errorEl.hidden = true; errorEl.textContent = ""; }
+      if (!versionInput || !versionInput.value.trim()) {
+        if (errorEl) { errorEl.textContent = "Chọn hoặc nhập phiên bản Ceph trước khi tiếp tục."; errorEl.hidden = false; }
+        updateSubmitState();
+        return;
+      }
+      if (!validateNodes(true)) {
+        if (errorEl) { errorEl.textContent = "Kiểm tra lại IP node và chọn ít nhất một node MON."; errorEl.hidden = false; }
+        updateSubmitState();
+        return;
+      }
+      if (!updateSubmitState()) return;
+      var method = currentMethod();
+      if (notYetSupported.indexOf(method) !== -1) {
+        if (errorEl) { errorEl.textContent = "Phương thức này chưa được hỗ trợ tự động — chọn cephadm."; errorEl.hidden = false; }
+        return;
+      }
+      var payload = collectPayload();
+      showDeploySummary(payload);
+      if (confirmWord) confirmWord.value = "";
+      if (confirmSubmit) confirmSubmit.disabled = true;
+      if (deployDialog && deployDialog.showModal) deployDialog.showModal();
+      else if (errorEl) { errorEl.textContent = "Trình duyệt không hỗ trợ hộp thoại xác nhận an toàn."; errorEl.hidden = false; }
+      if (deployDialog && deployDialog.open && confirmWord) window.setTimeout(function () { confirmWord.focus(); }, 0);
     });
   }
 
@@ -365,18 +468,27 @@
       if (nodeRowsEl) {
         nodeRowsEl.innerHTML = "";
         nodeRowCount = 0;
-        (params.nodes || []).forEach(function (node) {
+      (params.nodes || []).forEach(function (node) {
           addNodeRow(node.ip || "");
           var row = nodeRowsEl.lastElementChild;
           (node.roles || []).forEach(function (role) {
             var checkbox = row.querySelector('.node-role[value="' + role + '"]');
             if (checkbox) checkbox.checked = true;
+            if (checkbox) checkbox.closest(".node-role-chip").classList.add("is-selected");
           });
           var disks = (node.osd_disks || []).join(", ");
           var diskInput = row.querySelector(".node-osd-disk");
           if (diskInput) { diskInput.value = disks; diskInput.disabled = !(node.roles || []).includes("osd"); }
         });
         if (!nodeRowsEl.children.length) { addNodeRow(); addNodeRow(); addNodeRow(); }
+      }
+      var poolSizeInput = document.getElementById("df-pool-size");
+      var poolMinInput = document.getElementById("df-pool-min-size");
+      if (poolSizeInput) poolSizeInput.value = params.osd_pool_default_size || 3;
+      if (poolMinInput) poolMinInput.value = params.osd_pool_default_min_size || 2;
+      if (luksToggle) {
+        luksToggle.checked = !!params.osd_encryption;
+        document.getElementById("df-luks-warning").hidden = !luksToggle.checked;
       }
       var configCard = document.getElementById("deploy-config-card");
       var configBody = document.getElementById("deploy-config-body");
@@ -398,6 +510,66 @@
   var logCard = document.getElementById("deploy-log-card");
   var clearBtn = document.getElementById("df-log-clear");
   var copyBtn = document.getElementById("df-log-copy");
+  var downloadBtn = document.getElementById("df-log-download");
+  var logAutoFollow = true;
+  var logSearch = document.getElementById("df-log-search");
+  var activeLogFilter = "all";
+
+  if (logBox) logBox.addEventListener("scroll", function () {
+    logAutoFollow = logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight < 48;
+  });
+
+  function applyLogFilters() {
+    if (!logBox) return;
+    var query = (logSearch ? logSearch.value : "").trim().toLowerCase();
+    Array.prototype.forEach.call(logBox.querySelectorAll(".deploy-log-line"), function (line) {
+      line.querySelectorAll("mark.deploy-log-match").forEach(function (mark) {
+        mark.replaceWith(document.createTextNode(mark.textContent));
+      });
+      var text = line.textContent || "";
+      var matchesLevel = activeLogFilter === "all"
+        || (activeLogFilter === "error" && line.classList.contains("status-failed"))
+        || (activeLogFilter === "warning" && /warn|warning|⚠/i.test(text));
+      var matchesQuery = !query || text.toLowerCase().indexOf(query) !== -1;
+      line.hidden = !(matchesLevel && matchesQuery);
+      if (!line.hidden && query) {
+        var walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+        var textNodes = [];
+        while (walker.nextNode()) textNodes.push(walker.currentNode);
+        textNodes.forEach(function (node) {
+          var lower = node.nodeValue.toLowerCase();
+          var index = lower.indexOf(query);
+          if (index < 0) return;
+          var fragment = document.createDocumentFragment();
+          var cursor = 0;
+          while (index >= 0) {
+            if (index > cursor) fragment.appendChild(document.createTextNode(node.nodeValue.slice(cursor, index)));
+            var mark = document.createElement("mark");
+            mark.className = "deploy-log-match";
+            mark.textContent = node.nodeValue.slice(index, index + query.length);
+            fragment.appendChild(mark);
+            cursor = index + query.length;
+            index = lower.indexOf(query, cursor);
+          }
+          if (cursor < node.nodeValue.length) fragment.appendChild(document.createTextNode(node.nodeValue.slice(cursor)));
+          node.replaceWith(fragment);
+        });
+      }
+    });
+  }
+
+  if (logSearch) logSearch.addEventListener("input", applyLogFilters);
+  document.querySelectorAll("[data-log-filter]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      activeLogFilter = button.dataset.logFilter;
+      document.querySelectorAll("[data-log-filter]").forEach(function (item) {
+        var selected = item === button;
+        item.classList.toggle("is-active", selected);
+        item.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+      applyLogFilters();
+    });
+  });
 
   function renderProgress(status, progress) {
     if (logCard && status) logCard.dataset.status = status;
@@ -412,10 +584,18 @@
         logBox.appendChild(fallbackLine);
         if (progressLabel) progressLabel.textContent = "0% — Deployment thất bại; thiếu log chi tiết";
         if (logTitle) logTitle.textContent = "❌ Thất bại";
+      } else if (status === "EXECUTED") {
+        if (progressBarFill) { progressBarFill.style.width = "100%"; progressBarFill.classList.add("is-complete"); }
+        if (progressBar) progressBar.setAttribute("aria-valuenow", "100");
+        if (progressLabel) progressLabel.textContent = "100% — Hoàn tất";
+        if (logTitle) logTitle.textContent = "✅ Hoàn tất";
+      } else if (["APPROVED", "EXECUTING", "GRACE_PENDING", "INCONCLUSIVE"].indexOf(status) !== -1) {
+        if (logTitle) { logTitle.textContent = "Đang chạy…"; logTitle.classList.add("is-running"); }
       }
       return;
     }
 
+    var shouldFollowLog = logAutoFollow;
     logBox.innerHTML = "";
     var runningStep = null;
     progress.forEach(function (step) {
@@ -463,16 +643,16 @@
       }
       if (step.status === "running") runningStep = step;
     });
-    logBox.scrollTop = logBox.scrollHeight;
-
     var lastDone = progress.filter(function (s) { return s.status === "done"; }).pop();
     var pct = runningStep ? runningStep.pct : (lastDone ? lastDone.pct : 0);
     var failedStep = progress.filter(function (s) { return s.status === "failed"; })[0];
     if (failedStep) pct = failedStep.pct;
+    if (status === "EXECUTED") pct = 100;
 
     if (progressBarFill) {
       progressBarFill.style.width = pct + "%";
       progressBarFill.classList.toggle("is-active", !!runningStep);
+      progressBarFill.classList.toggle("is-complete", status === "EXECUTED");
     }
     if (progressBar) progressBar.setAttribute("aria-valuenow", String(pct));
     if (progressLabel) {
@@ -485,10 +665,13 @@
       }
     }
     if (logTitle) {
+      logTitle.classList.toggle("is-running", !!runningStep || ["APPROVED", "EXECUTING", "GRACE_PENDING", "INCONCLUSIVE"].indexOf(status) !== -1);
       if (status === "EXECUTED") logTitle.textContent = "✅ Hoàn tất";
       else if (status === "FAILED") logTitle.textContent = "❌ Thất bại";
-      else if (status === "APPROVED") logTitle.textContent = "● ĐANG CÀI ĐẶT...";
+      else if (["APPROVED", "EXECUTING", "GRACE_PENDING", "INCONCLUSIVE"].indexOf(status) !== -1) logTitle.textContent = "Đang chạy…";
     }
+    applyLogFilters();
+    if (shouldFollowLog) logBox.scrollTop = logBox.scrollHeight;
   }
 
   function escapeHtml(text) {
@@ -568,6 +751,21 @@
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text);
       }
+    });
+  }
+  if (downloadBtn && logBox) {
+    downloadBtn.addEventListener("click", function () {
+      var content = Array.prototype.map.call(logBox.querySelectorAll(".deploy-log-line"), function (line) {
+        return line.textContent.trim();
+      }).join("\n");
+      var blobUrl = URL.createObjectURL(new Blob([content + "\n"], { type: "text/plain;charset=utf-8" }));
+      var link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = "ceph-deploy-" + new Date().toISOString().replace(/[:.]/g, "-") + ".log";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(function () { URL.revokeObjectURL(blobUrl); }, 1000);
     });
   }
 
