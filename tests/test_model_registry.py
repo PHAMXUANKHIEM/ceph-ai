@@ -57,4 +57,7 @@ def test_guarded_rollback_restores_exact_previous_model_within_target(db_session
     assert db_session.query(NodeResourceModelState).filter_by(
         algorithm="river_mean", selected=True,
     ).count() == 0
-    assert elapsed < 1.0
+    # A guard against a pathological rollback (e.g. a query per row), not a
+    # benchmark: shared CI runners took 1.28 s for this in-memory call on
+    # 07/10/2026 (Python 3.11) while it passed elsewhere, so 1.0 s was flaky.
+    assert elapsed < 5.0
