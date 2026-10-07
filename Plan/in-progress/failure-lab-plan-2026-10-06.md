@@ -70,23 +70,43 @@ Một máy trạng thái, mỗi bước ghi audit: kiểm tra môi trường →
 - Lượt chẩn đoán sai/đề xuất sai → ví dụ âm (LL6), không bao giờ dùng để cho phép hành động.
 - Báo cáo chiến dịch trên `/ai-learning`: tỉ lệ đúng từng khâu theo kịch bản, xu hướng theo thời gian.
 
+### 4.5. Đánh giá đề xuất công cụ (07/10/2026)
+
+Operator gửi một đề xuất công cụ bên ngoài; đánh giá và quyết định:
+
+| Đề xuất | Quyết định | Lý do |
+|---|---|---|
+| `ceph/ceph` vstart.sh làm cụm lab | **Không dùng**; thay bằng VM cephadm một node (FL0) | Ý đúng: không gây lỗi trên cụm mà tool đang giám sát (CS-LAB là cụm mặc định duy nhất, autopilot bật, incident tính vào KPI học). Nhưng vstart cần build Ceph từ source (hàng giờ, hàng chục GB) và không có cephadm/orchestrator, nên `osd_down_fault` và đường `exec_mode=cephadm` của Watcher sẽ khác cụm thật. |
+| `ceph/teuthology` | Chỉ tham khảo cách tổ chức setup/run/cleanup | Tích hợp toàn bộ quá nặng. |
+| `chaos-mesh` | Không dùng | Chỉ cho Kubernetes/Rook; Ceph ở đây chạy cephadm trên máy thật. |
+| `ceph-qa-suite` | Không dùng | Deprecated; test nằm trong `qa/` của repo chính. |
+| `tc netem` | Giữ quyết định chưa cho phép | Chỉ trên mạng lab cách ly, có bước tự gỡ. |
+| `promptfoo` | Làm sau (FL1), chạy theo lịch trên lab | Đã có scorer 6 khâu; promptfoo thêm so sánh nhiều prompt/model. Không chạy LLM trong GitHub CI. |
+| `langfuse` | Hoãn | Trace cơ bản đã có (`shared/ai_observability.py`, `AutonomyDecision`, `RemediationCase`); Langfuse v3 tự host cần Postgres + ClickHouse + Redis + S3, quá nặng cho máy này; gửi ra ngoài thì phải redact hostname/IP. Chỉ đáng khi có hàng trăm lượt chạy cần duyệt nhãn. |
+| GPU / fine-tune | Không cần | 2/8 là do thiếu bằng chứng và prompt chưa đòi nêu thực thể cụ thể, chưa phải do model. |
+
+Thứ tự: deploy FL2 + bật evidence → chạy lại replay → VM cephadm lab → tiêu chí "từ chối khi thiếu bằng chứng" → promptfoo → (Langfuse nếu cần).
+
 ## 5. Gói việc
 
 ### FL0 — Chuẩn bị staging
 - [x] CS-LAB đổi sang `autonomy_environment=lab` (06/10, operator yêu cầu; có bản ghi `AutopilotClusterConfigAudit`; autopilot giữ nguyên). Đã kiểm tra: trong Worker/Watcher/shared chỉ bộ giả lập đọc giá trị này.
-- [ ] Ghim `fsid` của CS-LAB trong cấu hình Failure Lab; bộ chạy từ chối mọi cụm khác.
+- [x] Ghim `fsid`: `FAILURE_LAB_CLUSTER_FSID`; bộ chạy đọc `ceph fsid` thật và từ chối nếu khác (07/10). Operator cần đặt giá trị sau khi deploy.
 - [ ] Pool/bucket test riêng (`test-*`) cho các kịch bản đụng dữ liệu.
-- [ ] Kênh Telegram/nhãn riêng cho thông báo lab để không lẫn cảnh báo thật.
+- [ ] **Cụm lab dùng một lần** (mục 4.5): một VM `cephadm bootstrap --single-host-defaults`, 3 OSD trên loop device/LV; thêm làm cụm giám sát thứ 2 qua Deploy Cluster, đánh dấu `lab`, ghim fsid. Khi có cụm này, FL2 chạy trên nó; CS-LAB chỉ để giám sát. Cần operator cấp VM (~4 vCPU, 8 GB RAM, 3 × 20 GB).
+- [x] Kênh Telegram riêng: `FAILURE_LAB_TELEGRAM_CHAT_ID` (bot incident, tiền tố `[FAILURE LAB]`); để trống = im lặng, không bao giờ rơi vào kênh incident thật (07/10). Operator cần cung cấp chat id.
 
 ### FL1 — Replay có bằng chứng + chấm điểm (không đụng cụm)
 - [ ] Mở rộng bộ giả lập: envelope có health detail, log line và metric mẫu lấy từ sự cố thật đã ghi (đã ẩn danh) thay vì một câu thông báo.
 - [~] Danh mục YAML + validator cho 9 replay scenario đã có. Fixture hiện là dữ liệu tổng hợp, có provenance `synthetic_fixture`; chưa thay bằng log/metric sự cố thật đã ẩn danh nên chưa đủ điều kiện golden/learning.
 - [~] Scorer cho detection/diagnosis/proposal/recovery/side effects/cleanup đã có; campaign JSON/CLI hỗ trợ chấm cả replay và no-fault control. Bộ chạy chiến dịch `scripts/lab/failure_lab_replay.py` (`shared/failure_lab.py`) tự tạo incident giả lập, chờ Worker chẩn đoán, đọc chẩn đoán/đề xuất, chấm và dọn đúng `run_id`; báo cáo ở `/var/lib/ceph-ai/failure-lab/`. Còn thiếu: lượt đối chứng tự động (cần FL2/cụm thật) và chạy thật trên CS-LAB (cần FL0: `autonomy_environment=lab`).
-- [ ] Chạy trong CI như golden set chẩn đoán đầu tiên.
+- [ ] Chạy trong CI như golden set chẩn đoán đầu tiên — chỉ **chấm lại output đã ghi**, không gọi LLM trong GitHub CI (Worker gọi model qua CLI OAuth; đưa secret lên CI và tốn token mỗi lần push là không đáng).
+- [ ] Tiêu chí **"từ chối khi thiếu bằng chứng"**: kịch bản không có bằng chứng thì chẩn đoán phải nói chưa chắc chắn thay vì đoán; thêm vào scorer như một khâu chấm riêng và vài kịch bản replay thiếu dữ liệu có chủ đích.
+- [ ] (Sau) promptfoo chạy **theo lịch trên lab** để so sánh prompt/model trên cùng bộ kịch bản, qua provider `exec:`/python bọc router hiện có; tiêu chí chấm vẫn lấy từ `failure_lab_scenarios.yaml`.
 
 ### FL2 — Lỗi thật trên CS-LAB
-- [ ] Bộ chạy `mode: fault` với chốt chặn mục 3 (lab + fsid, khóa toàn cục, thời hạn, dọn dẹp luôn chạy, kiểm tra sau dọn dẹp).
-- [ ] Kịch bản đầu, đều đảo ngược được: dừng một OSD daemon; trễ mạng có kiểm soát bằng `tc netem` trên một interface (luôn gỡ); hạ ngưỡng nearfull trên pool test; LARGE_OMAP (chuyển harness shell hiện có vào bộ chạy).
+- [x] Bộ chạy lỗi thật `shared/failure_lab_fault.py` + CLI `scripts/lab/failure_lab_fault.py`, danh mục riêng `worker/policy/failure_lab_faults.yaml` (chỉ các `kind` có trong code, không có lệnh tự do). Chốt chặn: `FAILURE_LAB_FAULT_ENABLED` (mặc định tắt), cụm `lab` + fsid ghim, file `HALT`, khóa `flock` toàn cục, không có incident thật cùng loại đang mở, mã health kỳ vọng chưa xuất hiện, lượt `--scheduled` chỉ trong `FAILURE_LAB_WINDOW`. Gỡ lỗi trong `finally` (cả khi Ctrl-C/SIGTERM, thử lại 3 lần), rồi chờ cụm về đúng tập mã health trước lượt chạy; không về được hoặc bị ngắt → ghi `HALT` + báo lab. Worker: incident phát hiện trong cửa sổ lượt chạy (+15 phút) → action SAFE chờ duyệt (`failure_lab_execution_held`), cảnh báo sang kênh lab. 15 test + 1 test Worker (07/10).
+- [~] Kịch bản đầu (operator chốt 07/10): `osd_down_fault` — `ceph orch daemon stop/start` OSD up có id lớn nhất, chỉ khi `ceph osd ok-to-stop` đồng ý và `mon_osd_down_out_interval` ≥ thời hạn + 120 s (không để Ceph đánh dấu out và dời dữ liệu); `osd_nearfull_fault` — `ceph osd set-nearfull-ratio` xuống ngay dưới mức dùng của OSD đầy nhất rồi trả lại giá trị cũ. **Đính chính:** ngưỡng nearfull là của cả cụm, không có ngưỡng theo pool; trên lab nó chỉ sinh cảnh báo, không chặn ghi. Chưa làm: `tc netem` (chưa cho phép), LARGE_OMAP vào bộ chạy.
 - [ ] Mỗi kịch bản chạy thử có người theo dõi trước khi cho chạy theo lịch.
 
 ### FL3 — Ghi kết quả thành tri thức
@@ -110,10 +130,12 @@ Một máy trạng thái, mỗi bước ghi audit: kiểm tra môi trường →
 
 ## 7. Cần operator quyết định
 
-1. Đổi CS-LAB sang `autonomy_environment=lab` (FL0).
-2. Trên lab, action **SAFE** được tự chạy trong lượt Failure Lab hay vẫn chờ duyệt? (RISKY luôn chờ duyệt.)
-3. Khung giờ chạy chiến dịch tự động (FL4) và kênh Telegram cho thông báo lab.
-4. Danh sách kịch bản `mode: fault` được phép ở FL2.
+Đã chốt 07/10/2026 (operator đồng ý đề xuất):
+
+1. CS-LAB là `lab` — xong 06/10.
+2. Action **SAFE vẫn chờ duyệt** trong lượt lab; cân nhắc cho tự chạy sau vài lượt FL2 có người theo dõi. RISKY luôn chờ duyệt.
+3. Chạy theo lịch **02:00–05:00** (Asia/Ho_Chi_Minh); thông báo vào **kênh Telegram riêng** (chat id: chờ operator).
+4. FL2 bắt đầu với **dừng 1 OSD** và **hạ ngưỡng nearfull**; chưa cho `tc netem`.
 
 ## 8. Nhật ký
 
@@ -127,3 +149,6 @@ Một máy trạng thái, mỗi bước ghi audit: kiểm tra môi trường →
 | 06/10/2026 | Chiến dịch replay đầu tiên trên CS-LAB | **2/8 đạt** (bỏ `large_omap` vì có incident LARGE_OMAP thật đang mở). Đạt: clock skew, node unreachable. Chẩn đoán sai: `osd_down`, `osd_nearfull` — AI không nêu được OSD cụ thể (osd.0/osd.2) dù có trong log. Đề xuất khác kỳ vọng (`investigate_manually`): `restart_osd_daemon` cho osd_down/latency/pg_degraded/slow_heartbeat, `enable_pool_pg_autoscaler` cho crush_skew/nearfull — osd_down→restart có thể chấp nhận được, còn autoscaler cho nearfull/CRUSH skew là sai hướng. Cần operator duyệt lại `acceptable_action_ids` từng kịch bản. Sự cố vận hành: báo cáo không ghi được (thư mục thuộc root) → dựng lại từ DB; incident giả lập gửi cảnh báo Telegram thật → lượt này đã mute, đã sửa vĩnh viễn. | `/var/lib/ceph-ai/failure-lab/replay-first-20261006.json` | Done |
 | 06/10/2026 | Duyệt tiêu chí đề xuất | Operator duyệt: `osd_down` chấp nhận `restart_osd_daemon`; autoscaler cho nearfull/CRUSH skew và restart OSD cho PG degraded/slow heartbeat là sai (giữ chỉ điều tra). Chấm lại chiến dịch đầu: vẫn 2/8 — osd_down giờ chỉ trượt ở chẩn đoán (không nêu osd.0). Việc tiếp theo cho vòng học: chẩn đoán phải nêu thực thể cụ thể từ log; đề xuất không dùng autoscaler/restart cho mã lỗi không liên quan. | `worker/policy/failure_lab_scenarios.yaml` | Done |
 | 06/10/2026 | FL0 operator gates | Chưa đổi CS-LAB, chưa tạo pool/bucket, chưa cấu hình Telegram. Chờ operator xác nhận mục 7. | mục 7 | Blocked on operator decision |
+| 07/10/2026 | Evidence không đụng incident giả lập | Bước thu bằng chứng (WP3.3/3.4) chưa từng chạy vì `INVESTIGATION_ENABLED` mặc định tắt. Trước khi bật cho CS-LAB: Worker gate và scanner Watcher bỏ qua incident có `synthetic_injection` (bằng chứng của cụm thật đang khỏe sẽ mâu thuẫn kịch bản và làm hỏng điểm replay); mọi lần bỏ qua đều ghi log lý do; tab Luồng AI hiện TẮT khi cờ tắt. Bằng chứng giả lập giống thật vẫn là việc FL1 còn lại. | `worker/llm/evidence_gate.py`, `watcher/investigation_scanner.py`, `shared/ai_flow.py` | Done |
+| 07/10/2026 | FL2 bộ chạy lỗi thật | Xem mục FL2. Chưa chạy trên cụm: cần deploy, đặt `FAILURE_LAB_CLUSTER_FSID`, `FAILURE_LAB_FAULT_ENABLED=true`, rồi chạy thử từng kịch bản có người theo dõi. | `shared/failure_lab_fault.py`, `worker/policy/failure_lab_faults.yaml` | In Progress |
+| 07/10/2026 | Đánh giá đề xuất công cụ | vstart → thay bằng VM cephadm một node; teuthology chỉ tham khảo; chaos-mesh/ceph-qa-suite không dùng; promptfoo làm sau, chạy theo lịch trên lab; Langfuse hoãn. Thêm việc: cụm lab dùng một lần (FL0), tiêu chí "từ chối khi thiếu bằng chứng" và promptfoo (FL1). | mục 4.5 | Done |
