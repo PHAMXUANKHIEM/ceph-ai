@@ -1596,9 +1596,10 @@ _NODE_FSIDS_COMMAND = (
 def _monitored_fsids() -> tuple[set[str], list[str]]:
     """fsids of every monitored cluster, and the names whose fsid could not be read."""
     from shared.clusters import list_active_clusters
-    from watcher.ceph_client import run_ceph_json_command_with
+    from worker.executor.commands import wrap_ceph_runtime_command
 
-    found, unreadable = set(), []
+    found: set[str] = set()
+    unreadable: list[str] = []
     with db.SessionLocal() as session:
         clusters = list_active_clusters(session)
         session.expunge_all()
@@ -1606,10 +1607,18 @@ def _monitored_fsids() -> tuple[set[str], list[str]]:
         user, key_path, exec_mode, container = resolve_ssh_creds(None if cluster.is_default else cluster)
         raw = settings.ceph_mon_nodes if cluster.is_default else cluster.ceph_mon_nodes
         mons = [node.strip() for node in str(raw or "").split(",") if node.strip()]
-        try:
-            payload = run_ceph_json_command_with(mons, container, user, key_path, exec_mode, "ceph fsid")[1]
-            found.add(str(payload.get("fsid", "") if isinstance(payload, dict) else "").lower())
-        except Exception:  # noqa: BLE001 - reported to the caller, which decides
+        fsid = ""
+        for mon in mons:
+            try:
+                command = wrap_ceph_runtime_command("ceph fsid --format json", exec_mode=exec_mode,
+                                                    container_name=container)
+                fsid = str(json.loads(execute_command(mon, command, user=user, key_path=key_path)).get("fsid", ""))
+                break
+            except Exception:  # noqa: BLE001 - try the next MON, then report it unreadable
+                continue
+        if fsid:
+            found.add(fsid.lower())
+        else:
             unreadable.append(f"{cluster.name}{' (mặc định)' if cluster.is_default else ''}")
     return found, unreadable
 
