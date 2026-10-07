@@ -4248,9 +4248,21 @@ def _stop_monitoring_deleted_extra_cluster(action_params: dict) -> bool:
     return True
 
 
+def _node_removal_phases(action_id: str) -> list | None:
+    """Phase lists of worker/executor/node_removal.py (imported late: it imports this module)."""
+    from worker.executor import node_removal
+
+    return node_removal.PHASES.get(action_id)
+
+
 def _apply_config_epilogue(action_id: str, action_params: dict) -> None:
     """Record what a successful lifecycle action changed in Ceph AI's own config."""
     if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
+        return
+    if action_id in {"remove_cluster_nodes", "finish_remove_cluster_nodes"}:
+        from worker.executor import node_removal
+
+        node_removal.apply_config(action_params)
         return
     if action_id in NEW_CLUSTER_DEPLOY_ACTION_IDS:
         _register_monitored_cluster(action_params, action_id)
@@ -4340,7 +4352,7 @@ def run(
             return False
 
     nodes = action_params.get("nodes") or []
-    phases = _PHASES_BY_ACTION_ID.get(action_id)
+    phases = _PHASES_BY_ACTION_ID.get(action_id) or _node_removal_phases(action_id)
     if not phases:
         logger.error("cluster_deploy.run: no phase sequence registered for action_id=%s", action_id)
         return False
