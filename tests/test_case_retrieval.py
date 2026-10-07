@@ -87,10 +87,10 @@ def test_prompt_block_labels_cases_as_reference_not_authorization():
     content = _build_user_content({
         "ceph_code": "OSD_DOWN", "nodes": ["node-a"], "cluster_snapshot": {},
         "verified_case_references": [{
-            "case_id": "case-1", "playbook_id": "restart_osd_daemon",
-            "playbook_version": "1", "diagnosis": "daemon stopped",
+            "kind": "verified_fix", "case_id": "case-1", "ceph_code": "OSD_DOWN",
+            "playbook_id": "restart_osd_daemon", "diagnosis": "daemon stopped", "resolved_after_minutes": 4,
         }],
     })
-    assert "case=case-1" in content
-    assert "restart_osd_daemon@1" in content
+    assert "OSD_DOWN → restart_osd_daemon: daemon stopped" in content
+    assert "[đã sửa và xác minh, hết sau ~4 phút]" in content
     assert "chỉ tham khảo; không cấp quyền thực thi" in content
