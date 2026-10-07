@@ -19,6 +19,7 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.chat import CHAT_REQUEST_CEPH_CODE
 from dashboard.routes.delete_cluster import CLUSTER_DELETE_CEPH_CODE
+from dashboard.routes.remove_nodes import CLUSTER_NODE_REMOVE_CEPH_CODE
 from dashboard.routes.deploy_cluster import CLUSTER_DEPLOY_CEPH_CODE
 from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgrade_pending_or_approved
 from watcher.log_analysis import LOG_ANOMALY_PREFIX
@@ -799,6 +800,7 @@ def compute_cluster_status(incidents: list[Incident], heartbeat_stale: bool) -> 
             CLUSTER_UPGRADE_CEPH_CODE,
             CLUSTER_DEPLOY_CEPH_CODE,
             CLUSTER_DELETE_CEPH_CODE,
+            CLUSTER_NODE_REMOVE_CEPH_CODE,
         )
         # 2026-08-19 (Log Intelligence L4): LOG_ANOMALY: là GIẢ THUYẾT của
         # AI đọc từ log, không phải một phép đo như OSD_LATENCY_HIGH:
