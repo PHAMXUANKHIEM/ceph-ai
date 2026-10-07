@@ -23,6 +23,7 @@ from shared import incident_evidence, investigation_runbooks
 from shared.autonomy_kpi import fault_family
 from shared.evidence_collectors import EvidenceRunner, SshTransport
 from shared.models import Incident, IncidentEvidence
+from shared.synthetic_incidents import SYNTHETIC_EVIDENCE_KEY
 from shared.time import utc_now
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,10 @@ def pending(session, *, cluster_id: str | None, include_unscoped: bool, now: dat
         Incident.created_at >= now - max_age,
         Incident.status.notin_(TERMINAL_STATUSES),
         ~has_evidence,
+        # Failure Lab incidents describe an imagined fault; the real cluster's
+        # state would contradict the scenario and spoil its score.
+        or_(Incident.signal_evidence_json.is_(None),
+            ~Incident.signal_evidence_json.contains(f'"{SYNTHETIC_EVIDENCE_KEY}"')),
     )
     if cluster_id:
         scope = Incident.cluster_id == cluster_id
