@@ -475,3 +475,67 @@ def test_dmcrypt_teardown_shell_is_valid():
     for command in (cluster_deploy_module._CLOSE_CEPH_DMCRYPT,
                     cluster_deploy_module._wipe_disk_command("/dev/disk/by-id/x y")):
         assert subprocess.run(["bash", "-n", "-c", command]).returncode == 0
+
+
+# --- deleting a non-default monitored cluster ------------------------------------------
+
+@pytest.fixture
+def clusters_db(monkeypatch):
+    from datetime import datetime
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from shared.db import Base
+    from shared.models import Cluster, Incident
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(cluster_deploy_module.db, "SessionLocal", factory)
+    with factory() as session:
+        session.add_all([
+            Cluster(id="default", name="CS-LAB", ceph_mon_nodes="10.3.54.118", ssh_user="root", ssh_key_path="/k",
+                    is_default=True, is_active=True),
+            Cluster(id="lab", name="LAB-VM", ceph_mon_nodes="10.20.1.112,10.20.1.95,10.20.1.21",
+                    ceph_osd_nodes="10.20.1.95,10.20.1.21", ceph_exec_mode="cephadm", ssh_user="root",
+                    ssh_key_path="/k", is_default=False, is_active=True),
+            Incident(id="incident-1", ceph_code="CLUSTER_DELETE", detected_at=datetime.utcnow()),
+        ])
+        session.commit()
+    return factory
+
+
+def test_deleting_the_lab_cluster_stops_monitoring_it_and_leaves_the_default_alone(clusters_db, monkeypatch):
+    from shared.clusters import cluster_config_fingerprint
+    from shared.models import Cluster
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, cmd: "")
+    written = {}
+    monkeypatch.setattr(cluster_deploy_module.env_config, "update_env_file_batch", written.update)
+    with clusters_db() as session:
+        fingerprint = cluster_config_fingerprint(session.get(Cluster, "lab"))
+    write_progress, _calls = _make_recording_progress_writer()
+
+    result = run("action-1", "delete_cluster_cephadm",
+                 _delete_params(_cluster_id="lab", _cluster_config_fingerprint=fingerprint),
+                 "incident-1", write_progress, _never_blocked)
+
+    assert result is True and written == {}  # .env (the default cluster) untouched
+    with clusters_db() as session:
+        assert session.get(Cluster, "lab").is_active is False
+        assert session.get(Cluster, "default").is_active is True
+
+
+def test_a_lab_cluster_changed_after_the_proposal_is_not_deleted(clusters_db, monkeypatch):
+    commands = []
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, cmd: commands.append(cmd) or "")
+    write_progress, calls = _make_recording_progress_writer()
+
+    result = run("action-1", "delete_cluster_cephadm",
+                 _delete_params(_cluster_id="lab", _cluster_config_fingerprint="stale"),
+                 "incident-1", write_progress, _never_blocked)
+
+    assert result is False and commands == []
+    assert "đã thay đổi sau khi đề xuất" in calls[-1][1][0]["message"]

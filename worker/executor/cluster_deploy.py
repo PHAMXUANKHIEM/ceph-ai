@@ -28,7 +28,7 @@ from shared.time import utc_now
 from config.settings import settings
 from sqlalchemy.exc import OperationalError
 from shared import db, env_config
-from shared.clusters import MONITORED_CLUSTER_NAME_RE, sync_default_cluster_from_env
+from shared.clusters import MONITORED_CLUSTER_NAME_RE, cluster_config_fingerprint, sync_default_cluster_from_env
 from shared.ceph_releases import codename_for_version, major_version, repo_path_version
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import Cluster, Incident, NodeUpgradeGate, NodeUpgradeGateState
@@ -4139,6 +4139,48 @@ def _deleted_cluster_is_default(action_params: dict) -> bool:
     return bool(deleted) and deleted == monitored
 
 
+def _extra_cluster(action_params: dict) -> Cluster | None:
+    """The non-default monitored cluster a lifecycle action targets, if any."""
+    cluster_id = action_params.get("_cluster_id")
+    if not cluster_id:
+        return None
+    with db.SessionLocal() as session:
+        cluster = session.get(Cluster, cluster_id)
+        if cluster is not None:
+            session.expunge(cluster)
+    return cluster if cluster is not None and not cluster.is_default else None
+
+
+def _current_config_fingerprint(action_params: dict) -> str:
+    if action_params.get("_cluster_id"):
+        extra = _extra_cluster(action_params)
+        if extra is not None:
+            return cluster_config_fingerprint(extra)
+        with db.SessionLocal() as session:
+            if session.get(Cluster, action_params["_cluster_id"]) is None:
+                return ""  # the cluster row is gone: never run against a guess
+    return env_config.current_cluster_config_fingerprint()
+
+
+def _stop_monitoring_deleted_extra_cluster(action_params: dict) -> bool:
+    """After deleting a non-default cluster, stop monitoring it (soft-deactivate,
+    the row stays for history). Returns False when the target is the default."""
+    extra = _extra_cluster(action_params)
+    if extra is None:
+        return False
+    deleted = set(_node_ips_with_role(action_params.get("nodes") or [], "mon"))
+    monitored = {ip.strip() for ip in (extra.ceph_mon_nodes or "").split(",") if ip.strip()}
+    if not deleted or deleted != monitored:
+        logger.warning("cluster_deploy: deleted MONs %s are not cluster %s's; monitoring unchanged", deleted, extra.id)
+        return True
+    with db.SessionLocal() as session:
+        row = session.get(Cluster, extra.id)
+        row.is_active = False
+        session.commit()
+    logger.info("cluster_deploy: cluster %s deleted, no longer monitored", extra.id)
+    return True
+
+
 def _apply_config_epilogue(action_id: str, action_params: dict) -> None:
     """Record what a successful lifecycle action changed in Ceph AI's own config."""
     if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
@@ -4147,6 +4189,8 @@ def _apply_config_epilogue(action_id: str, action_params: dict) -> None:
         _register_monitored_cluster(action_params, action_id)
         return
     if action_id in _DELETE_CLUSTER_ACTION_IDS:
+        if _stop_monitoring_deleted_extra_cluster(action_params):
+            return
         if not _deleted_cluster_is_default(action_params):
             logger.info("cluster_deploy: deleted cluster is not the monitored default; config unchanged")
             return
@@ -4235,7 +4279,7 @@ def run(
     write_progress(action_pk, progress)
 
     expected_fingerprint = action_params.get("_cluster_config_fingerprint")
-    if expected_fingerprint and expected_fingerprint != env_config.current_cluster_config_fingerprint():
+    if expected_fingerprint and expected_fingerprint != _current_config_fingerprint(action_params):
         progress[0]["status"] = "failed"
         progress[0]["message"] = "Cấu hình cụm đã thay đổi sau khi đề xuất; tạo proposal mới trước khi chạy."
         progress[0]["finished_at"] = utc_now().isoformat()

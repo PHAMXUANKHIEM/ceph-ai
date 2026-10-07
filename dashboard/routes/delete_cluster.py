@@ -9,14 +9,15 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from config.settings import settings
-from dashboard.cluster_scope import require_default_cluster
+from dashboard.cluster_scope import selected_cluster
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
 from shared import audit, db, env_config
 from shared.cluster_nodes import configured_nodes
-from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared.clusters import cluster_config_fingerprint
+from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
@@ -48,7 +49,7 @@ _OSD_DISK_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
 _DEFAULT_CLUSTER_NAME = "Cụm mặc định"
 
 
-def _normalize_configured_nodes() -> list[dict]:
+def _normalize_configured_nodes(cluster: Cluster | None = None) -> list[dict]:
     """shared/cluster_nodes.py::configured_nodes() returns
     {"host": .., "roles": ["MON", "OSD"]} (uppercase roles, "host" key) —
     normalized here to the SAME lowercase {"ip": .., "roles": [...],
@@ -59,13 +60,37 @@ def _normalize_configured_nodes() -> list[dict]:
     `propose_delete` below fills it in from the operator's own input when
     `wipe_osd_disks` is requested."""
     nodes = []
-    for n in configured_nodes():
+    for n in configured_nodes(cluster):
         roles = [_ROLE_UPPER_TO_LOWER[r] for r in n["roles"] if r in _ROLE_UPPER_TO_LOWER]
         nodes.append({"ip": n["host"], "roles": roles, "osd_disks": []})
     return nodes
 
 
-def _delete_plan_text(exec_mode: str, nodes: list[dict], wipe_osd_disks: bool) -> str:
+def _delete_target(request: Request) -> tuple[Cluster, list[dict], str, str]:
+    """(cluster, nodes, name, exec mode) of the cluster selected in the switcher.
+
+    The default cluster's connection lives in .env; any other monitored
+    cluster (e.g. one registered by Deploy Cluster) is deleted from its own
+    row, so deleting a lab cluster can never pick the default's nodes.
+    """
+    cluster = selected_cluster(request)
+    if cluster.is_default:
+        name = settings.cluster_name.strip() or _DEFAULT_CLUSTER_NAME
+        return cluster, _normalize_configured_nodes(), name, settings.ceph_exec_mode
+    return cluster, _normalize_configured_nodes(cluster), cluster.name, cluster.ceph_exec_mode or "none"
+
+
+def _latest_delete_action(session, cluster: Cluster) -> Action | None:
+    scope = Incident.cluster_id == cluster.id
+    if cluster.is_default:
+        scope = scope | Incident.cluster_id.is_(None)  # deletions recorded before clusters had ids
+    return (session.query(Action).join(Incident, Incident.id == Action.incident_id)
+            .filter(Action.action_id.in_(CLUSTER_DELETE_ACTION_IDS), scope)
+            .order_by(Action.created_at.desc()).first())
+
+
+def _delete_plan_text(exec_mode: str, nodes: list[dict], wipe_osd_disks: bool, *,
+                      cluster_name: str = _DEFAULT_CLUSTER_NAME, is_default: bool = True) -> str:
     mon = [n["ip"] for n in nodes if "mon" in n["roles"]]
     mgr = [n["ip"] for n in nodes if "mgr" in n["roles"]]
     osd_nodes = [n for n in nodes if "osd" in n["roles"]]
@@ -100,13 +125,17 @@ def _delete_plan_text(exec_mode: str, nodes: list[dict], wipe_osd_disks: bool) -
         f"trên từng node OSD.\n"
     )
 
+    after = (
+        "Sau khi xoá thành công, cấu hình cụm trong .env cũng được xoá theo — Dashboard sẽ không còn theo dõi cụm này."
+        if is_default else
+        f"Sau khi xoá thành công, cụm {cluster_name!r} được gỡ khỏi danh sách giám sát; cụm mặc định KHÔNG bị đụng tới."
+    )
     return (
-        f"XOÁ CỤM CEPH đang cấu hình (phương thức hiện tại: {exec_mode}) — {len(nodes)} node.\n"
+        f"XOÁ CỤM CEPH {cluster_name!r} (phương thức hiện tại: {exec_mode}) — {len(nodes)} node.\n"
         f"{node_summary}\n\n"
         f"{steps}\n"
         f"Xoá dữ liệu đĩa OSD: {wipe_note}\n\n"
-        f"kiểm tra lại trước MỖI bước; nếu một bước lỗi, các bước sau không chạy. Sau khi xoá thành "
-        f"công, cấu hình cụm trong .env cũng được xoá theo — Dashboard sẽ không còn theo dõi cụm này."
+        f"kiểm tra lại trước MỖI bước; nếu một bước lỗi, các bước sau không chạy. {after}"
     )
 
 
@@ -137,15 +166,10 @@ def _with_step_display_times(progress: list) -> list:
 
 @router.get("/delete-cluster", response_class=HTMLResponse)
 async def delete_cluster_page(request: Request, user: str = Depends(require_login)):
-    require_default_cluster(request, "Delete Cluster")
+    cluster, nodes, cluster_name, exec_mode = _delete_target(request)
     try:
         with db.SessionLocal() as session:
-            last_action = (
-                session.query(Action)
-                .filter(Action.action_id.in_(CLUSTER_DELETE_ACTION_IDS))
-                .order_by(Action.created_at.desc())
-                .first()
-            )
+            last_action = _latest_delete_action(session, cluster)
     except SQLAlchemyError:
         logger.exception("delete_cluster_page: failed to query DB")
         raise HTTPException(
@@ -165,13 +189,11 @@ async def delete_cluster_page(request: Request, user: str = Depends(require_logi
             progress = []
     progress = _with_step_display_times(progress)
 
-    nodes = _normalize_configured_nodes()
     control_nodes = [
         node for node in nodes if any(role in node["roles"] for role in ("mon", "mgr", "rgw"))
     ]
     osd_nodes = [n for n in nodes if "osd" in n["roles"]]
     first_mon_ip = next((n["ip"] for n in nodes if "mon" in n["roles"]), None)
-    cluster_name = settings.cluster_name.strip() or _DEFAULT_CLUSTER_NAME
 
     return templates.TemplateResponse(
         request,
@@ -179,7 +201,8 @@ async def delete_cluster_page(request: Request, user: str = Depends(require_logi
         {
             "user": user,
             "is_admin": auth.is_admin_user(user),
-            "exec_mode": settings.ceph_exec_mode,
+            "exec_mode": exec_mode,
+            "is_default_cluster": cluster.is_default,
             "configured_nodes": nodes,
             "control_nodes": control_nodes,
             "osd_nodes": osd_nodes,
@@ -195,14 +218,12 @@ async def delete_cluster_page(request: Request, user: str = Depends(require_logi
 
 @router.post("/delete-cluster/propose")
 async def propose_delete(request: Request, user: str = Depends(require_login)):
-    require_default_cluster(request, "Delete Cluster")
+    cluster, nodes, expected_cluster_name, exec_mode = _delete_target(request)
     body = await request.json()
 
-    nodes = _normalize_configured_nodes()
     if not nodes:
         raise HTTPException(status_code=400, detail="Chưa có cụm nào được cấu hình để xoá")
 
-    expected_cluster_name = settings.cluster_name.strip() or _DEFAULT_CLUSTER_NAME
     confirmation = str(body.get("confirmation") or "").strip()
     if confirmation != expected_cluster_name:
         raise HTTPException(
@@ -241,13 +262,14 @@ async def propose_delete(request: Request, user: str = Depends(require_login)):
                 )
             node["osd_disks"] = disks
 
-    exec_mode = settings.ceph_exec_mode
     action_id = DELETE_CEPHADM_ACTION_ID if exec_mode == "cephadm" else DELETE_MANUAL_ACTION_ID
 
     action_params = {
         "nodes": nodes,
         "wipe_osd_disks": wipe_osd_disks,
-        "_cluster_config_fingerprint": env_config.current_cluster_config_fingerprint(),
+        "_cluster_config_fingerprint": (env_config.current_cluster_config_fingerprint() if cluster.is_default
+                                        else cluster_config_fingerprint(cluster)),
+        "_cluster_id": cluster.id,
         "_approval_confirmation": next(n["ip"] for n in nodes if "mon" in n["roles"]),
     }
 
@@ -271,9 +293,10 @@ async def propose_delete(request: Request, user: str = Depends(require_login)):
             )
 
         incident = Incident(
+            cluster_id=cluster.id,
             ceph_code=CLUSTER_DELETE_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
-            log_excerpt=f"Đề xuất xoá cụm Ceph đang cấu hình bởi {user} — {len(nodes)} node",
+            log_excerpt=f"Đề xuất xoá cụm Ceph {expected_cluster_name!r} bởi {user} — {len(nodes)} node",
             detected_at=utc_now(),
         )
         session.add(incident)
@@ -284,7 +307,8 @@ async def propose_delete(request: Request, user: str = Depends(require_login)):
             action_id=action_id,
             classification=gate.classify_action(action_id).value,  # always RISKY (AD-5)
             status=ActionStatus.PENDING_APPROVAL.value,
-            rationale=_delete_plan_text(exec_mode, nodes, wipe_osd_disks),
+            rationale=_delete_plan_text(exec_mode, nodes, wipe_osd_disks, cluster_name=expected_cluster_name,
+                                        is_default=cluster.is_default),
             target_nodes=json.dumps(target_nodes),
             action_params=json.dumps(action_params),
             proposed_command=preview_command,
@@ -316,14 +340,9 @@ async def propose_delete(request: Request, user: str = Depends(require_login)):
 
 @router.get("/delete-cluster/progress")
 async def delete_cluster_progress(request: Request, user: str = Depends(require_login)):
-    require_default_cluster(request, "Delete Cluster")
+    cluster = selected_cluster(request)
     with db.SessionLocal() as session:
-        action = (
-            session.query(Action)
-            .filter(Action.action_id.in_(CLUSTER_DELETE_ACTION_IDS))
-            .order_by(Action.created_at.desc())
-            .first()
-        )
+        action = _latest_delete_action(session, cluster)
         if action is None:
             return JSONResponse({"status": None, "progress": []})
         try:

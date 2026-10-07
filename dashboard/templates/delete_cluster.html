@@ -23,7 +23,7 @@
       <div class="card-header"><h2>{% if last_action.status == "EXECUTED" %}✅ Đã xoá cụm gần nhất thành công{% else %}❌ Lần xoá cụm gần nhất thất bại{% endif %}</h2></div>
       <div class="card-body">
         {% if last_action.status == "EXECUTED" %}
-        <p class="hint">Cấu hình cụm trong .env đã được xoá — Dashboard không còn theo dõi cụm này. Vào <a href="/deploy-cluster">Deploy Cluster</a> nếu muốn dựng cụm mới.</p>
+        {% if is_default_cluster is false %}<p class="hint">Cụm này đã được gỡ khỏi danh sách giám sát; cụm mặc định không bị đụng tới.</p>{% else %}<p class="hint">Cấu hình cụm trong .env đã được xoá — Dashboard không còn theo dõi cụm này. Vào <a href="/deploy-cluster">Deploy Cluster</a> nếu muốn dựng cụm mới.</p>{% endif %}
         {% endif %}
       </div>
     </section>

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 import re
 
@@ -101,6 +103,17 @@ def sync_default_cluster_from_settings(session: Session) -> Cluster:
         setattr(cluster, field, getattr(settings, field))
     session.commit()
     return cluster
+
+
+def cluster_config_fingerprint(cluster: Cluster) -> str:
+    """Stable fingerprint of a non-default cluster's node lists and exec mode;
+    the row counterpart of env_config.current_cluster_config_fingerprint()."""
+    canonical = {
+        "mon": cluster.ceph_mon_nodes or "", "mgr": cluster.ceph_mgr_nodes or "",
+        "osd": cluster.ceph_osd_nodes or "", "rgw": cluster.ceph_rgw_nodes or "",
+        "exec_mode": cluster.ceph_exec_mode or "",
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def sync_default_cluster_from_env(session: Session) -> Cluster:

@@ -212,7 +212,9 @@ def test_default_only_features_fail_closed_for_selected_additional_cluster(
 
     # Persist the additional cluster as the global dashboard selection.
     dashboard_client.get(f"/?cluster={cluster_id}")
-    for path in ("/delete-cluster", "/convert-cluster", "/restore-cluster", "/patch"):
+    # Delete Cluster works on the selected cluster since 07/10/2026 (it deletes
+    # that cluster's own nodes; see test_dashboard_delete_cluster.py).
+    for path in ("/convert-cluster", "/restore-cluster", "/patch"):
         response = dashboard_client.get(path)
         assert response.status_code == 409, path
         assert "chỉ hỗ trợ cụm mặc định" in response.json()["detail"]
