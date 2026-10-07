@@ -70,7 +70,7 @@ def _ci(conclusion="success", status="completed"):
 def admin(dashboard_client, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "ci_github_token_file", str(tmp_path / "token"))
     monkeypatch.setattr(settings, "deploy_request_dir", str(tmp_path / "requests"))
-    monkeypatch.setattr(route.test_progress, "fetch_ci_runs", lambda repo: _ci())
+    monkeypatch.setattr(route.test_progress, "fetch_ci_runs", lambda repo, **_kwargs: _ci())
     dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
     return dashboard_client
 
@@ -85,7 +85,7 @@ def test_only_the_newest_green_commit_can_be_deployed(admin, monkeypatch, tmp_pa
     assert "ok=" in ok.headers["location"]
     assert json.loads((tmp_path / "requests" / "pending.json").read_text())["sha"] == SHA
 
-    monkeypatch.setattr(route.test_progress, "fetch_ci_runs", lambda repo: _ci(conclusion="failure"))
+    monkeypatch.setattr(route.test_progress, "fetch_ci_runs", lambda repo, **_kwargs: _ci(conclusion="failure"))
     assert admin.get("/api/test-progress").json()["latest_green_sha"] is None
 
 
