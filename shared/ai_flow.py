@@ -21,6 +21,7 @@ from typing import Any
 
 from sqlalchemy import func
 
+from config.settings import settings
 from shared import db
 from shared.models import (
     Action, AuditEntry, Incident, IncidentEvidence, LogFinding, OnlineLearnerLabel, PlaybookStat, RemediationCase,
@@ -126,15 +127,26 @@ def _incident_nodes(c: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _evidence_node(c: dict[str, Any], total: int) -> dict[str, Any]:
+    facts = ["Đọc health/OSD/log theo runbook trước khi hỏi LLM", "Chỉ lệnh chỉ-đọc"]
+    if not settings.investigation_enabled:
+        # Off by design until enabled per canary cluster; not a fault, but say so.
+        return _node("evidence", "diagnose", "evidence", "Thu bằng chứng (runbook)", "TẮT", UNKNOWN,
+                     facts + ["INVESTIGATION_ENABLED=false: chẩn đoán đang dựa trên dữ liệu thô"])
+    canary = settings.investigation_cluster_ids.strip()
+    facts.append(f"Chỉ cụm canary: {canary}" if canary else "Mọi cụm")
+    if total > 0 and c["evidence"] == 0:
+        facts.append("Không thu bằng chứng nào dù có incident: xem log Worker 'evidence_gate: no evidence'")
+        return _node("evidence", "diagnose", "evidence", "Thu bằng chứng (runbook)", "0 lần thu / 24h", WARN, facts)
+    return _node("evidence", "diagnose", "evidence", "Thu bằng chứng (runbook)", f"{c['evidence']} lần thu / 24h",
+                 OK, facts)
+
+
 def _diagnosis_nodes(c: dict[str, Any]) -> list[dict[str, Any]]:
     total = len(c["incidents"])
-    evidence_missing = total > 0 and c["evidence"] == 0
     low_confidence = c["events"].get("proposal_blocked_by_low_confidence", 0)
     return [
-        _node("evidence", "diagnose", "evidence", "Thu bằng chứng (runbook)", f"{c['evidence']} lần thu / 24h",
-              WARN if evidence_missing else OK,
-              ["Đọc health/OSD/log theo runbook trước khi hỏi LLM", "Chỉ lệnh chỉ-đọc"]
-              + (["Không thu bằng chứng nào dù có incident: chẩn đoán đang dựa trên dữ liệu thô"] if evidence_missing else [])),
+        _evidence_node(c, total),
         _node("diagnosis", "diagnose", "llm", "Chẩn đoán AI", f"{c['diagnosed']}/{total} incident có chẩn đoán",
               ERROR if c["failed_incidents"] else (WARN if low_confidence else OK),
               [f"Chẩn đoán thất bại: {c['failed_incidents']}", f"Bị chặn vì độ tin cậy thấp: {low_confidence}",

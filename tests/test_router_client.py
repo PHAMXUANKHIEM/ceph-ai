@@ -4195,6 +4195,20 @@ def test_low_confidence_rule_falls_back_to_the_llm(isolated_db, monkeypatch):
     assert gate.decided is False and "[E1] ceph_osd_perf" in gate.prompt_block
 
 
+def test_a_skipped_evidence_collection_is_logged_with_its_reason(isolated_db, monkeypatch, caplog):
+    from worker.llm import evidence_gate
+
+    monkeypatch.setattr(settings, "investigation_enabled", True)
+    monkeypatch.setattr(settings, "investigation_cluster_ids", "some-other-cluster")
+    _create_incident("evidence-skip")
+
+    with caplog.at_level(logging.INFO, logger=evidence_gate.__name__):
+        gate = asyncio.run(evidence_gate.prepare("evidence-skip", "OSD_DOWN"))
+
+    assert gate.prompt_block == "" and gate.decided is False
+    assert "no evidence for evidence-skip" in caplog.text and "INVESTIGATION_CLUSTER_IDS" in caplog.text
+
+
 def test_every_new_case_logs_a_decision_with_its_source(isolated_db, monkeypatch):
     from shared.models import AutonomyDecision
 

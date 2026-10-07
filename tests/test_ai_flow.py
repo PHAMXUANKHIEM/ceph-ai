@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from config.settings import settings
 from shared import ai_flow
 from shared.db import Base
 from shared.models import Action, AuditEntry, Incident, IncidentEvidence
@@ -43,7 +44,8 @@ def test_every_stage_is_drawn_and_connected(tmp_path):
     assert _node(flow, "failure_lab")["status"] == "unknown"
 
 
-def test_counts_sources_and_flags_missing_evidence_and_failed_execution(tmp_path):
+def test_counts_sources_and_flags_missing_evidence_and_failed_execution(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "investigation_enabled", True)
     factory = _factory()
     with factory() as session:
         log = _incident(session, "LOG_ANOMALY:abc", diagnosis="mẫu log lạ")
@@ -69,7 +71,8 @@ def test_counts_sources_and_flags_missing_evidence_and_failed_execution(tmp_path
     assert "Preflight chặn: 1" in _node(flow, "policy")["facts"]
 
 
-def test_evidence_collected_clears_the_warning(tmp_path):
+def test_evidence_collected_clears_the_warning(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "investigation_enabled", True)
     factory = _factory()
     with factory() as session:
         incident = _incident(session, "OSD_DOWN")
@@ -81,6 +84,18 @@ def test_evidence_collected_clears_the_warning(tmp_path):
     flow = ai_flow.build(now=NOW, session_factory=factory, failure_lab_dir=tmp_path)
 
     assert _node(flow, "evidence")["status"] == "ok"
+
+
+def test_evidence_turned_off_says_so_instead_of_warning(tmp_path):
+    factory = _factory()
+    with factory() as session:
+        _incident(session, "OSD_DOWN")
+        session.commit()
+
+    evidence = _node(ai_flow.build(now=NOW, session_factory=factory, failure_lab_dir=tmp_path), "evidence")
+
+    assert evidence["status"] == "unknown" and evidence["subtitle"] == "TẮT"
+    assert any("INVESTIGATION_ENABLED=false" in fact for fact in evidence["facts"])
 
 
 def test_failure_lab_shows_the_newest_campaign(tmp_path):
