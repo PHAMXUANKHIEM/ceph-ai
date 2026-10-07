@@ -850,9 +850,8 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
         retrieval_cluster_id = (incident_for_retrieval.cluster_id if incident_for_retrieval
                                 else envelope.get("cluster_id"))
         retrieval_cluster = retrieval_session.get(Cluster, retrieval_cluster_id) if retrieval_cluster_id else None
-        scope = {"cluster_id": retrieval_cluster_id,
-                 "include_unscoped": bool(retrieval_cluster is not None and retrieval_cluster.is_default),
-                 "ceph_code": str(envelope.get("ceph_code") or "")}
+        include_unscoped = bool(retrieval_cluster is not None and retrieval_cluster.is_default)
+        retrieval_code = str(envelope.get("ceph_code") or "")
         # Learning plan LL1/LL6: past cases of the same fault family and how
         # earlier proposals ended. Context only; never authorization.
         enriched_envelope["verified_case_references"] = case_references.find_reference_cases(
@@ -862,9 +861,14 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             ceph_version=ceph_version if isinstance(ceph_version, str) else None,
             deployment_mode=envelope.get("ceph_exec_mode"),
             limit=3,
-            **scope,
+            cluster_id=retrieval_cluster_id,
+            include_unscoped=include_unscoped,
+            ceph_code=retrieval_code,
         )
-        enriched_envelope["proposal_history"] = case_references.proposal_history(retrieval_session, **scope)
+        enriched_envelope["proposal_history"] = case_references.proposal_history(
+            retrieval_session, cluster_id=retrieval_cluster_id, include_unscoped=include_unscoped,
+            ceph_code=retrieval_code,
+        )
     payload = default_redactor.redact(enriched_envelope)
     user_content = _build_user_content(payload)
 
