@@ -172,3 +172,38 @@ def test_units_are_installed_and_enabled_by_the_deploy():
     assert "ExecStart=/usr/bin/python3.11 /root/ceph-ai/scripts/deploy/deploy_request_runner.py" in service
     assert "systemctl enable --now ceph-ai-deploy-request.path" in deploy
     assert '"deploy-requests"' in (ROOT / "scripts" / "bootstrap_container_config.py").read_text()
+
+
+def test_run_ci_links_to_the_run_github_created(admin, monkeypatch, tmp_path):
+    ci_control.save_token(tmp_path / "token", TOKEN)
+    monkeypatch.setattr(route.ci_control, "dispatch_ci", lambda *args, **kwargs: None)
+    run_url = f"https://github.com/{settings.ci_github_repo}/actions/runs/42"
+    monkeypatch.setattr(route.test_progress, "find_dispatched_run", lambda repo, ref, since: run_url)
+
+    response = admin.post("/test-progress/ci-run", data={"ref": "main"}, follow_redirects=False)
+    page = admin.get(response.headers["location"]).text
+
+    assert f'href="{run_url}"' in page and "Mở lượt CI trên GitHub" in page
+
+
+def test_only_links_to_this_repository_are_shown(admin):
+    page = admin.get("/test-progress?ok=x&url=https://evil.example/phish").text
+    assert "evil.example" not in page
+
+
+def test_find_dispatched_run_waits_for_github_to_create_it():
+    from datetime import datetime, timezone
+
+    from shared import test_progress
+
+    since = datetime(2026, 10, 7, 7, 0, 45, tzinfo=timezone.utc)
+    answers = [[], [{"created_at": "2026-10-07T07:00:30Z", "html_url": "old"}],
+               [{"created_at": "2026-10-07T07:00:47Z", "html_url": "new"}]]
+
+    def handler(request):
+        return httpx.Response(200, json={"workflow_runs": answers.pop(0)})
+
+    url = test_progress.find_dispatched_run("org/repo", "main", since, sleep=lambda s: None,
+                                            client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    assert url == "new"

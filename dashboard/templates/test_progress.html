@@ -10,7 +10,7 @@
   {% include "_nav.html" %}
 
   <main class="page">
-    {% if notice %}<p class="ci-control-flash is-ok" role="status">{{ notice }}</p>{% endif %}
+    {% if notice %}<p class="ci-control-flash is-ok" role="status">{{ notice }}{% if notice_url %} <a href="{{ notice_url }}" target="_blank" rel="noopener">Mở lượt CI trên GitHub</a>{% endif %}</p>{% endif %}
     {% if error %}<p class="ci-control-flash is-error" role="alert">{{ error }}</p>{% endif %}
     <section class="card">
       <div class="card-header"><h2>Chạy CI &amp; deploy</h2></div>

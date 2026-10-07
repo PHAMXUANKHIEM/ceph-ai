@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from urllib.parse import urlencode
@@ -34,7 +35,8 @@ async def test_progress_page(request: Request, user: str = Depends(require_login
         request, "test_progress.html",
         {"user": user, "is_admin": True, "ci_repo": settings.ci_github_repo,
          "token_configured": ci_control.read_token(Path(settings.ci_github_token_file)) is not None,
-         "notice": request.query_params.get("ok"), "error": request.query_params.get("err")},
+         "notice": request.query_params.get("ok"), "error": request.query_params.get("err"),
+         "notice_url": _github_url(request.query_params.get("url"))},
     )
 
 
@@ -57,6 +59,12 @@ def _latest_green_sha(ci: dict) -> str | None:
     return None
 
 
+def _github_url(value: str | None) -> str | None:
+    """Only links to this repository on GitHub are shown (the value comes from the query string)."""
+    prefix = f"https://github.com/{settings.ci_github_repo}/"
+    return value if value and value.startswith(prefix) and "\"" not in value and "<" not in value else None
+
+
 def _back(**message: str) -> RedirectResponse:
     return RedirectResponse("/test-progress?" + urlencode(message), status_code=303)
 
@@ -75,13 +83,18 @@ async def save_ci_token(token: str = Form(""), user: str = Depends(require_login
 async def run_ci(ref: str = Form("main"), user: str = Depends(require_login)):
     _require_admin(user)
     token = ci_control.read_token(Path(settings.ci_github_token_file))
+    branch = ref.strip() or "main"
+    started = datetime.now(timezone.utc)
     try:
         await asyncio.to_thread(ci_control.dispatch_ci, settings.ci_github_repo, settings.ci_github_workflow,
-                                ref.strip() or "main", token)
+                                branch, token)
     except ci_control.CiControlError as exc:
         return _back(err=str(exc))
+    url = await asyncio.to_thread(test_progress.find_dispatched_run, settings.ci_github_repo, branch, started)
     test_progress.clear_ci_cache()
-    return _back(ok=f"Đã yêu cầu GitHub chạy CI cho nhánh {ref.strip() or 'main'}.")
+    if url:
+        return _back(ok=f"Đã chạy CI cho nhánh {branch}.", url=url)
+    return _back(ok=f"Đã yêu cầu GitHub chạy CI cho nhánh {branch}; lượt chạy sẽ hiện ở thẻ CI sau ít giây.")
 
 
 @router.post("/test-progress/deploy")
