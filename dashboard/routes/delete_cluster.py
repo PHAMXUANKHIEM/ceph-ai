@@ -93,9 +93,10 @@ def _delete_plan_text(exec_mode: str, nodes: list[dict], wipe_osd_disks: bool) -
     steps = (
         f"Các bước sẽ thực hiện, LẦN LƯỢT, sau khi Duyệt:\n"
         f"1. Kiểm tra kết nối SSH tới từng node.\n"
-        f"2. Dừng & vô hiệu hoá mọi daemon Ceph (systemctl stop/disable) trên từng node.\n"
+        f"2. Dừng & vô hiệu hoá mọi daemon Ceph (systemctl stop/disable) trên từng node, rồi đóng các "
+        f"ánh xạ dm-crypt (LUKS) của OSD mã hoá.\n"
         f"3. Xoá /etc/ceph và /var/lib/ceph trên từng node.\n"
-        f"4. {'Xoá dữ liệu đĩa OSD bằng `ceph-volume lvm zap --destroy`' if wipe_osd_disks else 'KHÔNG đụng tới đĩa OSD'} "
+        f"4. {'Xoá dữ liệu đĩa OSD bằng `ceph-volume lvm zap --destroy`, kể cả header LUKS của OSD mã hoá' if wipe_osd_disks else 'KHÔNG đụng tới đĩa OSD'} "
         f"trên từng node OSD.\n"
     )
 

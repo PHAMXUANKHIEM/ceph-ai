@@ -1581,6 +1581,51 @@ def _phase_delete_ssh_check(nodes: list[dict], action_params: dict, on_host_upda
         on_host_update(list(host_status))
 
 
+# OSDs deployed with osd_encryption (dm-crypt/LUKS) keep an open
+# device-mapper "crypt" mapping on top of their ceph-volume LV after the
+# daemon stops; it holds the LV busy, so zap/vgremove fail. Only mappings
+# whose backing device is a ceph-volume OSD LV are closed — never an OS or
+# other encrypted volume. dmsetup (lvm2) is present even where cryptsetup
+# is not (a cephadm host opens them from inside the OSD container).
+_CLOSE_CEPH_DMCRYPT = (
+    "closed=''; "
+    "for m in $(dmsetup ls --target crypt 2>/dev/null | awk '$1 != \"No\" {print $1}'); do "
+    "case \"$(dmsetup deps -o devname \"$m\" 2>/dev/null)\" in "
+    "*ceph--*osd--*) dmsetup remove --retry \"$m\" "
+    "|| { echo \"Khong dong duoc dm-crypt $m\" >&2; exit 1; }; closed=\"$closed $m\";; "
+    "esac; done; "
+    "[ -z \"$closed\" ] || echo \"Da dong dm-crypt (LUKS):$closed\""
+)
+
+
+def _wipe_disk_command(osd_disk: str) -> str:
+    """Close any dm-crypt mapping on the disk, zap it, then make sure no LUKS
+    header is left (raw-mode encrypted OSDs put it straight on the device)."""
+    disk = shlex.quote(osd_disk)
+    close = (
+        f"for m in $(lsblk -nr -o NAME,TYPE {disk} 2>/dev/null | awk '$2 == \"crypt\" {{print $1}}'); do "
+        f"dmsetup remove --retry \"$m\" || {{ echo \"Khong dong duoc dm-crypt $m tren {disk}\" >&2; exit 1; }}; done; "
+    )
+    zap = (
+        "if command -v ceph-volume >/dev/null 2>&1; then "
+        f"ceph-volume lvm zap --destroy {disk}; "
+        "elif command -v cephadm >/dev/null 2>&1; then "
+        f"cephadm ceph-volume -- lvm zap --destroy {disk}; "
+        "else cephadm_script=$(find /var/lib/ceph -mindepth 2 -maxdepth 2 -type f "
+        "-name 'cephadm.*' -printf '%T@ %p\\n' 2>/dev/null "
+        "| sort -nr | sed -n '1s/^[^ ]* //p'); "
+        "if [ -n \"$cephadm_script\" ]; then "
+        f"python3 \"$cephadm_script\" ceph-volume -- lvm zap --destroy {disk}; "
+        "else echo 'no ceph-volume (native or via cephadm) found' >&2; exit 1; fi; fi"
+    )
+    verify = (
+        f"if blkid -p {disk} 2>/dev/null | grep -q crypto_LUKS; then wipefs -a {disk} >/dev/null || exit 1; fi; "
+        f"if lsblk -nr -o TYPE {disk} 2>/dev/null | grep -qx crypt; then "
+        f"echo \"van con dm-crypt tren {disk}\" >&2; exit 1; fi"
+    )
+    return f"{close}{zap} || exit 1; {verify}"
+
+
 def _phase_delete_manual_stop_daemons(nodes: list[dict], action_params: dict, on_host_update) -> None:
     """Discovers and stops+disables every Ceph systemd unit on every node,
     in ONE remote shell invocation per host (a plain `systemctl list-units
@@ -1594,9 +1639,10 @@ def _phase_delete_manual_stop_daemons(nodes: list[dict], action_params: dict, on
     on_host_update(list(host_status))
     command = (
         "units=$(systemctl list-units --all --plain --no-legend 'ceph-*' 2>/dev/null | awk '{print $1}'); "
-        "if [ -z \"$units\" ]; then echo 'Khong tim thay daemon Ceph nao tren node nay'; exit 0; fi; "
+        "if [ -z \"$units\" ]; then echo 'Khong tim thay daemon Ceph nao tren node nay'; else "
         "for u in $units; do systemctl stop \"$u\" 2>/dev/null; systemctl disable \"$u\" 2>/dev/null; done; "
-        "echo \"Da dung: $units\""
+        "echo \"Da dung: $units\"; fi; "
+        + _CLOSE_CEPH_DMCRYPT
     )
     for i, node in enumerate(nodes):
         host = node["ip"]
@@ -1834,21 +1880,8 @@ def _phase_delete_manual_wipe_osd_disk(nodes: list[dict], action_params: dict, o
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         for osd_disk in osd_disks:
-            quoted_disk = shlex.quote(osd_disk)
-            zap_command = (
-                "if command -v ceph-volume >/dev/null 2>&1; then "
-                f"ceph-volume lvm zap --destroy {quoted_disk}; "
-                "elif command -v cephadm >/dev/null 2>&1; then "
-                f"cephadm ceph-volume -- lvm zap --destroy {quoted_disk}; "
-                "else cephadm_script=$(find /var/lib/ceph -mindepth 2 -maxdepth 2 -type f "
-                "-name 'cephadm.*' -printf '%T@ %p\\n' 2>/dev/null "
-                "| sort -nr | sed -n '1s/^[^ ]* //p'); "
-                "if [ -n \"$cephadm_script\" ]; then "
-                f"python3 \"$cephadm_script\" ceph-volume -- lvm zap --destroy {quoted_disk}; "
-                "else echo 'no ceph-volume (native or via cephadm) found' >&2; exit 1; fi; fi"
-            )
             try:
-                _execute_zap_with_connect_retry(ip, zap_command)
+                _execute_zap_with_connect_retry(ip, _wipe_disk_command(osd_disk))
             except ExecutorError as exc:
                 host_status[i]["status"] = "failed"
                 on_host_update(list(host_status))

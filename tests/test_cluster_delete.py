@@ -436,3 +436,42 @@ def test_delete_cluster_action_ids_registered_in_policy():
 
     assert "delete_cluster_cephadm" in VALID_CLUSTER_DEPLOY_ACTION_IDS
     assert "delete_cluster_manual" in VALID_CLUSTER_DEPLOY_ACTION_IDS
+
+
+# --- dm-crypt / LUKS (osd_encryption) ------------------------------------------------
+#
+# Encrypted OSDs keep a dm-crypt mapping open over their ceph-volume LV after
+# the daemon stops; it holds the LV busy and outlives the cluster.
+
+def test_stop_daemons_closes_only_ceph_osd_dmcrypt_mappings(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, cmd: seen.append(cmd) or "")
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "delete_cluster_cephadm", _delete_params(), "incident-1", write_progress, _never_blocked)
+
+    stop = next(cmd for cmd in seen if "systemctl list-units" in cmd)
+    assert "dmsetup ls --target crypt" in stop and "*ceph--*osd--*) dmsetup remove --retry" in stop
+    assert stop.index("systemctl stop") < stop.index("dmsetup remove")  # daemons first, then their mappings
+
+
+def test_wiping_an_encrypted_disk_closes_dmcrypt_and_erases_the_luks_header(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, cmd: seen.append((host, cmd)) or "")
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "delete_cluster_cephadm", _delete_params(wipe_osd_disks=True), "incident-1",
+        write_progress, _never_blocked)
+
+    wipe = next(cmd for host, cmd in seen if host == "10.20.1.21" and "lvm zap" in cmd)
+    assert wipe.index("lsblk -nr -o NAME,TYPE /dev/vdb") < wipe.index("lvm zap --destroy /dev/vdb")
+    assert "blkid -p /dev/vdb" in wipe and "wipefs -a /dev/vdb" in wipe
+    assert "|| exit 1;" in wipe  # a failed zap is not masked by the LUKS check after it
+
+
+def test_dmcrypt_teardown_shell_is_valid():
+    import subprocess
+
+    for command in (cluster_deploy_module._CLOSE_CEPH_DMCRYPT,
+                    cluster_deploy_module._wipe_disk_command("/dev/disk/by-id/x y")):
+        assert subprocess.run(["bash", "-n", "-c", command]).returncode == 0
