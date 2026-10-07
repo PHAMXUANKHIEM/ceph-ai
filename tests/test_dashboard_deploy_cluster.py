@@ -72,6 +72,12 @@ def test_get_deploy_cluster_shows_form(dashboard_client):
     assert response.status_code == 200
     assert "deploy-form" in response.text
     assert "Bắt đầu cài đặt" in response.text
+    assert response.text.count('id="df-codename"') == 1
+    assert response.text.count('id="df-version-select"') == 1
+    assert 'id="deploy-confirm-dialog"' in response.text
+    assert 'id="df-log-search"' in response.text
+    assert 'data-log-filter="warning"' in response.text
+    assert 'id="df-ssh-key-path"' not in response.text
 
 
 def test_get_deploy_cluster_handles_db_error_gracefully(dashboard_client, monkeypatch):
@@ -523,6 +529,24 @@ def test_get_deploy_cluster_shows_executed_summary(dashboard_client):
     assert response.status_code == 200
     assert "đã dựng thành công" in response.text
     assert "Xem Dashboard" in response.text
+    assert "Khởi động lại ▾" in response.text
+    assert 'id="deploy-restart-dialog"' in response.text
+    # Deploying never rewrites the monitored cluster's .env since 06/10/2026.
+    assert "đã được ghi vào .env" not in response.text
+    assert "Cụm mới không được đăng ký giám sát" in response.text
+
+
+def test_executed_summary_names_the_registered_monitoring_cluster(dashboard_client):
+    _login(dashboard_client)
+    payload = dict(_valid_payload(), register_monitoring=True, monitor_cluster_name="CS-NEW")
+    action_pk = dashboard_client.post("/deploy-cluster/propose", json=payload).json()["action_id"]
+    with db_module.SessionLocal() as session:
+        session.get(Action, action_pk).status = ActionStatus.EXECUTED.value
+        session.commit()
+
+    page = dashboard_client.get("/deploy-cluster").text
+
+    assert "cụm giám sát <strong>CS-NEW</strong>" in page and "không cần khởi động lại dịch vụ" in page
 
 
 def test_get_deploy_cluster_shows_failed_summary(dashboard_client):
