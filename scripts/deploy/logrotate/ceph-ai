@@ -1,4 +1,4 @@
-/var/log/ceph-ai-watcher.log /var/log/ceph-ai-worker.log /var/log/ceph-ai-dashboard.log {
+/var/log/ceph-ai-watcher.log /var/log/ceph-ai-worker.log /var/log/ceph-ai-dashboard.log /var/log/ceph-ai-code-repair-supervisor.log {
     daily
     rotate 14
     compress

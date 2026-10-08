@@ -332,7 +332,17 @@ CEPH_AI_ENV_FILE="${CEPH_AI_ENV_FILE:-/var/lib/ceph-ai/config/.env}" \
 # source mounts. Its unit explicitly disables auto-push/deploy/promotion until
 # candidates have their own scanned-artifact pipeline.
 systemctl daemon-reload
-systemctl enable --now ceph-ai-code-repair-supervisor.service
+# An operator can switch Code Repair off for good (08/10/2026: it had
+# crash-looped for 41 h on a stale DATABASE_URL, and AI code repair runs
+# outside the PR release flow). Masking the unit would fail this enable and the
+# whole deploy, so a marker file is honoured instead.
+if [ -e /var/lib/ceph-ai/config/code-repair.disabled ]; then
+  systemctl disable --now ceph-ai-code-repair-supervisor.service >/dev/null 2>&1 || true
+  echo "Code Repair stays off (/var/lib/ceph-ai/config/code-repair.disabled)"
+else
+  systemctl enable --now ceph-ai-code-repair-supervisor.service
+fi
+install -m 0644 "$REPO_DIR/scripts/deploy/logrotate/ceph-ai" /etc/logrotate.d/ceph-ai
 finish_phase
 record_deploy_event complete PASSED "sha=$(git rev-parse HEAD)"
 echo "Deploy complete: $(git rev-parse HEAD); incident consumers=${consumer_count}"
