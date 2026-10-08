@@ -214,3 +214,29 @@ def test_inventory_sections_run_in_parallel_with_a_bounded_worker_count(monkeypa
     assert set(started) == {"pools", "pgs"}
     assert set(result) == {"pools", "pgs", "crush", "nodes"}
     assert observed_request_ids == ["inventory-trace", "inventory-trace"]
+
+
+def test_a_section_past_the_inventory_deadline_is_recorded_as_an_error(monkeypatch):
+    # 08/10/2026: the node summary took 20.3 s against a 20 s deadline and the
+    # timeout path tried to store (loader, empty value) as the snapshot data,
+    # which cannot be JSON-encoded, so the nodes card stayed empty for good.
+    from config.settings import settings
+    from shared.cluster_snapshot import read_section_snapshot
+
+    cluster = type("ClusterConfig", (), {"id": "cluster-slow", "name": "lab"})()
+    release = threading.Event()
+    monkeypatch.setattr(settings, "ceph_inventory_timeout", 1)
+    monkeypatch.setattr(cluster_snapshot_collector, "_collect_pool_rows", lambda _cluster: [])
+    monkeypatch.setattr(cluster_snapshot_collector, "_collect_pg_rows", lambda _cluster: [])
+    monkeypatch.setattr(cluster_snapshot_collector, "_collect_crush_tree", lambda _cluster: {"state": "ok"})
+    monkeypatch.setattr(cluster_snapshot_collector, "_collect_node_summary",
+                        lambda _cluster: release.wait(5) and {"nodes": [], "total": 0})
+
+    try:
+        cluster_snapshot_collector.CephSnapshotCollector(max_workers=4).collect_inventory(cluster)
+    finally:
+        release.set()
+
+    nodes = read_section_snapshot("cluster-slow", "nodes", max_stale_seconds=3600)
+    assert nodes is not None and nodes["section_available"] is False
+    assert nodes["nodes"] == {"nodes": [], "total": 0}

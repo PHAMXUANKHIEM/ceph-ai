@@ -100,7 +100,9 @@ class Settings(BaseSettings):
     ceph_ssh_auth_timeout: int = Field(default=5, gt=0, le=120)
     ceph_command_timeout: int = Field(default=15, gt=0, le=3600)
     ceph_health_timeout: int = Field(default=8, gt=0, le=300)
-    ceph_inventory_timeout: int = Field(default=20, gt=0, le=3600)
+    # The node summary (with daemon addresses and networks) takes ~20 s on
+    # CS-LAB; 20 s timed out after the 08/10/2026 node reboots.
+    ceph_inventory_timeout: int = Field(default=45, gt=0, le=3600)
     ceph_backup_operation_timeout: int = Field(default=3600, gt=0, le=86400)
     ceph_worker_command_timeout: int = Field(default=1800, gt=0, le=86400)
     ceph_log_query_timeout: int = Field(default=20, gt=0, le=3600)

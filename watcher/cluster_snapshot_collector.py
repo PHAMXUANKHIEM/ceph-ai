@@ -453,7 +453,11 @@ class CephSnapshotCollector:
                 cluster.name,
                 float(settings.ceph_inventory_timeout),
             )
-            for section, empty_data in loaders.items():
+            # loaders maps section -> (loader, empty value); recording the
+            # whole tuple put a function into the snapshot JSON, so every
+            # timed-out inventory failed to persist and the nodes card stayed
+            # empty (CS-LAB, 08/10/2026).
+            for section, (_loader, empty_data) in loaders.items():
                 if section in published:
                     continue
                 _record_metric("failure_total", section)
