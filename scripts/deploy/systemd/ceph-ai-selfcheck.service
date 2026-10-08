@@ -8,5 +8,12 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3.11 /root/ceph-ai/scripts/selfcheck/ceph_ai_selfcheck.py
-TimeoutStartSec=90
+# Self-heal restarts containers from here (podman restart). Their new conmon
+# monitor starts inside this unit's cgroup; the default KillMode=control-group
+# killed it when the run ended or timed out, leaving the restarted container
+# stuck in "Stopping" (watcher, remediation-watcher, telegram-ai on
+# 08/10/2026). Only stop the selfcheck process itself.
+KillMode=process
+# Room for a few `podman restart -t 30` in one run.
+TimeoutStartSec=300
 Nice=5
