@@ -136,8 +136,11 @@ def read_latest_deploy(path: Path = DEFAULT_DEPLOY_LOG, now: datetime | None = N
     }
 
 
-def _get_json(client: httpx.Client, url: str) -> Any:
-    response = client.get(url, headers={"Accept": "application/vnd.github+json"})
+def _get_json(client: httpx.Client, url: str, token: str | None = None) -> Any:
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    response = client.get(url, headers=headers)
     response.raise_for_status()
     return response.json()
 
@@ -151,13 +154,15 @@ def _summarise_run(run: dict) -> dict[str, Any]:
         "title": str(run.get("display_title") or "")[:120],
         "status": run.get("status"),
         "conclusion": run.get("conclusion"),
+        "event": run.get("event"),
+        "branch": run.get("head_branch"),
         "created_at": run.get("created_at"),
         "updated_at": run.get("updated_at"),
     }
 
 
 def find_dispatched_run(repo: str, ref: str, since: datetime, *, attempts: int = 6, wait_seconds: float = 2,
-                        client: httpx.Client | None = None, sleep=time.sleep) -> str | None:
+                        client: httpx.Client | None = None, sleep=time.sleep, token: str | None = None) -> str | None:
     """URL of the workflow_dispatch run GitHub creates a few seconds after a
     dispatch on ``ref`` (the dispatch API itself returns nothing)."""
     own_client = client is None
@@ -165,11 +170,13 @@ def find_dispatched_run(repo: str, ref: str, since: datetime, *, attempts: int =
     try:
         for attempt in range(attempts):
             try:
-                payload = _get_json(http, f"{GITHUB_API}/repos/{repo}/actions/runs?event=workflow_dispatch"
-                                          f"&branch={ref}&per_page=3")
+                payload = _get_json(http, f"{GITHUB_API}/repos/{repo}/actions/runs?event=workflow_dispatch&per_page=10",
+                                    token)
             except (httpx.HTTPError, ValueError):
                 payload = {}
             for run in payload.get("workflow_runs", []):
+                if run.get("head_branch") != ref:
+                    continue
                 created = _parse_time(run.get("created_at"))
                 if created is not None and created >= since - timedelta(seconds=5):
                     return str(run.get("html_url") or "") or None
@@ -187,8 +194,16 @@ def clear_ci_cache() -> None:
         _ci_cache.clear()
 
 
-def fetch_ci_runs(repo: str, *, branch: str = "main", limit: int = 5, client: httpx.Client | None = None) -> dict[str, Any]:
-    """Recent CI runs on ``branch``; the newest one includes its jobs."""
+# GitHub's `branch=` filter on the runs API returned week-old runs first on
+# 07/10/2026 (the newest run on main was missing), and the page then offered
+# a 2-day-old commit for deploy. Runs are listed unfiltered and narrowed here;
+# the branch head comes from the branches API.
+_BRANCH_EVENTS = ("push", "workflow_dispatch")
+
+
+def fetch_ci_runs(repo: str, *, branch: str = "main", limit: int = 5, client: httpx.Client | None = None,
+                  token: str | None = None) -> dict[str, Any]:
+    """Recent CI runs on ``branch`` (newest first, the newest with its jobs) and the branch's head commit."""
     key = f"{repo}@{branch}:{limit}"
     with _ci_lock:
         cached = _ci_cache.get(key)
@@ -197,10 +212,14 @@ def fetch_ci_runs(repo: str, *, branch: str = "main", limit: int = 5, client: ht
     own_client = client is None
     http = client or httpx.Client(timeout=_HTTP_TIMEOUT_SECONDS)
     try:
-        payload = _get_json(http, f"{GITHUB_API}/repos/{repo}/actions/runs?branch={branch}&per_page={limit}")
-        runs = [_summarise_run(run) for run in payload.get("workflow_runs", [])[:limit]]
+        payload = _get_json(http, f"{GITHUB_API}/repos/{repo}/actions/runs?per_page=100", token)
+        on_branch = [run for run in payload.get("workflow_runs", [])
+                     if run.get("head_branch") == branch and run.get("event") in _BRANCH_EVENTS]
+        on_branch.sort(key=lambda run: str(run.get("created_at") or ""), reverse=True)
+        runs = [_summarise_run(run) for run in on_branch[:limit]]
+        head = (_get_json(http, f"{GITHUB_API}/repos/{repo}/branches/{branch}", token).get("commit") or {}).get("sha")
         if runs:
-            jobs = _get_json(http, f"{GITHUB_API}/repos/{repo}/actions/runs/{runs[0]['id']}/jobs")
+            jobs = _get_json(http, f"{GITHUB_API}/repos/{repo}/actions/runs/{runs[0]['id']}/jobs", token)
             runs[0]["jobs"] = [
                 {
                     "name": job.get("name"),
@@ -211,9 +230,10 @@ def fetch_ci_runs(repo: str, *, branch: str = "main", limit: int = 5, client: ht
                 }
                 for job in jobs.get("jobs", [])
             ]
-        result: dict[str, Any] = {"repo": repo, "branch": branch, "runs": runs, "error": None}
+        result: dict[str, Any] = {"repo": repo, "branch": branch, "head_sha": head, "runs": runs, "error": None}
     except (httpx.HTTPError, ValueError) as exc:
-        result = {"repo": repo, "branch": branch, "runs": [], "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        result = {"repo": repo, "branch": branch, "head_sha": None, "runs": [],
+                  "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
     finally:
         if own_client:
             http.close()
