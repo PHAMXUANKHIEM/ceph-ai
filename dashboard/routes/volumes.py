@@ -93,6 +93,28 @@ logger = logging.getLogger(__name__)
 _DEFAULT_HISTORY_HOURS = 6
 _MAX_HISTORY_HOURS = 168
 _CEPH_PAGE_CACHE_TTL_SECONDS = 45
+# Read-only Volumes insights (pool overview, dependency health, CRUSH rules,
+# EC profiles) each cost several cephadm-shell round trips: 18-72 s per card
+# on CS-LAB (08/10/2026), redone on every page view. They change slowly, so
+# the last result is served at once and refreshed in the background.
+# Mutation previews (propose_*) never read this cache.
+_INSIGHT_TTL_SECONDS = 120
+_INSIGHT_STALE_SECONDS = 1800
+
+
+def _insight(cluster, default_query, cluster_query, *args):
+    """Cached read-only Ceph query for the default or a selected cluster."""
+    key = f"{cluster.id}:{default_query.__name__}:{':'.join(str(arg) for arg in args)}"
+    if cluster.is_default:
+        def loader():
+            return default_query(*args)
+    else:
+        connection = cluster_connection(cluster)
+
+        def loader():
+            return cluster_query(*args, *connection)
+    return get_cached_ceph_query("volume-insight", key, loader, ttl_seconds=_INSIGHT_TTL_SECONDS,
+                                 stale_ttl_seconds=_INSIGHT_STALE_SECONDS)
 _CEPH_IOSTAT_CACHE_TTL_SECONDS = 15
 
 
@@ -954,7 +976,7 @@ async def trash_summary_api(request: Request, pool: str, user: str = Depends(req
 
 
 @router.get("/api/volumes/{pool}/iostat")
-async def volume_iostat_api(request: Request, pool: str, user: str = Depends(require_login)):
+def volume_iostat_api(request: Request, pool: str, user: str = Depends(require_login)):
     # `pool` is attacker-reachable input feeding into an `rbd` command run
     # over SSH — same SSRF-via-SSH whitelist posture as
     # dashboard/routes/nodes.py::node_metrics_api's `host` check. Only pools
@@ -996,7 +1018,7 @@ async def volume_iostat_api(request: Request, pool: str, user: str = Depends(req
 
 
 @router.get("/api/volumes/{pool}/images")
-async def volume_known_images_api(request: Request, pool: str, user: str = Depends(require_login)):
+def volume_known_images_api(request: Request, pool: str, user: str = Depends(require_login)):
     """Backs the volume-search box's autocomplete on the Volumes page —
     2026-07-29: that page used to list every volume's numbers directly, a
     live `rbd perf image iostat` table; it now asks the operator to search
@@ -1066,7 +1088,7 @@ async def volume_known_images_api(request: Request, pool: str, user: str = Depen
 
 
 @router.get("/api/volumes/{pool}/inventory")
-async def volume_inventory_api(
+def volume_inventory_api(
     request: Request,
     pool: str,
     search: str = Query("", max_length=128),
@@ -1136,7 +1158,7 @@ async def volume_inventory_api(
 
 
 @router.get("/api/volumes/{pool}/inventory-overview")
-async def volume_inventory_overview_api(
+def volume_inventory_overview_api(
     request: Request, pool: str, user: str = Depends(require_login)
 ):
     """Live RBD pool durability and physical-capacity context."""
@@ -1145,9 +1167,7 @@ async def volume_inventory_overview_api(
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
         overview = (
-            ceph_client.query_rbd_pool_overview(pool)
-            if cluster.is_default
-            else ceph_client.query_rbd_pool_overview_with(pool, *cluster_connection(cluster))
+            _insight(cluster, ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
         )
     except CephQueryError as exc:
         logger.warning("volume_inventory_overview_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
@@ -1170,7 +1190,7 @@ async def cinder_mapping_api(
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
-        inventory, cache_state = _cached_rbd_inventory_with_state(cluster, pool)
+        inventory, cache_state = (await asyncio.to_thread(_cached_rbd_inventory_with_state, cluster, pool))
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}") from exc
     query = search.strip().casefold()
@@ -1218,17 +1238,11 @@ async def volume_pool_lifecycle_api(
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
-        if cluster.is_default:
-            overview_future = asyncio.to_thread(ceph_client.query_rbd_pool_overview, pool)
-            dependency_future = asyncio.to_thread(ceph_client.query_rbd_pool_dependency_health, pool)
-        else:
-            connection = cluster_connection(cluster)
-            overview_future = asyncio.to_thread(
-                ceph_client.query_rbd_pool_overview_with, pool, *connection
-            )
-            dependency_future = asyncio.to_thread(
-                ceph_client.query_rbd_pool_dependency_health_with, pool, *connection
-            )
+        overview_future = asyncio.to_thread(
+            _insight, cluster, ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
+        dependency_future = asyncio.to_thread(
+            _insight, cluster, ceph_client.query_rbd_pool_dependency_health,
+            ceph_client.query_rbd_pool_dependency_health_with, pool)
         inventory_future = asyncio.to_thread(_cached_rbd_inventory_with_state, cluster, pool)
         overview, dependency_evidence, inventory_result = await asyncio.gather(
             overview_future, dependency_future, inventory_future,
@@ -1264,7 +1278,7 @@ async def volume_pool_lifecycle_api(
 
 
 @router.get("/api/volumes/{pool}/capacity-risk")
-async def volume_capacity_risk_api(
+def volume_capacity_risk_api(
     request: Request, pool: str, user: str = Depends(require_login)
 ):
     """Return read-only logical/physical capacity risk for one RBD pool.
@@ -1280,9 +1294,7 @@ async def volume_capacity_risk_api(
     try:
         inventory, inventory_state = _cached_rbd_inventory_with_state(cluster, pool)
         overview = (
-            ceph_client.query_rbd_pool_overview(pool)
-            if cluster.is_default
-            else ceph_client.query_rbd_pool_overview_with(pool, *cluster_connection(cluster))
+            _insight(cluster, ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
         )
     except CephQueryError as exc:
         logger.warning("volume_capacity_risk_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
@@ -1295,9 +1307,7 @@ async def volume_capacity_risk_api(
         profile = overview.get("erasure_code_profile")
         try:
             profile_payload = (
-                ceph_client.query_erasure_code_profile(str(profile))
-                if cluster.is_default
-                else ceph_client.query_erasure_code_profile_with(str(profile), *cluster_connection(cluster))
+                _insight(cluster, ceph_client.query_erasure_code_profile, ceph_client.query_erasure_code_profile_with, str(profile))
             ) if profile else {}
             overview = {
                 **overview,
@@ -1328,7 +1338,7 @@ async def volume_capacity_risk_api(
 
 
 @router.get("/api/volumes/{pool}/dependency-health")
-async def volume_dependency_health_api(
+def volume_dependency_health_api(
     request: Request, pool: str, user: str = Depends(require_login)
 ):
     """Return pool-scoped Volume → PG/OSD/failure-domain health evidence."""
@@ -1338,9 +1348,7 @@ async def volume_dependency_health_api(
     try:
         inventory, _inventory_state = _cached_rbd_inventory_with_state(cluster, pool)
         evidence = (
-            ceph_client.query_rbd_pool_dependency_health(pool)
-            if cluster.is_default
-            else ceph_client.query_rbd_pool_dependency_health_with(pool, *cluster_connection(cluster))
+            _insight(cluster, ceph_client.query_rbd_pool_dependency_health, ceph_client.query_rbd_pool_dependency_health_with, pool)
         )
     except CephQueryError as exc:
         logger.warning("volume_dependency_health_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
@@ -1356,7 +1364,7 @@ async def volume_dependency_health_api(
 
 
 @router.get("/api/volumes/{pool}/durability-policy")
-async def volume_durability_policy_api(
+def volume_durability_policy_api(
     request: Request, pool: str, user: str = Depends(require_login)
 ):
     """Return read-only replica/EC policy and CRUSH failure-domain posture."""
@@ -1365,19 +1373,13 @@ async def volume_durability_policy_api(
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
         overview = (
-            ceph_client.query_rbd_pool_overview(pool)
-            if cluster.is_default
-            else ceph_client.query_rbd_pool_overview_with(pool, *cluster_connection(cluster))
+            _insight(cluster, ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
         )
         dependency_evidence = (
-            ceph_client.query_rbd_pool_dependency_health(pool)
-            if cluster.is_default
-            else ceph_client.query_rbd_pool_dependency_health_with(pool, *cluster_connection(cluster))
+            _insight(cluster, ceph_client.query_rbd_pool_dependency_health, ceph_client.query_rbd_pool_dependency_health_with, pool)
         )
         crush_rules = (
-            ceph_client.query_crush_rules()
-            if cluster.is_default
-            else ceph_client.query_crush_rules_with(*cluster_connection(cluster))
+            _insight(cluster, ceph_client.query_crush_rules, ceph_client.query_crush_rules_with)
         )
     except CephQueryError as exc:
         logger.warning("volume_durability_policy_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
@@ -1388,9 +1390,7 @@ async def volume_durability_policy_api(
         profile_name = overview.get("erasure_code_profile")
         try:
             profile = (
-                ceph_client.query_erasure_code_profile(str(profile_name))
-                if cluster.is_default
-                else ceph_client.query_erasure_code_profile_with(str(profile_name), *cluster_connection(cluster))
+                _insight(cluster, ceph_client.query_erasure_code_profile, ceph_client.query_erasure_code_profile_with, str(profile_name))
             ) if profile_name else None
         except CephQueryError as exc:
             logger.warning("volume_durability_policy_api: EC profile %s unavailable: %s", profile_name, exc)
@@ -1504,7 +1504,7 @@ def _replication_evidence(info: dict, status: dict, *, collected_at: datetime) -
 
 
 @router.get("/api/volumes/{pool}/replication")
-async def volume_replication_api(
+def volume_replication_api(
     request: Request, pool: str, user: str = Depends(require_login)
 ):
     """Read-only RBD mirroring posture; never enables, promotes, or fails over."""
@@ -1542,7 +1542,7 @@ async def volume_replication_api(
 
 
 @router.get("/api/volumes/{pool}/inventory-insights")
-async def volume_inventory_insights_api(
+def volume_inventory_insights_api(
     request: Request, pool: str, user: str = Depends(require_login)
 ):
     """Return conservative, read-only RBD inventory recommendations.
@@ -1638,7 +1638,7 @@ async def volume_snapshot_clone_insights_api(
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
-        inventory, cache_state = _cached_rbd_inventory_with_state(cluster, pool)
+        inventory, cache_state = (await asyncio.to_thread(_cached_rbd_inventory_with_state, cluster, pool))
     except CephQueryError as exc:
         logger.warning("volume_snapshot_clone_insights_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}") from exc
@@ -1660,16 +1660,13 @@ async def volume_snapshot_clone_insights_api(
         image = str(row.get("name") or "")
         async with detail_limit:
             try:
-                if cluster.is_default:
-                    detail = await asyncio.to_thread(
-                        ceph_client.query_rbd_image_detail, pool, image,
-                    )
-                else:
-                    detail = await asyncio.to_thread(
-                        ceph_client.query_rbd_image_detail_with,
-                        pool, image, *cluster_connection(cluster),
-                    )
-            except CephQueryError as exc:
+                # Cached like the other read-only insights: 20 images took
+                # 161 s per view on CS-LAB (08/10/2026).
+                detail = await asyncio.to_thread(
+                    _insight, cluster, ceph_client.query_rbd_image_detail,
+                    ceph_client.query_rbd_image_detail_with, pool, image,
+                )
+            except (CephQueryError, CacheLockError) as exc:
                 return {
                     "pool": pool, "name": image, "snapshots": [], "children": [],
                     "partial_errors": {"snapshots": str(exc), "children": str(exc)},
@@ -1705,7 +1702,7 @@ async def volume_snapshot_clone_insights_api(
 
 
 @router.get("/api/volumes/{pool}/protection-insights")
-async def volume_protection_insights_api(
+def volume_protection_insights_api(
     request: Request,
     pool: str,
     max_images: int = Query(50, ge=1, le=100),
@@ -2217,14 +2214,14 @@ async def propose_volume_create(
         return replay
     try:
         inventory = (
-            ceph_client.query_rbd_inventory(pool)
+            (await asyncio.to_thread(ceph_client.query_rbd_inventory, pool))
             if cluster.is_default
-            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+            else (await asyncio.to_thread(ceph_client.query_rbd_inventory_with, pool, *cluster_connection(cluster)))
         )
         overview = (
-            ceph_client.query_rbd_pool_overview(pool)
+            (await asyncio.to_thread(ceph_client.query_rbd_pool_overview, pool))
             if cluster.is_default
-            else ceph_client.query_rbd_pool_overview_with(pool, *cluster_connection(cluster))
+            else (await asyncio.to_thread(ceph_client.query_rbd_pool_overview_with, pool, *cluster_connection(cluster)))
         )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không chạy được preflight tạo Volume: {exc}")
@@ -2264,14 +2261,14 @@ async def propose_volume_resize(
         return replay
     try:
         detail = (
-            ceph_client.query_rbd_image_detail(pool, image)
+            (await asyncio.to_thread(ceph_client.query_rbd_image_detail, pool, image))
             if cluster.is_default
-            else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+            else (await asyncio.to_thread(ceph_client.query_rbd_image_detail_with, pool, image, *cluster_connection(cluster)))
         )
         overview = (
-            ceph_client.query_rbd_pool_overview(pool)
+            (await asyncio.to_thread(ceph_client.query_rbd_pool_overview, pool))
             if cluster.is_default
-            else ceph_client.query_rbd_pool_overview_with(pool, *cluster_connection(cluster))
+            else (await asyncio.to_thread(ceph_client.query_rbd_pool_overview_with, pool, *cluster_connection(cluster)))
         )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không chạy được preflight resize Volume: {exc}")
@@ -2312,14 +2309,14 @@ async def propose_volume_rename(
         return replay
     try:
         detail = (
-            ceph_client.query_rbd_image_detail(pool, image)
+            (await asyncio.to_thread(ceph_client.query_rbd_image_detail, pool, image))
             if cluster.is_default
-            else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+            else (await asyncio.to_thread(ceph_client.query_rbd_image_detail_with, pool, image, *cluster_connection(cluster)))
         )
         inventory = (
-            ceph_client.query_rbd_inventory(pool)
+            (await asyncio.to_thread(ceph_client.query_rbd_inventory, pool))
             if cluster.is_default
-            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+            else (await asyncio.to_thread(ceph_client.query_rbd_inventory_with, pool, *cluster_connection(cluster)))
         )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không chạy được preflight rename Volume: {exc}")
@@ -2363,16 +2360,16 @@ async def propose_volume_clone(
         return replay
     try:
         source = (
-            ceph_client.query_rbd_image_detail(pool, image)
-            if cluster.is_default else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_image_detail, pool, image))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_image_detail_with, pool, image, *cluster_connection(cluster)))
         )
         inventory = (
-            ceph_client.query_rbd_inventory(dest_pool)
-            if cluster.is_default else ceph_client.query_rbd_inventory_with(dest_pool, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_inventory, dest_pool))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_inventory_with, dest_pool, *cluster_connection(cluster)))
         )
         overview = (
-            ceph_client.query_rbd_pool_overview(dest_pool)
-            if cluster.is_default else ceph_client.query_rbd_pool_overview_with(dest_pool, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_pool_overview, dest_pool))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_pool_overview_with, dest_pool, *cluster_connection(cluster)))
         )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không chạy được preflight clone Volume: {exc}") from exc
@@ -2435,16 +2432,16 @@ async def propose_volume_copy(
         return replay
     try:
         source = (
-            ceph_client.query_rbd_image_detail(pool, image)
-            if cluster.is_default else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_image_detail, pool, image))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_image_detail_with, pool, image, *cluster_connection(cluster)))
         )
         inventory = (
-            ceph_client.query_rbd_inventory(dest_pool)
-            if cluster.is_default else ceph_client.query_rbd_inventory_with(dest_pool, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_inventory, dest_pool))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_inventory_with, dest_pool, *cluster_connection(cluster)))
         )
         overview = (
-            ceph_client.query_rbd_pool_overview(dest_pool)
-            if cluster.is_default else ceph_client.query_rbd_pool_overview_with(dest_pool, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_pool_overview, dest_pool))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_pool_overview_with, dest_pool, *cluster_connection(cluster)))
         )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không chạy được preflight copy Volume: {exc}") from exc
@@ -2518,16 +2515,16 @@ async def propose_volume_move(
         return replay
     try:
         source = (
-            ceph_client.query_rbd_image_detail(pool, image)
-            if cluster.is_default else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_image_detail, pool, image))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_image_detail_with, pool, image, *cluster_connection(cluster)))
         )
         inventory = (
-            ceph_client.query_rbd_inventory(dest_pool)
-            if cluster.is_default else ceph_client.query_rbd_inventory_with(dest_pool, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_inventory, dest_pool))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_inventory_with, dest_pool, *cluster_connection(cluster)))
         )
         overview = (
-            ceph_client.query_rbd_pool_overview(dest_pool)
-            if cluster.is_default else ceph_client.query_rbd_pool_overview_with(dest_pool, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_pool_overview, dest_pool))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_pool_overview_with, dest_pool, *cluster_connection(cluster)))
         )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không chạy được preflight move Volume: {exc}") from exc
@@ -2680,12 +2677,12 @@ async def propose_partial_move_cleanup(
         raise HTTPException(status_code=409, detail="Destination trong move proposal không còn hợp lệ")
     try:
         source = (
-            ceph_client.query_rbd_image_detail(pool, image)
-            if cluster.is_default else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_image_detail, pool, image))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_image_detail_with, pool, image, *cluster_connection(cluster)))
         )
         destination_inventory = (
-            ceph_client.query_rbd_inventory(dest_pool)
-            if cluster.is_default else ceph_client.query_rbd_inventory_with(dest_pool, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_inventory, dest_pool))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_inventory_with, dest_pool, *cluster_connection(cluster)))
         )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không kiểm tra được trạng thái partial move: {exc}") from exc
@@ -2723,7 +2720,7 @@ async def propose_partial_move_cleanup(
 
 
 @router.post("/api/volumes/{pool}/inventory/{image}/flatten")
-async def propose_volume_flatten(
+def propose_volume_flatten(
     request: Request, pool: str, image: str, user: str = Depends(require_login)
 ):
     """Flatten a clone only after parent/dependency, attachment and capacity evidence."""
@@ -2797,8 +2794,8 @@ async def propose_volume_template(
         return replay
     try:
         detail = (
-            ceph_client.query_rbd_image_detail(pool, image)
-            if cluster.is_default else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+            (await asyncio.to_thread(ceph_client.query_rbd_image_detail, pool, image))
+            if cluster.is_default else (await asyncio.to_thread(ceph_client.query_rbd_image_detail_with, pool, image, *cluster_connection(cluster)))
         )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không chạy được preflight template: {exc}") from exc
@@ -2824,7 +2821,7 @@ async def propose_volume_template(
 
 
 @router.post("/api/volumes/{pool}/inventory/{image}/trash")
-async def propose_volume_trash_move(
+def propose_volume_trash_move(
     request: Request, pool: str, image: str, user: str = Depends(require_login)
 ):
     _require_admin_privilege(user)
@@ -3129,9 +3126,9 @@ async def volume_inventory_detail_api(
         raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
     try:
         detail = (
-            ceph_client.query_rbd_image_detail(pool, image)
+            (await asyncio.to_thread(ceph_client.query_rbd_image_detail, pool, image))
             if cluster.is_default
-            else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+            else (await asyncio.to_thread(ceph_client.query_rbd_image_detail_with, pool, image, *cluster_connection(cluster)))
         )
     except CephQueryError as exc:
         logger.warning("volume_inventory_detail_api: cluster=%s volume=%s/%s: %s", cluster.id, pool, image, exc)
@@ -3295,7 +3292,7 @@ async def volume_integrity_api(
 
 
 @router.get("/api/volumes/{pool}/inventory/{image}/dependencies")
-async def volume_dependency_graph_api(
+def volume_dependency_graph_api(
     request: Request,
     pool: str,
     image: str,
@@ -3326,9 +3323,9 @@ async def volume_dependency_graph_api(
 async def _cinder_attachment_preflight(cluster, pool: str, image: str) -> tuple[dict, dict, dict]:
     try:
         detail = (
-            ceph_client.query_rbd_image_detail(pool, image)
+            (await asyncio.to_thread(ceph_client.query_rbd_image_detail, pool, image))
             if cluster.is_default
-            else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+            else (await asyncio.to_thread(ceph_client.query_rbd_image_detail_with, pool, image, *cluster_connection(cluster)))
         )
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không đọc được Ceph attachment evidence: {exc}")

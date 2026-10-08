@@ -372,7 +372,7 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
 
 
 @router.get("/api/nodes/{host}/rgw-log")
-async def rgw_log_api(request: Request, host: str, filter: str = "", user: str = Depends(require_login)):
+def rgw_log_api(request: Request, host: str, filter: str = "", user: str = Depends(require_login)):
     """Backs the Nodes page's "Log RGW" panel — tails this host's radosgw
     daemon log (watcher/rgw_log.py), optionally grepped server-side by
     `filter`. Live-only, like node_metrics_api above: nothing here is
@@ -402,7 +402,7 @@ async def rgw_log_api(request: Request, host: str, filter: str = "", user: str =
 
 
 @router.get("/api/nodes/{host}/ceph-log")
-async def ceph_log_api(
+def ceph_log_api(
     request: Request, host: str, service: str, filter: str = "",
     user: str = Depends(require_login),
 ):

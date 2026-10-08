@@ -62,7 +62,7 @@ async def ai_flow_api(user: str = Depends(require_login)) -> dict:
 
 
 @router.get("/stream", response_class=HTMLResponse)
-async def installation_stream_page(request: Request, user: str = Depends(require_login)):
+def installation_stream_page(request: Request, user: str = Depends(require_login)):
     """Render the current install's architecture; never probe external services."""
     _require_admin(user)
     clusters, selected = cluster_selection(request)
