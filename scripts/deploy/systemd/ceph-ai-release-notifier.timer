@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the Ceph AI release notifier every 3 minutes
+
+[Timer]
+OnBootSec=180
+OnUnitActiveSec=180
+
+[Install]
+WantedBy=timers.target

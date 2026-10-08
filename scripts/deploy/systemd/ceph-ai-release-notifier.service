@@ -1,0 +1,10 @@
+[Unit]
+Description=Ceph AI release notifier (PRs for cand/* branches, Telegram approval cards, deploy approved merges)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3.11 /root/ceph-ai/scripts/deploy/release_notifier.py
+TimeoutStartSec=120
+Nice=5
