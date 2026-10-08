@@ -38,7 +38,7 @@ from shared.object_storage_cache import (
 )
 from shared.ceph_query_cache import get_cached as get_persisted_bucket, store as store_persisted_bucket, invalidate as invalidate_persisted_bucket
 from dashboard.cluster_scope import cluster_connection
-from watcher import ceph_client
+from watcher import capability_inventory, ceph_client
 from watcher.ceph_client import CephQueryError
 from watcher.rgw_evidence import get_rgw_evidence
 from watcher.rgw_bucket_diagnosis import build_bucket_access_diagnosis
@@ -82,6 +82,8 @@ MAX_QUERY_LENGTH = 120
 MAX_METADATA_SCAN = 500
 CAPABILITY_TTL_SECONDS = 300
 CAPABILITY_STALE_TTL_SECONDS = 600
+# A Watcher capability scan older than this many scan intervals is not trusted.
+CAPABILITY_SCAN_MAX_AGE_SCANS = 3
 BUCKET_STATS_TTL_SECONDS = 30
 BUCKET_STATS_STALE_TTL_SECONDS = 300
 BUCKET_LIST_TTL_SECONDS = 30
@@ -166,17 +168,40 @@ def _uses_mocked_rgw_client() -> bool:
     )
 
 
-def _capabilities(cluster) -> dict:
+def _scanned_ceph_version(cluster) -> str | None:
+    """The single Ceph version from the Watcher's latest capability scan, if recent.
+
+    The Watcher runs ``ceph versions`` every capability_inventory_scan_interval_seconds
+    and stores it; reading that row avoids a ~12 s SSH round trip on a cold page
+    load. A failed, mixed-version or stale scan returns None so the caller asks
+    the cluster directly.
+    """
     try:
-        if cluster.is_default:
-            versions = ceph_client.summarize_cluster_versions()
-        else:
-            connection = cluster_connection(cluster)
-            _host, payload = ceph_client.run_ceph_json_command_with(*connection, "ceph versions")
-            versions = ceph_client.summarize_versions_payload(payload)
-    except CephQueryError as exc:
-        raise ObjectStorageError(f"Không lấy được phiên bản Ceph của cluster: {exc}") from exc
-    version = versions.get("current_version")
+        snapshot = capability_inventory.latest_snapshot(cluster.id)
+    except Exception:  # a database hiccup must not cost the live query
+        logger.warning("object storage: capability scan unavailable", exc_info=True)
+        return None
+    if snapshot is None or snapshot.is_mixed_version or not snapshot.current_version or snapshot.error_message:
+        return None
+    max_age = timedelta(seconds=CAPABILITY_SCAN_MAX_AGE_SCANS * settings.capability_inventory_scan_interval_seconds)
+    if snapshot.collected_at is None or utc_now() - snapshot.collected_at > max_age:
+        return None
+    return snapshot.current_version
+
+
+def _capabilities(cluster) -> dict:
+    version = _scanned_ceph_version(cluster)
+    if version is None:
+        try:
+            if cluster.is_default:
+                versions = ceph_client.summarize_cluster_versions()
+            else:
+                connection = cluster_connection(cluster)
+                _host, payload = ceph_client.run_ceph_json_command_with(*connection, "ceph versions")
+                versions = ceph_client.summarize_versions_payload(payload)
+        except CephQueryError as exc:
+            raise ObjectStorageError(f"Không lấy được phiên bản Ceph của cluster: {exc}") from exc
+        version = versions.get("current_version")
     if not version:
         raise ObjectStorageError("Cluster đang chạy lẫn phiên bản Ceph; từ chối suy đoán capability RGW.")
     release = codename_for_version(version)
