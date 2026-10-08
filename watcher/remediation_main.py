@@ -87,8 +87,11 @@ def _run(max_iterations: Optional[int] = None) -> None:
         ssh_user, ssh_key, exec_mode, container = resolve_ssh_creds(cluster)
 
     iterations = 0
+    liveness = service_health.LivenessGuard("remediation-watcher").start() if max_iterations is None else None
     while max_iterations is None or iterations < max_iterations:
         service_health.record_safe("remediation-watcher")
+        if liveness is not None:
+            liveness.progress()
         started = time.monotonic()
         try:
             # Cluster settings can be changed from the Dashboard while this

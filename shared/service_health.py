@@ -84,3 +84,58 @@ def status(service: str, *, stale_after_seconds: int = 60) -> dict:
             "age_seconds": None,
             "updated_at": None,
         }
+
+
+class LivenessGuard:
+    """Keep a service heartbeat fresh while its main loop keeps making progress.
+
+    The Watchers recorded their heartbeat once per poll cycle, so a cycle
+    slowed down by an unreachable cluster (every MON timing out) looked like
+    a dead process: the container turned unhealthy and was restarted in the
+    middle of the outage (CS-LAB, 08/10/2026). This thread writes the
+    heartbeat every ``interval_seconds`` as long as the loop called
+    ``progress()`` within ``stall_seconds``; a loop that is really stuck
+    stops the heartbeat, so the container is still reported unhealthy.
+    """
+
+    def __init__(self, service: str, *, stall_seconds: float = 300.0, interval_seconds: float = 10.0,
+                 clock=None) -> None:
+        import threading
+        import time
+
+        self.service = service
+        self.stall_seconds = stall_seconds
+        self.interval_seconds = interval_seconds
+        self._clock = clock or time.monotonic
+        self._last_progress = self._clock()
+        self._stop = threading.Event()
+        self._thread: object | None = None
+        self._stalled_logged = False
+
+    def progress(self) -> None:
+        self._last_progress = self._clock()
+        self._stalled_logged = False
+
+    def beat_once(self) -> bool:
+        """Record the heartbeat if the loop is not stalled; True when written."""
+        stalled_for = self._clock() - self._last_progress
+        if stalled_for > self.stall_seconds:
+            if not self._stalled_logged:
+                logger.error("%s main loop made no progress for %.0f s; heartbeat stopped", self.service, stalled_for)
+                self._stalled_logged = True
+            return False
+        return record_safe(self.service)
+
+    def start(self) -> "LivenessGuard":
+        import threading
+
+        def run() -> None:
+            while not self._stop.wait(self.interval_seconds):
+                self.beat_once()
+
+        self._thread = threading.Thread(target=run, name=f"{self.service}-liveness", daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()

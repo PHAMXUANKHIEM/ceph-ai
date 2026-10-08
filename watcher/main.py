@@ -1011,8 +1011,11 @@ def run(
             background=max_iterations is None,
         )
 
+    liveness = service_health.LivenessGuard("watcher").start() if max_iterations is None else None
     while max_iterations is None or iterations < max_iterations:
         service_health.record_safe("watcher")
+        if liveness is not None:
+            liveness.progress()
         poll_started_monotonic = time.monotonic()
         poll_started_at = cluster_snapshot_collector.collection_timestamp()
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
