@@ -33,7 +33,7 @@ from dashboard.dual_ai_chat import (
 )
 from dashboard.routes.actions import ApprovalOutcome, approve_action_core
 from dashboard.routes.chat import _confirm_chat_action_core
-from shared import db
+from shared import ci_control, db, release_approval
 from shared import telegram_federation
 from shared.full_executor_auth import executor_token
 from shared.codex_app_server import (
@@ -1691,6 +1691,46 @@ async def _handle_message_impl(
             logger.exception("telegram_chat: failed to report single mode failure")
 
 
+def _sender_name(callback_query: dict) -> str:
+    sender = callback_query.get("from") or {}
+    return str(sender.get("username") or sender.get("first_name") or sender.get("id") or "?")
+
+
+async def _handle_release_callback(callback_query: dict, bot_token: str, data: str, chat_id: str,
+                                   actor: str) -> str:
+    """Operator approves (merge, then deploy once main CI is green) or skips a candidate PR."""
+    if not _sender_can_use_full_access(callback_query):
+        return "Chỉ operator có quyền vận hành mới duyệt được phát hành."
+    message = callback_query.get("message") or {}
+    original = str(message.get("text") or "")
+    name = _sender_name(callback_query)
+    try:
+        if data.startswith(release_approval.SKIP_PREFIX):
+            number, _short = release_approval.parse(data, release_approval.SKIP_PREFIX)
+            note = f"\n\n⏭ Bỏ qua bởi {name}."
+            reply = f"Đã bỏ qua PR #{number}."
+        else:
+            number, short_sha = release_approval.parse(data, release_approval.APPROVE_PREFIX)
+            token = ci_control.read_token(Path(settings.ci_github_token_file))
+            if token is None:
+                return "Chưa có GitHub token trên Dashboard."
+            record = await asyncio.to_thread(
+                release_approval.approve, settings.ci_github_repo, token, number=number, short_sha=short_sha,
+                actor=f"{actor} ({name})", deploy_request_dir=settings.deploy_request_dir)
+            note = (f"\n\n✅ Đã duyệt bởi {name}: merge {record['merge_sha'][:8]} vào main; "
+                    "deploy khi CI trên main xanh.")
+            reply = f"Đã merge PR #{number}."
+            logger.info("release approval: PR #%s merged as %s by %s", number, record["merge_sha"][:8], actor)
+    except release_approval.ApprovalError as exc:
+        return str(exc)
+    try:
+        await asyncio.to_thread(edit_telegram_message, bot_token, chat_id, message.get("message_id"),
+                                (original + note)[:4000])
+    except Exception:  # noqa: BLE001 - the decision stands even if the card cannot be edited
+        logger.warning("release approval: could not edit the Telegram card", exc_info=True)
+    return reply
+
+
 async def handle_callback(callback_query: dict, bot_token: str) -> str | None:
     """Confirm a Chatbox proposal from its inline Telegram button."""
     if not is_allowed_callback(callback_query, bot_token):
@@ -1698,6 +1738,8 @@ async def handle_callback(callback_query: dict, bot_token: str) -> str | None:
     data = str(callback_query.get("data") or "")
     chat_id = str(((callback_query.get("message") or {}).get("chat") or {}).get("id", ""))
     actor = _actor(callback_query)
+    if data.startswith((release_approval.APPROVE_PREFIX, release_approval.SKIP_PREFIX)):
+        return await _handle_release_callback(callback_query, bot_token, data, chat_id, actor)
     if data.startswith(AI_MODE_PREFIX):
         selected = data[len(AI_MODE_PREFIX):]
         label = await _select_mode(
