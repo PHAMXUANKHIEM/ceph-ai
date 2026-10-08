@@ -102,9 +102,9 @@ _INSIGHT_TTL_SECONDS = 120
 _INSIGHT_STALE_SECONDS = 1800
 
 
-def _insight(cluster, default_query, cluster_query, *args):
-    """Cached read-only Ceph query for the default or a selected cluster."""
-    key = f"{cluster.id}:{default_query.__name__}:{':'.join(str(arg) for arg in args)}"
+def _insight(cluster, name: str, default_query, cluster_query, *args):
+    """Cached read-only Ceph query ``name`` for the default or a selected cluster."""
+    key = f"{cluster.id}:{name}:{':'.join(str(arg) for arg in args)}"
     if cluster.is_default:
         def loader():
             return default_query(*args)
@@ -1167,7 +1167,7 @@ def volume_inventory_overview_api(
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
         overview = (
-            _insight(cluster, ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
+            _insight(cluster, "query_rbd_pool_overview", ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
         )
     except CephQueryError as exc:
         logger.warning("volume_inventory_overview_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
@@ -1239,9 +1239,9 @@ async def volume_pool_lifecycle_api(
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
         overview_future = asyncio.to_thread(
-            _insight, cluster, ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
+            _insight, cluster, "query_rbd_pool_overview", ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
         dependency_future = asyncio.to_thread(
-            _insight, cluster, ceph_client.query_rbd_pool_dependency_health,
+            _insight, cluster, "query_rbd_pool_dependency_health", ceph_client.query_rbd_pool_dependency_health,
             ceph_client.query_rbd_pool_dependency_health_with, pool)
         inventory_future = asyncio.to_thread(_cached_rbd_inventory_with_state, cluster, pool)
         overview, dependency_evidence, inventory_result = await asyncio.gather(
@@ -1294,7 +1294,7 @@ def volume_capacity_risk_api(
     try:
         inventory, inventory_state = _cached_rbd_inventory_with_state(cluster, pool)
         overview = (
-            _insight(cluster, ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
+            _insight(cluster, "query_rbd_pool_overview", ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
         )
     except CephQueryError as exc:
         logger.warning("volume_capacity_risk_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
@@ -1307,7 +1307,7 @@ def volume_capacity_risk_api(
         profile = overview.get("erasure_code_profile")
         try:
             profile_payload = (
-                _insight(cluster, ceph_client.query_erasure_code_profile, ceph_client.query_erasure_code_profile_with, str(profile))
+                _insight(cluster, "query_erasure_code_profile", ceph_client.query_erasure_code_profile, ceph_client.query_erasure_code_profile_with, str(profile))
             ) if profile else {}
             overview = {
                 **overview,
@@ -1348,7 +1348,7 @@ def volume_dependency_health_api(
     try:
         inventory, _inventory_state = _cached_rbd_inventory_with_state(cluster, pool)
         evidence = (
-            _insight(cluster, ceph_client.query_rbd_pool_dependency_health, ceph_client.query_rbd_pool_dependency_health_with, pool)
+            _insight(cluster, "query_rbd_pool_dependency_health", ceph_client.query_rbd_pool_dependency_health, ceph_client.query_rbd_pool_dependency_health_with, pool)
         )
     except CephQueryError as exc:
         logger.warning("volume_dependency_health_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
@@ -1373,13 +1373,13 @@ def volume_durability_policy_api(
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
         overview = (
-            _insight(cluster, ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
+            _insight(cluster, "query_rbd_pool_overview", ceph_client.query_rbd_pool_overview, ceph_client.query_rbd_pool_overview_with, pool)
         )
         dependency_evidence = (
-            _insight(cluster, ceph_client.query_rbd_pool_dependency_health, ceph_client.query_rbd_pool_dependency_health_with, pool)
+            _insight(cluster, "query_rbd_pool_dependency_health", ceph_client.query_rbd_pool_dependency_health, ceph_client.query_rbd_pool_dependency_health_with, pool)
         )
         crush_rules = (
-            _insight(cluster, ceph_client.query_crush_rules, ceph_client.query_crush_rules_with)
+            _insight(cluster, "query_crush_rules", ceph_client.query_crush_rules, ceph_client.query_crush_rules_with)
         )
     except CephQueryError as exc:
         logger.warning("volume_durability_policy_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
@@ -1390,7 +1390,7 @@ def volume_durability_policy_api(
         profile_name = overview.get("erasure_code_profile")
         try:
             profile = (
-                _insight(cluster, ceph_client.query_erasure_code_profile, ceph_client.query_erasure_code_profile_with, str(profile_name))
+                _insight(cluster, "query_erasure_code_profile", ceph_client.query_erasure_code_profile, ceph_client.query_erasure_code_profile_with, str(profile_name))
             ) if profile_name else None
         except CephQueryError as exc:
             logger.warning("volume_durability_policy_api: EC profile %s unavailable: %s", profile_name, exc)
@@ -1663,7 +1663,7 @@ async def volume_snapshot_clone_insights_api(
                 # Cached like the other read-only insights: 20 images took
                 # 161 s per view on CS-LAB (08/10/2026).
                 detail = await asyncio.to_thread(
-                    _insight, cluster, ceph_client.query_rbd_image_detail,
+                    _insight, cluster, "query_rbd_image_detail", ceph_client.query_rbd_image_detail,
                     ceph_client.query_rbd_image_detail_with, pool, image,
                 )
             except (CephQueryError, CacheLockError) as exc:

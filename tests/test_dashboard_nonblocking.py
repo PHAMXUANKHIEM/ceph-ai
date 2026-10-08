@@ -58,7 +58,18 @@ def test_read_only_insights_are_served_from_cache(monkeypatch, tmp_path):
 
     cluster = type("Cluster", (), {"id": "c1", "is_default": True})()
 
-    first = volumes._insight(cluster, query_rbd_pool_overview, None, "volumes")
-    second = volumes._insight(cluster, query_rbd_pool_overview, None, "volumes")
+    first = volumes._insight(cluster, "overview", query_rbd_pool_overview, None, "volumes")
+    second = volumes._insight(cluster, "overview", query_rbd_pool_overview, None, "volumes")
 
     assert first == second == {"pool": "volumes", "size": 3} and calls == ["volumes"]
+
+
+def test_insights_of_different_queries_never_share_a_cache_entry(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    cluster = type("Cluster", (), {"id": "c1", "is_default": True})()
+
+    overview = volumes._insight(cluster, "query_rbd_pool_overview", lambda pool: {"kind": "overview"}, None, "vms")
+    health = volumes._insight(cluster, "query_rbd_pool_dependency_health", lambda pool: {"kind": "deps"}, None, "vms")
+
+    assert overview == {"kind": "overview"} and health == {"kind": "deps"}
