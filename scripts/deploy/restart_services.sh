@@ -294,7 +294,9 @@ fi
 # The repair supervisor must survive candidate deployments because it owns the
 # test/deploy/promote decision. Under systemd it is left running; on a legacy
 # host start it only if no matching process is present.
-if [ "$USE_SYSTEMD" = "true" ] && [ "$REPAIR_USES_SYSTEMD" = "true" ]; then
+if [ -e /var/lib/ceph-ai/config/code-repair.disabled ]; then
+  echo "Code Repair stays off (/var/lib/ceph-ai/config/code-repair.disabled)"
+elif [ "$USE_SYSTEMD" = "true" ] && [ "$REPAIR_USES_SYSTEMD" = "true" ]; then
   systemctl is-active --quiet ceph-ai-code-repair-supervisor.service || \
     systemctl start ceph-ai-code-repair-supervisor.service
 else
