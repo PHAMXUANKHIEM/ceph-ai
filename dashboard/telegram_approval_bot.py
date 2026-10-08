@@ -1045,14 +1045,7 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
             callback_query = update.get("callback_query")
             if callback_query:
                 callback_data = str(callback_query.get("data") or "")
-                if callback_data.startswith((
-                    telegram_chat.CHAT_CONFIRM_PREFIX,
-                    telegram_chat.CHAT_APPROVE_PREFIX,
-                    telegram_chat.DUAL_STOP_PREFIX,
-                    telegram_chat.QUOTA_LOGIN_PREFIX,
-                    telegram_chat.AI_MODE_PREFIX,
-                    telegram_chat.CLUSTER_SELECT_PREFIX,
-                )):
+                if callback_data.startswith(telegram_chat.CALLBACK_PREFIXES):
                     try:
                         result = telegram_chat.run_callback_sync(callback_query, bot_token)
                         if result is not None:

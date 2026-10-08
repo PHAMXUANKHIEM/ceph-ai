@@ -54,6 +54,12 @@ DUAL_STOP_PREFIX = "dualstop:"
 QUOTA_LOGIN_PREFIX = "quotalogin:"
 AI_MODE_PREFIX = "aimode:"
 CLUSTER_SELECT_PREFIX = "clusterselect:"
+# Every callback prefix handle_callback answers; the shared gateway
+# (telegram_approval_bot) routes exactly these here, everything else to action approval.
+CALLBACK_PREFIXES = (
+    CHAT_CONFIRM_PREFIX, CHAT_APPROVE_PREFIX, DUAL_STOP_PREFIX, QUOTA_LOGIN_PREFIX,
+    AI_MODE_PREFIX, CLUSTER_SELECT_PREFIX, release_approval.APPROVE_PREFIX, release_approval.SKIP_PREFIX,
+)
 _TELEGRAM_ACTOR_PREFIX = "telegram-chat:"
 _MAX_MESSAGE_CHARS = 12000
 _MESSAGE_QUEUE_SIZE = 4

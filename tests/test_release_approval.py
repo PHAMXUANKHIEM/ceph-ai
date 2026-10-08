@@ -179,3 +179,24 @@ def test_each_green_pr_is_announced_once_with_its_sensitive_files(monkeypatch):
     assert notifier.announce_green_pull_requests("t", {}, state) == [7]
     assert notifier.announce_green_pull_requests("t", {}, state) == []  # same head: not again
     assert "⚠️ Đụng phần nhạy cảm: alembic/versions/x.py" in cards[0] and "2 file (+4/-1)" in cards[0]
+
+
+def test_the_shared_gateway_routes_release_buttons_to_the_chat_handler():
+    """08/10/2026: taps reached telegram_approval_bot, which logged them as unrecognized."""
+    import ast
+    import inspect
+
+    from dashboard import telegram_approval_bot, telegram_chat
+
+    assert "telegram_chat.CALLBACK_PREFIXES" in inspect.getsource(telegram_approval_bot._listen_loop_for_token)
+    handled = set()
+    for node in ast.walk(ast.parse(inspect.getsource(telegram_chat.handle_callback))):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "startswith":
+            for arg in ast.walk(node.args[0]):
+                if isinstance(arg, ast.Name) and arg.id.endswith("_PREFIX"):
+                    handled.add(getattr(telegram_chat, arg.id))
+                elif isinstance(arg, ast.Attribute) and arg.attr.endswith("_PREFIX"):
+                    handled.add(getattr(ra, arg.attr))
+    assert handled and handled <= set(telegram_chat.CALLBACK_PREFIXES)
+    for data in (ra.callback_data(ra.APPROVE_PREFIX, 7, HEAD), ra.callback_data(ra.SKIP_PREFIX, 7, HEAD)):
+        assert data.startswith(telegram_chat.CALLBACK_PREFIXES)
