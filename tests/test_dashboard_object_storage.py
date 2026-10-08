@@ -1819,3 +1819,49 @@ def test_public_posture_secondary_cluster_without_credentials_fails_closed(dashb
     assert response.json()["ready"] is False
     assert response.json()["status"] == "unknown"
     assert "credential" in response.json()["evidence_gaps"][0]
+
+
+# --- capabilities from the Watcher's version scan (08/10/2026) ---------------------------------
+
+def _default_cluster_with_scan(**scan):
+    from shared.clusters import ensure_default_cluster
+    from shared.models import ClusterCapabilityInventory
+    from shared.time import utc_now
+
+    with db.SessionLocal() as session:
+        cluster = ensure_default_cluster(session)
+        if scan:
+            row = {"status": "SUPPORTED", "is_mixed_version": False, "current_version": "18.2.4",
+                   "collected_at": utc_now(), **scan}
+            session.add(ClusterCapabilityInventory(cluster_id=cluster.id, **row))
+            session.commit()
+        session.refresh(cluster)
+        session.expunge(cluster)
+        return cluster
+
+
+def test_a_recent_watcher_scan_answers_capabilities_without_asking_ceph(dashboard_client, monkeypatch):
+    cluster = _default_cluster_with_scan(current_version="18.2.4")
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions",
+                        lambda: pytest.fail("a fresh scan must not cost an SSH round trip"))
+
+    capability = object_storage_route._capabilities(cluster)
+
+    assert capability["ceph_version"] == "18.2.4" and capability["ceph_release"] == "reef"
+
+
+@pytest.mark.parametrize("scan", [
+    {"collected_at": datetime(2020, 1, 1)},
+    {"is_mixed_version": True, "current_version": None},
+    {"status": "UNAVAILABLE", "current_version": None, "error_message": "no MON reachable"},
+    {},
+])
+def test_a_stale_mixed_failed_or_missing_scan_falls_back_to_the_live_query(dashboard_client, monkeypatch, scan):
+    cluster = _default_cluster_with_scan(**scan) if scan else _default_cluster_with_scan()
+    live = []
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions",
+                        lambda: live.append(1) or {"current_version": "19.2.1", "is_mixed": False})
+
+    capability = object_storage_route._capabilities(cluster)
+
+    assert live and capability["ceph_version"] == "19.2.1"
