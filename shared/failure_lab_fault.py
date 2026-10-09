@@ -29,7 +29,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -402,8 +402,8 @@ _CAUSE = {
 }
 
 
-def label_evidence(scenario: FaultScenario, replay: Scenario, result: dict) -> dict:
-    return {
+def label_evidence(scenario: FaultScenario, replay: Scenario, result: dict, extra: dict | None = None) -> dict:
+    return {**(extra or {}),
         "run_id": result["run_id"], "scenario_id": scenario.id, "kind": scenario.kind, "target": result["target"],
         "cause": _CAUSE.get(scenario.kind, "Failure Lab đã chủ động gây lỗi {kind} trên {target}.").format(
             target=result["target"], kind=scenario.kind),
@@ -413,12 +413,13 @@ def label_evidence(scenario: FaultScenario, replay: Scenario, result: dict) -> d
     }
 
 
-def _record_label(session_factory, scenario: FaultScenario, replay: Scenario, result: dict) -> None:
+def _record_label(session_factory, scenario: FaultScenario, replay: Scenario, result: dict,
+                  extra: dict | None = None) -> None:
     if not result.get("incident_id"):
         return
     with session_factory() as session:
         incident_events.record(session, incident_id=result["incident_id"], event_type=LABEL_EVENT,
-                               actor="failure-lab", evidence=label_evidence(scenario, replay, result))
+                               actor="failure-lab", evidence=label_evidence(scenario, replay, result, extra))
         session.commit()
 
 
@@ -441,7 +442,18 @@ def run_fault(session_factory: Callable[[], Any], *, cluster_id: str, scenario_i
     scenario = fault_scenarios().get(scenario_id)
     if scenario is None:
         raise FaultRefused(f"unknown fault scenario {scenario_id}")
-    replay = scenarios()[scenario.expect_from]
+    return _execute(session_factory, cluster_id=cluster_id, scenario=scenario, replay=scenarios()[scenario.expect_from],
+                    scheduled=scheduled, lab_factory=lab_factory, state_dir=state_dir, poll_seconds=poll_seconds,
+                    sleep=sleep, monotonic=monotonic)
+
+
+_RUN_DEFAULTS: dict[str, Any] = {"scheduled": False, "lab_factory": SshCephLab, "state_dir": STATE_DIR,
+                                 "poll_seconds": 10, "sleep": time.sleep, "monotonic": time.monotonic}
+
+
+def _execute(session_factory: Callable[[], Any], *, cluster_id: str, scenario: FaultScenario, replay: Scenario,
+             scheduled: bool, lab_factory: Callable[[Cluster], CephLab], state_dir: Path, poll_seconds: float,
+             sleep: Callable[[float], None], monotonic: Callable[[], float], label_extra: dict | None = None) -> dict:
     clock = _Clock(sleep, monotonic, poll_seconds)
     with _exclusive(state_dir):
         now = utc_now()
@@ -466,9 +478,58 @@ def run_fault(session_factory: Callable[[], Any], *, cluster_id: str, scenario_i
     if not (recovered and observed["undone"]):
         _halt(state_dir, f"{scenario.id} on {injected.target}: cụm chưa về trạng thái trước lượt chạy")
     _audit(session_factory, result["incident_id"], result)
-    _record_label(session_factory, scenario, replay, result)
+    _record_label(session_factory, scenario, replay, result, label_extra)
     failed = [stage for stage, ok in result["stages"].items() if not ok]
     notify_lab(f"{scenario.id} trên {injected.target}: " + ("ĐẠT" if result["passed"] else "TRƯỢT " + ", ".join(failed)))
+    return result
+
+
+# --- FL6.4: run an operator-approved AI reproduction proposal -------------------------
+
+def scenario_from_proposal(record: dict) -> tuple[FaultScenario, Scenario]:
+    """The reviewed catalog fault of the same kind, narrowed by the approved proposal.
+
+    Mechanics, undo and recovery come from the catalog; the proposal only adds
+    expected health codes, sets the acceptable actions the operator approved and
+    may shorten the time the fault is held.
+    """
+    raw = record.get("proposal")
+    proposal: dict = raw if isinstance(raw, dict) else {}
+    base = next((item for item in fault_scenarios().values() if item.kind == proposal.get("fault_kind")), None)
+    if base is None:
+        raise FaultRefused(f"proposal {record.get('id')}: no reviewed fault of kind {proposal.get('fault_kind')!r}")
+    seconds = max(60, min(base.max_seconds, int(proposal.get("max_seconds") or base.max_seconds)))
+    fault = replace(base, id=str(record["id"]), max_seconds=seconds,
+                    expected_health_codes=base.expected_health_codes | frozenset(
+                        str(code) for code in proposal.get("expected_health_codes") or []))
+    actions = tuple(str(item) for item in proposal.get("acceptable_action_ids") or []) or ("investigate_manually",)
+    return fault, replace(scenarios()[base.expect_from], acceptable_action_ids=actions)
+
+
+def run_proposal(session_factory: Callable[[], Any], *, cluster_id: str, proposal_id: str,
+                 proposals_dir: Path | None = None, **options: Any) -> dict:
+    """Run one APPROVED proposal once, under every FL2 gate; its file records RUNNING, then DONE or FAILED."""
+    from shared import reproduction_approval as approvals
+
+    record = approvals.load(proposal_id, proposals_dir)
+    if record.get("status") != approvals.APPROVED:
+        raise FaultRefused(f"proposal {proposal_id} is {record.get('status')}, not APPROVED")
+    fault, replay = scenario_from_proposal(record)
+    approvals.update(proposal_id, proposals_dir, status=approvals.RUNNING, run_started_at=utc_now().isoformat())
+    raw = record.get("proposal")
+    extra = {"proposal_id": proposal_id, "proposed_cause": raw.get("cause") if isinstance(raw, dict) else None,
+             "approved_by": record.get("decided_by")}
+    try:
+        result = _execute(session_factory, cluster_id=cluster_id, scenario=fault, replay=replay,
+                          label_extra=extra, **{**_RUN_DEFAULTS, **options})
+    except FaultRefused as exc:
+        approvals.update(proposal_id, proposals_dir, status=approvals.APPROVED, last_refusal=str(exc))
+        raise
+    except BaseException as exc:
+        approvals.update(proposal_id, proposals_dir, status=approvals.FAILED, error=str(exc)[:500])
+        raise
+    approvals.update(proposal_id, proposals_dir, status=approvals.DONE, run_id=result["run_id"],
+                     passed=result["passed"], stages=result["stages"], target=result["target"])
     return result
 
 
