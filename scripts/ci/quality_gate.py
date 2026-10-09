@@ -68,6 +68,21 @@ def changed_files(base: str | None) -> list[str]:
     return git_output("diff", "--name-only", f"{base}..HEAD").splitlines()
 
 
+def changed_python_files(files: list[str], *, root: Path = ROOT) -> list[str]:
+    """Return changed Python paths that exist in this checkout.
+
+    Deleted files are part of a diff too, but cannot be passed to Ruff,
+    mypy, or Bandit as current-tree inputs.
+    """
+    return [
+        path
+        for path in files
+        if path.endswith(".py")
+        and Path(path).parts[0] != ".venv"
+        and (root / path).is_file()
+    ]
+
+
 def archive_revision(revision: str, destination: Path) -> None:
     archive = subprocess.run(
         ["git", "archive", revision],
@@ -175,7 +190,7 @@ def main() -> int:
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     base = resolve_base()
     files = changed_files(base)
-    changed_py = [path for path in files if path.endswith(".py") and Path(path).parts[0] != ".venv"]
+    changed_py = changed_python_files(files)
     failures: list[str] = []
 
     compare_static_analysis(base, changed_py, failures)

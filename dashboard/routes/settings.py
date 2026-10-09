@@ -56,7 +56,7 @@ from shared.clusters import sync_default_cluster_from_settings
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.ai_limits import normalize_rate_limits
 from shared.models import (
-    Action, ActionPolicyOverride, ActionPolicyOverrideAudit, ActionStatus,
+    ActionPolicyOverride, ActionPolicyOverrideAudit,
     AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, PlaybookStat,
     SecurityAuditEvent,
 )

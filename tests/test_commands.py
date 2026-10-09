@@ -1,5 +1,3 @@
-import re
-
 import pytest
 
 import worker.executor.commands as commands_module
