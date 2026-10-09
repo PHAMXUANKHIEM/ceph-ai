@@ -405,3 +405,30 @@ def test_summarize_counts_by_reason(isolated_db):
 
 def test_summarize_when_nothing_flagged():
     assert log_triage.summarize([]) == "không có mẫu log bất thường"
+
+
+# --- read-only audit lines are noise; cluster changes are not (09/10/2026) -------------------
+
+import pytest as _pytest  # noqa: E402
+from types import SimpleNamespace as _Pattern  # noqa: E402
+
+_AUDIT = "log_channel(audit) log [{level}] : from='client.? <ADDR>' entity='client.<ID>' cmd=[{{\"prefix\": \"{prefix}\"{rest}}}]: dispatch"
+
+
+@_pytest.mark.parametrize(("level", "prefix", "rest", "benign"), [
+    ("DBG", "osd dump", ", \"format\": \"json\"", True),
+    ("DBG", "mon dump", ", \"format\": \"json\"", True),
+    ("DBG", "config get", ", \"who\": \"osd\"", True),
+    ("DBG", "orch ps", ", \"daemon_type\": \"osd\"", True),
+    ("DBG", "orch daemon rm", ", \"names\": [\"osd.3\"]", False),
+    ("DBG", "osd pool scrub", ", \"who\": \"volumes\"", False),
+    ("DBG", "osd reweight-by-utilization", "", False),
+    ("DBG", "config-key get", ", \"key\": \"mgr/x\"", False),
+    ("DBG", "osd ok-to-stop", ", \"ids\": [\"1\"]", False),
+    ("INF", "osd out", ", \"ids\": [\"3\"]", False),
+    ("INF", "osd dump", "", False),
+])
+def test_only_read_only_debug_audit_lines_are_known_noise(level, prefix, rest, benign):
+    template = _AUDIT.format(level=level, prefix=prefix, rest=rest)
+
+    assert log_triage._is_known_benign(_Pattern(template=template)) is benign
