@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import math
+from statistics import median
 from itertools import islice
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -79,6 +81,44 @@ def _observed_at(raw: object) -> datetime:
 
 def _cluster_key(cluster_id: str | None) -> str:
     return str(cluster_id or "__default__")
+
+
+# The label drift guard compared a verified label with the learner's own
+# prediction, so the labels the learner got most wrong were the ones refused:
+# 128 of the canary's 129 labels on 09/10/2026 ("sample drift 34.1 exceeds
+# limit 20"), and the learner could never correct itself. It now compares the
+# label with the host/metric's recent observations: a jump beyond the larger of
+# the configured limit and DRIFT_MAD_MULTIPLIER robust deviations is refused.
+DRIFT_WINDOW_SAMPLES = 24
+DRIFT_MIN_SAMPLES = 8
+DRIFT_MAD_MULTIPLIER = 4.0
+_MAD_TO_SIGMA = 1.4826
+
+
+def _recent_drift_reference(
+    session, cluster_key: str, host: str, metric: str, *, before: datetime,
+) -> tuple[float | None, float]:
+    """(median of recent observations, allowed distance), or (None, limit) on a cold start."""
+    limit = float(settings.online_learning_drift_threshold_percent)
+    values = [
+        float(value) for value in session.scalars(
+            select(OnlineLearnerAudit.value)
+            .where(
+                OnlineLearnerAudit.cluster_key == cluster_key,
+                OnlineLearnerAudit.host == host,
+                OnlineLearnerAudit.metric == metric,
+                OnlineLearnerAudit.observed_at < before,
+            )
+            .order_by(desc(OnlineLearnerAudit.observed_at))
+            .limit(DRIFT_WINDOW_SAMPLES)
+        )
+        if value is not None and math.isfinite(float(value))
+    ]
+    if len(values) < DRIFT_MIN_SAMPLES:
+        return None, limit
+    center = median(values)
+    spread = median(abs(value - center) for value in values) * _MAD_TO_SIGMA
+    return center, max(limit, DRIFT_MAD_MULTIPLIER * spread)
 
 
 def _consume_one(
@@ -195,7 +235,9 @@ def _consume_one(
                     metric=metric,
                     model_version=MODEL_VERSION,
                 )
-                reference = learner.predict_one(fallback=existing.value)
+                reference, drift_limit = _recent_drift_reference(
+                    session, cluster_key, host, metric, before=existing.observed_at,
+                )
                 quality = evaluate_sample(
                     OnlineLearningSample(
                         value=ready_label.label_value,
@@ -209,7 +251,7 @@ def _consume_one(
                     max_forward_gap_seconds=effective_max_gap_seconds(settings),
                     require_label=True,
                     drift_reference=reference,
-                    drift_absolute_threshold=settings.online_learning_drift_threshold_percent,
+                    drift_absolute_threshold=drift_limit,
                 )
                 quality = OnlineLearningGateDecision(
                     quality.status,
