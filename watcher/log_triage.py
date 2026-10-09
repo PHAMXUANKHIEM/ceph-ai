@@ -95,6 +95,20 @@ _KNOWN_BENIGN_SEVERE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         # Client closing Beast's HTTP stream is routine transport chatter.
         # Correlated Vault/key errors above remain independently severe.
         r"^failed to read header: end of stream$",
+        # Read-only MON/MGR commands in the audit log, polled every minute by
+        # Ceph AI itself and by mgr modules: `osd dump` at ~1/min was flagged
+        # as "called abnormally" (09/10/2026). Only [DBG] lines whose prefix is
+        # on this explicit read list; anything that changes the cluster
+        # (osd out/set, pool set, orch daemon add/rm, scrub, reweight) and
+        # sensitive reads (config-key get, auth) stay visible.
+        r"^log_channel\(audit\) log \[DBG\] : from=.* cmd=\[?\{ ?\"prefix\": ?\"(?:"
+        r"osd (?:dump|perf|df|tree|ls|lspools|map|metadata|find|stat|blocklist ls"
+        r"|crush (?:dump|rule dump|tree)|pool (?:ls|get|get-quota|stats|application get))"
+        r"|mon (?:dump|stat|metadata)|mgr (?:metadata|services|module ls)|mds metadata"
+        r"|config (?:get|dump|ls|help|generate-minimal-conf)|df|health|status|fsid|versions|report"
+        r"|node ls|device ls|crash ls(?:-new)?|log last|balancer status|fs volume ls"
+        r"|pg (?:dump|stat)|quorum_status|orch (?:ls|ps|host ls|status|upgrade status)"
+        r")\"[,}].*: (?:dispatch|finished)$",
     )
 )
 
