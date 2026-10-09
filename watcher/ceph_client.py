@@ -1947,7 +1947,9 @@ def _run_remote_command_with(
     )
     owns_pool = pool is None
     cephadm_circuit = _cephadm_circuit(host, ssh_user, ssh_key_path, command) if command.lstrip().startswith("cephadm shell") else None
+    host_circuit = None
     try:
+        host_circuit = _enter_host_circuit(host, command)
         if cephadm_circuit is not None and not cephadm_circuit.allow():
             raise CephQueryError(f"{host}: cephadm circuit breaker open")
         # cephadm creates a transient Podman container per call. A bounded
@@ -1967,10 +1969,12 @@ def _run_remote_command_with(
             # flock and its cephadm/Podman descendants. Closing a Paramiko
             # channel alone does not reliably terminate those remote children.
         result = CephCommandRunner(active_pool).run(host, remote_command, remote_timeout)
+        _leave_host_circuit(host_circuit, None)
         if cephadm_circuit is not None:
             cephadm_circuit.record_success()
         return result
     except CephRunnerError as exc:
+        _leave_host_circuit(host_circuit, exc)
         if cephadm_circuit is not None and _cephadm_lock_busy(exc):
             # The MON is healthy, only busy: free the probe without counting a
             # failure, and let the caller fall back to the next MON.
@@ -1984,6 +1988,49 @@ def _run_remote_command_with(
     finally:
         if owns_pool:
             active_pool.close()
+
+
+# 09/10/2026: while ceph2 was soft-locking in memory reclaim, the Ceph AI
+# host kept opening 9-22 SSH sessions a minute on it. After a few transport
+# failures in a row, stop sending SSH work to that host for a cooldown; MON
+# queries fall back to the next MON. The reachability probe is exempt so a
+# recovery is still seen at once.
+HOST_CIRCUIT_FAILURES = 3
+HOST_CIRCUIT_COOLDOWN_SECONDS = 60
+_HOST_PROBE_COMMAND = "true"
+_HOST_FAILURE_KINDS = {"timeout", "unreachable"}
+_HOST_CIRCUITS: dict[str, CircuitBreaker] = {}
+_HOST_CIRCUITS_LOCK = threading.Lock()
+
+
+def _enter_host_circuit(host: str, command: str) -> CircuitBreaker | None:
+    """The host's circuit for this call; raises while the host is cooling down."""
+    if command.strip() == _HOST_PROBE_COMMAND:
+        return None
+    with _HOST_CIRCUITS_LOCK:
+        circuit = _HOST_CIRCUITS.setdefault(host, CircuitBreaker(
+            failure_threshold=HOST_CIRCUIT_FAILURES, cooldown_seconds=HOST_CIRCUIT_COOLDOWN_SECONDS,
+        ))
+    if not circuit.allow():
+        raise CephQueryError(f"{host}: host not answering SSH; paused for {HOST_CIRCUIT_COOLDOWN_SECONDS} s")
+    return circuit
+
+
+def _leave_host_circuit(circuit: CircuitBreaker | None, exc: CephRunnerError | None) -> None:
+    """A transport timeout counts against the host; any answer, even an error exit, clears it."""
+    if circuit is None:
+        return
+    if exc is not None and exc.kind in _HOST_FAILURE_KINDS:
+        circuit.record_failure()
+    else:
+        circuit.record_success()
+
+
+def get_host_circuit_metrics() -> dict[str, int]:
+    """Hosts the SSH layer is currently holding back, without connection details."""
+    with _HOST_CIRCUITS_LOCK:
+        circuits = list(_HOST_CIRCUITS.values())
+    return {"tracked": len(circuits), "open": sum(1 for circuit in circuits if circuit.is_open)}
 
 
 def _cephadm_lock_busy(exc: CephRunnerError) -> bool:
