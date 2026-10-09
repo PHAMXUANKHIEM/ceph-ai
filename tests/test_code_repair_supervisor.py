@@ -146,12 +146,57 @@ def test_nightly_collects_bounded_redacted_recent_application_errors(tmp_path):
     log = tmp_path / "ceph-ai-worker.log"
     log.write_text("INFO healthy\nERROR request failed token=very-secret-value\nTraceback (most recent call last):\nRuntimeError: backend unavailable\n")
 
-    evidence = supervisor._collect_recent_nightly_error_evidence(tmp_path)
+    evidence = supervisor._collect_recent_nightly_error_evidence(tmp_path, containers=lambda: [])
 
     assert "ceph-ai-worker.log" in evidence
     assert "backend unavailable" in evidence
     assert "very-secret-value" not in evidence
     assert "<redacted>" in evidence
+
+
+def test_nightly_reads_service_container_logs_with_their_error_counts(tmp_path):
+    worker_log = ("INFO poll\nTraceback (most recent call last):\n  File \"/app/worker/x.py\"\n"
+                  "ValueError: runtime active model differs password=hunter2\n")
+
+    def containers():
+        return [("ceph-ai_worker_1", 170229, worker_log), ("ceph-ai_dashboard-web_1", 0, "INFO ok\n")]
+
+    evidence = supervisor._collect_recent_nightly_error_evidence(tmp_path, containers=containers)
+
+    assert "ceph-ai_worker_1=170229, ceph-ai_dashboard-web_1=0" in evidence
+    assert "container ceph-ai_worker_1 (170229 error lines in 24 h)" in evidence
+    assert "runtime active model differs" in evidence and "hunter2" not in evidence
+
+
+def test_a_container_log_is_counted_whole_but_kept_bounded(monkeypatch):
+    lines = [f"INFO line {index}\n" for index in range(5_000)] + ["ERROR boom\n"] * 3
+
+    class FakeProcess:
+        stdout = iter(lines)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    name, errors, tail = supervisor._container_log_tail("podman", "ceph-ai_worker_1")
+
+    assert (name, errors) == ("ceph-ai_worker_1", 3)
+    assert tail.count("\n") == supervisor.NIGHTLY_CONTAINER_TAIL_LINES and tail.endswith("ERROR boom\n")
+
+
+def test_the_report_does_not_call_a_successful_log_collection_an_error():
+    from worker import nightly_ai_report
+
+    lines = nightly_ai_report._plan_mode_lines({"mode": "PLAN_ONLY", "runtime_error_evidence": "bounded_redacted_24h"})
+
+    assert not any(line.startswith("Lỗi") for line in lines) and "đã nhận log 24h" in lines[1]
 
 
 def test_nightly_passes_runtime_log_evidence_only_to_error_analyst(monkeypatch):

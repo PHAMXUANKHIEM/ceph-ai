@@ -112,11 +112,11 @@ def _plan_mode_lines(state: dict) -> list[str]:
         return []
     evidence = state.get("runtime_error_evidence")
     if evidence == "bounded_redacted_24h":
-        runtime = "Lỗi runtime: analyst lỗi nhận tail log app gần đây đã lọc/che secret (file log cập nhật trong 24h)."
+        runtime = "Log runtime: analyst rà lỗi đã nhận log 24h của các container và file log (đã che secret)."
     elif evidence == "pending":
-        runtime = "Lỗi runtime: lượt rà soát bị gián đoạn trước khi hoàn tất thu thập log."
+        runtime = "Log runtime: lượt rà soát bị gián đoạn trước khi thu thập xong log."
     else:
-        runtime = "Lỗi runtime: chưa thu thập log ứng dụng cho lượt rà soát này."
+        runtime = "Log runtime: lượt rà soát này không thu thập log ứng dụng."
     return ["Chế độ: chỉ rà soát và lập kế hoạch; không sửa code, không chạy test/remediation.", runtime]
 
 
