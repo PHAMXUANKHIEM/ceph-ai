@@ -1,5 +1,5 @@
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable
 import hashlib
 import ipaddress
 import json
@@ -39,6 +39,7 @@ from shared.ceph_query_cache import (
     get_or_load as get_cached_ceph_query,
     invalidate as invalidate_ceph_query_cache,
     schedule_refresh as schedule_ceph_query_refresh,
+    store as store_ceph_query_value,
 )
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.rbd_trash_retention import trash_entry_ttl_status
@@ -161,6 +162,75 @@ def _rbd_pools_for_request(request: Request) -> list[str]:
         return ceph_client.configured_rbd_pools() if cluster.is_default else []
 
 
+# The cheap Trash listing (no capacity) behind the pool cards and, until the
+# measured scan lands, the table. Every `rbd trash ls` under cephadm starts a
+# container and waits for the host lock (3-16 s per pool on CS-LAB,
+# 09/10/2026), so it is served from cache, refreshed in the background, and
+# shown up to six hours old; only a pool never listed before is read inline,
+# and several such pools share one remote shell.
+_TRASH_LIST_NAMESPACE = "rbd-trash-list"
+_TRASH_LIST_MAX_AGE_SECONDS = 6 * 3600
+
+
+def _store_trash_listing(cluster, pool: str, rows: list[dict]) -> None:
+    try:
+        store_ceph_query_value(_TRASH_LIST_NAMESPACE, f"{cluster.id}:{pool}", rows)
+    except CacheLockError:
+        logger.info("trash listing for %s not cached: another writer holds the lock", pool)
+
+
+def _list_trash_now(cluster, pools: list[str]) -> dict[str, list[dict] | CephQueryError]:
+    """List pools that have no cached listing: one pool directly, several in one remote shell."""
+    if len(pools) == 1:
+        try:
+            listed: dict[str, list[dict] | None] = {pools[0]: [dict(row) for row in _query_rbd_trash_fast(cluster, pools[0])]}
+        except CephQueryError as exc:
+            return {pools[0]: exc}
+    else:
+        connection = None
+        if not cluster.is_default:
+            mon_nodes, container, ssh_user, key_path, exec_mode = cluster_connection(cluster)
+            connection = (list(mon_nodes), str(container), str(ssh_user), str(key_path), str(exec_mode))
+        try:
+            listed = {pool: None if rows is None else [dict(row) for row in rows]
+                      for pool, rows in ceph_client.query_rbd_trash_listings(pools, connection).items()}
+        except CephQueryError as exc:
+            return {pool: exc for pool in pools}
+    result: dict[str, list[dict] | CephQueryError] = {}
+    for pool in pools:
+        rows = listed.get(pool)
+        if rows is None:
+            result[pool] = CephQueryError(f"không đọc được Trash của pool {pool}")
+            continue
+        _store_trash_listing(cluster, pool, rows)
+        result[pool] = rows
+    return result
+
+
+def _trash_listing_loader(cluster, pool: str) -> Callable[[], list[dict]]:
+    return lambda: [dict(row) for row in _query_rbd_trash_fast(cluster, pool)]
+
+
+def _cached_trash_listing(cluster, pools: list[str]) -> dict[str, list[dict] | CephQueryError]:
+    """Cheap listing per pool from cache (stale ones refreshed in the background); never-listed pools read now."""
+    result: dict[str, list[dict] | CephQueryError] = {}
+    missing = []
+    for pool in pools:
+        key = f"{cluster.id}:{pool}"
+        cached = cached_ceph_query_value(_TRASH_LIST_NAMESPACE, key, max_age_seconds=_TRASH_LIST_MAX_AGE_SECONDS)
+        if cached is None:
+            missing.append(pool)
+            continue
+        rows, age_seconds = cached
+        if age_seconds > _CEPH_PAGE_CACHE_TTL_SECONDS:
+            schedule_ceph_query_refresh(_TRASH_LIST_NAMESPACE, key, _trash_listing_loader(cluster, pool),
+                                        _CEPH_PAGE_CACHE_TTL_SECONDS)
+        result[pool] = [dict(row) for row in rows] if isinstance(rows, list) else []
+    if missing:
+        result.update(_list_trash_now(cluster, missing))
+    return result
+
+
 def _cached_rbd_trash(cluster, pool: str) -> list[dict]:
     """Trash listing for the page, including measured capacity.
 
@@ -183,22 +253,16 @@ def _cached_rbd_trash(cluster, pool: str) -> list[dict]:
     # raised CacheLockError and blanked the page. Answer now from the cheap
     # listing and let the next load read the measured one.
     schedule_ceph_query_refresh(namespace, key, lambda: _load_rbd_trash_measured(cluster, pool), _CEPH_PAGE_CACHE_TTL_SECONDS)
-    return _query_rbd_trash_fast(cluster, pool)
+    listed = _cached_trash_listing(cluster, [pool])[pool]
+    if isinstance(listed, CephQueryError):
+        raise listed
+    return listed
 
 
 def _load_rbd_trash_measured(cluster, pool: str) -> list[dict]:
     query = ceph_client.query_rbd_trash if cluster.is_default else ceph_client.query_rbd_trash_with
     args = (pool,) if cluster.is_default else (pool, *cluster_connection(cluster))
     return query(*args)
-
-
-def _prime_rbd_trash_cache(cluster, pool: str) -> None:
-    namespace, key = "rbd-trash", f"{cluster.id}:{pool}"
-    cached = cached_ceph_query_value(namespace, key, max_age_seconds=900)
-    if cached is None or cached[1] > _CEPH_PAGE_CACHE_TTL_SECONDS:
-        schedule_ceph_query_refresh(
-            namespace, key, lambda: _load_rbd_trash_measured(cluster, pool), _CEPH_PAGE_CACHE_TTL_SECONDS
-        )
 
 
 def _rbd_trash_cache_state(cluster, pool: str) -> dict:
@@ -631,37 +695,24 @@ def _volumes_page_context(
     vm_perf_action: Action | None = None
     if selected_view == "trash":
         cluster = _cluster_for_request(request)
-        # Warm the measured snapshot for every pool in the background. The
-        # first render still uses the cheap listing, while the next render or
-        # API poll can show capacity without opening each pool.
+        # The pool cards come from the cached cheap listing (all never-listed
+        # pools in one remote shell); only the selected pool's table reads the
+        # measured snapshot, which is scanned in the background.
         trash_pools = [pool] if pool else list(pools)
-        def fetch_trash(trash_pool: str):
-            if not pool:
-                _prime_rbd_trash_cache(cluster, trash_pool)
-                return _query_rbd_trash_fast(cluster, trash_pool)
-            return _cached_rbd_trash(cluster, trash_pool)
-
-        # A trash listing is one independent RBD command per pool. Bound the
-        # fan-out so large installations do not create an unbounded number
-        # of SSH sessions, while avoiding the old N x timeout page latency.
         results: dict[str, list[dict] | CephQueryError | CacheLockError] = {}
-        max_workers = min(8, max(1, len(trash_pools)))
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="trash-pool") as executor:
-            futures = {executor.submit(fetch_trash, trash_pool): trash_pool for trash_pool in trash_pools}
-            for future in as_completed(futures):
-                trash_pool = futures[future]
-                try:
-                    results[trash_pool] = future.result()
-                # CacheLockError is a RuntimeError, not a CephQueryError: left
-                # uncaught it turns a concurrent page load into a 500 and the
-                # operator sees a blank page instead of their Trash. It means
-                # another request is still running the capacity scan, which is
-                # slow enough to outlast the cache's 5s lock wait.
-                except (CephQueryError, CacheLockError) as exc:
-                    results[trash_pool] = exc
+        if pool:
+            try:
+                results[pool] = _cached_rbd_trash(cluster, pool)
+            # CacheLockError is a RuntimeError, not a CephQueryError: left
+            # uncaught it turns a concurrent page load into a 500 and the
+            # operator sees a blank page instead of their Trash. It means
+            # another request is still running the capacity scan.
+            except (CephQueryError, CacheLockError) as exc:
+                results[pool] = exc
+        else:
+            results.update(_cached_trash_listing(cluster, trash_pools))
 
-        # Render in configured pool order even though requests completed out
-        # of order, so parallelism never makes the UI jump around.
+        # Render in configured pool order.
         for trash_pool in trash_pools:
             result = results[trash_pool]
             if isinstance(result, CacheLockError):
@@ -939,19 +990,19 @@ async def trash_page(request: Request, user: str = Depends(require_login)):
     requested_pool = request.query_params.get("pool", "").strip() or None
     if requested_pool and requested_pool not in pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
-    return templates.TemplateResponse(
+    # Off the event loop: a cold listing still waits on Ceph, and the rest of
+    # the Dashboard must keep answering meanwhile.
+    context = await asyncio.to_thread(
+        _volumes_page_context,
         request,
-        "trash.html",
-        _volumes_page_context(
-            request,
-            user,
-            requested_pool,
-            pools,
-            clusters=clusters,
-            selected_cluster=cluster,
-            selected_view="trash",
-        ),
+        user,
+        requested_pool,
+        pools,
+        clusters=clusters,
+        selected_cluster=cluster,
+        selected_view="trash",
     )
+    return templates.TemplateResponse(request, "trash.html", context)
 
 
 @router.get("/api/volumes/{pool}/trash/summary")
