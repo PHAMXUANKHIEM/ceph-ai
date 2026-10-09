@@ -3486,3 +3486,45 @@ def test_syncing_the_default_cluster_keeps_its_ssh_key(monkeypatch, tmp_path):
         default = session.query(Cluster).filter_by(is_default=True).one()
         assert default.ceph_mon_nodes == "10.3.54.118"
         assert default.ssh_key_path == "/tmp/readonly-id_ed25519"  # never the Worker's mutation key
+
+
+_NEW_FSID = "0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0"
+
+
+def test_a_new_cluster_chosen_as_staging_becomes_lab_with_its_fsid_pinned(monkeypatch):
+    from shared import failure_lab_config
+    from shared.models import AutopilotClusterConfigAudit, Cluster
+
+    sessions = _cluster_db(monkeypatch)
+    asked = []
+    monkeypatch.setattr(cluster_deploy_module, "execute_command",
+                        lambda host, command, **_: asked.append(host) or f"{_NEW_FSID}\n")
+
+    cluster_deploy_module._apply_config_epilogue("deploy_cluster_cephadm", _cephadm_params(
+        register_monitoring=True, monitor_cluster_name="CS-STAGING", failure_lab_staging=True))
+
+    with sessions() as session:
+        staging = session.query(Cluster).filter_by(name="CS-STAGING").one()
+        default = session.query(Cluster).filter_by(name="CS-LAB").one()
+        audit = session.query(AutopilotClusterConfigAudit).one()
+        assert (staging.autonomy_environment, default.autonomy_environment) == ("lab", "production")
+        assert (audit.cluster_id, audit.new_environment, audit.actor) == (staging.id, "lab", "Deploy Cluster")
+        config = failure_lab_config.load()
+        assert (config.cluster_id, config.fsid, config.fault_enabled) == (staging.id, _NEW_FSID, False)
+    assert asked == ["10.20.1.112"]
+
+
+def test_deploy_never_replaces_an_existing_staging_cluster(monkeypatch):
+    from shared import failure_lab_config
+    from shared.models import Cluster
+
+    sessions = _cluster_db(monkeypatch)
+    failure_lab_config.save("admin", cluster_id="existing", fsid=_NEW_FSID)
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda *a, **k: pytest.fail("no SSH expected"))
+
+    cluster_deploy_module._apply_config_epilogue("deploy_cluster_cephadm", _cephadm_params(
+        register_monitoring=True, monitor_cluster_name="CS-STAGING", failure_lab_staging=True))
+
+    with sessions() as session:
+        assert session.query(Cluster).filter_by(name="CS-STAGING").one().autonomy_environment == "production"
+    assert failure_lab_config.load().cluster_id == "existing"

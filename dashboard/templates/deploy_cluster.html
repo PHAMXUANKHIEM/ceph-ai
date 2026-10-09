@@ -168,6 +168,11 @@
                 Tên cụm giám sát
                 <input type="text" id="df-monitor-name" name="monitor_cluster_name" maxlength="64" placeholder="CS-NEW">
               </label>
+              <label class="deploy-switch-row" id="df-staging-field" hidden>
+                <input type="checkbox" id="df-failure-lab-staging" name="failure_lab_staging" {% if staging_cluster_name %}disabled{% endif %}><span class="deploy-switch" aria-hidden="true"></span>
+                <span><strong>Dùng cụm này làm cụm Staging (Failure Lab)</strong>
+                  <small>{% if staging_cluster_name %}Đã có cụm Staging: {{ staging_cluster_name }} — đổi trong Cài đặt &gt; Cụm Staging.{% else %}Sau khi deploy: đánh dấu <code>lab</code> và ghim fsid. Gây lỗi vẫn TẮT; bật trong Cài đặt &gt; Cụm Staging.{% endif %}</small></span>
+              </label>
               <p class="hint">Bật để thêm cụm mới như một cụm riêng, giữ nguyên cụm đang giám sát. Cụm mới dùng khóa SSH chỉ-đọc của Ceph AI; cần cài khóa đó trên các node mới.</p>
             </div>
 

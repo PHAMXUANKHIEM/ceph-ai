@@ -33,7 +33,8 @@ from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from shared import db, env_config, trust_engine
+from dashboard.cluster_scope import cluster_connection
+from shared import db, env_config, failure_lab_config, trust_engine
 from shared.ai_cost import summary as ai_cost_summary
 from shared.codex_app_server import (
     CodexAppServerError,
@@ -1179,6 +1180,8 @@ def _settings_context(
     openstack_cluster_id: str | None = None,
     autopilot_error: str | None = None,
     autopilot_success: str | None = None,
+    failure_lab_error: str | None = None,
+    failure_lab_success: str | None = None,
     action_policy_error: str | None = None,
     action_policy_success: str | None = None,
     ai_budget_error: str | None = None,
@@ -1332,6 +1335,9 @@ def _settings_context(
         "autopilot_activation_unlocked": settings.autopilot_activation_unlocked,
         "autopilot_error": autopilot_error,
         "autopilot_success": autopilot_success,
+        "failure_lab_error": failure_lab_error,
+        "failure_lab_success": failure_lab_success,
+        "failure_lab": failure_lab_config.load(),
         "action_policy_error": action_policy_error,
         "action_policy_success": action_policy_success,
         "ai_budget_error": ai_budget_error,
@@ -1437,6 +1443,8 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
     produced THIS response's error/success must win over the default
     landing tab, or the operator would submit a form and see no feedback
     at all (the message would render into a hidden panel)."""
+    if context.get("failure_lab_error") or context.get("failure_lab_success"):
+        return "staging-cluster"
     if any(
         context.get(k)
         for k in (
@@ -1538,7 +1546,7 @@ async def settings_form(
         ceph_host_key_page=host_key_page,
     )
     section = request.query_params.get("section", "")
-    if section in {"router", "cost", "cluster", "ceph-host-keys", "openstack", "restart-controls", "action-policy", "database", "server-log", "log-intel", "dual-ai", "code-repair", "backup-targets", "cleanup"}:
+    if section in {"router", "cost", "cluster", "ceph-host-keys", "openstack", "restart-controls", "action-policy", "database", "server-log", "log-intel", "dual-ai", "code-repair", "backup-targets", "cleanup", "staging-cluster"}:
         context["active_section"] = section
     return templates.TemplateResponse(
         request, "settings.html",
@@ -1901,6 +1909,73 @@ async def settings_cluster_autopilot_submit(
     return templates.TemplateResponse(request, "settings.html", _settings_context(
         user, autopilot_success=f"Đã cập nhật cluster gate và restart Worker (PID {restart_result['new_pid']})."
     ))
+
+
+def _set_environment(session, cluster: Cluster, environment: str, actor: str, reason: str) -> None:
+    """Change a cluster's commissioning environment, audited; Autopilot itself is left as it is."""
+    if cluster.autonomy_environment == environment:
+        return
+    session.add(AutopilotClusterConfigAudit(
+        cluster_id=cluster.id, actor=actor, previous_environment=cluster.autonomy_environment,
+        new_environment=environment, previous_enabled=cluster.autopilot_enabled,
+        new_enabled=cluster.autopilot_enabled, reason=reason,
+    ))
+    cluster.autonomy_environment = environment
+
+
+def _live_fsid(cluster: Cluster) -> str:
+    from watcher.ceph_client import run_ceph_json_command_with
+
+    _host, payload = run_ceph_json_command_with(*cluster_connection(cluster), "ceph fsid")
+    return str(payload.get("fsid") or "") if isinstance(payload, dict) else ""
+
+
+@router.post("/settings/failure-lab", response_class=HTMLResponse)
+async def settings_failure_lab_submit(
+    request: Request, user: str = Depends(require_login),
+    operation: str = Form("save"), cluster_id: str = Form(""), fault_enabled: str = Form("0"),
+    window: str = Form("02:00-05:00"), telegram_chat_id: str = Form(""),
+):
+    """Choose the Failure Lab staging cluster, pin its fsid, and switch fault injection on or off."""
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được cấu hình cụm staging")
+    current = failure_lab_config.load()
+    try:
+        if operation == "pin_fsid":
+            with db.SessionLocal() as session:
+                cluster = session.get(Cluster, current.cluster_id) if current.cluster_id else None
+                if cluster is None or not cluster.is_active:
+                    raise failure_lab_config.LabConfigError("Lưu cụm staging trước khi ghim fsid.")
+                session.expunge(cluster)
+            fsid = await asyncio.to_thread(_live_fsid, cluster)
+            if not fsid:
+                raise failure_lab_config.LabConfigError("Không đọc được fsid từ cụm.")
+            failure_lab_config.save(user, fsid=fsid)
+            message = f"Đã ghim fsid {fsid} của cụm {cluster.name}."
+        else:
+            cluster_id = cluster_id.strip()
+            changed = cluster_id != current.cluster_id
+            reason = f"Failure Lab staging (Settings, {user})"
+            with db.SessionLocal() as session:
+                chosen = session.get(Cluster, cluster_id) if cluster_id else None
+                if cluster_id and (chosen is None or not chosen.is_active):
+                    raise failure_lab_config.LabConfigError("Không tìm thấy cụm đang hoạt động.")
+                previous = session.get(Cluster, current.cluster_id) if changed and current.cluster_id else None
+                if previous is not None and previous.autonomy_environment == "lab":
+                    _set_environment(session, previous, "production", user, reason + ": bỏ chọn")
+                if chosen is not None:
+                    _set_environment(session, chosen, "lab", user, reason)
+                failure_lab_config.save(
+                    user, cluster_id=cluster_id, fsid="" if changed else current.fsid,
+                    fault_enabled=fault_enabled == "1" and not changed, window=window.strip(),
+                    telegram_chat_id=telegram_chat_id.strip(),
+                )
+                session.commit()
+            message = ("Đã đổi cụm staging; ghim lại fsid rồi mới bật gây lỗi." if changed and cluster_id
+                       else "Đã lưu cấu hình cụm staging.")
+    except (failure_lab_config.LabConfigError, CephQueryError) as exc:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(user, failure_lab_error=str(exc)))
+    return templates.TemplateResponse(request, "settings.html", _settings_context(user, failure_lab_success=message))
 
 
 @router.post("/settings/autopilot/action-policy", response_class=HTMLResponse)

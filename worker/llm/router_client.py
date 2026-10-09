@@ -3066,7 +3066,9 @@ def _auto_reject_risky_during_cluster_operation(
 def _failure_lab_alert_target() -> tuple[str, str, bool]:
     """(bot token, chat id, enabled) for a lab fault run's alerts: the lab chat
     when configured, otherwise muted — never the real incident channel."""
-    chat_id = settings.failure_lab_telegram_chat_id.strip()
+    from shared import failure_lab_config
+
+    chat_id = failure_lab_config.load().telegram_chat_id
     return settings.telegram_incident_bot_token, chat_id, bool(chat_id)
 
 

@@ -4194,7 +4194,50 @@ def _register_monitored_cluster(action_params: dict, action_id: str) -> str | No
         )
         session.add(cluster)
         session.commit()
-        return cluster.id
+        cluster_id = cluster.id
+    if action_params.get("failure_lab_staging"):
+        _mark_failure_lab_staging(cluster_id, name, _node_ips_with_role(nodes, "mon"))
+    return cluster_id
+
+
+def _mark_failure_lab_staging(cluster_id: str, name: str, mon_ips: list[str]) -> None:
+    """Make the new cluster the Failure Lab staging cluster: environment lab, fsid pinned.
+
+    Fault injection stays off; the operator switches it on in Settings. An
+    existing staging cluster is never replaced from here.
+    """
+    from shared import failure_lab_config
+    from shared.models import AutopilotClusterConfigAudit
+
+    if failure_lab_config.load().cluster_id:
+        logger.warning("cluster_deploy: a Failure Lab staging cluster is already set; %s stays production", name)
+        return
+    fsid = ""
+    for mon in mon_ips:
+        try:
+            found = {line.strip().lower() for line in execute_command(mon, _NODE_FSIDS_COMMAND).splitlines()
+                     if line.strip()}
+        except ExecutorError as exc:
+            logger.warning("cluster_deploy: %s: fsid not readable for Failure Lab: %s", mon, exc)
+            continue
+        if len(found) == 1:
+            fsid = found.pop()
+            break
+    with db.SessionLocal() as session:
+        cluster = session.get(Cluster, cluster_id)
+        if cluster is None:
+            return
+        session.add(AutopilotClusterConfigAudit(
+            cluster_id=cluster.id, actor="Deploy Cluster", previous_environment=cluster.autonomy_environment,
+            new_environment="lab", previous_enabled=cluster.autopilot_enabled,
+            new_enabled=cluster.autopilot_enabled, reason="Failure Lab staging chosen at deploy",
+        ))
+        cluster.autonomy_environment = "lab"
+        session.commit()
+    try:
+        failure_lab_config.save("Deploy Cluster", cluster_id=cluster_id, fsid=fsid, fault_enabled=False)
+    except (failure_lab_config.LabConfigError, OSError):
+        logger.exception("cluster_deploy: could not record %s as the Failure Lab staging cluster", name)
 
 
 def _deleted_cluster_is_default(action_params: dict) -> bool:

@@ -342,3 +342,11 @@ def _no_node_config_audit_ssh(monkeypatch):
     from watcher import node_config_audit
 
     monkeypatch.setattr(node_config_audit, "collect", lambda nodes: {})
+
+
+@pytest.fixture(autouse=True)
+def _isolated_failure_lab_config(monkeypatch, tmp_path_factory):
+    """The staging config lives in /var/lib/ceph-ai/config on a real host; tests never read it."""
+    from shared import failure_lab_config
+
+    monkeypatch.setattr(failure_lab_config, "CONFIG_PATH", tmp_path_factory.mktemp("lab-config") / "failure-lab.json")

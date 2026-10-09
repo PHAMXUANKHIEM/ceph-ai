@@ -2994,3 +2994,72 @@ def test_verify_router_connection_rejects_garbage_key_against_real_router():
         )
     )
     assert is_valid is False
+
+
+_LAB_FSID = "0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0"
+
+
+def _second_cluster(name="CS-STG"):
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(name=name, is_default=False, is_active=True, ceph_mon_nodes="10.0.0.9",
+                          ssh_user="root", ssh_key_path="/tmp/k")
+        session.add(cluster)
+        session.commit()
+        return cluster.id
+
+
+def test_admin_chooses_the_staging_cluster_and_pins_its_fsid(dashboard_client, monkeypatch, default_cluster_id):
+    from shared import failure_lab_config
+
+    staging_id = _second_cluster()
+    monkeypatch.setattr(settings_route, "_live_fsid", lambda cluster: _LAB_FSID)
+    _login(dashboard_client)
+    assert "Cụm Staging (Failure Lab)" in dashboard_client.get("/settings?section=staging-cluster").text
+
+    saved = dashboard_client.post("/settings/failure-lab", data={
+        "cluster_id": staging_id, "window": "01:00-04:00", "telegram_chat_id": "-1001", "fault_enabled": "1"})
+    assert "ghim lại fsid" in saved.text
+    assert failure_lab_config.load().fault_enabled is False  # never on before the fsid is pinned
+
+    pinned = dashboard_client.post("/settings/failure-lab", data={"operation": "pin_fsid"})
+    assert f"Đã ghim fsid {_LAB_FSID}" in pinned.text
+    enabled = dashboard_client.post("/settings/failure-lab", data={
+        "cluster_id": staging_id, "window": "01:00-04:00", "telegram_chat_id": "-1001", "fault_enabled": "1"})
+    assert "Đã lưu cấu hình cụm staging" in enabled.text
+
+    config = failure_lab_config.load()
+    assert (config.cluster_id, config.fsid, config.fault_enabled, config.window) == (
+        staging_id, _LAB_FSID, True, "01:00-04:00")
+    with db_module.SessionLocal() as session:
+        assert session.get(Cluster, staging_id).autonomy_environment == "lab"
+        assert session.get(Cluster, default_cluster_id).autonomy_environment == "production"
+        assert session.query(AutopilotClusterConfigAudit).one().new_environment == "lab"
+
+
+def test_changing_the_staging_cluster_returns_the_old_one_to_production(dashboard_client, monkeypatch):
+    from shared import failure_lab_config
+
+    first, second = _second_cluster("CS-STG-1"), _second_cluster("CS-STG-2")
+    _login(dashboard_client)
+    dashboard_client.post("/settings/failure-lab", data={"cluster_id": first})
+    failure_lab_config.save("admin", fsid=_LAB_FSID, fault_enabled=True)
+
+    dashboard_client.post("/settings/failure-lab", data={"cluster_id": second, "fault_enabled": "1"})
+
+    config = failure_lab_config.load()
+    assert (config.cluster_id, config.fsid, config.fault_enabled) == (second, "", False)
+    with db_module.SessionLocal() as session:
+        assert session.get(Cluster, first).autonomy_environment == "production"
+        assert session.get(Cluster, second).autonomy_environment == "lab"
+
+
+def test_staging_settings_are_admin_only_and_validated(dashboard_client):
+    _login(dashboard_client)
+    bad = dashboard_client.post("/settings/failure-lab", data={"cluster_id": "", "window": "late"})
+    assert "HH:MM-HH:MM" in bad.text
+    unpinned = dashboard_client.post("/settings/failure-lab", data={"operation": "pin_fsid"})
+    assert "Lưu cụm staging trước khi ghim fsid" in unpinned.text
+
+    _create_user("viewer", "viewer-password-1")
+    _login_as(dashboard_client, "viewer", "viewer-password-1")
+    assert dashboard_client.post("/settings/failure-lab", data={"cluster_id": ""}).status_code == 403

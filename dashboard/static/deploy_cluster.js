@@ -352,6 +352,8 @@
       if (registerBox && registerBox.checked) {
         payload.register_monitoring = true;
         payload.monitor_cluster_name = document.getElementById("df-monitor-name").value.trim();
+        var stagingBox = document.getElementById("df-failure-lab-staging");
+        if (stagingBox && stagingBox.checked && !stagingBox.disabled) payload.failure_lab_staging = true;
       }
     return payload;
   }
@@ -397,6 +399,7 @@
       ["dm-crypt (LUKS)", payload.osd_encryption ? "Bật" : "Tắt"]
     ];
     if (payload.register_monitoring) items.push(["Giám sát", payload.monitor_cluster_name || "Cụm thứ hai"]);
+    if (payload.failure_lab_staging) items.push(["Failure Lab", "Cụm Staging (gây lỗi vẫn tắt)"]);
     items.forEach(function (item) {
       var term = document.createElement("dt");
       var value = document.createElement("dd");
@@ -462,6 +465,8 @@
         document.getElementById("df-register-monitoring").checked = !!params.register_monitoring;
         document.getElementById("df-monitor-name").value = params.monitor_cluster_name || "";
         document.getElementById("df-monitor-name-field").hidden = !params.register_monitoring;
+        if (document.getElementById("df-staging-field")) document.getElementById("df-staging-field").hidden = !params.register_monitoring;
+        if (document.getElementById("df-failure-lab-staging")) document.getElementById("df-failure-lab-staging").checked = !!params.failure_lab_staging;
       }
       if (document.getElementById("df-cluster-network")) document.getElementById("df-cluster-network").value = params.cluster_network || "";
       onMethodChange();
@@ -796,5 +801,9 @@
   var box = document.getElementById("df-register-monitoring");
   var field = document.getElementById("df-monitor-name-field");
   if (!box || !field) return;
-  box.addEventListener("change", function () { field.hidden = !box.checked; });
+  var staging = document.getElementById("df-staging-field");
+  box.addEventListener("change", function () {
+    field.hidden = !box.checked;
+    if (staging) staging.hidden = !box.checked;
+  });
 })();

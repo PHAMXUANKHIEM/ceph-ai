@@ -761,3 +761,35 @@ def test_deploy_page_offers_the_monitoring_option_off_by_default(dashboard_clien
 
     assert 'id="df-register-monitoring"' in page and "checked" not in page.split('id="df-register-monitoring"')[1][:40]
     assert "Đăng ký cụm mới làm cụm giám sát thứ hai" in page
+
+
+def test_deploy_can_mark_the_new_cluster_as_failure_lab_staging(dashboard_client):
+    _login(dashboard_client)
+    assert "Dùng cụm này làm cụm Staging" in dashboard_client.get("/deploy-cluster").text
+
+    response = dashboard_client.post("/deploy-cluster/propose", json=_valid_payload(
+        register_monitoring=True, monitor_cluster_name="CS-STAGING", failure_lab_staging=True))
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        params = json.loads(session.get(Action, response.json()["action_id"]).action_params)
+    assert params["failure_lab_staging"] is True
+
+
+def test_staging_is_refused_when_one_is_already_set(dashboard_client):
+    from shared import failure_lab_config
+    from shared.models import Cluster
+
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        lab = Cluster(name="CS-STG", is_default=False, is_active=True, ceph_mon_nodes="10.0.0.9",
+                      ssh_user="root", ssh_key_path="/tmp/k")
+        session.add(lab)
+        session.commit()
+        failure_lab_config.save("admin", cluster_id=lab.id)
+
+    assert "Đã có cụm Staging: CS-STG" in dashboard_client.get("/deploy-cluster").text
+    response = dashboard_client.post("/deploy-cluster/propose", json=_valid_payload(
+        register_monitoring=True, monitor_cluster_name="CS-NEW", failure_lab_staging=True))
+
+    assert response.status_code == 400 and "CS-STG" in response.json()["detail"]

@@ -39,7 +39,7 @@ import yaml  # type: ignore[import-untyped]
 from sqlalchemy import or_
 
 from config.settings import settings
-from shared import audit, incident_events
+from shared import audit, failure_lab_config, incident_events
 from shared.failure_lab import _latest_action, diagnosis_ready, open_real_incident_codes
 from shared.models import Cluster, Incident
 from shared.synthetic_incidents import Scenario, is_synthetic_evidence, scenarios
@@ -258,7 +258,7 @@ def in_window(now: datetime, window: str) -> bool:
 
 
 def notify_lab(text: str) -> None:
-    chat_id, token = settings.failure_lab_telegram_chat_id.strip(), settings.telegram_incident_bot_token
+    chat_id, token = failure_lab_config.load().telegram_chat_id, settings.telegram_incident_bot_token
     if not chat_id or not token:
         logger.info("failure lab (no lab chat configured): %s", text)
         return
@@ -273,14 +273,17 @@ def notify_lab(text: str) -> None:
 # --- gates --------------------------------------------------------------------------
 
 def _gated_cluster(session, cluster_id: str, *, scheduled: bool, state_dir: Path, now: datetime) -> Cluster:
-    if not settings.failure_lab_fault_enabled:
-        raise FaultRefused("FAILURE_LAB_FAULT_ENABLED=false")
+    config = failure_lab_config.load()
+    if not config.fault_enabled:
+        raise FaultRefused("fault injection is off (Settings > Cụm Staging, or FAILURE_LAB_FAULT_ENABLED)")
     if (state_dir / HALT_FILE).exists():
         raise FaultRefused(f"halted: {(state_dir / HALT_FILE).read_text(encoding='utf-8').strip()}")
-    if not settings.failure_lab_cluster_fsid.strip():
-        raise FaultRefused("FAILURE_LAB_CLUSTER_FSID is not set")
-    if scheduled and not in_window(now, settings.failure_lab_window):
-        raise FaultRefused(f"outside FAILURE_LAB_WINDOW {settings.failure_lab_window}")
+    if not config.fsid:
+        raise FaultRefused("no staging fsid is pinned")
+    if config.cluster_id and cluster_id != config.cluster_id:
+        raise FaultRefused("this is not the cluster chosen as staging in Settings")
+    if scheduled and not in_window(now, config.window):
+        raise FaultRefused(f"outside the Failure Lab window {config.window}")
     cluster = session.get(Cluster, cluster_id)
     if cluster is None or cluster.autonomy_environment != "lab":
         raise FaultRefused("the cluster is not marked autonomy_environment=lab")
@@ -289,7 +292,7 @@ def _gated_cluster(session, cluster_id: str, *, scheduled: bool, state_dir: Path
 
 def _check_cluster_state(lab: CephLab, scenario: FaultScenario, replay: Scenario, busy: set[str]) -> set[str]:
     live = str(lab.read("ceph fsid").get("fsid", ""))
-    if live != settings.failure_lab_cluster_fsid.strip():
+    if live != failure_lab_config.load().fsid:
         raise FaultRefused(f"live fsid {live or '?'} is not the pinned lab fsid")
     if replay.ceph_code in busy:
         raise FaultRefused(f"a real {replay.ceph_code} incident is already open")
