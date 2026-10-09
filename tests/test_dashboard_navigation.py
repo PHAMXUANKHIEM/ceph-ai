@@ -8,7 +8,6 @@ APP_JS = Path("dashboard/static/app.js")
 SHARED_NAV_PATHS = {
     "/",
     "/nodes",
-    "/volume-performance",
     "/bucket-access-log",
     "/openstack/auth-pool",
     "/deploy-cluster",
@@ -16,7 +15,6 @@ SHARED_NAV_PATHS = {
     "/upgrade",
     "/patch",
     "/convert-cluster",
-    "/ai-learning",
     "/backups",
     "/restore-cluster",
     "/settings",
@@ -68,7 +66,11 @@ def test_shared_navigation_seeds_every_non_permission_gated_group():
 
     assert '"/object-storage/user-settings"' not in source
     assert 'paths: ["/object-storage/buckets", "/object-storage/users", "/bucket-access-log"]' in source
-    assert 'paths: ["/block-storage", "/volume-performance", "/trash"]' in source
+    assert 'paths: ["/block-storage", "/trash"]' in source
+    # Removed from the dashboard by the operator (09/10/2026).
+    for gone in ('"/volume-performance"', '"AI & Intelligence"', '"/ai-learning"', '"/log-intelligence"',
+                 '"/runbooks"', '"/alerts"', '"/synthetic-incidents"'):
+        assert gone not in source
     assert 'if (path === "/volumes") link.textContent = "Volumes"' not in source
     assert '{ label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map", "/stream"] }' in source
     assert '{ label: "Pool", paths: ["/pools", "/pgs"] }' in source
