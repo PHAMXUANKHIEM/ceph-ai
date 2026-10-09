@@ -41,15 +41,6 @@ def _load_cluster_upgrade_action_ids() -> frozenset[str]:
     return frozenset(policy.get("cluster_upgrade_action_ids") or [])
 
 
-def _load_patch_action_ids() -> frozenset[str]:
-    """Ceph patch build & deploy pipeline's own closed action_id enum
-    (dashboard/routes/patch.py) — see action_policy.yaml's
-    `patch_action_ids:` comment for why this is a fourth family."""
-    with open(_POLICY_PATH) as f:
-        policy = yaml.safe_load(f)
-    return frozenset(policy.get("patch_action_ids") or [])
-
-
 def _load_cluster_deploy_action_ids() -> frozenset[str]:
     """Dựng cụm Ceph tự động feature's own closed action_id enum
     (dashboard/routes/deploy_cluster.py) — see action_policy.yaml's
@@ -98,7 +89,6 @@ def _load_bluestore_action_ids() -> frozenset[str]:
 READ_ONLY_ACTION_IDS, SAFE_ACTION_IDS, RISKY_ACTION_IDS, DESTRUCTIVE_ACTION_IDS = _load_action_id_lists()
 VALID_MANAGEMENT_ACTION_IDS = _load_management_action_ids()
 VALID_CLUSTER_UPGRADE_ACTION_IDS = _load_cluster_upgrade_action_ids()
-VALID_PATCH_ACTION_IDS = _load_patch_action_ids()
 VALID_BACKUP_ACTION_IDS = _load_backup_action_ids()
 VALID_CLUSTER_DEPLOY_ACTION_IDS = _load_cluster_deploy_action_ids()
 # These actions all mutate the cluster topology or its management mode. They

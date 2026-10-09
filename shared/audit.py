@@ -24,18 +24,9 @@ EVENT_CHANGE_RISK_BLOCKED_AUTOPILOT = "change_risk_blocked_autopilot"
 # acknowledges, will handle manually", never routed to Worker execution, so
 # it must not read as a normal approved-and-executed action in the trail.
 EVENT_RISKY_ACTION_ACKNOWLEDGED_NO_COMMAND = "risky_action_acknowledged_no_command"
-# 2026-07-24: a cluster upgrade/patch install restarts every Ceph daemon on
-# every node one at a time — each restart routinely trips a transient
-# OSD_DOWN/MGR_DOWN incident that would otherwise spam the operator with a
-# new RISKY proposal to reject, every few seconds, for the whole duration of
-# the upgrade (verified live: 4 such proposals in under 90 seconds during
-# one upgrade run). worker/llm/router_client.py::diagnose_incident auto-
-# rejects RISKY proposals instead of surfacing them while
-# CLUSTER_UPGRADE_ACTION_IDS/PATCH_INSTALL_ACTION_ID has anything
-# PENDING_APPROVAL/APPROVED — this fires instead of
-# EVENT_RISKY_ACTION_PENDING_APPROVAL for that window; normal proposal
-# resumes automatically once the in-flight upgrade/patch action leaves that
-# window (EXECUTED/FAILED), no separate "re-enable" step needed.
+# 2026-07-24: a cluster upgrade restarts Ceph daemons across the cluster,
+# which can trigger transient OSD_DOWN/MGR_DOWN incidents. The diagnosis
+# flow suppresses risky proposals while an upgrade is pending or running.
 EVENT_RISKY_ACTION_AUTO_REJECTED_CLUSTER_OPERATION_IN_PROGRESS = (
     "risky_action_auto_rejected_cluster_operation_in_progress"
 )

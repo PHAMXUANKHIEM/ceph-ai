@@ -332,7 +332,6 @@ def test_cluster_deploy_action_ids_disjoint_from_other_families():
     assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS.isdisjoint(VALID_ACTION_IDS)
     assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS.isdisjoint(gate.VALID_MANAGEMENT_ACTION_IDS)
     assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_UPGRADE_ACTION_IDS)
-    assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS.isdisjoint(gate.VALID_PATCH_ACTION_IDS)
 
 
 def test_volume_perf_action_ids_loaded_from_policy_yaml():
@@ -356,7 +355,6 @@ def test_volume_perf_action_ids_disjoint_from_other_families():
     assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(VALID_ACTION_IDS)
     assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(gate.VALID_MANAGEMENT_ACTION_IDS)
     assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_UPGRADE_ACTION_IDS)
-    assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(gate.VALID_PATCH_ACTION_IDS)
     assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS)
 
 
@@ -380,7 +378,6 @@ def test_device_health_action_ids_disjoint_from_other_families():
     assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(VALID_ACTION_IDS)
     assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_MANAGEMENT_ACTION_IDS)
     assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_UPGRADE_ACTION_IDS)
-    assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_PATCH_ACTION_IDS)
     assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS)
     assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_VOLUME_PERF_ACTION_IDS)
     assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_BACKUP_ACTION_IDS)
@@ -405,7 +402,6 @@ def test_bluestore_action_ids_disjoint_from_other_families():
     assert gate.VALID_BLUESTORE_ACTION_IDS.isdisjoint(VALID_ACTION_IDS)
     assert gate.VALID_BLUESTORE_ACTION_IDS.isdisjoint(gate.VALID_MANAGEMENT_ACTION_IDS)
     assert gate.VALID_BLUESTORE_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_UPGRADE_ACTION_IDS)
-    assert gate.VALID_BLUESTORE_ACTION_IDS.isdisjoint(gate.VALID_PATCH_ACTION_IDS)
     assert gate.VALID_BLUESTORE_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS)
     assert gate.VALID_BLUESTORE_ACTION_IDS.isdisjoint(gate.VALID_VOLUME_PERF_ACTION_IDS)
     assert gate.VALID_BLUESTORE_ACTION_IDS.isdisjoint(gate.VALID_BACKUP_ACTION_IDS)

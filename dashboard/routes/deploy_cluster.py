@@ -31,7 +31,7 @@ router = APIRouter()
 templates = make_templates()
 
 # Synthetic Incident.ceph_code for this feature — same trick
-# dashboard/routes/chat.py/upgrade.py/patch.py use: AuditEntry.incident_id
+# dashboard/routes/chat.py/upgrade.py use: AuditEntry.incident_id
 # is a required FK, and building a brand-new (not-yet-monitored) cluster has
 # no real detected Incident behind it, only an operator explicitly filling
 # in the node table and proposing a deploy.

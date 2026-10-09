@@ -949,7 +949,6 @@ def test_inventory_page_keeps_auth_and_cluster_lifecycle_navigation(dashboard_cl
     assert 'href="/deploy-cluster"' in response.text
     assert 'href="/delete-cluster"' in response.text
     assert 'href="/upgrade"' in response.text
-    assert 'href="/patch"' in response.text
     assert 'href="/convert-cluster"' in response.text
 
 

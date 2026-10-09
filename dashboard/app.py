@@ -61,7 +61,6 @@ from dashboard.routes import (
     maintenance,
     nodes,
     openstack,
-    patch,
     pgs,
     restore_cluster,
     runbooks as runbooks_routes,
@@ -621,7 +620,6 @@ def create_app() -> FastAPI:
     application.include_router(delete_cluster.router)
     application.include_router(remove_nodes.router)
     application.include_router(convert_cluster.router)
-    application.include_router(patch.router)
     application.include_router(users.router)
     application.include_router(volumes.router)
     application.include_router(pgs.router)

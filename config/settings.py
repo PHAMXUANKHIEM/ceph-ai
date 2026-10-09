@@ -260,41 +260,6 @@ class Settings(BaseSettings):
     # default, matching node_health_scan_interval_seconds below.
     bluestore_omap_scan_interval_seconds: int = 900
 
-    # 2026-07-24: Ceph patch build & deploy pipeline (dashboard/routes/patch.py)
-    # — a separate build server, NOT a Ceph cluster node, so deliberately not
-    # part of the ceph_mon/osd/mgr/rgw_nodes family above or
-    # shared/cluster_nodes.py::configured_nodes()'s SSH SSRF whitelist (see
-    # that function's docstring). Reuses the same ssh_user/ssh_key_path as
-    # every other SSH target in this app (one shared key, same posture
-    # documented above for the Ceph node fields) — the operator additionally
-    # needs to place a copy of that same private key file on the build
-    # server itself (one-time manual step, since the build server does its
-    # OWN scp to each Ceph node — see _patch_build_and_stage_command's
-    # docstring in worker/executor/commands.py for why there's no built-in
-    # file-transfer mechanism in this codebase to do that instead).
-    ceph_patch_build_node: str = ""
-    # Path to the Ceph git checkout on the build server — the uploaded patch
-    # is applied here (`git apply`) before ceph_patch_build_command runs.
-    ceph_patch_source_dir: str = ""
-    # Operator-authored shell command(s) that actually produce the .rpm
-    # files, run inside ceph_patch_source_dir right after the patch is
-    # applied — e.g. whatever build script/rpmbuild invocation the operator
-    # already runs by hand today. This codebase has no built-in knowledge of
-    # Ceph's build process (unlike upgrade_ceph_cluster_package_download's
-    # hardcoded, distro-generic download.ceph.com repo commands) — it's
-    # specific to this operator's toolchain, same reasoning ceph_mon_nodes
-    # etc. are operator-typed rather than auto-discovered.
-    ceph_patch_build_command: str = ""
-    # Where the .rpm files land on the build server once
-    # ceph_patch_build_command finishes.
-    ceph_patch_output_dir: str = ""
-    # Fixed scratch directory on EACH Ceph node where the build server copies
-    # the built .rpm files to, before patch_install runs `rpm`/`yum
-    # localinstall` from this same path — an app-owned convention (unlike
-    # the fields above, not something the operator is expected to already
-    # have an existing value for), so it ships with a sensible default.
-    ceph_patch_node_staging_dir: str = "/opt/ceph-aiops-patch-staging"
-
     # Worker (Story 2.1): total number of processing attempts (including the
     # first) before an Incident is marked FAILED and its message dead-lettered
     # — NOT the count of retries after the first attempt.

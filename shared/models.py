@@ -1738,19 +1738,11 @@ class ChatPreference(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )
-
-
 class PatchDocument(Base):
-    """Singleton (id always 1, upserted) — the operator's currently-staged
-    Ceph source patch, uploaded via the "Vá lỗi Ceph" page
-    (dashboard/routes/patch.py). Re-uploading replaces the previous row
-    entirely, same posture as UpgradeProcedureDocument above — this is a
-    scratch staging area, not a history of past patches. `content` feeds
-    directly into the patch_build_and_stage Action's action_params (see
-    worker/executor/commands.py::_patch_build_and_stage_command) at propose
-    time, so its lifetime as a DB row is really just "between upload and
-    the next successful propose", though nothing here deletes it
-    automatically — re-uploading is the only way it changes."""
+    """Legacy table mapping retained to preserve previously stored uploads.
+
+    Patch Ceph is retired; no active route or worker reads or writes this row.
+    """
 
     __tablename__ = "patch_documents"
 

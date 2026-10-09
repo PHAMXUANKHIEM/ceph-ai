@@ -28,7 +28,7 @@ router = APIRouter()
 templates = make_templates()
 
 # Synthetic Incident.ceph_code for this feature — same trick
-# dashboard/routes/deploy_cluster.py/upgrade.py/patch.py/chat.py use:
+# dashboard/routes/deploy_cluster.py/upgrade.py/chat.py use:
 # AuditEntry.incident_id is a required FK, and tearing down a cluster has
 # no real detected Incident behind it, only an operator explicitly
 # requesting it.

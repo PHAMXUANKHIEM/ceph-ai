@@ -439,7 +439,7 @@ router = APIRouter()
 templates = make_templates()
 
 # Synthetic Incident.ceph_code for this feature — same trick
-# dashboard/routes/deploy_cluster.py/delete_cluster.py/upgrade.py/patch.py
+# dashboard/routes/deploy_cluster.py/delete_cluster.py/upgrade.py
 # use: AuditEntry.incident_id is a required FK, and purging an already-
 # trashed RBD image has no real detected Incident behind it, only an
 # operator explicitly clicking "Xoá" on the Volumes page.

@@ -549,8 +549,8 @@ code {
 .nav-link.active { color: var(--text); border-bottom-color: var(--accent); }
 
 /* "Cluster" dropdown — groups every cluster-lifecycle page (Cluster
-   Metrics, Volumes, Deploy/Delete/Convert/Upgrade Cluster, Patch Ceph,
-   Backup, Restore Cluster) behind one top-level nav item instead of 9
+   Metrics, Volumes, Deploy/Delete/Convert/Upgrade Cluster, Backup, Restore
+   Cluster) behind one top-level nav item instead of 9
    separate ones (that's what originally overflowed .main-nav — see the
    comment above). Click-to-toggle (app.js), not hover-to-open — hover
    menus are unreliable on touch and easy to trigger by accident while
@@ -2492,7 +2492,6 @@ a { transition: color 140ms ease; }
 }
 .settings-page .settings-nav-item[data-section="restart-controls"]::before { content: "↻"; }
 .settings-page .settings-nav-item[data-section="database"]::before { content: "DB"; font-size: 0.58rem; font-weight: 750; }
-.settings-page .settings-nav-item[data-section="patch-pipeline"]::before { content: "⌁"; font-size: 1rem; }
 .settings-page .settings-nav-item[data-section="backup-targets"]::before { content: "↓"; }
 .settings-page .settings-nav-item[data-section="server-log"]::before { content: "≡"; font-size: 1rem; }
 .settings-page .settings-nav-item[data-section="router"]::before { content: "AI"; font-size: 0.58rem; font-weight: 750; }
