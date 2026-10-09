@@ -44,7 +44,7 @@ def test_plan_only_report_explains_scope_and_never_claims_code_was_changed():
     assert "không có (đúng theo chế độ chỉ lập kế hoạch)" in message
     assert "nâng cấp dependency" in message
     assert "operator" in message
-    assert "file log cập nhật trong 24h" in message
+    assert "đã nhận log 24h của các container" in message and "Lỗi runtime" not in message
 
 
 def test_failed_retryable_state_uses_finished_date():

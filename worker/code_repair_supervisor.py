@@ -8,6 +8,7 @@ evaluate the deployment and promote or roll it back.
 from __future__ import annotations
 
 import fcntl
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
@@ -57,6 +58,11 @@ NIGHTLY_ANALYSIS_REPORT_LIMIT = 4_500
 NIGHTLY_ERROR_EVIDENCE_MAX_FILES = 6
 NIGHTLY_ERROR_EVIDENCE_MAX_CHARS = 6_000
 NIGHTLY_ERROR_EVIDENCE_MAX_BYTES_PER_FILE = 100_000
+# Since the move to containers the services log to podman, not /var/log: the
+# 09/10/2026 review read no service log and missed ~170k worker tracebacks.
+NIGHTLY_CONTAINER_PREFIX = "ceph-ai_"
+NIGHTLY_CONTAINER_TAIL_LINES = 400
+NIGHTLY_CONTAINER_LOG_TIMEOUT_SECONDS = 120
 _NIGHTLY_SECRET_RE = re.compile(
     r"(?i)(?P<prefix>[\"']?(?:api[_-]?key|secret|password|token|authorization|private[_-]?key)"
     r"[\"']?\s*[:=]\s*)(?P<quote>[\"']?)(?P<value>[^\"'\s,}]+)(?P=quote)"
@@ -297,39 +303,98 @@ def _redacted_error_blocks(text: str) -> list[str]:
     return blocks
 
 
+def _container_log_tail(podman: str, name: str) -> tuple[str, int, str] | None:
+    """(name, error lines in the last 24 h, bounded tail) of one container's log.
+
+    The whole day is streamed to count errors, but only the last
+    NIGHTLY_CONTAINER_TAIL_LINES lines are kept, and reading stops at the timeout.
+    """
+    deadline = time.monotonic() + NIGHTLY_CONTAINER_LOG_TIMEOUT_SECONDS
+    errors = 0
+    tail: deque[str] = deque(maxlen=NIGHTLY_CONTAINER_TAIL_LINES)
+    try:
+        with subprocess.Popen(  # nosec B603 - fixed argv, no shell
+            [podman, "logs", "--since", "24h", name],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+        ) as process:
+            for line in process.stdout or ():
+                if ERROR_RE.search(line):
+                    errors += 1
+                tail.append(line)
+                if time.monotonic() > deadline:
+                    process.kill()
+                    break
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return name, errors, "".join(tail)
+
+
+def _container_log_tails() -> list[tuple[str, int, str]]:
+    """Every running ceph-ai service container's 24 h error count and log tail."""
+    podman = shutil.which("podman") or "/usr/bin/podman"
+    try:
+        listed = subprocess.run(  # nosec B603 - fixed argv, no shell
+            [podman, "ps", "--format", "{{.Names}}"], capture_output=True, text=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    names = sorted(name for name in listed.stdout.split()
+                   if name.startswith(NIGHTLY_CONTAINER_PREFIX) and "code-repair" not in name)
+    return [tail for tail in (_container_log_tail(podman, name) for name in names) if tail is not None]
+
+
+def _nightly_log_sources(log_dir: Path, cutoff: float, containers) -> tuple[list[str], list[tuple[str, str]]]:
+    """Per-container error counts, and (label, text) for every container log and recent log file."""
+    counts: list[str] = []
+    sources: list[tuple[str, str]] = []
+    for name, errors, text in containers():
+        # The count shows the scale a two-block excerpt cannot (170k identical tracebacks).
+        counts.append(f"{name}={errors}")
+        sources.append((f"container {name} ({errors} error lines in 24 h)", text))
+    try:
+        paths = sorted(log_dir.glob("ceph-ai-*.log"), key=lambda path: path.name)
+    except OSError:
+        paths = []
+    for path in paths:
+        text = None if "code-repair" in path.name else _read_recent_tail(path, cutoff)
+        if text is not None:
+            sources.append((path.name, text))
+    return counts, sources
+
+
 def _collect_recent_nightly_error_evidence(
-    log_dir: Path = Path("/var/log"), *, now: datetime | None = None,
+    log_dir: Path = Path("/var/log"), *, now: datetime | None = None, containers=_container_log_tails,
 ) -> str:
     """Read a bounded 24-hour tail of application errors for the error analyst only."""
     cutoff = (now or datetime.now(timezone.utc)).timestamp() - 24 * 60 * 60
     evidence: list[str] = []
     total_chars = 0
-    try:
-        paths = sorted(log_dir.glob("ceph-ai-*.log"), key=lambda path: path.name)
-    except OSError:
-        return "\n\nRuntime error evidence: unavailable (log directory could not be read)."
-
-    for path in paths:
-        if "code-repair" in path.name or len(evidence) >= NIGHTLY_ERROR_EVIDENCE_MAX_FILES:
-            continue
-        text = _read_recent_tail(path, cutoff)
-        if text is None:
-            continue
+    counts, sources = _nightly_log_sources(log_dir, cutoff, containers)
+    per_source = NIGHTLY_ERROR_EVIDENCE_MAX_CHARS // 4
+    for label, text in sources:
+        if len(evidence) >= NIGHTLY_ERROR_EVIDENCE_MAX_FILES * 2:
+            break
+        source_chars = 0
         for block in _redacted_error_blocks(text):
-            remaining = NIGHTLY_ERROR_EVIDENCE_MAX_CHARS - total_chars
+            remaining = min(NIGHTLY_ERROR_EVIDENCE_MAX_CHARS - total_chars, per_source - source_chars)
             if remaining <= 0:
                 break
             block = block[:remaining]
-            evidence.append(f"{path.name}:\n{block}")
+            evidence.append(f"{label}:\n{block}")
             total_chars += len(block)
+            source_chars += len(block)
         if total_chars >= NIGHTLY_ERROR_EVIDENCE_MAX_CHARS:
             break
 
+    summary = f"\n\nError lines in the last 24 h per service container: {', '.join(counts)}." if counts else ""
     if not evidence:
-        return "\n\nRuntime error evidence: no matching errors found in readable ceph-ai log files updated within 24 hours."
-    return (
-        "\n\nBounded, secret-redacted error excerpts from recent ceph-ai log tails "
-        "(only files updated within the last 24 hours; excerpt is not a strict event-time window) "
+        return summary + (
+            "\n\nRuntime error evidence: no matching errors found in the ceph-ai container logs "
+            "or readable ceph-ai log files of the last 24 hours."
+        )
+    return summary + (
+        "\n\nBounded, secret-redacted error excerpts from the last 24 hours of ceph-ai container logs "
+        "and log files (excerpt is not a strict event-time window) "
         "(provided only to the error-review analyst; verify against source):\n"
         + "\n---\n".join(evidence)
     )
