@@ -363,3 +363,11 @@ def _isolated_failure_lab_config(monkeypatch, tmp_path_factory):
     from shared import failure_lab_config
 
     monkeypatch.setattr(failure_lab_config, "CONFIG_PATH", tmp_path_factory.mktemp("lab-config") / "failure-lab.json")
+
+
+@pytest.fixture(autouse=True)
+def _no_mgr_rbd_metrics(monkeypatch):
+    """The volume monitor reads RBD stats from the mgr; tests use the iostat path unless they opt in."""
+    from watcher import mgr_rbd_metrics
+
+    monkeypatch.setattr(mgr_rbd_metrics, "fetch_images", lambda **kwargs: None)

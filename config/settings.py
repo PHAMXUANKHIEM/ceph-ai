@@ -171,6 +171,10 @@ class Settings(BaseSettings):
     # journal, machine-id, memory budget), checked read-only (09/10/2026).
     node_config_audit_enabled: bool = True
     node_config_audit_interval_seconds: int = Field(default=21600, ge=300)
+    # Volume I/O from the mgr's per-image RBD counters instead of
+    # `rbd perf image iostat` through cephadm shell (needs
+    # mgr/prometheus/rbd_stats_pools; falls back when the mgr has none).
+    rbd_iostat_from_mgr: bool = True
     ceph_mon_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
     ceph_mon_circuit_cooldown_seconds: int = Field(default=30, ge=1, le=3600)
     # Realtime snapshot collection guard. These bounds apply to the Watcher
