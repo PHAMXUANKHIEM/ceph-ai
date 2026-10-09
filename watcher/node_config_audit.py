@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,13 @@ FACTS_COMMAND = " ; ".join((
     'echo "JOURNAL=$([ -d /var/log/journal ] && echo persistent || echo volatile)"',
     'echo "MAKECACHE=$(systemctl is-enabled dnf-makecache.timer 2>/dev/null || echo none)"',
     'echo "OSDS=$(pgrep -c -x ceph-osd || true)"',
+    'echo "NTP_SYNC=$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown)"',
+    'echo "EPOCH=$(date -u +%s.%N)"',
 ))
+# 09/10/2026: the Ceph AI host ran 37.7 s behind three NTP-synced nodes with
+# no NTP service at all; snapshot ages, incident times and forecast/outcome
+# matching against cluster logs were all off by that much.
+CLOCK_SKEW_LIMIT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,10 @@ def _host_findings(host: str, facts: dict[str, str], osd_memory_target: int | No
         found.append(Finding(host, "JOURNAL_VOLATILE", "warning",
                              "journal không lưu xuống đĩa: log kernel của lần treo/reset bị mất.",
                              "mkdir /var/log/journal; systemctl restart systemd-journald"))
+    if facts.get("NTP_SYNC") == "no":
+        found.append(Finding(host, "NTP_UNSYNCED", "warning",
+                             "Đồng hồ node không được đồng bộ NTP: log, sự cố và MON quorum lệch giờ.",
+                             "systemctl enable --now chronyd; chronyc makestep"))
     if facts.get("MAKECACHE") == "enabled":
         found.append(Finding(host, "DNF_MAKECACHE_ENABLED", "info",
                              "dnf-makecache.timer bật: làm mới metadata gói định kỳ, tốn RAM đột ngột.",
@@ -119,12 +130,32 @@ def evaluate(facts_by_host: dict[str, dict[str, str]], osd_memory_target: int | 
     for name, (_address, facts) in by_name.items():
         if facts.get("MACHINE_ID"):
             owners.setdefault(facts["MACHINE_ID"], []).append(name)
+    findings.extend(_ceph_ai_clock(by_name))
     for machine_id, names in owners.items():
         if len(names) > 1:
             findings.append(Finding(", ".join(sorted(names)), "DUPLICATE_MACHINE_ID", "warning",
                                     f"{len(names)} node dùng chung machine-id {machine_id[:8]}…: journal/monitoring dễ lẫn.",
                                     "rm /etc/machine-id; systemd-machine-id-setup (từng node, ngoài giờ)"))
     return findings
+
+
+def _ceph_ai_clock(by_name: dict[str, tuple[str, dict[str, str]]]) -> list[Finding]:
+    """When every NTP-synced node disagrees with this host by the same amount, this host is off."""
+    offsets = []
+    for _address, facts in by_name.values():
+        try:
+            offsets.append(float(facts["EPOCH"]) - float(facts["_LOCAL_EPOCH"]))
+        except (KeyError, ValueError):
+            continue
+        if facts.get("NTP_SYNC") != "yes":
+            offsets.pop()
+    if not offsets or min(abs(offset) for offset in offsets) < CLOCK_SKEW_LIMIT_SECONDS:
+        return []
+    skew = sorted(offsets)[len(offsets) // 2]
+    direction = "chậm" if skew > 0 else "nhanh"
+    return [Finding("Ceph AI", "CEPH_AI_CLOCK_SKEW", "warning",
+                    f"Đồng hồ máy Ceph AI {direction} {abs(skew):.1f} s so với {len(offsets)} node đã đồng bộ NTP.",
+                    "trên máy Ceph AI: systemctl enable --now chronyd; chronyc makestep")]
 
 
 def fingerprint(findings: list[Finding]) -> str:
@@ -148,12 +179,15 @@ def collect(nodes: list[str]) -> dict[str, dict[str, str]]:
 
     facts: dict[str, dict[str, str]] = {}
     for host in nodes:
+        started = time.time()
         try:
             output = ceph_client.run_command_on_node(host, FACTS_COMMAND, timeout=FACTS_TIMEOUT_SECONDS)
         except Exception as exc:
             logger.warning("node config audit: %s unavailable: %s", host, exc)
             continue
         facts[host] = parse_facts(output)
+        # The node's clock is read somewhere inside the SSH round trip: compare with its midpoint.
+        facts[host]["_LOCAL_EPOCH"] = f"{(started + time.time()) / 2:.3f}"
     return facts
 
 
