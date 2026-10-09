@@ -36,6 +36,7 @@ from shared.forecast_metrics import update_rolling_metrics
 from shared.learning_runtime import evaluate as evaluate_learning_runtime
 from shared.models import (
     Cluster,
+    ForecastModelRegistry,
     OnlineLearnerLabel,
     NodeResourceForecastAlert,
     NodeResourceForecastAlertEvent,
@@ -566,6 +567,23 @@ def evaluate_due_outcomes(
         return before
 
 
+def _registry_active_window(session, cluster: str, host: str, metric: str, horizon_hours: int) -> int | None:
+    """The linear window the guarded model registry holds ACTIVE for this scope, if any.
+
+    The registry (shared/model_registry.py) changes ACTIVE only through its
+    approval path. Picking the lowest-MAE window on every run overrode that
+    choice, so the worker refused every shadow evaluation for 21 CS-LAB scopes
+    and logged ~170k tracebacks a day (09/10/2026). The MAE pick remains the
+    bootstrap for a scope the registry has not seen yet.
+    """
+    row = session.query(ForecastModelRegistry).filter_by(
+        scope_type="NODE_RESOURCE", scope_key=f"{cluster}|{host}|{metric.lower()}|h{horizon_hours}", status="ACTIVE",
+    ).one_or_none()
+    if row is None or not str(row.algorithm or "").startswith("linear:"):
+        return None
+    return row.training_window_hours
+
+
 def _selected_window(
     session, cluster: str, host: str, metric: str,
     available: list[int], horizon_hours: int = 24,
@@ -578,7 +596,11 @@ def _selected_window(
                 if state.window_hours in available
                 and state.evaluated_count >= settings.node_resource_learning_min_outcomes
                 and state.mean_absolute_error is not None]
-    selected = min(eligible, key=lambda state: state.mean_absolute_error).window_hours if eligible else max(available)
+    approved = _registry_active_window(session, cluster, host, metric, horizon_hours)
+    if approved in available:
+        selected = approved
+    else:
+        selected = min(eligible, key=lambda state: state.mean_absolute_error).window_hours if eligible else max(available)
     for window in available:
         state = _state_for(session, cluster, host, metric, window, horizon_hours=horizon_hours)
         state.selected = window == selected

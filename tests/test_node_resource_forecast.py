@@ -529,3 +529,70 @@ def test_river_linear_v2_disabled_flag_skips_model_and_database():
     assert result["quality_status"] == "DISABLED"
     assert result["prediction"] is None
     assert result["execution_mode"] == "SHADOW_ONLY"
+
+
+# --- the guarded model registry decides the selected window (09/10/2026) -----------------------
+
+def _selection_session(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    monkeypatch.setattr(forecast.settings, "node_resource_learning_min_outcomes", 1)
+    for window, mae in ((24, 1.0), (72, 5.0), (168, 9.0)):
+        session.add(NodeResourceModelState(cluster_name="CS-LAB", host="h1", metric="ram", algorithm="linear",
+                                           window_hours=window, horizon_hours=6, evaluated_count=10,
+                                           mean_absolute_error=mae, selected=False))
+    session.flush()
+    return session
+
+
+def _registry_active(session, algorithm, window):
+    from shared.models import ForecastModelRegistry
+
+    session.add(ForecastModelRegistry(scope_type="NODE_RESOURCE", scope_key="CS-LAB|h1|ram|h6",
+                                      name="node-resource-forecast", version=f"{algorithm}:{window}h",
+                                      algorithm=algorithm, feature_schema="node-resource-v1",
+                                      training_window_hours=window, status="ACTIVE"))
+    session.flush()
+
+
+def test_the_registry_active_window_wins_over_a_lower_mae(monkeypatch):
+    session = _selection_session(monkeypatch)
+    _registry_active(session, "linear:72h", 72)
+
+    assert forecast._selected_window(session, "CS-LAB", "h1", "ram", [24, 72, 168], 6) == 72
+    session.flush()
+    selected = session.query(NodeResourceModelState).filter_by(selected=True).one()
+    assert selected.window_hours == 72
+
+
+@pytest.mark.parametrize("registry", [None, ("seasonal_median:72h", 72), ("linear:720h", 720)])
+def test_without_a_usable_registry_window_the_lowest_mae_bootstraps(monkeypatch, registry):
+    session = _selection_session(monkeypatch)
+    if registry:
+        _registry_active(session, *registry)
+
+    assert forecast._selected_window(session, "CS-LAB", "h1", "ram", [24, 72, 168], 6) == 24
+
+
+def test_a_refused_shadow_pair_is_noted_once_per_hour(monkeypatch, caplog):
+    from worker.llm import router_client
+
+    clock = [1000.0]
+    monkeypatch.setattr(router_client.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(router_client, "_shadow_skip_noted", {})
+    refused = ValueError("runtime active model differs from registry ACTIVE model")
+
+    with caplog.at_level("WARNING", logger=router_client.logger.name):
+        for _ in range(50):
+            router_client._note_shadow_skip("CS-LAB|h1|ram|h6", refused)
+        clock[0] += router_client._SHADOW_SKIP_NOTE_SECONDS
+        router_client._note_shadow_skip("CS-LAB|h1|ram|h6", refused)
+        try:
+            raise RuntimeError("database gone")
+        except RuntimeError as exc:  # the worker calls it from its except block
+            router_client._note_shadow_skip("CS-LAB|h1|cpu|h6", exc)
+
+    notes = [record for record in caplog.records if "shadow registry skipped" in record.getMessage()]
+    assert len(notes) == 3
+    assert [record.exc_info is not None and record.exc_info[0] is not None for record in notes] == [False, False, True]

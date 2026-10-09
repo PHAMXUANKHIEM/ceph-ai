@@ -3154,6 +3154,25 @@ def _route_risky_to_approval(incident_id: str, action_pk: str, action_id: str) -
 # the Worker holds SSH executor credentials (AD-3).
 
 
+# A shadow comparison the registry refuses is refused again on every worker
+# poll (~6 s): 21 CS-LAB scopes produced ~170k tracebacks a day (09/10/2026).
+# Note each (scope, reason) once per hour; unexpected errors keep the traceback.
+_SHADOW_SKIP_NOTE_SECONDS = 3600
+_shadow_skip_noted: dict[tuple[str, str], float] = {}
+
+
+def _note_shadow_skip(scope_key: str, exc: Exception) -> None:
+    if not isinstance(exc, ValueError):
+        logger.exception("forecast shadow registry skipped scope=%s: %s", scope_key, exc)
+        return
+    key, now = (scope_key, str(exc)), time.monotonic()
+    if now - _shadow_skip_noted.get(key, -_SHADOW_SKIP_NOTE_SECONDS) < _SHADOW_SKIP_NOTE_SECONDS:
+        return
+    _shadow_skip_noted[key] = now
+    logger.warning("forecast shadow registry skipped scope=%s: %s (repeats muted for %d s)",
+                   scope_key, exc, _SHADOW_SKIP_NOTE_SECONDS)
+
+
 def _process_approved_actions_once() -> None:
     with db.SessionLocal() as session:
         recovered = reconcile_expired_executions(session, now=utc_now())
@@ -3191,10 +3210,7 @@ def _process_approved_actions_once() -> None:
                         shadow_evaluations_persisted += 1
                 except Exception as exc:
                     session.rollback()
-                    logger.exception(
-                        "forecast shadow registry skipped scope=%s: %s",
-                        shadow.scope_key, exc,
-                    )
+                    _note_shadow_skip(shadow.scope_key, exc)
             session.commit()
     if recovered:
         logger.warning(
