@@ -21,6 +21,7 @@ PROPOSALS_DIR = Path("/var/lib/ceph-ai/failure-lab/proposals")
 APPROVE_PREFIX = "flrepro:ok:"
 SKIP_PREFIX = "flrepro:skip:"
 PROPOSED, APPROVED, SKIPPED = "PROPOSED", "APPROVED", "SKIPPED"
+RUNNING, DONE, FAILED = "RUNNING", "DONE", "FAILED"
 _ID_RE = re.compile(r"repro-[0-9a-f]{10}")
 
 
@@ -61,6 +62,29 @@ def _write(record: dict, directory: Path) -> None:
 def _proposal(record: dict) -> dict:
     raw = record.get("proposal")
     return raw if isinstance(raw, dict) else {}
+
+
+def update(proposal_id: str, directory: Path | None = None, **fields: object) -> dict:
+    """Merge ``fields`` into a stored proposal (the Failure Lab runner's progress)."""
+    directory = directory or PROPOSALS_DIR
+    record = load(proposal_id, directory)
+    record.update(fields)
+    _write(record, directory)
+    return record
+
+
+def next_approved(directory: Path | None = None) -> str | None:
+    """The oldest APPROVED proposal id, or None."""
+    directory = directory or PROPOSALS_DIR
+    approved = []
+    for path in sorted(directory.glob("repro-*.json")) if directory.exists() else []:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and record.get("status") == APPROVED:
+            approved.append((str(record.get("decided_at") or ""), str(record.get("id"))))
+    return min(approved)[1] if approved else None
 
 
 def decide(proposal_id: str, *, approve: bool, actor: str, directory: Path | None = None,

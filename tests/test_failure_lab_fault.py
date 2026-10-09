@@ -252,3 +252,85 @@ def test_the_catalog_only_has_known_kinds_and_safe_limits():
     catalog = fault.fault_scenarios()
     assert set(catalog) == {"osd_down_fault", "osd_nearfull_fault"}
     assert all(item.kind in fault.PREPARE and item.max_seconds <= 540 for item in catalog.values())
+
+
+# --- FL6.4: operator-approved AI proposals (09/10/2026) ------------------------------------
+
+def _proposal(directory, *, status="APPROVED", kind="stop_osd", seconds=120, pid="repro-00000000aa",
+              decided_at="2026-10-09T08:00:00+00:00"):
+    directory.mkdir(exist_ok=True)
+    record = {"id": pid, "family": "network_heartbeat", "status": status, "decided_by": "telegram-chat:1 (op)",
+              "decided_at": decided_at,
+              "proposal": {"fault_kind": kind, "expected_health_codes": ["OSD_DOWN", "SLOW_OPS"],
+                           "cause": "Một OSD daemon dừng nên MON đánh dấu down.", "max_seconds": seconds,
+                           "acceptable_action_ids": ["investigate_manually"]}}
+    (directory / f"{pid}.json").write_text(json.dumps(record))
+    return pid
+
+
+def test_an_approved_proposal_narrows_the_reviewed_fault_of_its_kind(tmp_path):
+    pid = _proposal(tmp_path / "proposals", seconds=7200)
+    record = json.loads((tmp_path / "proposals" / f"{pid}.json").read_text())
+
+    scenario, replay = fault.scenario_from_proposal(record)
+
+    base = fault.fault_scenarios()["osd_down_fault"]
+    assert scenario.id == pid and scenario.kind == "stop_osd" and scenario.max_seconds == base.max_seconds
+    assert scenario.expected_health_codes == base.expected_health_codes | {"SLOW_OPS"}
+    assert replay.acceptable_action_ids == ("investigate_manually",)
+    with pytest.raises(fault.FaultRefused, match="no reviewed fault"):
+        fault.scenario_from_proposal({**record, "proposal": {**record["proposal"], "fault_kind": "rm_rf"}})
+
+
+def test_an_approved_proposal_runs_once_and_its_label_names_the_proposal(enabled, tmp_path):
+    factory, cluster_id = _db()
+    lab = FakeLab()
+    sleep, now = _worker_reacts(factory, cluster_id, lab, "OSD_DOWN", "osd.3 đang down trên host", "investigate_manually")
+    proposals = tmp_path / "proposals"
+    pid = _proposal(proposals)
+
+    result = fault.run_proposal(factory, cluster_id=cluster_id, proposal_id=pid, proposals_dir=proposals,
+                                lab_factory=lambda cluster: lab, state_dir=tmp_path, poll_seconds=10,
+                                sleep=sleep, monotonic=now)
+
+    assert result["passed"] and lab.writes[-1] == "ceph orch daemon start osd.3"  # always undone
+    stored = json.loads((proposals / f"{pid}.json").read_text())
+    assert stored["status"] == "DONE" and stored["run_id"] == result["run_id"] and stored["target"] == "osd.3"
+    with factory() as session:
+        from shared.models import IncidentTimelineEvent
+
+        label = json.loads(session.query(IncidentTimelineEvent).filter_by(event_type=fault.LABEL_EVENT).one().evidence_json)
+    assert label["proposal_id"] == pid and label["approved_by"] == "telegram-chat:1 (op)"
+    assert label["proposed_cause"].startswith("Một OSD daemon dừng")
+    with pytest.raises(fault.FaultRefused, match="DONE, not APPROVED"):
+        fault.run_proposal(factory, cluster_id=cluster_id, proposal_id=pid, proposals_dir=proposals)
+
+
+def test_an_unapproved_or_refused_proposal_changes_nothing(enabled, tmp_path):
+    factory, cluster_id = _db(environment="production")
+    proposals = tmp_path / "proposals"
+    waiting = _proposal(proposals, status="PROPOSED", pid="repro-00000000bb")
+    approved = _proposal(proposals, pid="repro-00000000cc")
+    lab = FakeLab()
+
+    with pytest.raises(fault.FaultRefused, match="PROPOSED, not APPROVED"):
+        fault.run_proposal(factory, cluster_id=cluster_id, proposal_id=waiting, proposals_dir=proposals)
+    with pytest.raises(fault.FaultRefused):  # a production cluster fails the FL2 gate
+        fault.run_proposal(factory, cluster_id=cluster_id, proposal_id=approved, proposals_dir=proposals,
+                           lab_factory=lambda cluster: lab, state_dir=tmp_path)
+
+    assert lab.writes == []
+    stored = json.loads((proposals / f"{approved}.json").read_text())
+    assert stored["status"] == "APPROVED" and stored["last_refusal"]  # left for a later, valid run
+
+
+def test_next_runs_the_oldest_approved_proposal(tmp_path):
+    from shared import reproduction_approval
+
+    proposals = tmp_path / "proposals"
+    _proposal(proposals, pid="repro-00000000dd", decided_at="2026-10-09T09:00:00+00:00")
+    _proposal(proposals, pid="repro-00000000ee", decided_at="2026-10-09T07:00:00+00:00")
+    _proposal(proposals, pid="repro-00000000ff", status="PROPOSED", decided_at="2026-10-09T06:00:00+00:00")
+
+    assert reproduction_approval.next_approved(proposals) == "repro-00000000ee"
+    assert reproduction_approval.next_approved(tmp_path / "missing") is None
