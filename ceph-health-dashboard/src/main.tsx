@@ -41,6 +41,13 @@ if (streamRoot && streamData?.textContent) {
       // The system stream still renders; the Ceph tab stays disabled.
       console.error("Invalid ceph-topology bootstrap data", error);
     }
+    let staging: CephTopology | null = null;
+    try {
+      staging = JSON.parse(document.getElementById("staging-topology-bootstrap")?.textContent || "null") as CephTopology | null;
+    } catch (error) {
+      // No staging tab; the other tabs still render.
+      console.error("Invalid staging-topology bootstrap data", error);
+    }
     let aiFlow: AiFlow | null = null;
     try {
       aiFlow = JSON.parse(document.getElementById("ai-flow-bootstrap")?.textContent || "null") as AiFlow | null;
@@ -48,7 +55,7 @@ if (streamRoot && streamData?.textContent) {
       // The other tabs still render; the AI tab stays disabled.
       console.error("Invalid ai-flow bootstrap data", error);
     }
-    createRoot(streamRoot).render(<React.StrictMode><StreamPage profile={profile} topology={topology} aiFlow={aiFlow} /></React.StrictMode>);
+    createRoot(streamRoot).render(<React.StrictMode><StreamPage profile={profile} topology={topology} staging={staging} aiFlow={aiFlow} /></React.StrictMode>);
   } catch (error) {
     console.error("Invalid installation-stream bootstrap data", error);
     streamRoot.textContent = "Không đọc được profile cấu hình. Hãy tải lại trang.";

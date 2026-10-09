@@ -268,3 +268,5 @@
 .stream-tabs button.is-active { background: rgba(34,211,238,.1); border-color: rgba(34,211,238,.45); color: #67e8f9; }
 .stream-tabs button:disabled { cursor: not-allowed; opacity: .55; }
 .stream-tabs button:focus-visible { outline: 2px solid #22d3ee; outline-offset: 2px; }
+.ceph-cluster-stream__lab { align-items: center; background: rgba(168,85,247,.12); border: 1px solid rgba(168,85,247,.4); border-radius: 8px; color: #d8b4fe; display: flex; flex-wrap: wrap; font-size: 13px; gap: 6px; margin: 0 0 14px; padding: 9px 12px; }
+.ceph-cluster-stream__lab a { color: inherit; text-decoration: underline; }
