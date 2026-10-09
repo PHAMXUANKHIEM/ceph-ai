@@ -26,6 +26,13 @@ def isolated_db(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_postmortem_ssh(monkeypatch):
+    """Resolving an unreachable node reads its journal over SSH; never from tests."""
+    monkeypatch.setattr(nhm.node_postmortem, "collect", lambda host, started: nhm.node_postmortem.Postmortem(
+        nhm.node_postmortem.UNAVAILABLE, None, "test"))
+
+
+@pytest.fixture(autouse=True)
 def clear_module_state():
     # nhm._consecutive_high_scans is process-lifetime module state (by
     # design, same as watcher/volume_monitor.py's own _state) — would
@@ -477,3 +484,39 @@ def test_restart_still_holds_a_recovering_host_open(reachability, monkeypatch):
     assert _incidents()[0].status != IncidentStatus.RESOLVED.value
     _scan(monkeypatch, ok=True)
     assert _incidents()[0].status == IncidentStatus.RESOLVED.value
+
+
+def test_a_recovered_node_gets_a_postmortem_alert_and_timeline_event(isolated_db, monkeypatch):
+    from shared.models import IncidentTimelineEvent
+
+    calls = []
+    monkeypatch.setattr(nhm, "send_node_alert", lambda host, message: calls.append((host, message)))
+    lockup = nhm.node_postmortem.Postmortem(
+        nhm.node_postmortem.SOFT_LOCKUP, True, "Kernel soft lockup, kẹt trong thu hồi bộ nhớ (kswapd0).",
+        ("kswapd0",), ("watchdog: BUG: soft lockup - CPU#2 stuck for 24s! [kswapd0:74]",),
+    )
+    seen = []
+    monkeypatch.setattr(nhm.node_postmortem, "collect", lambda host, started: seen.append(host) or lockup)
+    current = {"NODE_UNREACHABLE:node-1": {"host": "node-1", "roles": ["OSD"], "consecutive_failures": 2,
+                                            "error": "SSH timeout"}}
+
+    nhm.create_or_resolve_node_unreachable_incidents(current)
+    nhm.create_or_resolve_node_unreachable_incidents({})
+
+    assert seen == ["node-1"]
+    assert calls[-1][0] == "node-1" and "kswapd0" in calls[-1][1]
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="NODE_UNREACHABLE:node-1").one()
+        assert json.loads(incident.signal_evidence_json)["postmortem"]["kind"] == "KERNEL_SOFT_LOCKUP"
+        assert session.query(IncidentTimelineEvent).filter_by(
+            incident_id=incident.id, event_type="node_postmortem").count() == 1
+
+
+def test_postmortem_can_be_switched_off(isolated_db, monkeypatch):
+    monkeypatch.setattr(nhm.settings, "node_postmortem_enabled", False)
+    monkeypatch.setattr(nhm, "send_node_alert", lambda host, message: None)
+    monkeypatch.setattr(nhm.node_postmortem, "collect", lambda *a: pytest.fail("must not SSH"))
+    current = {"NODE_UNREACHABLE:node-1": {"host": "node-1", "roles": [], "consecutive_failures": 2, "error": "x"}}
+
+    nhm.create_or_resolve_node_unreachable_incidents(current)
+    nhm.create_or_resolve_node_unreachable_incidents({})
