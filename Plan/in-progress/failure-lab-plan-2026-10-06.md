@@ -141,7 +141,7 @@ Gói việc:
 - [x] FL6.2 tài liệu Ceph (`shared/ceph_docs.py`) + đề xuất AI có cấu trúc + validator (`shared/reproduction_proposal.py`, `scripts/lab/propose_reproduction.py`).
 - [x] FL6.3 thẻ duyệt Telegram (`flrepro:ok/skip`, chỉ operator), quyết định ghi vào file đề xuất (`shared/reproduction_approval.py`).
 - [x] FL6.4 `run_proposal`: đề xuất đã duyệt chạy một lần qua mọi cổng FL2, ghép với lỗi đã review cùng kiểu (cơ chế/gỡ lỗi từ catalog; đề xuất chỉ thêm mã kỳ vọng, đặt hành động đã duyệt, rút ngắn thời gian giữ lỗi); trạng thái RUNNING → DONE/FAILED; nhãn FL3 ghi `proposal_id`. CLI `--proposal <id>|next`. Duyệt sửa dùng đường giữ action + thẻ duyệt ở kênh lab của FL2.
-- [ ] FL6.5 báo cáo học: chỉ số theo họ lỗi, Telegram sau mỗi lượt.
+- [x] FL6.5 báo cáo học (`shared/failure_lab_report.py`, `python -m scripts.lab.learning_report [--json]`): theo họ lỗi — số lượt, số lượt đạt đủ 6 khâu, tỉ lệ từng khâu, lượt đầu tiên chẩn đoán đúng, trung vị số giây tới chẩn đoán đúng (nhãn FL3 nay ghi `detection_seconds`/`diagnosis_seconds`), chẩn đoán lab đúng ở lượt đầu so với các lượt đã có tham khảo lab, và tỉ lệ case production thiếu bằng chứng/độ tin < 0.5 trước và sau nhãn lab đầu tiên (không tính cụm `lab`; là tương quan, có kèm số đếm). Sau mỗi lượt, bộ chạy gửi tóm tắt họ lỗi đó vào chat lab (09/10).
 - [ ] Thêm kiểu lỗi mới theo yêu cầu (vd large omap trên pool test, OSD out, cờ `noout`), mỗi kiểu một PR có review.
 - **Cần operator:** dựng cụm staging, đánh dấu `lab`, đặt `FAILURE_LAB_CLUSTER_FSID`, `FAILURE_LAB_TELEGRAM_CHAT_ID`, `FAILURE_LAB_FAULT_ENABLED=true`.
 

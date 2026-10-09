@@ -335,7 +335,8 @@ def _observe(session_factory, lab: CephLab, run: dict, prefix: str, seconds: flo
             if incident is not None and diagnosis_ready(incident):
                 action = _latest_action(session, incident.id)
                 observed.update(detected_ceph_code=incident.ceph_code, diagnosis_text=incident.diagnosis_text or "",
-                                action_id=action.action_id if action is not None else None)
+                                action_id=action.action_id if action is not None else None,
+                                diagnosis_seconds=round(clock.now() - started))
                 return observed
         clock.sleep(clock.poll_seconds)
     return observed
@@ -410,6 +411,7 @@ def label_evidence(scenario: FaultScenario, replay: Scenario, result: dict, extr
         "expected_health_codes": sorted(scenario.expected_health_codes),
         "acceptable_action_ids": list(replay.acceptable_action_ids),
         "stages": dict(result["stages"]), "passed": bool(result["passed"]),
+        "detection_seconds": result.get("detection_seconds"), "diagnosis_seconds": result.get("diagnosis_seconds"),
     }
 
 
@@ -472,6 +474,8 @@ def _execute(session_factory: Callable[[], Any], *, cluster_id: str, scenario: F
         observed = _inject_and_observe(session_factory, lab, run, injected, scenario, replay, clock, state_dir)
         recovered, final_codes = _recover(lab, injected, baseline, scenario.recovery_seconds, clock)
         result = {"run_id": run["run_id"], "incident_id": observed.get("incident_id"),
+                  "detection_seconds": observed.get("detection_seconds"),
+                  "diagnosis_seconds": observed.get("diagnosis_seconds"),
                   "final_health_codes": sorted(final_codes), "baseline_health_codes": sorted(baseline),
                   **score_fault(scenario, replay, injected.target, observed, baseline=baseline,
                                 undone=observed["undone"], recovered=recovered)}
@@ -481,7 +485,29 @@ def _execute(session_factory: Callable[[], Any], *, cluster_id: str, scenario: F
     _record_label(session_factory, scenario, replay, result, label_extra)
     failed = [stage for stage, ok in result["stages"].items() if not ok]
     notify_lab(f"{scenario.id} trên {injected.target}: " + ("ĐẠT" if result["passed"] else "TRƯỢT " + ", ".join(failed)))
+    _notify_learning(session_factory, result.get("incident_id"))
     return result
+
+
+def _notify_learning(session_factory, incident_id: str | None) -> None:
+    """FL6.5: after a run, how this fault family is learning so far (lab chat)."""
+    if not incident_id:
+        return
+    from shared.failure_lab_report import family_summary_text, learning_report
+    from shared.evidence_gaps import family_of_code
+    from watcher.incident_correlation import FAMILY_CODES
+
+    try:
+        with session_factory() as session:
+            incident = session.get(Incident, incident_id)
+            family = family_of_code(incident.ceph_code or "", FAMILY_CODES) if incident is not None else None
+            item = next((row for row in learning_report(session, family_codes=FAMILY_CODES) if row.family == family),
+                        None)
+    except Exception:  # noqa: BLE001 - a missing summary must not fail a finished run
+        logger.exception("failure lab: learning summary failed")
+        return
+    if item is not None:
+        notify_lab(family_summary_text(item))
 
 
 # --- FL6.4: run an operator-approved AI reproduction proposal -------------------------

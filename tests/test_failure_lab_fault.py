@@ -334,3 +334,22 @@ def test_next_runs_the_oldest_approved_proposal(tmp_path):
 
     assert reproduction_approval.next_approved(proposals) == "repro-00000000ee"
     assert reproduction_approval.next_approved(tmp_path / "missing") is None
+
+
+def test_every_run_reports_how_its_family_is_learning(enabled, tmp_path, monkeypatch):
+    factory, cluster_id = _db()
+    notices = []
+    monkeypatch.setattr(fault, "notify_lab", notices.append)
+    lab = FakeLab()
+    sleep, now = _worker_reacts(factory, cluster_id, lab, "OSD_DOWN", "osd.3 đang down trên host", "restart_osd_daemon")
+
+    result = _run(factory, cluster_id, lab, tmp_path, sleep=sleep, monotonic=now)
+
+    assert result["detection_seconds"] is not None and result["diagnosis_seconds"] is not None
+    with factory() as session:
+        from shared.models import IncidentTimelineEvent
+
+        label = json.loads(session.query(IncidentTimelineEvent).filter_by(event_type=fault.LABEL_EVENT).one().evidence_json)
+    assert label["diagnosis_seconds"] == result["diagnosis_seconds"]
+    assert notices[-1].startswith("📈 Học họ lỗi network_heartbeat: 1 lượt, 1 đạt đủ 6 khâu.")
+    assert "Chẩn đoán đúng lần đầu ở lượt: 1" in notices[-1]
