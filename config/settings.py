@@ -171,6 +171,11 @@ class Settings(BaseSettings):
     # journal, machine-id, memory budget), checked read-only (09/10/2026).
     node_config_audit_enabled: bool = True
     node_config_audit_interval_seconds: int = Field(default=21600, ge=300)
+    # Reuse the last `ceph health detail` while the mgr prometheus metrics
+    # show the same status and checks (watcher/mgr_health_gate.py):
+    # off | shadow (compare only, the default) | on.
+    ceph_health_mgr_gate: str = "shadow"
+    ceph_health_mgr_gate_max_age_seconds: int = Field(default=60, ge=15, le=600)
     ceph_mon_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
     ceph_mon_circuit_cooldown_seconds: int = Field(default=30, ge=1, le=3600)
     # Realtime snapshot collection guard. These bounds apply to the Watcher

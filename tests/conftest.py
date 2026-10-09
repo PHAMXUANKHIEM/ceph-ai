@@ -363,3 +363,11 @@ def _isolated_failure_lab_config(monkeypatch, tmp_path_factory):
     from shared import failure_lab_config
 
     monkeypatch.setattr(failure_lab_config, "CONFIG_PATH", tmp_path_factory.mktemp("lab-config") / "failure-lab.json")
+
+
+@pytest.fixture(autouse=True)
+def _no_mgr_metrics_lookup(monkeypatch):
+    """The health gate asks Ceph for the mgr URL and fetches metrics; tests never do."""
+    from watcher import mgr_health_gate
+
+    monkeypatch.setattr(mgr_health_gate, "_GATE", mgr_health_gate.MgrHealthGate(discover=lambda: None))
