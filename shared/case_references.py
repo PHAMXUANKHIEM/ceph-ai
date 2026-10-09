@@ -30,7 +30,7 @@ from sqlalchemy import or_
 from shared import audit
 from shared.autonomy_kpi import fault_family
 from shared.case_retrieval import _BAD_VERDICTS, _eligible, _load, _major, _normalized_nodes
-from shared.models import Action, AuditEntry, Incident, RemediationCase
+from shared.models import Action, AuditEntry, Incident, IncidentTimelineEvent, RemediationCase
 from shared.time import utc_now
 
 NO_ACTION = "investigate_manually"
@@ -116,7 +116,40 @@ def find_reference_cases(
         score = (_KIND_WEIGHT[kind] + 5 * (incident.ceph_code == ceph_code) + 3 * same_nodes
                  + ((case.deployment_mode or "unknown") == (deployment_mode or "unknown")))
         scored.append((score, _reference(case, action, incident, kind)))
-    return _top(scored, limit)
+    return _top(scored, limit) + lab_references(session, family, incident_id=incident_id)
+
+
+# FL3: Failure Lab runs reproduce a fault on a lab cluster with a known cause.
+LAB_LABEL_EVENT = "failure_lab_label"
+LAB_REFERENCES = 2
+
+
+def lab_references(session, family: str, *, incident_id: str, limit: int = LAB_REFERENCES) -> list[dict]:
+    """The newest lab reproductions of this fault family, from any cluster, with their known cause."""
+    rows = (
+        session.query(IncidentTimelineEvent, Incident)
+        .join(Incident, Incident.id == IncidentTimelineEvent.incident_id)
+        .filter(IncidentTimelineEvent.event_type == LAB_LABEL_EVENT,
+                IncidentTimelineEvent.incident_id != incident_id,
+                _family_filter(Incident.ceph_code, family))
+        .order_by(IncidentTimelineEvent.created_at.desc()).limit(limit).all()
+    )
+    references = []
+    for event, incident in rows:
+        raw = _load(event.evidence_json, {})
+        label: dict = raw if isinstance(raw, dict) else {}
+        if not label.get("cause"):
+            continue
+        raw_stages = label.get("stages")
+        stages: dict = raw_stages if isinstance(raw_stages, dict) else {}
+        references.append({
+            "kind": "lab_reproduced", "case_id": None, "ceph_code": incident.ceph_code,
+            "playbook_id": None, "diagnosis": str(label["cause"])[:400],
+            "acceptable_action_ids": list(label.get("acceptable_action_ids") or []),
+            "ai_diagnosis_correct": stages.get("diagnosis"), "resolved_after_minutes": _minutes(incident),
+            "operator_verdict": None,
+        })
+    return references
 
 
 def _top(scored: list[tuple[int, dict]], limit: int) -> list[dict]:
@@ -191,6 +224,7 @@ _KIND_LABEL = {
     "verified_fix": "đã sửa và xác minh",
     "diagnosis_confirmed": "operator xác nhận chẩn đoán đúng",
     "self_resolved": "tự hết, không cần hành động, không tái phát",
+    "lab_reproduced": "tái hiện trên cụm lab, nguyên nhân đã biết",
 }
 
 
@@ -209,6 +243,14 @@ def references_block(references: list[dict]) -> str:
         else:
             handled = "(không hành động)"
         kind = str(item.get("kind"))
+        if kind == "lab_reproduced":
+            accepted = ", ".join(item.get("acceptable_action_ids") or []) or NO_ACTION
+            correct = item.get("ai_diagnosis_correct")
+            verdict = ("AI lần đó chẩn đoán ĐÚNG" if correct is True
+                       else "AI lần đó chẩn đoán SAI" if correct is False else "chưa chấm chẩn đoán")
+            lines.append(f"  - [tái hiện trên cụm lab, nguyên nhân đã biết] {item.get('ceph_code')}: "
+                         f"{item.get('diagnosis')} Hành động chấp nhận: {accepted}. ({verdict})")
+            continue
         lines.append(f"  - [{_KIND_LABEL.get(kind, kind)}{after}] {item.get('ceph_code')} "
                      f"{handled}: {item.get('diagnosis') or '(không lưu chẩn đoán)'}")
     return "\n".join(lines) + "\n"

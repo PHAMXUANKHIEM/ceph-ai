@@ -39,7 +39,7 @@ import yaml  # type: ignore[import-untyped]
 from sqlalchemy import or_
 
 from config.settings import settings
-from shared import audit
+from shared import audit, incident_events
 from shared.failure_lab import _latest_action, diagnosis_ready, open_real_incident_codes
 from shared.models import Cluster, Incident
 from shared.synthetic_incidents import Scenario, is_synthetic_evidence, scenarios
@@ -392,6 +392,36 @@ def score_fault(scenario: FaultScenario, replay: Scenario, target: str, observed
             "passed": all(stages.values()), "unexpected_health_codes": unexpected}
 
 
+# FL3: the answer of a real-fault run, attached to the incident it raised.
+# The cause is known because the lab caused it; case_references shows it to
+# later diagnoses of the same fault family on any cluster (context only).
+LABEL_EVENT = "failure_lab_label"
+_CAUSE = {
+    "stop_osd": "Failure Lab đã chủ động dừng daemon {target}: OSD down có chủ đích, không phải lỗi phần cứng.",
+    "nearfull_ratio": "Failure Lab đã chủ động hạ ngưỡng nearfull của cụm xuống dưới mức dùng của {target}.",
+}
+
+
+def label_evidence(scenario: FaultScenario, replay: Scenario, result: dict) -> dict:
+    return {
+        "run_id": result["run_id"], "scenario_id": scenario.id, "kind": scenario.kind, "target": result["target"],
+        "cause": _CAUSE.get(scenario.kind, "Failure Lab đã chủ động gây lỗi {kind} trên {target}.").format(
+            target=result["target"], kind=scenario.kind),
+        "expected_health_codes": sorted(scenario.expected_health_codes),
+        "acceptable_action_ids": list(replay.acceptable_action_ids),
+        "stages": dict(result["stages"]), "passed": bool(result["passed"]),
+    }
+
+
+def _record_label(session_factory, scenario: FaultScenario, replay: Scenario, result: dict) -> None:
+    if not result.get("incident_id"):
+        return
+    with session_factory() as session:
+        incident_events.record(session, incident_id=result["incident_id"], event_type=LABEL_EVENT,
+                               actor="failure-lab", evidence=label_evidence(scenario, replay, result))
+        session.commit()
+
+
 def _audit(session_factory, incident_id: str | None, result: dict) -> None:
     if not incident_id:
         return
@@ -436,6 +466,7 @@ def run_fault(session_factory: Callable[[], Any], *, cluster_id: str, scenario_i
     if not (recovered and observed["undone"]):
         _halt(state_dir, f"{scenario.id} on {injected.target}: cụm chưa về trạng thái trước lượt chạy")
     _audit(session_factory, result["incident_id"], result)
+    _record_label(session_factory, scenario, replay, result)
     failed = [stage for stage, ok in result["stages"].items() if not ok]
     notify_lab(f"{scenario.id} trên {injected.target}: " + ("ĐẠT" if result["passed"] else "TRƯỢT " + ", ".join(failed)))
     return result
