@@ -100,6 +100,28 @@ _RECOVERABLE_STATUSES = {
 # real unbounded-growth risk).
 _consecutive_high_scans: dict[int, int] = {}
 _consecutive_ok_scans: dict[int, int] = {}
+# Last scan's small summary for the Dashboard's OSD latency card, which had
+# no data source and always showed N/A (09/10/2026). Replaced every scan.
+_latest_summary: dict | None = None
+
+
+def latest_summary() -> dict | None:
+    """Average/max latency of the last scan's up OSDs, or None before the first scan."""
+    return dict(_latest_summary) if _latest_summary is not None else None
+
+
+def summarize(commit_ms: dict[int, float], apply_ms: dict[int, float]) -> dict | None:
+    """A few numbers, not the per-OSD table: average of apply and commit, the slowest OSD."""
+    if not commit_ms:
+        return None
+    values = [*commit_ms.values(), *apply_ms.values()]
+    slowest = max(commit_ms, key=lambda osd_id: commit_ms[osd_id])
+    return {
+        "avg_latency_ms": round(sum(values) / len(values), 2),
+        "max_commit_latency_ms": round(commit_ms[slowest], 2),
+        "slowest_osd": slowest,
+        "osds": len(commit_ms),
+    }
 
 
 def ceph_code_for(osd_id: int) -> str:
@@ -161,6 +183,8 @@ def check_osd_latency_outliers(
         if isinstance(apply_ms, (int, float)):
             apply_latency_by_id[osd_id] = float(apply_ms)
 
+    global _latest_summary
+    _latest_summary = summarize(commit_latency_by_id, apply_latency_by_id)
     if len(commit_latency_by_id) < MIN_UP_OSDS_FOR_COMPARISON:
         return {}
 

@@ -289,3 +289,41 @@ def test_known_values_and_an_idle_cluster_still_report_numbers():
     assert payload["metrics"]["bandwidth_bps"] == 0
     assert payload["metrics"]["iops"] == 0
     assert payload["placement_groups"] == "WARN"
+
+
+# --- the OSD latency card has a data source (09/10/2026) ---------------------------------------
+
+def test_the_latency_card_shows_the_watchers_osd_summary(dashboard_client):
+    from shared.cluster_snapshot import publish_section_snapshot
+
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    cluster_id = _default_cluster_id()
+    publish_section_snapshot(cluster_id, "status", {"health": {"status": "HEALTH_OK"}, "pgmap": {}})
+    publish_section_snapshot(cluster_id, "osd_perf", {"avg_latency_ms": 3.5, "max_commit_latency_ms": 5.0,
+                                                       "slowest_osd": 4, "osds": 6})
+
+    body = dashboard_client.get(f"/api/dashboard/health?cluster={cluster_id}").json()
+
+    assert body["metrics"]["latency_ms"] == 3.5
+
+
+def test_the_latency_card_reads_ceph_osd_perf_as_ceph_prints_it():
+    from types import SimpleNamespace
+
+    perf = {"pg_ready": True, "osdstats": {"osd_perf_infos": [
+        {"id": 2, "perf_stats": {"commit_latency_ms": 2, "apply_latency_ms": 2}},
+        {"id": 4, "perf_stats": {"commit_latency_ms": 5, "apply_latency_ms": 5}},
+    ]}}
+    cluster = SimpleNamespace(ceph_mon_nodes="10.0.0.1", ceph_mgr_nodes="", ceph_osd_nodes="", ceph_rgw_nodes="")
+
+    body = incidents._dashboard_health_payload({"health": {"status": "HEALTH_OK"}}, cluster, osd_perf=perf)
+
+    assert body["metrics"]["latency_ms"] == 3.5
+
+
+def test_no_latency_data_stays_unknown():
+    from types import SimpleNamespace
+
+    cluster = SimpleNamespace(ceph_mon_nodes="10.0.0.1", ceph_mgr_nodes="", ceph_osd_nodes="", ceph_rgw_nodes="")
+
+    assert incidents._dashboard_health_payload({"health": {}}, cluster)["metrics"]["latency_ms"] is None

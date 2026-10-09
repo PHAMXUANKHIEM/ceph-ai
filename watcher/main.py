@@ -933,6 +933,19 @@ def _record_heartbeat_safe(
         logger.exception("run: failed to record heartbeat")
 
 
+
+def _publish_osd_latency_summary(cluster_id: str | None) -> None:
+    """Hand the scan's latency summary to the Dashboard (one small snapshot, overwritten)."""
+    summary = osd_latency_monitor.latest_summary()
+    if summary is None or not cluster_id:
+        return
+    from shared.cluster_snapshot import publish_section_snapshot
+
+    publish_section_snapshot(
+        cluster_id, "osd_perf", summary,
+        collected_at=cluster_snapshot_collector.collection_timestamp(), source="watcher-osd-latency",
+    )
+
 def run(
     on_transition: OnTransition = default_on_transition,
     max_iterations: Optional[int] = None,
@@ -1414,6 +1427,7 @@ def run(
                     osd_latency_monitor.create_or_resolve_osd_latency_incidents(
                         current_osd_latency, latency_still_over
                     )
+                    _publish_osd_latency_summary(cluster_id)
                 except Exception:
                     logger.exception("run: osd latency scan failed")
 

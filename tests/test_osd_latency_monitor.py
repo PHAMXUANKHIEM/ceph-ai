@@ -306,3 +306,12 @@ def test_recovering_osd_stays_over_threshold_until_enough_good_scans(monkeypatch
         osdlm.check_osd_latency_outliers(still)
         assert ("OSD_LATENCY_HIGH:3" in still) is expected_held
 
+
+
+def test_the_scan_summary_is_a_few_numbers_for_the_dashboard():
+    from watcher import osd_latency_monitor as monitor
+
+    summary = monitor.summarize({0: 2.0, 1: 4.0, 2: 9.0}, {0: 1.0, 1: 3.0, 2: 5.0})
+
+    assert summary == {"avg_latency_ms": 4.0, "max_commit_latency_ms": 9.0, "slowest_osd": 2, "osds": 3}
+    assert monitor.summarize({}, {}) is None
