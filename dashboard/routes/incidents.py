@@ -1095,12 +1095,21 @@ def _resolve_selected_cluster(
     return resolve_cluster_selection(requested_cluster_id, session_cluster_id)
 
 
+def _osd_latency_ms(latency_values: list[float], osd_latency: dict | None) -> float | None:
+    """Average OSD apply/commit latency: the raw rows if given, else the Watcher's summary."""
+    if latency_values:
+        return round(sum(latency_values) / len(latency_values), 2)
+    value = osd_latency.get("avg_latency_ms") if isinstance(osd_latency, dict) else None
+    return float(value) if isinstance(value, (int, float)) else None
+
+
 def _dashboard_health_payload(
     status: dict,
     cluster: Cluster,
     osd_perf: dict | None = None,
     cluster_nodes: dict | list | None = None,
     osd_dump: dict | None = None,
+    osd_latency: dict | None = None,
 ) -> dict:
     """Convert one authoritative ceph status response into card values."""
     health = status.get("health") if isinstance(status.get("health"), dict) else {}
@@ -1138,7 +1147,9 @@ def _dashboard_health_payload(
 
     perf_rows = []
     if isinstance(osd_perf, dict):
-        candidate = osd_perf.get("osd_perf_infos")
+        # `ceph osd perf` nests the rows: {"pg_ready": ..., "osdstats": {"osd_perf_infos": [...]}}.
+        container = osd_perf.get("osdstats") if isinstance(osd_perf.get("osdstats"), dict) else osd_perf
+        candidate = container.get("osd_perf_infos")
         if isinstance(candidate, list):
             perf_rows = candidate
     latency_values = []
@@ -1207,7 +1218,7 @@ def _dashboard_health_payload(
             "pools": pools,
         },
         "metrics": {
-            "latency_ms": round(sum(latency_values) / len(latency_values), 2) if latency_values else None,
+            "latency_ms": _osd_latency_ms(latency_values, osd_latency),
             "bandwidth_bps": bandwidth_bps,
             "iops": iops,
         },
@@ -1243,6 +1254,14 @@ def _dashboard_health_snapshot_response(
     )
     node_data = nodes_section.get("nodes") if isinstance(nodes_section, dict) else None
     cluster_nodes = node_data.get("nodes") if isinstance(node_data, dict) else node_data
+    # The OSD latency card had no data source and always showed N/A (09/10/2026).
+    latency_section = read_section_snapshot(
+        selected_cluster.id,
+        "osd_perf",
+        stale_after_seconds=_DASHBOARD_HEALTH_STALE_SECONDS,
+        max_stale_seconds=_DASHBOARD_HEALTH_MAX_STALE_SECONDS,
+    )
+    osd_latency = latency_section.get("osd_perf") if isinstance(latency_section, dict) else None
     if not isinstance(cluster_nodes, (dict, list)):
         cluster_nodes = None
     full_status = status_section.get("status") if isinstance(status_section, dict) else None
@@ -1255,11 +1274,11 @@ def _dashboard_health_snapshot_response(
             full_health = status.get("health")
             status["health"] = {**(full_health if isinstance(full_health, dict) else {}), **critical_health}
         payload = _dashboard_health_payload(
-            status, selected_cluster, cluster_nodes=cluster_nodes,
+            status, selected_cluster, cluster_nodes=cluster_nodes, osd_latency=osd_latency,
         )
     else:
         payload = _dashboard_health_payload(
-            status, selected_cluster, cluster_nodes=cluster_nodes,
+            status, selected_cluster, cluster_nodes=cluster_nodes, osd_latency=osd_latency,
         )
     status_age = status_section.get("age_seconds") if isinstance(status_section, dict) else None
     status_available = bool(status_section and status_section.get("section_available", True))
