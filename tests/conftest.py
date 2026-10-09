@@ -355,3 +355,11 @@ def _staging_soak_passes(monkeypatch):
 
     monkeypatch.setattr(upgrade_soak, "staging_soak", lambda session, target_version, **kwargs: upgrade_soak.SoakResult(
         True, f"CS-STAGING đã chạy Ceph {target_version} 48 giờ, HEALTH_OK.", "CS-STAGING", 48.0))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_failure_lab_config(monkeypatch, tmp_path_factory):
+    """The staging config lives in /var/lib/ceph-ai/config on a real host; tests never read it."""
+    from shared import failure_lab_config
+
+    monkeypatch.setattr(failure_lab_config, "CONFIG_PATH", tmp_path_factory.mktemp("lab-config") / "failure-lab.json")

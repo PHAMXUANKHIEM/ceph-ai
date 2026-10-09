@@ -166,7 +166,26 @@ def _monitoring_choice(body: dict) -> dict:
     with db.SessionLocal() as session:
         if session.query(Cluster).filter(Cluster.name == name).first() is not None:
             raise HTTPException(status_code=400, detail=f"Đã có cụm tên {name!r}; chọn tên khác")
-    return {"register_monitoring": True, "monitor_cluster_name": name}
+    choice: dict = {"register_monitoring": True, "monitor_cluster_name": name}
+    if body.get("failure_lab_staging"):
+        holder = _staging_cluster_name()
+        if holder:
+            raise HTTPException(status_code=400, detail=(
+                f"Đã có cụm Staging ({holder}); đổi trong Cài đặt > Cụm Staging nếu muốn thay"))
+        choice["failure_lab_staging"] = True
+    return choice
+
+
+def _staging_cluster_name() -> str:
+    """Name of the active cluster already chosen as Failure Lab staging ('' if none)."""
+    from shared import failure_lab_config
+
+    cluster_id = failure_lab_config.load().cluster_id
+    if not cluster_id:
+        return ""
+    with db.SessionLocal() as session:
+        cluster = session.get(Cluster, cluster_id)
+        return cluster.name if cluster is not None and cluster.is_active else ""
 
 
 def _is_valid_ip(ip: str) -> bool:
@@ -493,6 +512,7 @@ async def deploy_cluster_page(request: Request, user: str = Depends(require_logi
             "last_action_params": last_action_params,
             "progress": progress,
             "realtime_cluster_id": realtime_cluster_id,
+            "staging_cluster_name": _staging_cluster_name(),
         },
     )
 
