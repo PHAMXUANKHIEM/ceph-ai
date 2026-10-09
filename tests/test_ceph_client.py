@@ -2156,3 +2156,22 @@ def test_an_answering_host_is_never_paused_and_recovers_after_the_cooldown(monke
     _runner_raising(monkeypatch, None, calls)
 
     assert _ssh() == "ok" and not circuit.is_open
+
+
+def test_trash_listings_read_every_pool_in_one_remote_shell(monkeypatch):
+    seen = []
+
+    def fake_batch(mon_nodes, container, user, key, exec_mode, commands, *, parallel=False):
+        seen.append((tuple(mon_nodes), exec_mode, list(commands), parallel))
+        return "10.0.0.1", [[{"id": "abc", "name": "old", "deleted_at": "2026-10-01", "status": "USER"}], None]
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_batch_command_with", fake_batch)
+
+    listed = ceph_client.query_rbd_trash_listings(
+        ["vms", "volumes"], (["10.0.0.1"], "", "root", "/k", "cephadm"))
+
+    assert seen == [(("10.0.0.1",), "cephadm", ["rbd trash ls --long vms --format json",
+                                                 "rbd trash ls --long volumes --format json"], True)]
+    assert listed["volumes"] is None  # that pool's frame failed
+    assert [(entry["id"], entry["name"], entry["size_bytes"]) for entry in listed["vms"]] == [("abc", "old", None)]
+    assert ceph_client.query_rbd_trash_listings([]) == {}

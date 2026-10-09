@@ -1290,6 +1290,34 @@ def query_rbd_trash_with(
     )
 
 
+def query_rbd_trash_listings(
+    pools: list[str], connection: tuple[list[str], str, str, str, str] | None = None,
+) -> dict[str, list[TrashEntry] | None]:
+    """`rbd trash ls --long` for several pools in ONE remote Ceph shell, without
+    the capacity scan. Under cephadm every shell starts a container and waits
+    for the host lock: four pools listed one by one took 38 s on CS-LAB
+    (3-16 s each, 09/10/2026). A pool whose listing failed maps to None.
+    ``connection`` is (mon_nodes, container, ssh_user, ssh_key_path, exec_mode);
+    the default cluster's settings when omitted."""
+    if not pools:
+        return {}
+    connection = connection or (
+        get_mon_nodes(), settings.ceph_container_name, settings.ssh_user,
+        settings.ssh_key_path, settings.ceph_exec_mode,
+    )
+    _, payloads = run_ceph_json_batch_command_with(
+        *connection, [f"rbd trash ls --long {shlex.quote(pool)} --format json" for pool in pools], parallel=True,
+    )
+
+    def _no_capacity_query(command: str) -> dict | list:
+        raise CephQueryError(f"capacity is not read in a listing: {command}")
+
+    return {
+        pool: None if payload is None else _normalize_rbd_trash(pool, payload, _no_capacity_query, include_capacity=False)
+        for pool, payload in zip(pools, payloads)
+    }
+
+
 # One `rados ls` can hold this many object names in memory before the scan is
 # not worth its cost; above it the UI keeps showing "—" rather than stalling a
 # page render on a multi-million-object pool.

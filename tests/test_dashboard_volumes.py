@@ -77,6 +77,17 @@ def _stub_no_trash(monkeypatch):
     # "always mock live SSH calls explicitly" discipline (an earlier real
     # slowdown was found from a test that didn't).
     monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", lambda pool: [])
+    _stub_trash_listings(monkeypatch, lambda pool: [])
+
+
+def _stub_trash_listings(monkeypatch, entries_for, calls=None):
+    """The pool cards list every pool in one remote shell (query_rbd_trash_listings)."""
+    def listings(pools, connection=None):
+        if calls is not None:
+            calls.append(list(pools))
+        return {pool: entries_for(pool) for pool in pools}
+
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash_listings", listings)
 
 
 def test_unauthenticated_get_volumes_redirects_to_login(dashboard_client):
@@ -146,11 +157,9 @@ def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, mo
     _configure_pools(monkeypatch)
     calls = []
 
-    def list_trash(pool):
-        calls.append(pool)
-        return [_fake_trash_entry()]
-
-    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", list_trash)
+    _stub_trash_listings(monkeypatch, lambda pool: [_fake_trash_entry()], calls)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash",
+                        lambda *a, **k: pytest.fail("the landing lists all pools in one shell"))
     _login(dashboard_client)
 
     response = dashboard_client.get("/trash")
@@ -161,15 +170,38 @@ def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, mo
     assert "Chọn một pool để xem các volume" in response.text
     # The picker counts entries per pool, but never lists them: individual
     # volume names only appear once a pool is selected.
-    assert set(calls) == {"vms", "backups"}
+    assert len(calls) == 1 and set(calls[0]) == {"vms", "backups"}
     assert "old-disk" not in response.text
+
+
+def test_trash_landing_is_served_from_cache_after_the_first_listing(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    calls = []
+    _stub_trash_listings(monkeypatch, lambda pool: [_fake_trash_entry()], calls)
+    scheduled = []
+    monkeypatch.setattr(volumes_route, "schedule_ceph_query_refresh",
+                        lambda namespace, key, loader, ttl: scheduled.append((namespace, key)) or True)
+    _login(dashboard_client)
+    dashboard_client.get("/trash")
+
+    # An hour later the cards still render from the cached listing; Ceph is only asked in the background.
+    real_get = volumes_route.cached_ceph_query_value
+
+    def an_hour_old(namespace, key, **kwargs):
+        cached = real_get(namespace, key, **kwargs)
+        return (cached[0], 3600.0) if cached else None
+
+    monkeypatch.setattr(volumes_route, "cached_ceph_query_value", an_hour_old)
+    response = dashboard_client.get("/trash")
+
+    assert response.status_code == 200 and response.text.count("1 <small>volume</small>") == 2
+    assert len(calls) == 1
+    assert {namespace for namespace, _key in scheduled} == {"rbd-trash-list"}
 
 
 def test_trash_landing_does_not_offer_purge_all(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
-    monkeypatch.setattr(
-        volumes_route.ceph_client, "query_rbd_trash", lambda pool: [_fake_trash_entry()]
-    )
+    _stub_trash_listings(monkeypatch, lambda pool: [_fake_trash_entry()])
     _login(dashboard_client)
 
     response = dashboard_client.get("/trash")
@@ -1138,17 +1170,13 @@ def test_trash_landing_page_shows_volume_count_without_capacity_scan(dashboard_c
     _configure_pools(monkeypatch)
     calls = []
 
-    def list_trash(pool):
-        calls.append(pool)
-        return [_fake_trash_entry()]
-
-    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", list_trash)
+    _stub_trash_listings(monkeypatch, lambda pool: [_fake_trash_entry()], calls)
     _login(dashboard_client)
 
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert set(calls) == {"vms", "backups"}
+    assert len(calls) == 1 and set(calls[0]) == {"vms", "backups"}
     assert response.text.count("1 <small>volume</small>") == 2
     assert "Chọn một pool để xem các volume" in response.text
 
