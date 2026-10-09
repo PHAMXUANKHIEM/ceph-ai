@@ -43,6 +43,9 @@ _FAMILY_CODES: dict[str, tuple[str, ...]] = {
 # correlation truth inside CORRELATION_LOOKBACK.  REJECTED is the only
 # terminal state that says the Incident must not supervise a log label.
 _NON_CORRELATABLE_STATUSES = {IncidentStatus.REJECTED.value}
+# Public name for other modules (shared/evidence_gaps.py, FL6).
+FAMILY_CODES = _FAMILY_CODES
+
 _OSD_RE = re.compile(r"\bosd[.\s_-]?(\d+)\b", re.IGNORECASE)
 _VOLUME_CODE_RE = re.compile(r"^VOLUME_SATURATED:([^/]+)/(.+)$", re.IGNORECASE)
 _NODE_RESOURCE_CODE_RE = re.compile(r"^NODE_RESOURCE_HIGH:(.+)$", re.IGNORECASE)
