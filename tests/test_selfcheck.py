@@ -117,7 +117,7 @@ def test_a_failed_send_keeps_the_alert_pending(tmp_path, monkeypatch):
         "rabbitmq": {"failures": 1, "alerted_at": None, "since": T0}}})
     monkeypatch.setattr(selfcheck, "boot_id", lambda: "b")
     monkeypatch.setattr(selfcheck, "uptime_seconds", lambda: 9999.0)
-    monkeypatch.setattr(selfcheck, "run_checks", lambda env, now: {"rabbitmq": "không trả lời ping"})
+    monkeypatch.setattr(selfcheck, "run_checks", lambda env, now, state=None: {"rabbitmq": "không trả lời ping"})
     saved = {}
     monkeypatch.setattr(selfcheck, "save_state", lambda state: saved.update(state))
 
@@ -141,7 +141,7 @@ def test_units_run_independently_of_the_stack_every_minute():
 def test_the_script_uses_only_the_standard_library():
     source = (ROOT / "scripts" / "selfcheck" / "ceph_ai_selfcheck.py").read_text(encoding="utf-8")
     imports = {line.split()[1].split(".")[0] for line in source.splitlines() if line.startswith(("import ", "from "))}
-    assert imports <= {"__future__", "http", "json", "os", "shutil", "socket", "subprocess", "sys", "time", "datetime", "pathlib", "urllib"}
+    assert imports <= {"__future__", "collections", "http", "json", "os", "re", "shutil", "socket", "subprocess", "sys", "time", "datetime", "pathlib", "urllib"}
 
 
 def _unhealthy_runs(state, name, runs, start=T0):
@@ -205,3 +205,45 @@ def test_an_unreachable_worker_does_not_double_report(monkeypatch):
     monkeypatch.setattr(selfcheck, "_podman", lambda *args: SimpleNamespace(stdout="", returncode=125))
 
     assert selfcheck.check_telegram_outbox() == {"telegram_outbox": None}
+
+
+# --- error spikes in service container logs (09/10/2026) -------------------------------------
+
+_FLOOD_LINE = ("2026-10-09 02:07:30,908 ERROR:worker.llm.router_client:forecast shadow registry skipped "
+               "scope=CS-LAB|10.20.1.39|ram|h6: runtime active model differs from registry ACTIVE model")
+
+
+def test_an_error_flood_is_a_problem_with_its_most_repeated_message():
+    log = "\n".join([_FLOOD_LINE, "Traceback (most recent call last):", "  File \"/app/x.py\""] * 60)
+
+    problem = selfcheck.error_spike(log)
+
+    assert problem.startswith("120 dòng lỗi trong 5 phút")
+    assert "runtime active model differs from registry ACTIVE model" in problem
+    assert "02:07:30" not in problem  # timestamps and numbers are folded away
+
+
+def test_a_few_errors_are_normal():
+    assert selfcheck.error_spike("\n".join([_FLOOD_LINE] * 5 + ["INFO all good"] * 500)) is None
+
+
+def test_error_rates_are_rescanned_every_five_minutes_for_service_containers_only(monkeypatch):
+    scanned = []
+
+    def podman(*args):
+        scanned.append(args[-1])
+        flood = args[-1] == "ceph-ai_worker_1"
+        return SimpleNamespace(stdout="", stderr="\n".join([_FLOOD_LINE] * (150 if flood else 2)), returncode=0)
+
+    monkeypatch.setattr(selfcheck, "_podman", podman)
+    state = {}
+
+    first = selfcheck.check_error_rates(state, now=1000.0)
+    again = selfcheck.check_error_rates(state, now=1000.0 + selfcheck.ERROR_SCAN_SECONDS - 1)
+
+    assert "rabbitmq" not in scanned and len(scanned) == 7
+    assert first["errors:ceph-ai_worker_1"].startswith("150 dòng lỗi")
+    assert first["errors:ceph-ai_watcher_1"] is None
+    assert again == first and len(scanned) == 7  # cached between scans
+    selfcheck.check_error_rates(state, now=1000.0 + selfcheck.ERROR_SCAN_SECONDS)
+    assert len(scanned) == 14
