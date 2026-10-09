@@ -1,0 +1,15 @@
+[Unit]
+Description=Ceph AI Failure Lab nightly campaign on the staging cluster
+After=ceph-ai-containers.service
+Wants=ceph-ai-containers.service
+
+[Service]
+Type=oneshot
+# Inside the Worker container: it holds the database, the lab settings
+# (/var/lib/ceph-ai/config/failure-lab.json) and the SSH identity remediation
+# uses. The runner's own lock, HALT file and undo-in-finally still apply.
+ExecStart=/usr/bin/podman exec ceph-ai_worker_1 python -m scripts.lab.failure_lab_campaign
+# Up to three runs of at most ~20 minutes each, inside a three-hour window.
+TimeoutStartSec=3h
+StandardOutput=append:/var/log/ceph-ai-failure-lab.log
+StandardError=append:/var/log/ceph-ai-failure-lab.log
