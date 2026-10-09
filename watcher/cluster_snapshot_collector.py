@@ -25,6 +25,7 @@ from shared.cluster_snapshot import (
     SNAPSHOT_NAMESPACE,
     publish_section_snapshot,
     publish_snapshot,
+    read_section_snapshot,
     record_section_error,
     read_snapshot,
 )
@@ -58,6 +59,17 @@ _METRICS = {
     "last_completed_at": None,
 }
 logger = logging.getLogger(__name__)
+
+# Ceph's network config and the MON/OSD address dumps barely change, yet the
+# nodes section asked for them on every inventory poll (60 s): three
+# `cephadm shell` round trips, 13-30 s on CS-LAB, and ~80 `osd dump` audit
+# lines per 20 min that log intelligence flagged (09/10/2026). Reuse them until
+# the TTL runs out or, for the dumps, the osdmap/monmap epoch in the latest
+# `ceph -s` snapshot moves (any up/in/address change bumps it).
+NETWORK_CONFIG_TTL_SECONDS = 1800
+DAEMON_ADDRESSES_TTL_SECONDS = 600
+_SLOW_FACTS_LOCK = Lock()
+_SLOW_FACTS: dict[tuple[str, str], tuple[float, object, object]] = {}
 
 
 def _utc_now() -> str:
@@ -343,26 +355,54 @@ def _collect_node_summary(cluster) -> dict:
     }
 
 
+def _map_epochs(cluster) -> tuple | None:
+    """(osdmap epoch, monmap epoch) from the latest published ``ceph -s``, if any."""
+    try:
+        snapshot = read_section_snapshot(cluster.id, "status")
+    except Exception:
+        logger.debug("snapshot collector: status snapshot unreadable", exc_info=True)
+        return None
+    status = (snapshot or {}).get("status")
+    if not isinstance(status, dict):
+        return None
+    osd_epoch = (status.get("osdmap") or {}).get("epoch")
+    mon_epoch = (status.get("monmap") or {}).get("epoch")
+    return None if osd_epoch is None or mon_epoch is None else (osd_epoch, mon_epoch)
+
+
+def _reused_fact(cluster, name: str, loader, ttl_seconds: int, version: object = None):
+    """``loader(cluster)`` at most once per TTL and ``version``; the last value survives a failure.
+
+    Best effort: a failed query must not cost the nodes section, so it returns
+    the previous value (or None) instead of raising.
+    """
+    key = (str(cluster.id), name)
+    with _SLOW_FACTS_LOCK:
+        entry = _SLOW_FACTS.get(key)
+    if entry is not None and entry[1] == version and monotonic() - entry[0] < ttl_seconds:
+        return entry[2]
+    try:
+        value = loader(cluster)
+    except Exception:
+        logger.warning("snapshot collector: Ceph %s unavailable", name, exc_info=True)
+        return entry[2] if entry is not None else None
+    with _SLOW_FACTS_LOCK:
+        _SLOW_FACTS[key] = (monotonic(), version, value)
+    return value
+
+
 def _network_config(cluster) -> dict | None:
-    """Best effort: a failed ``config get`` must not cost the nodes section."""
     from watcher.inventory_queries import collect_network_config
 
-    try:
-        return collect_network_config(cluster)
-    except Exception:
-        logger.warning("snapshot collector: Ceph network config unavailable", exc_info=True)
-        return None
+    return _reused_fact(cluster, "network config", collect_network_config, NETWORK_CONFIG_TTL_SECONDS)
 
 
 def _daemon_addresses(cluster) -> dict | None:
-    """Best effort, like ``_network_config``: the Stream view falls back to host addresses."""
+    """The Stream view falls back to host addresses when this is None."""
     from watcher.inventory_queries import collect_daemon_addresses
 
-    try:
-        return collect_daemon_addresses(cluster)
-    except Exception:
-        logger.warning("snapshot collector: Ceph daemon addresses unavailable", exc_info=True)
-        return None
+    return _reused_fact(cluster, "daemon addresses", collect_daemon_addresses, DAEMON_ADDRESSES_TTL_SECONDS,
+                        version=_map_epochs(cluster))
 
 
 class CephSnapshotCollector:
