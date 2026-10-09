@@ -269,6 +269,38 @@ def test_nightly_analyst_uses_budget_guard_and_cli_telemetry(monkeypatch, tmp_pa
     assert telemetry_calls[0]["output_chars"] == len("bounded report")
 
 
+def test_a_codex_analyst_is_measured_by_its_final_answer_not_its_session(monkeypatch, tmp_path):
+    telemetry_calls = []
+    session_log = "exec rg ...\n" * 50_000 + "tail of the session"
+    monkeypatch.setattr(supervisor, "_role_account_dirs", lambda config, profile: (tmp_path, tmp_path))
+    monkeypatch.setattr(supervisor, "_provider_command", lambda *args, **kwargs: ("codex", ["codex", "exec", "-"]))
+    monkeypatch.setattr(supervisor, "check_ai_budget", lambda *args: "reservation-1")
+    monkeypatch.setattr(supervisor, "record_ai_attempt", lambda **values: telemetry_calls.append(values))
+    seen = []
+
+    def fake_run(args, **kwargs):
+        if args[:3] == ["git", "worktree", "add"]:
+            Path(args[4]).mkdir(parents=True)
+            return SimpleNamespace(returncode=0, stdout="")
+        if args[:2] == ["codex", "exec"]:
+            seen.append(args)
+            Path(args[args.index("--output-last-message") + 1]).write_text("Final plan: pin apt snapshot.")
+            return SimpleNamespace(returncode=0, stdout=session_log)
+        if args[:3] in (["git", "status", "--porcelain"], ["git", "worktree", "remove"]):
+            return SimpleNamespace(returncode=0, stdout="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(supervisor, "_run", fake_run)
+    _role, report = supervisor._run_nightly_analyst(
+        tmp_path, "nightly evidence", "system_upgrade", "upgrades",
+        provider="codex", model="", account_profile="configured", timeout_seconds=30,
+    )
+
+    assert seen[0][-1] == "-"  # the prompt still comes from stdin
+    assert "Final plan: pin apt snapshot." in report and "exec rg" not in report
+    assert telemetry_calls[0]["output_chars"] == len("Final plan: pin apt snapshot.")
+
+
 def test_nightly_due_is_idempotent_when_systemd_starts_late():
     now = datetime(2026, 8, 30, 20, 15, tzinfo=timezone.utc)
 
