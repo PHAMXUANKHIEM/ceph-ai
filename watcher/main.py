@@ -31,6 +31,7 @@ from watcher import (
     health_availability_monitor,
     investigation_scanner,
     log_intel,
+    mgr_health_gate,
     node_health_monitor,
     osd_latency_monitor,
     publisher,
@@ -1045,7 +1046,7 @@ def run(
         try:
             with cluster_snapshot_collector.health_collection_lock(cluster_id):
                 try:
-                    health = query_cluster_health()
+                    health = mgr_health_gate.read_health(query_cluster_health)
                 except CephQueryError as exc:
                     try:
                         cluster_snapshot_collector.publish_health_error(cluster_id, exc)
