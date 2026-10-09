@@ -724,7 +724,7 @@ def test_query_cluster_health_with_cephadm_mode_uses_shell_and_longer_timeout(fa
     ]
     assert 0 < float(command_parts[3].split("s", 1)[0]) <= ceph_client.HEALTH_COMMAND_TIMEOUT_SECONDS
     assert command_parts[3].endswith(
-        f"flock -w {ceph_client.CEPHADM_LOCK_WAIT_SECONDS} "
+        f"flock -E {ceph_client.CEPHADM_LOCK_BUSY_EXIT_CODE} -w {ceph_client.CEPHADM_LOCK_WAIT_SECONDS} "
         f"{ceph_client.CEPHADM_REMOTE_LOCK_PATH} "
         "cephadm shell -- ceph health detail --format json"
     )
@@ -2031,3 +2031,67 @@ def test_rbd_dependency_graph_marks_node_limit_without_unbounded_queries(monkeyp
     assert len(graph["nodes"]) == 2
     assert graph["truncated"] is True
     assert len(calls) == 2
+
+
+# --- a busy cephadm lock is not a MON failure (09/10/2026) -------------------------------------
+
+def _runner_failing_with(monkeypatch, message):
+    from shared.ceph_runner import CephRunnerError
+
+    calls = []
+
+    class Runner:
+        def __init__(self, pool):
+            pass
+
+        def run(self, host, command, timeout):
+            calls.append(host)
+            raise CephRunnerError(host, "command", "command_failed", message)
+
+    monkeypatch.setattr(ceph_client, "CephCommandRunner", Runner)
+    monkeypatch.setattr(ceph_client, "_CEPHADM_CIRCUITS", {})
+    return calls
+
+
+def _run_cephadm(host="10.3.54.118"):
+    return ceph_client._run_remote_command_with(
+        host, "cephadm shell -- rbd perf image iostat everest-rbd", "root", "/key", 10, pool=object(),
+    )
+
+
+def test_a_busy_cephadm_lock_never_opens_the_circuit(monkeypatch):
+    calls = _runner_failing_with(monkeypatch, f"command exited {ceph_client.CEPHADM_LOCK_BUSY_EXIT_CODE}: b''")
+
+    for _ in range(10):
+        with pytest.raises(CephQueryError, match="cephadm lock busy"):
+            _run_cephadm()
+
+    assert len(calls) == 10  # every call reached the MON; none was refused by the circuit
+
+
+def test_real_failures_still_open_the_circuit_and_a_busy_probe_frees_it(monkeypatch):
+    calls = _runner_failing_with(monkeypatch, "command exited 1: b'error'")
+    threshold = ceph_client.settings.ceph_mon_circuit_failure_threshold
+    for _ in range(threshold):
+        with pytest.raises(CephQueryError, match="exited 1"):
+            _run_cephadm()
+    with pytest.raises(CephQueryError, match="circuit breaker open"):
+        _run_cephadm()
+    assert len(calls) == threshold
+
+    circuit = next(iter(ceph_client._CEPHADM_CIRCUITS.values()))
+    circuit._opened_at -= ceph_client.settings.ceph_mon_circuit_cooldown_seconds + 1
+    from shared.ceph_runner import CephRunnerError
+
+    class Busy:
+        def __init__(self, pool):
+            pass
+
+        def run(self, host, command, timeout):
+            raise CephRunnerError(host, "command", "command_failed",
+                                  f"command exited {ceph_client.CEPHADM_LOCK_BUSY_EXIT_CODE}: b''")
+
+    monkeypatch.setattr(ceph_client, "CephCommandRunner", Busy)
+    with pytest.raises(CephQueryError, match="cephadm lock busy"):
+        _run_cephadm()  # the probe met a busy lock
+    assert circuit.allow()  # ...and did not leave the circuit stuck with a probe in flight
