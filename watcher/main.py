@@ -31,6 +31,7 @@ from watcher import (
     health_availability_monitor,
     investigation_scanner,
     log_intel,
+    node_config_audit,
     node_health_monitor,
     osd_latency_monitor,
     publisher,
@@ -59,6 +60,7 @@ from watcher.performance_rca import PERFORMANCE_RCA_PREFIX
 from shared import alert_lifecycle, audit, db, heartbeat, incident_outbox, service_health, telegram_alerts, telegram_outbox
 from shared.cluster_snapshot import read_priority_refresh
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
+from shared.cluster_nodes import configured_nodes
 from shared.clusters import get_default_cluster_id, list_active_clusters
 from shared.logging_redaction import install_logging_redaction
 from shared.models import Action, ActionStatus, AuditEntry, Cluster, Incident, IncidentStatus
@@ -969,6 +971,7 @@ def run(
     initial_auxiliary_scan_at = utc_now() if max_iterations is None else None
     last_device_health_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_node_health_scan_at: Optional[datetime] = initial_auxiliary_scan_at
+    last_node_config_audit_at: Optional[datetime] = initial_auxiliary_scan_at
     last_node_reachability_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_bluestore_omap_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_osd_latency_scan_at: Optional[datetime] = initial_auxiliary_scan_at
@@ -1356,6 +1359,24 @@ def run(
                 f"node-health-{cluster_id or 'default'}", scan_node_health,
             )
             last_node_health_scan_at = now
+
+        # 09/10/2026: OS settings of the Ceph nodes, read-only, slow cadence.
+        if settings.node_config_audit_enabled and (
+            last_node_config_audit_at is None
+            or (now - last_node_config_audit_at).total_seconds()
+            >= settings.node_config_audit_interval_seconds
+        ):
+            def audit_node_config() -> None:
+                try:
+                    node_config_audit.run_audit(
+                        cluster_id, [node["host"] for node in configured_nodes()],
+                        notify=lambda text: telegram_alerts.send_node_alert("cấu hình node", text),
+                    )
+                except Exception:
+                    logger.exception("run: node config audit failed")
+
+            run_auxiliary_scan(f"node-config-{cluster_id or 'default'}", audit_node_config)
+            last_node_config_audit_at = now
 
         # 2026-08-06: BlueStore per-pool omap quick-fix, system-proposed —
         # own independent try/except (same isolation reasoning as the

@@ -334,3 +334,11 @@ def _fresh_ssh_host_circuits():
     yield
     with ceph_client._HOST_CIRCUITS_LOCK:
         ceph_client._HOST_CIRCUITS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_node_config_audit_ssh(monkeypatch):
+    """The Watcher loop audits node OS settings over SSH; tests never reach real nodes."""
+    from watcher import node_config_audit
+
+    monkeypatch.setattr(node_config_audit, "collect", lambda nodes: {})
