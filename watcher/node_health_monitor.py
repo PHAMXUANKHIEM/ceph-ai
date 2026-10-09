@@ -30,13 +30,13 @@ from datetime import datetime, timedelta, timezone
 from shared.time import utc_now
 
 from config.settings import settings
-from shared import alert_lifecycle, audit, db, telegram_outbox
+from shared import alert_lifecycle, audit, db, incident_events, telegram_outbox
 from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
 from shared.online_learning_consumer import apply_ready_labels, consume_samples
 from shared.telegram_alerts import send_node_alert
-from watcher import ceph_client, node_metrics, node_resource_forecast
+from watcher import ceph_client, node_metrics, node_postmortem, node_resource_forecast
 from worker.policy import gate
 
 logger = logging.getLogger(__name__)
@@ -222,6 +222,7 @@ def create_or_resolve_node_unreachable_incidents(
 ) -> None:
     """Persist one approval-gated incident and Telegram alert per outage."""
     pending_event_ids: list[str] = []
+    recovered: list[tuple[str, str, datetime]] = []
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -244,6 +245,8 @@ def create_or_resolve_node_unreachable_incidents(
                 continue
             incident.status = IncidentStatus.RESOLVED.value
             cancel_pending_actions(session, incident.id)
+            recovered.append((incident.id, incident.ceph_code.removeprefix(NODE_UNREACHABLE_PREFIX),
+                              incident.detected_at))
 
         for ceph_code, detail in current.items():
             if ceph_code in open_codes:
@@ -285,6 +288,38 @@ def create_or_resolve_node_unreachable_incidents(
                 )
         session.commit()
     _deliver_committed_node_alerts(pending_event_ids)
+    if recovered and settings.node_postmortem_enabled:
+        _record_postmortems(recovered)
+
+
+def _record_postmortems(recovered: list[tuple[str, str, datetime]]) -> None:
+    """After the resolve is committed (the SSH read may take seconds), attach why each node went down."""
+    results = [(incident_id, host, node_postmortem.collect(host, detected_at))
+               for incident_id, host, detected_at in recovered]
+    event_ids: list[str] = []
+    with db.SessionLocal() as session:
+        for incident_id, host, result in results:
+            incident = session.get(Incident, incident_id)
+            if incident is None:
+                continue
+            try:
+                evidence = json.loads(incident.signal_evidence_json or "{}")
+            except ValueError:
+                evidence = {}
+            evidence["postmortem"] = result.as_dict()
+            incident.signal_evidence_json = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
+            incident_events.record(
+                session, incident_id=incident_id, event_type=node_postmortem.POSTMORTEM_EVENT,
+                actor="system", evidence=result.as_dict(),
+            )
+            if result.kind != node_postmortem.UNAVAILABLE and not alert_lifecycle.inherit_active_mute(session, incident):
+                event_ids.append(telegram_outbox.enqueue_node_postmortem_alert(
+                    session, incident_id=incident_id, host=host,
+                    message=f"🩺 Node {host} đã trả lời lại. Nguyên nhân theo kernel log: {result.summary}",
+                ))
+        session.commit()
+    _deliver_committed_node_alerts(event_ids)
+
 
 def ceph_code_for(host: str) -> str:
     return f"{NODE_RESOURCE_HIGH_PREFIX}{host}"

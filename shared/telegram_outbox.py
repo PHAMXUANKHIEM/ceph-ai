@@ -131,6 +131,29 @@ def enqueue_node_alert(
 
 
 
+def enqueue_node_postmortem_alert(
+    session,
+    *,
+    incident_id: str,
+    host: str,
+    message: str,
+) -> str:
+    """Queue the single "why the node went down" notice once it is reachable again."""
+    payload = {
+        "kind": "node_alert",
+        "incident_id": incident_id,
+        "host": str(host),
+        "message": str(message)[:4000],
+    }
+    return _enqueue(
+        session,
+        event_id=f"incident:{incident_id}:hardware_postmortem",
+        incident_id=incident_id,
+        category="hardware",
+        payload=payload,
+    )
+
+
 def enqueue_node_flapping_alert(
     session,
     *,
