@@ -8,7 +8,8 @@ standard library only.
 
 Checks: expected containers running and not unhealthy, service heartbeats in
 /run/ceph-ai, RabbitMQ answering, database TCP reachable, Dashboard answering,
-disk space, Telegram outbox (counts only: stuck or DEAD messages). A problem is reported after two failed runs in a row, reminded
+disk space, Telegram outbox (counts only: stuck or DEAD messages), and error
+lines in each service container's log (every five minutes). A problem is reported after two failed runs in a row, reminded
 every six hours while it lasts, and a recovery is reported once. After a host
 reboot the stack gets a grace period, then one boot summary is sent.
 
@@ -23,12 +24,14 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 # Only ever runs /usr/bin/podman with constant arguments (see _podman).
 import subprocess  # nosec B404
 import sys
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
@@ -61,6 +64,13 @@ UNHEALTHY_RUNS_BEFORE_RESTART = 3
 MAX_RESTARTS = 3
 RESTART_WINDOW_SECONDS = 6 * 3600
 NEVER_AUTO_RESTART = frozenset({"rabbitmq", "ceph-ai_full-executor_1"})
+# 09/10/2026: the worker logged ~170k tracebacks a day for weeks and nobody
+# knew until a manual log read. Count error lines per service container.
+ERROR_SCAN_SECONDS = 300
+ERROR_LINES_LIMIT = 100
+_ERROR_LINE = re.compile(r"(Traceback \(most recent call last\)|\b(?:ERROR|CRITICAL)\b)")
+_TIMESTAMP = re.compile(r"^\d{4}-\d\d-\d\d[ T]\S+\s+")
+_VOLATILE = re.compile(r"0x[0-9a-f]+|[0-9a-f]{8}-[0-9a-f-]{27}|\d+")
 
 
 # --- inputs -----------------------------------------------------------------
@@ -226,10 +236,41 @@ def check_disks() -> dict[str, str | None]:
     return results
 
 
-def run_checks(env: dict[str, str], now: float) -> dict[str, str | None]:
+def error_spike(log_text: str) -> str | None:
+    """A problem text when the log holds ERROR_LINES_LIMIT or more error lines, else None."""
+    errors = [line for line in log_text.splitlines() if _ERROR_LINE.search(line)]
+    if len(errors) < ERROR_LINES_LIMIT:
+        return None
+    messages = Counter(
+        _VOLATILE.sub("N", _TIMESTAMP.sub("", line)).strip()[:160] for line in errors if "Traceback" not in line
+    )
+    top = f"; lặp nhiều nhất: {messages.most_common(1)[0][0]}" if messages else ""
+    return f"{len(errors)} dòng lỗi trong {ERROR_SCAN_SECONDS // 60} phút{top}"
+
+
+def check_error_rates(state: dict, now: float) -> dict[str, str | None]:
+    """Error-line counts of the service containers, rescanned every ERROR_SCAN_SECONDS."""
+    scan = state.setdefault("error_scan", {})
+    if now - float(scan.get("at") or 0) < ERROR_SCAN_SECONDS:
+        return dict(scan.get("results") or {})
+    results: dict[str, str | None] = {}
+    for name in EXPECTED_CONTAINERS:
+        if not name.startswith("ceph-ai_"):
+            continue
+        try:
+            logs = _podman("logs", "--since", f"{ERROR_SCAN_SECONDS}s", name)
+        except (OSError, subprocess.TimeoutExpired):
+            continue  # an unreadable log is the container check's business
+        results[f"errors:{name}"] = error_spike((logs.stdout or "") + (logs.stderr or ""))
+    scan.update({"at": now, "results": results})
+    return results
+
+
+def run_checks(env: dict[str, str], now: float, state: dict | None = None) -> dict[str, str | None]:
     results: dict[str, str | None] = {}
     for part in (check_containers(), check_heartbeats(now), check_rabbitmq(),
-                 check_database(env), check_dashboard(), check_disks(), check_telegram_outbox()):
+                 check_database(env), check_dashboard(), check_disks(), check_telegram_outbox(),
+                 check_error_rates(state if state is not None else {}, now)):
         results.update(part)
     return results
 
@@ -353,7 +394,7 @@ def main() -> int:
     now = time.time()
     state = load_state()
     in_grace = uptime_seconds() < BOOT_GRACE_SECONDS
-    results = run_checks(env, now)
+    results = run_checks(env, now, state)
     lines = boot_lines(results, state, boot_id(), in_grace=in_grace) + evaluate(results, state, now, in_grace=in_grace)
     lines += heal(results, state, now, in_grace=in_grace)
     failing = sorted(name for name, problem in results.items() if problem)
