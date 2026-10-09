@@ -334,3 +334,11 @@ def _fresh_ssh_host_circuits():
     yield
     with ceph_client._HOST_CIRCUITS_LOCK:
         ceph_client._HOST_CIRCUITS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_mgr_metrics_lookup(monkeypatch):
+    """The health gate asks Ceph for the mgr URL and fetches metrics; tests never do."""
+    from watcher import mgr_health_gate
+
+    monkeypatch.setattr(mgr_health_gate, "_GATE", mgr_health_gate.MgrHealthGate(discover=lambda: None))
