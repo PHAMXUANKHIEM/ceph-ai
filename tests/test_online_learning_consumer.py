@@ -457,7 +457,32 @@ def test_a_label_that_cannot_update_is_recorded_and_not_retried(monkeypatch):
         audit = session.query(OnlineLearnerAudit).filter_by(sample_id="s-no-runtime").one()
         assert audit.label == 43.0
         assert audit.update_applied is False
+        label = session.query(OnlineLearnerLabel).filter_by(sample_id="s-no-runtime").one()
+        assert label.status == "SKIPPED"  # no longer counted as waiting
+        from shared.models import OnlineLearnerLabelEvent
+
+        event = session.query(OnlineLearnerLabelEvent).filter_by(label_id=label.id, action="SKIPPED").one()
+        assert "mode=" in event.reason
     assert consumer_module.apply_ready_labels() == []
+
+
+def test_labels_attempted_before_skipped_existed_leave_the_ready_queue(monkeypatch):
+    factory = _session(monkeypatch)
+    _learning_settings(monkeypatch)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    _labelled_sample(factory, now, sample_id="s-old-attempt")
+    _labelled_sample(factory, now.replace(second=0) if now.second else now, sample_id="s-never-tried", host="node-other")
+    with factory() as session:
+        audit = session.query(OnlineLearnerAudit).filter_by(sample_id="s-old-attempt").one()
+        audit.label, audit.quality_status, audit.runtime_mode = 43.0, "DRIFT", "SHADOW_ONLY"
+        session.commit()
+
+    assert consumer_module.retire_attempted_labels() == 1
+    assert consumer_module.retire_attempted_labels() == 0
+
+    with factory() as session:
+        statuses = {label.sample_id: label.status for label in session.query(OnlineLearnerLabel).all()}
+    assert statuses == {"s-old-attempt": "SKIPPED", "s-never-tried": "READY"}
 
 
 def test_ready_label_sweep_is_off_with_online_learning(monkeypatch):

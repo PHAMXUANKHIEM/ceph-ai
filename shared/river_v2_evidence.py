@@ -41,7 +41,7 @@ def _self_labelled(label: Any) -> bool:
 
 def _new_scope() -> dict[str, Any]:
     return {
-        "verified": 0, "scored": 0, "ready": 0, "rejected": 0, "inconclusive": 0,
+        "verified": 0, "scored": 0, "ready": 0, "skipped": 0, "rejected": 0, "inconclusive": 0,
         "stale": 0, "self_labelled": 0, "ages_hours": [],
         "audit_samples": 0, "audit_ready_to_learn": 0,
     }
@@ -65,6 +65,8 @@ def _add_label(scope: dict[str, Any], label: Any, *, now: datetime, stale_after:
     scope["verified"] += 1
     if label.status == "CONSUMED":
         scope["scored"] += 1
+    elif label.status == "SKIPPED":
+        scope["skipped"] += 1  # tried and refused by the learner; not waiting
     elif label.status == "READY":
         scope["ready"] += 1
         if age is not None and age > stale_after:
