@@ -363,3 +363,11 @@ def _isolated_failure_lab_config(monkeypatch, tmp_path_factory):
     from shared import failure_lab_config
 
     monkeypatch.setattr(failure_lab_config, "CONFIG_PATH", tmp_path_factory.mktemp("lab-config") / "failure-lab.json")
+
+
+@pytest.fixture(autouse=True)
+def _no_mgr_pool_metrics(monkeypatch):
+    """The Pools section reads usage from the mgr; tests take the Ceph-command path unless they opt in."""
+    from watcher import mgr_pool_metrics
+
+    monkeypatch.setattr(mgr_pool_metrics, "fetch_pools", lambda **kwargs: None)
