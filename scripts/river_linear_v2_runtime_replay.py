@@ -196,7 +196,7 @@ def build_report() -> dict[str, object]:
         run_ids = [row.id for row in rows]
         raw_labels = session.query(OnlineLearnerLabel).filter(
             OnlineLearnerLabel.source_run_id.in_(run_ids),
-            OnlineLearnerLabel.status.in_(("READY", "CONSUMED")),
+            OnlineLearnerLabel.status.in_(("READY", "CONSUMED", "SKIPPED")),
             OnlineLearnerLabel.outcome.in_(VERIFIED_OUTCOMES),
             OnlineLearnerLabel.source_actor == "forecast-evaluator",
             OnlineLearnerLabel.evidence_fingerprint.isnot(None),

@@ -41,6 +41,7 @@ from shared.online_learning_labels import (
     enqueue_verified_outcomes,
     label_policy_paused,
     mark_consumed,
+    mark_skipped,
     normalize_metric,
     ready_label_for_sample,
 )
@@ -263,6 +264,9 @@ def _consume_one(
                         f"{runtime.reason}; target={target_decision.target}; "
                         f"target_reason={target_decision.reason}"
                     )
+                    # 128 of the canary's 129 "waiting" labels on 09/10/2026 had
+                    # been tried and refused (DRIFT); READY made them look queued.
+                    mark_skipped(ready_label, reason=f"{quality.status}: {quality.reason}; mode={runtime.mode}")
                     session.commit()
                     return ConsumedSample(
                         sample_id=sample_id,
@@ -440,6 +444,38 @@ def consume_samples(samples: Iterable[dict]) -> list[ConsumedSample]:
     return results
 
 
+RETIRE_ATTEMPTED_LABELS_PER_CYCLE = 500
+
+
+def retire_attempted_labels(limit: int = RETIRE_ATTEMPTED_LABELS_PER_CYCLE) -> int:
+    """Move READY labels whose sample already had a refused attempt to SKIPPED.
+
+    Labels attempted before SKIPPED existed stayed READY although
+    apply_ready_labels() never re-submits them; this drains them a bounded
+    batch per cycle. Labels never attempted (e.g. outside the canary) stay READY.
+    """
+    with db.SessionLocal() as session:
+        rows = session.execute(
+            select(OnlineLearnerLabel, OnlineLearnerAudit.quality_status, OnlineLearnerAudit.runtime_mode)
+            .join(OnlineLearnerAudit, and_(
+                OnlineLearnerLabel.cluster_key == OnlineLearnerAudit.cluster_key,
+                OnlineLearnerLabel.host == OnlineLearnerAudit.host,
+                OnlineLearnerLabel.metric == OnlineLearnerAudit.metric,
+                OnlineLearnerLabel.sample_id == OnlineLearnerAudit.sample_id,
+            ))
+            .where(
+                OnlineLearnerLabel.status == READY,
+                OnlineLearnerAudit.update_applied.is_(False),
+                OnlineLearnerAudit.label.is_not(None),
+            )
+            .limit(limit)
+        ).all()
+        for label, quality_status, runtime_mode in rows:
+            mark_skipped(label, reason=f"{quality_status}: attempted earlier without an update; mode={runtime_mode}")
+        session.commit()
+        return len(rows)
+
+
 def apply_ready_labels(limit: int | None = None) -> list[ConsumedSample]:
     """Feed verified labels back to the samples they verify (autonomy plan WP7).
 
@@ -454,6 +490,7 @@ def apply_ready_labels(limit: int | None = None) -> list[ConsumedSample]:
     """
     if not settings.online_learning_enabled:
         return []
+    retire_attempted_labels()
     limit = limit or settings.online_learning_max_samples_per_cycle
     query = (
         select(

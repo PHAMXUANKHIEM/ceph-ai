@@ -28,10 +28,14 @@ VERIFIED_SUCCESS = "VERIFIED_SUCCESS"
 VERIFIED_FAILED = "VERIFIED_FAILED"
 INCONCLUSIVE = "INCONCLUSIVE"
 REVOKED = "REVOKED"
+# Tried once and refused by the quality gate or runtime target; never retried,
+# because apply_ready_labels() only re-submits samples without a label attempt.
+SKIPPED = "SKIPPED"
 EVENT_CREATED = "CREATED"
 EVENT_BLOCKED = "BLOCKED"
 EVENT_CONSUMED = "CONSUMED"
 EVENT_REVOKED = "REVOKED"
+EVENT_SKIPPED = "SKIPPED"
 
 
 def normalize_metric(metric: str) -> str:
@@ -323,6 +327,21 @@ def label_policy_paused(session, *, now: datetime | None = None) -> bool:
         OnlineLearnerLabelEvent.reason.like("label rate limit reached%"),
         OnlineLearnerLabelEvent.created_at >= cutoff,
     )) is not None
+
+
+def mark_skipped(label: OnlineLearnerLabel, *, reason: str) -> None:
+    """A label attempt that did not update: leave the READY queue, keep why."""
+    label.status = SKIPPED
+    session = object_session(label)
+    if session is not None:
+        _record_event_once(
+            session,
+            action=EVENT_SKIPPED,
+            actor="online-learner",
+            label_id=label.id,
+            source_run_id=label.source_run_id,
+            reason=reason[:1000] or "label attempt did not update the learner",
+        )
 
 
 def mark_consumed(label: OnlineLearnerLabel, *, now: datetime | None = None) -> None:

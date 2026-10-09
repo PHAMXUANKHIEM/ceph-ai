@@ -817,7 +817,8 @@ def _river_linear_v2_shadow_evidence(
             labels = session.query(OnlineLearnerLabel).filter(
                 OnlineLearnerLabel.source_run_id.in_(run_ids),
                 OnlineLearnerLabel.outcome.in_(VERIFIED_OUTCOMES),
-                OnlineLearnerLabel.status.in_(("READY", "CONSUMED")),
+                # SKIPPED labels were refused by the learner, not by the evidence: still ground truth.
+                OnlineLearnerLabel.status.in_(("READY", "CONSUMED", "SKIPPED")),
                 OnlineLearnerLabel.source_actor == "forecast-evaluator",
                 OnlineLearnerLabel.evidence_fingerprint.isnot(None),
             ).all()
