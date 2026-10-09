@@ -334,3 +334,11 @@ def _fresh_ssh_host_circuits():
     yield
     with ceph_client._HOST_CIRCUITS_LOCK:
         ceph_client._HOST_CIRCUITS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_mgr_pool_metrics(monkeypatch):
+    """The Pools section reads usage from the mgr; tests take the Ceph-command path unless they opt in."""
+    from watcher import mgr_pool_metrics
+
+    monkeypatch.setattr(mgr_pool_metrics, "fetch_pools", lambda **kwargs: None)

@@ -262,6 +262,27 @@ def collect_pool_rows(cluster) -> list[dict]:
     return rows
 
 
+def collect_pool_config(cluster) -> tuple[dict | list, dict | list]:
+    """`osd pool ls detail` and `osd crush rule dump` in one call: what only changes with the osdmap."""
+    connection = _cluster_connection(cluster)
+    _host, payloads = ceph_client.run_ceph_json_batch_command_with(
+        *connection, ["ceph osd pool ls detail --format json", "ceph osd crush rule dump --format json"],
+    )
+    detail, rules = (list(payloads) + [None, None])[:2]
+    if detail is None or rules is None:
+        raise CephQueryError("Pool configuration queries failed")
+    return detail, rules
+
+
+def pool_rows_from(config: tuple[dict | list, dict | list], df_payload: dict, stats_payload: dict) -> list[dict]:
+    """Pool rows from cached configuration plus usage/IO payloads built elsewhere (the mgr)."""
+    detail_payload, rules_payload = config
+    rows = _normalize_pool_rows(detail_payload, df_payload, stats_payload, rules_payload)
+    for row in rows:
+        row["used"] = _format_bytes(row["used_bytes"])
+    return rows
+
+
 def _normalize_pg_rows(payload: dict | list, pool_names: dict[str, str] | None = None) -> list[dict]:
     if isinstance(payload, list):
         raw_rows = payload

@@ -142,6 +142,9 @@ class Settings(BaseSettings):
     # Read the kernel journal of a node that answers again after a
     # NODE_UNREACHABLE incident and classify why it went down (09/10/2026).
     node_postmortem_enabled: bool = True
+    # Pools inventory: usage and client I/O from the mgr prometheus module,
+    # configuration cached until the osdmap epoch moves (09/10/2026).
+    ceph_pool_usage_from_mgr: bool = True
     ceph_mon_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
     ceph_mon_circuit_cooldown_seconds: int = Field(default=30, ge=1, le=3600)
     # Realtime snapshot collection guard. These bounds apply to the Watcher
