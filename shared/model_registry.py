@@ -7,6 +7,7 @@ promotion workflow in a later phase.
 
 from __future__ import annotations
 
+import re
 import json
 import math
 from dataclasses import dataclass
@@ -406,28 +407,44 @@ def _audit(session, *, candidate_model_id: str, previous_active_model_id: str | 
     return row
 
 
+def _scope_parts(scope_key: str, width: int) -> tuple[list[str], int | None]:
+    """Split a registry scope key; a trailing ``h<N>`` is the horizon (keys since 09/2026)."""
+    parts = scope_key.split("|")
+    horizon = None
+    if len(parts) == width + 1 and re.fullmatch(r"h\d+", parts[-1]):
+        horizon = int(parts.pop()[1:])
+    if len(parts) != width:
+        raise ValueError("invalid registry scope key")
+    return parts, horizon
+
+
 def _select_runtime_state(session, row: ForecastModelRegistry, *, selected: bool) -> None:
+    # Registry rows name the algorithm with its window ("linear:72h") and key
+    # the scope by horizon ("CS-LAB|host|ram|h6"); runtime states store
+    # "linear" and the horizon separately. Comparing them as-is meant no
+    # approval could ever select a model (09/10/2026).
     if row.scope_type == "NODE_RESOURCE":
-        parts = row.scope_key.split("|", 2)
-        if len(parts) != 3:
-            raise ValueError("invalid NODE_RESOURCE registry scope key")
-        cluster_name, host, metric = parts
-        states = session.query(NodeResourceModelState).filter_by(
+        (cluster_name, host, metric), horizon = _scope_parts(row.scope_key, 3)
+        query = session.query(NodeResourceModelState).filter_by(
             cluster_name=cluster_name, host=host, metric=metric,
-        ).all()
+        )
+        if horizon is not None:
+            query = query.filter_by(horizon_hours=horizon)
     elif row.scope_type == "VOLUME":
-        parts = row.scope_key.split("|", 3)
-        if len(parts) != 4:
-            raise ValueError("invalid VOLUME registry scope key")
-        cluster_id, pool, image, metric = parts
-        states = session.query(VolumeModelState).filter_by(
+        (cluster_id, pool, image, metric), horizon = _scope_parts(row.scope_key, 4)
+        query = session.query(VolumeModelState).filter_by(
             cluster_id=cluster_id, pool=pool, image=image, metric=metric,
-        ).all()
+        )
+        if horizon is not None:
+            query = query.filter_by(horizon_hours=horizon)
     else:
         raise ValueError("unsupported registry scope type")
+    states = query.all()
+    algorithm = str(row.algorithm or "")
     target = next(
         (state for state in states
-         if state.algorithm == row.algorithm and state.window_hours == row.training_window_hours),
+         if state.algorithm in (algorithm, algorithm.split(":", 1)[0])
+         and state.window_hours == row.training_window_hours),
         None,
     )
     if target is None:

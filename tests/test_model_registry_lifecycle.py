@@ -229,3 +229,57 @@ def test_learned_algorithm_detection():
     assert not model_registry.is_learned_algorithm("linear")
     assert not model_registry.is_learned_algorithm("seasonal_median:168h")
 
+
+
+# --- approval selects production-style registry rows (09/10/2026) ------------------------------
+
+def _registry_row(scope_type, scope_key, algorithm, window):
+    return SimpleNamespace(scope_type=scope_type, scope_key=scope_key, algorithm=algorithm,
+                           training_window_hours=window)
+
+
+def test_approval_selects_the_windowed_algorithm_within_the_keyed_horizon(db_session):
+    states = {}
+    for horizon in (6, 24):
+        for window in (24, 72):
+            states[(horizon, window)] = NodeResourceModelState(
+                cluster_name="CS-LAB", host="10.3.54.118", metric="ram", algorithm="linear",
+                window_hours=window, horizon_hours=horizon, selected=(window == 24),
+            )
+    db_session.add_all(states.values())
+    db_session.flush()
+
+    model_registry._select_runtime_state(
+        db_session, _registry_row("NODE_RESOURCE", "CS-LAB|10.3.54.118|ram|h6", "linear:72h", 72), selected=True,
+    )
+
+    assert {key for key, state in states.items() if state.selected} == {(6, 72), (24, 24)}  # h24 untouched
+
+
+def test_approval_selects_a_volume_state_by_horizon(db_session):
+    from shared.models import Cluster, VolumeModelState
+
+    db_session.add(Cluster(id="c1", name="lab", ceph_mon_nodes="", ssh_user="root", ssh_key_path="/tmp/key"))
+    db_session.flush()
+    one = VolumeModelState(cluster_id="c1", pool="volumes", image="img", metric="write_latency_ms",
+                           algorithm="seasonal_median", window_hours=168, horizon_hours=1, selected=False)
+    six = VolumeModelState(cluster_id="c1", pool="volumes", image="img", metric="write_latency_ms",
+                           algorithm="seasonal_median", window_hours=168, horizon_hours=6, selected=False)
+    db_session.add_all([one, six])
+    db_session.flush()
+
+    model_registry._select_runtime_state(
+        db_session,
+        _registry_row("VOLUME", "c1|volumes|img|write_latency_ms|h6", "seasonal_median:168h", 168),
+        selected=True,
+    )
+
+    assert (one.selected, six.selected) == (False, True)
+
+
+@pytest.mark.parametrize("scope_key", ["CS-LAB|host", "CS-LAB|host|ram|6", "CS-LAB|host|ram|h6|extra"])
+def test_a_malformed_scope_key_is_refused(db_session, scope_key):
+    with pytest.raises(ValueError, match="scope key"):
+        model_registry._select_runtime_state(
+            db_session, _registry_row("NODE_RESOURCE", scope_key, "linear:72h", 72), selected=True,
+        )
