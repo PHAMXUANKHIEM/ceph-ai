@@ -531,14 +531,14 @@ def test_river_linear_v2_disabled_flag_skips_model_and_database():
     assert result["execution_mode"] == "SHADOW_ONLY"
 
 
-# --- the guarded model registry decides the selected window (09/10/2026) -----------------------
+# --- the lowest-MAE window stays selected (09/10/2026) ---------------------------------------
 
 def _selection_session(monkeypatch):
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
     monkeypatch.setattr(forecast.settings, "node_resource_learning_min_outcomes", 1)
-    for window, mae in ((24, 1.0), (72, 5.0), (168, 9.0)):
+    for window, mae in ((24, 9.0), (72, 5.0), (168, 1.0)):
         session.add(NodeResourceModelState(cluster_name="CS-LAB", host="h1", metric="ram", algorithm="linear",
                                            window_hours=window, horizon_hours=6, evaluated_count=10,
                                            mean_absolute_error=mae, selected=False))
@@ -546,33 +546,17 @@ def _selection_session(monkeypatch):
     return session
 
 
-def _registry_active(session, algorithm, window):
+def test_a_stale_registry_active_row_does_not_override_the_lowest_mae(monkeypatch):
     from shared.models import ForecastModelRegistry
 
+    session = _selection_session(monkeypatch)
     session.add(ForecastModelRegistry(scope_type="NODE_RESOURCE", scope_key="CS-LAB|h1|ram|h6",
-                                      name="node-resource-forecast", version=f"{algorithm}:{window}h",
-                                      algorithm=algorithm, feature_schema="node-resource-v1",
-                                      training_window_hours=window, status="ACTIVE"))
+                                      name="node-resource-forecast", version="linear:24h:24h",
+                                      algorithm="linear:24h", feature_schema="node-resource-v1",
+                                      training_window_hours=24, status="ACTIVE"))
     session.flush()
 
-
-def test_the_registry_active_window_wins_over_a_lower_mae(monkeypatch):
-    session = _selection_session(monkeypatch)
-    _registry_active(session, "linear:72h", 72)
-
-    assert forecast._selected_window(session, "CS-LAB", "h1", "ram", [24, 72, 168], 6) == 72
-    session.flush()
-    selected = session.query(NodeResourceModelState).filter_by(selected=True).one()
-    assert selected.window_hours == 72
-
-
-@pytest.mark.parametrize("registry", [None, ("seasonal_median:72h", 72), ("linear:720h", 720)])
-def test_without_a_usable_registry_window_the_lowest_mae_bootstraps(monkeypatch, registry):
-    session = _selection_session(monkeypatch)
-    if registry:
-        _registry_active(session, *registry)
-
-    assert forecast._selected_window(session, "CS-LAB", "h1", "ram", [24, 72, 168], 6) == 24
+    assert forecast._selected_window(session, "CS-LAB", "h1", "ram", [24, 72, 168], 6) == 168
 
 
 def test_a_refused_shadow_pair_is_noted_once_per_hour(monkeypatch, caplog):
