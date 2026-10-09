@@ -182,6 +182,28 @@ def _containers_healthy() -> bool:
     return result.returncode == 0 and bool(rows) and all("(healthy)" in row for row in rows)
 
 
+# How far back on main to look for an approved, green merge.
+DEPLOY_LOOKBACK_COMMITS = 30
+
+
+def _deployable_commit(token: str, running: str | None) -> str | None:
+    """The newest operator-approved merge on main whose push CI is green, newer than ``running``.
+
+    Not only main's head: CI on main takes ~41 minutes, and on 09/10/2026 six
+    approved merges landed 3-20 minutes apart, so whenever one turned green the
+    head had already moved to a commit still under test and nothing deployed
+    for 1h45. Deploying the newest green approved merge ships everything up to
+    it; the merges after it follow once their own CI is green.
+    """
+    for commit in _get(f"/commits?sha=main&per_page={DEPLOY_LOOKBACK_COMMITS}", token) or []:
+        sha = str(commit.get("sha") or "")
+        if not sha or sha == running:
+            return None  # everything older is already running
+        if _approval(sha) is not None and _ci_state(sha, token, "push") == "success":
+            return sha
+    return None
+
+
 def deploy_approved_head(token: str, env: dict[str, str], state: dict) -> str | None:
     request_dir = runner.REQUEST_DIR
     if (request_dir / "pending.json").exists():
@@ -192,12 +214,10 @@ def deploy_approved_head(token: str, env: dict[str, str], state: dict) -> str | 
         status = {}
     if status.get("state") in ("checking", "running"):
         return None
-    head = _get("/branches/main", token)["commit"]["sha"]
-    approval = _approval(head)
-    if approval is None or head in state.setdefault("deploy_requested", []):
-        return None  # not an operator-approved merge, or already requested once
-    if head == runner.running_revision() or _ci_state(head, token, "push") != "success":
-        return None
+    head = _deployable_commit(token, runner.running_revision())
+    if head is None or head in state.setdefault("deploy_requested", []):
+        return None  # nothing approved and green beyond the running revision, or already requested once
+    approval = _approval(head) or {}
     if not _containers_healthy():
         if state.get("unhealthy_noted") != head:
             send_telegram(env, f"⏸ Chưa deploy {head[:8]} (PR #{approval.get('pr')} đã duyệt): có container chưa healthy.")

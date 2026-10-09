@@ -119,16 +119,27 @@ def host(monkeypatch, tmp_path):
     return tmp_path, sent
 
 
-def _github(monkeypatch, *, main_head=MERGED, push_ci="success"):
+def _github(monkeypatch, *, main=(MERGED, "r" * 40), push_ci="success"):
+    """``main``: commits newest first (the running revision "r"*40 last); ``push_ci``: one state or {sha: state}."""
     def get(path, token):
-        if path == "/branches/main":
-            return {"commit": {"sha": main_head}}
-        if path.startswith("/actions/runs"):
+        if path.startswith("/commits?sha=main"):
+            return [{"sha": sha} for sha in main]
+        if path.startswith("/actions/runs?head_sha="):
+            sha = path.split("head_sha=")[1].split("&")[0]
+            state = push_ci.get(sha, "running") if isinstance(push_ci, dict) else push_ci
+            if state == "running":
+                return {"workflow_runs": [{"path": notifier.WORKFLOW_PATH, "event": "push", "status": "in_progress"}]}
             return {"workflow_runs": [{"path": notifier.WORKFLOW_PATH, "event": "push", "status": "completed",
-                                       "conclusion": push_ci}]}
+                                       "conclusion": state}]}
         raise AssertionError(path)
 
     monkeypatch.setattr(notifier, "_get", get)
+
+
+def _approved(directory, *shas):
+    (directory / "approved").mkdir(exist_ok=True)
+    for number, sha in enumerate(shas, 1):
+        (directory / "approved" / f"{sha}.json").write_text(json.dumps({"pr": number, "approved_by": "op"}))
 
 
 def test_main_is_deployed_only_when_its_head_was_approved_and_green(host, monkeypatch):
@@ -145,6 +156,29 @@ def test_main_is_deployed_only_when_its_head_was_approved_and_green(host, monkey
     assert request["sha"] == MERGED and request["requested_by"] == "telegram:op"
     (directory / "pending.json").unlink()
     assert notifier.deploy_approved_head("t", {}, state) is None  # requested once only
+
+
+def test_the_newest_green_approved_merge_deploys_while_newer_merges_are_still_in_ci(host, monkeypatch):
+    """09/10/2026: six approved merges 3-20 minutes apart, CI ~41 minutes each; waiting for main's head to be
+    green deployed nothing for 1h45."""
+    directory, sent = host
+    newest, middle, older = "c" * 40, "b" * 40, "a" * 40
+    _approved(directory, older, middle, newest)
+    _github(monkeypatch, main=(newest, middle, older, "r" * 40),
+            push_ci={newest: "running", middle: "success", older: "success"})
+
+    assert notifier.deploy_approved_head("t", {}, {}) == middle
+    assert json.loads((directory / "pending.json").read_text())["sha"] == middle
+    assert sent == [f"🚀 CI trên main xanh: deploy {middle[:8]} (PR #2, duyệt bởi op)."]
+
+
+def test_nothing_older_than_the_running_revision_is_deployed(host, monkeypatch):
+    directory, _sent = host
+    newer, older = "c" * 40, "a" * 40
+    _approved(directory, older, newer)
+    _github(monkeypatch, main=(newer, "r" * 40, older), push_ci={newer: "running", older: "success"})
+
+    assert notifier.deploy_approved_head("t", {}, {}) is None and not (directory / "pending.json").exists()
 
 
 def test_a_red_main_ci_is_not_deployed(host, monkeypatch):
