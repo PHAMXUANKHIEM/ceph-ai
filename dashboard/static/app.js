@@ -308,7 +308,7 @@
   });
 
   var iconByPath = {
-    "/": "⌁", "/nodes": "◫", "/stream": "⇢", "/volume-performance": "⌁", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
+    "/": "⌁", "/nodes": "◫", "/stream": "⇢", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
@@ -339,7 +339,6 @@
     [
       ["/", "Dashboard"],
       ["/nodes", "Cluster Metrics"],
-      ["/volume-performance", "Performance"],
       ["/bucket-access-log", "Bucket Logging"],
       ["/openstack/auth-pool", "Auth-Pool"],
       ["/deploy-cluster", "Deploy Cluster"],
@@ -408,10 +407,9 @@
       { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map", "/stream"] },
       { label: "Pool", paths: ["/pools", "/pgs"] },
       { label: "Object Storage", paths: ["/object-storage/buckets", "/object-storage/users", "/bucket-access-log"] },
-      { label: "Block Storage", paths: ["/block-storage", "/volume-performance", "/trash"] },
+      { label: "Block Storage", paths: ["/block-storage", "/trash"] },
       { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/config-dump", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
-      { label: "AI & Intelligence", paths: ["/ai-learning", "/log-intelligence", "/runbooks", "/alerts", "/synthetic-incidents"] },
       { label: "Backup", paths: ["/backups", "/cinder-backups", "/restore-cluster"] },
       { label: "Users & Notifications", paths: ["/telegram-alerts", "/users"] },
       { label: "System Administration", paths: ["/settings", "/clusters"] }
@@ -441,7 +439,6 @@
         link.classList.remove("nav-dropdown-item", "nav-dropdown-item-active");
         link.classList.add("nav-link");
         if (path === "/block-storage") link.textContent = "Overview";
-        if (path === "/volume-performance") link.textContent = "Performance";
         if (path === "/trash") link.textContent = "Trash & Restore";
         items.appendChild(link);
       });

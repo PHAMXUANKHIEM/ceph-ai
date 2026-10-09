@@ -907,7 +907,11 @@ async def volumes_page(request: Request, user: str = Depends(require_login)):
 
 @router.get("/volume-performance", response_class=HTMLResponse)
 async def volume_performance_page(request: Request, user: str = Depends(require_login)):
-    return await _volume_workspace_page(request, user, "performance")
+    """Removed from the dashboard (operator, 09/10/2026); old links land on Block Storage."""
+    del user
+    cluster_query = request.query_params.get("cluster", "").strip()
+    suffix = f"?cluster={cluster_query}" if cluster_query else ""
+    return RedirectResponse(url=f"/block-storage{suffix}", status_code=303)
 
 
 async def _volume_workspace_page(request: Request, user: str, selected_view: str):

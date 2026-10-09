@@ -220,31 +220,6 @@ def test_volumes_page_with_explicit_pool_selects_it(dashboard_client, monkeypatc
     assert 'id="trash-entry-list"' not in response.text
 
 
-def test_volume_performance_page_is_separate_from_volume_inventory(dashboard_client, monkeypatch):
-    _configure_pools(monkeypatch)
-    _login(dashboard_client)
-
-    response = dashboard_client.get("/volume-performance?pool=vms")
-
-    assert response.status_code == 200
-    assert 'id="volumes-panel"' in response.text
-    assert 'id="vm-perf-panel"' in response.text
-    assert 'id="volume-inventory-panel"' not in response.text
-    assert 'data-pool="vms"' in response.text
-
-
-def test_volumes_page_uses_vm_benchmark_instead_of_legacy_pool_sweep(dashboard_client, monkeypatch):
-    _configure_pools(monkeypatch)
-    _stub_no_trash(monkeypatch)
-    _login(dashboard_client)
-
-    response = dashboard_client.get("/volume-performance?pool=vms")
-
-    assert response.status_code == 200
-    assert 'id="vm-perf-form"' in response.text
-    assert 'id="perf-sweep-run-btn"' not in response.text
-
-
 def test_volumes_page_hides_perf_sweep_button_for_non_admin(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _stub_no_trash(monkeypatch)
@@ -255,41 +230,6 @@ def test_volumes_page_hides_perf_sweep_button_for_non_admin(dashboard_client, mo
 
     assert response.status_code == 200
     assert 'id="perf-sweep-run-btn"' not in response.text
-
-
-def test_volumes_page_does_not_surface_legacy_perf_sweep_pending_action(dashboard_client, monkeypatch):
-    _configure_pools(monkeypatch)
-    _stub_no_trash(monkeypatch)
-    _login(dashboard_client)
-
-    propose = dashboard_client.post("/volumes/vms/perf-sweep/propose")
-    action_id = propose.json()["action_id"]
-
-    response = dashboard_client.get("/volume-performance?pool=vms")
-
-    assert response.status_code == 200
-    assert f'action="/actions/{action_id}/approve"' not in response.text
-    assert f'action="/actions/{action_id}/reject"' not in response.text
-    assert 'id="perf-sweep-run-btn"' not in response.text
-    assert 'id="vm-perf-form"' in response.text
-
-
-def test_volumes_page_does_not_show_legacy_perf_sweep_running_indicator(dashboard_client, monkeypatch):
-    _configure_pools(monkeypatch)
-    _stub_no_trash(monkeypatch)
-    _login(dashboard_client)
-
-    propose = dashboard_client.post("/volumes/vms/perf-sweep/propose")
-    action_id = propose.json()["action_id"]
-    with db_module.SessionLocal() as session:
-        session.get(Action, action_id).status = ActionStatus.APPROVED.value
-        session.commit()
-
-    response = dashboard_client.get("/volume-performance?pool=vms")
-
-    assert response.status_code == 200
-    assert "Đang đo hiệu năng — xem tiến độ bên dưới" not in response.text
-    assert 'id="vm-perf-form"' in response.text
 
 
 def test_volumes_page_rejects_pool_not_in_configured_list(dashboard_client, monkeypatch):
@@ -689,38 +629,6 @@ def test_propose_perf_sweep_rejects_non_admin(dashboard_client, monkeypatch):
     response = dashboard_client.post("/volumes/vms/perf-sweep/propose")
 
     assert response.status_code == 403
-
-
-def test_vm_perf_form_prompts_for_ip_key_and_suggested_disks(dashboard_client, monkeypatch):
-    _configure_pools(monkeypatch)
-    _login(dashboard_client)
-
-    response = dashboard_client.get("/volume-performance?pool=vms")
-
-    assert response.status_code == 200
-    assert 'name="vm_ip"' in response.text
-    assert 'name="ssh_key_path"' in response.text
-    assert 'value="/dev/vdb"' in response.text
-    assert 'value="/dev/vdc"' in response.text
-    assert "READ-ONLY" in response.text
-    assert "Mỗi mức tải được đo đúng 3 lần" in response.text
-    assert 'id="perf-sweep-panel"' not in response.text
-
-
-def test_volume_performance_uses_compact_monitoring_and_benchmark_layout(dashboard_client, monkeypatch):
-    _configure_pools(monkeypatch)
-    _login(dashboard_client)
-
-    response = dashboard_client.get("/volume-performance?pool=vms")
-
-    assert response.status_code == 200
-    assert "performance-tabbed-page" in response.text
-    assert 'class="performance-selector"' in response.text
-    assert 'id="volume-selected-volume"' in response.text
-    assert 'id="volume-clear-btn"' in response.text
-    assert "benchmark-form" in response.text
-    assert 'class="benchmark-warning"' in response.text
-    assert 'id="volume-suggestions"' not in response.text
 
 
 def test_propose_vm_perf_creates_risky_pending_action(dashboard_client):
@@ -3119,3 +3027,14 @@ def test_warm_trash_page_serves_the_measured_values(monkeypatch):
     )
 
     assert volumes_route._cached_rbd_trash(cluster, "vms") == measured
+
+
+def test_the_removed_performance_page_sends_old_links_to_block_storage(dashboard_client, monkeypatch):
+    """Block Storage > Performance was removed from the dashboard (operator, 09/10/2026)."""
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/volume-performance?pool=vms&cluster=c1", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/block-storage?cluster=c1"
