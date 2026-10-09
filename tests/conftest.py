@@ -322,3 +322,15 @@ def default_cluster_id(dashboard_client) -> str:
     needs this instead of a bare literal like the old fixed id=1."""
     with db_module.SessionLocal() as session:
         return session.query(Cluster).filter_by(is_default=True).one().id
+
+
+@pytest.fixture(autouse=True)
+def _fresh_ssh_host_circuits():
+    """watcher.ceph_client keeps per-host SSH circuits for the process; tests must not share them."""
+    from watcher import ceph_client
+
+    with ceph_client._HOST_CIRCUITS_LOCK:
+        ceph_client._HOST_CIRCUITS.clear()
+    yield
+    with ceph_client._HOST_CIRCUITS_LOCK:
+        ceph_client._HOST_CIRCUITS.clear()

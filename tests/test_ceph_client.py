@@ -2095,3 +2095,64 @@ def test_real_failures_still_open_the_circuit_and_a_busy_probe_frees_it(monkeypa
     with pytest.raises(CephQueryError, match="cephadm lock busy"):
         _run_cephadm()  # the probe met a busy lock
     assert circuit.allow()  # ...and did not leave the circuit stuck with a probe in flight
+
+
+# --- per-host SSH backoff (09/10/2026) -------------------------------------------------------
+
+def _runner_raising(monkeypatch, kind, calls):
+    from shared.ceph_runner import CephRunnerError
+
+    class Runner:
+        def __init__(self, pool):
+            pass
+
+        def run(self, host, command, timeout):
+            calls.append(command)
+            if kind is None:
+                return "ok"
+            raise CephRunnerError(host, "connect" if kind != "command_failed" else "command", kind, f"{kind}!")
+
+    monkeypatch.setattr(ceph_client, "CephCommandRunner", Runner)
+
+
+def _ssh(command="cat /proc/loadavg", host="10.3.53.69"):
+    return ceph_client._run_remote_command_with(host, command, "root", "/key", 5, pool=object())
+
+
+def test_a_host_that_keeps_timing_out_is_paused_but_still_probed(monkeypatch):
+    calls = []
+    _runner_raising(monkeypatch, "timeout", calls)
+    for _ in range(ceph_client.HOST_CIRCUIT_FAILURES):
+        with pytest.raises(CephQueryError, match="timeout"):
+            _ssh()
+
+    with pytest.raises(CephQueryError, match="paused for"):
+        _ssh()
+    with pytest.raises(CephQueryError, match="paused for"):
+        _ssh(host="10.3.53.69", command="cephadm shell -- ceph -s")
+    assert len(calls) == ceph_client.HOST_CIRCUIT_FAILURES  # nothing more reached the sick host
+
+    with pytest.raises(CephQueryError, match="timeout"):
+        _ssh(command="true")  # the reachability probe is never held back
+    _runner_raising(monkeypatch, None, calls)
+    assert _ssh(host="10.3.53.1") == "ok"  # other hosts are unaffected
+    assert ceph_client.get_host_circuit_metrics() == {"tracked": 2, "open": 1}
+
+
+def test_an_answering_host_is_never_paused_and_recovers_after_the_cooldown(monkeypatch):
+    calls = []
+    _runner_raising(monkeypatch, "command_failed", calls)
+    for _ in range(ceph_client.HOST_CIRCUIT_FAILURES + 2):
+        with pytest.raises(CephQueryError, match="command_failed"):
+            _ssh()  # an error exit still proves the host answers
+    assert len(calls) == ceph_client.HOST_CIRCUIT_FAILURES + 2
+
+    _runner_raising(monkeypatch, "unreachable", calls)
+    for _ in range(ceph_client.HOST_CIRCUIT_FAILURES):
+        with pytest.raises(CephQueryError):
+            _ssh()
+    circuit = ceph_client._HOST_CIRCUITS["10.3.53.69"]
+    circuit._opened_at -= ceph_client.HOST_CIRCUIT_COOLDOWN_SECONDS + 1
+    _runner_raising(monkeypatch, None, calls)
+
+    assert _ssh() == "ok" and not circuit.is_open
