@@ -485,3 +485,73 @@ def test_ready_label_sweep_only_takes_the_canary_scope(monkeypatch):
     with factory() as session:
         other = session.query(OnlineLearnerAudit).filter_by(sample_id="s-other").one()
         assert other.label is None
+
+
+# --- the label drift guard looks at recent observations, not the learner (09/10/2026) ----------
+
+def _history(factory, now, values, host="node-1"):
+    from datetime import timedelta
+
+    with factory() as session:
+        for index, value in enumerate(values):
+            session.add(OnlineLearnerAudit(
+                cluster_key="cluster-a", host=host, metric="cpu", sample_id=f"h-{host}-{index}",
+                observed_at=(now - timedelta(minutes=len(values) - index)).replace(tzinfo=None), value=value,
+                label=None, quality_status="NO_LABEL", quality_reason="history", runtime_mode="AUDIT_ONLY",
+                runtime_reason="history", update_applied=False, model_version="river-mean-v1",
+            ))
+        session.commit()
+
+
+def test_drift_reference_is_the_recent_median_with_a_robust_limit(monkeypatch):
+    factory = _session(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_drift_threshold_percent", 20.0)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    with factory() as session:
+        assert consumer_module._recent_drift_reference(
+            session, "cluster-a", "node-1", "cpu", before=now.replace(tzinfo=None)) == (None, 20.0)
+    _history(factory, now, [40.0] * 12)
+    _history(factory, now, [5.0, 60.0] * 6, host="node-volatile")
+    with factory() as session:
+        steady = consumer_module._recent_drift_reference(session, "cluster-a", "node-1", "cpu",
+                                                         before=now.replace(tzinfo=None))
+        volatile = consumer_module._recent_drift_reference(session, "cluster-a", "node-volatile", "cpu",
+                                                           before=now.replace(tzinfo=None))
+    assert steady == (40.0, 20.0)  # no spread: the configured floor applies
+    assert volatile[0] == 32.5 and volatile[1] > 100  # a volatile host gets a wider band
+
+
+def test_a_label_the_learner_got_wrong_is_still_learnable(monkeypatch):
+    factory = _session(monkeypatch)
+    _learning_settings(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_drift_threshold_percent", 20.0)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    _history(factory, now, [44.0, 46.0, 48.0, 45.0, 47.0, 49.0, 46.0, 48.0, 47.0, 45.0])
+    _labelled_sample(factory, now, sample_id="s-learner-wrong", label_value=48.1)
+
+    class FarOff:  # the learner still believes CPU sits near 14 %
+        def predict_one(self, fallback=None):
+            return 14.0
+
+    original = consumer_module.load_or_reset_state
+    monkeypatch.setattr(consumer_module, "load_or_reset_state",
+                        lambda *args, **kwargs: (FarOff(), original(*args, **kwargs)[1]))
+    monkeypatch.setattr(consumer_module, "guarded_update", lambda *args, **kwargs: type("U", (), {"applied": False})())
+
+    [result] = consumer_module.apply_ready_labels()
+
+    assert result.quality.status != "DRIFT"
+
+
+def test_a_label_far_from_recent_observations_is_refused(monkeypatch):
+    factory = _session(monkeypatch)
+    _learning_settings(monkeypatch)
+    monkeypatch.setattr("shared.online_learning_consumer.settings.online_learning_drift_threshold_percent", 20.0)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    _history(factory, now, [10.0, 11.0, 12.0, 10.5, 11.5, 12.5, 11.0, 10.0])
+    _labelled_sample(factory, now, sample_id="s-poisoned", label_value=95.0)
+
+    [result] = consumer_module.apply_ready_labels()
+
+    assert result.quality.status == "DRIFT"
