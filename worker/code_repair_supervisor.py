@@ -148,6 +148,8 @@ def _run_nightly_analyst(
             model=model,
             mode="review",
         )
+        last_message = root / "last-message.txt"
+        command = _with_last_message_file(selected_provider, command, last_message)
         reservation_id = check_ai_budget(selected_provider, model_id, len(prompt))
         budget_checked = True
         with _ai_process_environment() as ai_env:
@@ -165,8 +167,8 @@ def _run_nightly_analyst(
         status = _run(["git", "status", "--porcelain"], cwd=worktree, check=False, timeout=30)
         if status.stdout.strip():
             raise RuntimeError("analyst modified its read-only worktree")
-        report = _redact_nightly_text(result.stdout or "")
-        report = report.strip()[-NIGHTLY_ANALYSIS_REPORT_LIMIT:]
+        answer = _final_answer(last_message, result.stdout or "")
+        report = _redact_nightly_text(answer).strip()[-NIGHTLY_ANALYSIS_REPORT_LIMIT:]
         if not report:
             raise RuntimeError("analyst returned an empty report")
         record_ai_attempt(
@@ -177,7 +179,7 @@ def _run_nightly_analyst(
             status="SUCCESS",
             latency_ms=round((time.monotonic() - started) * 1000),
             input_chars=len(prompt),
-            output_chars=len(result.stdout or ""),
+            output_chars=len(answer),
         )
         return role, f"[{role} / {selected_provider}]\n{report}"
     except AIBudgetError:
@@ -203,7 +205,7 @@ def _run_nightly_analyst(
                 status="ERROR",
                 latency_ms=round((time.monotonic() - started) * 1000),
                 input_chars=len(prompt),
-                output_chars=len(getattr(result, "stdout", "") or ""),
+                output_chars=len(_final_answer(root / "last-message.txt", getattr(result, "stdout", "") or "")),
                 error_type=type(exc).__name__,
             )
         raise
@@ -267,6 +269,27 @@ def collect_nightly_multi_agent_analysis(repo: Path, evidence: str) -> tuple[lis
                 reports.append(report)
     reports.sort()
     return reports, failures
+
+
+def _with_last_message_file(provider: str, command: list[str], last_message: Path) -> list[str]:
+    """Have Codex write its final answer to ``last_message``.
+
+    stdout carries the whole session (every command and file the agent read,
+    stderr merged): 1.32 M chars for one analyst on 09/10/2026, billed as
+    estimated output tokens. Claude ``-p`` already prints only its answer.
+    """
+    if provider != "codex" or command[-1] != "-":
+        return command
+    return [*command[:-1], "--output-last-message", str(last_message), "-"]
+
+
+def _final_answer(last_message: Path, stdout: str) -> str:
+    """The model's final answer: Codex's last-message file, else the CLI stdout."""
+    try:
+        text = last_message.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return stdout
+    return text if text.strip() else stdout
 
 
 def _read_recent_tail(path: Path, cutoff: float) -> str | None:
