@@ -110,13 +110,40 @@ Thứ tự: deploy FL2 + bật evidence → chạy lại replay → VM cephadm l
 - [ ] Mỗi kịch bản chạy thử có người theo dõi trước khi cho chạy theo lịch.
 
 ### FL3 — Ghi kết quả thành tri thức
-- [ ] `RemediationCase` nguồn `lab` + nhãn đáp án; tra cứu case dùng được (sau LL1); golden set lấy từ lượt lab đạt.
+- [x] (09/10) Mỗi lượt lỗi thật ghi sự kiện `failure_lab_label` vào timeline của incident nó gây ra: nguyên nhân đã biết (vd "Failure Lab đã chủ động dừng daemon osd.5"), mã health kỳ vọng, `acceptable_action_ids`, điểm 6 khâu. Không cần migration.
+- [x] (09/10) `shared/case_references.py` thêm loại tham khảo `lab_reproduced` lấy từ **mọi cụm** theo họ lỗi: chẩn đoán trên cụm production thấy nguyên nhân thật đã tái hiện trên lab, hành động chấp nhận và lần đó AI đúng hay sai. Chỉ là ngữ cảnh, không cấp quyền thực thi.
+- [ ] Golden set chẩn đoán lấy từ lượt lab đạt (cần cụm staging chạy thật).
 
 ### FL4 — Chạy shadow theo lịch
 - [ ] Chiến dịch định kỳ (giờ thấp điểm), báo cáo tỉ lệ từng khâu và báo động giả; dừng khi cụm không về `HEALTH_OK`.
 
 ### FL5 — Tiêu chí nâng quyền theo từng playbook
 - [ ] Đề xuất tiêu chí: ≥ 10 lượt lab liên tiếp đạt hồi phục, 0 tác dụng phụ, rollback đã kiểm thử, chẩn đoán đúng ≥ 90 %. Đạt tiêu chí chỉ tạo **đề xuất** nâng quyền; operator duyệt mới có hiệu lực.
+
+### FL6 — AI tự tái hiện lỗi thiếu bằng chứng trên staging (operator yêu cầu 09/10/2026)
+
+Mục tiêu: lỗi production mà AI kết luận "chưa đủ bằng chứng" được tái hiện có kiểm soát trên cụm staging, để có nguyên nhân đã biết và rút ngắn việc học.
+
+Luồng:
+1. **Hàng chờ thiếu bằng chứng:** gom incident/case production có chẩn đoán thiếu bằng chứng hoặc độ tin thấp theo họ lỗi; ưu tiên họ lặp lại nhiều và chưa có tham khảo `lab_reproduced`.
+2. **Nghiên cứu tài liệu:** code tải tài liệu Ceph chính thức cho mã health đó (docs.ceph.com health-checks, cùng nguồn đã trích); AI (CLI chỉ đọc, như các analyst nightly) đọc tài liệu + bằng chứng production và trả về **đề xuất tái hiện có cấu trúc**: kiểu lỗi (chỉ chọn trong bộ kiểu lỗi có trong code), tham số, mã health kỳ vọng, nguyên nhân, hành động chấp nhận, cách hồi phục, trích dẫn tài liệu.
+3. **Kiểm tra tất định:** validator từ chối đề xuất có kiểu lỗi lạ, tham số ngoài giới hạn, thời hạn quá dài, hoặc nhắm cụm không phải staging (lab + fsid ghim). Nếu không kiểu lỗi nào phù hợp, AI chỉ được tạo **yêu cầu thêm kiểu lỗi mới** — thành việc viết code + review, không chạy được.
+4. **Duyệt tạo lỗi trên Telegram:** thẻ nêu lỗi production gốc, đề xuất, tài liệu, phạm vi ảnh hưởng; nút "Cho phép tái hiện" / "Bỏ qua". Đề xuất được duyệt lưu thành kịch bản động (audit người duyệt).
+5. **Chạy trên staging:** bộ chạy FL2 (khóa, HALT, gỡ lỗi trong `finally`, chờ hồi phục) với kịch bản đã duyệt.
+6. **Duyệt sửa trên Telegram:** AI chẩn đoán và đề xuất `action_id` trong danh mục policy; operator cho phép thì thực thi trên staging (đường duyệt action hiện có, giữ trong cửa sổ lượt lab).
+7. **Ghi học + đánh giá:** nhãn FL3; chấm 6 khâu; báo cáo Telegram: AI đúng ở khâu nào, sửa có hồi phục không; chỉ số theo họ lỗi: số lượt đến khi chẩn đoán đúng, thời gian tới chẩn đoán đúng, tỉ lệ đúng trước/sau khi có tham khảo lab.
+
+Rào an toàn giữ nguyên mục 3: AI không viết lệnh shell; chỉ cụm staging; mọi lần tạo lỗi và mọi lần sửa đều qua người duyệt; HALT/khóa/gỡ lỗi luôn chạy; case lab không nâng quyền production.
+
+Gói việc:
+- [x] FL6.0 (= FL3) nhãn lab và tham khảo chéo cụm.
+- [ ] FL6.1 hàng chờ thiếu bằng chứng + báo cáo.
+- [ ] FL6.2 bộ tải tài liệu + đề xuất tái hiện có cấu trúc + validator.
+- [ ] FL6.3 thẻ duyệt Telegram + kịch bản động đã duyệt.
+- [ ] FL6.4 bộ chạy nhận kịch bản động; thẻ duyệt sửa gửi kênh lab.
+- [ ] FL6.5 báo cáo học: chỉ số theo họ lỗi, Telegram sau mỗi lượt.
+- [ ] Thêm kiểu lỗi mới theo yêu cầu (vd large omap trên pool test, OSD out, cờ `noout`), mỗi kiểu một PR có review.
+- **Cần operator:** dựng cụm staging, đánh dấu `lab`, đặt `FAILURE_LAB_CLUSTER_FSID`, `FAILURE_LAB_TELEGRAM_CHAT_ID`, `FAILURE_LAB_FAULT_ENABLED=true`.
 
 ## 6. Rủi ro
 
@@ -151,4 +178,5 @@ Thứ tự: deploy FL2 + bật evidence → chạy lại replay → VM cephadm l
 | 06/10/2026 | FL0 operator gates | Chưa đổi CS-LAB, chưa tạo pool/bucket, chưa cấu hình Telegram. Chờ operator xác nhận mục 7. | mục 7 | Blocked on operator decision |
 | 07/10/2026 | Evidence không đụng incident giả lập | Bước thu bằng chứng (WP3.3/3.4) chưa từng chạy vì `INVESTIGATION_ENABLED` mặc định tắt. Trước khi bật cho CS-LAB: Worker gate và scanner Watcher bỏ qua incident có `synthetic_injection` (bằng chứng của cụm thật đang khỏe sẽ mâu thuẫn kịch bản và làm hỏng điểm replay); mọi lần bỏ qua đều ghi log lý do; tab Luồng AI hiện TẮT khi cờ tắt. Bằng chứng giả lập giống thật vẫn là việc FL1 còn lại. | `worker/llm/evidence_gate.py`, `watcher/investigation_scanner.py`, `shared/ai_flow.py` | Done |
 | 07/10/2026 | FL2 bộ chạy lỗi thật | Xem mục FL2. Chưa chạy trên cụm: cần deploy, đặt `FAILURE_LAB_CLUSTER_FSID`, `FAILURE_LAB_FAULT_ENABLED=true`, rồi chạy thử từng kịch bản có người theo dõi. | `shared/failure_lab_fault.py`, `worker/policy/failure_lab_faults.yaml` | In Progress |
+| 09/10/2026 | FL3 nhãn lab + FL6 thiết kế | Lượt lỗi thật ghi `failure_lab_label`; tham khảo `lab_reproduced` chéo cụm trong prompt chẩn đoán; thêm FL6 (AI tái hiện lỗi thiếu bằng chứng, hai lần duyệt Telegram). 29 test failure lab + case references pass. | `shared/failure_lab_fault.py`, `shared/case_references.py` | In Progress |
 | 07/10/2026 | Đánh giá đề xuất công cụ | vstart → thay bằng VM cephadm một node; teuthology chỉ tham khảo; chaos-mesh/ceph-qa-suite không dùng; promptfoo làm sau, chạy theo lịch trên lab; Langfuse hoãn. Thêm việc: cụm lab dùng một lần (FL0), tiêu chí "từ chối khi thiếu bằng chứng" và promptfoo (FL1). | mục 4.5 | Done |

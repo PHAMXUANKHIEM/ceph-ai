@@ -131,3 +131,44 @@ def test_an_unexecuted_proposal_is_never_shown_as_the_fix_and_duplicates_collaps
 
 def test_blocks_are_empty_without_data():
     assert case_references.references_block([]) == "" and case_references.history_block([]) == ""
+
+
+
+# --- FL3: lab reproductions with a known cause (09/10/2026) ----------------------------------
+
+def _lab_label(session, code, *, cluster="lab-1", diagnosis_ok=False, age=timedelta(hours=2)):
+    import json
+
+    from shared.models import IncidentTimelineEvent
+
+    incident, _action, _case_row = _case(session, code, cluster=cluster, age=age)
+    session.add(IncidentTimelineEvent(
+        incident_id=incident.id, event_type="failure_lab_label", actor="failure-lab", created_at=NOW - age,
+        evidence_json=json.dumps({"cause": "Failure Lab đã chủ động dừng daemon osd.5.",
+                                  "acceptable_action_ids": ["investigate_manually", "restart_osd_daemon"],
+                                  "stages": {"diagnosis": diagnosis_ok}}),
+    ))
+    session.flush()
+    return incident
+
+
+def test_lab_reproductions_reach_production_diagnoses_with_their_known_cause():
+    session = _session()
+    _lab_label(session, "OSD_DOWN", cluster="lab-1", diagnosis_ok=False)
+
+    references = _find(session, code="OSD_DOWN", cluster_id="c1")
+
+    lab = [item for item in references if item["kind"] == "lab_reproduced"]
+    assert len(lab) == 1 and "dừng daemon osd.5" in lab[0]["diagnosis"]
+    block = case_references.references_block(references)
+    assert "tái hiện trên cụm lab, nguyên nhân đã biết" in block
+    assert "restart_osd_daemon" in block and "AI lần đó chẩn đoán SAI" in block
+
+
+def test_lab_references_stay_within_the_fault_family_and_skip_the_incident_itself():
+    session = _session()
+    own = _lab_label(session, "OSD_DOWN")
+    _lab_label(session, "MON_CLOCK_SKEW")
+
+    assert [item for item in _find(session, code="OSD_DOWN", incident_id=own.id)
+            if item["kind"] == "lab_reproduced"] == []

@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta
 
+import json
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -138,6 +140,14 @@ def test_a_stopped_osd_is_detected_scored_and_always_started_again(enabled, tmp_
     assert not (tmp_path / fault.HALT_FILE).exists()
     with factory() as session:
         assert session.query(AuditEntry).filter_by(event_type="failure_lab_fault_run").count() == 1
+        from shared.models import IncidentTimelineEvent
+
+        label = session.query(IncidentTimelineEvent).filter_by(event_type=fault.LABEL_EVENT).one()
+        evidence = json.loads(label.evidence_json)
+        # FL3: the run's known cause is kept with the incident it raised.
+        assert evidence["target"] == "osd.3" and "dừng daemon osd.3" in evidence["cause"]
+        assert evidence["acceptable_action_ids"] == ["investigate_manually", "restart_osd_daemon"]
+        assert evidence["passed"] is True and evidence["stages"]["diagnosis"] is True
 
 
 def test_the_diagnosis_must_name_the_osd_this_run_really_stopped(enabled, tmp_path):
