@@ -9,7 +9,6 @@ from enum import Enum
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from dashboard.routes import patch as patch_routes
 from dashboard.routes import upgrade as upgrade_routes
 from dashboard.routes import auth
 from dashboard.cluster_authorization import CAPABILITY_APPROVE, require_cluster_capability
@@ -227,24 +226,6 @@ def approve_action_core(action_id: str, actor: str) -> ApprovalResult:
                 raise ActionConflictError(
                     "Đang có đề xuất/quá trình nâng cấp cụm — tạm khoá duyệt hành động khác "
                     "cho tới khi nâng cấp xong."
-                )
-
-        # 2026-07-24: symmetric counterpart — a patch_install is just as
-        # disruptive to the live cluster as a cluster upgrade (installs
-        # packages + restarts daemons on every configured Ceph node), so it
-        # gets the same mutual-exclusion treatment, both ways: approving
-        # some OTHER action (including an upgrade) is blocked while a patch
-        # install is in-flight, and patch_install's OWN approval is exempt
-        # from this specific check (same "exempt from its own gate" posture
-        # as CLUSTER_UPGRADE_ACTION_IDS above). No live-cluster-state
-        # equivalent of is_cluster_upgrade_physically_running is needed here
-        # — there's no orchestrator to query for a patch install's progress,
-        # only the DB Action/Incident state.
-        if action.action_id != patch_routes.PATCH_INSTALL_ACTION_ID:
-            if patch_routes.is_patch_install_pending_or_approved(session):
-                raise ActionConflictError(
-                    "Đang có đề xuất/quá trình cài đặt patch Ceph — tạm khoá duyệt hành động "
-                    "khác cho tới khi xong."
                 )
 
         # 2026-08-05 (Epic 11, AD-19): a node's mon may be pulled out of

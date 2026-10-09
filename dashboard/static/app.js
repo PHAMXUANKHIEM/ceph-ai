@@ -311,7 +311,7 @@
     "/": "⌁", "/nodes": "◫", "/stream": "⇢", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
-    "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
+    "/convert-cluster": "⇄", "/upgrade": "↑",
     "/backups": "□", "/cinder-backups": "▣", "/restore-cluster": "↶", "/object-storage/buckets": "◫", "/object-storage/users": "♙",
     "/bucket-access-log": "≡", "/pgs": "∷",
     "/openstack/auth-pool": "◈", "/openstack/auth-user/create": "+", "/openstack/config-dump": "▤"
@@ -344,7 +344,6 @@
       ["/deploy-cluster", "Deploy Cluster"],
       ["/delete-cluster", "Delete Cluster"],
       ["/upgrade", "Upgrade Cluster"],
-      ["/patch", "Patch Ceph"],
       ["/convert-cluster", "Convert to Cephadm"],
       ["/backups", "Backup"],
       ["/cinder-backups", "Cinder Volume Backups"],
@@ -409,7 +408,7 @@
       { label: "Object Storage", paths: ["/object-storage/buckets", "/object-storage/users", "/bucket-access-log"] },
       { label: "Block Storage", paths: ["/block-storage", "/trash"] },
       { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/config-dump", "/openstack/auth-user/create"] },
-      { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
+      { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/convert-cluster"] },
       { label: "Backup", paths: ["/backups", "/cinder-backups", "/restore-cluster"] },
       { label: "Users & Notifications", paths: ["/telegram-alerts", "/users"] },
       { label: "System Administration", paths: ["/settings", "/clusters"] }

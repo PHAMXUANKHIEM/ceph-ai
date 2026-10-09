@@ -21,7 +21,7 @@ Dashboard hiện cung cấp các nhóm chức năng chính:
 - **Object Storage**: bucket inventory/detail, S3 user, bucket access log và audit thao tác quản trị.
 - **Block Storage**: inventory RBD image theo pool/namespace.
 - **ceph-auth**: Auth-Pool và tạo Ceph Auth User phục vụ OpenStack.
-- **Cluster Lifecycle Management**: deploy, delete, upgrade, patch và chuyển đổi sang cephadm.
+- **Cluster Lifecycle Management**: deploy, delete, upgrade và chuyển đổi sang cephadm.
 - **Backup** và **System Administration**: backup/restore, cấu hình, cluster, user và thông báo.
 
 Trạng thái phần AI, guardrail production và danh sách việc để tiếp tục được
@@ -353,7 +353,7 @@ Trang **Clusters** (`/clusters`, admin) — thêm cụm Ceph thứ 2 trở đi �
 **quan sát** ngay trong instance hiện tại, không cần dựng thêm server/DB
 nào. Watcher tự chạy thêm 1 vòng lặp health-check + Incident feed riêng cho
 mỗi cụm, Dashboard có bộ chọn cụm ở trang chính. **Giới hạn**: chẩn đoán
-AI/remediation/backup/patch/upgrade/Telegram vẫn chỉ áp dụng cho cụm mặc
+AI/remediation/backup/upgrade/Telegram vẫn chỉ áp dụng cho cụm mặc
 định (Worker chủ động bỏ qua Incident từ cụm khác) — xem
 [docs/multi-cluster-deployment.md](docs/multi-cluster-deployment.md) để
 biết chi tiết và hướng thay thế (chạy nhiều instance riêng) nếu cần đầy đủ

@@ -692,7 +692,7 @@ def _write_remote_file_b64(
 ) -> None:
     """Writes base64-decoded bytes to `path` on `host`, creating its parent
     directory first — binary-safe (keyrings/monmaps), unlike a plain heredoc,
-    same base64-over-exec_command trick `commands.py::_patch_build_and_stage_command`
+    same bounded base64-over-exec_command approach used for small payloads
     already uses for the same reason (no SFTP anywhere in this codebase —
     see ssh_executor.py's docstring)."""
     quoted_path = shlex.quote(path)

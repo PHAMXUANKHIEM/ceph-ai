@@ -141,9 +141,9 @@ nodes:
     tests: [tests/test_dashboard_telegram_alerts.py, tests/test_shared_telegram_alerts.py, tests/test_telegram_client.py]
   dashboard.cluster_lifecycle:
     kind: route_group
-    source: [dashboard/routes/clusters.py, dashboard/routes/deploy_cluster.py, dashboard/routes/delete_cluster.py, dashboard/routes/convert_cluster.py, dashboard/routes/upgrade.py, dashboard/routes/patch.py]
+    source: [dashboard/routes/clusters.py, dashboard/routes/deploy_cluster.py, dashboard/routes/delete_cluster.py, dashboard/routes/convert_cluster.py, dashboard/routes/upgrade.py]
     criticality: critical
-    tests: [tests/test_dashboard_clusters.py, tests/test_dashboard_deploy_cluster.py, tests/test_dashboard_delete_cluster.py, tests/test_dashboard_convert_cluster.py, tests/test_dashboard_upgrade.py, tests/test_dashboard_patch.py]
+    tests: [tests/test_dashboard_clusters.py, tests/test_dashboard_deploy_cluster.py, tests/test_dashboard_delete_cluster.py, tests/test_dashboard_convert_cluster.py, tests/test_dashboard_upgrade.py]
   dashboard.admin:
     kind: route_group
     source: [dashboard/routes/settings.py, dashboard/routes/users.py, dashboard/routes/maintenance.py, dashboard/routes/capability_matrix.py, dashboard/routes/openstack.py, dashboard/routes/rbac.py]
@@ -620,7 +620,7 @@ flows:
     diagram: cluster-lifecycle
     criticality: critical
     nodes: [browser.ceph_jinja, dashboard.app, dashboard.auth, dashboard.cluster_scope, dashboard.cluster_lifecycle, dashboard.cinder_backups, config.runtime, data.cluster_registry, data.sqlalchemy, external.sql_database, data.audit, worker.main, worker.policy, worker.executor, external.ceph, external.openstack]
-    tests: [tests/test_dashboard_clusters.py, tests/test_dashboard_deploy_cluster.py, tests/test_dashboard_delete_cluster.py, tests/test_dashboard_convert_cluster.py, tests/test_dashboard_upgrade.py, tests/test_dashboard_patch.py, tests/test_cinder_mapping_api.py]
+    tests: [tests/test_dashboard_clusters.py, tests/test_dashboard_deploy_cluster.py, tests/test_dashboard_delete_cluster.py, tests/test_dashboard_convert_cluster.py, tests/test_dashboard_upgrade.py, tests/test_cinder_mapping_api.py]
   flow.performance_rca:
     diagram: performance-rca
     criticality: high

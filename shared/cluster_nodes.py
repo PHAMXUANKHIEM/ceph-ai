@@ -72,14 +72,3 @@ def resolve_ssh_creds(cluster: "Cluster | None" = None) -> tuple[str, str, str, 
     if cluster is not None:
         return cluster.ssh_user, cluster.ssh_key_path, cluster.ceph_exec_mode, cluster.ceph_container_name
     return settings.ssh_user, settings.ssh_key_path, settings.ceph_exec_mode, settings.ceph_container_name
-
-
-def patch_build_node() -> str | None:
-    """The Ceph patch build server (dashboard/routes/patch.py) — deliberately
-    NOT part of configured_nodes()'s SSH SSRF whitelist above: that list is
-    specifically "hosts a Ceph-targeted action may SSH into", and the build
-    server is never a valid target for one (it isn't a Ceph node at all), the
-    same way a Ceph node must never be resolved as the build server. Returns
-    None if unconfigured (blank ceph_patch_build_node)."""
-    host = settings.ceph_patch_build_node.strip()
-    return host or None

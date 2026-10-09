@@ -56,7 +56,7 @@ from shared.clusters import sync_default_cluster_from_settings
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.ai_limits import normalize_rate_limits
 from shared.models import (
-    Action, ActionPolicyOverride, ActionPolicyOverrideAudit, ActionStatus,
+    ActionPolicyOverride, ActionPolicyOverrideAudit,
     AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, PlaybookStat,
     SecurityAuditEvent,
 )
@@ -398,13 +398,8 @@ def _start_worker() -> int:
     # new Worker would silently keep using an old key/model despite .env
     # being updated.
     #
-    # 2026-07-24: same reasoning now extends to the patch-pipeline fields
-    # (worker/executor/commands.py::_patch_build_and_stage_command reads
-    # them directly) and, since that same command also calls
-    # shared.cluster_nodes.configured_nodes(), to the cluster node fields
-    # too — a Worker restarted here (e.g. right after saving new patch
-    # settings) must see the CURRENT cluster node list, not a stale one
-    # from whenever it originally started.
+    # Keep the cluster node settings fresh in the restarted Worker as well
+    # as the credentials and provider configuration above.
     _sync_cluster_settings_from_env()
     child_env = {
         **os.environ,
@@ -417,7 +412,6 @@ def _start_worker() -> int:
         CODEX_CHAT_MODEL_ENV_NAME: settings.codex_chat_model,
         CLAUDE_CHAT_MODEL_ENV_NAME: settings.claude_chat_model,
         CLAUDE_CHAT_EFFORT_ENV_NAME: settings.claude_chat_effort,
-        **{env_name: getattr(settings, field) for field, env_name in PATCH_PIPELINE_ENV_NAMES.items()},
         **{env_name: getattr(settings, field) for field, env_name in CLUSTER_ENV_NAMES.items()},
     }
     return _start_process(WORKER_MODULE, WORKER_LOG_PATH, child_env)
@@ -429,13 +423,6 @@ def _start_worker() -> int:
 # every existing test) keeps working unchanged.
 CLUSTER_ENV_NAMES = env_config.CLUSTER_ENV_NAMES
 
-# 2026-07-24: Ceph patch build & deploy pipeline (dashboard/routes/patch.py) —
-# consumed by WORKER (worker/executor/commands.py's
-# _patch_build_and_stage_command/_patch_install_command), not Watcher, so
-# saving these restarts Worker instead of Watcher (see _start_worker()'s
-# explicit child_env override below, same reasoning as ROUTER_*_ENV_NAME —
-# a fresh Worker process must see these values immediately, not whatever
-# was exported in the Dashboard's own os.environ once).
 LOG_INTEL_ENV_NAMES = {
     # Log Intelligence (Plan/log-intelligence-rca-plan.md). Hai công tắc
     # TÁCH RIÊNG có chủ đích: bật thu thập không đồng nghĩa bật chi tiêu
@@ -457,54 +444,6 @@ LOG_INTEL_ENV_NAMES = {
     # trước khi động tới ngưỡng.
 }
 
-
-PATCH_PIPELINE_ENV_NAMES = {
-    "ceph_patch_build_node": "CEPH_PATCH_BUILD_NODE",
-    "ceph_patch_source_dir": "CEPH_PATCH_SOURCE_DIR",
-    "ceph_patch_build_command": "CEPH_PATCH_BUILD_COMMAND",
-    "ceph_patch_output_dir": "CEPH_PATCH_OUTPUT_DIR",
-    "ceph_patch_node_staging_dir": "CEPH_PATCH_NODE_STAGING_DIR",
-    # ssh_user/ssh_key_path are deliberately NOT here — same shared SSH
-    # credential already used for every other cluster/build-server target
-    # (see config/settings.py's ceph_patch_build_node docstring), not a
-    # separate one for this form to manage.
-}
-
-_PIPELINE_HOSTNAME_RE = re.compile(
-    r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*"
-)
-
-
-def _valid_pipeline_host(value: str) -> bool:
-    """Accept an IPv4/IPv6 address or a DNS hostname for the build server."""
-    try:
-        ipaddress.ip_address(value)
-        return True
-    except ValueError:
-        # Do not let an invalid dotted-quad such as 999.3.55.213 pass as a
-        # hostname just because DNS labels may contain digits.
-        if re.fullmatch(r"\d+(?:\.\d+){3}", value):
-            return False
-        return bool(_PIPELINE_HOSTNAME_RE.fullmatch(value))
-
-
-def _pipeline_validation_error(values: dict[str, str]) -> str | None:
-    if not values["ceph_patch_build_node"]:
-        return "Cần nhập IP hoặc hostname của build server."
-    if not _valid_pipeline_host(values["ceph_patch_build_node"]):
-        return "IP/hostname build server không hợp lệ. Ví dụ: 10.0.0.20 hoặc build.ceph.local."
-    if not values["ceph_patch_build_command"]:
-        return "Cần nhập lệnh build."
-    for field, label in (
-        ("ceph_patch_source_dir", "Thư mục source Ceph"),
-        ("ceph_patch_output_dir", "Thư mục chứa file .rpm"),
-        ("ceph_patch_node_staging_dir", "Thư mục tạm trên node Ceph"),
-    ):
-        if not values[field]:
-            return f"{label} không được để trống."
-        if not values[field].startswith("/"):
-            return f"{label} phải là đường dẫn tuyệt đối, bắt đầu bằng '/'."
-    return None
 
 # AI Code Repair supervisor roles are separate from Chat-with-AI/provider
 # settings: Planner/Reviewer asks, plans and audits; Implementer edits the
@@ -1115,16 +1054,6 @@ def _log_intel_form_values() -> dict:
     return {field: getattr(settings, field) for field in LOG_INTEL_ENV_NAMES}
 
 
-def _patch_pipeline_form_values() -> dict:
-    return {
-        "ceph_patch_build_node": settings.ceph_patch_build_node,
-        "ceph_patch_source_dir": settings.ceph_patch_source_dir,
-        "ceph_patch_build_command": settings.ceph_patch_build_command,
-        "ceph_patch_output_dir": settings.ceph_patch_output_dir,
-        "ceph_patch_node_staging_dir": settings.ceph_patch_node_staging_dir,
-    }
-
-
 def _code_repair_form_values() -> dict:
     return {
         field: getattr(settings, field)
@@ -1233,9 +1162,6 @@ def _settings_context(
     database_reset_success: str | None = None,
     database_migrate_error: str | None = None,
     database_migrate_success: str | None = None,
-    patch_pipeline_error: str | None = None,
-    patch_pipeline_success: str | None = None,
-    patch_pipeline_values: dict | None = None,
     code_repair_error: str | None = None,
     code_repair_success: str | None = None,
     code_repair_values: dict | None = None,
@@ -1379,8 +1305,6 @@ def _settings_context(
         "database_migrate_error": database_migrate_error,
         "database_migrate_success": database_migrate_success,
         "current_database_display": _current_database_display(),
-        "patch_pipeline_error": patch_pipeline_error,
-        "patch_pipeline_success": patch_pipeline_success,
         "code_repair_error": code_repair_error,
         "code_repair_success": code_repair_success,
         "code_repair_providers": CODE_REPAIR_PROVIDERS,
@@ -1471,9 +1395,6 @@ def _settings_context(
         context["openstack_openrc_path"] = openstack_cluster.openstack_openrc_path if openstack_cluster else ""
     context.update(database_values if database_values is not None else _database_form_values())
     context.update(cluster_values if cluster_values is not None else _cluster_form_values())
-    context.update(
-        patch_pipeline_values if patch_pipeline_values is not None else _patch_pipeline_form_values()
-    )
     context.update(
         code_repair_values if code_repair_values is not None else _code_repair_form_values()
     )
@@ -1573,8 +1494,6 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         return "log-intel"
     if any(context.get(k) for k in ("dual_ai_error", "dual_ai_success")):
         return "dual-ai"
-    if any(context.get(k) for k in ("patch_pipeline_error", "patch_pipeline_success")):
-        return "patch-pipeline"
     if any(context.get(k) for k in ("backup_target_error", "backup_target_success")):
         return "backup-targets"
     if any(context.get(k) for k in ("openstack_error", "openstack_success")):
@@ -1619,7 +1538,7 @@ async def settings_form(
         ceph_host_key_page=host_key_page,
     )
     section = request.query_params.get("section", "")
-    if section in {"router", "cost", "cluster", "ceph-host-keys", "openstack", "restart-controls", "action-policy", "database", "server-log", "patch-pipeline", "log-intel", "dual-ai", "code-repair", "backup-targets", "cleanup"}:
+    if section in {"router", "cost", "cluster", "ceph-host-keys", "openstack", "restart-controls", "action-policy", "database", "server-log", "log-intel", "dual-ai", "code-repair", "backup-targets", "cleanup"}:
         context["active_section"] = section
     return templates.TemplateResponse(
         request, "settings.html",
@@ -2941,10 +2860,9 @@ async def cluster_settings_submit(
         ) + "Không thể tự khởi động lại AI Remediation Watcher."
 
     # 2026-07-24 fix: Worker also reads ceph_exec_mode/ceph_mon_nodes/etc
-    # directly (worker/executor/commands.py's package-based upgrade AND
-    # patch-pipeline command builders — both call
-    # shared.cluster_nodes.configured_nodes() and/or check
-    # settings.ceph_exec_mode) — until now only Watcher got restarted here,
+    # directly (worker/executor/commands.py's package-based upgrade builders,
+    # which read shared cluster settings and check settings.ceph_exec_mode)
+    # — until now only Watcher got restarted here,
     # so a Worker that had been running since BEFORE this save kept using
     # its stale in-memory ceph_exec_mode/node list indefinitely (observed
     # live: every package-based-upgrade approval failed with "no Command
@@ -3254,136 +3172,6 @@ async def settings_run_migrations(request: Request, user: str = Depends(require_
             database_migrate_success="Đã chạy migration thành công — schema database đã cập nhật mới nhất.",
         ),
     )
-
-
-@router.post("/settings/patch-pipeline", response_class=HTMLResponse)
-async def patch_pipeline_settings_submit(
-    request: Request,
-    user: str = Depends(require_login),
-    ceph_patch_build_node: str = Form(""),
-    ceph_patch_source_dir: str = Form(""),
-    ceph_patch_build_command: str = Form(""),
-    ceph_patch_output_dir: str = Form(""),
-    ceph_patch_node_staging_dir: str = Form(""),
-    save_action: str = Form("save-restart"),
-):
-    """Configures the Ceph patch build & deploy pipeline (Vá lỗi Ceph page,
-    dashboard/routes/patch.py) — where the build server is and how to build
-    RPMs on it. See config/settings.py's ceph_patch_* fields for what each
-    one means; ssh_user/ssh_key_path are NOT part of this form (same shared
-    SSH credential already used for every Ceph node — see "Kết nối cụm
-    Ceph" above).
-
-    No connection test here (unlike "Kết nối cụm Ceph"/"Kết nối Database")
-    — the build server doesn't need to be reachable just to SAVE its
-    address; worker/executor/commands.py's _patch_build_and_stage_command
-    already validates all of this is non-blank and fails loudly (not a
-    guess) if the build server itself turns out to be unreachable when a
-    patch build is actually proposed."""
-    _require_admin_privilege(user)
-
-    submitted = {
-        "ceph_patch_build_node": ceph_patch_build_node.strip(),
-        "ceph_patch_source_dir": ceph_patch_source_dir.strip(),
-        "ceph_patch_build_command": ceph_patch_build_command.strip(),
-        "ceph_patch_output_dir": ceph_patch_output_dir.strip(),
-        "ceph_patch_node_staging_dir": ceph_patch_node_staging_dir.strip(),
-    }
-
-    validation_error = _pipeline_validation_error(submitted)
-    if validation_error:
-        return templates.TemplateResponse(
-            request,
-            "settings.html",
-            _settings_context(
-                user,
-                patch_pipeline_error=validation_error,
-                patch_pipeline_values=submitted,
-            ),
-        )
-
-    try:
-        _update_env_file_batch(
-            {env_name: submitted[field] for field, env_name in PATCH_PIPELINE_ENV_NAMES.items()}
-        )
-        for field in PATCH_PIPELINE_ENV_NAMES:
-            setattr(settings, field, submitted[field])
-    except Exception:
-        logger.exception("patch_pipeline_settings_submit: failed to persist config to .env")
-        return templates.TemplateResponse(
-            request,
-            "settings.html",
-            _settings_context(
-                user,
-                patch_pipeline_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server",
-                patch_pipeline_values=submitted,
-            ),
-        )
-
-    if save_action != "save-restart":
-        return templates.TemplateResponse(
-            request,
-            "settings.html",
-            _settings_context(
-                user,
-                patch_pipeline_success="Đã lưu cấu hình pipeline. Worker chưa được restart.",
-            ),
-        )
-
-    worker_restart = await asyncio.to_thread(restart_worker)
-    restart_suffix = (
-        " Worker đã khởi động lại để áp dụng ngay."
-        if worker_restart.get("restarted")
-        else " Chưa áp dụng vào Worker: " + (worker_restart.get("error") or "hãy kiểm tra log dịch vụ.")
-    )
-
-    return templates.TemplateResponse(
-        request,
-        "settings.html",
-        _settings_context(
-            user,
-            patch_pipeline_success="Đã lưu cấu hình —" + restart_suffix,
-        ),
-    )
-
-
-@router.get("/api/settings/patch-pipeline/status")
-async def patch_pipeline_status(user: str = Depends(require_login)):
-    """Return the non-secret runtime/configuration status for the Pipeline card."""
-    _require_admin_privilege(user)
-    configured = not _pipeline_validation_error(_patch_pipeline_form_values())
-    state = "ready" if configured else "not_configured"
-    state_label = "Sẵn sàng chạy pipeline" if configured else "Chưa cấu hình đầy đủ"
-    last_build = None
-    try:
-        with db.SessionLocal() as session:
-            action = (
-                session.query(Action)
-                .filter(Action.action_id == "patch_build_and_stage")
-                .order_by(Action.created_at.desc())
-                .first()
-            )
-            if action is not None:
-                status = action.status or ""
-                status_display = {
-                    ActionStatus.PENDING_APPROVAL.value: ("Đang chờ duyệt", "waiting"),
-                    ActionStatus.APPROVED.value: ("Đã duyệt, chờ chạy", "waiting"),
-                    ActionStatus.EXECUTING.value: ("Đang chạy", "running"),
-                    ActionStatus.EXECUTED.value: ("Build thành công", "success"),
-                    ActionStatus.FAILED.value: ("Build thất bại", "error"),
-                    ActionStatus.REJECTED.value: ("Đã từ chối", "error"),
-                }.get(status, (status or "Chưa xác định", "ready"))
-                state_label, state = status_display
-                timestamp = action.created_at.strftime("%d/%m %H:%M") if action.created_at else "—"
-                last_build = f"{timestamp} · {state_label}"
-    except Exception:
-        logger.exception("patch_pipeline_status: failed to read latest pipeline action")
-    return {
-        "configured": configured,
-        "state": state,
-        "state_label": state_label,
-        "last_build": last_build,
-    }
 
 
 @router.post("/settings/dual-ai", response_class=HTMLResponse)

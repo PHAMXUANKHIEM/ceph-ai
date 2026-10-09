@@ -1552,7 +1552,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 )
         return
 
-    # 2026-07-24: a cluster upgrade/patch install restarting every daemon
+    # A cluster upgrade restarting daemons
     # one host at a time routinely trips transient OSD_DOWN/MGR_DOWN
     # incidents for the whole run — surfacing each as a new RISKY proposal
     # means an operator has to manually reject a stream of them just to let
@@ -2339,7 +2339,7 @@ def _record_execution_result(
 
 
 _DISRUPTIVE_CLUSTER_OPERATION_ACTION_IDS = (
-    gate.VALID_CLUSTER_UPGRADE_ACTION_IDS | gate.VALID_PATCH_ACTION_IDS
+    gate.VALID_CLUSTER_UPGRADE_ACTION_IDS
 )
 
 # 2026-07-28: the two ceph-deploy/package-based upgrade action_ids (see
@@ -2995,7 +2995,7 @@ def _run_restart_phase(
 
 
 def _is_disruptive_cluster_operation_in_flight() -> bool:
-    """True while a cluster-upgrade or patch-install Action is proposed but
+    """True while a cluster-upgrade Action is proposed but
     not yet resolved (PENDING_APPROVAL/APPROVED) — same in-flight window
     dashboard/routes/actions.py::approve_action already gates other RISKY
     approvals on, checked here too so a fresh RISKY proposal doesn't even
@@ -3029,7 +3029,7 @@ def _auto_reject_risky_during_cluster_operation(
 ) -> None:
     logger.warning(
         "diagnose_incident: auto-rejecting RISKY action %s for incident %s — a cluster "
-        "upgrade/patch install is currently in flight",
+        "cluster upgrade is currently in flight",
         action_id,
         incident_id,
     )

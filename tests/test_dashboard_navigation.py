@@ -13,7 +13,6 @@ SHARED_NAV_PATHS = {
     "/deploy-cluster",
     "/delete-cluster",
     "/upgrade",
-    "/patch",
     "/convert-cluster",
     "/backups",
     "/restore-cluster",
@@ -84,6 +83,12 @@ def test_permission_gated_links_are_not_synthesized_by_shared_navigation():
 
     for path in ("/crush-map", "/telegram-alerts", "/users", "/clusters"):
         assert f'["{path}",' not in shared_block
+
+
+def test_retired_patch_ceph_route_is_not_registered(dashboard_client):
+    response = dashboard_client.get("/patch")
+
+    assert response.status_code == 404
 
 
 def test_compact_admin_pages_include_the_shared_permission_aware_navigation():

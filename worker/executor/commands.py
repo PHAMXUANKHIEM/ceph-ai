@@ -1,9 +1,7 @@
-import base64
 import re
 import shlex
 
 from config.settings import settings
-from shared.cluster_nodes import configured_nodes
 from worker.executor.action_contract import ActionContractError, validate_typed_action_params
 from worker.executor.ssh_executor import ExecutorError, execute_command
 
@@ -1484,121 +1482,6 @@ _CLUSTER_UPGRADE_COMMAND_BUILDERS = {
 }
 
 
-# --- Ceph patch build & deploy pipeline (2026-07-24) ------------------------
-#
-# dashboard/routes/patch.py-only — see action_policy.yaml's `patch_action_ids:`
-# comment for why this is a fourth action_id family. patch_build_and_stage's
-# `host` is the separate build server (shared/cluster_nodes.py::patch_build_node(),
-# NEVER a Ceph node); patch_install's `host` is a Ceph node from
-# configured_nodes(), the same SSH SSRF whitelist every other Ceph-targeted
-# action already uses.
-_PATCH_FILENAME = "ceph-aiops-current.patch"
-
-
-def _patch_build_and_stage_command(host: str | None, params: dict) -> str:
-    """Writes the operator-uploaded patch to disk, applies it, runs the
-    operator-configured build command, then has the BUILD SERVER ITSELF scp
-    the resulting .rpm files onto every configured Ceph node's staging
-    directory.
-
-    There is no in-app file-transfer code doing that copy instead — this
-    codebase has no SFTP/scp anywhere (every SSH call is exec_command-only,
-    see ssh_executor.py), and built Ceph RPMs (ceph-osd/ceph-common etc. can
-    be tens-hundreds of MB) are far too large for a base64-over-exec_command
-    trick like the one used for the patch text itself just below (fine
-    there only because patch files are small, capped at upload time).
-    Requires the operator to have already placed a copy of the SAME SSH
-    private key (settings.ssh_key_path) on the build server, at the same
-    path — the build server's own scp calls need it to reach the Ceph
-    nodes, which already trust that key's public half (Watcher/Worker
-    already SSH to them with it).
-
-    `ceph_patch_build_command` is operator-configured trusted shell text
-    (same trust level as e.g. ceph_container_name elsewhere in this
-    codebase — a Settings-page value, not per-request/attacker-reachable
-    input) — deliberately NOT shlex.quote()'d, since it must remain
-    executable shell syntax (the operator's own multi-step build
-    invocation), not a single literal argument.
-    """
-    if host is None:
-        raise ExecutorError("patch_build_and_stage needs the build server host — no host given")
-    patch_content = params.get("patch_content")
-    if not isinstance(patch_content, str) or not patch_content.strip():
-        raise ExecutorError("patch_build_and_stage requires a non-empty patch_content param")
-
-    source_dir = settings.ceph_patch_source_dir.strip()
-    build_command = settings.ceph_patch_build_command.strip()
-    output_dir = settings.ceph_patch_output_dir.strip()
-    staging_dir = settings.ceph_patch_node_staging_dir.strip()
-    if not source_dir or not build_command or not output_dir or not staging_dir:
-        raise ExecutorError(
-            "ceph_patch_source_dir/ceph_patch_build_command/ceph_patch_output_dir/"
-            "ceph_patch_node_staging_dir must all be configured (Cài đặt) before proposing a "
-            "patch build"
-        )
-
-    target_hosts = [n["host"] for n in configured_nodes()]
-    if not target_hosts:
-        raise ExecutorError("no Ceph nodes configured (shared.cluster_nodes.configured_nodes is empty)")
-
-    patch_b64 = base64.b64encode(patch_content.encode()).decode()
-    quoted_source_dir = shlex.quote(source_dir)
-    patch_path = shlex.quote(f"{source_dir.rstrip('/')}/{_PATCH_FILENAME}")
-    write_patch = f"base64 -d > {patch_path} <<< {shlex.quote(patch_b64)}"
-    apply_patch = (
-        f"cd {quoted_source_dir} && git apply --check {_PATCH_FILENAME} && git apply {_PATCH_FILENAME}"
-    )
-
-    quoted_output_dir = shlex.quote(output_dir)
-    key_path = shlex.quote(settings.ssh_key_path)
-    copy_steps = " && ".join(
-        f"scp -o StrictHostKeyChecking=accept-new -i {key_path} {quoted_output_dir}/*.rpm "
-        f"{shlex.quote(f'{settings.ssh_user}@{ceph_host}:{staging_dir}/')}"
-        for ceph_host in target_hosts
-    )
-    return f"{write_patch} && {apply_patch} && {build_command} && {copy_steps}"
-
-
-def _patch_install_command(host: str | None, params: dict) -> str:
-    """Installs whatever .rpm files patch_build_and_stage already copied
-    into settings.ceph_patch_node_staging_dir on this Ceph node, then
-    restarts whatever this host actually runs — near-identical to
-    _upgrade_ceph_cluster_package_local_command above, except the staging
-    directory is a fixed app-owned constant (config/settings.py's
-    ceph_patch_node_staging_dir), not an operator-typed path, since THIS
-    pipeline is the one that put the files there in the first place. Same
-    execution-model caveat as that function: no orchestrator gating
-    mid-sequence stop (see worker/llm/router_client.py::_execute_approved_action)."""
-    _require_non_cephadm_exec_mode("patch_install")
-    if host is None:
-        raise ExecutorError(
-            "patch_install needs a specific host to discover its Ceph systemd unit(s) and "
-            "detect its package manager — no host given"
-        )
-    staging_dir = settings.ceph_patch_node_staging_dir.strip()
-    if not staging_dir:
-        raise ExecutorError("ceph_patch_node_staging_dir must be configured before proposing an install")
-    quoted_dir = shlex.quote(staging_dir)
-
-    exists_check = f"[ -d {quoted_dir} ] || {{ echo '{quoted_dir}: directory not found' >&2; exit 1; }}"
-    apt_snippet = f"apt-get install -y {quoted_dir}/*.deb"
-    rpm_snippet = f"(dnf install -y {quoted_dir}/*.rpm || yum localinstall -y {quoted_dir}/*.rpm)"
-    install_command = (
-        f"{exists_check} && " + _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
-    )
-
-    restart_snippet = _restart_discovered_units_snippet(host)
-    if restart_snippet is None:
-        return install_command
-    return f"{install_command} && {restart_snippet}"
-
-
-_PATCH_COMMAND_BUILDERS = {
-    "patch_build_and_stage": _patch_build_and_stage_command,
-    "patch_install": _patch_install_command,
-}
-
-
 # --- Dựng cụm Ceph tự động (2026-07-25, Story 8.1) --------------------------
 #
 # dashboard/routes/deploy_cluster.py-only — see action_policy.yaml's
@@ -1890,8 +1773,6 @@ def get_command(
         command = _DEVICE_HEALTH_COMMAND_BUILDERS[action_id](params or {})
     elif action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS:
         command = _CLUSTER_UPGRADE_COMMAND_BUILDERS[action_id](host, params or {})
-    elif action_id in _PATCH_COMMAND_BUILDERS:
-        command = _PATCH_COMMAND_BUILDERS[action_id](host, params or {})
     elif action_id in _CLUSTER_DEPLOY_COMMAND_BUILDERS:
         command = _CLUSTER_DEPLOY_COMMAND_BUILDERS[action_id](host, params or {})
     elif action_id in _VOLUME_PERF_COMMAND_BUILDERS:
@@ -1933,7 +1814,6 @@ def has_command(action_id: str) -> bool:
         or action_id in _INCIDENT_PARAMETER_COMMAND_BUILDERS
         or action_id in _DEVICE_HEALTH_COMMAND_BUILDERS
         or action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS
-        or action_id in _PATCH_COMMAND_BUILDERS
         or action_id in _CLUSTER_DEPLOY_COMMAND_BUILDERS
         or action_id in _VOLUME_PERF_COMMAND_BUILDERS
         or action_id in _BACKUP_COMMAND_BUILDERS
