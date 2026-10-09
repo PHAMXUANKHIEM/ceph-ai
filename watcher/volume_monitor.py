@@ -37,6 +37,7 @@ single heuristic below, which already covers the general case.
 import json
 import logging
 import threading
+import time
 from collections import deque
 from datetime import datetime
 from shared.time import utc_now
@@ -46,7 +47,7 @@ from config.settings import settings
 from shared import audit, db
 from shared.incident_actions import cancel_pending_actions
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, VolumeMetric
-from watcher import ceph_client, volume_learning
+from watcher import ceph_client, mgr_rbd_metrics, volume_learning
 from watcher.ceph_client import CephQueryError
 from worker.policy import gate
 
@@ -136,6 +137,22 @@ def _looks_saturated(state: _VolumeState, iops: float, latency_ms: float) -> boo
     return near_peak and latency_elevated
 
 
+# Pools the mgr reports no RBD stats for, with when that was last logged.
+_mgr_missing_pool_logged: dict[str, float] = {}
+
+
+def _pool_samples_from_mgr(pool: str, images: dict) -> list:
+    """One pool's samples from the mgr page (09/10/2026: replaces `rbd perf image iostat`)."""
+    if not any(image_pool == pool for image_pool, _image in images):
+        now = time.monotonic()
+        if now - _mgr_missing_pool_logged.get(pool, -3600.0) >= 3600:
+            _mgr_missing_pool_logged[pool] = now
+            logger.info("check_volumes: mgr has no RBD stats for pool %r (no images, or not in "
+                        "mgr/prometheus/rbd_stats_pools)", pool)
+        return []
+    return mgr_rbd_metrics.samples_for_pool(pool, images, time.monotonic())
+
+
 def check_volumes(cluster: Cluster | None = None, cluster_id: str | None = None) -> dict[str, dict]:
     """Polls every settings.ceph_rbd_pools-configured pool's per-image
     iostat, updates each image's rolling window + streak counter, and
@@ -161,7 +178,11 @@ def check_volumes(cluster: Cluster | None = None, cluster_id: str | None = None)
             logger.warning("check_volumes: cluster %s pool discovery failed: %s", cluster.id, exc)
             return {}
 
+    mgr_images = mgr_rbd_metrics.fetch_images() if cluster is None and settings.rbd_iostat_from_mgr else None
+
     def query(pool: str):
+        if mgr_images is not None:
+            return _pool_samples_from_mgr(pool, mgr_images)
         if cluster is None:
             return ceph_client.query_rbd_iostat(pool)
         return ceph_client.query_rbd_iostat_with(

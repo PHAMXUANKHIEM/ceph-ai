@@ -334,3 +334,11 @@ def _fresh_ssh_host_circuits():
     yield
     with ceph_client._HOST_CIRCUITS_LOCK:
         ceph_client._HOST_CIRCUITS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_mgr_rbd_metrics(monkeypatch):
+    """The volume monitor reads RBD stats from the mgr; tests use the iostat path unless they opt in."""
+    from watcher import mgr_rbd_metrics
+
+    monkeypatch.setattr(mgr_rbd_metrics, "fetch_images", lambda **kwargs: None)
