@@ -87,6 +87,11 @@ CEPHADM_KEYRING_TARGET = "/etc/ceph/ceph.client.admin.keyring"
 # fail with exit 1 and caused false "Trash is below threshold" readings.
 CEPHADM_LOCK_WAIT_SECONDS = 30
 CEPHADM_REMOTE_LOCK_PATH = "/run/ceph-ai-cephadm.lock"
+# `flock -w` exits 1 with no output when the lock stays taken, which read as a
+# MON failure: three in a row opened the circuit on every MON, and the volume
+# monitor's `rbd perf image iostat` stopped from 21/09/2026 while ~20 health
+# polls a minute held the lock (09/10/2026). A distinct code marks "busy".
+CEPHADM_LOCK_BUSY_EXIT_CODE = 75
 CEPHADM_REMOTE_TIMEOUT_GRACE_SECONDS = 2
 
 _HEALTH_POOL_LOCK = threading.RLock()
@@ -1955,7 +1960,7 @@ def _run_remote_command_with(
                 "timeout --signal=TERM "
                 f"--kill-after={CEPHADM_REMOTE_TIMEOUT_GRACE_SECONDS}s "
                 f"{float(command_timeout):g}s "
-                f"flock -w {CEPHADM_LOCK_WAIT_SECONDS} "
+                f"flock -E {CEPHADM_LOCK_BUSY_EXIT_CODE} -w {CEPHADM_LOCK_WAIT_SECONDS} "
                 f"{shlex.quote(CEPHADM_REMOTE_LOCK_PATH)} {command}"
             )
             # The remote timeout owns the process group, so TERM/KILL reaches
@@ -1966,12 +1971,23 @@ def _run_remote_command_with(
             cephadm_circuit.record_success()
         return result
     except CephRunnerError as exc:
+        if cephadm_circuit is not None and _cephadm_lock_busy(exc):
+            # The MON is healthy, only busy: free the probe without counting a
+            # failure, and let the caller fall back to the next MON.
+            cephadm_circuit.release_probe()
+            raise CephQueryError(
+                f"{host}: cephadm lock busy for {CEPHADM_LOCK_WAIT_SECONDS} s"
+            ) from exc
         if cephadm_circuit is not None:
             cephadm_circuit.record_failure()
         raise CephQueryError(str(exc)) from exc
     finally:
         if owns_pool:
             active_pool.close()
+
+
+def _cephadm_lock_busy(exc: CephRunnerError) -> bool:
+    return exc.kind == "command_failed" and exc.message.startswith(f"command exited {CEPHADM_LOCK_BUSY_EXIT_CODE}:")
 
 
 def run_command_on_node(host: str, command: str, timeout: int = COMMAND_TIMEOUT_SECONDS) -> str:

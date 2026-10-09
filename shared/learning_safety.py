@@ -82,6 +82,11 @@ class CircuitBreaker:
             if self._failures >= self.failure_threshold:
                 self._opened_at = current
 
+    def release_probe(self) -> None:
+        """End a probe that met a busy dependency: no success, no failure."""
+        with self._lock:
+            self._probe_in_flight = False
+
     def reset(self) -> None:
         with self._lock:
             self._failures = 0
