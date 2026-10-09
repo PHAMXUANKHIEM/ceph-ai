@@ -93,3 +93,30 @@ def test_batch_is_capped_per_weak_label():
         _case(session, index, family=f"FAMILY_{index}")
     chosen = verdict_nudges.select_cases(session, limit=4, per_label_cap=2, now=NOW)
     assert len(chosen) == 2 and {item.weak_label for item in chosen} == {None}
+
+
+def test_one_fault_on_many_hosts_is_one_family_for_the_batch():
+    """09/10/2026: five NODE_UNREACHABLE:<ip> cases a day crowded out everything else."""
+    session = _session()
+    for index, host in enumerate(["10.20.1.153", "10.3.53.69", "10.20.1.195", "10.20.1.39", "10.3.53.1"]):
+        _case(session, index, family=f"NODE_UNREACHABLE:{host}", outcome="EXECUTION_FAILED")
+    latency = _case(session, 20, family="OSD_LATENCY_HIGH:3")
+    omap = _case(session, 21, family="LARGE_OMAP_OBJECTS")
+
+    chosen = verdict_nudges.select_cases(session, limit=5, per_family_cap=2, per_label_cap=5, now=NOW)
+
+    families = [item.fault_family.split(":", 1)[0] for item in chosen]
+    assert families.count("NODE_UNREACHABLE") == 2
+    assert {latency.id, omap.id} <= {item.case_id for item in chosen}
+
+
+def test_rarity_counts_verdicts_of_the_base_family():
+    session = _session()
+    for index in range(3):
+        _case(session, 100 + index, family=f"OSD_LATENCY_HIGH:{index}", verdict="CORRECT")
+    common = _case(session, 1, family="OSD_LATENCY_HIGH:7")
+    rare = _case(session, 2, family="PG_DAMAGED:1.2a")
+
+    chosen = verdict_nudges.select_cases(session, limit=2, now=NOW)
+
+    assert [item.case_id for item in chosen] == [rare.id, common.id]

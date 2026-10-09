@@ -9,7 +9,7 @@ most:
 * the fault family has few labels so far,
 * the proposal is a concrete action rather than ``investigate_manually``.
 
-At most ``per_family_cap`` cases per fault family keep the batch varied. A
+At most ``per_family_cap`` cases per base fault family (the part before ":") keep the batch varied. A
 case is nudged once: the nudge is recorded as an incident timeline event,
 so no schema change is needed and repeated runs skip it.
 """
@@ -41,6 +41,18 @@ class NudgeCandidate:
     weak_label: str | None = None
     weak_confidence: float = 0.0
     weak_label_conflict: bool = False
+
+
+def _base_family(fault_family: str | None) -> str:
+    """``NODE_UNREACHABLE:10.20.1.153`` -> ``NODE_UNREACHABLE``.
+
+    Fault families carry the host/OSD/bucket after a colon. Counting them per
+    entity made one fault look like many rare families: 2,152 CS-LAB cases in
+    14 days were nearly all NODE_UNREACHABLE on six addresses, and the daily
+    nudge asked about five near-identical cases (7 of 58 answered, 09/10/2026).
+    Diversity caps and rarity therefore use the base family.
+    """
+    return str(fault_family or "").split(":", 1)[0] or "UNKNOWN"
 
 
 def _score(case, action_id: str | None, action_status: str | None,
@@ -78,7 +90,7 @@ def select_cases(session, *, limit: int = 5, lookback_days: int = 14, per_family
         return []
     since = (now or utc_now()) - timedelta(days=lookback_days)
     labelled = Counter(
-        family for (family,) in session.query(RemediationCase.fault_family)
+        _base_family(family) for (family,) in session.query(RemediationCase.fault_family)
         .filter(RemediationCase.operator_verdict.isnot(None)).all()
     )
     already_nudged = {
@@ -105,7 +117,7 @@ def select_cases(session, *, limit: int = 5, lookback_days: int = 14, per_family
         weak = weak_by_case.get(case.id)
         weak_conflict = bool(weak and len({vote.label for vote in weak.votes}) > 1)
         score, reasons = _score(
-            case, action_id, action_status, labelled[case.fault_family],
+            case, action_id, action_status, labelled[_base_family(case.fault_family)],
             weak_label=weak.label if weak else None,
             weak_label_conflict=weak_conflict,
         )
@@ -121,13 +133,14 @@ def select_cases(session, *, limit: int = 5, lookback_days: int = 14, per_family
     per_family: Counter = Counter()
     per_label: Counter = Counter()
     for candidate in ranked:
-        if per_family[candidate.fault_family] >= per_family_cap:
+        family = _base_family(candidate.fault_family)
+        if per_family[family] >= per_family_cap:
             continue
         label_key = candidate.weak_label or "UNLABELED"
         if per_label[label_key] >= per_label_cap:
             continue
         chosen.append(candidate)
-        per_family[candidate.fault_family] += 1
+        per_family[family] += 1
         per_label[label_key] += 1
         if len(chosen) >= limit:
             break
