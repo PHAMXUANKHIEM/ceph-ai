@@ -104,13 +104,38 @@ def save(record: dict, directory: Path = PROPOSALS_DIR) -> Path:
     return path
 
 
+def announce(record: dict, *, sender=None, plain_sender=None) -> bool:
+    """Post a PROPOSED record as an approval card; a new-kind request as a plain note."""
+    from config.settings import settings
+    from shared import reproduction_approval
+    from shared.telegram_client import send_telegram_message, send_telegram_message_with_keyboard
+
+    token, chat = settings.telegram_chatbox_bot_token, settings.telegram_chatbox_chat_id
+    if not token or not chat:
+        return False
+    if record["status"] == "PROPOSED":
+        (sender or send_telegram_message_with_keyboard)(
+            token, chat, reproduction_approval.card_text(record), reproduction_approval.buttons(record["id"]))
+        return True
+    if record["status"] == "NEW_KIND_REQUESTED":
+        request = record["proposal"].get("new_kind_request") or {}
+        (plain_sender or send_telegram_message)(
+            token, chat, f"🧩 AI đề nghị thêm kiểu lỗi mới cho {record['family']} (cần viết code + review, "
+                         f"không chạy được ngay): {json.dumps(request, ensure_ascii=False)[:1500]}")
+        return True
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--family", required=True)
     parser.add_argument("--days", type=int, default=30)
+    parser.add_argument("--no-telegram", action="store_true", help="store the proposal without posting a card")
     args = parser.parse_args()
     record = propose(args.family, days=args.days)
     path = save(record)
+    if not args.no_telegram:
+        announce(record)
     print(json.dumps({"saved": str(path), "status": record["status"], "errors": record["validation_errors"]},
                      ensure_ascii=False))
     return 0
