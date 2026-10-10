@@ -13,7 +13,7 @@ from .schema import NaturalLanguageIntent, TimeRange
 _MUTATION_TERMS = (
     "xoa", "tao", "tao moi", "resize", "restart", "repair", "delete",
     "create", "remove", "purge", "out osd", "in osd", "sua", "doi",
-    "thay doi", "bat", "tat", "khoi phuc", "restore",
+    "thay doi", "bat", "tat", "khoi phuc", "restore", "fix",
 )
 
 _INTENT_RULES: tuple[tuple[str, tuple[str, ...], str | None], ...] = (
@@ -28,7 +28,7 @@ _INTENT_RULES: tuple[tuple[str, tuple[str, ...], str | None], ...] = (
     ("osd_health", ("osd", "mon", "mgr", "disk"), "osd"),
     ("node_metrics", ("cpu", "ram", "iops", "latency", "node", "may chu"), "node"),
     ("pool_capacity", ("pool", "dung luong", "capacity", "nearfull", "full"), "pool"),
-    ("cluster_health", ("health", "suc khoe", "trang thai", "tong quan", "co van de"), "cluster"),
+    ("cluster_health", ("health", "suc khoe", "trang thai", "tinh trang", "tong quan", "co van de"), "cluster"),
 )
 
 
