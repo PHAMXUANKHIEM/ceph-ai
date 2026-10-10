@@ -113,6 +113,17 @@ def isolated_db(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_auxiliary_ssh_collectors(monkeypatch):
+    """run() starts the host-metrics and capacity-forecast collectors on
+    auxiliary threads; unmocked they SSH to conftest's fake MON IPs. Locally
+    that fails fast, but on GitHub's runners the connect hangs until its
+    timeout: 25 tests here took 30 s each, 14.7 of CI's 31.6 test minutes
+    (run 9c81f547, 09/10/2026). Their own test files cover them."""
+    monkeypatch.setattr(watcher_main.host_metrics, "collect_and_store", lambda *args, **kwargs: None)
+    monkeypatch.setattr(watcher_main.capacity_forecast, "collect_and_store", lambda *args, **kwargs: None)
+
+
+@pytest.fixture(autouse=True)
 def _fast_device_health_monitor_default(monkeypatch):
     """2026-08-01 (Story C): run() now also calls device_health_monitor.
     check_predicted_failing_osds() every poll cycle (gated to once per
