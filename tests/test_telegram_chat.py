@@ -862,3 +862,79 @@ def test_a_lone_chat_cluster_is_selected_for_member_operators(monkeypatch, tmp_p
     monkeypatch.setattr(chat.settings, "telegram_chat_members_are_operators", False, raising=False)
     assert not chat._auto_select_only_cluster("telegram-chat:2", "123:token", "-1001")
     chat._cluster_by_chat.clear()
+
+
+def _single_mode_harness(monkeypatch, single):
+    _settings(monkeypatch)
+    chat._mode_by_chat.clear()
+    chat._session_by_chat.clear()
+    _patch_cluster(monkeypatch)
+    monkeypatch.setattr(chat, "_session_and_history", lambda actor, cluster_id: ("session-1", []))
+    saved, sent = [], []
+
+    def save(**kwargs):
+        saved.append(kwargs)
+        return SimpleNamespace(id=f"message-{len(saved)}")
+
+    async def send(_token, _chat_id, text):
+        sent.append(text)
+
+    monkeypatch.setattr(chat, "_save_message", save)
+    monkeypatch.setattr(chat, "_send", send)
+    monkeypatch.setattr(chat, "run_chat_turn", single)
+    chat._mode_by_chat["telegram-chat:77"] = "single"
+    asyncio.run(chat.handle_message(
+        {"chat": {"id": -1001, "type": "private"}, "from": {"id": 77}, "text": "tình trạng cụm?"}, "123:token"))
+    return saved, sent
+
+
+def test_a_telegram_answer_keeps_its_natural_language_context(monkeypatch):
+    """Telegram is where the chat is used; without this the NL rollout report counted 0 questions for weeks."""
+    context = {"schema_version": "nl-context-v1", "intent": "cluster_health", "evidence_refs": ["ceph-status"]}
+
+    async def single(history, text, actor, cluster):
+        return {"reply_text": "HEALTH_OK", "proposal": None, "nl_context": context}
+
+    saved, _sent = _single_mode_harness(monkeypatch, single)
+
+    assert [row["role"] for row in saved] == ["user", "assistant"]
+    assert saved[1]["nl_context"] == context
+
+
+def test_a_failed_answer_is_recorded_like_the_reply_the_operator_saw(monkeypatch):
+    async def single(history, text, actor, cluster):
+        raise chat.ChatTurnError("AI provider timed out")
+
+    saved, sent = _single_mode_harness(monkeypatch, single)
+
+    assert sent == ["Không thể trả lời: AI provider timed out"]
+    assert saved[-1]["role"] == "assistant" and saved[-1]["content"] == sent[0]
+
+
+def test_save_message_stores_the_context_as_json(monkeypatch):
+    from shared.models import ChatMessage
+
+    stored = []
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def add(self, message):
+            stored.append(message)
+
+        def commit(self):
+            pass
+
+        def refresh(self, message):
+            pass
+
+    monkeypatch.setattr(chat.db, "SessionLocal", Session)
+
+    chat._save_message(session_id="s", cluster_id="c", actor="a", role="assistant", content="ok",
+                       nl_context={"intent": "cluster_health"})
+
+    assert isinstance(stored[0], ChatMessage) and json.loads(stored[0].nl_context_json) == {"intent": "cluster_health"}
