@@ -14,7 +14,7 @@
 {% set cluster_group_exact = [
   "/nodes", "/trash", "/pools",
   "/block-storage", "/pgs", "/capacity-forecast", "/disk-risk",
-  "/deploy-cluster", "/delete-cluster", "/remove-nodes", "/convert-cluster",
+  "/deploy-cluster", "/delete-cluster", "/remove-nodes", "/replace-osd", "/convert-cluster",
   "/volumes", "/trash"
 ] %}
 {% set cluster_group_active = (nav_path in cluster_group_exact) or nav_path.startswith("/upgrade") or nav_path.startswith("/volumes/") %}
@@ -40,6 +40,7 @@
           <a href="/deploy-cluster" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/deploy-cluster' else '' }}">Deploy Cluster</a>
           <a href="/delete-cluster" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/delete-cluster' else '' }}">Delete Cluster</a>
           <a href="/remove-nodes" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/remove-nodes' else '' }}">Remove Nodes</a>
+          <a href="/replace-osd" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/replace-osd' else '' }}">Replace OSD</a>
           <a href="/convert-cluster" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/convert-cluster' else '' }}">Convert to Cephadm</a>
           <a href="/upgrade" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path.startswith('/upgrade') else '' }}">Upgrade Cluster</a>
         </div>

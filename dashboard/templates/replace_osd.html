@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Replace OSD — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&amp;lifecycle_layout=5">
+</head>
+<body>
+  {% include "_nav.html" %}
+
+  <main class="page cluster-lifecycle-page replace-osd-page">
+    <header class="lifecycle-page-header">
+      <div class="dc-title-block"><div class="lifecycle-eyebrow">CLUSTER LIFECYCLE / DESTRUCTIVE</div>
+        <div class="dc-title-row"><h1>Thay OSD hỏng</h1><span class="lifecycle-page-badge is-danger">DESTRUCTIVE WORKFLOW</span></div>
+        <p>Thay một OSD của cụm <strong>{{ cluster_name }}</strong> (cụm đang chọn) mà vẫn <strong>giữ ID</strong>: cephadm dời dữ liệu đi và đánh dấu OSD destroyed; sau khi thay ổ, OSD được tạo lại cùng ID trên ổ mới.</p></div>
+    </header>
+
+    {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}
+    <section class="card lifecycle-panel">
+      <div class="card-header"><h2>Đề xuất đang chờ duyệt</h2></div>
+      <div class="card-body">
+        <pre class="upgrade-plan-text">{{ pending_action.rationale }}</pre>
+        {% if pending_action.proposed_command %}<p><strong>Xem trước lệnh:</strong></p><pre class="upgrade-plan-text">{{ pending_action.proposed_command }}</pre>{% endif %}
+        <label>Gõ chính xác <code>{{ confirm_text }}</code> để duyệt
+          <input type="text" id="ro-approve-input" autocomplete="off" spellcheck="false"></label>
+        <div class="pending-action-buttons">
+          <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form">
+            <input type="hidden" name="confirm_text" id="ro-approve-hidden" value="">
+            <button type="submit" class="btn btn-reject" id="ro-approve-btn" disabled>Duyệt — thay OSD</button>
+          </form>
+          <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form">
+            <button type="submit" class="btn btn-approve">Từ chối</button>
+          </form>
+        </div>
+      </div>
+    </section>
+    {% elif pending_action %}
+    <section class="card lifecycle-panel"><div class="card-body"><p class="hint">Đang thực hiện — xem tiến trình bên dưới.</p></div></section>
+    {% elif awaiting_disk %}
+    <section class="card lifecycle-panel">
+      <div class="card-header"><h2>osd.{{ last_params.osd_id }} chờ ổ mới</h2></div>
+      <div class="card-body">
+        <p class="hint">Thay ổ vật lý (hoặc dùng lại ổ cũ) rồi tạo đề xuất hoàn tất. Ổ sẽ bị <strong>xoá sạch</strong> rồi OSD được tạo lại cùng ID. Worker từ chối nếu OSD chưa ở trạng thái destroyed (dữ liệu vẫn đang được dời).</p>
+        <form id="ro-finish-form">
+          <p>Host: <code>{{ recorded_host or "?" }}</code></p>
+          <label>Đường dẫn ổ <input type="text" id="ro-device" value="{{ recorded_device or '' }}" autocomplete="off" spellcheck="false"></label>
+          <label><span>Gõ <code>THAY osd.{{ last_params.osd_id }}</code> để xác nhận</span> <input type="text" id="ro-finish-confirm" autocomplete="off" spellcheck="false"></label>
+          <p class="dc-modal-error" id="ro-finish-error" hidden></p>
+          <button type="submit" class="btn btn-primary" id="ro-finish-submit">Hoàn tất thay OSD</button>
+        </form>
+      </div>
+    </section>
+    {% elif exec_mode != "cephadm" %}
+    <section class="card"><div class="card-body"><p class="hint">Thay OSD chỉ hỗ trợ cụm triển khai bằng cephadm (cụm này: {{ exec_mode }}).</p></div></section>
+    {% else %}
+    <section class="card lifecycle-panel">
+      <div class="card-header"><h2>Chọn OSD cần thay</h2></div>
+      <div class="card-body">
+        <form id="ro-form">
+          {% if osds %}
+          <label>OSD
+            <select id="ro-osd">
+              <option value="">— chọn —</option>
+              {% for item in osds %}<option value="{{ item.osd_id }}">osd.{{ item.osd_id }} ({{ item.host }})</option>{% endfor %}
+            </select>
+          </label>
+          {% else %}
+          <p class="hint">Chưa có snapshot CRUSH của cụm này; chờ Watcher thu (vài phút) rồi tải lại trang.</p>
+          {% endif %}
+          <p class="hint">Worker từ chối nếu cụm HEALTH_ERR, hoặc OSD còn up mà không đủ host khác cho số bản sao lớn nhất của pool, hoặc các OSD còn lại không đủ chỗ. OSD đã down (ổ hỏng) được thay dù cụm sẽ degraded cho tới khi ổ mới vào.</p>
+          <label><span>Gõ <code id="ro-expected">THAY osd.…</code> để xác nhận</span> <input type="text" id="ro-confirm" autocomplete="off" spellcheck="false"></label>
+          <p class="dc-modal-error" id="ro-error" hidden></p>
+          <button type="submit" class="btn dc-delete-button" id="ro-submit" disabled>Tạo đề xuất thay OSD</button>
+        </form>
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <div class="card-header"><h2>Tiến trình{% if last_action %} — {{ last_action.status }}{% endif %}</h2></div>
+      <div class="card-body"><div id="ro-progress"><p class="hint">Chưa có lượt thay OSD nào.</p></div></div>
+    </section>
+  </main>
+
+  <script type="application/json" id="ro-initial">{{ {"progress": progress, "status": last_action.status if last_action else None}|tojson }}</script>
+  <script>
+  (function () {
+    function el(id) { return document.getElementById(id); }
+    const MARK = {done: "✓", running: "▶", failed: "✗", pending: "·"};
+    function render(state) {
+      const box = el("ro-progress");
+      if (!state.progress || !state.progress.length) return;
+      box.replaceChildren();
+      state.progress.forEach(function (step) {
+        const p = document.createElement("p");
+        const strong = document.createElement("strong");
+        strong.textContent = (MARK[step.status] || "·") + " " + step.label;
+        p.append(strong);
+        if (step.message) { p.append(document.createElement("br"), step.message); }
+        (step.hosts || []).forEach(function (host) {
+          const line = document.createElement("div"); line.className = "hint";
+          line.textContent = host.host + ": " + (host.message || host.status); p.append(line);
+        });
+        box.append(p);
+      });
+    }
+    render(JSON.parse(el("ro-initial").textContent));
+    setInterval(async function () {
+      try {
+        const response = await fetch("/replace-osd/progress", {credentials: "same-origin"});
+        if (response.ok) render(await response.json());
+      } catch (e) { /* keep the last view */ }
+    }, 5000);
+
+    const approveInput = el("ro-approve-input");
+    if (approveInput) {
+      const expected = {{ (confirm_text or "")|tojson }};
+      approveInput.addEventListener("input", function () {
+        el("ro-approve-hidden").value = approveInput.value.trim();
+        el("ro-approve-btn").disabled = approveInput.value.trim() !== expected;
+      });
+    }
+
+    async function post(url, body, errorId) {
+      const response = await fetch(url, {method: "POST", credentials: "same-origin",
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+      if (response.ok) { window.location.reload(); return; }
+      let detail = "Không tạo được đề xuất";
+      try { detail = (await response.json()).detail || detail; } catch (e) { /* default */ }
+      el(errorId).textContent = typeof detail === "string" ? detail : JSON.stringify(detail); el(errorId).hidden = false;
+    }
+
+    const form = el("ro-form");
+    if (form && el("ro-osd")) {
+      function expectedText() { return "THAY osd." + el("ro-osd").value; }
+      function update() {
+        el("ro-expected").textContent = el("ro-osd").value ? expectedText() : "THAY osd.…";
+        el("ro-submit").disabled = !el("ro-osd").value || el("ro-confirm").value.trim() !== expectedText();
+      }
+      form.addEventListener("input", update); form.addEventListener("change", update);
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        post("/replace-osd/propose", {osd_id: Number(el("ro-osd").value), confirmation: el("ro-confirm").value.trim()}, "ro-error");
+      });
+    }
+    const finishForm = el("ro-finish-form");
+    if (finishForm) {
+      finishForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        post("/replace-osd/finish", {device: el("ro-device").value.trim(), confirmation: el("ro-finish-confirm").value.trim()}, "ro-finish-error");
+      });
+    }
+  })();
+  </script>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

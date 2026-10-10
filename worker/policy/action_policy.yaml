@@ -178,6 +178,10 @@ cluster_deploy_action_ids:
   # worker/executor/node_removal.py) — drain then `ceph orch host rm`.
   - remove_cluster_nodes
   - finish_remove_cluster_nodes
+  # 2026-10-10: Thay OSD hỏng giữ ID (dashboard/routes/replace_osd.py,
+  # worker/executor/osd_replacement.py) — croit-parity plan C1.
+  - replace_failed_osd
+  - finish_replace_osd
 
 # 2026-07-29: Volumes page "Đo hiệu năng tối đa" (load sweep) button
 # (dashboard/routes/volumes.py) — a SEVENTH family, same reasoning as
@@ -428,6 +432,9 @@ risky:
 # a fresh operator decision — doing so would silently reverse that
 # decision (DESTRUCTIVE always overrides safe: in classify_action).
 destructive:
+  # 2026-10-10: removes an OSD (its data moved first) and zaps/recreates its disk.
+  - replace_failed_osd
+  - finish_replace_osd
   # 2026-10-07: drains hosts out of a running cluster (data moves off their
   # OSDs, the OSDs are destroyed, optionally their devices zapped).
   - remove_cluster_nodes
