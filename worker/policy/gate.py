@@ -107,6 +107,8 @@ CLUSTER_LIFECYCLE_ACTION_IDS = frozenset(
         "restore_cluster_from_backup",
         "remove_cluster_nodes",
         "finish_remove_cluster_nodes",
+        "replace_failed_osd",
+        "finish_replace_osd",
     }
 )
 CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY = "cluster-lifecycle-in-flight"

@@ -1629,6 +1629,19 @@ def _finish_remove_cluster_nodes_preview_command(host: str | None, params: dict)
             "ceph orch host rm <hostname>")
 
 
+def _replace_failed_osd_preview_command(host: str | None, params: dict) -> str:
+    osd_id = params.get("osd_id", "?")
+    return (f"# kiểm tra an toàn cho osd.{osd_id}; ceph orch osd rm {osd_id} --replace (dời dữ liệu, giữ ID); "
+            "chờ OSD destroyed tối đa 20 phút")
+
+
+def _finish_replace_osd_preview_command(host: str | None, params: dict) -> str:
+    osd_id = params.get("osd_id", "?")
+    target = f"{params.get('_hostname') or '<host>'} {params.get('device') or params.get('_device') or '<device>'}"
+    return (f"# kiểm tra osd.{osd_id} destroyed; ceph orch device zap {target} --force; "
+            f"ceph orch daemon add osd {target.replace(' ', ':')} (dùng lại ID {osd_id}); chờ up/in")
+
+
 _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "deploy_cluster_cephadm": _deploy_cluster_cephadm_preview_command,
     "deploy_cluster_ceph_deploy": _deploy_cluster_ceph_deploy_preview_command,
@@ -1642,6 +1655,8 @@ _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "node_os_gate_recover": _node_os_gate_recover_preview_command,
     "remove_cluster_nodes": _remove_cluster_nodes_preview_command,
     "finish_remove_cluster_nodes": _finish_remove_cluster_nodes_preview_command,
+    "replace_failed_osd": _replace_failed_osd_preview_command,
+    "finish_replace_osd": _finish_replace_osd_preview_command,
 }
 
 

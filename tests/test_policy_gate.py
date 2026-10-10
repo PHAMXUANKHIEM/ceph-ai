@@ -290,6 +290,8 @@ def test_cluster_deploy_action_ids_loaded_from_policy_yaml():
         "node_os_gate_recover",
         "remove_cluster_nodes",
         "finish_remove_cluster_nodes",
+        "replace_failed_osd",
+        "finish_replace_osd",
     }
 
 
@@ -297,6 +299,8 @@ def test_node_removal_needs_approval_and_destroys_osds():
     import worker.policy.gate as gate
 
     assert gate.classify_action("remove_cluster_nodes") == gate.ActionClassification.DESTRUCTIVE
+    assert gate.classify_action("replace_failed_osd") == gate.ActionClassification.DESTRUCTIVE
+    assert gate.classify_action("finish_replace_osd") == gate.ActionClassification.DESTRUCTIVE
     assert gate.classify_action("finish_remove_cluster_nodes") == gate.ActionClassification.RISKY
     assert {"remove_cluster_nodes", "finish_remove_cluster_nodes"} <= gate.CLUSTER_LIFECYCLE_ACTION_IDS
 
