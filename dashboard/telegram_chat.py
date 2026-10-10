@@ -33,7 +33,7 @@ from dashboard.dual_ai_chat import (
 )
 from dashboard.routes.actions import ApprovalOutcome, approve_action_core
 from dashboard.routes.chat import _confirm_chat_action_core
-from shared import ci_control, db, release_approval
+from shared import ci_control, db, release_approval, reproduction_approval
 from shared import telegram_federation
 from shared.full_executor_auth import executor_token
 from shared.codex_app_server import (
@@ -60,6 +60,7 @@ CLUSTER_SELECT_PREFIX = "clusterselect:"
 CALLBACK_PREFIXES = (
     CHAT_CONFIRM_PREFIX, CHAT_APPROVE_PREFIX, DUAL_STOP_PREFIX, QUOTA_LOGIN_PREFIX,
     AI_MODE_PREFIX, CLUSTER_SELECT_PREFIX, release_approval.APPROVE_PREFIX, release_approval.SKIP_PREFIX,
+    reproduction_approval.APPROVE_PREFIX, reproduction_approval.SKIP_PREFIX,
 )
 _TELEGRAM_ACTOR_PREFIX = "telegram-chat:"
 _MAX_MESSAGE_CHARS = 12000
@@ -1778,6 +1779,32 @@ async def _handle_release_callback(callback_query: dict, bot_token: str, data: s
     return reply
 
 
+async def _handle_reproduction_callback(callback_query: dict, bot_token: str, data: str, chat_id: str,
+                                        actor: str) -> str:
+    """FL6.3: an operator allows (or skips) an AI reproduction proposal on the lab cluster."""
+    if not _sender_can_use_full_access(callback_query):
+        return "Chỉ operator có quyền vận hành mới duyệt được tái hiện lỗi."
+    message = callback_query.get("message") or {}
+    name = _sender_name(callback_query)
+    approve = data.startswith(reproduction_approval.APPROVE_PREFIX)
+    try:
+        proposal_id = reproduction_approval.parse(
+            data, reproduction_approval.APPROVE_PREFIX if approve else reproduction_approval.SKIP_PREFIX)
+        await asyncio.to_thread(reproduction_approval.decide, proposal_id, approve=approve,
+                                actor=f"{actor} ({name})")
+    except reproduction_approval.ReproductionError as exc:
+        return str(exc)
+    note = (f"\n\n✅ Cho phép bởi {name}: Failure Lab sẽ chạy trên cụm lab trong lượt kế tiếp."
+            if approve else f"\n\n⏭ Bỏ qua bởi {name}.")
+    logger.info("reproduction approval: %s %s by %s", proposal_id, "approved" if approve else "skipped", actor)
+    try:
+        await asyncio.to_thread(edit_telegram_message, bot_token, chat_id, message.get("message_id"),
+                                (str(message.get("text") or "") + note)[:4000])
+    except Exception:  # noqa: BLE001 - the decision stands even if the card cannot be edited
+        logger.warning("reproduction approval: could not edit the Telegram card", exc_info=True)
+    return f"Đã {'cho phép' if approve else 'bỏ qua'} {proposal_id}."
+
+
 async def handle_callback(callback_query: dict, bot_token: str) -> str | None:
     """Confirm a Chatbox proposal from its inline Telegram button."""
     if not is_allowed_callback(callback_query, bot_token):
@@ -1787,6 +1814,8 @@ async def handle_callback(callback_query: dict, bot_token: str) -> str | None:
     actor = _actor(callback_query)
     if data.startswith((release_approval.APPROVE_PREFIX, release_approval.SKIP_PREFIX)):
         return await _handle_release_callback(callback_query, bot_token, data, chat_id, actor)
+    if data.startswith((reproduction_approval.APPROVE_PREFIX, reproduction_approval.SKIP_PREFIX)):
+        return await _handle_reproduction_callback(callback_query, bot_token, data, chat_id, actor)
     if data.startswith(AI_MODE_PREFIX):
         selected = data[len(AI_MODE_PREFIX):]
         label = await _select_mode(
