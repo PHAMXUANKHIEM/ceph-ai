@@ -4255,10 +4255,19 @@ def _node_removal_phases(action_id: str) -> list | None:
     return node_removal.PHASES.get(action_id)
 
 
+def _host_maintenance_phases(action_id: str) -> list | None:
+    """Phase list of worker/executor/host_maintenance.py (imported late: it imports this module)."""
+    from worker.executor import host_maintenance
+
+    return host_maintenance.PHASES.get(action_id)
+
+
 def _apply_config_epilogue(action_id: str, action_params: dict) -> None:
     """Record what a successful lifecycle action changed in Ceph AI's own config."""
     if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
         return
+    if action_id == "rolling_node_maintenance":
+        return  # hosts are rebooted, not added or removed
     if action_id in {"remove_cluster_nodes", "finish_remove_cluster_nodes"}:
         from worker.executor import node_removal
 
@@ -4352,7 +4361,8 @@ def run(
             return False
 
     nodes = action_params.get("nodes") or []
-    phases = _PHASES_BY_ACTION_ID.get(action_id) or _node_removal_phases(action_id)
+    phases = (_PHASES_BY_ACTION_ID.get(action_id) or _node_removal_phases(action_id)
+              or _host_maintenance_phases(action_id))
     if not phases:
         logger.error("cluster_deploy.run: no phase sequence registered for action_id=%s", action_id)
         return False
