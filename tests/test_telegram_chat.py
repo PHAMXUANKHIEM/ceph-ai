@@ -862,3 +862,136 @@ def test_a_lone_chat_cluster_is_selected_for_member_operators(monkeypatch, tmp_p
     monkeypatch.setattr(chat.settings, "telegram_chat_members_are_operators", False, raising=False)
     assert not chat._auto_select_only_cluster("telegram-chat:2", "123:token", "-1001")
     chat._cluster_by_chat.clear()
+
+
+def _single_mode_harness(monkeypatch, single):
+    _settings(monkeypatch)
+    chat._mode_by_chat.clear()
+    chat._session_by_chat.clear()
+    _patch_cluster(monkeypatch)
+    monkeypatch.setattr(chat, "_session_and_history", lambda actor, cluster_id: ("session-1", []))
+    saved, sent = [], []
+
+    def save(**kwargs):
+        saved.append(kwargs)
+        return SimpleNamespace(id=f"message-{len(saved)}")
+
+    async def send(_token, _chat_id, text):
+        sent.append(text)
+
+    monkeypatch.setattr(chat, "_save_message", save)
+    monkeypatch.setattr(chat, "_send", send)
+    monkeypatch.setattr(chat, "run_chat_turn", single)
+    chat._mode_by_chat["telegram-chat:77"] = "single"
+    asyncio.run(chat.handle_message(
+        {"chat": {"id": -1001, "type": "private"}, "from": {"id": 77}, "text": "tình trạng cụm?"}, "123:token"))
+    return saved, sent
+
+
+def test_a_telegram_answer_keeps_its_natural_language_context(monkeypatch):
+    """Telegram is where the chat is used; without this the NL rollout report counted 0 questions for weeks."""
+    context = {"schema_version": "nl-context-v1", "intent": "cluster_health", "evidence_refs": ["ceph-status"]}
+
+    async def single(history, text, actor, cluster):
+        return {"reply_text": "HEALTH_OK", "proposal": None, "nl_context": context}
+
+    saved, _sent = _single_mode_harness(monkeypatch, single)
+
+    assert [row["role"] for row in saved] == ["user", "assistant"]
+    assert saved[1]["nl_context"] == context
+
+
+def test_a_failed_answer_is_recorded_like_the_reply_the_operator_saw(monkeypatch):
+    async def single(history, text, actor, cluster):
+        raise chat.ChatTurnError("AI provider timed out")
+
+    saved, sent = _single_mode_harness(monkeypatch, single)
+
+    assert sent == ["Không thể trả lời: AI provider timed out"]
+    assert saved[-1]["role"] == "assistant" and saved[-1]["content"] == sent[0]
+
+
+def test_save_message_stores_the_context_as_json(monkeypatch):
+    from shared.models import ChatMessage
+
+    stored = []
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def add(self, message):
+            stored.append(message)
+
+        def commit(self):
+            pass
+
+        def refresh(self, message):
+            pass
+
+    monkeypatch.setattr(chat.db, "SessionLocal", Session)
+
+    chat._save_message(session_id="s", cluster_id="c", actor="a", role="assistant", content="ok",
+                       nl_context={"intent": "cluster_health"})
+
+    assert isinstance(stored[0], ChatMessage) and json.loads(stored[0].nl_context_json) == {"intent": "cluster_health"}
+
+
+def _single_full_harness(monkeypatch, tmp_path, text):
+    _settings(monkeypatch)
+    monkeypatch.setattr(chat.settings, "telegram_chatbox_full_access_user_ids", "77", raising=False)
+    monkeypatch.setattr(chat, "_CONFIRM_STATE_PATH", tmp_path / "confirmations.json")
+    monkeypatch.setattr(chat, "_FULL_RUN_STATE_PATH", tmp_path / "single-full-runs.json")
+    chat._mode_by_chat.clear()
+    chat._session_by_chat.clear()
+    chat._full_runs.clear()
+    _patch_cluster(monkeypatch)
+    monkeypatch.setattr(chat, "_session_and_history", lambda *_args: ("session-1", []))
+    monkeypatch.setattr(chat, "_save_message", lambda **_kwargs: SimpleNamespace(id="message"))
+    sent, answered = [], []
+
+    async def send(_token, _chat_id, message_text):
+        sent.append(message_text)
+
+    async def single(history, question, actor, cluster):
+        answered.append(question)
+        return {"reply_text": "HEALTH_OK, 6/6 OSD up", "proposal": None, "nl_context": {"intent": "cluster_health"}}
+
+    async def full(*_args, **_kwargs):
+        raise AssertionError("Single Full must not run without its confirmation")
+
+    monkeypatch.setattr(chat, "_send", send)
+    monkeypatch.setattr(chat, "run_chat_turn", single)
+    monkeypatch.setattr(chat, "run_single_full_access_chat", full)
+    chat._mode_by_chat["telegram-chat:77"] = "single-full"
+    asyncio.run(chat.handle_message(
+        {"chat": {"id": -1001, "type": "private"}, "from": {"id": 77}, "text": text}, "123:token"))
+    return sent, answered
+
+
+def test_a_read_only_question_in_single_full_is_answered_without_a_confirmation_code(monkeypatch, tmp_path):
+    """08/10/2026: "xác nhận tình trạng cụm" waited for /confirm_full and was never answered."""
+    sent, answered = _single_full_harness(monkeypatch, tmp_path, "xác nhận tình trạng cụm")
+
+    assert answered == ["xác nhận tình trạng cụm"]
+    assert sent == ["HEALTH_OK, 6/6 OSD up"] and not any("/confirm_full" in text for text in sent)
+    assert chat._mode("telegram-chat:77") == "single-full"  # the chat stays in Single Full
+
+
+def test_a_change_request_in_single_full_still_needs_its_confirmation(monkeypatch, tmp_path):
+    for request in ("fix node down đi", "restart osd.3", "deploy đi"):
+        sent, answered = _single_full_harness(monkeypatch, tmp_path, request)
+
+        assert answered == [] and any("/confirm_full " in text for text in sent), request
+
+
+def test_a_deploy_question_is_answered_from_the_runner_files_in_any_mode(monkeypatch, tmp_path):
+    import shared.deploy_status as deploy_status_module
+
+    monkeypatch.setattr(deploy_status_module, "deploy_status_text", lambda: "📦 Trạng thái deploy Ceph AI\nOK")
+    sent, answered = _single_full_harness(monkeypatch, tmp_path, "ủa xem xem phần deploy có đang làm không đấy ?")
+
+    assert answered == [] and sent == ["📦 Trạng thái deploy Ceph AI\nOK"]

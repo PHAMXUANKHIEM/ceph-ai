@@ -13,10 +13,13 @@ from .schema import NaturalLanguageIntent, TimeRange
 _MUTATION_TERMS = (
     "xoa", "tao", "tao moi", "resize", "restart", "repair", "delete",
     "create", "remove", "purge", "out osd", "in osd", "sua", "doi",
-    "thay doi", "bat", "tat", "khoi phuc", "restore",
+    "thay doi", "bat", "tat", "khoi phuc", "restore", "fix",
+    "deploy di", "deploy ngay", "merge", "rollback",
 )
 
 _INTENT_RULES: tuple[tuple[str, tuple[str, ...], str | None], ...] = (
+    # Ceph AI's own releases (deploy runner state), not deploying a Ceph cluster.
+    ("deploy_status", ("deploy", "release", "phat hanh", "ban moi", "ban dang chay"), "deploy"),
     ("explain_incident", ("incident", "su co", "postmortem", "root cause", "nguyen nhan"), "cluster"),
     ("recommend_action", ("de xuat", "khuyen nghi", "recommend", "nen lam gi", "cach xu ly", "goi y"), "cluster"),
     ("log_search", ("log", "logs", "nhat ky", "audit"), "log"),
@@ -28,7 +31,7 @@ _INTENT_RULES: tuple[tuple[str, tuple[str, ...], str | None], ...] = (
     ("osd_health", ("osd", "mon", "mgr", "disk"), "osd"),
     ("node_metrics", ("cpu", "ram", "iops", "latency", "node", "may chu"), "node"),
     ("pool_capacity", ("pool", "dung luong", "capacity", "nearfull", "full"), "pool"),
-    ("cluster_health", ("health", "suc khoe", "trang thai", "tong quan", "co van de"), "cluster"),
+    ("cluster_health", ("health", "suc khoe", "trang thai", "tinh trang", "tong quan", "co van de"), "cluster"),
 )
 
 
