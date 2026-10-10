@@ -9,6 +9,7 @@ legacy dimensions.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -49,11 +50,26 @@ class ForecastScope:
         return "|".join(parts)
 
 
+_HORIZON_SUFFIX = re.compile(r"h(\d+)")
+
+
 def parse_legacy_scope(scope_type: str, scope_key: str, *, horizon_hours: int | None = None) -> ForecastScope | None:
-    """Parse only known legacy keys; return ``None`` instead of guessing."""
+    """Parse only known legacy keys; return ``None`` instead of guessing.
+
+    Keys written since 09/2026 end with the forecast horizon ("CS-LAB|host|ram|h1");
+    that explicit horizon wins over ``horizon_hours``. Before 10/10/2026 such keys
+    parsed to None, so 288 node-resource models had no dimensions and every
+    promotion of them was refused as UNKNOWN_SCOPE.
+    """
 
     parts = [item.strip() for item in str(scope_key or "").split("|")]
     kind = str(scope_type or "").strip().upper()
+    width = {"NODE_RESOURCE": 3, "VOLUME": 4}.get(kind)
+    if width is not None and len(parts) == width + 1:
+        suffix = _HORIZON_SUFFIX.fullmatch(parts[-1])
+        if suffix is None or int(suffix.group(1)) <= 0:
+            return None
+        parts, horizon_hours = parts[:-1], int(suffix.group(1))
     if kind == "NODE_RESOURCE" and len(parts) == 3:
         cluster, host, metric = parts
         if cluster and host and metric and horizon_hours:
