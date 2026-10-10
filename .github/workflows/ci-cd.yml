@@ -11,12 +11,19 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  # The suite runs as three balanced shards per Python version
+  # (scripts/ci/test_shard.py); one serial job took ~30 minutes and held up
+  # every merge's deploy. The `test` job below gathers the shards, keeps the
+  # check names "test (3.11)"/"test (3.12)" and enforces the coverage gate
+  # on the combined data.
+  test_shard:
+    name: test-shard (${{ matrix.python-version }}, ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+        shard: [1, 2, 3]
     # A real (ephemeral, CI-only) broker — tests/test_mq.py needs one it
     # doesn't share with any other consumer, which a locally-run dev
     # instance can't guarantee (see that file's own comment on this).
@@ -58,17 +65,21 @@ jobs:
         run: npm --prefix ceph-health-dashboard ci && npm --prefix ceph-health-dashboard run build
 
       - name: Verify default pytest collection root
+        if: matrix.shard == 1
         run: python scripts/ci/verify_pytest_collection.py
 
       - name: Validate architecture impact graph
+        if: matrix.shard == 1
         run: python scripts/validate_architecture_graph.py --strict-paths
 
-      - name: Run tests (Python ${{ matrix.python-version }})
+      - name: Run tests (Python ${{ matrix.python-version }}, shard ${{ matrix.shard }}/3)
+        env:
+          COVERAGE_FILE: artifacts/coverage-${{ matrix.python-version }}-${{ matrix.shard }}.data
         run: |
           mkdir -p artifacts
-          pytest --junitxml="artifacts/pytest-${{ matrix.python-version }}.xml" \
-            --cov --cov-report="xml:artifacts/coverage-${{ matrix.python-version }}.xml" \
-            --cov-report="html:artifacts/coverage-html-${{ matrix.python-version }}"
+          python scripts/ci/test_shard.py --index ${{ matrix.shard }} --total 3 > artifacts/shard-files.txt
+          pytest --junitxml="artifacts/pytest-${{ matrix.python-version }}-${{ matrix.shard }}.xml" \
+            --cov --cov-report= $(cat artifacts/shard-files.txt)
         # `-m 'not live'` is already pytest's default (pyproject.toml
         # addopts) — the `live` suite makes real SSH/network calls to the
         # actual Ceph lab cluster and only ever runs manually, never in CI.
@@ -76,16 +87,16 @@ jobs:
       - name: Summarize test failures
         if: failure()
         env:
-          PYTHON_VERSION: ${{ matrix.python-version }}
+          JUNIT_NAME: ${{ matrix.python-version }}-${{ matrix.shard }}
         run: |
           python - <<'PY'
-          import html
           import os
           import pathlib
           import xml.etree.ElementTree as ET
 
-          xml_path = pathlib.Path("artifacts") / f"pytest-{os.environ['PYTHON_VERSION']}.xml"
-          summary_path = pathlib.Path("artifacts") / f"pytest-failures-{os.environ['PYTHON_VERSION']}.txt"
+          name = os.environ["JUNIT_NAME"]
+          xml_path = pathlib.Path("artifacts") / f"pytest-{name}.xml"
+          summary_path = pathlib.Path("artifacts") / f"pytest-failures-{name}.txt"
           failures = []
           if xml_path.exists():
               root = ET.parse(xml_path).getroot()
@@ -95,14 +106,14 @@ jobs:
                   detail = failure if failure is not None else error
                   if detail is None:
                       continue
-                  name = f"{case.attrib.get('classname', '')}::{case.attrib.get('name', '')}"
+                  test = f"{case.attrib.get('classname', '')}::{case.attrib.get('name', '')}"
                   message = (detail.attrib.get("message") or detail.text or "").strip()
-                  failures.append((name, message[:1000]))
-          lines = [f"Python {os.environ['PYTHON_VERSION']} pytest failures: {len(failures)}"]
-          for name, message in failures:
+                  failures.append((test, message[:1000]))
+          lines = [f"Python {name} pytest failures: {len(failures)}"]
+          for test, message in failures:
               safe = message.replace("\n", " ").replace("%", "%25").replace("\r", "%0D")
-              print(f"::error title=pytest failure,file=.github::{name}: {safe}")
-              lines.append(f"- `{name}`: {message}")
+              print(f"::error title=pytest failure,file=.github::{test}: {safe}")
+              lines.append(f"- `{test}`: {message}")
           summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
           github_summary = os.environ.get("GITHUB_STEP_SUMMARY")
           if github_summary:
@@ -110,15 +121,63 @@ jobs:
                   stream.write("## Pytest failures\n\n" + "\n".join(lines) + "\n")
           PY
 
+      - name: Upload shard evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-shard-python-${{ matrix.python-version }}-${{ matrix.shard }}-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: ignore
+
+  test:
+    name: test (${{ matrix.python-version }})
+    needs: test_shard
+    # Runs even when a shard failed, so the coverage report is still
+    # produced; the last step fails the check unless every shard passed.
+    if: always()
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install coverage
+        run: python -m pip install coverage==7.16.1
+
+      - name: Download shard evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: test-shard-python-${{ matrix.python-version }}-*-${{ github.sha }}
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Combine coverage (Python ${{ matrix.python-version }})
+        run: |
+          shopt -s nullglob
+          data=(artifacts/coverage-${{ matrix.python-version }}-*.data)
+          if [ ${#data[@]} -eq 0 ]; then echo "no coverage data from the shards" >&2; exit 0; fi
+          python -m coverage combine --keep --data-file=artifacts/coverage-${{ matrix.python-version }}.data "${data[@]}"
+          python -m coverage xml --data-file=artifacts/coverage-${{ matrix.python-version }}.data \
+            -o "artifacts/coverage-${{ matrix.python-version }}.xml"
+          python -m coverage html --data-file=artifacts/coverage-${{ matrix.python-version }}.data \
+            -d "artifacts/coverage-html-${{ matrix.python-version }}"
+
       - name: Enforce coverage gate (Python ${{ matrix.python-version }})
-        # Runs after a test failure too, so the coverage report is always
-        # produced; the baseline lives in scripts/ci/coverage_baseline.json.
+        # The baseline lives in scripts/ci/coverage_baseline.json.
         if: always() && hashFiles(format('artifacts/coverage-{0}.xml', matrix.python-version)) != ''
         run: |
           set -o pipefail
+          junit=()
+          for file in artifacts/pytest-${{ matrix.python-version }}-*.xml; do junit+=(--junit "$file"); done
           python scripts/ci/coverage_gate.py \
             --coverage-xml "artifacts/coverage-${{ matrix.python-version }}.xml" \
-            --junit "artifacts/pytest-${{ matrix.python-version }}.xml" \
+            "${junit[@]}" \
             --output "artifacts/coverage-gate-${{ matrix.python-version }}.json" \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -129,6 +188,14 @@ jobs:
           name: test-evidence-python-${{ matrix.python-version }}-${{ github.sha }}
           path: artifacts/
           if-no-files-found: ignore
+
+      - name: Every shard passed
+        if: always()
+        run: |
+          if [ "${{ needs.test_shard.result }}" != "success" ]; then
+            echo "test shards: ${{ needs.test_shard.result }}" >&2
+            exit 1
+          fi
 
   quality:
     needs: test
