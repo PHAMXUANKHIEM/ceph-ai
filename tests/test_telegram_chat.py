@@ -982,7 +982,16 @@ def test_a_read_only_question_in_single_full_is_answered_without_a_confirmation_
 
 
 def test_a_change_request_in_single_full_still_needs_its_confirmation(monkeypatch, tmp_path):
-    for request in ("fix node down đi", "restart osd.3", "xem phần deploy có đang chạy không"):
+    for request in ("fix node down đi", "restart osd.3", "deploy đi"):
         sent, answered = _single_full_harness(monkeypatch, tmp_path, request)
 
         assert answered == [] and any("/confirm_full " in text for text in sent), request
+
+
+def test_a_deploy_question_is_answered_from_the_runner_files_in_any_mode(monkeypatch, tmp_path):
+    import shared.deploy_status as deploy_status_module
+
+    monkeypatch.setattr(deploy_status_module, "deploy_status_text", lambda: "📦 Trạng thái deploy Ceph AI\nOK")
+    sent, answered = _single_full_harness(monkeypatch, tmp_path, "ủa xem xem phần deploy có đang làm không đấy ?")
+
+    assert answered == [] and sent == ["📦 Trạng thái deploy Ceph AI\nOK"]

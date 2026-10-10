@@ -1017,17 +1017,33 @@ def _save_message(
 _READ_ONLY_CONFIDENCE = 0.8
 
 
-def _read_only_question(text: str, cluster) -> bool:
-    """True for a question Single Full need not handle, e.g. "cụm có vấn đề gì không"."""
+def _read_only_intent(text: str, cluster) -> str | None:
+    """The read-only intent of a question Single Full need not handle (e.g. "cụm có vấn đề gì không"), else None."""
     if not text or text.startswith("/"):
-        return False
+        return None
     try:
         intent = route_natural_language(text, cluster_id=str(getattr(cluster, "id", "") or "") or None)
     except Exception:  # noqa: BLE001 - when unsure, keep the Single Full flow
         logger.exception("telegram_chat: intent routing failed")
-        return False
-    return (intent.mode == "read_only" and not intent.needs_clarification
-            and intent.intent != "unknown_or_ambiguous" and intent.confidence >= _READ_ONLY_CONFIDENCE)
+        return None
+    if (intent.mode == "read_only" and not intent.needs_clarification
+            and intent.intent != "unknown_or_ambiguous" and intent.confidence >= _READ_ONLY_CONFIDENCE):
+        return intent.intent
+    return None
+
+
+async def _answer_deploy_status(bot_token: str, chat_id: str, session_id: str, cluster_id: str, actor: str,
+                                text: str) -> None:
+    """Deploy questions are answered from the deploy runner's files, with no AI call, in any mode."""
+    from shared.deploy_status import deploy_status_text
+
+    reply = await asyncio.to_thread(deploy_status_text)
+    _save_message(session_id=session_id, cluster_id=cluster_id, actor=actor, role="user", content=text)
+    _save_message(session_id=session_id, cluster_id=cluster_id, actor=actor, role="assistant", content=reply,
+                  nl_context={"schema_version": "nl-context-v1", "intent": "deploy_status",
+                              "evidence_refs": ["deploy-requests/status.json"],
+                              "telemetry": {"answered_without_ai": True}})
+    await _send(bot_token, chat_id, reply)
 
 
 def _save_failure_reply(session_id: str, cluster_id: str, actor: str, text: str) -> None:
@@ -1476,7 +1492,11 @@ async def _handle_message_impl(
             f"Mã có hiệu lực {_DESTRUCTIVE_CONFIRM_TTL_SECONDS // 60} phút.",
         )
         return
-    if mode == "single-full" and not confirmed_full and _read_only_question(text, cluster):
+    intent = None if confirmed_full else _read_only_intent(text, cluster)
+    if intent == "deploy_status":
+        await _answer_deploy_status(bot_token, chat_id, session_id, cluster.id, actor, text)
+        return
+    if mode == "single-full" and intent is not None:
         # A plain read-only question needs no Single Full run or confirmation
         # code: it is answered on the natural-language path (planner, snapshot,
         # RAG). The chat stays in Single Full for the next request.
