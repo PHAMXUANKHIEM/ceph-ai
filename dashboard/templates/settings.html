@@ -777,15 +777,26 @@
             {% if is_admin %}
             {% if ai_budget_error %}<p class="error">{{ ai_budget_error }}</p>{% endif %}
             {% if ai_budget_success %}<p class="success">{{ ai_budget_success }}</p>{% endif %}
-            <p class="hint">Giới hạn dùng chung cho các tiến trình AI. Để trống/0 để tắt giới hạn tương ứng. Chặn cứng sẽ từ chối model chưa có đơn giá và các lượt vượt ngân sách.</p>
-            <form method="post" action="/settings/ai-budget">
+            <p class="hint">Giới hạn dùng chung cho các tiến trình AI. Chọn "Không giới hạn" để bỏ giới hạn tương ứng. Chặn cứng sẽ từ chối model chưa có đơn giá và các lượt vượt ngân sách.</p>
+            {% set budget = ai_cost_overview.budget if ai_cost_overview.budget is defined else none %}
+            {% if budget %}
+            <ul class="settings-budget-usage">
+              {% for key, label in [("daily", "Hôm nay"), ("monthly", "Tháng này")] %}
+              {% set period = budget[key] %}
+              <li><span>{{ label }}</span> <strong>${{ "%.2f"|format(period.spent_usd or 0) }}</strong>
+                / {% if period.limit_usd %}${{ "{:,.2f}".format(period.limit_usd) }} ({{ period.percent }}%){% else %}<em>không giới hạn</em>{% endif %}</li>
+              {% endfor %}
+            </ul>
+            {% endif %}
+            <form method="post" action="/settings/ai-budget" class="ai-budget-form">
               <div class="form-grid">
-                <label>Budget ngày (USD)
-                  <input type="number" name="daily_budget" min="0" max="1000000000" step="0.000001" value="{{ ai_budget_values.daily }}">
+                {% for key, name, label in [("daily", "daily_budget", "Budget ngày (USD)"), ("monthly", "monthly_budget", "Budget tháng (USD)")] %}
+                {% set unlimited = not (ai_budget_values[key]|float(0)) %}
+                <label>{{ label }}
+                  <input type="number" name="{{ name }}" min="0" max="1000000000" step="0.000001" value="{{ '' if unlimited else ai_budget_values[key] }}" placeholder="Không giới hạn" data-budget-input="{{ key }}" {% if unlimited %}disabled{% endif %}>
+                  <span class="settings-budget-unlimited"><input type="checkbox" name="{{ key }}_unlimited" value="1" data-budget-unlimited="{{ key }}" {% if unlimited %}checked{% endif %}> Không giới hạn</span>
                 </label>
-                <label>Budget tháng (USD)
-                  <input type="number" name="monthly_budget" min="0" max="1000000000" step="0.000001" value="{{ ai_budget_values.monthly }}">
-                </label>
+                {% endfor %}
                 <label>Output dự phòng (tokens)
                   <input type="number" name="reserve_output_tokens" min="0" max="100000" step="1" value="{{ ai_budget_values.reserve_output }}">
                 </label>

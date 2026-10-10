@@ -1718,6 +1718,8 @@ async def settings_ai_budget_submit(
     user: str = Depends(require_login),
     daily_budget: str = Form("0"),
     monthly_budget: str = Form("0"),
+    daily_unlimited: str | None = Form(None),
+    monthly_unlimited: str | None = Form(None),
     hard_limit: str | None = Form(None),
     reserve_output_tokens: str = Form("2048"),
 ):
@@ -1726,8 +1728,10 @@ async def settings_ai_budget_submit(
     hard_limit_enabled = (
         settings.ai_cost_budget_hard_limit if hard_limit is None else hard_limit == "1"
     )
+    # "Không giới hạn" stores 0, which Budget Guard already reads as no limit.
     values = {
-        "daily": daily_budget.strip(), "monthly": monthly_budget.strip(),
+        "daily": "0" if daily_unlimited == "1" else daily_budget.strip(),
+        "monthly": "0" if monthly_unlimited == "1" else monthly_budget.strip(),
         "hard_limit": hard_limit_enabled, "reserve_output": reserve_output_tokens.strip(),
     }
 

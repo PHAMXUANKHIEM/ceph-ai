@@ -2103,3 +2103,16 @@
   updateConfigCopy(activeProvider);
   updateConfigurationBadges();
 })();
+
+// Settings > Chi phí: "Không giới hạn" disables its budget field (the server stores 0 = no limit).
+(function () {
+  document.querySelectorAll("[data-budget-unlimited]").forEach(function (box) {
+    var input = document.querySelector('[data-budget-input="' + box.getAttribute("data-budget-unlimited") + '"]');
+    if (!input) return;
+    box.addEventListener("change", function () {
+      input.disabled = box.checked;
+      if (box.checked) input.value = "";
+      else input.focus();
+    });
+  });
+})();
