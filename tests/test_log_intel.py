@@ -753,3 +753,62 @@ def test_rgw_errno_107_focus_matches_transport_endpoint_pattern():
         "rgw watcher librados: RGWWatcher::handle_error err (<N>) Transport endpoint is not connected",
         "-107",
     )
+
+
+def _nodes_snapshot(monkeypatch, nodes):
+    from shared import cluster_snapshot
+
+    monkeypatch.setattr(cluster_snapshot, "read_section_snapshot",
+                        lambda cluster_id, section: {"nodes": {"nodes": nodes}} if section == "nodes" else None)
+
+
+def test_loki_reads_a_node_under_every_address_it_has(isolated_db, enabled, monkeypatch):
+    """CS-LAB lists OSD nodes by cluster IP (10.20.1.x) while Loki labels their logs with the
+    management IP (10.3.x): every scan from 07/10/2026 was PARTIAL and log learning blocked."""
+    monkeypatch.setattr(settings, "log_intel_source", "loki")
+    monkeypatch.setattr(log_intel, "configured_nodes", lambda cluster=None: [
+        {"host": "10.3.53.1", "roles": ["mon"]},
+        {"host": "10.20.1.39", "roles": ["osd"]},
+    ])
+    _nodes_snapshot(monkeypatch, [{"host": "10.3.53.1", "aliases": ["10.3.53.1", "10.20.1.39"]}])
+    _fake_source(monkeypatch, {
+        ("10.3.53.1", "mon"): [_record("10.3.53.1", "mon.a calling monitor election")],
+        ("10.3.53.1", "osd"): [_record("10.3.53.1", "osd.1 slow request")],
+    })
+
+    log_intel.scan_and_store()
+
+    with db_module.SessionLocal() as session:
+        run = session.query(LogIngestRun).one()
+        assert run.status == LogIngestStatus.OK.value, run.error_message
+        assert run.hosts_scanned == 1 and run.lines_scanned == 2
+
+
+def test_a_machine_is_missing_only_when_every_address_is_empty(isolated_db, enabled, monkeypatch):
+    monkeypatch.setattr(settings, "log_intel_source", "loki")
+    monkeypatch.setattr(log_intel, "configured_nodes", lambda cluster=None: [
+        {"host": "10.3.53.1", "roles": ["osd"]},
+        {"host": "10.3.53.69", "roles": ["osd"]},
+    ])
+    _nodes_snapshot(monkeypatch, [
+        {"host": "10.3.53.1", "aliases": ["10.3.53.1", "10.20.1.39"]},
+        {"host": "10.3.53.69", "aliases": ["10.3.53.69", "10.20.1.153"]},
+    ])
+    _fake_source(monkeypatch, {("10.20.1.39", "osd"): [_record("10.20.1.39", "osd.1 slow request")]})
+
+    log_intel.scan_and_store()
+
+    with db_module.SessionLocal() as session:
+        run = session.query(LogIngestRun).one()
+        assert run.status == LogIngestStatus.PARTIAL.value
+        assert (run.hosts_scanned, run.hosts_failed) == (2, 1)
+        assert "10.3.53.69/10.20.1.153: Loki trả 0 dòng" in run.error_message
+
+
+def test_ssh_hosts_are_never_merged(monkeypatch):
+    monkeypatch.setattr(settings, "log_intel_source", "ssh")
+    _nodes_snapshot(monkeypatch, [{"host": "a", "aliases": ["a", "b"]}])
+
+    machines = log_intel._machines("c1", {"a": {"mon"}, "b": {"osd"}})
+
+    assert machines == [("a", ["a"], {"mon"}), ("b", ["b"], {"osd"})]
