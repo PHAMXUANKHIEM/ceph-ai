@@ -1629,6 +1629,13 @@ def _finish_remove_cluster_nodes_preview_command(host: str | None, params: dict)
             "ceph orch host rm <hostname>")
 
 
+def _rolling_node_maintenance_preview_command(host: str | None, params: dict) -> str:
+    targets = ", ".join(params.get("targets") or [])
+    return (f"# lần lượt từng host ({targets}): ceph orch host ok-to-stop; ceph mgr fail (nếu MGR active ở đó); "
+            "ceph orch host maintenance enter; systemctl reboot; chờ SSH; ceph orch host maintenance exit; "
+            "chờ health về như trước khi bắt đầu rồi mới sang host kế")
+
+
 _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "deploy_cluster_cephadm": _deploy_cluster_cephadm_preview_command,
     "deploy_cluster_ceph_deploy": _deploy_cluster_ceph_deploy_preview_command,
@@ -1642,6 +1649,7 @@ _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "node_os_gate_recover": _node_os_gate_recover_preview_command,
     "remove_cluster_nodes": _remove_cluster_nodes_preview_command,
     "finish_remove_cluster_nodes": _finish_remove_cluster_nodes_preview_command,
+    "rolling_node_maintenance": _rolling_node_maintenance_preview_command,
 }
 
 
