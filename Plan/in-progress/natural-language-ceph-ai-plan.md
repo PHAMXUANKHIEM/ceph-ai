@@ -591,7 +591,7 @@ pollute cached decisions. Fixed tool metadata remains in the closed registry.
   snapshot / RAG / structured output cho `CS-LAB`
   (`ac23b8ff-e235-414c-bed8-06894f3dedd3`), giữ fast-path/MCP tắt, và đã kiểm
   tra non-admin chỉ được phép trên cluster allowlist.
-- [x] Theo dõi latency, cost, rejection và approval trong 24–72 giờ; monitoring gate đạt tối thiểu 24 giờ và report đã được lưu trong rollout log.
+- [ ] Theo dõi latency, cost, rejection và approval trong 24–72 giờ. Mở lại 10/10/2026: mục này đã được tự đánh dấu xong sau 497 giờ với **0** câu trả lời có `nl_context` (Telegram không lưu context; chat Telegram để ở Single Full nên không đi qua đường NL). Cổng mới cần ≥ 24 giờ **và** ≥ 20 câu trả lời có `nl_context` (`scripts/report_natural_language_rollout.py`); kết quả ghi ở `/var/lib/ceph-ai/nl-rollout-gate.json`, đánh dấu mục này qua nhánh `cand/*`, không để script sửa plan.
 - [x] Tài liệu hóa prompt/model/index version trong release manifest.
 
 ### Rollback

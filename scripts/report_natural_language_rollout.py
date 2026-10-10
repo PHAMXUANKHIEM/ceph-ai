@@ -66,7 +66,26 @@ def _latency_summary(values: list[float]) -> dict[str, float | int | None]:
     }
 
 
-def _monitoring_window(*, now: datetime, state_path: str | Path) -> dict:
+# The canary is judged on real answers, not elapsed time alone: the first gate
+# checked only 24 hours and closed the checklist on 10/2026 after 497 hours
+# with 0 natural-language answers recorded.
+MINIMUM_HOURS = 24
+MINIMUM_SAMPLES = 20
+
+
+def count_samples(session, *, since: datetime, cluster_id: str | None = None) -> int:
+    """Assistant answers that carry a natural-language context since ``since``."""
+    query = session.query(ChatMessage).filter(
+        ChatMessage.created_at >= since,
+        ChatMessage.role == "assistant",
+        ChatMessage.nl_context_json.is_not(None),
+    )
+    if cluster_id:
+        query = query.filter(ChatMessage.cluster_id == cluster_id)
+    return query.count()
+
+
+def _monitoring_window(*, now: datetime, state_path: str | Path, samples: int | None = None) -> dict:
     path = Path(state_path)
     started_at = None
     try:
@@ -90,9 +109,15 @@ def _monitoring_window(*, now: datetime, state_path: str | Path) -> dict:
     return {
         "started_at": started_at.isoformat() + "Z",
         "elapsed_hours": round(elapsed_hours, 3),
-        "minimum_hours": 24,
-        "ready_for_close": elapsed_hours >= 24,
+        "minimum_hours": MINIMUM_HOURS,
+        "samples": samples,
+        "minimum_samples": MINIMUM_SAMPLES,
+        "ready_for_close": elapsed_hours >= MINIMUM_HOURS and (samples or 0) >= MINIMUM_SAMPLES,
     }
+
+
+def _window_start(window: dict) -> datetime:
+    return datetime.fromisoformat(str(window["started_at"]).removesuffix("Z"))
 
 
 def build_report(
@@ -103,8 +128,11 @@ def build_report(
     now = now or utc_now()
     cutoff = now - timedelta(hours=hours)
     with db.SessionLocal() as session:
+        # Answers only: a dashboard user row stores the parsed intent as an
+        # object, which is not the rollout context this report counts.
         message_query = session.query(ChatMessage).filter(
             ChatMessage.created_at >= cutoff,
+            ChatMessage.role == "assistant",
             ChatMessage.nl_context_json.is_not(None),
         )
         if cluster_id:
@@ -124,6 +152,8 @@ def build_report(
         invocations = session.query(AIInvocation).filter(
             AIInvocation.created_at >= cutoff,
         ).all()
+        window = _monitoring_window(now=now, state_path=state_path)
+        samples = count_samples(session, since=_window_start(window), cluster_id=cluster_id)
 
     contexts = [_context(row.nl_context_json) for row in messages]
     scopes = Counter(
@@ -158,7 +188,7 @@ def build_report(
         "observed_at": now.isoformat() + "Z",
         "window_hours": hours,
         "cluster_id": cluster_id,
-        "monitoring_window": _monitoring_window(now=now, state_path=state_path),
+        "monitoring_window": _monitoring_window(now=now, state_path=state_path, samples=samples),
         "rollout": {
             "admin_only": bool(settings.ai_natural_language_admin_only),
             "feature_flags": _feature_flags(),
