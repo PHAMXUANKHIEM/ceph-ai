@@ -1,8 +1,21 @@
+import logging
 import os
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+# Settings removed from the code whose keys may still sit in an operator's
+# .env. extra="forbid" keeps rejecting unknown keys so a typo fails loudly,
+# but a key left behind by a removed feature must not stop every service: on
+# 10/10/2026 PR #43 dropped ceph_patch_node_staging_dir, and the deploy's
+# migration step, the morning report and the nightly jobs all failed on the
+# live .env. When removing a setting, add its field name here.
+RETIRED_SETTINGS = frozenset({
+    "ceph_patch_node_staging_dir",
+})
 
 # Exposed as module-level constants (not just inline defaults) so other code
 # — e.g. the startup check in dashboard/app.py — can detect "still using the
@@ -13,6 +26,18 @@ DEFAULT_SESSION_SECRET_KEY = "dev-only-insecure-secret-change-me"
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=os.environ.get("CEPH_AI_ENV_FILE", ".env"), extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_retired_settings(cls, data: Any) -> Any:
+        """Drop keys of removed settings (RETIRED_SETTINGS) with a warning instead of failing."""
+        if not isinstance(data, dict):
+            return data
+        retired = sorted(key for key in data if str(key).lower() in RETIRED_SETTINGS)
+        if retired:
+            logger.warning("ignoring removed settings still set in the environment or .env: %s; delete them",
+                           ", ".join(str(key).upper() for key in retired))
+        return {key: value for key, value in data.items() if key not in retired}
 
     # Kept for compatibility with the production dashboard's startup guard;
     # the deployment environment may override it with CEPH_AI_ENVIRONMENT.
