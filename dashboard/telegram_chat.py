@@ -42,6 +42,7 @@ from shared.codex_app_server import (
     start_cli_device_login,
 )
 from shared.models import Action, ActionStatus, ChatMessage, Cluster
+from shared.natural_language.router import route_natural_language
 from shared import single_full_audit
 from shared.single_full_scope import normalize_scope, sign_scope
 from shared.telegram_client import edit_telegram_message, send_telegram_message, send_telegram_message_with_keyboard
@@ -1010,6 +1011,25 @@ def _save_message(
         return message
 
 
+# The deterministic intent router (no LLM call) must name exactly one
+# read-only intent with at least this confidence; mutation words such as
+# "sửa", "restart", "fix" make it ambiguous, and those stay in Single Full.
+_READ_ONLY_CONFIDENCE = 0.8
+
+
+def _read_only_question(text: str, cluster) -> bool:
+    """True for a question Single Full need not handle, e.g. "cụm có vấn đề gì không"."""
+    if not text or text.startswith("/"):
+        return False
+    try:
+        intent = route_natural_language(text, cluster_id=str(getattr(cluster, "id", "") or "") or None)
+    except Exception:  # noqa: BLE001 - when unsure, keep the Single Full flow
+        logger.exception("telegram_chat: intent routing failed")
+        return False
+    return (intent.mode == "read_only" and not intent.needs_clarification
+            and intent.intent != "unknown_or_ambiguous" and intent.confidence >= _READ_ONLY_CONFIDENCE)
+
+
 def _save_failure_reply(session_id: str, cluster_id: str, actor: str, text: str) -> None:
     """Keep the failure the operator was told about in the history, so a question never looks unanswered."""
     try:
@@ -1456,6 +1476,11 @@ async def _handle_message_impl(
             f"Mã có hiệu lực {_DESTRUCTIVE_CONFIRM_TTL_SECONDS // 60} phút.",
         )
         return
+    if mode == "single-full" and not confirmed_full and _read_only_question(text, cluster):
+        # A plain read-only question needs no Single Full run or confirmation
+        # code: it is answered on the natural-language path (planner, snapshot,
+        # RAG). The chat stays in Single Full for the next request.
+        mode = "single"
     if mode == "single-full" and not confirmed_full:
         if not _sender_can_use_full_access(message):
             _set_mode(actor, "single")

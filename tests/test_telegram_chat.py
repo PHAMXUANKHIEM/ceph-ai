@@ -938,3 +938,51 @@ def test_save_message_stores_the_context_as_json(monkeypatch):
                        nl_context={"intent": "cluster_health"})
 
     assert isinstance(stored[0], ChatMessage) and json.loads(stored[0].nl_context_json) == {"intent": "cluster_health"}
+
+
+def _single_full_harness(monkeypatch, tmp_path, text):
+    _settings(monkeypatch)
+    monkeypatch.setattr(chat.settings, "telegram_chatbox_full_access_user_ids", "77", raising=False)
+    monkeypatch.setattr(chat, "_CONFIRM_STATE_PATH", tmp_path / "confirmations.json")
+    monkeypatch.setattr(chat, "_FULL_RUN_STATE_PATH", tmp_path / "single-full-runs.json")
+    chat._mode_by_chat.clear()
+    chat._session_by_chat.clear()
+    chat._full_runs.clear()
+    _patch_cluster(monkeypatch)
+    monkeypatch.setattr(chat, "_session_and_history", lambda *_args: ("session-1", []))
+    monkeypatch.setattr(chat, "_save_message", lambda **_kwargs: SimpleNamespace(id="message"))
+    sent, answered = [], []
+
+    async def send(_token, _chat_id, message_text):
+        sent.append(message_text)
+
+    async def single(history, question, actor, cluster):
+        answered.append(question)
+        return {"reply_text": "HEALTH_OK, 6/6 OSD up", "proposal": None, "nl_context": {"intent": "cluster_health"}}
+
+    async def full(*_args, **_kwargs):
+        raise AssertionError("Single Full must not run without its confirmation")
+
+    monkeypatch.setattr(chat, "_send", send)
+    monkeypatch.setattr(chat, "run_chat_turn", single)
+    monkeypatch.setattr(chat, "run_single_full_access_chat", full)
+    chat._mode_by_chat["telegram-chat:77"] = "single-full"
+    asyncio.run(chat.handle_message(
+        {"chat": {"id": -1001, "type": "private"}, "from": {"id": 77}, "text": text}, "123:token"))
+    return sent, answered
+
+
+def test_a_read_only_question_in_single_full_is_answered_without_a_confirmation_code(monkeypatch, tmp_path):
+    """08/10/2026: "xác nhận tình trạng cụm" waited for /confirm_full and was never answered."""
+    sent, answered = _single_full_harness(monkeypatch, tmp_path, "xác nhận tình trạng cụm")
+
+    assert answered == ["xác nhận tình trạng cụm"]
+    assert sent == ["HEALTH_OK, 6/6 OSD up"] and not any("/confirm_full" in text for text in sent)
+    assert chat._mode("telegram-chat:77") == "single-full"  # the chat stays in Single Full
+
+
+def test_a_change_request_in_single_full_still_needs_its_confirmation(monkeypatch, tmp_path):
+    for request in ("fix node down đi", "restart osd.3", "xem phần deploy có đang chạy không"):
+        sent, answered = _single_full_harness(monkeypatch, tmp_path, request)
+
+        assert answered == [] and any("/confirm_full " in text for text in sent), request
