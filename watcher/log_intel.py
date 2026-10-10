@@ -391,16 +391,17 @@ def _scan_and_store_unlocked(
     hosts_scanned = 0
     hosts_failed = 0
 
-    for host, daemon_types in sorted(hosts.items()):
+    for host, addresses, daemon_types in _machines(cluster_id, hosts):
         host_had_error = False
         host_record_count = 0
-        for daemon_type in sorted(daemon_types):
-            result = source.fetch(host, daemon_type, window_start, window_end, cluster)
-            records.extend(result.records)
-            host_record_count += len(result.records)
-            if result.error:
-                errors.append(result.error)
-                host_had_error = True
+        for address in addresses:
+            for daemon_type in sorted(daemon_types):
+                result = source.fetch(address, daemon_type, window_start, window_end, cluster)
+                records.extend(result.records)
+                host_record_count += len(result.records)
+                if result.error:
+                    errors.append(result.error)
+                    host_had_error = True
         # Loki returning no stream for every configured daemon on one host
         # usually means that host has no shipper or its `host` label differs
         # from Ceph AIOps configuration.  Treat that host as missing evidence
@@ -409,7 +410,7 @@ def _scan_and_store_unlocked(
         if settings.log_intel_source in ("loki", "elasticsearch") and host_record_count == 0 and not host_had_error:
             source_label = "Loki" if settings.log_intel_source == "loki" else "Elasticsearch"
             errors.append(
-                f"{host}: {source_label} trả 0 dòng cho mọi daemon; kiểm tra shipper và label host"
+                f"{'/'.join(addresses)}: {source_label} trả 0 dòng cho mọi daemon; kiểm tra shipper và label host"
             )
             host_had_error = True
         hosts_scanned += 1
@@ -546,6 +547,42 @@ def _matches_focus(template: str, message: str) -> bool:
         if token not in ignored
     }
     return bool(tokens) and len(tokens.intersection(template_lower.split())) >= min(2, len(tokens))
+
+
+def _machines(cluster_id: str | None, hosts: dict[str, set[str]]) -> list[tuple[str, list[str], set[str]]]:
+    """(name, addresses, daemon types) per machine for a log query.
+
+    A node has a management and a cluster-network address, and the config may
+    list it under either: CS-LAB names its OSD nodes 10.20.1.x while Loki
+    labels their logs with 10.3.x. Querying only the configured address found
+    0 lines on three hosts, so every scan from 07/10/2026 was PARTIAL and log
+    learning blocked all 558 samples. For Loki/Elasticsearch a machine is
+    queried under every address in the Watcher's nodes snapshot and counts as
+    missing only when all of them are empty. SSH reads each host's own
+    journal, so its hosts are never merged (that would read the same lines twice).
+    """
+    if settings.log_intel_source not in ("loki", "elasticsearch") or cluster_id is None:
+        return [(host, [host], types) for host, types in sorted(hosts.items())]
+    aliases_of: dict[str, list[str]] = {}
+    try:
+        from shared import cluster_snapshot
+
+        snapshot = cluster_snapshot.read_section_snapshot(cluster_id, "nodes") or {}
+        raw_payload = snapshot.get("nodes")
+        payload: dict = raw_payload if isinstance(raw_payload, dict) else {}
+        for node in payload.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            group = [str(item) for item in node.get("aliases") or [node.get("host")] if item]
+            for address in group:
+                aliases_of[address] = group
+    except Exception:  # noqa: BLE001 - without the snapshot each configured host stands alone
+        logger.warning("log_intel: nodes snapshot unavailable; querying configured hosts only", exc_info=True)
+    machines: dict[tuple[str, ...], set[str]] = {}
+    for host, types in sorted(hosts.items()):
+        addresses = tuple(aliases_of.get(host) or [host])
+        machines.setdefault(addresses, set()).update(types)
+    return [(addresses[0], list(addresses), types) for addresses, types in machines.items()]
 
 
 def _hosts_by_daemon_type(cluster: Cluster | None) -> dict[str, set[str]]:
