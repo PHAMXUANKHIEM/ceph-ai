@@ -2994,3 +2994,49 @@ def test_verify_router_connection_rejects_garbage_key_against_real_router():
         )
     )
     assert is_valid is False
+
+
+def _budget_harness(monkeypatch, daily=1000.0, monthly=1500.0):
+    writes = {}
+    monkeypatch.setattr(settings_route, "_update_env_file_batch", writes.update)
+    for name in ("restart_worker", "restart_watcher", "restart_remediation_watcher"):
+        monkeypatch.setattr(settings_route, name, lambda: {"restarted": True, "new_pid": 1, "error": None})
+    # The route writes the live settings object; registering them here restores them after the test.
+    monkeypatch.setattr(settings, "ai_cost_daily_budget_usd", daily)
+    monkeypatch.setattr(settings, "ai_cost_monthly_budget_usd", monthly)
+    monkeypatch.setattr(settings, "ai_cost_budget_hard_limit", False)
+    monkeypatch.setattr(settings, "ai_cost_budget_reserve_output_tokens", 2048)
+    return writes
+
+
+def test_a_budget_can_be_set_to_unlimited(dashboard_client, monkeypatch):
+    writes = _budget_harness(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/ai-budget", data={
+        "monthly_budget": "1500", "daily_unlimited": "1", "reserve_output_tokens": "2048"})
+
+    assert response.status_code == 200 and "Đã lưu cấu hình Budget Guard" in response.text
+    assert writes["AI_COST_DAILY_BUDGET_USD"] == "0.0" and writes["AI_COST_MONTHLY_BUDGET_USD"] == "1500.0"
+    assert settings.ai_cost_daily_budget_usd == 0.0
+    # The re-rendered form shows the daily budget as unlimited: field disabled, box ticked.
+    page = " ".join(response.text.split())
+    assert 'name="daily_budget"' in page and 'data-budget-input="daily" disabled' in page
+    assert 'name="daily_unlimited" value="1" data-budget-unlimited="daily" checked' in page
+    assert 'name="monthly_unlimited" value="1" data-budget-unlimited="monthly" >' in page
+
+
+def test_the_cost_panel_shows_spending_against_each_limit(dashboard_client, monkeypatch):
+    _budget_harness(monkeypatch, daily=0.0, monthly=1500.0)
+    monkeypatch.setattr(settings_route, "_ai_cost_overview", lambda hours=24: {
+        "hours": hours, "calls": 3, "errors": 0, "pricing_configured": True,
+        "estimated_cost_usd": 1.0, "estimated_cost_vnd": 26290,
+        "budget": {"daily": {"limit_usd": 0.0, "spent_usd": 0.42, "remaining_usd": None, "percent": None},
+                   "monthly": {"limit_usd": 1500.0, "spent_usd": 150.04, "remaining_usd": 1349.96, "percent": 10.0}},
+    })
+    _login(dashboard_client)
+
+    page = " ".join(dashboard_client.get("/settings?section=cost").text.split())
+
+    assert "Hôm nay</span> <strong>$0.42</strong> / <em>không giới hạn</em>" in page
+    assert "Tháng này</span> <strong>$150.04</strong> / $1,500.00 (10.0%)" in page
