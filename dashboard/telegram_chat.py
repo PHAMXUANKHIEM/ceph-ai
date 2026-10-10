@@ -984,6 +984,7 @@ def _save_message(
     content: str,
     proposal: dict | None = None,
     proposed_status: str | None = None,
+    nl_context: dict | None = None,
 ) -> ChatMessage:
     with db.SessionLocal() as session:
         message = ChatMessage(
@@ -998,11 +999,23 @@ def _save_message(
             proposed_rationale=proposal.get("rationale") if proposal else None,
             proposed_command_preview=proposal.get("command_preview") if proposal else None,
             proposed_status=proposed_status if proposal else None,
+            # The natural-language context of an answer (intent, evidence,
+            # telemetry): the NL rollout report reads it from assistant rows.
+            nl_context_json=(json.dumps(nl_context, ensure_ascii=False, separators=(",", ":"))
+                             if nl_context else None),
         )
         session.add(message)
         session.commit()
         session.refresh(message)
         return message
+
+
+def _save_failure_reply(session_id: str, cluster_id: str, actor: str, text: str) -> None:
+    """Keep the failure the operator was told about in the history, so a question never looks unanswered."""
+    try:
+        _save_message(session_id=session_id, cluster_id=cluster_id, actor=actor, role="assistant", content=text)
+    except Exception:  # noqa: BLE001 - the reply to the operator matters more than its record
+        logger.exception("telegram_chat: failed to record a failure reply")
 
 
 def _proposal_text(reply: str, proposal: dict | None) -> str:
@@ -1679,6 +1692,7 @@ async def _handle_message_impl(
             session_id=session_id, cluster_id=cluster.id, actor=actor,
             role="assistant", content=reply, proposal=proposal,
             proposed_status="PENDING" if proposal else None,
+            nl_context=result.get("nl_context"),
         )
         if proposal and proposal.get("action_id") != "execute_node_command":
             await _send_proposal(bot_token, chat_id, reply, assistant)
@@ -1688,9 +1702,11 @@ async def _handle_message_impl(
             await _send(bot_token, chat_id, reply)
     except ChatTurnError as exc:
         logger.warning("telegram_chat: single mode failed: %s", exc)
+        _save_failure_reply(session_id, cluster.id, actor, f"Không thể trả lời: {exc}")
         await _send(bot_token, chat_id, f"Không thể trả lời: {exc}")
     except Exception:
         logger.exception("telegram_chat: unexpected single mode failure")
+        _save_failure_reply(session_id, cluster.id, actor, "Không thể trả lời do lỗi nội bộ; kiểm tra log Dashboard.")
         try:
             await _send(bot_token, chat_id, "Không thể trả lời do lỗi nội bộ; kiểm tra log Dashboard.")
         except Exception:
