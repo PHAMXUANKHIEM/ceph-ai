@@ -283,3 +283,47 @@ def test_a_malformed_scope_key_is_refused(db_session, scope_key):
         model_registry._select_runtime_state(
             db_session, _registry_row("NODE_RESOURCE", scope_key, "linear:72h", 72), selected=True,
         )
+
+
+@pytest.mark.parametrize(("scope_type", "scope_key", "expected"), [
+    ("NODE_RESOURCE", "CS-LAB|10.3.53.69|ram|h1", ("node", "10.3.53.69", "ram", 1, "10.3.53.69")),
+    ("NODE_RESOURCE", "CS-LAB|10.3.53.69|cpu|h24", ("node", "10.3.53.69", "cpu", 24, "10.3.53.69")),
+    ("NODE_RESOURCE", "CS-LAB|10.3.53.69|ram", ("node", "10.3.53.69", "ram", 72, "10.3.53.69")),
+    ("VOLUME", "c1|volumes|img|write_latency_ms|h6", ("volume", "volumes/img", "write_latency_ms", 6, None)),
+])
+def test_scope_keys_with_a_horizon_suffix_parse_to_full_dimensions(scope_type, scope_key, expected):
+    from shared.forecast_scope import parse_legacy_scope
+
+    scope = parse_legacy_scope(scope_type, scope_key, horizon_hours=72)
+
+    assert (scope.entity_type, scope.entity_id, scope.metric, scope.horizon_hours, scope.host) == expected
+
+
+@pytest.mark.parametrize("scope_key", ["CS-LAB|host|ram|6", "CS-LAB|host|ram|h0", "CS-LAB|host|ram|h6|extra"])
+def test_a_scope_key_with_a_bad_suffix_still_parses_to_nothing(scope_key):
+    from shared.forecast_scope import parse_legacy_scope
+
+    assert parse_legacy_scope("NODE_RESOURCE", scope_key, horizon_hours=24) is None
+
+
+def test_a_horizon_keyed_model_gets_its_dimensions_when_registered_again(db_session):
+    """10/10/2026: 288 node-resource models keyed "...|h1" had no dimensions; promotion said UNKNOWN_SCOPE."""
+    from shared.models import ForecastModelRegistry
+
+    legacy = ForecastModelRegistry(
+        scope_type="NODE_RESOURCE", scope_key="CS-LAB|10.3.53.69|ram|h1", name="node-resource-forecast",
+        version="rolling_quantile:72h:72h", algorithm="rolling_quantile:72h", feature_schema="node-resource-v1",
+        training_window_hours=72, status="SHADOW",
+    )
+    db_session.add(legacy)
+    db_session.flush()
+    assert not model_registry._scope_ready(legacy)
+
+    again = model_registry.register_candidate(
+        db_session, scope_type="NODE_RESOURCE", scope_key="CS-LAB|10.3.53.69|ram|h1",
+        name="node-resource-forecast", version="rolling_quantile:72h:72h", algorithm="rolling_quantile:72h",
+        feature_schema="node-resource-v1", training_window_hours=72,
+    )
+
+    assert again.id == legacy.id and model_registry._scope_ready(again)
+    assert (again.scope_schema, again.host, again.metric, again.horizon_hours) == (SCOPE_SCHEMA, "10.3.53.69", "ram", 1)
