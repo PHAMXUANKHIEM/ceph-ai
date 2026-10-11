@@ -963,6 +963,7 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
             "current_versions": current_versions,
             "versions_error": versions_error,
             "suggested_target": suggested_target,
+            "staging_soak": _staging_soak_view(cluster, suggested_target),
             "upgrade_progress": upgrade_progress,
             "progress_error": progress_error,
             "package_upgrade_progress": package_upgrade_progress,
@@ -978,8 +979,48 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
     )
 
 
+def _staging_soak_view(cluster, target_version: str | None) -> dict | None:
+    """Staging evidence for the suggested target, shown next to a production cluster's upgrade forms."""
+    from shared import upgrade_soak
+
+    if not target_version or getattr(cluster, "autonomy_environment", "production") != "production":
+        return None
+    try:
+        with db.SessionLocal() as session:
+            return upgrade_soak.staging_soak(session, target_version, cluster_id=cluster.id).as_dict()
+    except Exception:  # noqa: BLE001 - the page must render without this hint
+        logger.exception("upgrade: staging soak view failed")
+        return None
+
+
+def _staging_gate(cluster, target_version: str, bypass: str, reason: str) -> str:
+    """Croit-parity C4: a production upgrade needs the version proven on staging first.
+
+    Returns the note added to the proposal; raises 400 when staging has not
+    run target_version long enough and the operator gave no reason to
+    bypass it. Lab clusters (staging itself) are never gated.
+    """
+    from shared import upgrade_soak
+
+    if getattr(cluster, "autonomy_environment", "production") != "production":
+        return ""
+    with db.SessionLocal() as session:
+        result = upgrade_soak.staging_soak(session, target_version, cluster_id=cluster.id)
+    if result.ok:
+        return f"Staging: {result.reason}\n\n"
+    reason = (reason or "").strip()
+    if bypass != "1":
+        raise HTTPException(status_code=400, detail=(
+            f"Chưa thử trên staging: {result.reason} Chạy nâng cấp trên cụm staging trước, hoặc chọn bỏ qua "
+            "và ghi lý do."))
+    if len(reason) < 8:
+        raise HTTPException(status_code=400, detail="Bỏ qua bước thử trên staging cần lý do (ít nhất 8 ký tự).")
+    return f"BỎ QUA THỬ TRÊN STAGING ({result.reason}) — lý do: {reason}\n\n"
+
+
 @router.post("/upgrade/propose")
-async def propose_upgrade(request: Request, target_version: str = Form(...), user: str = Depends(require_login)):
+async def propose_upgrade(request: Request, target_version: str = Form(...), user: str = Depends(require_login),
+                          bypass_staging: str = Form(""), bypass_reason: str = Form("")):
     """cephadm path — creates a PENDING_APPROVAL Action the exact same way
     dashboard/routes/chat.py::confirm_chat_action does for a chat proposal —
     a synthetic Incident, an Action row, one audit.record() call. From here
@@ -997,6 +1038,7 @@ async def propose_upgrade(request: Request, target_version: str = Form(...), use
             status_code=400,
             detail="Chỉ hỗ trợ nâng cấp qua cephadm cho cụm dùng ceph_exec_mode=cephadm",
         )
+    staging_note = _staging_gate(cluster, target_version, bypass_staging, bypass_reason)
 
     with db.SessionLocal() as session:
         _reject_duplicate_proposal(session, cluster)
@@ -1033,7 +1075,7 @@ async def propose_upgrade(request: Request, target_version: str = Form(...), use
             action_id=CLUSTER_UPGRADE_ACTION_ID,
             classification=classification.value,
             status=ActionStatus.PENDING_APPROVAL.value,
-            rationale=_upgrade_plan_text(target_version),
+            rationale=staging_note + _upgrade_plan_text(target_version),
             target_nodes=json.dumps([target_node]),
             action_params=json.dumps(action_params),
             proposed_command=resolved_command,
@@ -1610,6 +1652,8 @@ async def propose_package_download_upgrade(
     request: Request,
     target_version: str = Form(...),
     user: str = Depends(require_login),
+    bypass_staging: str = Form(""),
+    bypass_reason: str = Form(""),
 ):
     """ceph-deploy path, option 1 — download the target release from
     download.ceph.com on each configured node (mon/mgr/osd/rgw, in that
@@ -1650,6 +1694,7 @@ async def propose_package_download_upgrade(
             status_code=400,
             detail=f"Không tìm thấy mã tên release Ceph cho phiên bản {target_version!r}",
         )
+    staging_note = _staging_gate(cluster, target_version, bypass_staging, bypass_reason)
 
     with db.SessionLocal() as session:
         _reject_duplicate_proposal(session, cluster)
@@ -1691,7 +1736,7 @@ async def propose_package_download_upgrade(
             action_id=PACKAGE_DOWNLOAD_ACTION_ID,
             classification=gate.classify_action(PACKAGE_DOWNLOAD_ACTION_ID).value,  # always RISKY
             status=ActionStatus.PENDING_APPROVAL.value,
-            rationale=_package_download_plan_text(target_version, codename, target_nodes),
+            rationale=staging_note + _package_download_plan_text(target_version, codename, target_nodes),
             target_nodes=json.dumps(target_nodes),
             action_params=json.dumps(action_params),
             proposed_command=preview_command,

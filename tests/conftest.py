@@ -342,3 +342,16 @@ def _no_node_config_audit_ssh(monkeypatch):
     from watcher import node_config_audit
 
     monkeypatch.setattr(node_config_audit, "collect", lambda nodes: {})
+
+
+@pytest.fixture(autouse=True)
+def _staging_soak_passes(monkeypatch):
+    """Production upgrades need the version proven on staging (shared/upgrade_soak.py, croit-parity C4).
+
+    Upgrade tests that are not about that gate assume it passed; tests of the
+    gate itself replace this stub.
+    """
+    from shared import upgrade_soak
+
+    monkeypatch.setattr(upgrade_soak, "staging_soak", lambda session, target_version, **kwargs: upgrade_soak.SoakResult(
+        True, f"CS-STAGING đã chạy Ceph {target_version} 48 giờ, HEALTH_OK.", "CS-STAGING", 48.0))
