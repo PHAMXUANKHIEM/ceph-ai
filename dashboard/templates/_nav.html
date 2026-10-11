@@ -13,7 +13,7 @@
 {% set nav_path = request.url.path %}
 {% set cluster_group_exact = [
   "/nodes", "/trash", "/pools",
-  "/block-storage", "/pgs", "/capacity-forecast", "/disk-risk",
+  "/block-storage", "/file-services", "/pgs", "/capacity-forecast", "/disk-risk",
   "/deploy-cluster", "/delete-cluster", "/remove-nodes", "/replace-osd", "/convert-cluster",
   "/volumes", "/trash"
 ] %}
@@ -35,6 +35,7 @@
           <a href="/nodes" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/nodes' else '' }}">Cluster Metrics</a>
           <a href="/pools" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/pools' else '' }}">Pools</a>
           <a href="/block-storage" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/block-storage' or nav_path == '/volumes' or nav_path.startswith("/volumes/") or nav_path == "/trash" else '' }}">Block Storage</a>
+          <a href="/file-services" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/file-services' else '' }}">CephFS · NFS · RGW</a>
           <a href="/capacity-forecast" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/capacity-forecast' else '' }}">Capacity Forecast</a>
           <a href="/disk-risk" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/disk-risk' else '' }}">Disk Failure Risk</a>
           <a href="/deploy-cluster" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/deploy-cluster' else '' }}">Deploy Cluster</a>
