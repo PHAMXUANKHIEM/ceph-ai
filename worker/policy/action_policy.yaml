@@ -313,6 +313,14 @@ safe:
   - crash_archive_all
 
 risky:
+  # 2026-10-11 (croit-parity C5, dashboard/routes/file_services.py): create
+  # CephFS volumes/subvolumes, NFS clusters/exports and place RGW services.
+  # They only add services; each waits for an operator's approval.
+  - cephfs_create_volume
+  - cephfs_create_subvolume
+  - nfs_create_cluster
+  - nfs_create_export
+  - rgw_apply_service
   # 2026-10-07: removes already-drained hosts from the cephadm inventory.
   - finish_remove_cluster_nodes
   # Changes when the cluster raises BlueStore slow-op warnings: always approved.

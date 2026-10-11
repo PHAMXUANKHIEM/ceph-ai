@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>File &amp; Object Services — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&amp;lifecycle_layout=5">
+</head>
+<body>
+  {% include "_nav.html" %}
+
+  <main class="page cluster-lifecycle-page file-services-page">
+    <header class="lifecycle-page-header">
+      <div class="dc-title-block"><div class="lifecycle-eyebrow">SERVICES / RISKY</div>
+        <div class="dc-title-row"><h1>CephFS · NFS · RGW</h1></div>
+        <p>Dịch vụ file và object của cụm <strong>{{ cluster_name }}</strong> (cụm đang chọn). Mọi thay đổi là đề xuất RISKY, chạy sau khi admin duyệt.
+        {% if age_seconds is not none %}<span class="hint">Dữ liệu cách đây {{ age_seconds|round|int }} giây.</span>{% endif %}</p></div>
+    </header>
+
+    {% if error %}<section class="card"><div class="card-body"><p class="error">Không đọc được trạng thái dịch vụ: {{ error }}</p></div></section>{% endif %}
+
+    {% if state %}
+    <section class="card lifecycle-panel">
+      <div class="card-header"><h2>CephFS</h2></div>
+      <div class="card-body">
+        {% for fs in state.filesystems %}
+        <p><strong>{{ fs.name }}</strong> — metadata <code>{{ fs.metadata_pool }}</code>, data <code>{{ (fs.data_pools or [])|join(", ") }}</code></p>
+        <p class="hint">MDS: {% for m in fs.mds %}<code>{{ m.name }}</code> {{ m.state }}{% if not loop.last %}, {% endif %}{% else %}chưa có MDS nào{% endfor %}
+          · Subvolume: {{ (fs.subvolumes or [])|join(", ") or "chưa có" }}</p>
+        {% else %}<p class="hint">Chưa có filesystem nào.</p>{% endfor %}
+        {% if is_admin %}
+        <form class="fs-form" data-action="cephfs_create_volume">
+          <label>Tên filesystem mới <input name="fs_name" required pattern="[A-Za-z][A-Za-z0-9_-]{0,63}"></label>
+          <button class="btn btn-primary" type="submit">Đề xuất tạo CephFS</button>
+          <p class="hint">`ceph fs volume create`: tạo pool metadata/data và để cephadm đặt MDS.</p>
+        </form>
+        {% if state.filesystems %}
+        <form class="fs-form" data-action="cephfs_create_subvolume">
+          <label>Filesystem <select name="fs_name">{% for fs in state.filesystems %}<option>{{ fs.name }}</option>{% endfor %}</select></label>
+          <label>Subvolume <input name="subvolume" required pattern="[A-Za-z][A-Za-z0-9_-]{0,63}"></label>
+          <label>Quota (GiB, tuỳ chọn) <input name="size_gib" type="number" min="1"></label>
+          <button class="btn btn-primary" type="submit">Đề xuất tạo subvolume</button>
+        </form>
+        {% endif %}
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card lifecycle-panel">
+      <div class="card-header"><h2>NFS</h2></div>
+      <div class="card-body">
+        {% for nfs in state.nfs %}
+        <p><strong>{{ nfs.id }}</strong></p>
+        <ul>{% for e in nfs.exports %}<li><code>{{ e.pseudo }}</code> → {{ e.fs }}:{{ e.path }} ({{ e.access }})</li>{% else %}<li class="hint">chưa có export</li>{% endfor %}</ul>
+        {% else %}<p class="hint">Chưa có cụm NFS nào.</p>{% endfor %}
+        {% if is_admin and state.cephadm %}
+        <form class="fs-form" data-action="nfs_create_cluster">
+          <label>Tên cụm NFS <input name="nfs_id" required pattern="[A-Za-z][A-Za-z0-9_-]{0,63}"></label>
+          <fieldset><legend>Host chạy NFS</legend>{% for h in state.hosts %}<label><input type="checkbox" name="hosts" value="{{ h }}"> {{ h }}</label> {% endfor %}</fieldset>
+          <button class="btn btn-primary" type="submit">Đề xuất tạo cụm NFS</button>
+        </form>
+        {% if state.nfs and state.filesystems %}
+        <form class="fs-form" data-action="nfs_create_export">
+          <label>Cụm NFS <select name="nfs_id">{% for n in state.nfs %}<option>{{ n.id }}</option>{% endfor %}</select></label>
+          <label>Filesystem <select name="fs_name">{% for fs in state.filesystems %}<option>{{ fs.name }}</option>{% endfor %}</select></label>
+          <label>Đường dẫn NFS (pseudo) <input name="pseudo_path" required placeholder="/app1"></label>
+          <label>Thư mục trong CephFS <input name="path" value="/"></label>
+          <label><input type="checkbox" name="readonly" value="1"> Chỉ đọc</label>
+          <button class="btn btn-primary" type="submit">Đề xuất tạo export</button>
+        </form>
+        {% endif %}
+        {% elif is_admin %}<p class="hint">NFS qua orchestrator chỉ hỗ trợ cụm cephadm (cụm này: {{ exec_mode }}).</p>{% endif %}
+      </div>
+    </section>
+
+    <section class="card lifecycle-panel">
+      <div class="card-header"><h2>RGW (S3/Swift)</h2></div>
+      <div class="card-body">
+        {% for svc in state.rgw %}
+        <p><strong>{{ svc.name }}</strong> — {{ svc.running }}/{{ svc.size }} đang chạy · placement <code>{{ svc.placement|tojson }}</code></p>
+        {% else %}<p class="hint">{% if state.cephadm %}Chưa có dịch vụ RGW nào do cephadm quản lý.{% else %}Danh sách RGW qua orchestrator chỉ có ở cụm cephadm.{% endif %}</p>{% endfor %}
+        {% if is_admin and state.cephadm %}
+        <form class="fs-form" data-action="rgw_apply_service">
+          <label>Tên dịch vụ <input name="service_id" required pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" placeholder="s3"></label>
+          <fieldset><legend>Host chạy RGW</legend>{% for h in state.hosts %}<label><input type="checkbox" name="hosts" value="{{ h }}"> {{ h }}</label> {% endfor %}</fieldset>
+          <label>Cổng <input name="port" type="number" min="1" max="65535" value="8080"></label>
+          <button class="btn btn-primary" type="submit">Đề xuất đặt/đổi dịch vụ RGW</button>
+          <p class="hint">`ceph orch apply rgw`: cùng tên dịch vụ thì thay placement/cổng của dịch vụ đó.</p>
+        </form>
+        {% endif %}
+      </div>
+    </section>
+    {% endif %}
+
+    <p class="dc-modal-error" id="fs-error" hidden></p>
+
+    <section class="card">
+      <div class="card-header"><h2>Đề xuất gần đây</h2></div>
+      <div class="card-body">
+        {% for a in actions %}
+        <div class="fs-action"><strong>{{ a.label }}</strong> — {{ a.status }} <code>{{ a.command }}</code>
+          {% if a.status == "PENDING_APPROVAL" and is_admin %}
+          <form method="post" action="/actions/{{ a.id }}/approve" class="inline-form"><button class="btn btn-approve" type="submit">Duyệt</button></form>
+          <form method="post" action="/actions/{{ a.id }}/reject" class="inline-form"><button class="btn btn-reject" type="submit">Từ chối</button></form>
+          {% endif %}
+        </div>
+        {% else %}<p class="hint">Chưa có đề xuất nào.</p>{% endfor %}
+      </div>
+    </section>
+  </main>
+
+  <script>
+  (function () {
+    document.querySelectorAll("form.fs-form").forEach(function (form) {
+      form.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        const body = {action_id: form.dataset.action};
+        new FormData(form).forEach(function (value, key) {
+          if (key === "hosts") { (body.hosts = body.hosts || []).push(value); return; }
+          if (key === "readonly") { body.readonly = true; return; }
+          body[key] = value;
+        });
+        const response = await fetch("/file-services/propose", {method: "POST", credentials: "same-origin",
+          headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+        if (response.ok) { window.location.reload(); return; }
+        let detail = "Không tạo được đề xuất";
+        try { detail = (await response.json()).detail || detail; } catch (e) { /* default */ }
+        const box = document.getElementById("fs-error");
+        box.textContent = typeof detail === "string" ? detail : JSON.stringify(detail); box.hidden = false;
+      });
+    });
+  })();
+  </script>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

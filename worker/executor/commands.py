@@ -264,6 +264,73 @@ def _create_pool_command(params: dict) -> str:
     return command
 
 
+# --- croit-parity C5: CephFS, NFS and RGW services ---------------------------------------
+_SERVICE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$")
+_EXPORT_PATH_RE = re.compile(r"^/[A-Za-z0-9/_.-]{0,254}$")
+_MAX_SUBVOLUME_GIB = 1_000_000
+
+
+def _require_name(params: dict, key: str) -> str:
+    value = params.get(key)
+    if not isinstance(value, str) or not _SERVICE_NAME_RE.match(value):
+        raise ExecutorError(f"invalid or missing {key}: {value!r}")
+    return value
+
+
+def _require_hosts(params: dict) -> list[str]:
+    hosts = params.get("hosts")
+    if not isinstance(hosts, list) or not hosts or len(hosts) > 16 or len(set(hosts)) != len(hosts):
+        raise ExecutorError("hosts must be 1-16 distinct cephadm hostnames")
+    for host in hosts:
+        if not isinstance(host, str) or not _HOSTNAME_RE.match(host):
+            raise ExecutorError(f"invalid hostname: {host!r}")
+    return hosts
+
+
+def _require_export_path(params: dict, key: str) -> str:
+    value = params.get(key)
+    if not isinstance(value, str) or not _EXPORT_PATH_RE.match(value) or "/../" in f"{value}/":
+        raise ExecutorError(f"invalid {key}: {value!r} (absolute path, no '..')")
+    return value
+
+
+def _cephfs_create_volume_command(params: dict) -> str:
+    return f"ceph fs volume create {shlex.quote(_require_name(params, 'fs_name'))}"
+
+
+def _cephfs_create_subvolume_command(params: dict) -> str:
+    command = (f"ceph fs subvolume create {shlex.quote(_require_name(params, 'fs_name'))} "
+               f"{shlex.quote(_require_name(params, 'subvolume'))}")
+    if params.get("size_gib") is not None:
+        command += f" --size {_require_int(params, 'size_gib', (1, _MAX_SUBVOLUME_GIB)) * 1024 ** 3}"
+    return command
+
+
+def _placement(hosts: list[str]) -> str:
+    return shlex.quote(f"{len(hosts)} {' '.join(hosts)}")
+
+
+def _nfs_create_cluster_command(params: dict) -> str:
+    return (f"ceph nfs cluster create {shlex.quote(_require_name(params, 'nfs_id'))} "
+            f"{_placement(_require_hosts(params))}")
+
+
+def _nfs_create_export_command(params: dict) -> str:
+    command = ("ceph nfs export create cephfs"
+               f" --cluster-id {shlex.quote(_require_name(params, 'nfs_id'))}"
+               f" --pseudo-path {shlex.quote(_require_export_path(params, 'pseudo_path'))}"
+               f" --fsname {shlex.quote(_require_name(params, 'fs_name'))}"
+               f" --path {shlex.quote(_require_export_path(params, 'path'))}")
+    return command + (" --readonly" if params.get("readonly") is True else "")
+
+
+def _rgw_apply_service_command(params: dict) -> str:
+    port = _require_int(params, "port", (1, 65535))
+    return (f"ceph orch apply rgw {shlex.quote(_require_name(params, 'service_id'))} "
+            f"--placement={_placement(_require_hosts(params))} --port={port}")
+
+
 def _delete_pool_command(params: dict) -> str:
     """2026-07-23: Ceph itself refuses `ceph osd pool delete` outright
     (`Error EPERM: pool deletion is disabled`) unless the cluster-wide
@@ -893,6 +960,11 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "set_pool_protection": _set_pool_protection_command,
     "execute_node_command": _execute_node_command,
     "create_pool": _create_pool_command,
+    "cephfs_create_volume": _cephfs_create_volume_command,
+    "cephfs_create_subvolume": _cephfs_create_subvolume_command,
+    "nfs_create_cluster": _nfs_create_cluster_command,
+    "nfs_create_export": _nfs_create_export_command,
+    "rgw_apply_service": _rgw_apply_service_command,
     "delete_pool": _delete_pool_command,
     "set_pool_size": _set_pool_size_command,
     "set_pool_pg_num": _set_pool_pg_num_command,
@@ -935,6 +1007,11 @@ _CEPH_RUNTIME_ACTION_IDS = frozenset({
     "scrub_pool",
     "set_pool_protection",
     "create_pool",
+    "cephfs_create_volume",
+    "cephfs_create_subvolume",
+    "nfs_create_cluster",
+    "nfs_create_export",
+    "rgw_apply_service",
     "delete_pool",
     "set_pool_size",
     "set_pool_pg_num",
