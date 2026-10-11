@@ -54,6 +54,13 @@ def configured_nodes(cluster: "Cluster | None" = None) -> list[dict]:
     return [{"host": host, "roles": sorted(roles[host])} for host in ordered_hosts]
 
 
+# The read-only SSH identity compose.yaml mounts into the Watcher and the
+# Dashboard. Extra clusters registered from the Dashboard or Deploy Cluster
+# store it as their key, which suits monitoring but not the Worker, whose own
+# identity (settings.ssh_key_path there) is the mutation key.
+READ_ONLY_KEY_PATH = "/tmp/readonly-id_ed25519"
+
+
 def resolve_ssh_creds(cluster: "Cluster | None" = None) -> tuple[str, str, str, str]:
     """(ssh_user, ssh_key_path, ceph_exec_mode, ceph_container_name) for
     `cluster`, or the global `settings` singleton's equivalents when `cluster`
@@ -68,7 +75,17 @@ def resolve_ssh_creds(cluster: "Cluster | None" = None) -> tuple[str, str, str, 
     `ceph_container_name` here is the MON container name (same field
     `watcher/ceph_client.py` already means by that name) — RGW's own
     container name is a separate field (`ceph_rgw_container_name`),
-    unrelated to this general-purpose helper."""
+    unrelated to this general-purpose helper.
+
+    An extra cluster whose key is Ceph AI's shared read-only identity is
+    reached with this process's own identity instead: still read-only in the
+    Watcher and the Dashboard, the mutation key in the Worker. Before
+    11/10/2026 the Worker refused every approved action on such a cluster
+    ("SSH key path không hợp lệ cho production: /tmp/readonly-id_ed25519"),
+    so nothing could be repaired or changed on CS-STAGING."""
     if cluster is not None:
-        return cluster.ssh_user, cluster.ssh_key_path, cluster.ceph_exec_mode, cluster.ceph_container_name
+        key_path = cluster.ssh_key_path
+        if key_path == READ_ONLY_KEY_PATH and settings.ssh_key_path:
+            key_path = settings.ssh_key_path
+        return cluster.ssh_user, key_path, cluster.ceph_exec_mode, cluster.ceph_container_name
     return settings.ssh_user, settings.ssh_key_path, settings.ceph_exec_mode, settings.ceph_container_name
