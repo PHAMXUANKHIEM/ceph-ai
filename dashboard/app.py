@@ -54,6 +54,7 @@ from dashboard.routes import (
     convert_cluster,
     crush_map,
     delete_cluster,
+    add_nodes,
     remove_nodes,
     file_services,
     replace_osd,
@@ -620,6 +621,7 @@ def create_app() -> FastAPI:
     application.include_router(upgrade.router)
     application.include_router(deploy_cluster.router)
     application.include_router(delete_cluster.router)
+    application.include_router(add_nodes.router)
     application.include_router(remove_nodes.router)
     application.include_router(file_services.router)
     application.include_router(replace_osd.router)

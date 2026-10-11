@@ -4303,6 +4303,11 @@ def _osd_replacement_phases(action_id: str) -> list | None:
     from worker.executor import osd_replacement
 
     return osd_replacement.PHASES.get(action_id)
+def _cluster_expansion_phases(action_id: str) -> list | None:
+    """Phase list of worker/executor/cluster_expansion.py (imported late: it imports this module)."""
+    from worker.executor import cluster_expansion
+
+    return cluster_expansion.PHASES.get(action_id)
 
 
 def _apply_config_epilogue(action_id: str, action_params: dict) -> None:
@@ -4311,6 +4316,11 @@ def _apply_config_epilogue(action_id: str, action_params: dict) -> None:
         return
     if action_id in {"replace_failed_osd", "finish_replace_osd"}:
         return  # the OSD keeps its ID and host; node lists do not change
+    if action_id == "add_cluster_nodes":
+        from worker.executor import cluster_expansion
+
+        cluster_expansion.apply_config(action_params)
+        return
     if action_id in {"remove_cluster_nodes", "finish_remove_cluster_nodes"}:
         from worker.executor import node_removal
 
@@ -4405,7 +4415,8 @@ def run(
 
     nodes = action_params.get("nodes") or []
     phases = (_PHASES_BY_ACTION_ID.get(action_id) or _node_removal_phases(action_id)
-              or _osd_replacement_phases(action_id))
+              or _osd_replacement_phases(action_id)
+              or _cluster_expansion_phases(action_id))
     if not phases:
         logger.error("cluster_deploy.run: no phase sequence registered for action_id=%s", action_id)
         return False
