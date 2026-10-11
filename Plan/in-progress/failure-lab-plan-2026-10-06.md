@@ -137,10 +137,10 @@ Rào an toàn giữ nguyên mục 3: AI không viết lệnh shell; chỉ cụm 
 
 Gói việc:
 - [x] FL6.0 (= FL3) nhãn lab và tham khảo chéo cụm.
-- [ ] FL6.1 hàng chờ thiếu bằng chứng + báo cáo.
-- [ ] FL6.2 bộ tải tài liệu + đề xuất tái hiện có cấu trúc + validator.
-- [ ] FL6.3 thẻ duyệt Telegram + kịch bản động đã duyệt.
-- [ ] FL6.4 bộ chạy nhận kịch bản động; thẻ duyệt sửa gửi kênh lab.
+- [x] FL6.1 hàng chờ thiếu bằng chứng (`shared/evidence_gaps.py`, `python -m scripts.lab.evidence_gaps`).
+- [x] FL6.2 tài liệu Ceph (`shared/ceph_docs.py`) + đề xuất AI có cấu trúc + validator (`shared/reproduction_proposal.py`, `scripts/lab/propose_reproduction.py`).
+- [x] FL6.3 thẻ duyệt Telegram (`flrepro:ok/skip`, chỉ operator), quyết định ghi vào file đề xuất (`shared/reproduction_approval.py`).
+- [x] FL6.4 `run_proposal`: đề xuất đã duyệt chạy một lần qua mọi cổng FL2, ghép với lỗi đã review cùng kiểu (cơ chế/gỡ lỗi từ catalog; đề xuất chỉ thêm mã kỳ vọng, đặt hành động đã duyệt, rút ngắn thời gian giữ lỗi); trạng thái RUNNING → DONE/FAILED; nhãn FL3 ghi `proposal_id`. CLI `--proposal <id>|next`. Duyệt sửa dùng đường giữ action + thẻ duyệt ở kênh lab của FL2.
 - [ ] FL6.5 báo cáo học: chỉ số theo họ lỗi, Telegram sau mỗi lượt.
 - [ ] Thêm kiểu lỗi mới theo yêu cầu (vd large omap trên pool test, OSD out, cờ `noout`), mỗi kiểu một PR có review.
 - **Cần operator:** dựng cụm staging, đánh dấu `lab`, đặt `FAILURE_LAB_CLUSTER_FSID`, `FAILURE_LAB_TELEGRAM_CHAT_ID`, `FAILURE_LAB_FAULT_ENABLED=true`.
