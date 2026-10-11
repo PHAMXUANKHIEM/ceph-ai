@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from shared.time import utc_now
+from shared.operator_requests import is_operator_request
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -463,7 +464,7 @@ def _resolve_recovered_incidents(
                 # not represent a live Ceph health check and must not be
                 # auto-resolved on the next healthy poll.
                 continue
-            if incident.ceph_code in _OPERATOR_VOLUME_CEPH_CODES:
+            if incident.ceph_code in _OPERATOR_VOLUME_CEPH_CODES or is_operator_request(incident.ceph_code):
                 # Dashboard volume/Trash/Cinder proposals use synthetic
                 # ceph_code values to attach audit entries. They are not
                 # health checks and must remain pending until approval or
