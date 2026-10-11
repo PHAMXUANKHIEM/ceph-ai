@@ -13,14 +13,15 @@
     <nav class="settings-sidebar">
       {% if is_admin %}
       <section class="settings-nav-group" data-settings-group="system">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['restart-controls', 'action-policy', 'database', 'server-log'] else 'false' }}">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['restart-controls', 'action-policy', 'database', 'server-log', 'staging-cluster'] else 'false' }}">
           <span>Hệ thống</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
-        <div class="settings-nav-group-items" {% if active_section not in ['restart-controls', 'action-policy', 'database', 'server-log'] %}hidden{% endif %}>
+        <div class="settings-nav-group-items" {% if active_section not in ['restart-controls', 'action-policy', 'database', 'server-log', 'staging-cluster'] %}hidden{% endif %}>
           <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">Tiến trình hệ thống</button>
           <button type="button" class="settings-nav-item {% if active_section == 'action-policy' %}active{% endif %}" data-section="action-policy">Chính sách hành động AI</button>
           <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối cơ sở dữ liệu</button>
           <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Nhật ký máy chủ</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'staging-cluster' %}active{% endif %}" data-section="staging-cluster">Cụm Staging (Failure Lab)</button>
         </div>
       </section>
       <section class="settings-nav-group" data-settings-group="storage">
@@ -187,6 +188,43 @@
     {% endif %}
 
     {% if is_admin %}
+    {% if is_admin %}
+    <section class="card settings-panel" data-panel="staging-cluster" {% if active_section != 'staging-cluster' %}hidden{% endif %}>
+      <div class="card-header"><div><span class="settings-breadcrumb">Settings / System / Failure Lab</span><h2>Cụm Staging (Failure Lab)</h2></div></div>
+      <div class="card-body">
+        {% if failure_lab_error %}<p class="error">{{ failure_lab_error }}</p>{% endif %}
+        {% if failure_lab_success %}<p class="success">{{ failure_lab_success }}</p>{% endif %}
+        <p class="hint">Cụm staging là nơi Failure Lab được phép <strong>chủ động gây lỗi</strong> để AI học (tái hiện lỗi thiếu bằng chứng, duyệt trên Telegram). Chỉ một cụm; cụm được chọn chuyển sang <code>lab</code>, cụm cũ trở về <code>production</code> (có ghi audit). Không chọn cụm đang chạy dịch vụ thật.</p>
+        <form method="post" action="/settings/failure-lab" class="staging-cluster-form">
+          <input type="hidden" name="operation" value="save">
+          <div class="form-grid">
+            <label>Cụm staging
+              <select name="cluster_id">
+                <option value="" {% if not failure_lab.cluster_id %}selected{% endif %}>— Chưa chọn —</option>
+                {% for cluster in autopilot_clusters %}
+                <option value="{{ cluster.id }}" {% if cluster.id == failure_lab.cluster_id %}selected{% endif %}>{{ cluster.name }}{% if cluster.is_default %} (cụm giám sát chính){% endif %} — {{ cluster.autonomy_environment }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Khung giờ chạy theo lịch
+              <input type="text" name="window" value="{{ failure_lab.window }}" pattern="\d{2}:\d{2}-\d{2}:\d{2}" placeholder="02:00-05:00">
+            </label>
+            <label>Chat Telegram của lab
+              <input type="text" name="telegram_chat_id" value="{{ failure_lab.telegram_chat_id }}" placeholder="-100…  (trống = không gửi)">
+            </label>
+            <label class="toggle-line"><input type="checkbox" name="fault_enabled" value="1" {% if failure_lab.fault_enabled %}checked{% endif %} {% if not failure_lab.fsid %}disabled{% endif %}> Cho phép gây lỗi thật trên cụm này</label>
+          </div>
+          <div class="form-actions"><button type="submit" class="btn btn-primary">Lưu</button></div>
+        </form>
+        <form method="post" action="/settings/failure-lab" class="staging-cluster-fsid">
+          <input type="hidden" name="operation" value="pin_fsid">
+          <p>fsid đã ghim: {% if failure_lab.fsid %}<code>{{ failure_lab.fsid }}</code>{% else %}<strong>chưa ghim</strong> — bộ chạy sẽ từ chối gây lỗi{% endif %}</p>
+          <button type="submit" class="btn btn-secondary" {% if not failure_lab.cluster_id %}disabled{% endif %}>Đọc và ghim fsid từ cụm</button>
+        </form>
+        {% if failure_lab.updated_by %}<p class="hint">Cập nhật lần cuối bởi {{ failure_lab.updated_by }} lúc {{ failure_lab.updated_at }}.</p>{% endif %}
+      </div>
+    </section>
+    {% endif %}
     <section class="card settings-panel" data-panel="database" {% if active_section != 'database' %}hidden{% endif %}>
       <div class="card-header db-panel-title"><div><h2>Kết nối Database</h2><p class="hint">Kiểm tra và quản lý kết nối lưu trữ của Ceph AIOps.</p></div><div class="db-status-chip is-pending" id="db-status-chip" aria-live="polite"><i></i><b id="db-status-text">Đang kiểm tra</b><span id="db-status-meta">—</span></div></div>
       <div class="card-body db-panel-body">

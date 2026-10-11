@@ -173,7 +173,7 @@ def test_nearfull_lowers_the_ratio_under_the_fullest_osd_and_restores_it(enabled
 
 @pytest.mark.parametrize(("change", "reason"), [
     (lambda m, lab: m.setattr(settings, "failure_lab_fault_enabled", False), "FAILURE_LAB_FAULT_ENABLED"),
-    (lambda m, lab: m.setattr(settings, "failure_lab_cluster_fsid", ""), "FSID is not set"),
+    (lambda m, lab: m.setattr(settings, "failure_lab_cluster_fsid", ""), "no staging fsid is pinned"),
     (lambda m, lab: setattr(lab, "fsid", "another-cluster"), "not the pinned lab fsid"),
     (lambda m, lab: setattr(lab, "down_out", 300), "mon_osd_down_out_interval"),
     (lambda m, lab: setattr(lab, "ok_to_stop", False), "ok-to-stop"),
@@ -206,7 +206,7 @@ def test_a_scheduled_run_stays_inside_the_window(enabled, tmp_path, monkeypatch)
     assert not fault.in_window(datetime(2026, 10, 7, 3, 0), "02:00-05:00")     # 10:00 in Hanoi
     monkeypatch.setattr(fault, "utc_now", lambda: datetime(2026, 10, 7, 3, 0))
     factory, cluster_id = _db()
-    with pytest.raises(fault.FaultRefused, match="FAILURE_LAB_WINDOW"):
+    with pytest.raises(fault.FaultRefused, match="Failure Lab window"):
         _run(factory, cluster_id, FakeLab(), tmp_path, scheduled=True)
 
 
