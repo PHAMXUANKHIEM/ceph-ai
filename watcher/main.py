@@ -255,6 +255,20 @@ def _is_inflight_incident_duplicate(error: IntegrityError) -> bool:
 _STALE_REMINDER_AGE = timedelta(hours=24)
 
 
+def escalate_engineer_incidents(now: datetime | None = None) -> int:
+    """Croit-parity C6: one "cần kỹ sư" card per incident outside what the AI has learned."""
+    from shared import engineer_escalation
+    from watcher.incident_correlation import FAMILY_CODES
+
+    with db.SessionLocal() as session:
+        escalated = engineer_escalation.escalate_due(session, family_codes=FAMILY_CODES, now=now)
+        session.commit()
+    if escalated:
+        telegram_outbox.dispatch_due(limit=len(escalated),
+                                     event_ids=[f"incident:{iid}:engineer_escalation" for iid in escalated])
+    return len(escalated)
+
+
 def send_due_incident_reminders(
     now: datetime | None = None,
     *,
@@ -1301,6 +1315,10 @@ def run(
                 send_due_incident_reminders(now, muted_ceph_codes=muted_ceph_codes)
             except Exception:
                 logger.exception("run: Telegram incident reminder scan failed")
+            try:
+                escalate_engineer_incidents(now)
+            except Exception:
+                logger.exception("run: engineer escalation scan failed")
             last_incident_reminder_scan_at = now
         if (
             last_device_health_scan_at is None

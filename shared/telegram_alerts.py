@@ -1450,6 +1450,18 @@ def send_crush_skew_alert(signal: str, entity_label: str, message: str) -> None:
     )
 
 
+def send_engineer_escalation(message: str) -> None:
+    """One "cần kỹ sư" card per incident Ceph AI cannot handle on known ground
+    (shared/engineer_escalation.py), in the incident channel."""
+    _send(
+        settings.telegram_incident_bot_token,
+        settings.telegram_incident_chat_id,
+        settings.telegram_incident_enabled,
+        _natural(message, limit=_MAX_EXCERPT_CHARS),
+        category="incident", severity="critical",
+    )
+
+
 def send_database_size_alert(message: str) -> None:
     """Called once per NEWLY-flagged database-size Incident
     (watcher/database_capacity_monitor.py::create_or_resolve_database_size_incident
