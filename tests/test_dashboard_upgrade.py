@@ -1626,3 +1626,47 @@ def test_confirm_rejects_when_target_version_format_invalid_reaches_worker(dashb
             },
             lambda host_status: None,
         )
+
+
+def _staging_not_ready(monkeypatch):
+    from shared import upgrade_soak
+
+    monkeypatch.setattr(upgrade_soak, "staging_soak", lambda session, version, **kwargs: upgrade_soak.SoakResult(
+        False, f"CS-STAGING mới chạy Ceph {version} 3.0 giờ (cần ≥ 24 giờ).", "CS-STAGING", 3.0))
+
+
+def test_a_production_upgrade_waits_for_staging_unless_bypassed_with_a_reason(dashboard_client, monkeypatch):
+    _set_cephadm(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _staging_not_ready(monkeypatch)
+    _login(dashboard_client)
+
+    refused = dashboard_client.post("/upgrade/propose", data={"target_version": "19.2.0"}, follow_redirects=False)
+    no_reason = dashboard_client.post("/upgrade/propose", data={"target_version": "19.2.0", "bypass_staging": "1"},
+                                      follow_redirects=False)
+    bypassed = dashboard_client.post("/upgrade/propose", data={
+        "target_version": "19.2.0", "bypass_staging": "1", "bypass_reason": "lỗi bảo mật cần vá ngay"},
+        follow_redirects=False)
+
+    assert refused.status_code == 400 and "Chưa thử trên staging" in refused.json()["detail"]
+    assert no_reason.status_code == 400 and "lý do" in no_reason.json()["detail"]
+    assert bypassed.status_code == 303
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).one()
+        assert action.rationale.startswith("BỎ QUA THỬ TRÊN STAGING") and "lỗi bảo mật cần vá ngay" in action.rationale
+
+
+def test_a_lab_cluster_is_never_gated_on_staging(dashboard_client, monkeypatch):
+    from shared.models import Cluster
+
+    _set_cephadm(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _staging_not_ready(monkeypatch)
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        session.query(Cluster).filter_by(is_default=True).one().autonomy_environment = "lab"
+        session.commit()
+
+    response = dashboard_client.post("/upgrade/propose", data={"target_version": "19.2.0"}, follow_redirects=False)
+
+    assert response.status_code == 303
