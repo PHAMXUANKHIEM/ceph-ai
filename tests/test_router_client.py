@@ -1637,6 +1637,83 @@ def test_execute_approved_action_uses_incidents_own_cluster_creds_not_default(is
     assert execute_calls == [("10.30.1.20", "other-cluster-user", "/root/.ssh/other-cluster-key")]
 
 
+def _bound_action(cluster_kwargs=None, *, incident_cluster="own", params=None):
+    """An approved restart on an extra cluster (or the default when incident_cluster is None)."""
+    import json as _json
+
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(name="cluster-c", ceph_mon_nodes="10.40.1.10", ssh_user="root",
+                          ssh_key_path="/root/.ssh/cluster-c", is_default=False, is_active=True,
+                          **(cluster_kwargs or {}))
+        session.add(cluster)
+        session.commit()
+        cluster_id = cluster.id
+        session.add(Incident(id="incident-bound", ceph_code="OSD_DOWN", status=IncidentStatus.DIAGNOSING.value,
+                             detected_at=datetime.utcnow(),
+                             cluster_id=cluster_id if incident_cluster == "own" else incident_cluster))
+        session.commit()
+        action = _approved_action(session, "incident-bound", nodes=["10.40.1.20"])
+        if params is not None:
+            action.action_params = _json.dumps({key: (cluster_id if value == "own" else value)
+                                                for key, value in params.items()})
+            session.commit()
+        return action.id, cluster_id
+
+
+def _run_bound(action_pk, monkeypatch):
+    calls = []
+    monkeypatch.setattr(router_client, "execute_command", lambda host, command, **kw: calls.append(host) or "ok")
+    monkeypatch.setattr(router_client.commands, "execute_command",
+                        lambda host, command, **kw: calls.append(host) or "ok")
+    router_client._execute_approved_action(action_pk)
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        blocked = session.query(AuditEntry).filter_by(
+            action_id=action_pk, event_type="action_cluster_binding_blocked").count()
+        progress = json.loads(action.execution_progress or "[]")
+        return action.status, calls, blocked, " ".join(step.get("message") or "" for step in progress)
+
+
+@pytest.mark.parametrize(("setup", "reason"), [
+    ("disabled", "đã bị tắt"),
+    ("other_cluster_param", "khác cụm của sự cố"),
+])
+def test_an_action_never_runs_on_a_cluster_other_than_the_one_approved(isolated_db, monkeypatch, setup, reason):
+    """Plan readiness-gap-review R1: a deleted cluster used to resolve to the default cluster's SSH credentials."""
+    params = {"_cluster_id": "some-other-cluster"} if setup == "other_cluster_param" else None
+    action_pk, cluster_id = _bound_action(params=params)
+    with db_module.SessionLocal() as session:
+        if setup == "disabled":
+            session.get(Cluster, cluster_id).is_active = False
+        session.commit()
+
+    status, calls, blocked, progress = _run_bound(action_pk, monkeypatch)
+
+    assert status == ActionStatus.FAILED.value and calls == [] and blocked == 1
+    assert reason in progress
+
+
+def test_a_default_cluster_action_with_its_own_cluster_id_still_runs(isolated_db, monkeypatch):
+    """Upgrade proposals store None on the Incident and the default cluster's id in _cluster_id."""
+    from types import SimpleNamespace
+
+    from shared.clusters import get_default_cluster_id
+
+    with db_module.SessionLocal() as session:
+        default_id = get_default_cluster_id(session)
+    action_pk, _ = _bound_action(incident_cluster=None, params={"_cluster_id": default_id})
+
+    binding = router_client._cluster_binding_reason
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        incident = session.get(Incident, action.incident_id)
+        assert binding(session, incident, {"_cluster_id": default_id}) is None
+        assert binding(session, incident, {"_cluster_id": "cluster-x"}) is not None
+        assert binding(session, None, {}) is not None
+        # A cluster row that is gone must never fall back to the default cluster's credentials.
+        assert "không còn tồn tại" in binding(session, SimpleNamespace(cluster_id="deleted-cluster"), None)
+
+
 def test_package_upgrade_uses_incidents_cluster_nodes_roles_and_credentials(isolated_db, monkeypatch):
     """A selected non-default cluster must never inherit the old default
     cluster's MON/role list during phased package execution."""

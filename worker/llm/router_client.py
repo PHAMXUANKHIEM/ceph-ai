@@ -136,6 +136,39 @@ def _live_action_target_safety_reason(
     return f"SSH key path không hợp lệ cho production: {ssh_key_path}"
 
 
+def _cluster_binding_reason(session, incident: Incident | None, action_params: object) -> str | None:
+    """Why an approved action must not run on the cluster it would resolve to, or None.
+
+    An action belongs to its Incident's cluster (None is the default cluster).
+    Execution resolves SSH credentials from that row, and the lifecycle
+    executors resolve theirs from the ``_cluster_id`` parameter, so all three
+    must agree and the cluster must still exist and be enabled. Before
+    12/10/2026 a deleted cluster made ``session.get`` return None, which the
+    credential lookup reads as "the default cluster", and a disabled cluster
+    was checked only at approval time (Plan readiness-gap-review R1).
+    Unlike the target-node check this one also runs under pytest.
+    """
+    if incident is None:
+        return "Action không còn Incident nên không xác định được cụm đích."
+    cluster_id = incident.cluster_id
+    if cluster_id is not None:
+        cluster = session.get(Cluster, cluster_id)
+        if cluster is None:
+            return (f"Cụm {cluster_id} của sự cố không còn tồn tại; "
+                    "không thực thi thay bằng cụm mặc định.")
+        if not cluster.is_active:
+            return f"Cụm {cluster.name} đã bị tắt sau khi hành động được duyệt."
+    if isinstance(action_params, dict) and action_params.get("_cluster_id"):
+        bound = cluster_id
+        if bound is None:
+            default = session.query(Cluster).filter(Cluster.is_default.is_(True)).one_or_none()
+            bound = default.id if default is not None else None
+        if str(action_params["_cluster_id"]) != str(bound):
+            return (f"Tham số _cluster_id ({action_params['_cluster_id']}) khác cụm của sự cố "
+                    f"({bound or 'mặc định'}); không thực thi.")
+    return None
+
+
 def _read_operational_status(connection):
     """Read live Ceph status, tolerating a short MON election window.
 
@@ -3603,6 +3636,19 @@ def _execute_approved_action(action_pk: str) -> None:
         # envelope itself is unavailable, so Incident.cluster_id -> Cluster
         # is the only place left to look them up. None means the default
         # cluster (execute_command()'s own settings.* fallback applies).
+        try:
+            bound_params = json.loads(action_params_raw) if action_params_raw else None
+        except (TypeError, ValueError):
+            bound_params = None
+        binding_reason = _cluster_binding_reason(session, incident, bound_params)
+        if binding_reason:
+            audit.record(
+                session, incident_id=incident_id, action_id=action_pk,
+                event_type=audit.EVENT_ACTION_CLUSTER_BINDING_BLOCKED, actor=audit.ACTOR_SYSTEM,
+                evidence={"incident_cluster_id": incident.cluster_id if incident is not None else None,
+                          "reason": binding_reason},
+            )
+            session.commit()
         cluster = None
         if incident is not None and incident.cluster_id is not None:
             cluster = session.get(Cluster, incident.cluster_id)
@@ -3613,6 +3659,18 @@ def _execute_approved_action(action_pk: str) -> None:
         # ssh_key_path just above.
         cluster_id = incident.cluster_id if incident is not None else None
 
+    if binding_reason:
+        logger.error("_execute_approved_action: blocked action %s: %s", action_pk, binding_reason)
+        _write_action_progress(action_pk, [{
+            "step": "preflight",
+            "label": "Kiểm tra cụm đích",
+            "pct": 0,
+            "status": "failed",
+            "message": binding_reason,
+            "finished_at": utc_now().isoformat(),
+        }])
+        _record_approved_execution_result(action_pk, command=None, succeeded=False)
+        return
     try:
         nodes = json.loads(target_nodes_raw) if target_nodes_raw else None
     except (TypeError, ValueError):
