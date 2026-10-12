@@ -81,3 +81,26 @@ def test_finishing_uses_the_host_and_disk_the_first_step_recorded(admin):
 def test_finishing_needs_a_previous_replacement(admin):
     response = admin.post("/replace-osd/finish", json={"confirmation": "THAY osd.1"})
     assert response.status_code == 400
+
+
+def test_both_steps_target_a_node_the_worker_accepts(admin, monkeypatch):
+    """12/10/2026, CS-STAGING: the first real replacement failed with "target node không thuộc cấu hình cluster
+    hiện tại: osd.2". The Worker's target check is skipped under pytest, so run it for real here."""
+    from worker.llm import router_client
+
+    started = admin.post("/replace-osd/propose", json={"osd_id": 1, "confirmation": "THAY osd.1"}).json()
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, started["action_id"])
+        start_targets = json.loads(action.target_nodes)
+        action.status = ActionStatus.EXECUTED.value
+        session.get(Incident, action.incident_id).status = "RESOLVED"
+        action.execution_progress = json.dumps([{"step": "osd_preflight", "status": "done", "hosts": [
+            {"host": "osd.1", "status": "done", "osd_host": "ceph2", "osd_device": "/dev/vdb"}]}])
+        session.commit()
+    finished = admin.post("/replace-osd/finish", json={"confirmation": "THAY osd.1"}).json()
+    with db_module.SessionLocal() as session:
+        finish_targets = json.loads(session.get(Action, finished["action_id"]).target_nodes)
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    for targets in (start_targets, finish_targets):
+        assert router_client._live_action_target_safety_reason(None, targets, "/root/.ssh/id_ed25519") is None
