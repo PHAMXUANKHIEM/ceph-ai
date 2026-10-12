@@ -214,3 +214,31 @@ def test_failed_delivery_is_retried_and_recovery_is_sent(dashboard_client, defau
 
     assert attempts == [80, 80]
     assert recoveries == [(80, 0)]
+
+
+def test_the_forecast_follows_the_users_cluster_grants(dashboard_client, default_cluster_id, monkeypatch):
+    """Plan readiness-gap-review R1 (9.1): the page looked cluster_id up itself, past the per-user grants."""
+    from dashboard import cluster_scope
+    from dashboard.routes import capacity_forecast as route
+    from shared import db as db_module
+    from shared.models import Cluster
+
+    with db_module.SessionLocal() as session:
+        other = Cluster(name="other", ceph_mon_nodes="10.50.0.1", ssh_user="root", ssh_key_path="/k",
+                        is_default=False, is_active=True)
+        session.add(other)
+        session.commit()
+        other_id = other.id
+    monkeypatch.setattr(route, "forecasts", lambda cluster_id: {"cluster": cluster_id})
+    monkeypatch.setattr(route, "simulate", lambda cluster_id: {})
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+
+    monkeypatch.setattr(cluster_scope, "authorized_cluster_ids", lambda _user: {default_cluster_id})
+    refused = dashboard_client.get(f"/api/capacity-forecast?cluster_id={other_id}")
+    assert refused.status_code == 403
+
+    monkeypatch.setattr(cluster_scope, "authorized_cluster_ids", lambda _user: None)
+    allowed = dashboard_client.get(f"/api/capacity-forecast?cluster_id={other_id}")
+    assert allowed.status_code == 200 and allowed.json()["cluster_id"] == other_id
+    # Without ?cluster_id the page follows the cluster selected in the header (kept in the session).
+    assert dashboard_client.get("/api/capacity-forecast").json()["cluster_id"] == other_id
