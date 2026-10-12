@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ops Report — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  {% include "_nav.html" %}
+  <main class="page ops-report-page">
+    <h1>Báo cáo vận hành theo họ lỗi</h1>
+    <p class="hint">Cụm production, {{ days }} ngày gần nhất ({% for w in windows %}<a href="/ops-report?days={{ w }}">{{ w }} ngày</a>{% if not loop.last %} · {% endif %}{% endfor %}).
+      MTTR là <strong>ước tính</strong> (từ lúc phát hiện tới lần cập nhật cuối của sự cố đã đóng). Độ chính xác chẩn đoán chỉ tính trên các sự cố operator đã đánh giá; số trong ngoặc là số mẫu.</p>
+    <section class="card">
+      <div class="card-body">
+        <table class="data-table">
+          <thead><tr><th>Họ lỗi</th><th>Sự cố</th><th>Đang mở</th><th>MTTR (phút)</th><th>AI tự đóng</th><th>Chẩn đoán đúng</th><th>Sửa thành công</th></tr></thead>
+          <tbody>
+          {% for r in rows %}
+            <tr>
+              <td>{{ r.family }}</td><td>{{ r.incidents }}</td><td>{{ r.open }}</td>
+              <td>{{ r.mttr_minutes_estimate if r.mttr_minutes_estimate is not none else "—" }}</td>
+              <td>{{ "%.0f%%"|format(r.auto_fixed_share * 100) if r.auto_fixed_share is not none else "—" }} ({{ r.auto_fixed }}/{{ r.closed }})</td>
+              <td>{{ "%.0f%%"|format(r.diagnosis_accuracy * 100) if r.diagnosis_accuracy is not none else "—" }} ({{ r.diagnoses_judged }})</td>
+              <td>{{ "%.0f%%"|format(r.fix_success * 100) if r.fix_success is not none else "—" }} ({{ r.fixes_verified }})</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7" class="hint">Không có sự cố production nào thuộc họ lỗi đã biết trong khoảng này.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <p class="hint">Sự cố ngoài vùng AI đã học (họ lỗi lạ, chẩn đoán độ tin thấp hoặc thiếu bằng chứng, khắc phục thất bại) mở quá 30 phút được gửi một thẻ "CẦN KỸ SƯ" vào kênh sự cố trên Telegram.</p>
+  </main>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

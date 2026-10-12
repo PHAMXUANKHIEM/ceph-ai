@@ -243,6 +243,13 @@ def enqueue_database_size_alert(session, *, incident_id: str, message: str) -> s
         payload=payload,
     )
 
+def enqueue_engineer_escalation(session, *, incident_id: str, message: str) -> str:
+    """Queue the single "cần kỹ sư" card of one incident (shared/engineer_escalation.py)."""
+    payload = {"kind": "engineer_escalation", "incident_id": incident_id, "message": str(message)[:4000]}
+    return _enqueue(session, event_id=f"incident:{incident_id}:engineer_escalation", incident_id=incident_id,
+                    category="incident", payload=payload)
+
+
 def enqueue_incident_alert(
     session,
     incident: Incident,
@@ -681,6 +688,10 @@ def _deliver(payload: dict[str, Any], sender: Callable[..., Any] | None = None) 
     if kind == "crush_skew_alert":
         callback = sender or telegram_alerts.send_crush_skew_alert
         callback(payload["signal"], payload["entity_label"], payload["message"])
+        return
+    if kind == "engineer_escalation":
+        callback = sender or telegram_alerts.send_engineer_escalation
+        callback(payload["message"])
         return
     if kind == "database_size_alert":
         callback = sender or telegram_alerts.send_database_size_alert
