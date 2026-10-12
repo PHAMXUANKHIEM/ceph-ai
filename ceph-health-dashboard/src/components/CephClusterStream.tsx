@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Activity, AlertTriangle, Bot, Cable, Cloud, Crown, Database, HardDrive, Layers, Network, RefreshCw, Server, Shield, Users,
+  Activity, AlertTriangle, Bot, Cable, Cloud, Crown, Database, FlaskConical, HardDrive, Layers, Network, RefreshCw, Server,
+  Shield, Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import "./InstallationStream.css";
@@ -47,6 +48,8 @@ export type CephTopology = {
   groups: Array<{ id: string; title: string }>;
   nodes: TopologyNode[];
   edges: CanvasEdge[];
+  // Present only on the Failure Lab staging cluster (Settings > Cụm Staging).
+  failure_lab?: { staging: boolean; fsid_pinned: boolean; fault_enabled: boolean; window: string };
 };
 
 const REFRESH_MS = 30_000;
@@ -102,7 +105,18 @@ function healthClass(health: string | null | undefined, stale: boolean): string 
   return health ? "is-warn" : "is-unknown";
 }
 
-export function CephClusterStream({ initial }: { initial: CephTopology }) {
+function FailureLabBanner({ lab }: { lab: NonNullable<CephTopology["failure_lab"]> }) {
+  const state = !lab.fsid_pinned ? "chưa ghim fsid, bộ chạy từ chối gây lỗi"
+    : lab.fault_enabled ? `gây lỗi ĐANG BẬT · lịch ${lab.window}` : "gây lỗi đang tắt";
+  return (
+    <p className="ceph-cluster-stream__lab" role="status">
+      <FlaskConical size={14} /> Cụm Staging của Failure Lab: các node dưới đây có thể bị gây lỗi có kiểm soát để AI học — {state}.
+      {" "}<a href="/settings?section=staging-cluster">Cấu hình</a>
+    </p>
+  );
+}
+
+export function CephClusterStream({ initial, source }: { initial: CephTopology; source?: string }) {
   const [topology, setTopology] = useState<CephTopology>(initial);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
@@ -110,7 +124,7 @@ export function CephClusterStream({ initial }: { initial: CephTopology }) {
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const response = await fetch(`/api/stream/ceph-topology${window.location.search}`, {
+      const response = await fetch(source || `/api/stream/ceph-topology${window.location.search}`, {
         credentials: "same-origin", headers: { Accept: "application/json" },
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -121,7 +135,7 @@ export function CephClusterStream({ initial }: { initial: CephTopology }) {
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [source]);
 
   useEffect(() => {
     const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, REFRESH_MS);
@@ -167,7 +181,7 @@ export function CephClusterStream({ initial }: { initial: CephTopology }) {
     <div className="installation-stream ceph-cluster-stream">
       <header className="installation-stream__header">
         <div>
-          <div className="installation-stream__eyebrow">CEPH CLUSTER · {topology.cluster.name}</div>
+          <div className="installation-stream__eyebrow">CEPH CLUSTER · {topology.cluster.name}{topology.failure_lab?.staging ? " · STAGING · FAILURE LAB" : ""}</div>
           <h1>Luồng dịch vụ cụm Ceph</h1>
           <p>Dịch vụ, host và đường mạng của cụm đang chọn, kèm trạng thái từ snapshot watcher đã thu. Trang chỉ đọc, không chạy lệnh Ceph khi mở.</p>
         </div>
@@ -178,6 +192,7 @@ export function CephClusterStream({ initial }: { initial: CephTopology }) {
           </button>
         </div>
       </header>
+      {topology.failure_lab?.staging && <FailureLabBanner lab={topology.failure_lab} />}
       {topology.stale && <p className="ceph-cluster-stream__stale" role="status"><AlertTriangle size={14} /> Snapshot đã cũ hoặc thiếu: mọi trạng thái hiển thị là "chưa rõ" cho tới khi watcher thu lại.</p>}
       {refreshError && <p className="ceph-cluster-stream__stale" role="status"><AlertTriangle size={14} /> Không làm mới được ({refreshError}); đang hiển thị dữ liệu lần trước.</p>}
 
