@@ -125,9 +125,22 @@ def phase_preflight(nodes: list[dict], params: dict, on_host_update) -> None:
 # --- removal ------------------------------------------------------------------------------
 
 def phase_remove(nodes: list[dict], params: dict, on_host_update) -> None:
+    """Ask cephadm to remove the OSD and keep its ID.
+
+    A running OSD is drained first. A failed (down) one is removed with
+    --force: its disk can no longer be read, so there is nothing to drain,
+    and cephadm would otherwise wait for `ceph osd safe-to-destroy`, which
+    on a cluster with no spare failure domain never answers ("not all PGs
+    are active+clean"). On CS-STAGING (3 hosts, size 3) the first real
+    replacement of a failed OSD waited "done, waiting for purge" forever
+    (12/10/2026, Plan readiness-gap-review R2). The other copies keep the
+    data; the cluster stays degraded until the new disk is in.
+    """
     osd_id = _osd_id(params)
-    _ceph(params, f"ceph orch osd rm {osd_id} --replace", as_json=False)
-    on_host_update(_status(params, "done", "đã yêu cầu `ceph orch osd rm --replace` (giữ ID)"))
+    force = params.get("_was_up") is False
+    _ceph(params, f"ceph orch osd rm {osd_id} --replace" + (" --force" if force else ""), as_json=False)
+    on_host_update(_status(params, "done", f"đã yêu cầu `ceph orch osd rm --replace{' --force' if force else ''}` "
+                                           f"(giữ ID{'; OSD đã hỏng nên không dời dữ liệu' if force else ''})"))
 
 
 def _destroyed(params: dict, osd_id: int) -> bool:

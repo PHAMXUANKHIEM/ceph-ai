@@ -41,6 +41,10 @@ class FakeCluster:
             return json.dumps({"nearfull_ratio": 0.85})
         if cmd.startswith("ceph orch osd rm"):
             self._removing = int(cmd.split()[4])
+            if self.osds[self._removing]["status"] == "down" and "--force" not in cmd.split():
+                # Real cephadm waits for `ceph osd safe-to-destroy`, which never answers for a dead OSD
+                # on a cluster without spare hosts: "done, waiting for purge" forever (CS-STAGING 12/10/2026).
+                return ""
             if not self.destroy_polls:
                 self.osds[self._removing]["status"] = "destroyed"
             return ""
@@ -143,7 +147,8 @@ def test_a_down_osd_is_replaced_even_without_spare_hosts(monkeypatch):
     ok, progress, _ = _run("replace_failed_osd", osd_id=0)
 
     assert ok, progress
-    assert "ceph orch osd rm 0 --replace" in fake.commands
+    assert "ceph orch osd rm 0 --replace --force" in fake.commands  # nothing to drain from a dead disk
+    assert fake.osds[0]["status"] == "destroyed"
 
 
 def test_finishing_refuses_an_osd_that_is_not_destroyed_yet(env):
