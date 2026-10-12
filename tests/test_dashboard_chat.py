@@ -793,6 +793,28 @@ def test_confirmed_secondary_chat_action_keeps_original_cluster(dashboard_client
         assert incident.cluster_id == cluster_id
 
 
+def test_a_proposal_of_a_cluster_that_is_gone_is_never_confirmed_on_the_default(dashboard_client):
+    """Plan readiness-gap-review R1 (7.2): a missing cluster row used to fall back to the default cluster."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from dashboard.routes import chat as chat_route
+
+    message = SimpleNamespace(
+        cluster_id="cluster-that-was-deleted", proposed_action_id="resync_ntp",
+        proposed_target_nodes=json.dumps([A_MON_HOST]), proposed_action_params=None, proposed_command_preview=None,
+    )
+    with db_module.SessionLocal() as session:
+        with pytest.raises(HTTPException) as refused:
+            chat_route._validate_chat_action_proposal(session, message)
+        assert refused.value.status_code == 400 and "không còn hoạt động" in refused.value.detail
+
+        # A message with no cluster at all is history from before chat was scoped: the default cluster.
+        message.cluster_id = None
+        assert chat_route._validate_chat_action_proposal(session, message)[1] == [A_MON_HOST]
+
+
 def _seed_node_command_proposal(session_id="node-command-session"):
     with db_module.SessionLocal() as session:
         message = ChatMessage(

@@ -58,8 +58,10 @@ Các trang này chưa có data model/executor đủ để chạy multi-cluster. 
 
 ## 7. Chat/AI và Action approval
 
-- [ ] 7.1 Chat session/message gắn cluster scope.
-- [ ] 7.2 Danh sách node và command validation dùng cluster của chat/action.
+- [x] 7.1 Chat session/message gắn cluster scope. (Rà 12/10/2026: `ChatMessage.cluster_id`, lịch sử/phiên lọc theo
+  cụm đã chọn; Telegram chọn cụm bằng `/cluster`, yêu cầu chờ mang `cluster_ref`.)
+- [x] 7.2 Danh sách node và command validation dùng cluster của chat/action. (12/10/2026: node đích kiểm tra theo
+  `configured_nodes(cluster)` của tin nhắn; tin nhắn có cụm đã bị xoá không còn rơi về cụm mặc định.)
 - [x] 7.3 Approve/reject giữ cluster context và quay về đúng dashboard cluster.
 - [ ] 7.4 Worker luôn resolve cluster từ Incident/Action; thêm regression test chống fallback nhầm cluster mặc định.
 
