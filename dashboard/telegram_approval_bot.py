@@ -399,9 +399,7 @@ def _action_message_text(action: Action, incident: Incident | None, session) -> 
     if action.proposed_command:
         lines.append(f"💻 Lệnh: {_compact_text(action.proposed_command, _MAX_COMMAND_CHARS)}")
     lines.append(f"🆔 {action.id[:8]}")
-    expected = _typed_confirmation(action)
-    if expected and action.status == ActionStatus.PENDING_APPROVAL.value:
-        lines.append(f"🔐 Duyệt bằng cách gửi: {CONFIRM_COMMAND} {action.id[:_CONFIRM_REF_LENGTH]} {expected}")
+    lines.extend(_confirmation_lines(action))
     if action.status == ActionStatus.GRACE_PENDING.value and action.grace_until is not None:
         remaining = max(0, int((action.grace_until - utc_now()).total_seconds()))
         lines.append(f"⏳ Autopilot lab sẽ chạy sau khoảng {remaining} giây nếu không bị hủy.")
@@ -829,6 +827,14 @@ def _confirmation_prompt(action_id: str, expected: str) -> str:
             f"Gửi đúng dòng sau để duyệt:\n{CONFIRM_COMMAND} {action_id[:_CONFIRM_REF_LENGTH]} {expected}")
 
 
+def _confirmation_lines(action: Action) -> list[str]:
+    """The card line telling the operator what to send, for a pending lifecycle action."""
+    expected = _typed_confirmation(action)
+    if not expected or action.status != ActionStatus.PENDING_APPROVAL.value:
+        return []
+    return [f"🔐 Duyệt bằng cách gửi: {CONFIRM_COMMAND} {action.id[:_CONFIRM_REF_LENGTH]} {expected}"]
+
+
 def handle_confirmation_message(message: dict, bot_token: str) -> bool:
     """Approve a lifecycle action from "/xacnhan <ref> <text>"; False when the message is not that command.
 
@@ -836,52 +842,47 @@ def handle_confirmation_message(message: dict, bot_token: str) -> bool:
     and the sender an approver; the typed text must equal the action's own
     confirmation.
     """
-    text = str(message.get("text") or "").strip()
-    parts = text.split(maxsplit=2)
+    parts = str(message.get("text") or "").strip().split(maxsplit=2)
     if not parts or parts[0].split("@", 1)[0].lower() != CONFIRM_COMMAND:
         return False
     chat_id = str((message.get("chat") or {}).get("id", ""))
+    answer = _decide_confirmation(message, chat_id, parts[1:])
+    try:
+        send_telegram_message(bot_token, chat_id, answer)
+    except TelegramSendError:
+        logger.exception("telegram_approval_bot: could not answer %s", CONFIRM_COMMAND)
+    return True
 
-    def reply(body: str) -> None:
-        try:
-            send_telegram_message(bot_token, chat_id, body)
-        except TelegramSendError:
-            logger.exception("telegram_approval_bot: could not answer %s", CONFIRM_COMMAND)
 
-    if len(parts) < 3 or len(parts[1]) < _CONFIRM_REF_LENGTH:
-        reply(f"Cú pháp: {CONFIRM_COMMAND} <mã {_CONFIRM_REF_LENGTH} ký tự> <chuỗi xác nhận>")
-        return True
-    ref, supplied = parts[1], parts[2].strip()
+def _decide_confirmation(message: dict, chat_id: str, args: list[str]) -> str:
+    """Check and, when everything matches, approve; returns the reply for the chat."""
+    if len(args) < 2 or len(args[0]) < _CONFIRM_REF_LENGTH:
+        return f"Cú pháp: {CONFIRM_COMMAND} <mã {_CONFIRM_REF_LENGTH} ký tự> <chuỗi xác nhận>"
+    ref, supplied = args[0], args[1].strip()
     with db.SessionLocal() as session:
         matches = (session.query(Action)
                    .filter(Action.status == ActionStatus.PENDING_APPROVAL.value, Action.id.startswith(ref))
                    .limit(2).all())
         if len(matches) != 1:
-            reply("Không tìm thấy đúng một đề xuất đang chờ duyệt với mã này.")
-            return True
-        action = matches[0]
-        action_id, expected = action.id, _typed_confirmation(action)
-        incident = session.get(Incident, action.incident_id)
+            return "Không tìm thấy đúng một đề xuất đang chờ duyệt với mã này."
+        action_id, expected = matches[0].id, _typed_confirmation(matches[0])
+        incident = session.get(Incident, matches[0].incident_id)
         legit_chat_ids = {str(channel_chat) for _, _, channel_chat in channels_for_incident(incident, session)}
     if chat_id not in legit_chat_ids or not _sender_may_decide(message):
         logger.warning("telegram_approval_bot: refused %s for action %s from chat %s", CONFIRM_COMMAND,
                        action_id, chat_id)
-        reply("Không có quyền duyệt đề xuất này.")
-        return True
+        return "Không có quyền duyệt đề xuất này."
     if expected is None:
-        reply("Đề xuất này không cần gõ xác nhận; hãy dùng nút Duyệt.")
-        return True
+        return "Đề xuất này không cần gõ xác nhận; hãy dùng nút Duyệt."
     if not secrets.compare_digest(supplied, expected):
-        reply(f"Sai chuỗi xác nhận. Cần gõ đúng: {expected}")
-        return True
+        return f"Sai chuỗi xác nhận. Cần gõ đúng: {expected}"
     try:
         outcome = _OUTCOME_TOAST[approve_action_core(action_id, _actor_for(message)).outcome]
     except ActionNotFoundError:
         outcome = "Không tìm thấy đề xuất này"
     except ActionConflictError as exc:
         outcome = exc.detail
-    reply(f"{outcome} ({action_id[:_CONFIRM_REF_LENGTH]}).")
-    return True
+    return f"{outcome} ({action_id[:_CONFIRM_REF_LENGTH]})."
 
 
 def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
