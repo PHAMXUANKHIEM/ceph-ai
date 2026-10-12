@@ -87,8 +87,14 @@ Dùng lại các mục còn mở của `strict-production-readiness-closure-plan
 - **Nghiệm thu:** báo cáo gắn SHA, thời gian, output, người xác nhận.
 
 ### R4 — Giới hạn phạm vi ảnh hưởng của remediation (Pha 0)
-- [ ] Rà mọi hành động RISKY/SAFE: có preview, preflight, timeout, dedupe, post-check và đường phục hồi; liệt
-  kê hành động thiếu bước nào.
+- [x] Rà mọi hành động RISKY/SAFE: có preview, preflight, timeout, dedupe, post-check và đường phục hồi; liệt
+  kê hành động thiếu bước nào. (12/10/2026: `docs/operations/action-safety-inventory.md`, sinh bằng
+  `scripts/action_safety_inventory.py`: 77 hành động, 0 khai báo rollback; 5 phát hiện.)
+- [ ] Test tổng quát: dựng đề xuất của mọi route và chạy chốt node đích thật của Worker (3 lỗi đã lộ ra khi
+  nghiệm thu: C1, C3, Cinder).
+- [ ] Chủ dự án xem lại các hành động SAFE tác động dữ liệu (`set_pool_size`, `mark_osd_out/down`…).
+- [ ] Ghi kiểm tra trong executor của các hành động DESTRUCTIVE thành contract; khai báo rollback cho hành
+  động đảo được.
 - [ ] Fault injection trên CS-STAGING (dùng Failure Lab FL6.x): lỗi giữa các bước của hành động nhiều pha.
 - **Nghiệm thu:** bảng hành động × bước an toàn đầy đủ; mỗi hành động thiếu bước có issue hoặc đã sửa.
 
