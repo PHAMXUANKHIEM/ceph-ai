@@ -93,14 +93,15 @@ def test_promotion_connects_shadow_candidate_to_registry_and_rollback(db_session
     policy = model_registry.PromotionPolicy(
         minimum_outcomes=20, required_consecutive_evaluations=3,
     )
+    now = target + timedelta(hours=3)
     decision = model_registry.request_promotion(
-        db_session, candidate_id=candidate.id, actor="operator", policy=policy,
+        db_session, candidate_id=candidate.id, actor="operator", policy=policy, now=now,
     )
     assert decision.allowed is True
     assert candidate.status == "SHADOW"
 
     promoted = model_registry.approve_promotion(
-        db_session, candidate_id=candidate.id, actor="operator", policy=policy,
+        db_session, candidate_id=candidate.id, actor="operator", policy=policy, now=now,
     )
     assert promoted.status == "ACTIVE"
     assert active.status == "RETIRED"
@@ -327,3 +328,70 @@ def test_a_horizon_keyed_model_gets_its_dimensions_when_registered_again(db_sess
 
     assert again.id == legacy.id and model_registry._scope_ready(again)
     assert (again.scope_schema, again.host, again.metric, again.horizon_hours) == (SCOPE_SCHEMA, "10.3.53.69", "ram", 1)
+
+
+POLICY = model_registry.PromotionPolicy(minimum_outcomes=20, required_consecutive_evaluations=3)
+TARGET = datetime(2026, 9, 21)
+
+
+def test_a_streak_that_stopped_long_ago_is_not_a_reason_to_promote():
+    """12/10/2026: 22 of 30 requests rested on evaluations last made on 20-23/09."""
+    rows = [_evaluation("candidate", "active", TARGET + timedelta(hours=index)) for index in range(3)]
+
+    fresh = model_registry.evaluate_guarded_promotion(rows, policy=POLICY, now=TARGET + timedelta(hours=10))
+    stale = model_registry.evaluate_guarded_promotion(rows, policy=POLICY, now=TARGET + timedelta(days=19))
+
+    assert fresh.allowed is True and fresh.checks["fresh_evaluations"] is True
+    assert stale.allowed is False and stale.checks["fresh_evaluations"] is False
+    assert "fresh_evaluations" in stale.reason
+
+
+def _scope_with_candidates(db_session, maes_by_window):
+    common = dict(scope_type="NODE_RESOURCE", scope_key="CS-LAB|10.20.1.153|ram|h1", name="node-resource-forecast",
+                  feature_schema="node-resource-v1")
+    active = model_registry.register_candidate(db_session, **common, version="linear:24h", algorithm="linear",
+                                               training_window_hours=24)
+    model_registry.set_status(db_session, active, status="ACTIVE", reason="test baseline")
+    candidates = {}
+    for window, mae in maes_by_window.items():
+        row = model_registry.register_candidate(db_session, **common, version=f"rolling_quantile:{window}h",
+                                                algorithm="rolling_quantile", training_window_hours=window)
+        model_registry.set_status(db_session, row, status="SHADOW", reason="test shadow")
+        db_session.flush()
+        for index in range(3):
+            evaluation = _evaluation(row.id, active.id, TARGET + timedelta(hours=index))
+            evaluation.candidate_mae = mae
+            db_session.add(evaluation)
+        candidates[window] = row
+    db_session.commit()
+    return active, candidates
+
+
+def test_only_the_best_passing_candidate_of_a_scope_is_requested(db_session):
+    """Four windows of one scope used to be requested together for one active model."""
+    active, candidates = _scope_with_candidates(db_session, {24: 6.0, 72: 5.0, 168: 5.0, 720: 7.0})
+    now = TARGET + timedelta(hours=5)
+
+    decisions = {window: model_registry.scope_decision(db_session, row, active, policy=POLICY, now=now)
+                 for window, row in candidates.items()}
+
+    assert [window for window, decision in decisions.items() if decision.allowed] == [72]  # tie with 168: shorter
+    assert decisions[72].checks["best_in_scope"] is True
+    assert decisions[168].checks["best_in_scope"] is False
+    assert "rolling_quantile:72h" in decisions[24].reason
+    with pytest.raises(ValueError, match="best_in_scope"):
+        model_registry.approve_promotion(db_session, candidate_id=candidates[24].id, actor="operator",
+                                         policy=POLICY, now=now)
+
+
+def test_a_better_sibling_that_fails_the_guard_does_not_block(db_session):
+    active, candidates = _scope_with_candidates(db_session, {24: 6.0, 72: 1.0})
+    worse_fp = db_session.query(ForecastModelEvaluation).filter_by(candidate_model_id=candidates[72].id).all()
+    for evaluation in worse_fp:
+        evaluation.candidate_false_positive_rate = 0.5
+    db_session.commit()
+
+    decision = model_registry.scope_decision(db_session, candidates[24], active, policy=POLICY,
+                                             now=TARGET + timedelta(hours=5))
+
+    assert decision.allowed is True and decision.checks["best_in_scope"] is True
