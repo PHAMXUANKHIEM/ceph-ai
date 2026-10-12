@@ -339,6 +339,12 @@ def _nfs_create_export_command(params: dict) -> str:
     return f"{command} --path {shlex.quote(_require_export_path(params, 'path'))}{readonly}"
 
 
+def _nfs_delete_export_command(params: dict) -> str:
+    """Remove one NFS export; clients lose that mount, the CephFS data stays (R2, 12/10/2026)."""
+    return (f"ceph nfs export rm {shlex.quote(_require_name(params, 'nfs_id'))} "
+            f"{shlex.quote(_require_export_path(params, 'pseudo_path'))}")
+
+
 def _rgw_apply_service_command(params: dict) -> str:
     port = _require_int(params, "port", (1, 65535))
     return (f"ceph orch apply rgw {shlex.quote(_require_name(params, 'service_id'))} "
@@ -978,6 +984,7 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "cephfs_create_subvolume": _cephfs_create_subvolume_command,
     "nfs_create_cluster": _nfs_create_cluster_command,
     "nfs_create_export": _nfs_create_export_command,
+    "nfs_delete_export": _nfs_delete_export_command,
     "rgw_apply_service": _rgw_apply_service_command,
     "delete_pool": _delete_pool_command,
     "set_pool_size": _set_pool_size_command,
@@ -1025,6 +1032,7 @@ _CEPH_RUNTIME_ACTION_IDS = frozenset({
     "cephfs_create_subvolume",
     "nfs_create_cluster",
     "nfs_create_export",
+    "nfs_delete_export",
     "rgw_apply_service",
     "delete_pool",
     "set_pool_size",
