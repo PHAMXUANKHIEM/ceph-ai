@@ -300,12 +300,16 @@ def test_proposal_falls_back_to_investigate_manually(seeded):
         assert session.query(Action).one().action_id == "investigate_manually"
 
 
-def test_proposal_uses_recommended_action_when_present(seeded):
+def test_a_recommended_action_without_a_target_node_becomes_a_manual_check(seeded):
+    """12/10/2026 (R4): the AI's restart_osd_daemon was proposed with no target node, so approving it could
+    only fail in the Worker. Without a node resolved from the logs the proposal asks for a manual check."""
     log_analysis._maybe_propose_action(
         seeded["cluster_id"], _payload(recommended_action_id="restart_osd_daemon"), "dk-xyz", []
     )
     with db.SessionLocal() as session:
-        assert session.query(Action).one().action_id == "restart_osd_daemon"
+        action = session.query(Action).one()
+        assert action.action_id == "investigate_manually"
+        assert "restart_osd_daemon" in action.rationale and "kiểm tra thủ công" in action.rationale
 
 
 def test_rationale_marks_it_as_an_ai_hypothesis(seeded):

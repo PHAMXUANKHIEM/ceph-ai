@@ -190,7 +190,9 @@ def test_full_chain_from_raw_log_to_pending_action(isolated_db, wired):
         # --- L4: đề xuất luôn CHỜ DUYỆT ---
         action = session.query(Action).one()
         assert action.status == ActionStatus.PENDING_APPROVAL.value
-        assert action.action_id == "restart_osd_daemon"
+        # No target node is resolved from the logs, so the proposal is a manual check that names the AI's
+        # recommendation; a restart_osd_daemon without a node could only fail once approved (R4, 12/10/2026).
+        assert action.action_id == "investigate_manually" and "restart_osd_daemon" in action.rationale
         incident = session.get(Incident, action.incident_id)
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
         assert incident.ceph_code.startswith(log_analysis.LOG_ANOMALY_PREFIX)

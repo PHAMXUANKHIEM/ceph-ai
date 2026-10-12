@@ -1331,6 +1331,13 @@ def _maybe_propose_action(
                     action_id = "remove_invalid_rgw_default_key"
                     action_params.update(candidate)
                     target_nodes = [mons[0]]
+            if not target_nodes and action_id != _FALLBACK_ACTION_ID:
+                # The AI named an action but nothing here resolves its target
+                # node: a proposal the Worker could never run (Plan
+                # readiness-gap-review R4, 12/10/2026). Ask for a manual check.
+                rationale = (f"{rationale}\n\nAI đề xuất `{action_id}` nhưng không xác định được node đích "
+                             "từ log; cần kiểm tra thủ công.")
+                action_id = _FALLBACK_ACTION_ID
             # Cùng khoá danh tính với finding, nên một vấn đề kéo dài không
             # bao giờ đẻ ra Incident thứ hai -- bước dedupe của finding đã
             # chặn ở trên, đây là lớp chặn thứ hai phòng khi bảng findings

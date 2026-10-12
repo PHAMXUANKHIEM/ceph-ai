@@ -156,6 +156,27 @@ def _live_action_target_safety_reason(
     return f"SSH key path không hợp lệ cho production: {ssh_key_path}"
 
 
+# Actions whose plan names hosts outside the cluster configuration on purpose.
+_PLAN_NODE_ACTION_IDS = frozenset({"restore_cluster_from_backup"})
+_UNREGISTERED_DELETE_ACTION_IDS = frozenset({"delete_cluster_cephadm", "delete_cluster_manual"})
+
+
+def _targets_plan_nodes(action_id: str, action_params: object) -> bool:
+    """Whether an action's targets are the hosts of its approved plan rather than configured nodes.
+
+    Building a cluster, restoring one after a disaster onto new hardware, and
+    deleting a cluster Ceph AI does not monitor (identified by its fsid) all
+    work on hosts outside any cluster configuration. The Worker refused the
+    last two (found by running its target check on every route proposal,
+    Plan readiness-gap-review R4, 12/10/2026). For these the targets must
+    equal the plan's nodes instead.
+    """
+    if action_id in NEW_CLUSTER_DEPLOY_ACTION_IDS or action_id in _PLAN_NODE_ACTION_IDS:
+        return True
+    return (action_id in _UNREGISTERED_DELETE_ACTION_IDS and isinstance(action_params, dict)
+            and bool(action_params.get("_expected_fsid")))
+
+
 def _cluster_binding_reason(session, incident: Incident | None, action_params: object) -> str | None:
     """Why an approved action must not run on the cluster it would resolve to, or None.
 
@@ -3721,7 +3742,7 @@ def _execute_approved_action(action_pk: str) -> None:
     except (TypeError, ValueError):
         action_params = None
 
-    is_new_cluster_deploy = action_id_str in NEW_CLUSTER_DEPLOY_ACTION_IDS
+    is_new_cluster_deploy = _targets_plan_nodes(action_id_str, action_params)
     if is_new_cluster_deploy:
         proposed_nodes = action_params.get("nodes") if isinstance(action_params, dict) else None
         proposed_ips = (

@@ -4175,6 +4175,17 @@ def test_only_new_cluster_deploys_skip_the_configured_node_guard():
         assert action_id not in router_client.NEW_CLUSTER_DEPLOY_ACTION_IDS
 
 
+def test_restore_and_unmonitored_delete_target_their_plan_nodes():
+    """R4 (12/10/2026): restoring onto new hardware and deleting an unmonitored cluster name hosts outside any
+    cluster configuration; the Worker refused both. Deleting a monitored cluster keeps the normal guard."""
+    plan = router_client._targets_plan_nodes
+    assert plan("restore_cluster_from_backup", {"nodes": [{"ip": "10.9.9.1"}]})
+    assert plan("delete_cluster_cephadm", {"_expected_fsid": "1beef4a8-c2bb-11f1-baa4-fa163ea57b22"})
+    assert not plan("delete_cluster_cephadm", {"_cluster_id": "c1"})
+    assert not plan("node_os_gate_prepare", {})
+    assert plan("deploy_cluster_cephadm", None)
+
+
 def test_action_target_guard_rejects_a_test_fixture_ssh_key(monkeypatch):
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     allowed = settings.ceph_mon_nodes.split(",")[0]
