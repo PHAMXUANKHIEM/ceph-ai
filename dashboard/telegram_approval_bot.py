@@ -91,6 +91,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 from datetime import datetime, timezone
@@ -121,8 +122,10 @@ from shared.telegram_client import (
     edit_telegram_message_with_keyboard,
     get_telegram_updates,
     set_telegram_commands,
+    send_telegram_message,
     send_telegram_message_with_keyboard,
 )
+from worker.policy import gate
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +399,9 @@ def _action_message_text(action: Action, incident: Incident | None, session) -> 
     if action.proposed_command:
         lines.append(f"💻 Lệnh: {_compact_text(action.proposed_command, _MAX_COMMAND_CHARS)}")
     lines.append(f"🆔 {action.id[:8]}")
+    expected = _typed_confirmation(action)
+    if expected and action.status == ActionStatus.PENDING_APPROVAL.value:
+        lines.append(f"🔐 Duyệt bằng cách gửi: {CONFIRM_COMMAND} {action.id[:_CONFIRM_REF_LENGTH]} {expected}")
     if action.status == ActionStatus.GRACE_PENDING.value and action.grace_until is not None:
         remaining = max(0, int((action.grace_until - utc_now()).total_seconds()))
         lines.append(f"⏳ Autopilot lab sẽ chạy sau khoảng {remaining} giây nếu không bị hủy.")
@@ -795,6 +801,89 @@ def _approval_action_reference(data: str) -> str:
     return ""
 
 
+CONFIRM_COMMAND = "/xacnhan"
+_CONFIRM_REF_LENGTH = 8
+
+
+def _typed_confirmation(action: Action | None) -> str | None:
+    """The text a cluster lifecycle action needs typed before approval, as on the Dashboard; else None.
+
+    The Dashboard refuses to approve an OSD replacement, node removal, cluster
+    deletion… unless the admin types e.g. "THAY osd.2". That check lives in
+    the route, and the Telegram "Duyệt" button called approve_action_core
+    directly, so one tap approved such actions (12/10/2026). The button now
+    asks for the text, sent back with CONFIRM_COMMAND.
+    """
+    if action is None or action.action_id not in gate.CLUSTER_LIFECYCLE_ACTION_IDS:
+        return None
+    try:
+        params = json.loads(action.action_params or "{}")
+    except (TypeError, ValueError):
+        return None
+    expected = str(params.get("_approval_confirmation") or "").strip() if isinstance(params, dict) else ""
+    return expected or None
+
+
+def _confirmation_prompt(action_id: str, expected: str) -> str:
+    return ("🔐 Thao tác vòng đời cụm: cần gõ xác nhận như trên Dashboard.\n"
+            f"Gửi đúng dòng sau để duyệt:\n{CONFIRM_COMMAND} {action_id[:_CONFIRM_REF_LENGTH]} {expected}")
+
+
+def handle_confirmation_message(message: dict, bot_token: str) -> bool:
+    """Approve a lifecycle action from "/xacnhan <ref> <text>"; False when the message is not that command.
+
+    Same trust as the button: the chat must be one of the action's channels
+    and the sender an approver; the typed text must equal the action's own
+    confirmation.
+    """
+    text = str(message.get("text") or "").strip()
+    parts = text.split(maxsplit=2)
+    if not parts or parts[0].split("@", 1)[0].lower() != CONFIRM_COMMAND:
+        return False
+    chat_id = str((message.get("chat") or {}).get("id", ""))
+
+    def reply(body: str) -> None:
+        try:
+            send_telegram_message(bot_token, chat_id, body)
+        except TelegramSendError:
+            logger.exception("telegram_approval_bot: could not answer %s", CONFIRM_COMMAND)
+
+    if len(parts) < 3 or len(parts[1]) < _CONFIRM_REF_LENGTH:
+        reply(f"Cú pháp: {CONFIRM_COMMAND} <mã {_CONFIRM_REF_LENGTH} ký tự> <chuỗi xác nhận>")
+        return True
+    ref, supplied = parts[1], parts[2].strip()
+    with db.SessionLocal() as session:
+        matches = (session.query(Action)
+                   .filter(Action.status == ActionStatus.PENDING_APPROVAL.value, Action.id.startswith(ref))
+                   .limit(2).all())
+        if len(matches) != 1:
+            reply("Không tìm thấy đúng một đề xuất đang chờ duyệt với mã này.")
+            return True
+        action = matches[0]
+        action_id, expected = action.id, _typed_confirmation(action)
+        incident = session.get(Incident, action.incident_id)
+        legit_chat_ids = {str(channel_chat) for _, _, channel_chat in channels_for_incident(incident, session)}
+    if chat_id not in legit_chat_ids or not _sender_may_decide(message):
+        logger.warning("telegram_approval_bot: refused %s for action %s from chat %s", CONFIRM_COMMAND,
+                       action_id, chat_id)
+        reply("Không có quyền duyệt đề xuất này.")
+        return True
+    if expected is None:
+        reply("Đề xuất này không cần gõ xác nhận; hãy dùng nút Duyệt.")
+        return True
+    if not secrets.compare_digest(supplied, expected):
+        reply(f"Sai chuỗi xác nhận. Cần gõ đúng: {expected}")
+        return True
+    try:
+        outcome = _OUTCOME_TOAST[approve_action_core(action_id, _actor_for(message)).outcome]
+    except ActionNotFoundError:
+        outcome = "Không tìm thấy đề xuất này"
+    except ActionConflictError as exc:
+        outcome = exc.detail
+    reply(f"{outcome} ({action_id[:_CONFIRM_REF_LENGTH]}).")
+    return True
+
+
 def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
     """`bot_token` is the token of the listener thread that received this
     update — answering the callback / editing the message MUST use that
@@ -885,6 +974,20 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
         return
 
     actor = _actor_for(callback_query)
+    if verdict_code is None and data.startswith(APPROVE_CALLBACK_PREFIX):
+        with db.SessionLocal() as session:
+            expected = _typed_confirmation(session.get(Action, action_id))
+        if expected:
+            if callback_id:
+                try:
+                    answer_telegram_callback(bot_token, callback_id, "Cần gõ xác nhận")
+                except TelegramSendError:
+                    pass
+            try:
+                send_telegram_message(bot_token, incoming_chat_id, _confirmation_prompt(action_id, expected))
+            except TelegramSendError:
+                logger.exception("telegram_approval_bot: could not send the confirmation prompt")
+            return
     if verdict_code is not None:
         _handle_verdict(
             action_id, verdict_code, actor, bot_token=bot_token, chat_id=incoming_chat_id,
@@ -1075,7 +1178,9 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
             message = update.get("message")
             if message:
                 try:
-                    if not telegram_chat.handle_stop_message(message, bot_token):
+                    if handle_confirmation_message(message, bot_token):
+                        pass
+                    elif not telegram_chat.handle_stop_message(message, bot_token):
                         if not telegram_chat.handle_status_message(message, bot_token):
                             telegram_chat.enqueue_message(message, bot_token)
                 except Exception:

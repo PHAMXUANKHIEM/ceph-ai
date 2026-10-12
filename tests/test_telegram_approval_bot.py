@@ -996,3 +996,82 @@ def test_chat_member_trust_lets_any_member_of_the_cluster_channel_decide(dashboa
     assert _case(action_pk).operator_verdict is None
     _press(action_pk, "C", sender_id=42)                # any member of the right chat
     assert _case(action_pk).operator_verdict == "CORRECT"
+
+
+# --- Lifecycle actions need the typed confirmation on Telegram too (12/10/2026) ------------------
+
+
+def _lifecycle_action(incident_id: str = "inc-osd") -> str:
+    action_pk = _pending_action(incident_id, action_id="replace_failed_osd")
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        action.classification = ActionClassification.DESTRUCTIVE.value
+        action.action_params = json.dumps({"osd_id": 2, "_approval_confirmation": "THAY osd.2"})
+        session.commit()
+    return action_pk
+
+
+def _text_message(text: str, *, chat_id="-100999", username="alice"):
+    return {"message_id": 7, "text": text, "chat": {"id": chat_id}, "from": {"id": 42, "username": username}}
+
+
+def _status(action_pk: str) -> str:
+    with db_module.SessionLocal() as session:
+        return session.get(Action, action_pk).status
+
+
+def test_the_button_does_not_approve_a_lifecycle_action_but_asks_for_the_text(dashboard_client, monkeypatch):
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="123:ABC", chat_id="-100999")
+    action_pk = _lifecycle_action()
+    sent, answers = [], []
+    monkeypatch.setattr(bot, "send_telegram_message", lambda token, chat_id, text: sent.append(text) or 1)
+    monkeypatch.setattr(bot, "answer_telegram_callback", lambda token, cb_id, text=None: answers.append(text))
+
+    bot._handle_callback_query(_callback_query(action_pk, "approve"), "123:ABC")
+
+    assert _status(action_pk) == ActionStatus.PENDING_APPROVAL.value
+    assert answers == ["Cần gõ xác nhận"]
+    assert f"/xacnhan {action_pk[:8]} THAY osd.2" in sent[0]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        card = bot._action_message_text(action, session.get(Incident, action.incident_id), session)
+    assert f"/xacnhan {action_pk[:8]} THAY osd.2" in card
+
+
+def test_the_typed_text_approves_only_when_exact_and_from_a_trusted_chat(dashboard_client, monkeypatch):
+    from shared.models import AuditEntry
+
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="123:ABC", chat_id="-100999")
+    action_pk = _lifecycle_action()
+    replies = []
+    monkeypatch.setattr(bot, "send_telegram_message", lambda token, chat_id, text: replies.append(text) or 1)
+    ref = action_pk[:8]
+
+    assert bot.handle_confirmation_message(_text_message(f"/xacnhan {ref} THAY osd.1"), "123:ABC") is True
+    assert _status(action_pk) == ActionStatus.PENDING_APPROVAL.value and "Sai chuỗi" in replies[-1]
+
+    assert bot.handle_confirmation_message(_text_message(f"/xacnhan {ref} THAY osd.2", chat_id="-100777"), "123:ABC")
+    assert _status(action_pk) == ActionStatus.PENDING_APPROVAL.value and "Không có quyền" in replies[-1]
+
+    assert bot.handle_confirmation_message(_text_message(f"/xacnhan {ref} THAY osd.2"), "123:ABC")
+    assert _status(action_pk) == ActionStatus.APPROVED.value
+    with db_module.SessionLocal() as session:
+        assert session.query(AuditEntry).filter_by(action_id=action_pk).one().actor == "telegram:alice"
+
+
+def test_other_messages_go_on_to_the_chat(dashboard_client):
+    assert bot.handle_confirmation_message(_text_message("ceph status?"), "123:ABC") is False
+
+
+def test_an_ordinary_action_is_still_approved_with_one_tap(dashboard_client, monkeypatch):
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="123:ABC", chat_id="-100999")
+    action_pk = _pending_action("inc-plain")
+    monkeypatch.setattr(bot, "edit_telegram_message", lambda *a: None)
+    monkeypatch.setattr(bot, "answer_telegram_callback", lambda *a, **kw: None)
+
+    bot._handle_callback_query(_callback_query(action_pk, "approve"), "123:ABC")
+
+    assert _status(action_pk) == ActionStatus.APPROVED.value
