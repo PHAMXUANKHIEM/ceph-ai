@@ -72,7 +72,9 @@ Các trang này chưa có data model/executor đủ để chạy multi-cluster. 
 
 ## 9. UI nhất quán và kiểm thử
 
-- [ ] 9.1 Header các trang lớn hiển thị cluster backend thực sự đang dùng.
+- [x] 9.1 Header các trang lớn hiển thị cluster backend thực sự đang dùng. (Rà 12/10/2026: header chỉ hiện tên cụm
+  khi route dùng `selected_cluster`; Capacity Forecast — trang duy nhất tự tra `cluster_id` — nay theo cụm đang
+  chọn và quyền theo cụm.)
 - [x] 9.2 Navigation giữ cluster bằng session; các form scoped quan trọng mang cluster id/query rõ ràng.
 - [x] 9.3 Sửa link Clusters bị thiếu và import test non-admin không ổn định.
 - [ ] 9.4 Thêm ma trận test: cluster mặc định, cluster phụ hoạt động, cluster phụ bị vô hiệu hóa.
