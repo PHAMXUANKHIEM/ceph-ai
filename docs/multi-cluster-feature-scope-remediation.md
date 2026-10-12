@@ -63,7 +63,8 @@ Các trang này chưa có data model/executor đủ để chạy multi-cluster. 
 - [x] 7.2 Danh sách node và command validation dùng cluster của chat/action. (12/10/2026: node đích kiểm tra theo
   `configured_nodes(cluster)` của tin nhắn; tin nhắn có cụm đã bị xoá không còn rơi về cụm mặc định.)
 - [x] 7.3 Approve/reject giữ cluster context và quay về đúng dashboard cluster.
-- [ ] 7.4 Worker luôn resolve cluster từ Incident/Action; thêm regression test chống fallback nhầm cluster mặc định.
+- [x] 7.4 Worker luôn resolve cluster từ Incident/Action; thêm regression test chống fallback nhầm cluster mặc định.
+  (12/10/2026, #69: `_cluster_binding_reason` từ chối cụm đã xoá/tắt và `_cluster_id` lệch, chạy cả dưới pytest.)
 
 ## 8. Toggle, lifecycle và restart service
 
@@ -79,8 +80,11 @@ Các trang này chưa có data model/executor đủ để chạy multi-cluster. 
   chọn và quyền theo cụm.)
 - [x] 9.2 Navigation giữ cluster bằng session; các form scoped quan trọng mang cluster id/query rõ ràng.
 - [x] 9.3 Sửa link Clusters bị thiếu và import test non-admin không ổn định.
-- [ ] 9.4 Thêm ma trận test: cluster mặc định, cluster phụ hoạt động, cluster phụ bị vô hiệu hóa.
-- [ ] 9.5 Chạy toàn bộ test liên quan và ghi kết quả cuối cùng tại đây.
+- [x] 9.4 Thêm ma trận test: cluster mặc định, cluster phụ hoạt động, cluster phụ bị vô hiệu hóa.
+  (`tests/test_cluster_scope_matrix.py`. Lỗi tìm thấy: thay đổi gửi tới cụm đã tắt — qua URL hoặc session —
+  bị chuyển sang cụm mặc định; nay trả 409.)
+- [x] 9.5 Chạy toàn bộ test liên quan và ghi kết quả cuối cùng tại đây. (12/10/2026: 47 file test dùng
+  `selected_cluster`/`cluster_scope` + ma trận: 947 passed.)
 
 ## Nhật ký hoàn thành
 

@@ -96,14 +96,25 @@ def resolve_cluster_selection(
 
 
 def selected_cluster(request: Request) -> Cluster:
-    """Return the active cluster selected by ``?cluster=``/``?cluster_id=`` or the session."""
-    clusters, cluster = resolve_cluster_selection(
-        (
-            request.query_params.get("cluster_id", "").strip()
-            or request.query_params.get("cluster", "").strip()
-        ),
-        request.session.get("selected_cluster_id", ""),
+    """Return the active cluster selected by ``?cluster=``/``?cluster_id=`` or the session.
+
+    A page (GET) whose chosen cluster is gone or disabled falls back to the
+    default cluster, whose name the header then shows. A change (any other
+    method) never does: before 12/10/2026 a proposal posted from a page of a
+    cluster disabled meanwhile was created on the default cluster, e.g. the
+    staging page's "THAY osd.2" replacing production's osd.2 (Plan
+    readiness-gap-review R1).
+    """
+    requested = (
+        request.query_params.get("cluster_id", "").strip()
+        or request.query_params.get("cluster", "").strip()
     )
+    session_choice = str(request.session.get("selected_cluster_id", "") or "")
+    clusters, cluster = resolve_cluster_selection(requested, session_choice)
+    chosen = requested or session_choice
+    if request.method not in ("GET", "HEAD") and chosen and chosen != cluster.id:
+        raise HTTPException(status_code=409,
+                            detail="Cụm đã chọn không còn hoạt động; hãy tải lại trang và chọn lại cụm.")
     cluster = _enforce_request_cluster_access(request, clusters, cluster)
     request.session["selected_cluster_id"] = cluster.id
     return cluster
