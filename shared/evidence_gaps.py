@@ -65,7 +65,7 @@ def family_of_code(code: str, family_codes: dict[str, tuple[str, ...]]) -> str |
     return None
 
 
-def _low_confidence(case: RemediationCase) -> bool:
+def low_confidence(case: RemediationCase) -> bool:
     text = (case.diagnosis or "").casefold()
     return (case.diagnosis_confidence is not None and case.diagnosis_confidence < LOW_CONFIDENCE) or any(
         marker in text for marker in _INSUFFICIENT_TEXT)
@@ -97,7 +97,7 @@ def evidence_gap_queue(session, *, family_codes: dict[str, tuple[str, ...]],
         _touch(gap, finding.created_at, finding.root_cause_hypothesis or finding.title)
     for case in session.query(RemediationCase).filter(RemediationCase.created_at >= since):
         family = family_of_code(case.fault_family or "", family_codes)
-        if family is None or not _low_confidence(case):
+        if family is None or not low_confidence(case):
             continue
         gap = gaps.setdefault(family, EvidenceGap(family))
         gap.low_confidence_cases += 1
