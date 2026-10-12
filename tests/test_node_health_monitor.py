@@ -33,6 +33,14 @@ def no_postmortem_ssh(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_hostname_ssh(monkeypatch):
+    """Grouping addresses by machine looks hostnames up over SSH; tests give none unless they set them."""
+    from watcher import host_metrics
+
+    monkeypatch.setattr(host_metrics, "machine_identity", lambda cluster_id, host, cluster=None: None)
+
+
+@pytest.fixture(autouse=True)
 def clear_module_state():
     # nhm._consecutive_high_scans is process-lifetime module state (by
     # design, same as watcher/volume_monitor.py's own _state) — would
@@ -520,3 +528,33 @@ def test_postmortem_can_be_switched_off(isolated_db, monkeypatch):
 
     nhm.create_or_resolve_node_unreachable_incidents(current)
     nhm.create_or_resolve_node_unreachable_incidents({})
+
+
+def test_a_machine_listed_under_two_addresses_is_scanned_once(monkeypatch):
+    """12/10/2026: CS-LAB lists MON roles under 10.3.x and OSD roles under 10.20.1.x; each machine was learned twice."""
+    from watcher import host_metrics
+
+    names = {"10.3.54.118": "ceph-1", "10.20.1.195": "ceph-1", "10.3.53.69": "ceph-2", "10.20.1.153": "ceph-2"}
+    monkeypatch.setattr(host_metrics, "machine_identity", lambda cluster_id, host, cluster=None: names[host])
+    monkeypatch.setattr(nhm, "configured_nodes", lambda: [
+        {"host": "10.3.54.118", "roles": ["MON"]}, {"host": "10.3.53.69", "roles": ["MON"]},
+        {"host": "10.20.1.195", "roles": ["OSD"]}, {"host": "10.20.1.153", "roles": ["OSD"]}])
+    scanned = []
+    monkeypatch.setattr(nhm.node_resource_forecast, "fetch_latest_metrics",
+                        lambda cluster, host: scanned.append(host) or _metrics())
+
+    nhm.check_node_resources(cluster_id="cs-lab")
+
+    assert scanned == ["10.3.54.118", "10.3.53.69"]  # the MON address of each machine
+
+
+def test_without_hostnames_every_configured_address_is_still_scanned(monkeypatch):
+    monkeypatch.setattr(nhm, "configured_nodes", lambda: [{"host": "10.0.0.5", "roles": ["MON"]},
+                                                          {"host": "10.0.0.6", "roles": ["OSD"]}])
+    scanned = []
+    monkeypatch.setattr(nhm.node_resource_forecast, "fetch_latest_metrics",
+                        lambda cluster, host: scanned.append(host) or _metrics())
+
+    nhm.check_node_resources()
+
+    assert scanned == ["10.0.0.5", "10.0.0.6"]

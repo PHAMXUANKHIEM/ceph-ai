@@ -1362,7 +1362,8 @@ def run(
             def scan_node_health() -> None:
                 try:
                     node_still_over: set[str] = set()
-                    current_node_resources = node_health_monitor.check_node_resources(node_still_over)
+                    current_node_resources = node_health_monitor.check_node_resources(
+                        node_still_over, cluster_id=cluster_id)
                     node_health_monitor.create_or_resolve_node_health_incidents(
                         current_node_resources, node_still_over
                     )

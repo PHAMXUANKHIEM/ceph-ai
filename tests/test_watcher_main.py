@@ -153,7 +153,7 @@ def _fast_node_health_monitor_default(monkeypatch):
     the real shared.cluster_nodes.configured_nodes()/SSH path, adding real
     wall-clock time to every test in this file whether or not it cares
     about node-health monitoring."""
-    monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_resources", lambda *_a: {})
+    monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_resources", lambda *_a, **_k: {})
     monkeypatch.setattr(
         watcher_main.node_health_monitor, "create_or_resolve_node_health_incidents", lambda *_a: None
     )
@@ -483,7 +483,7 @@ def test_run_calls_device_health_monitor_once_within_default_scan_interval(monke
     check_calls = {"n": 0}
     resolve_calls = []
 
-    def fake_check(*_a):
+    def fake_check(*_a, **_k):
         check_calls["n"] += 1
         return {"DEVICE_HEALTH_EVACUATE:7": {"osd_id": 7}}
 
@@ -507,7 +507,7 @@ def test_run_calls_device_health_monitor_every_iteration_when_interval_is_zero(m
 
     check_calls = {"n": 0}
 
-    def fake_check(*_a):
+    def fake_check(*_a, **_k):
         check_calls["n"] += 1
         return {}
 
@@ -548,7 +548,7 @@ def test_run_calls_node_health_monitor_once_within_default_scan_interval(monkeyp
     check_calls = {"n": 0}
     resolve_calls = []
 
-    def fake_check(*_a):
+    def fake_check(*_a, **_k):
         check_calls["n"] += 1
         return {"NODE_RESOURCE_HIGH:10.0.0.5": {"host": "10.0.0.5"}}
 
@@ -572,7 +572,7 @@ def test_run_calls_node_health_monitor_every_iteration_when_interval_is_zero(mon
 
     check_calls = {"n": 0}
 
-    def fake_check(*_a):
+    def fake_check(*_a, **_k):
         check_calls["n"] += 1
         return {}
 
@@ -594,7 +594,7 @@ def test_run_calls_node_reachability_monitor_every_iteration_when_interval_is_ze
     check_calls = {"n": 0}
     resolve_calls = []
 
-    def fake_check(*_a):
+    def fake_check(*_a, **_k):
         check_calls["n"] += 1
         return {"NODE_UNREACHABLE:node-1": {"host": "node-1"}}
 
@@ -638,7 +638,7 @@ def test_run_calls_osd_latency_monitor_once_within_default_scan_interval(monkeyp
     check_calls = {"n": 0}
     resolve_calls = []
 
-    def fake_check(*_a):
+    def fake_check(*_a, **_k):
         check_calls["n"] += 1
         return {"OSD_LATENCY_HIGH:3": {"osd_id": 3}}
 
@@ -662,7 +662,7 @@ def test_run_calls_osd_latency_monitor_every_iteration_when_interval_is_zero(mon
 
     check_calls = {"n": 0}
 
-    def fake_check(*_a):
+    def fake_check(*_a, **_k):
         check_calls["n"] += 1
         return {}
 
