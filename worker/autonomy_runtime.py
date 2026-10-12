@@ -1,6 +1,7 @@
 """Runtime rate limits, cooldown and cluster-wide autonomous execution lease."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -70,6 +71,47 @@ def acquire_lease(session, *, cluster_id: str, action_id: str, now: datetime,
 def release_lease(session, *, action_id: str) -> None:
     session.query(AutopilotLease).filter(AutopilotLease.action_id == action_id).delete()
     session.commit()
+
+
+def reconcile_interrupted_approved_executions(session, *, now: datetime) -> int:
+    """Close operator-approved executions a stopped Worker left behind; never re-run them.
+
+    The approved-action path claims an action by moving its Incident to
+    EXECUTING while the Action stays APPROVED until the result is recorded.
+    A Worker stopped in between (every deploy restarts it; lifecycle actions
+    run for 20-60 minutes) left that pair forever: each later poll saw the
+    claim and skipped it, nothing reported it, and an APPROVED lifecycle
+    action blocked every new lifecycle proposal (Plan readiness-gap-review
+    R3, 12/10/2026). Only the Worker runs approved actions, so at its start,
+    before any poller runs, every such pair belongs to the previous process.
+    The command may have run in part: the Action becomes INCONCLUSIVE, the
+    Incident FAILED (so production escalation picks it up), and nothing is
+    retried.
+    """
+    rows = (session.query(Action, Incident).join(Incident, Incident.id == Action.incident_id)
+            .filter(Action.status == ActionStatus.APPROVED.value,
+                    Incident.status == IncidentStatus.EXECUTING.value)
+            .all())
+    reason = "Worker dừng giữa lúc thực thi; kết quả không xác định, không tự chạy lại — hãy kiểm tra cụm"
+    for action, incident in rows:
+        try:
+            progress = json.loads(action.execution_progress or "[]")
+        except (TypeError, ValueError):
+            progress = []
+        if not isinstance(progress, list):
+            progress = []
+        progress.append({"step": "worker_restart", "label": "Worker khởi động lại", "pct": 100,
+                         "status": "failed", "message": reason, "finished_at": now.isoformat()})
+        action.execution_progress = json.dumps(progress, ensure_ascii=False)
+        action.status = ActionStatus.INCONCLUSIVE.value
+        remediation_cases.record_inconclusive(session, action_id=action.id, at=now, reason=reason)
+        incident.status = IncidentStatus.FAILED.value
+        incident.diagnosis_text = f"{incident.diagnosis_text or ''}\n\n[Worker restart] {reason}.".strip()
+        audit.record(session, incident_id=incident.id, action_id=action.id,
+                     event_type=audit.EVENT_APPROVED_EXECUTION_INTERRUPTED, actor=audit.ACTOR_SYSTEM,
+                     evidence={"action_id": action.action_id, "auto_retry": False})
+    session.commit()
+    return len(rows)
 
 
 def reconcile_expired_executions(session, *, now: datetime) -> int:

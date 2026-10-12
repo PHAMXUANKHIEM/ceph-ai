@@ -390,6 +390,22 @@ async def _supervise(
         await asyncio.sleep(restart_delay_seconds)
 
 
+def _reconcile_interrupted_approved_actions() -> int:
+    from shared.time import utc_now
+    from worker.autonomy_runtime import reconcile_interrupted_approved_executions
+
+    try:
+        with db.SessionLocal() as session:
+            interrupted = reconcile_interrupted_approved_executions(session, now=utc_now())
+    except Exception:
+        logger.exception("worker startup: could not reconcile interrupted approved actions")
+        return 0
+    if interrupted:
+        logger.warning("worker startup: %d approved action(s) were interrupted by the last stop; marked "
+                       "INCONCLUSIVE, not retried", interrupted)
+    return interrupted
+
+
 async def _main() -> None:
     from worker.backup import scheduler as backup_scheduler
     from worker import bucket_logging, rgw_access_audit, delegated_tasks
@@ -432,6 +448,10 @@ async def _main() -> None:
                 last_reconcile = now
             await asyncio.sleep(2 if processed else 10)
 
+    # Before any coroutine can claim an action (the poller and the backup
+    # scheduler both execute approved actions), close the ones the previous
+    # Worker process left half done.
+    await asyncio.to_thread(_reconcile_interrupted_approved_actions)
     await asyncio.gather(
         _supervise("incident-consumer", lambda: run(process_incident=diagnose_incident)),
         _supervise("delegated-ai-consumer", delegated_tasks.run),

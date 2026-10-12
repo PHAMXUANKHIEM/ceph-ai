@@ -81,6 +81,10 @@ Dùng lại các mục còn mở của `strict-production-readiness-closure-plan
 - [ ] Backup PostgreSQL ra ngoài host; restore trên host khác; đo RPO/RTO.
 - [ ] Restart RabbitMQ, Worker, Dashboard lúc có Action đang chạy: Action không mất, không chạy hai lần, audit
   còn nguyên (kiểm tra idempotency key và trạng thái EXECUTING sau restart).
+  - [x] (12/10/2026) Lỗi tìm thấy khi rà code: hành động operator duyệt mà Worker dừng giữa chừng bị kẹt vĩnh viễn
+    (Incident EXECUTING + Action APPROVED, mọi lượt quét bỏ qua; hành động vòng đời kẹt còn chặn mọi đề xuất
+    vòng đời mới). Worker giờ đóng chúng khi khởi động: INCONCLUSIVE, Incident FAILED, audit, không chạy lại.
+  - [ ] Diễn tập thật: restart Worker giữa một hành động dài trên CS-STAGING và xác nhận kết quả trên.
 - [ ] Deploy cùng một release qua migration 3 lần; rollback image được chứng kiến; smoke test.
 - [ ] Chạy lại soak 24 giờ và ký nghiệm thu (hoặc ghi lý do không đạt).
 - [ ] Ghi RTO/RPO đo được vào `reliability-slo.md`; quyết định single-node có công bố hay làm HA (đưa vào R7).
