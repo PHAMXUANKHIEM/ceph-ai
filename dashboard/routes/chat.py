@@ -1169,8 +1169,13 @@ def _validate_chat_action_proposal(session, message):
     is_management_action = action_id in VALID_MANAGEMENT_ACTION_IDS
     is_bluestore_action = action_id in VALID_BLUESTORE_ACTION_IDS
     is_parameterized_action = is_management_action or is_bluestore_action
-    cluster = session.get(Cluster, message.cluster_id) if message.cluster_id else None
-    if cluster is None:
+    # Only a message without a cluster (history from before chat was scoped)
+    # belongs to the default cluster. A message whose cluster row is gone must
+    # not be confirmed against the default cluster's nodes and credentials
+    # (Plan readiness-gap-review R1, checklist 7.2).
+    if message.cluster_id:
+        cluster = session.get(Cluster, message.cluster_id)
+    else:
         cluster = session.query(Cluster).filter_by(is_default=True).first()
     if cluster is None or not cluster.is_active:
         raise HTTPException(status_code=400, detail="Cụm của đề xuất không còn hoạt động")
