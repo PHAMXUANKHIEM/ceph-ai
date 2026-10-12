@@ -8,8 +8,9 @@ standard library only.
 
 Checks: expected containers running and not unhealthy, service heartbeats in
 /run/ceph-ai, RabbitMQ answering, database TCP reachable, Dashboard answering,
-disk space, Telegram outbox (counts only: stuck or DEAD messages), and error
-lines in each service container's log (every five minutes). A problem is reported after two failed runs in a row, reminded
+disk space, Telegram outbox (counts only: stuck or DEAD messages), error
+lines in each service container's log (every five minutes), and the
+database backups on the backup host (every 30 minutes). A problem is reported after two failed runs in a row, reminded
 every six hours while it lasts, and a recovery is reported once. After a host
 reboot the stack gets a grace period, then one boot summary is sent.
 
@@ -71,6 +72,14 @@ ERROR_LINES_LIMIT = 100
 _ERROR_LINE = re.compile(r"(Traceback \(most recent call last\)|\b(?:ERROR|CRITICAL)\b)")
 _TIMESTAMP = re.compile(r"^\d{4}-\d\d-\d\d[ T]\S+\s+")
 _VOLATILE = re.compile(r"0x[0-9a-f]+|[0-9a-f]{8}-[0-9a-f-]{27}|\d+")
+# 12/10/2026: the database moved to its own node, which dumps it nightly and
+# pushes the dump to the Loki host; the Loki host checks the newest dump's
+# checksum daily. Read-only look at that result from here.
+BACKUP_HOST = os.environ.get("CEPH_AI_DB_BACKUP_HOST", "root@10.3.53.25")
+BACKUP_DIR = os.environ.get("CEPH_AI_DB_BACKUP_DIR", "/srv/pg-backups/ceph-ai")
+BACKUP_VERIFY_UNIT = "ceph-ai-pg-backup-retention.service"
+BACKUP_SCAN_SECONDS = 1800
+BACKUP_MAX_AGE_SECONDS = 26 * 3600
 
 
 # --- inputs -----------------------------------------------------------------
@@ -266,11 +275,54 @@ def check_error_rates(state: dict, now: float) -> dict[str, str | None]:
     return results
 
 
+def _backup_probe() -> str:
+    """`<newest dump> <its mtime>` and the verify unit's result, from the backup host (read-only)."""
+    remote = (f"cd {BACKUP_DIR} && (ls -1t -- *.dump 2>/dev/null | head -1 | xargs -r stat -c '%n %Y'); "
+              f"echo verify=$(systemctl show -p Result --value {BACKUP_VERIFY_UNIT})")
+    # Constant command; BatchMode never prompts.
+    result = subprocess.run(  # nosec B603 B607
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", BACKUP_HOST, remote],
+        capture_output=True, text=True, timeout=COMMAND_TIMEOUT_SECONDS, check=False,
+    )
+    if result.returncode != 0:
+        raise OSError(f"ssh exit {result.returncode}")
+    return result.stdout
+
+
+def backup_problem(probe_output: str, now: float) -> str | None:
+    """A problem text from the backup host's answer, or None when the newest dump is recent and verified."""
+    lines = [line.strip() for line in probe_output.splitlines() if line.strip()]
+    verify = next((line.split("=", 1)[1] for line in lines if line.startswith("verify=")), "")
+    dumps = [line.split() for line in lines if not line.startswith("verify=")]
+    if not dumps or len(dumps[0]) != 2 or not dumps[0][1].isdigit():
+        return f"không có bản backup nào trong {BACKUP_DIR} trên {BACKUP_HOST}"
+    name, mtime = dumps[0][0], int(dumps[0][1])
+    if now - mtime > BACKUP_MAX_AGE_SECONDS:
+        return f"bản backup mới nhất {name} đã cũ {_since(now - mtime)} (backup đêm qua lỗi hoặc không đẩy sang được)"
+    if verify not in ("success", ""):
+        return f"kiểm tra checksum trên backup host lỗi ({BACKUP_VERIFY_UNIT}: {verify})"
+    return None
+
+
+def check_database_backup(state: dict, now: float) -> dict[str, str | None]:
+    scan = state.setdefault("backup_scan", {})
+    if now - float(scan.get("at") or 0) < BACKUP_SCAN_SECONDS:
+        return dict(scan.get("results") or {})
+    try:
+        problem = backup_problem(_backup_probe(), now)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        problem = f"không đọc được backup trên {BACKUP_HOST} ({exc})"
+    results = {"database_backup": problem}
+    scan.update({"at": now, "results": results})
+    return results
+
+
 def run_checks(env: dict[str, str], now: float, state: dict | None = None) -> dict[str, str | None]:
     results: dict[str, str | None] = {}
     for part in (check_containers(), check_heartbeats(now), check_rabbitmq(),
                  check_database(env), check_dashboard(), check_disks(), check_telegram_outbox(),
-                 check_error_rates(state if state is not None else {}, now)):
+                 check_error_rates(state if state is not None else {}, now),
+                 check_database_backup(state if state is not None else {}, now)):
         results.update(part)
     return results
 

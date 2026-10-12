@@ -247,3 +247,38 @@ def test_error_rates_are_rescanned_every_five_minutes_for_service_containers_onl
     assert again == first and len(scanned) == 7  # cached between scans
     selfcheck.check_error_rates(state, now=1000.0 + selfcheck.ERROR_SCAN_SECONDS)
     assert len(scanned) == 14
+
+
+# --- database backups on the backup host (12/10/2026) ---------------------------------------
+
+NOW = 1_760_000_000.0
+
+
+@pytest.mark.parametrize(("probe", "expected"), [
+    (f"ceph_aiops_hapu_lab-a.dump {int(NOW) - 3600}\nverify=success\n", None),
+    (f"ceph_aiops_hapu_lab-a.dump {int(NOW) - 3600}\nverify=\n", None),                 # verify not run yet
+    (f"ceph_aiops_hapu_lab-a.dump {int(NOW) - 27 * 3600}\nverify=success\n", "đã cũ 27 giờ"),
+    (f"ceph_aiops_hapu_lab-a.dump {int(NOW) - 3600}\nverify=exit-code\n", "kiểm tra checksum"),
+    ("verify=success\n", "không có bản backup nào"),
+])
+def test_backup_problem(probe, expected):
+    problem = selfcheck.backup_problem(probe, NOW)
+    assert (problem is None) if expected is None else (expected in problem)
+
+
+def test_an_unreachable_backup_host_is_a_problem_and_scans_are_cached(monkeypatch):
+    calls = []
+
+    def probe():
+        calls.append(1)
+        raise OSError("ssh exit 255")
+
+    monkeypatch.setattr(selfcheck, "_backup_probe", probe)
+    state = {}
+
+    first = selfcheck.check_database_backup(state, NOW)
+    again = selfcheck.check_database_backup(state, NOW + 60)
+
+    assert "không đọc được backup" in first["database_backup"] and again == first and len(calls) == 1
+    selfcheck.check_database_backup(state, NOW + selfcheck.BACKUP_SCAN_SECONDS + 1)
+    assert len(calls) == 2
