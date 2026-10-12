@@ -115,7 +115,8 @@ Thứ tự: deploy FL2 + bật evidence → chạy lại replay → VM cephadm l
 - [ ] Golden set chẩn đoán lấy từ lượt lab đạt (cần cụm staging chạy thật).
 
 ### FL4 — Chạy shadow theo lịch
-- [ ] Chiến dịch định kỳ (giờ thấp điểm), báo cáo tỉ lệ từng khâu và báo động giả; dừng khi cụm không về `HEALTH_OK`.
+- [x] Chiến dịch theo lịch (09/10): `ceph-ai-failure-lab.timer` mỗi 15 phút chạy `scripts.lab.failure_lab_campaign` trong container Worker (`shared/failure_lab_campaign.py`). Không làm gì nếu Cài đặt > Cụm Staging chưa bật gây lỗi/chưa ghim fsid, ngoài khung giờ (mặc định 02:00-05:00) hoặc có `HALT`. Mỗi đêm một chiến dịch, tối đa 3 lượt: đề xuất AI đã duyệt trước (cũ nhất trước), rồi lỗi trong catalog xoay vòng (lâu chưa chạy nhất trước); mọi lượt qua đủ cổng FL2 với `scheduled=True`. Dừng khi bị từ chối, khi `HALT` (cụm không về trạng thái trước lượt), hoặc hết khung giờ; chẩn đoán/đề xuất sai không dừng (là dữ liệu học). Một tin tóm tắt mỗi đêm vào chat lab; trạng thái ở `/var/lib/ceph-ai/failure-lab/campaign.json`, log `/var/log/ceph-ai-failure-lab.log`.
+- [ ] Báo động giả: đếm incident ngoài mã kỳ vọng trong cửa sổ lượt chạy vào báo cáo FL6.5.
 
 ### FL5 — Tiêu chí nâng quyền theo từng playbook
 - [ ] Đề xuất tiêu chí: ≥ 10 lượt lab liên tiếp đạt hồi phục, 0 tác dụng phụ, rollback đã kiểm thử, chẩn đoán đúng ≥ 90 %. Đạt tiêu chí chỉ tạo **đề xuất** nâng quyền; operator duyệt mới có hiệu lực.

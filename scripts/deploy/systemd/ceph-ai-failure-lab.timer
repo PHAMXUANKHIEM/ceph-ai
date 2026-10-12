@@ -1,0 +1,12 @@
+[Unit]
+Description=Check every 15 minutes whether tonight's Failure Lab campaign is due
+
+[Timer]
+# The window itself (02:00-05:00 by default) is set in Settings > Cụm Staging;
+# outside it, or with fault injection off, each run returns at once.
+OnCalendar=*:0/15
+AccuracySec=1min
+Unit=ceph-ai-failure-lab.service
+
+[Install]
+WantedBy=timers.target
