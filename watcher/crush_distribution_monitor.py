@@ -34,6 +34,39 @@ from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 
 
+def _osd_df_stats(node: dict, tree_detail: dict) -> dict:
+    """One OSD's `ceph osd df` fields for the CRUSH table; `ceph osd tree` fills class, weights and status gaps.
+
+    Fields Ceph does not report stay None; nothing is derived from another field.
+    """
+    def kib_to_bytes(key: str) -> int | None:
+        value = node.get(key)
+        return int(value * 1024) if isinstance(value, (int, float)) else None
+
+    def numeric(key: str, fallback: str | None = None):
+        value = node.get(key)
+        if value is None and fallback:
+            value = node.get(fallback)
+        return value if isinstance(value, (int, float)) else None
+
+    crush_weight, reweight = numeric("crush_weight"), numeric("reweight")
+    return {
+        "device_class": node.get("device_class", node.get("class")) or tree_detail.get("device_class"),
+        "crush_weight": crush_weight if crush_weight is not None else tree_detail.get("crush_weight"),
+        "reweight": reweight if reweight is not None else tree_detail.get("reweight"),
+        "size_bytes": kib_to_bytes("kb"),
+        "raw_used_bytes": kib_to_bytes("kb_used"),
+        "data_bytes": kib_to_bytes("kb_used_data"),
+        "omap_bytes": kib_to_bytes("kb_used_omap"),
+        "meta_bytes": kib_to_bytes("kb_used_meta"),
+        "avail_bytes": kib_to_bytes("kb_avail"),
+        "used_percent": numeric("utilization", "%use"),
+        "variance": numeric("var"),
+        "pgs": node.get("pgs") if isinstance(node.get("pgs"), int) else None,
+        "status": node.get("status", node.get("state")) or tree_detail.get("status"),
+    }
+
+
 def collect_osd_distribution(cluster: Cluster | None = None) -> dict[int, dict] | None:
     """Runs `ceph osd df` and returns `{osd_id: {"host": str | None,
     "bytes_used": int | None, "bytes_total": int | None, "pgs": int |
@@ -83,36 +116,9 @@ def collect_osd_distribution(cluster: Cluster | None = None) -> dict[int, dict] 
         osd_id = node["id"]
         kb = node.get("kb")
         kb_used = node.get("kb_used")
-        def kib_to_bytes(key: str) -> int | None:
-            value = node.get(key)
-            return int(value * 1024) if isinstance(value, (int, float)) else None
-
-        def numeric(key: str, fallback: str | None = None):
-            value = node.get(key)
-            if value is None and fallback:
-                value = node.get(fallback)
-            return value if isinstance(value, (int, float)) else None
-
-        tree_detail = osd_tree_by_id.get(osd_id, {})
-        crush_weight = numeric("crush_weight")
-        reweight = numeric("reweight")
-        stats = {
-            "device_class": node.get("device_class", node.get("class")) or tree_detail.get("device_class"),
-            "crush_weight": crush_weight if crush_weight is not None else tree_detail.get("crush_weight"),
-            "reweight": reweight if reweight is not None else tree_detail.get("reweight"),
-            "size_bytes": kib_to_bytes("kb"),
-            "raw_used_bytes": kib_to_bytes("kb_used"),
-            "data_bytes": kib_to_bytes("kb_used_data"),
-            "omap_bytes": kib_to_bytes("kb_used_omap"),
-            "meta_bytes": kib_to_bytes("kb_used_meta"),
-            "avail_bytes": kib_to_bytes("kb_avail"),
-            "used_percent": numeric("utilization", "%use"),
-            "variance": numeric("var"),
-            "pgs": node.get("pgs") if isinstance(node.get("pgs"), int) else None,
-            "status": node.get("status", node.get("state")) or tree_detail.get("status"),
-        }
+        stats = _osd_df_stats(node, osd_tree_by_id.get(osd_id, {}))
         result[osd_id] = {
-            "host": tree_detail.get("crush_host"),
+            "host": osd_tree_by_id.get(osd_id, {}).get("crush_host"),
             "bytes_used": int(kb_used) * 1024 if isinstance(kb_used, (int, float)) else None,
             "bytes_total": int(kb) * 1024 if isinstance(kb, (int, float)) else None,
             "pgs": node.get("pgs") if isinstance(node.get("pgs"), int) else None,
