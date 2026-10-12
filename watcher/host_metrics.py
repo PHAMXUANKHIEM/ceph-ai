@@ -57,6 +57,11 @@ def _telemetry_targets(cluster_id: str, cluster) -> list[dict]:
     return targets
 
 
+def machine_identity(cluster_id: str | None, host: str, cluster=None) -> str | None:
+    """The short hostname behind an address (cached), as Node Monitoring groups its targets."""
+    return _identity(cluster_id or "default", host, cluster)
+
+
 def _identity(cluster_id: str, host: str, cluster) -> str | None:
     key = (cluster_id, host)
     if key in _identity_cache:

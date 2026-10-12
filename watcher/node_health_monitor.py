@@ -36,6 +36,7 @@ from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
 from shared.online_learning_consumer import apply_ready_labels, consume_samples
 from shared.telegram_alerts import send_node_alert
+from shared.telemetry_nodes import collapse_nodes
 from watcher import ceph_client, node_metrics, node_postmortem, node_resource_forecast
 from worker.policy import gate
 
@@ -325,9 +326,35 @@ def ceph_code_for(host: str) -> str:
     return f"{NODE_RESOURCE_HIGH_PREFIX}{host}"
 
 
+def _resource_nodes(cluster_id: str | None) -> list[dict]:
+    """One node per machine, under its preferred (MON) address.
+
+    CS-LAB lists each machine twice, MON roles under 10.3.x and OSD roles
+    under 10.20.1.x. Scanning the configured list sampled every machine
+    twice, so CPU/RAM history, forecasts, resource alerts and the model
+    registry all held two scopes per machine (12/10/2026: 6 "hosts" for
+    3 nodes, half their models stuck since 23/09). Node Monitoring already
+    collapsed the aliases by hostname; this scan now groups them the same
+    way and scans every configured host when the lookup fails.
+    """
+    configured = configured_nodes()
+    if len(configured) < 2:
+        return configured
+    try:
+        from watcher import host_metrics
+
+        identities = {node["host"]: host_metrics.machine_identity(cluster_id, node["host"])
+                      for node in configured if node.get("host")}
+    except Exception:  # noqa: BLE001 - an identity lookup failure must not stop the scan
+        logger.warning("check_node_resources: machine identities unavailable; scanning configured hosts",
+                       exc_info=True)
+        return configured
+    return collapse_nodes(configured, identities)
+
+
 def check_node_resources(
     still_over_threshold: set[str] | None = None,
-    *, cluster_name: str | None = None,
+    *, cluster_name: str | None = None, cluster_id: str | None = None,
 ) -> dict[str, dict]:
     """Scans every configured cluster node's current CPU%/RAM% and returns
     {ceph_code: detail} for every host whose CPU OR RAM has stayed at/above
@@ -339,7 +366,7 @@ def check_node_resources(
     own result, same per-host isolation posture as watcher/collector.py
     elsewhere in this codebase."""
     flagged: dict[str, dict] = {}
-    for node in configured_nodes():
+    for node in _resource_nodes(cluster_id):
         host = node["host"]
         fresh_metrics = None
         if (
