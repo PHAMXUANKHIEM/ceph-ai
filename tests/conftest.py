@@ -334,6 +334,71 @@ def dashboard_client(monkeypatch):
 
     with TestClient(app) as client:
         yield client
+    violations = _route_proposal_target_violations()
+    assert not violations, "route proposals the Worker would refuse to run:\n" + "\n".join(violations)
+
+
+def _route_proposal_target_violations() -> list[str]:
+    """Run the Worker's real target-node check on every action a Dashboard route proposed in this test.
+
+    The check (worker/llm/router_client.py::_live_action_target_safety_reason)
+    is skipped under pytest, so proposals that targeted an OSD name, new hosts
+    or an OpenStack controller passed CI and failed on the first real cluster
+    (Plan readiness-gap-review R4, 12/10/2026). Routes record a
+    "pending approval" audit entry for what they propose; actions a test
+    inserts itself have none and are not checked.
+    """
+    import json as _json
+    import os
+
+    from shared import audit
+    from shared.models import Action, AuditEntry, Cluster, Incident
+    from worker.llm import router_client
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from worker.executor import commands
+    from worker.policy import gate
+
+    try:
+        with db_module.SessionLocal() as session:
+            checks = _route_proposals(session, audit, Action, AuditEntry, Cluster, Incident, _json)
+    except SQLAlchemyError:
+        return []  # a test that breaks the database on purpose
+    violations = []
+    saved = os.environ.pop("PYTEST_CURRENT_TEST", None)
+    try:
+        for action_id, cluster, targets, params in checks:
+            if not commands.has_command(action_id) and action_id not in gate.CLUSTER_LIFECYCLE_ACTION_IDS:
+                continue  # nothing to run (e.g. investigate_manually): approval only closes it
+            reason = router_client._live_action_target_safety_reason(
+                cluster, targets if isinstance(targets, list) else [], "/root/.ssh/id_ed25519",
+                allow_unregistered_targets=router_client._targets_plan_nodes(action_id, params))
+            if reason or not isinstance(targets, list) or not targets:
+                violations.append(f"{action_id} -> {targets!r}: {reason or 'no target nodes'}")
+    finally:
+        if saved is not None:
+            os.environ["PYTEST_CURRENT_TEST"] = saved
+    return violations
+
+
+def _route_proposals(session, audit, Action, AuditEntry, Cluster, Incident, _json) -> list[tuple]:
+    """(action id, cluster, targets, params) of every action a route recorded as pending approval."""
+    proposed = {row[0] for row in session.query(AuditEntry.action_id).filter(
+        AuditEntry.event_type == audit.EVENT_RISKY_ACTION_PENDING_APPROVAL, AuditEntry.action_id.isnot(None))}
+    checks = []
+    for action in session.query(Action).filter(Action.id.in_(proposed)).all() if proposed else []:
+        incident = session.get(Incident, action.incident_id)
+        cluster = session.get(Cluster, incident.cluster_id) if incident and incident.cluster_id else None
+        if cluster is not None:
+            session.expunge(cluster)
+        try:
+            targets = _json.loads(action.target_nodes or "[]")
+            params = _json.loads(action.action_params or "{}")
+        except ValueError:
+            targets, params = None, {}
+        checks.append((action.action_id, cluster, targets, params))
+    return checks
 
 
 @pytest.fixture()
