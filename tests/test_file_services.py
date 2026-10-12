@@ -20,6 +20,10 @@ from worker.executor.ssh_executor import ExecutorError
     ("nfs_create_cluster", {"nfs_id": "nfs1", "hosts": ["ceph1", "ceph2"]}, "ceph nfs cluster create nfs1 '2 ceph1 ceph2'"),
     ("nfs_create_export", {"nfs_id": "nfs1", "fs_name": "cephfs", "pseudo_path": "/app1", "path": "/", "readonly": True},
      "ceph nfs export create cephfs --cluster-id nfs1 --pseudo-path /app1 --fsname cephfs --path / --readonly"),
+    # 11/10/2026: /app1 exported the whole filesystem; a subvolume export uses the subvolume's real path.
+    ("nfs_create_export", {"nfs_id": "nfs1", "fs_name": "cephfs", "pseudo_path": "/app1", "subvolume": "app1"},
+     'subvolume_path="$(ceph fs subvolume getpath cephfs app1)" && ceph nfs export create cephfs --cluster-id nfs1 '
+     '--pseudo-path /app1 --fsname cephfs --path "$subvolume_path"'),
     ("rgw_apply_service", {"service_id": "s3", "hosts": ["ceph1"], "port": 8080},
      "ceph orch apply rgw s3 --placement='1 ceph1' --port=8080"),
 ])
@@ -34,6 +38,7 @@ def test_service_commands(action_id, params, expected):
     ("nfs_create_cluster", {"nfs_id": "n", "hosts": ["a", "a"]}),
     ("nfs_create_export", {"nfs_id": "n", "fs_name": "f", "pseudo_path": "/x", "path": "/a/../../etc"}),
     ("nfs_create_export", {"nfs_id": "n", "fs_name": "f", "pseudo_path": "x", "path": "/"}),
+    ("nfs_create_export", {"nfs_id": "n", "fs_name": "f", "pseudo_path": "/x", "subvolume": "a$(id)"}),
     ("rgw_apply_service", {"service_id": "s3", "hosts": ["h1"], "port": 70000}),
 ])
 def test_bad_service_parameters_are_refused(action_id, params):
@@ -111,3 +116,18 @@ def test_an_approved_service_proposal_goes_to_the_worker(admin):
     assert response.status_code in (200, 303), response.text
     with db_module.SessionLocal() as session:
         assert session.get(Action, created["action_id"]).status == "APPROVED"
+
+
+def test_a_subvolume_export_runs_its_path_lookup_inside_the_ceph_shell():
+    command = commands.get_command("nfs_create_export", None, {
+        "nfs_id": "nfs1", "fs_name": "cephfs", "pseudo_path": "/app1", "subvolume": "app1"}, exec_mode="cephadm")
+    assert command.startswith("cephadm shell -- bash -lc ") and "getpath" in command.split("bash -lc ", 1)[1]
+
+
+def test_the_proposal_drops_the_root_default_when_a_subvolume_is_chosen():
+    from dashboard.routes.file_services import _clean_params
+
+    body = {"nfs_id": "nfs1", "fs_name": "cephfs", "pseudo_path": "/app1"}
+    assert _clean_params("nfs_create_export", {**body, "subvolume": "app1", "path": "/"}) == {
+        **body, "subvolume": "app1", "readonly": False}
+    assert _clean_params("nfs_create_export", body)["path"] == "/"

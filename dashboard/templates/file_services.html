@@ -64,7 +64,8 @@
           <label>Cụm NFS <select name="nfs_id">{% for n in state.nfs %}<option>{{ n.id }}</option>{% endfor %}</select></label>
           <label>Filesystem <select name="fs_name">{% for fs in state.filesystems %}<option>{{ fs.name }}</option>{% endfor %}</select></label>
           <label>Đường dẫn NFS (pseudo) <input name="pseudo_path" required placeholder="/app1"></label>
-          <label>Thư mục trong CephFS <input name="path" value="/"></label>
+          <label>Subvolume <select name="subvolume">{% for fs in state.filesystems %}{% for sub in fs.subvolumes or [] %}<option value="{{ sub }}">{{ fs.name }} / {{ sub }}</option>{% endfor %}{% endfor %}<option value="">— không, dùng thư mục bên dưới —</option></select></label>
+          <label>Thư mục trong CephFS (khi không chọn subvolume) <input name="path" value="/"></label>
           <label><input type="checkbox" name="readonly" value="1"> Chỉ đọc</label>
           <button class="btn btn-primary" type="submit">Đề xuất tạo export</button>
         </form>
