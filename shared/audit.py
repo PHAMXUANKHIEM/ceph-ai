@@ -91,6 +91,8 @@ EVENT_PLAYBOOK_POSTCHECK_INCONCLUSIVE = "playbook_postcheck_inconclusive"
 EVENT_AUTOPILOT_EXECUTION_INCONCLUSIVE = "autopilot_execution_inconclusive"
 EVENT_REMEDIATION_CASE_VERDICT_UPDATED = "remediation_case_verdict_updated"
 EVENT_SYNTHETIC_EXECUTION_BLOCKED = "synthetic_execution_blocked"
+# An operator-approved action was being executed when the Worker stopped; its outcome is unknown.
+EVENT_APPROVED_EXECUTION_INTERRUPTED = "approved_execution_interrupted"
 # The Worker refused an approved action whose target cluster is gone, disabled or contradicts its parameters.
 EVENT_ACTION_CLUSTER_BINDING_BLOCKED = "action_cluster_binding_blocked"
 EVENT_FAILURE_LAB_EXECUTION_HELD = "failure_lab_execution_held"

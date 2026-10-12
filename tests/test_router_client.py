@@ -3725,6 +3725,39 @@ def test_reconciler_keeps_live_execution_lease_untouched(isolated_db):
         assert session.query(AuditEntry).count() == 0
 
 
+def test_an_approved_execution_interrupted_by_a_worker_stop_is_closed_not_retried(isolated_db, monkeypatch):
+    """Plan readiness-gap-review R3: a claimed approved action (Incident EXECUTING, Action APPROVED) used to stay
+    claimed forever after a Worker stop, skipped by every poll."""
+    from worker.autonomy_runtime import reconcile_interrupted_approved_executions
+
+    ssh = []
+    monkeypatch.setattr(router_client, "execute_command", lambda host, command, **kw: ssh.append(host) or "ok")
+    monkeypatch.setattr(router_client.commands, "execute_command", lambda host, command, **kw: ssh.append(host) or "ok")
+    _create_incident("incident-interrupted")
+    _create_incident("incident-not-claimed", ceph_code="OSD_DOWN")
+    with db_module.SessionLocal() as session:
+        interrupted = _approved_action(session, "incident-interrupted").id
+        waiting = _approved_action(session, "incident-not-claimed").id
+        session.get(Incident, "incident-interrupted").status = IncidentStatus.EXECUTING.value  # the claim
+        session.commit()
+
+    router_client._execute_approved_action(interrupted)
+    assert ssh == []  # the claim makes every poll skip it: stuck until reconciled
+
+    with db_module.SessionLocal() as session:
+        assert reconcile_interrupted_approved_executions(session, now=datetime.utcnow()) == 1
+        action = session.get(Action, interrupted)
+        assert action.status == ActionStatus.INCONCLUSIVE.value
+        assert session.get(Incident, "incident-interrupted").status == IncidentStatus.FAILED.value
+        assert json.loads(action.execution_progress)[-1]["step"] == "worker_restart"
+        assert session.query(AuditEntry).filter_by(
+            action_id=interrupted, event_type="approved_execution_interrupted").count() == 1
+        assert session.get(Action, waiting).status == ActionStatus.APPROVED.value  # not claimed: runs normally
+
+    router_client._execute_approved_action(interrupted)
+    assert ssh == []  # never retried
+
+
 def test_db_commit_failure_after_ssh_becomes_inconclusive_without_retry(isolated_db, monkeypatch):
     """A lost DB acknowledgement after SSH must never cause the SSH command to run twice."""
     from worker.autonomy_runtime import reconcile_expired_executions
