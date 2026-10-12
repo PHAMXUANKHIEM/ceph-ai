@@ -63,7 +63,13 @@
             <select id="crush-root-picker" aria-label="Chọn root CRUSH"></select>
           </label>
         </div>
-        <div id="crush-map-tree" class="crush-tree" data-cluster-id="{{ selected_cluster.id }}" hidden></div>
+        <p class="hint crush-map-data-note">Thống kê từ lần Watcher quét gần nhất. Các nhánh class-shadow như <code>default~hdd</code> có thể lặp cùng OSD; không cộng dung lượng giữa cây chính và cây shadow.</p>
+        <div class="crush-tree-scroll">
+          <div class="crush-tree-table">
+            <div class="crush-tree-columns" aria-hidden="true"><span>ID</span><span>NODE</span><span>CLASS</span><span>WEIGHT</span><span>REWEIGHT</span><span>SIZE</span><span>RAW USE</span><span>DATA</span><span>OMAP</span><span>META</span><span>AVAIL</span><span>%USE</span><span>VAR</span><span>PGS</span><span>STATUS</span></div>
+            <div id="crush-map-tree" class="crush-tree" data-cluster-id="{{ selected_cluster.id }}" hidden></div>
+          </div>
+        </div>
       </div>
     </section>
 

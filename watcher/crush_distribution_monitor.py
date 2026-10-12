@@ -25,6 +25,8 @@ no second cadence/setting for this feature.
 
 from __future__ import annotations
 
+import json
+
 from shared import db
 from shared.clusters import ensure_default_cluster
 from shared.models import Cluster, CrushOsdDistribution
@@ -65,14 +67,14 @@ def collect_osd_distribution(cluster: Cluster | None = None) -> dict[int, dict] 
                 cluster.ssh_key_path, cluster.ceph_exec_mode, "ceph osd tree",
             )
             osds = ceph_client._normalize_osd_tree(tree_payload)
-        host_by_osd_id = {o["osd_id"]: o.get("crush_host") for o in osds}
+        osd_tree_by_id = {o["osd_id"]: o for o in osds}
     except CephQueryError:
         # A MON hiccup here must not discard the bytes/pgs data the `ceph
         # osd df` call above already succeeded at fetching -- degrade to
         # "no host enrichment this scan" rather than raising out of a
         # function documented (and tested) to always return `None` or a
         # populated dict, never propagate an exception.
-        host_by_osd_id = {}
+        osd_tree_by_id = {}
 
     result: dict[int, dict] = {}
     for node in nodes:
@@ -81,11 +83,40 @@ def collect_osd_distribution(cluster: Cluster | None = None) -> dict[int, dict] 
         osd_id = node["id"]
         kb = node.get("kb")
         kb_used = node.get("kb_used")
+        def kib_to_bytes(key: str) -> int | None:
+            value = node.get(key)
+            return int(value * 1024) if isinstance(value, (int, float)) else None
+
+        def numeric(key: str, fallback: str | None = None):
+            value = node.get(key)
+            if value is None and fallback:
+                value = node.get(fallback)
+            return value if isinstance(value, (int, float)) else None
+
+        tree_detail = osd_tree_by_id.get(osd_id, {})
+        crush_weight = numeric("crush_weight")
+        reweight = numeric("reweight")
+        stats = {
+            "device_class": node.get("device_class", node.get("class")) or tree_detail.get("device_class"),
+            "crush_weight": crush_weight if crush_weight is not None else tree_detail.get("crush_weight"),
+            "reweight": reweight if reweight is not None else tree_detail.get("reweight"),
+            "size_bytes": kib_to_bytes("kb"),
+            "raw_used_bytes": kib_to_bytes("kb_used"),
+            "data_bytes": kib_to_bytes("kb_used_data"),
+            "omap_bytes": kib_to_bytes("kb_used_omap"),
+            "meta_bytes": kib_to_bytes("kb_used_meta"),
+            "avail_bytes": kib_to_bytes("kb_avail"),
+            "used_percent": numeric("utilization", "%use"),
+            "variance": numeric("var"),
+            "pgs": node.get("pgs") if isinstance(node.get("pgs"), int) else None,
+            "status": node.get("status", node.get("state")) or tree_detail.get("status"),
+        }
         result[osd_id] = {
-            "host": host_by_osd_id.get(osd_id),
+            "host": tree_detail.get("crush_host"),
             "bytes_used": int(kb_used) * 1024 if isinstance(kb_used, (int, float)) else None,
             "bytes_total": int(kb) * 1024 if isinstance(kb, (int, float)) else None,
             "pgs": node.get("pgs") if isinstance(node.get("pgs"), int) else None,
+            "stats_json": json.dumps(stats, separators=(",", ":")),
         }
     return result
 
@@ -124,6 +155,7 @@ def sync_distribution(cluster_id: str | None = None, cluster: Cluster | None = N
             row.bytes_used = detail["bytes_used"]
             row.bytes_total = detail["bytes_total"]
             row.pgs = detail["pgs"]
+            row.stats_json = detail.get("stats_json")
 
         removed_ids = existing_ids - set(current.keys())
         if removed_ids:

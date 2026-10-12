@@ -45,6 +45,21 @@
     return typeof value === "number" ? (value / CRUSH_WEIGHT_SCALE).toFixed(3) : "—";
   }
 
+  function fmtBytes(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+    var units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    var amount = value, index = 0;
+    while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index += 1; }
+    return amount.toFixed(index === 0 ? 0 : 1) + " " + units[index];
+  }
+
+  function appendCrushCell(row, value, className) {
+    var cell = document.createElement("span");
+    cell.className = "crush-stat-cell" + (className ? " " + className : "");
+    cell.textContent = value == null || value === "" ? "—" : String(value);
+    row.appendChild(cell);
+  }
+
   function nodeType(node) {
     return String(node.type || "unknown").toLowerCase();
   }
@@ -113,9 +128,14 @@
     var hasChildren = Array.isArray(node.children) && node.children.length > 0;
     var nodeKey = String(node.id);
     var isCollapsed = hasChildren && collapsedSet.has(nodeKey);
+    var stats = node.stats || {};
     var row = document.createElement("div");
     row.className = "crush-node-row";
 
+    appendCrushCell(row, node.id, "is-number");
+    var identity = document.createElement("div");
+    identity.className = "crush-node-identity";
+    identity.style.setProperty("--crush-depth", String(depth || 0));
     var toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "crush-node-toggle";
@@ -123,13 +143,13 @@
     toggle.setAttribute("aria-label", hasChildren ? (isCollapsed ? "Mở nhánh " : "Thu gọn nhánh ") + (node.name || "node") : "Node lá");
     toggle.setAttribute("aria-expanded", String(!isCollapsed));
     toggle.textContent = hasChildren ? (isCollapsed ? "▸" : "▾") : "";
-    row.appendChild(toggle);
+    identity.appendChild(toggle);
 
     var icon = document.createElement("span");
     icon.className = "crush-node-icon";
     icon.setAttribute("aria-hidden", "true");
     icon.textContent = nodeIcon(type);
-    row.appendChild(icon);
+    identity.appendChild(icon);
 
     var main = document.createElement("div");
     main.className = "crush-node-main";
@@ -146,20 +166,27 @@
     titleLine.appendChild(nameEl);
     main.appendChild(titleLine);
 
-    var metrics = document.createElement("div");
-    metrics.className = "crush-node-metrics";
-    appendMetric(metrics, "Weight", node.weight_normalized == null ? "—" : Number(node.weight_normalized).toFixed(3), "is-mono");
-    appendMetric(metrics, "PG", typeof node.pgs === "number" ? String(node.pgs) : "—", "is-mono");
-    if (node.partial_distribution_data) {
-      var partial = document.createElement("span");
-      partial.className = "crush-partial-note";
-      partial.textContent = "Một phần dữ liệu";
-      metrics.appendChild(partial);
-    }
-    main.appendChild(metrics);
-    row.appendChild(main);
-
-    if (type === "osd") buildUsage(row, node);
+    var weight = typeof stats.crush_weight === "number" ? stats.crush_weight : node.weight_normalized;
+    appendCrushCell(row, stats.device_class);
+    appendCrushCell(row, typeof weight === "number" ? weight.toFixed(5) : null, "is-number");
+    appendCrushCell(row, stats.reweight, "is-number");
+    appendCrushCell(row, fmtBytes(stats.size_bytes != null ? stats.size_bytes : node.bytes_total), "is-number");
+    appendCrushCell(row, fmtBytes(stats.raw_used_bytes != null ? stats.raw_used_bytes : node.bytes_used), "is-number");
+    appendCrushCell(row, fmtBytes(stats.data_bytes), "is-number");
+    appendCrushCell(row, fmtBytes(stats.omap_bytes), "is-number");
+    appendCrushCell(row, fmtBytes(stats.meta_bytes), "is-number");
+    appendCrushCell(row, fmtBytes(stats.avail_bytes != null ? stats.avail_bytes : (typeof node.bytes_total === "number" && typeof node.bytes_used === "number" ? node.bytes_total - node.bytes_used : null)), "is-number");
+    var usePct = stats.used_percent;
+    if (typeof usePct !== "number" && typeof node.bytes_used === "number" && typeof node.bytes_total === "number" && node.bytes_total > 0) usePct = node.bytes_used / node.bytes_total * 100;
+    appendCrushCell(row, typeof usePct === "number" ? usePct.toFixed(2) + "%" : null, "is-number");
+    appendCrushCell(row, stats.variance, "is-number");
+    appendCrushCell(row, node.pgs, "is-number");
+    var statusCell = document.createElement("span");
+    statusCell.className = "crush-stat-cell crush-stat-status";
+    statusCell.textContent = stats.status == null ? "—" : String(stats.status);
+    var normalizedStatus = String(stats.status || "").toLowerCase();
+    if (normalizedStatus === "up" || normalizedStatus === "down") statusCell.classList.add("is-" + normalizedStatus);
+    row.appendChild(statusCell);
 
     if (node.recent_change) {
       var badge = document.createElement("span");
@@ -169,8 +196,10 @@
         ? "Mới thêm"
         : "Weight " + fmtWeight(node.recent_change.old_weight) + " → " + fmtWeight(node.recent_change.new_weight);
       badge.title = node.recent_change.changed_at ? "Thay đổi lúc " + new Date(node.recent_change.changed_at).toLocaleString("vi-VN") : "";
-      row.appendChild(badge);
+      main.appendChild(badge);
     }
+    identity.appendChild(main);
+    row.insertBefore(identity, row.children[1]);
     wrap.appendChild(row);
 
     if (hasChildren) {

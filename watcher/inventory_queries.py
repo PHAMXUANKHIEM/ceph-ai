@@ -333,6 +333,7 @@ def _crush_distribution(cluster_id: str, include_legacy_null: bool) -> dict[int,
                 "bytes_used": row.bytes_used,
                 "bytes_total": row.bytes_total,
                 "pgs": row.pgs,
+                "stats": json.loads(row.stats_json) if row.stats_json else None,
             }
             for row in rows
         }
@@ -376,6 +377,7 @@ def _augment_crush_node(node: dict, distribution: dict[int, dict], changes: dict
             "bytes_used": row.get("bytes_used") if row else None,
             "bytes_total": row.get("bytes_total") if row else None,
             "pgs": row.get("pgs") if row else None,
+            "stats": row.get("stats") if row else None,
             "has_distribution_data": row is not None,
             "partial_distribution_data": False,
             "recent_change": changes.get(node_id),

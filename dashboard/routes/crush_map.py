@@ -90,6 +90,7 @@ def _load_distribution_by_osd_id(cluster_id: str, include_legacy_null: bool = Fa
                 "bytes_used": row.bytes_used,
                 "bytes_total": row.bytes_total,
                 "pgs": row.pgs,
+                "stats": json.loads(row.stats_json) if row.stats_json else None,
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             }
             for row in rows
@@ -161,6 +162,7 @@ def _augment_node(node: dict, distribution: dict[int, dict], changes: dict[int, 
             "bytes_used": row["bytes_used"] if row else None,
             "bytes_total": row["bytes_total"] if row else None,
             "pgs": row["pgs"] if row else None,
+            "stats": row["stats"] if row else None,
             "has_distribution_data": row is not None,
             "partial_distribution_data": False,
             "recent_change": recent_change,
