@@ -139,7 +139,7 @@ async def file_services_page(request: Request, user: str = Depends(require_login
 def _clean_params(action_id: str, body: dict) -> dict:
     keys = {"cephfs_create_volume": ("fs_name",), "cephfs_create_subvolume": ("fs_name", "subvolume", "size_gib"),
             "nfs_create_cluster": ("nfs_id", "hosts"),
-            "nfs_create_export": ("nfs_id", "fs_name", "pseudo_path", "path", "readonly"),
+            "nfs_create_export": ("nfs_id", "fs_name", "pseudo_path", "subvolume", "path", "readonly"),
             "rgw_apply_service": ("service_id", "hosts", "port")}[action_id]
     params = {key: body[key] for key in keys if body.get(key) not in (None, "", [])}
     for key in ("size_gib", "port"):
@@ -149,7 +149,10 @@ def _clean_params(action_id: str, body: dict) -> dict:
             except (TypeError, ValueError) as exc:
                 raise HTTPException(status_code=400, detail=f"{key} phải là số nguyên.") from exc
     if action_id == "nfs_create_export":
-        params.setdefault("path", "/")
+        if params.get("subvolume"):
+            params.pop("path", None)  # the Worker exports the subvolume's own path
+        else:
+            params.setdefault("path", "/")
         params["readonly"] = body.get("readonly") is True
     return params
 

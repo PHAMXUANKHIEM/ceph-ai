@@ -317,12 +317,26 @@ def _nfs_create_cluster_command(params: dict) -> str:
 
 
 def _nfs_create_export_command(params: dict) -> str:
+    """Export a subvolume (its real path, quota included) or an explicit CephFS directory.
+
+    On 11/10/2026 the first export on CS-STAGING (/app1) exported the whole
+    filesystem ("path: /"): the form defaulted the directory to "/" and had
+    no way to name the subvolume, whose path is a generated
+    /volumes/_nogroup/<name>/<uuid> that only `ceph fs subvolume getpath`
+    knows. The command runs inside the Ceph runtime shell
+    (wrap_ceph_runtime_command), so the lookup happens there.
+    """
+    fs_name = shlex.quote(_require_name(params, 'fs_name'))
     command = ("ceph nfs export create cephfs"
                f" --cluster-id {shlex.quote(_require_name(params, 'nfs_id'))}"
                f" --pseudo-path {shlex.quote(_require_export_path(params, 'pseudo_path'))}"
-               f" --fsname {shlex.quote(_require_name(params, 'fs_name'))}"
-               f" --path {shlex.quote(_require_export_path(params, 'path'))}")
-    return command + (" --readonly" if params.get("readonly") is True else "")
+               f" --fsname {fs_name}")
+    readonly = " --readonly" if params.get("readonly") is True else ""
+    if params.get("subvolume"):
+        subvolume = shlex.quote(_require_name(params, "subvolume"))
+        return (f'subvolume_path="$(ceph fs subvolume getpath {fs_name} {subvolume})" && '
+                f'{command} --path "$subvolume_path"{readonly}')
+    return f"{command} --path {shlex.quote(_require_export_path(params, 'path'))}{readonly}"
 
 
 def _rgw_apply_service_command(params: dict) -> str:
