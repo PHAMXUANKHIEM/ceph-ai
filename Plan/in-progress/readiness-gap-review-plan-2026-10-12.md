@@ -123,6 +123,27 @@ Dùng lại các mục còn mở của `strict-production-readiness-closure-plan
 - [ ] Ưu tiên RBD mirroring/DR, RGW multisite, SMB/NVMe-oF, HA NFS/S3 theo nhu cầu đã xác nhận.
 - Việc rẻ làm ngay bất kể quyết định: trang sao chép RBD ghi rõ "chỉ đọc / RPO ước tính".
 
+### R8 — Bản cài cho khách và tri thức AI dùng chung (12/10/2026)
+Khách chạy Ceph AI trong mạng của họ, thường không có đường ra internet (ví dụ server 10.2.0.94), và không bao giờ
+kết nối vào DB của mình. Quyết định của chủ dự án: mỗi khách có DB riêng tại chỗ; về phía mình, mỗi khách một bảng
+riêng cho dữ liệu gửi về, còn tri thức AI học được thì dùng chung.
+
+- [ ] R8.1 **Bộ cài offline**: một file `ceph-ai-<version>.tar` gồm image (`podman save`, theo digest đã duyệt),
+  `compose.yaml`, script `install.sh` / `upgrade.sh` (kiểm tra checksum, nạp image, migration, khởi động, smoke),
+  mẫu `.env`, hướng dẫn, `SHA256SUMS`. Thử: nâng cấp bản cũ trên 10.2.0.94 chỉ bằng file mang sang.
+- [ ] R8.2 **Gói tri thức** (`knowledge-pack-<version>.json`, có version, kèm trong bộ cài): template log Ceph đã
+  chuẩn hoá, tham số khởi đầu cho dự báo theo loại metric, họ lỗi/runbook/contract, thống kê playbook để tham khảo.
+  Lệnh `export` (từ DB của mình) và `import` (khi cài/nâng cấp). Test bắt buộc: gói không chứa IP, hostname, fsid,
+  tên cụm, mã khách. Độ tin cậy Autopilot không bao giờ đi theo gói.
+- [ ] R8.3 **Gửi số liệu về (chỉ khi khách cho phép đi ra cổng 443)**: mặc định tắt; trang xem trước nội dung;
+  chỉ số liệu tổng hợp đã ẩn danh (tần suất template lỗi, đánh giá playbook, sai số dự báo theo metric); audit.
+- [ ] R8.4 **API thu nhận** (HTTPS 443 sau reverse proxy, chỉ `POST`, mỗi khách một khoá/chứng chỉ thu hồi được) và
+  **DB `ceph_ai_federation`** trên node DB (sau khi tăng dung lượng): mỗi khách một bảng `inbox_<mã khách>`
+  (payload JSON có version), bảng `knowledge_*` dùng chung. Cổng 5432 không bao giờ mở ra internet.
+- [ ] R8.5 **Job gộp**: từ mọi `inbox_*` sinh `knowledge_*`, rồi sinh gói tri thức cho bản phát hành sau.
+- [ ] R8.6 Thử đầu-cuối: CS-STAGING đóng vai khách gửi số liệu → gộp → gói mới → bản cài sạch nhập gói và nhận
+  ra log Ceph ngay lần quét đầu.
+
 ## 4. Thứ tự
 
 1. R1 (P0.1) — đã có bằng chứng lỗi thật, ảnh hưởng mọi thao tác trên cụm phụ.
@@ -130,6 +151,7 @@ Dùng lại các mục còn mở của `strict-production-readiness-closure-plan
 3. R3 và R4 (P0.2 và Pha 0).
 4. R5, rồi R6.
 5. R7 cần quyết định của chủ dự án; không chặn R1–R5.
+6. R8: R8.1 trước (cần cho 10.2.0.94), rồi R8.2, R8.4–R8.5, R8.3, R8.6.
 
 ## 5. Theo dõi điểm
 
