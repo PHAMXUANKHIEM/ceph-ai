@@ -11,7 +11,7 @@ import re
 import json
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from shared.time import utc_now
 
 from config.settings import settings
@@ -56,6 +56,10 @@ class PromotionPolicy:
     minimum_interval_coverage: float = 0.8
     max_alert_volume_increase: int = 0
     max_data_quality_failure_rate: float = 0.0
+    # Evidence older than this proves nothing about today's model: on
+    # 12/10/2026, 22 of 30 promotion requests rested on scopes whose last
+    # evaluation was 19-22 days old.
+    max_evaluation_age_hours: float = 48.0
 
 
 @dataclass(frozen=True)
@@ -148,20 +152,24 @@ def _optional_metric_guard(
         return False
     return True
 def evaluate_guarded_promotion(
-    evaluations: list, *, policy: PromotionPolicy | None = None,
+    evaluations: list, *, policy: PromotionPolicy | None = None, now: datetime | None = None,
 ) -> PromotionDecision:
     """Evaluate recent consecutive evidence without changing any state.
 
-    Every evaluation in the required streak must satisfy every gate.  Missing
-    metrics fail closed; volume evaluations have no meaningful CPU-style
-    false-positive rate, so two missing rates are treated as not applicable.
+    Every evaluation in the required streak must satisfy every gate, and the
+    newest must be recent: a scope that stopped being evaluated keeps its
+    last streak forever.  Missing metrics fail closed; volume evaluations
+    have no meaningful CPU-style false-positive rate, so two missing rates
+    are treated as not applicable.
     """
     policy = policy or default_promotion_policy()
+    now = now or utc_now()
     ordered = sorted(evaluations, key=lambda row: row.target_at)
     recent = ordered[-policy.required_consecutive_evaluations:]
     checks = {
         "minimum_outcomes": False,
         "consecutive_evaluations": len(recent) >= policy.required_consecutive_evaluations,
+        "fresh_evaluations": False,
         "mae_improved": False,
         "smape_improved": False,
         "false_positive_rate_guard": False,
@@ -178,6 +186,9 @@ def evaluate_guarded_promotion(
             checks,
         )
 
+    checks["fresh_evaluations"] = (
+        recent[-1].target_at >= now - timedelta(hours=policy.max_evaluation_age_hours)
+    )
     checks["minimum_outcomes"] = all(
         min(int(row.active_evaluated), int(row.candidate_evaluated)) >= policy.minimum_outcomes
         for row in recent
@@ -253,6 +264,53 @@ def evaluate_guarded_promotion(
         "candidate đạt đủ dữ liệu, MAE/SMAPE tốt hơn liên tục và không tăng false-positive rate",
         checks,
     )
+
+
+def _recent_candidate_mae(evaluations: list, policy: PromotionPolicy) -> float:
+    recent = sorted(evaluations, key=lambda row: row.target_at)[-policy.required_consecutive_evaluations:]
+    values = [float(row.candidate_mae) for row in recent if row.candidate_mae is not None]
+    return sum(values) / len(values) if values else math.inf
+
+
+def scope_decision(session, candidate: ForecastModelRegistry, active: ForecastModelRegistry, *,
+                   policy: PromotionPolicy | None = None, now: datetime | None = None,
+                   evaluations: list | None = None) -> PromotionDecision:
+    """The guard for one candidate, allowing only the best passing candidate of its scope.
+
+    A scope has one shadow candidate per training window (24/72/168/720 h);
+    on short histories they forecast alike, and all four used to be
+    requested for one active model. Among the candidates that pass the
+    guard, the one with the lowest MAE over the guard streak wins, the
+    shorter window on a tie.
+    """
+    policy = policy or default_promotion_policy()
+    now = now or utc_now()
+    if evaluations is None:
+        evaluations = _latest_evaluations(session, candidate, active)
+    decision = evaluate_guarded_promotion(evaluations, policy=policy, now=now)
+    if not decision.allowed:
+        return decision
+
+    def rank(model: ForecastModelRegistry, rows: list) -> tuple:
+        return (_recent_candidate_mae(rows, policy), int(model.training_window_hours or 0), str(model.id))
+
+    own = rank(candidate, evaluations)
+    siblings = session.query(ForecastModelRegistry).filter(
+        ForecastModelRegistry.scope_type == candidate.scope_type,
+        ForecastModelRegistry.scope_key == candidate.scope_key,
+        ForecastModelRegistry.status.in_(("CANDIDATE", "SHADOW")),
+        ForecastModelRegistry.id != candidate.id,
+    ).all()
+    for sibling in siblings:
+        rows = _latest_evaluations(session, sibling, active)
+        if rank(sibling, rows) < own and evaluate_guarded_promotion(rows, policy=policy, now=now).allowed:
+            return PromotionDecision(
+                False, PROMOTION_BLOCKED,
+                f"guard bị chặn: best_in_scope (candidate {sibling.version} của cùng scope tốt hơn)",
+                {**decision.checks, "best_in_scope": False},
+            )
+    return PromotionDecision(decision.allowed, decision.status, decision.reason,
+                             {**decision.checks, "best_in_scope": True})
 
 
 def _scope_model_identity(comparison) -> tuple[str, str, str, str]:
@@ -485,7 +543,7 @@ def request_promotion(session, *, candidate_id: str, actor: str,
             evidence={"scope_schema": candidate.scope_schema}, now=now,
         )
         return PromotionDecision(False, PROMOTION_BLOCKED, reason, {"scope_dimensions": False})
-    decision = evaluate_guarded_promotion(_latest_evaluations(session, candidate, active), policy=policy)
+    decision = scope_decision(session, candidate, active, policy=policy, now=now)
     _audit(
         session, candidate_model_id=candidate.id, previous_active_model_id=active.id,
         event_type=decision.status, actor=actor, reason=decision.reason,
@@ -544,7 +602,7 @@ def approve_promotion(session, *, candidate_id: str, actor: str,
             evidence={"scope_schema": candidate.scope_schema}, now=now,
         )
         raise ValueError(reason)
-    decision = evaluate_guarded_promotion(_latest_evaluations(session, candidate, active), policy=policy)
+    decision = scope_decision(session, candidate, active, policy=policy, now=now)
     if not decision.allowed:
         _audit(
             session, candidate_model_id=candidate.id, previous_active_model_id=active.id,

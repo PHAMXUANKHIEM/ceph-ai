@@ -339,8 +339,8 @@ def model_promotion_status(cluster_id: str, cluster_name: str) -> dict:
             active = session.query(ForecastModelRegistry).filter_by(
                 scope_type=row.scope_type, scope_key=row.scope_key, status="ACTIVE",
             ).one_or_none()
-            decision = model_registry.evaluate_guarded_promotion(
-                list(reversed(evaluations)),
+            decision = model_registry.scope_decision(
+                session, row, active,
             ) if row.status in {"CANDIDATE", "SHADOW"} and active else None
             output.append({
                 "id": row.id,

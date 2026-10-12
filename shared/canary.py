@@ -13,7 +13,7 @@ from statistics import mean
 
 from config.settings import settings
 from shared.learning_runtime import evaluate as evaluate_learning_runtime
-from shared.model_registry import default_promotion_policy, evaluate_guarded_promotion
+from shared.model_registry import default_promotion_policy, scope_decision
 from shared.models import (
     ForecastModelEvaluation,
     ForecastModelRegistry,
@@ -212,7 +212,7 @@ def build_canary_report(
             candidate_model_id=candidate.id,
             active_model_id=active.id,
         ).order_by(ForecastModelEvaluation.target_at).all()
-        decision = evaluate_guarded_promotion(evaluations, policy=policy)
+        decision = scope_decision(session, candidate, active, policy=policy, evaluations=evaluations)
         comparison = {
             "evaluation_count": len(evaluations),
             "active_mae": _average([row.active_mae for row in evaluations]),
