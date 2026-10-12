@@ -237,6 +237,31 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def no_real_service_processes(request, monkeypatch, tmp_path_factory):
+    """Tests never hold a production singleton lock nor start a Ceph AI service on this host.
+
+    Branch pipelines run on the Ceph AI host, where /run/ceph-ai is the
+    production runtime directory bind-mounted into the containers. On
+    12/10/2026 a test there spawned a real ``python -m
+    watcher.remediation_main`` (the Settings restart helper's
+    ``_start_process``) while a deploy restarted the containers; it took
+    /run/ceph-ai/remediation-watcher.lock, the production remediation watcher
+    could not start (60+ restarts), CS-LAB had no remediation loop and the
+    deploy of 4d580496 failed its health check. Every test gets its own
+    runtime directory and lock file; only ``live`` tests may spawn processes.
+    """
+    runtime = tmp_path_factory.mktemp("runtime")
+    monkeypatch.setenv("CEPH_AI_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(settings, "ai_remediation_lock_file", str(runtime / "remediation-watcher.lock"),
+                        raising=False)
+    if request.node.get_closest_marker("live"):
+        return
+    from dashboard.routes import settings as settings_route
+
+    monkeypatch.setattr(settings_route, "_start_process", lambda module, log_path, env: 2 ** 22 + 1)
+
+
+@pytest.fixture(autouse=True)
 def isolated_ceph_query_cache(tmp_path_factory, monkeypatch):
     """Give every test its own Ceph query cache.
 
