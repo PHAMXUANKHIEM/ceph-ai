@@ -97,6 +97,26 @@ NEW_CLUSTER_DEPLOY_ACTION_IDS = frozenset({
 INCIDENT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN = 2
 
 
+def _openstack_hosts(cluster: Cluster | None) -> set[str]:
+    """The OpenStack controller/compute nodes configured for this cluster (its row; the default's when None).
+
+    Cinder actions (attach/detach, snapshots) run on a controller, which is
+    not a Ceph node, so the target check refused every one of them; none had
+    ever run in production when this was found (12/10/2026, Plan
+    readiness-gap-review R2).
+    """
+    row = cluster
+    if row is None:
+        with db.SessionLocal() as session:
+            row = session.query(Cluster).filter(Cluster.is_default.is_(True)).one_or_none()
+            if row is not None:
+                session.expunge(row)
+    if row is None:
+        return set()
+    raw = f"{row.openstack_controller_nodes or ''},{row.openstack_compute_nodes or ''}"
+    return {host.strip() for host in raw.split(",") if host.strip()}
+
+
 def _live_action_target_safety_reason(
     cluster: Cluster | None,
     nodes: list[str],
@@ -119,7 +139,7 @@ def _live_action_target_safety_reason(
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return None
     if not allow_unregistered_targets:
-        allowed_hosts = {row["host"] for row in configured_nodes(cluster)}
+        allowed_hosts = {row["host"] for row in configured_nodes(cluster)} | _openstack_hosts(cluster)
         unexpected = [host for host in nodes if host not in allowed_hosts]
         if unexpected:
             return (

@@ -4078,6 +4078,24 @@ def test_action_target_guard_rejects_a_test_fixture_ssh_key(monkeypatch):
     assert reason is not None and "không hợp lệ cho production" in reason
 
 
+def test_action_target_guard_accepts_the_clusters_openstack_nodes(isolated_db, monkeypatch):
+    """Cinder actions target an OpenStack controller, never a Ceph node; the guard refused all of them (12/10/2026)."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(name="with-openstack", ceph_mon_nodes="10.60.0.1", ssh_user="root", ssh_key_path="/k",
+                          openstack_controller_nodes="10.60.9.1, 10.60.9.2", openstack_compute_nodes="10.60.9.5",
+                          is_default=False, is_active=True)
+        session.add(cluster)
+        session.commit()
+        session.refresh(cluster)
+        session.expunge(cluster)
+    key = "/root/.ssh/id_ed25519"
+
+    for host in ("10.60.0.1", "10.60.9.2", "10.60.9.5"):
+        assert router_client._live_action_target_safety_reason(cluster, [host], key) is None
+    assert "không thuộc cấu hình" in router_client._live_action_target_safety_reason(cluster, ["10.60.9.9"], key)
+
+
 def test_action_target_guard_stays_out_of_the_way_under_pytest():
     """Test dùng host giả có chủ đích; chốt phải im trong pytest, nếu không
     27 test đường thực thi sẽ vỡ."""
