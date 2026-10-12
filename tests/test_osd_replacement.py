@@ -14,9 +14,11 @@ GiB = 1048576  # kB
 class FakeCluster:
     """Hosts ceph1-4 with OSDs 0-3 (one each), pool size 3, cephadm."""
 
-    def __init__(self, *, hosts=4, status="up", used_kb=10 * GiB, destroy_polls=0, auto_create=False):
+    def __init__(self, *, hosts=4, status="up", used_kb=10 * GiB, destroy_polls=0, auto_create=False,
+                 inactive_pgs=0):
         self.osds = {i: {"host": f"ceph{i + 1}", "status": status, "reweight": 1} for i in range(hosts)}
         self.used_kb, self.destroy_polls, self.auto_create = used_kb, destroy_polls, auto_create
+        self.inactive_pgs = inactive_pgs
         self.commands: list[str] = []
 
     def __call__(self, host, command, **kwargs):
@@ -39,11 +41,24 @@ class FakeCluster:
                                           "kb_avail": 100 * GiB - self.used_kb, "reweight": 1} for i in self.osds]})
         if cmd == "ceph osd dump":
             return json.dumps({"nearfull_ratio": 0.85})
+        if cmd == "ceph pg stat":
+            return json.dumps({"pg_summary": {"num_pgs": 100, "num_pg_by_state": [
+                {"name": "active+undersized+degraded", "num": 100 - self.inactive_pgs},
+                {"name": "undersized+degraded+peered", "num": self.inactive_pgs}]}})
+        if cmd.startswith("ceph orch osd rm stop"):
+            return ""
+        if cmd == "ceph orch ps --daemon_type osd":
+            return json.dumps([{"daemon_name": f"osd.{i}"} for i, o in self.osds.items() if o["status"] != "destroyed"])
+        if cmd.startswith("ceph orch daemon rm osd."):
+            return ""
+        if cmd.startswith("ceph osd destroy"):
+            self.osds[int(cmd.split()[3])]["status"] = "destroyed"
+            return ""
         if cmd.startswith("ceph orch osd rm"):
             self._removing = int(cmd.split()[4])
-            if self.osds[self._removing]["status"] == "down" and "--force" not in cmd.split():
-                # Real cephadm waits for `ceph osd safe-to-destroy`, which never answers for a dead OSD
-                # on a cluster without spare hosts: "done, waiting for purge" forever (CS-STAGING 12/10/2026).
+            if self.osds[self._removing]["status"] == "down":
+                # cephadm (Reef) checks `ceph osd safe-to-destroy` even with --force; for a dead OSD on a
+                # cluster without spare hosts it never passes: "done, waiting for purge" (CS-STAGING 12/10/2026).
                 return ""
             if not self.destroy_polls:
                 self.osds[self._removing]["status"] = "destroyed"
@@ -147,8 +162,21 @@ def test_a_down_osd_is_replaced_even_without_spare_hosts(monkeypatch):
     ok, progress, _ = _run("replace_failed_osd", osd_id=0)
 
     assert ok, progress
-    assert "ceph orch osd rm 0 --replace --force" in fake.commands  # nothing to drain from a dead disk
+    assert not any(command.startswith("ceph orch osd rm 0 --replace") for command in fake.commands)
+    assert "ceph orch daemon rm osd.0 --force" in fake.commands
+    assert "ceph osd destroy 0 --yes-i-really-mean-it" in fake.commands
     assert fake.osds[0]["status"] == "destroyed"
+
+
+def test_a_down_osd_is_never_destroyed_while_a_pg_is_inactive(monkeypatch):
+    """An inactive PG may have its last copy on the dead OSD: destroying it would lose that data."""
+    fake = FakeCluster(hosts=3, status="down", inactive_pgs=4)
+    _patch(monkeypatch, fake)
+
+    ok, progress, _ = _run("replace_failed_osd", osd_id=0)
+
+    assert ok is False and "4 PG chưa active" in " ".join(step.get("message") or "" for step in progress)
+    assert not any(command.startswith(("ceph osd destroy", "ceph orch daemon rm")) for command in fake.commands)
 
 
 def test_finishing_refuses_an_osd_that_is_not_destroyed_yet(env):

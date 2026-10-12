@@ -124,23 +124,50 @@ def phase_preflight(nodes: list[dict], params: dict, on_host_update) -> None:
 
 # --- removal ------------------------------------------------------------------------------
 
-def phase_remove(nodes: list[dict], params: dict, on_host_update) -> None:
-    """Ask cephadm to remove the OSD and keep its ID.
+def _inactive_pgs(params: dict) -> int:
+    summary = (_ceph(params, "ceph pg stat") or {}).get("pg_summary") or {}
+    active = sum(int(item.get("num") or 0) for item in summary.get("num_pg_by_state") or []
+                 if "active" in str(item.get("name") or "").split("+"))
+    return int(summary.get("num_pgs") or 0) - active
 
-    A running OSD is drained first. A failed (down) one is removed with
-    --force: its disk can no longer be read, so there is nothing to drain,
-    and cephadm would otherwise wait for `ceph osd safe-to-destroy`, which
-    on a cluster with no spare failure domain never answers ("not all PGs
-    are active+clean"). On CS-STAGING (3 hosts, size 3) the first real
-    replacement of a failed OSD waited "done, waiting for purge" forever
-    (12/10/2026, Plan readiness-gap-review R2). The other copies keep the
-    data; the cluster stays degraded until the new disk is in.
+
+def _destroy_failed_osd(params: dict, osd_id: int) -> None:
+    """Destroy a dead OSD directly, keeping its ID, when every PG is still served by its other copies.
+
+    `ceph orch osd rm --replace` cannot do it: cephadm (Reef 18.2) checks
+    `ceph osd safe-to-destroy` before destroying, --force or not, and for a
+    dead OSD on a cluster with no spare failure domain that check never
+    passes. On CS-STAGING the first two real replacements of a failed OSD
+    waited "done, waiting for purge" forever (12/10/2026, Plan
+    readiness-gap-review R2). A dead disk holds nothing readable, so the
+    standard procedure applies: remove the stopped daemon and
+    `ceph osd destroy`. Only when no PG is inactive: an inactive PG may have
+    its last copy on this OSD.
     """
+    inactive = _inactive_pgs(params)
+    if inactive:
+        raise DeployPhaseError(f"{inactive} PG chưa active — osd.{osd_id} có thể đang giữ bản sao cuối cùng; "
+                               "không destroy. Khôi phục các PG đó trước.")
+    try:
+        _ceph(params, f"ceph orch osd rm stop {osd_id}", as_json=False)  # an earlier, stuck removal
+    except DeployPhaseError:
+        pass  # nothing queued for this OSD
+    daemons = {str(item.get("daemon_name")) for item in _ceph(params, "ceph orch ps --daemon_type osd") or []}
+    if f"osd.{osd_id}" in daemons:
+        _ceph(params, f"ceph orch daemon rm osd.{osd_id} --force", as_json=False)
+    _ceph(params, f"ceph osd destroy {osd_id} --yes-i-really-mean-it", as_json=False)
+
+
+def phase_remove(nodes: list[dict], params: dict, on_host_update) -> None:
+    """Remove the OSD and keep its ID: drain a running one through cephadm, destroy a dead one directly."""
     osd_id = _osd_id(params)
-    force = params.get("_was_up") is False
-    _ceph(params, f"ceph orch osd rm {osd_id} --replace" + (" --force" if force else ""), as_json=False)
-    on_host_update(_status(params, "done", f"đã yêu cầu `ceph orch osd rm --replace{' --force' if force else ''}` "
-                                           f"(giữ ID{'; OSD đã hỏng nên không dời dữ liệu' if force else ''})"))
+    if params.get("_was_up") is False:
+        _destroy_failed_osd(params, osd_id)
+        on_host_update(_status(params, "done", "OSD đã hỏng: đã gỡ daemon và `ceph osd destroy` (giữ ID); "
+                                               "các bản sao còn lại giữ dữ liệu"))
+        return
+    _ceph(params, f"ceph orch osd rm {osd_id} --replace", as_json=False)
+    on_host_update(_status(params, "done", "đã yêu cầu `ceph orch osd rm --replace` (giữ ID)"))
 
 
 def _destroyed(params: dict, osd_id: int) -> bool:
@@ -217,7 +244,7 @@ def phase_wait_up(nodes: list[dict], params: dict, on_host_update) -> None:
 PHASES: dict[str, list[tuple[str, str, int, Callable]]] = {
     ACTION_START: [
         ("osd_preflight", "Kiểm tra an toàn (số bản sao, dung lượng, trạng thái OSD)", 15, phase_preflight),
-        ("osd_remove", "ceph orch osd rm --replace (giữ ID)", 35, phase_remove),
+        ("osd_remove", "Gỡ OSD, giữ ID (đang chạy: dời dữ liệu; đã hỏng: destroy)", 35, phase_remove),
         ("osd_wait", "Chờ dời dữ liệu và OSD destroyed (tối đa 20 phút)", 95, phase_wait_destroyed),
     ],
     ACTION_FINISH: [
