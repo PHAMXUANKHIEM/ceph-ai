@@ -989,10 +989,12 @@ def test_list_osds_walks_flat_tree_via_integer_child_references(fake_ssh, monkey
 
     osds = ceph_client.list_osds()
 
+    # The tree carries no class or weights here; the CRUSH table's extra fields stay None, never guessed.
+    no_detail = {"device_class": None, "crush_weight": None, "reweight": None}
     assert osds == [
-        {"osd_id": 0, "crush_host": "host-a", "status": "up"},
-        {"osd_id": 1, "crush_host": "host-a", "status": "down"},
-        {"osd_id": 2, "crush_host": "host-b", "status": "up"},
+        {"osd_id": 0, "crush_host": "host-a", "status": "up", **no_detail},
+        {"osd_id": 1, "crush_host": "host-a", "status": "down", **no_detail},
+        {"osd_id": 2, "crush_host": "host-b", "status": "up", **no_detail},
     ]
 
 

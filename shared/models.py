@@ -2568,6 +2568,7 @@ class CrushOsdDistribution(Base):
     bytes_used: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     bytes_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     pgs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stats_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utc_now, onupdate=utc_now
     )

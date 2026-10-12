@@ -2723,6 +2723,9 @@ def _normalize_osd_tree(payload: dict | list) -> list[dict]:
                 {
                     "osd_id": child.get("id"),
                     "crush_host": host_name,
+                    "device_class": child.get("device_class", child.get("class")),
+                    "crush_weight": child.get("crush_weight"),
+                    "reweight": child.get("reweight"),
                     "status": child.get("status", "?"),
                 }
             )
