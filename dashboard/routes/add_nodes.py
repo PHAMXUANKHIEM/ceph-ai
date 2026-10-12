@@ -170,7 +170,9 @@ async def propose_add_nodes(request: Request, user: str = Depends(require_login)
         action = Action(
             incident_id=incident.id, action_id=cluster_expansion.ACTION_ID,
             classification=gate.classify_action(cluster_expansion.ACTION_ID).value,
-            status=ActionStatus.PENDING_APPROVAL.value, rationale=rationale, target_nodes=json.dumps(ips),
+            # The MON the Worker runs `ceph orch` on: the new hosts are not configured nodes yet, and the
+            # Worker refuses targets outside the configuration (seen with OSD replacement on 12/10/2026).
+            status=ActionStatus.PENDING_APPROVAL.value, rationale=rationale, target_nodes=json.dumps([mons[0]]),
             action_params=json.dumps(params), proposed_command=preview,
             expires_at=utc_now() + timedelta(hours=max(1, settings.action_approval_expiry_hours)),
             idempotency_key=gate.CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY,

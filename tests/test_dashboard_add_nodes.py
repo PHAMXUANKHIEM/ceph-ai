@@ -16,7 +16,7 @@ def admin(dashboard_client, monkeypatch):
     return dashboard_client
 
 
-def test_a_proposal_runs_through_an_existing_mon_and_needs_the_typed_ips(admin):
+def test_a_proposal_runs_through_an_existing_mon_and_needs_the_typed_ips(admin, monkeypatch):
     assert "Thêm node" in admin.get("/add-nodes").text
 
     response = admin.post("/add-nodes/propose", json={
@@ -31,6 +31,15 @@ def test_a_proposal_runs_through_an_existing_mon_and_needs_the_typed_ips(admin):
         assert params["nodes"] == [{"ip": "10.30.0.9", "roles": ["osd"], "osd_disks": ["/dev/vdb"]},
                                    {"ip": "10.30.0.10", "roles": [], "osd_disks": []}]
         assert params["_admin_mon"] and "ceph orch host add" in action.proposed_command
+        targets = json.loads(action.target_nodes)
+
+    # The new hosts are not configured nodes yet: the action targets the MON, which the Worker accepts
+    # (its target check is skipped under pytest, so run it for real).
+    from worker.llm import router_client
+
+    assert targets == [params["_admin_mon"]]
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    assert router_client._live_action_target_safety_reason(None, targets, "/root/.ssh/id_ed25519") is None
 
 
 @pytest.mark.parametrize("body", [
