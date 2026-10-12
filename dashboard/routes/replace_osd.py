@@ -24,6 +24,7 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import audit, cluster_snapshot, db
 from shared.ceph_topology import _osds_by_host
+from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
 from shared.time import utc_now
 from worker.executor import commands as executor_commands
@@ -98,6 +99,22 @@ def _recorded_disk(action: Action | None) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _mon_target(cluster: Cluster) -> str:
+    """The MON the Worker runs `ceph orch` on: the action's target node.
+
+    The target used to be the OSD's hostname or "osd.<id>". The Worker only
+    runs actions whose targets are configured node addresses (a check skipped
+    under pytest), so on 12/10/2026 the first real replacement on CS-STAGING
+    failed before its own preflight: "target node không thuộc cấu hình
+    cluster hiện tại: osd.2". The OSD and its host stay in the parameters.
+    """
+    nodes = configured_nodes(None if cluster.is_default else cluster)
+    mons = [node["host"] for node in nodes if "MON" in node.get("roles", [])]
+    if not mons:
+        raise HTTPException(status_code=400, detail="Cụm chưa có MON nào trong cấu hình.")
+    return mons[0]
+
+
 def _confirmation(osd_id: int) -> str:
     return f"THAY osd.{osd_id}"
 
@@ -167,7 +184,7 @@ def _propose(user: str, cluster: Cluster, action_id: str, params: dict) -> JSONR
         action = Action(
             incident_id=incident.id, action_id=action_id, classification=gate.classify_action(action_id).value,
             status=ActionStatus.PENDING_APPROVAL.value, rationale=rationale,
-            target_nodes=json.dumps([str(params.get("_hostname") or f"osd.{osd_id}")]),
+            target_nodes=json.dumps([_mon_target(cluster)]),
             action_params=json.dumps(params), proposed_command=preview,
             expires_at=utc_now() + timedelta(hours=max(1, settings.action_approval_expiry_hours)),
             idempotency_key=gate.CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY,
