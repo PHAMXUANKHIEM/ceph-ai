@@ -24,6 +24,7 @@ from worker.executor.ssh_executor import ExecutorError
     ("nfs_create_export", {"nfs_id": "nfs1", "fs_name": "cephfs", "pseudo_path": "/app1", "subvolume": "app1"},
      'subvolume_path="$(ceph fs subvolume getpath cephfs app1)" && ceph nfs export create cephfs --cluster-id nfs1 '
      '--pseudo-path /app1 --fsname cephfs --path "$subvolume_path"'),
+    ("nfs_delete_export", {"nfs_id": "nfs1", "pseudo_path": "/app1"}, "ceph nfs export rm nfs1 /app1"),
     ("rgw_apply_service", {"service_id": "s3", "hosts": ["ceph1"], "port": 8080},
      "ceph orch apply rgw s3 --placement='1 ceph1' --port=8080"),
 ])
@@ -38,6 +39,8 @@ def test_service_commands(action_id, params, expected):
     ("nfs_create_cluster", {"nfs_id": "n", "hosts": ["a", "a"]}),
     ("nfs_create_export", {"nfs_id": "n", "fs_name": "f", "pseudo_path": "/x", "path": "/a/../../etc"}),
     ("nfs_create_export", {"nfs_id": "n", "fs_name": "f", "pseudo_path": "x", "path": "/"}),
+    ("nfs_delete_export", {"nfs_id": "n", "pseudo_path": "/x; rm -rf /"}),
+    ("nfs_delete_export", {"nfs_id": "n$(id)", "pseudo_path": "/x"}),
     ("nfs_create_export", {"nfs_id": "n", "fs_name": "f", "pseudo_path": "/x", "subvolume": "a$(id)"}),
     ("rgw_apply_service", {"service_id": "s3", "hosts": ["h1"], "port": 70000}),
 ])
@@ -131,3 +134,20 @@ def test_the_proposal_drops_the_root_default_when_a_subvolume_is_chosen():
     assert _clean_params("nfs_create_export", {**body, "subvolume": "app1", "path": "/"}) == {
         **body, "subvolume": "app1", "readonly": False}
     assert _clean_params("nfs_create_export", body)["path"] == "/"
+
+
+def test_an_export_can_be_removed_after_approval(admin, monkeypatch):
+    """12/10/2026: /app1 on CS-STAGING exported the whole filesystem and had to go; there was no way to remove it."""
+    monkeypatch.setattr(file_services, "load_state", lambda cluster: {
+        "filesystems": [], "rgw": [], "hosts": ["ceph1"], "cephadm": True,
+        "nfs": [{"id": "nfsstaging", "exports": [{"pseudo": "/app1", "path": "/", "fs": "fsstaging", "access": "RW"}]}]})
+    page = admin.get("/file-services").text
+    assert 'data-action="nfs_delete_export"' in page and 'value="/app1"' in page
+
+    response = admin.post("/file-services/propose", json={
+        "action_id": "nfs_delete_export", "nfs_id": "nfsstaging", "pseudo_path": "/app1"})
+
+    assert response.status_code == 201, response.text
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert (action.classification, action.proposed_command) == ("RISKY", "ceph nfs export rm nfsstaging /app1")

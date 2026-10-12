@@ -320,6 +320,9 @@ risky:
   - cephfs_create_subvolume
   - nfs_create_cluster
   - nfs_create_export
+  # 2026-10-12: removes one NFS export (its clients lose the mount; the CephFS
+  # data stays), e.g. one created before exports used the subvolume's path.
+  - nfs_delete_export
   - rgw_apply_service
   # 2026-10-07: removes already-drained hosts from the cephadm inventory.
   - finish_remove_cluster_nodes

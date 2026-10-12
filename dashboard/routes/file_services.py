@@ -40,8 +40,9 @@ router = APIRouter()
 templates = make_templates()
 
 ACTION_IDS = ("cephfs_create_volume", "cephfs_create_subvolume", "nfs_create_cluster", "nfs_create_export",
+              "nfs_delete_export",
               "rgw_apply_service")
-CEPHADM_ONLY = {"nfs_create_cluster", "nfs_create_export", "rgw_apply_service"}
+CEPHADM_ONLY = {"nfs_create_cluster", "nfs_create_export", "nfs_delete_export", "rgw_apply_service"}
 CEPH_CODE = "FILE_SERVICE_CHANGE"
 CACHE_NAMESPACE = "file-services"
 CACHE_TTL_SECONDS = 60
@@ -49,7 +50,7 @@ CACHE_MAX_AGE_SECONDS = 6 * 3600
 _IN_FLIGHT = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value, ActionStatus.EXECUTING.value)
 _ACTION_LABELS = {
     "cephfs_create_volume": "Tạo CephFS", "cephfs_create_subvolume": "Tạo subvolume",
-    "nfs_create_cluster": "Tạo cụm NFS", "nfs_create_export": "Tạo NFS export", "rgw_apply_service": "Đặt dịch vụ RGW",
+    "nfs_create_cluster": "Tạo cụm NFS", "nfs_create_export": "Tạo NFS export", "nfs_delete_export": "Gỡ NFS export", "rgw_apply_service": "Đặt dịch vụ RGW",
 }
 
 
@@ -140,6 +141,7 @@ def _clean_params(action_id: str, body: dict) -> dict:
     keys = {"cephfs_create_volume": ("fs_name",), "cephfs_create_subvolume": ("fs_name", "subvolume", "size_gib"),
             "nfs_create_cluster": ("nfs_id", "hosts"),
             "nfs_create_export": ("nfs_id", "fs_name", "pseudo_path", "subvolume", "path", "readonly"),
+            "nfs_delete_export": ("nfs_id", "pseudo_path"),
             "rgw_apply_service": ("service_id", "hosts", "port")}[action_id]
     params = {key: body[key] for key in keys if body.get(key) not in (None, "", [])}
     for key in ("size_gib", "port"):

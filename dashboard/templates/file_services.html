@@ -51,7 +51,8 @@
       <div class="card-body">
         {% for nfs in state.nfs %}
         <p><strong>{{ nfs.id }}</strong></p>
-        <ul>{% for e in nfs.exports %}<li><code>{{ e.pseudo }}</code> → {{ e.fs }}:{{ e.path }} ({{ e.access }})</li>{% else %}<li class="hint">chưa có export</li>{% endfor %}</ul>
+        <ul>{% for e in nfs.exports %}<li><code>{{ e.pseudo }}</code> → {{ e.fs }}:{{ e.path }} ({{ e.access }}){% if is_admin and exec_mode == "cephadm" %}
+          <form class="fs-form fs-inline" data-action="nfs_delete_export"><input type="hidden" name="nfs_id" value="{{ nfs.id }}"><input type="hidden" name="pseudo_path" value="{{ e.pseudo }}"><button class="btn btn-secondary btn-sm" type="submit">Đề xuất gỡ</button></form>{% endif %}</li>{% else %}<li class="hint">chưa có export</li>{% endfor %}</ul>
         {% else %}<p class="hint">Chưa có cụm NFS nào.</p>{% endfor %}
         {% if is_admin and state.cephadm %}
         <form class="fs-form" data-action="nfs_create_cluster">
