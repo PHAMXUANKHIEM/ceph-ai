@@ -12,7 +12,8 @@ import os
 from pathlib import Path
 import re
 import socket
-import subprocess
+# All subprocess calls use fixed executable paths, fixed units and validated IPs.
+import subprocess  # nosec B404
 import tempfile
 
 
@@ -40,13 +41,40 @@ FORBIDDEN_DESTINATIONS = tuple(ipaddress.ip_network(value) for value in (
 ))
 
 
-def validate_profile(raw: bytes) -> str:
+def _validate_directive(value: str, seen: set[str]) -> None:
+    parts = value.split()
+    directive = parts[0].lstrip("-").lower()
+    if directive not in OPTIONS or parts[0].startswith("-"):
+        raise ValueError("Tùy chọn .ovpn không được phép: %s" % directive)
+    seen.add(directive)
+    if directive in BLOCKS or directive == "auth-user-pass":
+        raise ValueError("Chỉ hỗ trợ chứng chỉ/khóa nhúng trong .ovpn; không hỗ trợ file hoặc mật khẩu ngoài.")
+    if directive == "dev" and parts[1:] != ["tun"]:
+        raise ValueError("Profile chỉ được sử dụng dev tun.")
+    if directive == "remote":
+        _validate_remote(parts)
+    if directive == "proto" and (len(parts) != 2 or parts[1] not in ("udp", "udp4", "tcp", "tcp4", "tcp-client")):
+        raise ValueError("Chỉ hỗ trợ UDP hoặc TCP IPv4.")
+
+
+def _validate_remote(parts: list[str]) -> None:
+    if len(parts) not in (2, 3, 4) or not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", parts[1]):
+        raise ValueError("Địa chỉ VPN remote không hợp lệ.")
+    if len(parts) >= 3 and (not parts[2].isdigit() or not 1 <= int(parts[2]) <= 65535):
+        raise ValueError("Cổng VPN remote không hợp lệ.")
+
+
+def _decode_profile(raw: bytes) -> str:
     if not raw or len(raw) > MAX_PROFILE_BYTES or b"\x00" in raw:
         raise ValueError("File .ovpn trống, quá lớn hoặc không hợp lệ (tối đa 256 KiB).")
     try:
-        profile = raw.decode("utf-8-sig").replace("\r\n", "\n")
+        return raw.decode("utf-8-sig").replace("\r\n", "\n")
     except UnicodeDecodeError as exc:
         raise ValueError("File .ovpn phải là UTF-8.") from exc
+
+
+def validate_profile(raw: bytes) -> str:
+    profile = _decode_profile(raw)
     active_block = None
     seen = set()
     for line in profile.splitlines():
@@ -66,22 +94,7 @@ def validate_profile(raw: bytes) -> str:
                 raise ValueError("Khối .ovpn không được hỗ trợ: %s" % active_block)
             seen.add(active_block)
             continue
-        parts = value.split()
-        directive = parts[0].lstrip("-").lower()
-        if directive not in OPTIONS or parts[0].startswith("-"):
-            raise ValueError("Tùy chọn .ovpn không được phép: %s" % directive)
-        seen.add(directive)
-        if directive in BLOCKS or directive == "auth-user-pass":
-            raise ValueError("Chỉ hỗ trợ chứng chỉ/khóa nhúng trong .ovpn; không hỗ trợ file hoặc mật khẩu ngoài.")
-        if directive == "dev" and parts[1:] != ["tun"]:
-            raise ValueError("Profile chỉ được sử dụng dev tun.")
-        if directive == "remote":
-            if len(parts) not in (2, 3, 4) or not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", parts[1]):
-                raise ValueError("Địa chỉ VPN remote không hợp lệ.")
-            if len(parts) >= 3 and (not parts[2].isdigit() or not 1 <= int(parts[2]) <= 65535):
-                raise ValueError("Cổng VPN remote không hợp lệ.")
-        if directive == "proto" and (len(parts) != 2 or parts[1] not in ("udp", "udp4", "tcp", "tcp4", "tcp-client")):
-            raise ValueError("Chỉ hỗ trợ UDP hoặc TCP IPv4.")
+        _validate_directive(value, seen)
     if active_block:
         raise ValueError("Khối chứng chỉ .ovpn chưa đóng.")
     if not {"client", "dev", "remote", "ca"}.issubset(seen):
@@ -101,7 +114,8 @@ def validate_target(value: str) -> str:
 
 def _systemctl(*args: str) -> bool:
     try:
-        return subprocess.run(["/usr/bin/systemctl", *args, UNIT],
+        # The unit and every caller-provided argument are fixed literals.
+        return subprocess.run(["/usr/bin/systemctl", *args, UNIT],  # nosec B603
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               check=False, timeout=20).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
@@ -120,7 +134,8 @@ def _target():
 
 def _route_device(target: str):
     try:
-        result = subprocess.run(["/usr/sbin/ip", "-j", "route", "get", target],
+        # target only comes from validate_target(), so it is a canonical IPv4 address.
+        result = subprocess.run(["/usr/sbin/ip", "-j", "route", "get", target],  # nosec B603
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 universal_newlines=True, timeout=3, check=False)
         if result.returncode == 0:

@@ -11,7 +11,7 @@ from dashboard.routes.auth import require_login
 
 
 router = APIRouter()
-SOCKET_PATH = "/tmp/grafana-vpn-control.sock"
+SOCKET_PATH = "/run/grafana-vpn-control.sock"
 MAX_PROFILE_BYTES = 256 * 1024
 
 
