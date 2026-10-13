@@ -282,12 +282,14 @@ def test_an_approved_proposal_narrows_the_reviewed_fault_of_its_kind(tmp_path):
         fault.scenario_from_proposal({**record, "proposal": {**record["proposal"], "fault_kind": "rm_rf"}})
 
 
-def test_an_approved_proposal_runs_once_and_its_label_names_the_proposal(enabled, tmp_path):
+def test_an_approved_proposal_runs_once_and_its_label_names_the_proposal(enabled, tmp_path, monkeypatch):
     factory, cluster_id = _db()
     lab = FakeLab()
     sleep, now = _worker_reacts(factory, cluster_id, lab, "OSD_DOWN", "osd.3 đang down trên host", "investigate_manually")
     proposals = tmp_path / "proposals"
     pid = _proposal(proposals)
+    notices = []
+    monkeypatch.setattr(fault, "notify_lab", notices.append)
 
     result = fault.run_proposal(factory, cluster_id=cluster_id, proposal_id=pid, proposals_dir=proposals,
                                 lab_factory=lambda cluster: lab, state_dir=tmp_path, poll_seconds=10,
@@ -296,6 +298,9 @@ def test_an_approved_proposal_runs_once_and_its_label_names_the_proposal(enabled
     assert result["passed"] and lab.writes[-1] == "ceph orch daemon start osd.3"  # always undone
     stored = json.loads((proposals / f"{pid}.json").read_text())
     assert stored["status"] == "DONE" and stored["run_id"] == result["run_id"] and stored["target"] == "osd.3"
+    assert stored["learning_summary"]["completed_runs"] == 1
+    assert stored["learning_summary"]["stage_passes"]["diagnosis"] == 1
+    assert any("Chưa đo tác động" in notice for notice in notices)
     with factory() as session:
         from shared.models import IncidentTimelineEvent
 

@@ -533,6 +533,16 @@ def run_proposal(session_factory: Callable[[], Any], *, cluster_id: str, proposa
         raise
     approvals.update(proposal_id, proposals_dir, status=approvals.DONE, run_id=result["run_id"],
                      passed=result["passed"], stages=result["stages"], target=result["target"])
+    try:
+        from shared.failure_lab_learning_report import summarize, telegram_summary
+
+        family = str(record.get("family") or "")
+        summary = summarize(proposals_dir or approvals.PROPOSALS_DIR, family=family).get(family)
+        if summary is not None:
+            approvals.update(proposal_id, proposals_dir, learning_summary=summary)
+            notify_lab(telegram_summary(summary))
+    except Exception:  # noqa: BLE001 - reporting must not reclassify a safely completed fault run
+        logger.exception("failure lab: learning report failed for proposal %s", proposal_id)
     return result
 
 
