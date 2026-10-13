@@ -58,6 +58,7 @@ services:
       # restart socket is over-mounted below with the required write access.
       - /run/ceph-ai:/run/ceph-ai:ro
       - /run/ceph-ai/container-restart.sock:/run/ceph-ai/container-restart.sock
+      - /run/ceph-ai-grafana-vpn/control.sock:/run/grafana-vpn-control.sock
       - /root/.local:/opt/ai-tools:ro
       - /root/.codex/packages:/opt/codex-packages:ro
       # Keep executor account data hidden from the dashboard without forcing

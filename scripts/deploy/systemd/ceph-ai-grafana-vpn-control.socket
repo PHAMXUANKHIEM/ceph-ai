@@ -1,0 +1,12 @@
+[Unit]
+Description=Ceph AI Grafana VPN control socket
+
+[Socket]
+ListenStream=/run/ceph-ai-grafana-vpn/control.sock
+SocketMode=0600
+DirectoryMode=0700
+ExecStartPost=/usr/bin/setfacl -m u:10001:rw /run/ceph-ai-grafana-vpn/control.sock
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

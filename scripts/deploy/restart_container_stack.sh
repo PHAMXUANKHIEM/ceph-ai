@@ -168,6 +168,9 @@ fi
 start_phase runtime_setup
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-container-restart.service" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-container-restart.socket" /etc/systemd/system/
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-grafana-vpn-control.service" /etc/systemd/system/
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-grafana-vpn-control.socket" /etc/systemd/system/
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-grafana-vpn.service" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-code-repair-supervisor.service" /etc/systemd/system/
 # The stack unit and the RabbitMQ unit it starts after: a host reboot must
 # bring RabbitMQ back before Watcher/Worker (it is not a Compose service).
@@ -180,6 +183,7 @@ install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-deploy-request.service
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-release-notifier.service" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-release-notifier.timer" /etc/systemd/system/
 install -m 0755 "$REPO_DIR/scripts/deploy/container_restart_helper.py" /usr/local/libexec/ceph-ai-container-restart
+install -m 0755 "$REPO_DIR/scripts/deploy/grafana_vpn_helper.py" /usr/local/libexec/ceph-ai-grafana-vpn-control
 install -d -m 0750 /run/ceph-ai
 # On an existing directory, install's chmod also lowers the POSIX ACL mask to
 # r-x, which silently removes the app UID's write access (heartbeats, locks)
@@ -200,6 +204,7 @@ rm -f /etc/systemd/system/ceph-ai-container-restart@.service
 systemctl daemon-reload
 systemctl reset-failed ceph-ai-container-restart.service || true
 systemctl enable --now ceph-ai-container-restart.socket
+systemctl enable --now ceph-ai-grafana-vpn-control.socket
 # enable only: RabbitMQ is already running here, and the stack is restarted
 # later in this script.
 systemctl enable ceph-ai-rabbitmq.service ceph-ai-containers.service

@@ -56,6 +56,7 @@ from dashboard.routes import (
     delete_cluster,
     remove_nodes,
     file_services,
+    grafana_vpn,
     replace_osd,
     deploy_cluster,
     incidents,
@@ -612,6 +613,7 @@ def create_app() -> FastAPI:
     application.include_router(block_storage.router)
     application.include_router(openstack.router)
     application.include_router(settings_routes.router)
+    application.include_router(grafana_vpn.router)
     application.include_router(maintenance.router)
     application.include_router(actions.router)
     application.include_router(ai_cost_routes.router)
