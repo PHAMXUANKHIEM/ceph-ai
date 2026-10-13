@@ -45,7 +45,7 @@
           <button type="button" class="settings-nav-item {% if active_section == 'cost' %}active{% endif %}" data-section="cost">Chi phí</button>
           <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Cụm Ceph</button>
           <button type="button" class="settings-nav-item {% if active_section == 'ceph-host-keys' %}active{% endif %}" data-section="ceph-host-keys">Khóa SSH node Ceph</button>
-          {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'grafana-vpn' %}active{% endif %}" data-section="grafana-vpn">VPN tới Grafana</button>{% endif %}
+          {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'grafana-vpn' %}active{% endif %}" data-section="grafana-vpn">Kết nối VPN</button>{% endif %}
           {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">OpenStack</button>{% endif %}
           {% if is_admin %}<a href="/settings/federated-iam" class="settings-nav-item">Federated IAM RGW</a>{% endif %}
         </div>
@@ -1213,20 +1213,26 @@
 
     {% if is_admin %}
     <section class="card settings-panel grafana-vpn-panel" data-panel="grafana-vpn" {% if active_section != 'grafana-vpn' %}hidden{% endif %}>
-      <div class="card-header"><div><h1>VPN tới Grafana</h1><p class="hint">OpenVPN chạy trên host Ceph-AI; chỉ địa chỉ Grafana được chọn mới đi qua tunnel.</p></div><span id="grafana-vpn-state" class="grafana-vpn-state">Đang kiểm tra…</span></div>
+      <div class="card-header"><div><h1>Kết nối VPN</h1><p class="hint">OpenVPN chạy trên host Ceph-AI. Kết nối chỉ mở tunnel, không thay đổi default route, DNS hoặc các route tới cụm Ceph.</p></div><span id="grafana-vpn-state" class="grafana-vpn-state">Đang kiểm tra…</span></div>
       <div class="card-body">
         <p id="grafana-vpn-message" class="grafana-vpn-message" role="status" aria-live="polite"></p>
-        <dl class="grafana-vpn-facts"><div><dt>OpenVPN</dt><dd id="grafana-vpn-installed">Đang kiểm tra…</dd></div><div><dt>Profile</dt><dd id="grafana-vpn-configured">Đang kiểm tra…</dd></div><div><dt>IP Grafana qua VPN</dt><dd id="grafana-vpn-target">—</dd></div><div><dt>Interface</dt><dd id="grafana-vpn-interface">—</dd></div></dl>
+        <dl class="grafana-vpn-facts"><div><dt>OpenVPN</dt><dd id="grafana-vpn-installed">Đang kiểm tra…</dd></div><div><dt>Profile</dt><dd id="grafana-vpn-configured">Đang kiểm tra…</dd></div><div><dt>Interface</dt><dd id="grafana-vpn-interface">—</dd></div></dl>
         <form id="grafana-vpn-upload" class="grafana-vpn-form" enctype="multipart/form-data">
           <h2>Tải profile OpenVPN</h2>
-          <p class="hint">Chọn file <code>.ovpn</code> có chứng chỉ/khóa nhúng, không dùng file tham chiếu ngoài hoặc script. File được giữ trên host với quyền root; không hiển thị lại nội dung trên giao diện.</p>
+          <p class="hint">Chọn file <code>.ovpn</code> có CA nhúng; hỗ trợ chứng chỉ client nhúng hoặc <code>auth-user-pass</code> (username/mật khẩu/OTP nhập khi kết nối). Không dùng file tham chiếu ngoài hoặc script. Profile được giữ trên host với quyền root.</p>
           <label for="grafana-vpn-file">File .ovpn</label>
           <input id="grafana-vpn-file" type="file" name="profile" accept=".ovpn" required>
-          <label for="grafana-vpn-ip">IPv4 riêng của Grafana qua VPN</label>
-          <input id="grafana-vpn-ip" type="text" name="target" inputmode="decimal" placeholder="Ví dụ: 172.16.20.10" autocomplete="off" required>
-          <p class="hint">Lấy IP này từ network owner. OpenVPN chỉ tạo route /32 tới IP đó; không đổi default route.</p>
+          <p class="hint">Tunnel được mở mà không tự thêm route. Muốn truy cập một hệ thống qua VPN sẽ cần chính sách định tuyến riêng.</p>
           <button class="btn btn-primary" type="submit">Lưu profile</button>
         </form>
+        <div id="grafana-vpn-auth" class="grafana-vpn-form grafana-vpn-auth" hidden>
+          <h2>Đăng nhập VPN</h2>
+          <label for="grafana-vpn-username">Username VPN</label>
+          <input id="grafana-vpn-username" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="256">
+          <label for="grafana-vpn-password">Mật khẩu VPN / mã OTP</label>
+          <input id="grafana-vpn-password" type="password" autocomplete="off" maxlength="512">
+          <p class="hint">Nhập mật khẩu và OTP đúng định dạng bên cấp VPN yêu cầu. Ceph-AI không lưu chúng vào cấu hình; thông tin chỉ nằm trong <code>/run</code> khi tunnel đang hoạt động và sẽ bị xóa khi ngắt.</p>
+        </div>
         <div class="grafana-vpn-actions"><button id="grafana-vpn-connect" class="btn btn-primary" type="button" disabled>Kết nối VPN</button><button id="grafana-vpn-disconnect" class="btn btn-ghost" type="button" disabled>Ngắt kết nối</button><button id="grafana-vpn-refresh" class="btn btn-ghost" type="button">Làm mới trạng thái</button></div>
       </div>
     </section>

@@ -8,9 +8,9 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/ceph-ai/vpn/grafana-target.env
-ExecStart=/usr/sbin/openvpn --config /etc/ceph-ai/vpn/grafana.ovpn --route-nopull --route ${GRAFANA_IP} 255.255.255.255 vpn_gateway --script-security 1 --auth-nocache
-Restart=on-failure
+ExecStart=/usr/sbin/openvpn --config /etc/ceph-ai/vpn/grafana.ovpn --dev cephvpn0 --dev-type tun --route-nopull --script-security 1 --auth-nocache --auth-retry none --connect-retry-max 1
+ExecStopPost=/usr/bin/rm -f /run/ceph-ai-grafana-vpn/credentials
+Restart=on-abnormal
 RestartSec=10
 NoNewPrivileges=yes
 ProtectHome=yes

@@ -9,6 +9,9 @@
   var connect = document.getElementById("grafana-vpn-connect");
   var disconnect = document.getElementById("grafana-vpn-disconnect");
   var refresh = document.getElementById("grafana-vpn-refresh");
+  var auth = document.getElementById("grafana-vpn-auth");
+  var username = document.getElementById("grafana-vpn-username");
+  var password = document.getElementById("grafana-vpn-password");
 
   function showMessage(value, error) {
     message.textContent = value || "";
@@ -21,8 +24,8 @@
     state.dataset.state = data.state || "unknown";
     document.getElementById("grafana-vpn-installed").textContent = data.installed ? "Đã cài" : "Chưa cài trên host";
     document.getElementById("grafana-vpn-configured").textContent = data.configured ? "Đã lưu an toàn" : "Chưa có profile";
-    document.getElementById("grafana-vpn-target").textContent = data.target || "—";
     document.getElementById("grafana-vpn-interface").textContent = data.route_device || "—";
+    auth.hidden = !data.auth_required;
     connect.disabled = !data.installed || !data.configured || data.state !== "disconnected";
     disconnect.disabled = data.state === "disconnected";
     form.querySelector('button[type="submit"]').disabled = data.state !== "disconnected";
@@ -53,22 +56,34 @@
     try {
       render(await request("/api/settings/grafana-vpn/profile", { method: "POST", body: new FormData(form) }));
       form.reset();
-      showMessage("Profile đã lưu. Kiểm tra IP đích rồi bấm Kết nối VPN.", false);
+      showMessage("Profile đã lưu. Nhập thông tin đăng nhập nếu cần rồi bấm Kết nối VPN.", false);
     } catch (error) { showMessage(error.message, true); }
     finally { await loadStatus(); }
   });
 
   async function changeConnection(action) {
-    if (action === "connect" && !window.confirm("Kết nối OpenVPN và tạo route riêng tới Grafana?")) return;
-    if (action === "disconnect" && !window.confirm("Ngắt kết nối VPN tới Grafana?")) return;
+    var options = { method: "POST" };
+    if (action === "connect" && !auth.hidden) {
+      if (!username.value.trim() || !password.value) {
+        showMessage("Nhập username và mật khẩu/OTP VPN trước khi kết nối.", true);
+        return;
+      }
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify({ username: username.value.trim(), password: password.value });
+    } else if (action === "connect") {
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify({});
+    }
+    if (action === "connect" && !window.confirm("Kết nối OpenVPN? Tunnel sẽ mở nhưng không tự thay đổi route hoặc DNS.")) return;
+    if (action === "disconnect" && !window.confirm("Ngắt kết nối VPN?")) return;
     connect.disabled = true;
     disconnect.disabled = true;
     showMessage("Đang cập nhật kết nối…", false);
     try {
-      render(await request("/api/settings/grafana-vpn/" + action, { method: "POST" }));
-      showMessage(action === "connect" ? "Đã gửi lệnh kết nối. Chờ tunnel và route hoạt động." : "Đã ngắt kết nối.", false);
+      render(await request("/api/settings/grafana-vpn/" + action, options));
+      showMessage(action === "connect" ? "Đã gửi lệnh kết nối. Đang chờ tunnel hoạt động." : "Đã ngắt kết nối.", false);
     } catch (error) { showMessage(error.message, true); }
-    finally { await loadStatus(); }
+    finally { password.value = ""; await loadStatus(); }
   }
   connect.addEventListener("click", function () { changeConnection("connect"); });
   disconnect.addEventListener("click", function () { changeConnection("disconnect"); });
