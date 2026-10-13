@@ -939,3 +939,22 @@
   .settings-redesign [data-panel="cleanup"] .cleanup-form-actions { align-items: stretch; flex-direction: column; }
   .settings-redesign [data-panel="cleanup"] .cleanup-submit-button { width: 100%; }
 }
+.settings-redesign .grafana-vpn-panel .card-header { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+.settings-redesign .grafana-vpn-panel h1 { margin: 0 0 8px; color: #e2e8f0; font-size: 1.3rem; }
+.settings-redesign .grafana-vpn-panel h2 { margin: 0 0 8px; color: #e2e8f0; font-size: 1rem; }
+.settings-redesign .grafana-vpn-state { padding: 7px 10px; border-radius: 6px; background: #334155; color: #cbd5e1; white-space: nowrap; }
+.settings-redesign .grafana-vpn-state[data-state="connected"] { background: #14532d; color: #bbf7d0; }
+.settings-redesign .grafana-vpn-state[data-state="connecting"] { background: #78350f; color: #fde68a; }
+.settings-redesign .grafana-vpn-message { min-height: 22px; color: #22c55e; }
+.settings-redesign .grafana-vpn-message.is-error { color: #fca5a5; }
+.settings-redesign .grafana-vpn-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0 0 24px; }
+.settings-redesign .grafana-vpn-facts div { padding: 12px; border: 1px solid #334155; border-radius: 8px; background: #1e293b; }
+.settings-redesign .grafana-vpn-facts dt { margin-bottom: 4px; color: #94a3b8; font-size: .8rem; }
+.settings-redesign .grafana-vpn-facts dd { margin: 0; color: #e2e8f0; overflow-wrap: anywhere; }
+.settings-redesign .grafana-vpn-form { display: grid; gap: 10px; padding: 20px; border: 1px solid #334155; border-radius: 8px; background: #1e293b; }
+.settings-redesign .grafana-vpn-form label { color: #cbd5e1; font-weight: 600; }
+.settings-redesign .grafana-vpn-form input { width: 100%; max-width: 520px; }
+.settings-redesign .grafana-vpn-form button { justify-self: start; }
+.settings-redesign .grafana-vpn-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.settings-redesign .grafana-vpn-panel button:disabled { opacity: .45; cursor: not-allowed; }
+@media (max-width: 650px) { .settings-redesign .grafana-vpn-facts { grid-template-columns: 1fr; } }

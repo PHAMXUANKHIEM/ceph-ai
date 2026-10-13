@@ -14,3 +14,7 @@ Additional in-progress plans:
   mgr prometheus) to ceph-deploy clusters, starting with a ceph-deploy lab.
 - `aistor-enterprise-feature-gap-plan.md`: audits the AIStor-inspired
   enterprise feature gaps and tracks the P0/P1/P2 implementation gates.
+- `grafana-production-metrics-integration-plan-2026-10-13.md`: evaluates a
+  bounded, read-only Grafana/Prometheus metrics integration for CS-LAB, with
+  an optional split-tunnel VPN workstream, production-load measurement, and
+  storage safeguards before any AI or alerting use.

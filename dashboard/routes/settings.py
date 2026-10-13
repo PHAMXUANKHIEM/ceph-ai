@@ -1546,7 +1546,7 @@ async def settings_form(
         ceph_host_key_page=host_key_page,
     )
     section = request.query_params.get("section", "")
-    if section in {"router", "cost", "cluster", "ceph-host-keys", "openstack", "restart-controls", "action-policy", "database", "server-log", "log-intel", "dual-ai", "code-repair", "backup-targets", "cleanup", "staging-cluster"}:
+    if section in {"router", "cost", "cluster", "ceph-host-keys", "openstack", "grafana-vpn", "restart-controls", "action-policy", "database", "server-log", "log-intel", "dual-ai", "code-repair", "backup-targets", "cleanup", "staging-cluster"}:
         context["active_section"] = section
     return templates.TemplateResponse(
         request, "settings.html",

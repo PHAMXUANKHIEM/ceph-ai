@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Settings — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}-settings-v2">
-  <link rel="stylesheet" href="/static/settings_redesign.css?v={{ static_version }}-settings-v9">
+  <link rel="stylesheet" href="/static/settings_redesign.css?v={{ static_version }}-settings-v10-vpn">
 </head>
 <body class="settings-redesign">
   {% include "_nav.html" %}
@@ -37,14 +37,15 @@
       </section>
       {% endif %}
       <section class="settings-nav-group" data-settings-group="connections">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['router', 'cost', 'cluster', 'ceph-host-keys', 'openstack'] else 'false' }}">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['router', 'cost', 'cluster', 'ceph-host-keys', 'openstack', 'grafana-vpn'] else 'false' }}">
           <span>Kết nối</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
-        <div class="settings-nav-group-items" {% if active_section not in ['router', 'cost', 'cluster', 'ceph-host-keys', 'openstack'] %}hidden{% endif %}>
+        <div class="settings-nav-group-items" {% if active_section not in ['router', 'cost', 'cluster', 'ceph-host-keys', 'openstack', 'grafana-vpn'] %}hidden{% endif %}>
           <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">API AI</button>
           <button type="button" class="settings-nav-item {% if active_section == 'cost' %}active{% endif %}" data-section="cost">Chi phí</button>
           <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Cụm Ceph</button>
           <button type="button" class="settings-nav-item {% if active_section == 'ceph-host-keys' %}active{% endif %}" data-section="ceph-host-keys">Khóa SSH node Ceph</button>
+          {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'grafana-vpn' %}active{% endif %}" data-section="grafana-vpn">VPN tới Grafana</button>{% endif %}
           {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">OpenStack</button>{% endif %}
           {% if is_admin %}<a href="/settings/federated-iam" class="settings-nav-item">Federated IAM RGW</a>{% endif %}
         </div>
@@ -1210,6 +1211,27 @@
       </div>
     </section>
 
+    {% if is_admin %}
+    <section class="card settings-panel grafana-vpn-panel" data-panel="grafana-vpn" {% if active_section != 'grafana-vpn' %}hidden{% endif %}>
+      <div class="card-header"><div><h1>VPN tới Grafana</h1><p class="hint">OpenVPN chạy trên host Ceph-AI; chỉ địa chỉ Grafana được chọn mới đi qua tunnel.</p></div><span id="grafana-vpn-state" class="grafana-vpn-state">Đang kiểm tra…</span></div>
+      <div class="card-body">
+        <p id="grafana-vpn-message" class="grafana-vpn-message" role="status" aria-live="polite"></p>
+        <dl class="grafana-vpn-facts"><div><dt>OpenVPN</dt><dd id="grafana-vpn-installed">Đang kiểm tra…</dd></div><div><dt>Profile</dt><dd id="grafana-vpn-configured">Đang kiểm tra…</dd></div><div><dt>IP Grafana qua VPN</dt><dd id="grafana-vpn-target">—</dd></div><div><dt>Interface</dt><dd id="grafana-vpn-interface">—</dd></div></dl>
+        <form id="grafana-vpn-upload" class="grafana-vpn-form" enctype="multipart/form-data">
+          <h2>Tải profile OpenVPN</h2>
+          <p class="hint">Chọn file <code>.ovpn</code> có chứng chỉ/khóa nhúng, không dùng file tham chiếu ngoài hoặc script. File được giữ trên host với quyền root; không hiển thị lại nội dung trên giao diện.</p>
+          <label for="grafana-vpn-file">File .ovpn</label>
+          <input id="grafana-vpn-file" type="file" name="profile" accept=".ovpn" required>
+          <label for="grafana-vpn-ip">IPv4 riêng của Grafana qua VPN</label>
+          <input id="grafana-vpn-ip" type="text" name="target" inputmode="decimal" placeholder="Ví dụ: 172.16.20.10" autocomplete="off" required>
+          <p class="hint">Lấy IP này từ network owner. OpenVPN chỉ tạo route /32 tới IP đó; không đổi default route.</p>
+          <button class="btn btn-primary" type="submit">Lưu profile</button>
+        </form>
+        <div class="grafana-vpn-actions"><button id="grafana-vpn-connect" class="btn btn-primary" type="button" disabled>Kết nối VPN</button><button id="grafana-vpn-disconnect" class="btn btn-ghost" type="button" disabled>Ngắt kết nối</button><button id="grafana-vpn-refresh" class="btn btn-ghost" type="button">Làm mới trạng thái</button></div>
+      </div>
+    </section>
+    {% endif %}
+
     <section class="card settings-panel" data-panel="cleanup" {% if active_section != 'cleanup' %}hidden{% endif %}>
       <div class="card-header cleanup-panel-title"><div><h2><span class="cleanup-title-icon" aria-hidden="true">🧹</span>Dọn dẹp log &amp; dữ liệu cũ</h2><p class="hint">Giải phóng dữ liệu không còn cần thiết mà không ảnh hưởng tới cấu hình hệ thống.</p></div><span class="cleanup-danger-badge">⚠ Thao tác không thể hoàn tác</span></div>
       <div class="card-body cleanup-panel-body">
@@ -1247,6 +1269,7 @@
   <script src="/static/pagination.js?v={{ static_version }}"></script>
   <script src="/static/settings.js?v={{ static_version }}-settings-v9-delete-dialog"></script>
   <script src="/static/settings_navigation.js?v={{ static_version }}"></script>
+  <script src="/static/grafana_vpn.js?v={{ static_version }}-v1"></script>
   <script src="/static/settings_logs.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script>

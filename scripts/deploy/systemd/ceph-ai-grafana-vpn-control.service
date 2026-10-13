@@ -1,0 +1,12 @@
+[Unit]
+Description=Restricted Ceph AI Grafana VPN control helper
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/libexec/ceph-ai-grafana-vpn-control
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+Restart=on-failure
+RestartSec=1

@@ -1,7 +1,7 @@
 [Unit]
 Description=Ceph AI container stack
-After=network-online.target ceph-ai-rabbitmq.service
-Wants=network-online.target ceph-ai-rabbitmq.service
+After=network-online.target ceph-ai-rabbitmq.service ceph-ai-grafana-vpn-control.socket
+Wants=network-online.target ceph-ai-rabbitmq.service ceph-ai-grafana-vpn-control.socket
 RequiresMountsFor=/var/lib/containers
 
 [Service]

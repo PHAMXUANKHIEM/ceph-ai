@@ -1,0 +1,20 @@
+[Unit]
+Description=Ceph AI Grafana OpenVPN split tunnel
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/ceph-ai/vpn/grafana.ovpn
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/ceph-ai/vpn/grafana-target.env
+ExecStart=/usr/sbin/openvpn --config /etc/ceph-ai/vpn/grafana.ovpn --route-nopull --route ${GRAFANA_IP} 255.255.255.255 vpn_gateway --script-security 1 --auth-nocache
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
