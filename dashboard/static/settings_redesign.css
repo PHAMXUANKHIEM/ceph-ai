@@ -952,6 +952,8 @@
 .settings-redesign .grafana-vpn-facts dt { margin-bottom: 4px; color: #94a3b8; font-size: .8rem; }
 .settings-redesign .grafana-vpn-facts dd { margin: 0; color: #e2e8f0; overflow-wrap: anywhere; }
 .settings-redesign .grafana-vpn-form { display: grid; gap: 10px; padding: 20px; border: 1px solid #334155; border-radius: 8px; background: #1e293b; }
+.settings-redesign .grafana-vpn-auth { margin-top: 20px; }
+.settings-redesign .grafana-vpn-auth[hidden] { display: none; }
 .settings-redesign .grafana-vpn-form label { color: #cbd5e1; font-weight: 600; }
 .settings-redesign .grafana-vpn-form input { width: 100%; max-width: 520px; }
 .settings-redesign .grafana-vpn-form button { justify-self: start; }

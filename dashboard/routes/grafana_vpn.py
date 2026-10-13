@@ -4,7 +4,8 @@ import base64
 import json
 import socket
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
@@ -13,6 +14,11 @@ from dashboard.routes.auth import require_login
 router = APIRouter()
 SOCKET_PATH = "/run/grafana-vpn-control.sock"
 MAX_PROFILE_BYTES = 256 * 1024
+
+
+class VPNCredentials(BaseModel):
+    username: str = ""
+    password: str = ""
 
 
 def _admin(user: str = Depends(require_login)) -> str:
@@ -53,7 +59,6 @@ def grafana_vpn_status(user: str = Depends(_admin)) -> dict:
 @router.post("/api/settings/grafana-vpn/profile")
 async def grafana_vpn_profile(
     profile: UploadFile = File(...),
-    target: str = Form(...),
     user: str = Depends(_admin),
 ) -> dict:
     name = profile.filename or ""
@@ -62,12 +67,12 @@ async def grafana_vpn_profile(
     data = await profile.read(MAX_PROFILE_BYTES + 1)
     if not data or len(data) > MAX_PROFILE_BYTES:
         raise HTTPException(status_code=400, detail="File .ovpn phải nhỏ hơn 256 KiB.")
-    return _host_request({"action": "upload", "profile": base64.b64encode(data).decode("ascii"), "target": target})
+    return _host_request({"action": "upload", "profile": base64.b64encode(data).decode("ascii")})
 
 
 @router.post("/api/settings/grafana-vpn/connect")
-def grafana_vpn_connect(user: str = Depends(_admin)) -> dict:
-    return _host_request({"action": "connect"})
+def grafana_vpn_connect(credentials: VPNCredentials, user: str = Depends(_admin)) -> dict:
+    return _host_request({"action": "connect", "username": credentials.username, "password": credentials.password})
 
 
 @router.post("/api/settings/grafana-vpn/disconnect")

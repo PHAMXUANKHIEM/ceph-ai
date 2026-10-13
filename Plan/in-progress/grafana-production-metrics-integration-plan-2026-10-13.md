@@ -43,6 +43,8 @@ Các dữ kiện dưới đây được kiểm tra read-only trong phiên lập 
 
 **Tiến độ 13/10/2026:** OpenVPN 2.4.12 đã cài trên host `10.3.55.213`; giao diện Settings → Kết nối → VPN tới Grafana đã có ô chọn `.ovpn`, IP Grafana `/32`, trạng thái và nút kết nối/ngắt. Host helper socket tách riêng khỏi Podman, chỉ admin được gọi qua Dashboard. Profile được giới hạn 256 KiB, cần chứng chỉ/khóa nhúng, không cho script/plugin/route tùy ý; host lưu file quyền `0600`. Đã test validator/helper và status socket. Chưa tải profile thực, chưa tạo route/tunnel, chưa có kiểm chứng tới Grafana hoặc datasource. Dashboard đang chạy bản preview cục bộ; bản phát hành CI cần được đồng bộ để thay thế preview trước khi coi là production-ready.
 
+**Điều chỉnh theo yêu cầu operator 13/10/2026 (candidate, chưa deploy):** Bỏ ô IP Grafana và route `/32` khỏi luồng cấu hình; chỉ tải `.ovpn`, nhập username/mật khẩu+OTP khi cần và mở tunnel `cephvpn0`. `--route-nopull` giữ nguyên default route, DNS và route của mạng Ceph. Trạng thái `connected` chỉ xác nhận systemd unit còn hoạt động và tunnel interface tồn tại, **không** chứng minh truy cập Grafana. Bước route tới Grafana và kiểm chứng end-to-end vẫn là công việc riêng, cần network owner duyệt trước khi bật. Không coi tunnel-only là hoàn thành tích hợp metrics.
+
 **Quyết định kiến trúc:**
 
 - Chỉ triển khai VPN nếu network owner xác nhận direct allowlist/route không phù hợp hoặc yêu cầu private path. Không tự dựng VPN endpoint hay chọn peer thay cho owner mạng.

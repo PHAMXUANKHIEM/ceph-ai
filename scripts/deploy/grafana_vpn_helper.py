@@ -2,11 +2,11 @@
 """Narrow host control socket for the Grafana OpenVPN client.
 
 The web container never receives NET_ADMIN, the OpenVPN process, or the
-profile on disk.  Only a certificate based, inline profile can be installed.
+profile on disk. Only inline CA/key blocks and a narrowly scoped, temporary
+username/password file for OTP profiles are supported.
 """
 
 import base64
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -19,8 +19,11 @@ import tempfile
 
 CONFIG_DIR = Path("/etc/ceph-ai/vpn")
 PROFILE = CONFIG_DIR / "grafana.ovpn"
-TARGET = CONFIG_DIR / "grafana-target.env"
 UNIT = "ceph-ai-grafana-vpn.service"
+TUNNEL_DEVICE = "cephvpn0"
+RUNTIME_DIR = Path("/run/ceph-ai-grafana-vpn")
+CREDENTIALS = RUNTIME_DIR / "credentials"
+AUTH_LINE = f"auth-user-pass {CREDENTIALS}"
 MAX_PROFILE_BYTES = 256 * 1024
 MAX_REQUEST_BYTES = 400 * 1024
 BLOCKS = frozenset(("ca", "cert", "key", "tls-auth", "tls-crypt"))
@@ -35,26 +38,29 @@ OPTIONS = frozenset((
     "ping", "ping-restart", "remote-random", "remote-random-hostname",
     "tls-client", "auth-user-pass",
 ))
-FORBIDDEN_DESTINATIONS = tuple(ipaddress.ip_network(value) for value in (
-    "10.20.1.0/24", "10.3.52.0/22", "10.5.0.0/16", "10.88.0.0/16",
-    "10.89.0.0/24", "127.0.0.0/8", "169.254.0.0/16",
-))
-
-
-def _validate_directive(value: str, seen: set[str]) -> None:
+def _validate_directive(value: str, seen: set[str]) -> str | None:
     parts = value.split()
     directive = parts[0].lstrip("-").lower()
     if directive not in OPTIONS or parts[0].startswith("-"):
         raise ValueError("Tùy chọn .ovpn không được phép: %s" % directive)
     seen.add(directive)
-    if directive in BLOCKS or directive == "auth-user-pass":
-        raise ValueError("Chỉ hỗ trợ chứng chỉ/khóa nhúng trong .ovpn; không hỗ trợ file hoặc mật khẩu ngoài.")
+    if directive in BLOCKS:
+        raise ValueError("Chỉ hỗ trợ chứng chỉ/khóa nhúng trong .ovpn, không hỗ trợ file tham chiếu ngoài.")
+    if directive == "auth-user-pass":
+        if len(parts) != 1:
+            raise ValueError("Không cho phép .ovpn tham chiếu file mật khẩu bên ngoài.")
+        return AUTH_LINE
     if directive == "dev" and parts[1:] != ["tun"]:
         raise ValueError("Profile chỉ được sử dụng dev tun.")
     if directive == "remote":
         _validate_remote(parts)
     if directive == "proto" and (len(parts) != 2 or parts[1] not in ("udp", "udp4", "tcp", "tcp4", "tcp-client")):
         raise ValueError("Chỉ hỗ trợ UDP hoặc TCP IPv4.")
+    if directive == "remote-cert-tls" and parts[1:] != ["server"]:
+        raise ValueError("Profile phải kiểm tra chứng chỉ của VPN server.")
+    if directive == "auth-retry" and parts[1:] != ["none"]:
+        raise ValueError("Profile OTP chỉ hỗ trợ auth-retry none để tránh lặp lại OTP sai.")
+    return None
 
 
 def _validate_remote(parts: list[str]) -> None:
@@ -73,11 +79,19 @@ def _decode_profile(raw: bytes) -> str:
         raise ValueError("File .ovpn phải là UTF-8.") from exc
 
 
+def _check_required_options(seen: set[str]) -> None:
+    if not {"client", "dev", "remote", "ca", "remote-cert-tls"}.issubset(seen):
+        raise ValueError("Profile cần client, dev tun, remote, CA nhúng và remote-cert-tls server.")
+    if "auth-user-pass" not in seen and not {"cert", "key"}.issubset(seen):
+        raise ValueError("Profile cần chứng chỉ/khóa client nhúng hoặc auth-user-pass.")
+
+
 def validate_profile(raw: bytes) -> str:
     profile = _decode_profile(raw)
+    lines = profile.splitlines()
     active_block = None
     seen = set()
-    for line in profile.splitlines():
+    for index, line in enumerate(lines):
         value = line.strip()
         if active_block:
             if value == "</%s>" % active_block:
@@ -94,22 +108,11 @@ def validate_profile(raw: bytes) -> str:
                 raise ValueError("Khối .ovpn không được hỗ trợ: %s" % active_block)
             seen.add(active_block)
             continue
-        _validate_directive(value, seen)
+        lines[index] = _validate_directive(value, seen) or line
     if active_block:
         raise ValueError("Khối chứng chỉ .ovpn chưa đóng.")
-    if not {"client", "dev", "remote", "ca"}.issubset(seen):
-        raise ValueError("Profile cần client, dev tun, remote và chứng chỉ CA nhúng.")
-    return profile.rstrip() + "\n"
-
-
-def validate_target(value: str) -> str:
-    try:
-        target = ipaddress.IPv4Address(value)
-    except ipaddress.AddressValueError as exc:
-        raise ValueError("Nhập IPv4 đích riêng của Grafana do network owner cung cấp.") from exc
-    if target.is_multicast or target.is_unspecified or any(target in net for net in FORBIDDEN_DESTINATIONS):
-        raise ValueError("IP đích trùng mạng quản trị, Ceph, DB hoặc mạng container.")
-    return str(target)
+    _check_required_options(seen)
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _systemctl(*args: str) -> bool:
@@ -122,43 +125,47 @@ def _systemctl(*args: str) -> bool:
         return False
 
 
-def _target():
+def _tunnel_present() -> bool:
     try:
-        value = TARGET.read_text(encoding="ascii").strip()
-        if not value.startswith("GRAFANA_IP="):
-            return None
-        return validate_target(value[len("GRAFANA_IP="):])
-    except (OSError, ValueError):
-        return None
-
-
-def _route_device(target: str):
-    try:
-        # target only comes from validate_target(), so it is a canonical IPv4 address.
-        result = subprocess.run(["/usr/sbin/ip", "-j", "route", "get", target],  # nosec B603
+        result = subprocess.run(["/usr/sbin/ip", "-j", "link", "show", "dev", TUNNEL_DEVICE],  # nosec B603
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 universal_newlines=True, timeout=3, check=False)
-        if result.returncode == 0:
-            route = json.loads(result.stdout)
-            return route[0].get("dev") if route else None
+        return result.returncode == 0 and bool(json.loads(result.stdout))
     except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
-        pass
-    return None
+        return False
 
 
 def status() -> dict:
     installed = Path("/usr/sbin/openvpn").is_file()
-    configured = PROFILE.is_file() and _target() is not None
+    configured = PROFILE.is_file()
+    auth_required = _auth_required()
     active = _systemctl("is-active", "--quiet")
-    target = _target()
-    device = _route_device(target) if active and target else None
-    state = "connected" if active and device and device.startswith("tun") else "connecting" if active else "disconnected"
-    return {"installed": installed, "configured": configured, "state": state,
-            "target": target, "route_device": device if state == "connected" else None}
+    device = TUNNEL_DEVICE if active and _tunnel_present() else None
+    state = "connected" if device else "connecting" if active else "disconnected"
+    return {"installed": installed, "configured": configured, "auth_required": auth_required, "state": state,
+            "route_device": device}
+
+
+def _auth_required() -> bool:
+    try:
+        return AUTH_LINE in PROFILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+
+
+def _credentials(request: dict) -> bytes:
+    username, password = request.get("username"), request.get("password")
+    if not isinstance(username, str) or not isinstance(password, str):
+        raise ValueError("Nhập username và mật khẩu/OTP của VPN.")
+    if not username or not password or len(username) > 256 or len(password) > 512:
+        raise ValueError("Username hoặc mật khẩu/OTP VPN bị thiếu hoặc quá dài.")
+    if any(char in username + password for char in ("\r", "\n", "\x00")):
+        raise ValueError("Username hoặc mật khẩu/OTP VPN chứa ký tự không hợp lệ.")
+    return (username + "\n" + password + "\n").encode("utf-8")
 
 
 def _atomic_write(path: Path, content: bytes, mode: int) -> None:
-    fd, temporary = tempfile.mkstemp(prefix=".vpn-", dir=CONFIG_DIR)
+    fd, temporary = tempfile.mkstemp(prefix=".vpn-", dir=path.parent)
     try:
         os.fchmod(fd, mode)
         with os.fdopen(fd, "wb") as stream:
@@ -171,34 +178,62 @@ def _atomic_write(path: Path, content: bytes, mode: int) -> None:
             os.unlink(temporary)
 
 
+def _upload_profile(request: dict) -> dict:
+    if _systemctl("is-active", "--quiet"):
+        raise ValueError("Hãy ngắt VPN trước khi thay profile.")
+    try:
+        raw = base64.b64decode(request.get("profile", ""), validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("File .ovpn không hợp lệ.") from exc
+    profile = validate_profile(raw)
+    if not _systemctl("disable"):
+        raise ValueError("Không thể tắt tự khởi động VPN trước khi thay profile.")
+    CREDENTIALS.unlink(missing_ok=True)
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(CONFIG_DIR, 0o700)
+    _atomic_write(PROFILE, profile.encode("utf-8"), 0o600)
+    return status()
+
+
+def _connect(request: dict) -> dict:
+    current = status()
+    if not current["installed"] or not current["configured"]:
+        raise ValueError("Chưa cài OpenVPN hoặc chưa tải profile hợp lệ.")
+    if _systemctl("is-active", "--quiet"):
+        raise ValueError("VPN đang chạy; hãy ngắt trước khi kết nối lại.")
+    if _auth_required():
+        content = _credentials(request)
+        RUNTIME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(RUNTIME_DIR, 0o700)
+        _atomic_write(CREDENTIALS, content, 0o600)
+        started = _systemctl("start")
+        if not started:
+            CREDENTIALS.unlink(missing_ok=True)
+    else:
+        started = _systemctl("enable", "--now")
+    if not started:
+        raise ValueError("Không khởi động được OpenVPN. Kiểm tra journalctl của service.")
+    return status()
+
+
+def _disconnect() -> dict:
+    stopped = _systemctl("disable", "--now")
+    CREDENTIALS.unlink(missing_ok=True)
+    if not stopped:
+        raise ValueError("Không thể ngắt OpenVPN. Kiểm tra systemd service.")
+    return status()
+
+
 def handle(request: dict) -> dict:
     action = request.get("action")
     if action == "status":
         return status()
     if action == "upload":
-        if _systemctl("is-active", "--quiet"):
-            raise ValueError("Hãy ngắt VPN trước khi thay profile.")
-        try:
-            raw = base64.b64decode(request.get("profile", ""), validate=True)
-        except (ValueError, TypeError) as exc:
-            raise ValueError("File .ovpn không hợp lệ.") from exc
-        profile = validate_profile(raw)
-        target = validate_target(request.get("target", ""))
-        CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(CONFIG_DIR, 0o700)
-        _atomic_write(PROFILE, profile.encode("utf-8"), 0o600)
-        _atomic_write(TARGET, ("GRAFANA_IP=%s\n" % target).encode("ascii"), 0o600)
-        return status()
+        return _upload_profile(request)
     if action == "connect":
-        if not status()["installed"] or not status()["configured"]:
-            raise ValueError("Chưa cài OpenVPN hoặc chưa tải profile hợp lệ.")
-        if not _systemctl("enable", "--now"):
-            raise ValueError("Không khởi động được OpenVPN. Kiểm tra journalctl của service.")
-        return status()
+        return _connect(request)
     if action == "disconnect":
-        if not _systemctl("disable", "--now"):
-            raise ValueError("Không thể ngắt OpenVPN. Kiểm tra systemd service.")
-        return status()
+        return _disconnect()
     raise ValueError("Thao tác VPN không hợp lệ.")
 
 
