@@ -38,6 +38,7 @@ ARTIFACTS = Path("/var/lib/ceph-ai/release-artifacts")
 GITHUB_REPO = "PHAMXUANKHIEM/ceph-ai"
 IMAGE_REPO = "phamxuankhiem/ceph-ai"
 WORKFLOW_PATH = ".github/workflows/ci-cd.yml"
+GITHUB_TOKEN_FILE = Path("/var/lib/ceph-ai/config/github-ci-token")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 STEP_TIMEOUT_SECONDS = 3600
@@ -95,9 +96,22 @@ def take_request() -> dict:
 
 
 def ci_green(sha: str) -> None:
-    status, payload, _ = _https("GET", "api.github.com", f"/repos/{GITHUB_REPO}/actions/runs?head_sha={sha}&per_page=10",
-                                {"Accept": "application/vnd.github+json"})
+    try:
+        token = GITHUB_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise Refused("không đọc được GitHub CI token trên host") from exc
+    if not token:
+        raise Refused("chưa cấu hình GitHub CI token trên host")
+    status, payload, headers = _https(
+        "GET", "api.github.com", f"/repos/{GITHUB_REPO}/actions/runs?head_sha={sha}&per_page=10",
+        {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}",
+         "X-GitHub-Api-Version": "2022-11-28"},
+    )
     if status != 200:
+        if status == 403 and headers.get("x-ratelimit-remaining") == "0":
+            raise Refused("GitHub API đã hết rate limit dù đã xác thực; chờ reset rồi thử lại")
+        if status in (401, 403):
+            raise Refused(f"GitHub từ chối CI API (HTTP {status}); kiểm tra token còn hạn và có quyền Actions: read")
         raise Refused(f"không đọc được CI trên GitHub (HTTP {status})")
     # Only push runs build the deploy image. A manual re-run (workflow_dispatch)
     # on the same commit is newer but proves nothing about the image; on
