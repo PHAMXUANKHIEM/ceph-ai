@@ -300,6 +300,9 @@ services:
 
   worker:
     <<: *app
+    # A lab CLI receives SIGTERM and must have time to undo/recover before
+    # Podman escalates to SIGKILL. The stop path also refuses an active run.
+    stop_grace_period: 930s
     cpus: "2.00"
     mem_limit: 2g
     memswap_limit: 2g

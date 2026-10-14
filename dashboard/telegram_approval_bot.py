@@ -99,7 +99,7 @@ from shared.time import utc_now
 from pathlib import Path
 
 from config.settings import settings
-from dashboard import telegram_chat
+from dashboard import failure_lab_telegram, telegram_chat
 from dashboard.routes.actions import (
     ActionConflictError,
     ActionNotFoundError,
@@ -329,6 +329,9 @@ def _all_configured_tokens() -> set[str]:
     chatbox_token = telegram_chat.configured_token()
     if chatbox_token:
         tokens.add(chatbox_token)
+    lab_token = failure_lab_telegram.configured_token()
+    if lab_token:
+        tokens.add(lab_token)
     return tokens
 
 
@@ -1118,6 +1121,7 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
                     {"command": "status", "description": "Xem trạng thái phiên AI"},
                     {"command": "ask", "description": "Gửi câu hỏi cho AI"},
                     {"command": "new", "description": "Bắt đầu chat mới"},
+                    {"command": "lab", "description": "Yêu cầu AI đề xuất lỗi trên cụm staging"},
                     {"command": "help", "description": "Xem trợ giúp"},
                 ],
             )
@@ -1127,6 +1131,14 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
             telegram_chat.report_interrupted_full_runs(bot_token)
         except Exception:
             logger.exception("telegram_approval_bot: failed to report interrupted Single Full run")
+    elif bot_token == failure_lab_telegram.configured_token():
+        try:
+            set_telegram_commands(bot_token, [
+                {"command": "lab", "description": "AI đề xuất lỗi trên cụm staging (cần duyệt)"},
+                {"command": "help", "description": "Hướng dẫn Failure Lab"},
+            ])
+        except TelegramSendError:
+            logger.exception("telegram_approval_bot: failed to register Failure Lab commands")
     while not stop_event.is_set():
         try:
             updates = get_telegram_updates(
@@ -1149,7 +1161,15 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
             callback_query = update.get("callback_query")
             if callback_query:
                 callback_data = str(callback_query.get("data") or "")
-                if callback_data.startswith(telegram_chat.CALLBACK_PREFIXES):
+                if callback_data.startswith(failure_lab_telegram.CALLBACK_PREFIXES):
+                    try:
+                        lab_result = failure_lab_telegram.handle_callback(callback_query, bot_token)
+                        callback_id = callback_query.get("id")
+                        if callback_id:
+                            answer_telegram_callback(bot_token, callback_id, lab_result)
+                    except Exception:
+                        logger.exception("telegram_approval_bot: unexpected Failure Lab callback error")
+                elif callback_data.startswith(telegram_chat.CALLBACK_PREFIXES):
                     try:
                         result = telegram_chat.run_callback_sync(callback_query, bot_token)
                         if result is not None:
@@ -1179,7 +1199,9 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
             message = update.get("message")
             if message:
                 try:
-                    if handle_confirmation_message(message, bot_token):
+                    if failure_lab_telegram.is_lab_destination(message, bot_token):
+                        failure_lab_telegram.enqueue_message(message, bot_token)
+                    elif handle_confirmation_message(message, bot_token):
                         pass
                     elif not telegram_chat.handle_stop_message(message, bot_token):
                         if not telegram_chat.handle_status_message(message, bot_token):
