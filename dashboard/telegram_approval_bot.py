@@ -1121,6 +1121,7 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
                     {"command": "status", "description": "Xem trạng thái phiên AI"},
                     {"command": "ask", "description": "Gửi câu hỏi cho AI"},
                     {"command": "new", "description": "Bắt đầu chat mới"},
+                    {"command": "lab", "description": "Yêu cầu AI đề xuất lỗi trên cụm staging"},
                     {"command": "help", "description": "Xem trợ giúp"},
                 ],
             )
@@ -1130,6 +1131,14 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
             telegram_chat.report_interrupted_full_runs(bot_token)
         except Exception:
             logger.exception("telegram_approval_bot: failed to report interrupted Single Full run")
+    elif bot_token == failure_lab_telegram.configured_token():
+        try:
+            set_telegram_commands(bot_token, [
+                {"command": "lab", "description": "AI đề xuất lỗi trên cụm staging (cần duyệt)"},
+                {"command": "help", "description": "Hướng dẫn Failure Lab"},
+            ])
+        except TelegramSendError:
+            logger.exception("telegram_approval_bot: failed to register Failure Lab commands")
     while not stop_event.is_set():
         try:
             updates = get_telegram_updates(
