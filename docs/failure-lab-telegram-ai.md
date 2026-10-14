@@ -4,6 +4,8 @@ Kênh được chọn tại **Settings → Cụm Staging (Failure Lab)** có th�
 
 Luồng: bot nhận yêu cầu → AI chỉ chọn một kịch bản trong `worker/policy/failure_lab_faults.yaml` → bot gửi thẻ xem trước với tên cụm, FSID, kịch bản và giới hạn thời gian → operator bấm **Duyệt gây lỗi** hoặc **Bỏ qua** → Worker kiểm tra lại kênh, cụm, FSID và các chốt an toàn → tiến trình Failure Lab áp dụng lỗi, quan sát, gỡ lỗi và gửi kết quả. Không có lệnh shell/Ceph tự do từ AI. Hiện chỉ hỗ trợ `osd_down_fault` và `osd_nearfull_fault`; yêu cầu khác bị từ chối.
 
+Runner hiện tự chọn OSD đủ điều kiện. Yêu cầu chỉ định `osd.N` hoặc IP cụ thể bị từ chối để tránh gây lỗi nhầm mục tiêu; hỗ trợ target cụ thể sẽ cần một thay đổi và preflight riêng.
+
 Thẻ duyệt hết hạn sau 15 phút. Worker chỉ nhận thẻ đã duyệt trong 5 phút gần nhất; nếu hàng đợi bị kẹt hoặc Worker khởi động lại muộn, phải gửi yêu cầu mới.
 
 Trước khi bấm duyệt, operator phải kiểm tra cụm staging không có workload thật, FSID đã ghim và **Cho phép gây lỗi thật** đã bật. Nếu cấu hình đổi sau khi tạo thẻ, Worker từ chối. Không bật gây lỗi để “thử bot”: có thể gửi yêu cầu để xem bản đề xuất khi flag đang tắt, nhưng nút duyệt sẽ từ chối.

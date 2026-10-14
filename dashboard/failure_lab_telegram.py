@@ -10,7 +10,7 @@ import time
 
 from config.settings import settings
 from shared import db, failure_lab_config, reproduction_approval
-from shared.failure_lab_chat import LabChatRefused, card_text, prompt_for, proposal_from_answer
+from shared.failure_lab_chat import LabChatRefused, card_text, prompt_for, proposal_from_answer, validate_request
 from shared.models import TelegramManagedChannel
 from shared.telegram_client import edit_telegram_message, send_telegram_message, send_telegram_message_with_keyboard
 
@@ -80,6 +80,7 @@ def is_lab_callback(callback: dict, token: str) -> bool:
 def _create_request(text: str, actor: str, channel_id: str) -> dict:
     from scripts.lab.propose_reproduction import ask_ai
 
+    validate_request(text)
     config = failure_lab_config.load()
     if not config.cluster_id or not config.fsid or config.telegram_channel_id != channel_id:
         raise LabChatRefused("Chưa chọn cụm staging, ghim FSID và kênh Telegram hợp lệ.")

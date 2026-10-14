@@ -50,6 +50,12 @@ def test_runner_rechecks_exact_catalog_scenario():
         scenario_from_proposal(record)
 
 
+def test_request_for_named_osd_is_rejected_instead_of_touching_another_target():
+    with pytest.raises(LabChatRefused, match="OSD/IP cụ thể"):
+        proposal_from_answer("dừng osd.5", '{"scenario_id": "osd_down_fault"}', actor="operator",
+                             cluster_id="lab", cluster_name="Lab", fsid="pinned", channel_id="channel")
+
+
 def test_lab_messages_require_exact_bot_chat_and_explicit_operator(monkeypatch):
     monkeypatch.setattr(lab, "destination", lambda: ("channel", "lab-bot", "-100"))
     monkeypatch.setattr(lab.settings, "telegram_chatbox_full_access_user_ids", "77", raising=False)
