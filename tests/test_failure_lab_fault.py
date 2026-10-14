@@ -21,7 +21,7 @@ def test_lab_notice_uses_selected_bot_and_never_falls_back(monkeypatch):
     from types import SimpleNamespace
 
     channel_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    channel = SimpleNamespace(enabled=True, bot_token="lab-token", chat_id="-10042")
+    channel = SimpleNamespace(template="failure-lab", enabled=True, bot_token="lab-token", chat_id="-10042")
     sent = []
 
     class Session:
@@ -43,6 +43,11 @@ def test_lab_notice_uses_selected_bot_and_never_falls_back(monkeypatch):
     assert sent == [("lab-token", "-10042", "[FAILURE LAB] test")]
 
     channel.enabled = False
+    fault.notify_lab("test")
+    assert len(sent) == 1
+
+    channel.enabled = True
+    channel.template = "custom"
     fault.notify_lab("test")
     assert len(sent) == 1
 

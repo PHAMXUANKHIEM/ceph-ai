@@ -3105,7 +3105,9 @@ def test_staging_selects_a_separate_telegram_bot(dashboard_client):
     assert "Đã đổi cụm staging" in response.text
     assert failure_lab_config.load().telegram_channel_id == channel_id
     with db_module.SessionLocal() as session:
-        session.get(TelegramManagedChannel, channel_id).enabled = False
+        selected = session.get(TelegramManagedChannel, channel_id)
+        assert selected.template == "failure-lab"
+        selected.enabled = False
         session.commit()
     rejected = dashboard_client.post("/settings/failure-lab", data={
         "cluster_id": staging_id, "telegram_channel_id": channel_id,

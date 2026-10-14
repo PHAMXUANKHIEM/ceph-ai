@@ -268,7 +268,8 @@ def notify_lab(text: str) -> None:
         try:
             with SessionLocal() as session:
                 channel = session.get(TelegramManagedChannel, config.telegram_channel_id)
-                if channel is None or not channel.enabled or not channel.bot_token or not channel.chat_id:
+                if (channel is None or channel.template != "failure-lab" or not channel.enabled
+                        or not channel.bot_token or not channel.chat_id):
                     logger.warning("failure lab Telegram channel is unavailable; notice not sent")
                     return
                 token, chat_id = channel.bot_token, channel.chat_id

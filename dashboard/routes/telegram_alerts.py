@@ -192,7 +192,8 @@ def _public_managed_channel(row: TelegramManagedChannel) -> dict:
         "label": row.name,
         "chat_id": row.chat_id,
         "enabled": row.enabled,
-        "status_label": "Đang bật" if configured and row.enabled else "Đã tắt" if configured else "Chưa cấu hình",
+        "status_label": ("Chỉ Failure Lab" if row.template == "failure-lab" else "Đang bật")
+        if configured and row.enabled else "Đã tắt" if configured else "Chưa cấu hình",
         "masked_bot_token": _mask_key(row.bot_token) if row.bot_token else None,
         "custom": True,
         "approval_enabled": False,

@@ -1940,7 +1940,8 @@ def _failure_lab_channels() -> list[dict[str, str | bool]]:
     with db.SessionLocal() as session:
         channels = session.query(TelegramManagedChannel).order_by(TelegramManagedChannel.name).all()
         return [{"id": row.id, "name": row.name,
-                 "available": bool(row.enabled and row.bot_token and row.chat_id)} for row in channels]
+                 "available": bool(row.enabled and row.bot_token and row.chat_id)}
+                for row in channels if row.template in {"custom", "failure-lab"}]
 
 
 @router.post("/settings/failure-lab", response_class=HTMLResponse)
@@ -1969,16 +1970,19 @@ async def settings_failure_lab_submit(
         else:
             cluster_id = cluster_id.strip()
             telegram_channel_id = telegram_channel_id.strip()
-            if telegram_channel_id:
-                with db.SessionLocal() as session:
-                    channel = session.get(TelegramManagedChannel, telegram_channel_id)
-                    if channel is None or not channel.enabled or not channel.bot_token or not channel.chat_id:
-                        raise failure_lab_config.LabConfigError(
-                            "Kênh Telegram đã chọn chưa bật hoặc thiếu Bot Token/Chat ID."
-                        )
             changed = cluster_id != current.cluster_id
             reason = f"Failure Lab staging (Settings, {user})"
             with db.SessionLocal() as session:
+                if telegram_channel_id:
+                    channel = session.get(TelegramManagedChannel, telegram_channel_id)
+                    if (channel is None or not channel.enabled or not channel.bot_token or not channel.chat_id
+                            or channel.template not in {"custom", "failure-lab"}):
+                        raise failure_lab_config.LabConfigError(
+                            "Kênh Telegram đã chọn chưa bật, thiếu Bot Token/Chat ID hoặc không dành cho Failure Lab."
+                        )
+                    # Reserve this channel exclusively for Failure Lab. It must
+                    # not receive the default cluster's global alert fan-out.
+                    channel.template = "failure-lab"
                 chosen = session.get(Cluster, cluster_id) if cluster_id else None
                 if cluster_id and (chosen is None or not chosen.is_active):
                     raise failure_lab_config.LabConfigError("Không tìm thấy cụm đang hoạt động.")

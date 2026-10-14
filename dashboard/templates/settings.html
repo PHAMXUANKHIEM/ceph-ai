@@ -217,7 +217,7 @@
                 <option value="{{ channel.id }}" {% if channel.id == failure_lab.telegram_channel_id %}selected{% endif %} {% if not channel.available %}disabled{% endif %}>{{ channel.name }}{% if not channel.available %} — chưa bật hoặc thiếu cấu hình{% endif %}</option>
                 {% endfor %}
               </select>
-              <small class="hint">Chọn kênh riêng đã tạo tại Cảnh báo Telegram; Failure Lab sẽ dùng bot và nhóm của kênh đó.</small>
+              <small class="hint">Chọn kênh riêng đã tạo tại Cảnh báo Telegram. Kênh được chọn sẽ chỉ nhận thông báo Failure Lab, không nhận cảnh báo CS-LAB hoặc các cụm khác.</small>
             </label>
             <label>Chat ID nhập tay (chỉ dùng với bot cảnh báo cụm)
               <input type="text" name="telegram_chat_id" value="{{ failure_lab.telegram_chat_id }}" placeholder="-100…  (để trống nếu chọn kênh riêng)" {% if failure_lab.telegram_channel_id %}disabled{% endif %}>

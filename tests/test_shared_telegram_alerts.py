@@ -8,6 +8,38 @@ from shared.telegram_client import TelegramSendError
 from datetime import datetime
 
 
+def test_failure_lab_channel_never_receives_operational_fanout(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from shared import failure_lab_config
+    from shared.failure_lab_config import LabConfig
+    from shared.models import TelegramManagedChannel
+
+    engine = create_engine("sqlite:///:memory:")
+    TelegramManagedChannel.__table__.create(engine)
+    factory = sessionmaker(bind=engine)
+    selected_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    with factory() as session:
+        session.add_all([
+            TelegramManagedChannel(id=selected_id, name="lab-selected", bot_token="lab-1",
+                                   chat_id="-1001", enabled=True, template="custom"),
+            TelegramManagedChannel(id="bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee", name="lab-reserved",
+                                   bot_token="lab-2", chat_id="-1002", enabled=True, template="failure-lab"),
+            TelegramManagedChannel(id="cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee", name="general",
+                                   bot_token="general", chat_id="-1003", enabled=True, template="custom"),
+        ])
+        session.commit()
+    monkeypatch.setattr(telegram_alerts.db, "SessionLocal", factory)
+    monkeypatch.setattr(failure_lab_config, "load", lambda: LabConfig(telegram_channel_id=selected_id))
+    sent = []
+    monkeypatch.setattr(telegram_alerts, "send_telegram_alert_with_ai",
+                        lambda token, chat, *_args, **_kwargs: (sent.append((token, chat)) or True))
+
+    assert telegram_alerts.send_managed_channel_alert("CS-LAB alert", cluster_name="CS-LAB")
+    assert sent == [("general", "-1003")]
+    engine.dispose()
+
+
 def _mock_humanizer_router(monkeypatch, content):
     monkeypatch.setattr(telegram_humanizer.settings, "telegram_ai_humanize_enabled", True)
     monkeypatch.setattr(telegram_humanizer.settings, "router_enabled", True)
