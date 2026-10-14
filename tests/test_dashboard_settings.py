@@ -13,7 +13,7 @@ from shared import env_config
 from shared.models import (
     ActionPolicyOverride, ActionPolicyOverrideAudit, PlaybookStat,
     AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, User,
-    SecurityAuditEvent,
+    SecurityAuditEvent, TelegramManagedChannel,
 )
 from watcher.ceph_client import CephQueryError
 
@@ -2964,7 +2964,8 @@ def test_admin_can_approve_eligible_playbook_promotion(dashboard_client):
 def test_disabling_autopilot_stops_old_worker_when_restart_fails(
     dashboard_client, monkeypatch, tmp_path
 ):
-    tmp_env = tmp_path / ".env"; tmp_env.write_text("AUTOPILOT_ENABLED=true\n")
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("AUTOPILOT_ENABLED=true\n")
     stopped = []
     monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     monkeypatch.setattr(settings, "autopilot_enabled", True)
@@ -3080,6 +3081,37 @@ def test_admin_chooses_the_staging_cluster_and_pins_its_fsid(dashboard_client, m
         assert session.get(Cluster, staging_id).autonomy_environment == "lab"
         assert session.get(Cluster, default_cluster_id).autonomy_environment == "production"
         assert session.query(AutopilotClusterConfigAudit).one().new_environment == "lab"
+
+
+def test_staging_selects_a_separate_telegram_bot(dashboard_client):
+    from shared import failure_lab_config
+
+    staging_id = _second_cluster()
+    with db_module.SessionLocal() as session:
+        channel = TelegramManagedChannel(name="CS-STAGGING", bot_token="test-lab-bot",
+                                         chat_id="-10012345", enabled=True)
+        session.add(channel)
+        session.commit()
+        channel_id = channel.id
+    _login(dashboard_client)
+    page = dashboard_client.get("/settings?section=staging-cluster").text
+    assert 'name="telegram_channel_id"' in page
+    assert "CS-STAGGING" in page
+
+    response = dashboard_client.post("/settings/failure-lab", data={
+        "cluster_id": staging_id, "telegram_channel_id": channel_id,
+        "telegram_chat_id": "", "window": "02:00-05:00",
+    })
+    assert "Đã đổi cụm staging" in response.text
+    assert failure_lab_config.load().telegram_channel_id == channel_id
+    with db_module.SessionLocal() as session:
+        session.get(TelegramManagedChannel, channel_id).enabled = False
+        session.commit()
+    rejected = dashboard_client.post("/settings/failure-lab", data={
+        "cluster_id": staging_id, "telegram_channel_id": channel_id,
+    })
+    assert "Kênh Telegram đã chọn chưa bật" in rejected.text
+    assert failure_lab_config.load().telegram_channel_id == channel_id
 
 
 def test_changing_the_staging_cluster_returns_the_old_one_to_production(dashboard_client, monkeypatch):

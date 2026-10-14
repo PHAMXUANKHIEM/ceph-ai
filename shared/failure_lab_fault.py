@@ -258,7 +258,25 @@ def in_window(now: datetime, window: str) -> bool:
 
 
 def notify_lab(text: str) -> None:
-    chat_id, token = failure_lab_config.load().telegram_chat_id, settings.telegram_incident_bot_token
+    config = failure_lab_config.load()
+    if config.telegram_channel_id:
+        # Resolve on every send: a disabled/deleted channel must never fall
+        # back to the production incident bot or a stale cached credential.
+        from shared.db import SessionLocal
+        from shared.models import TelegramManagedChannel
+
+        try:
+            with SessionLocal() as session:
+                channel = session.get(TelegramManagedChannel, config.telegram_channel_id)
+                if channel is None or not channel.enabled or not channel.bot_token or not channel.chat_id:
+                    logger.warning("failure lab Telegram channel is unavailable; notice not sent")
+                    return
+                token, chat_id = channel.bot_token, channel.chat_id
+        except Exception:  # noqa: BLE001 - notification failure must not prevent cleanup
+            logger.exception("failure lab Telegram channel lookup failed")
+            return
+    else:
+        chat_id, token = config.telegram_chat_id, settings.telegram_incident_bot_token
     if not chat_id or not token:
         logger.info("failure lab (no lab chat configured): %s", text)
         return
