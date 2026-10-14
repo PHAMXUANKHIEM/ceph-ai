@@ -1,7 +1,9 @@
 """FL6.2: AI reproduction proposals are parsed and validated fail-closed."""
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -86,6 +88,37 @@ def test_planner_credentials_are_resolved_from_app_root_not_temp_workdir(monkeyp
     assert cli._planner_account_dirs("configured") == (tmp_path / "codex", tmp_path / "claude")
     assert captured["repo"] == Path(cli.__file__).resolve().parents[2]
     assert captured["profile"] == "configured"
+
+
+def test_codex_planner_skips_git_check_for_its_empty_temporary_workdir(monkeypatch, tmp_path):
+    from config.settings import settings
+    from scripts.lab import propose_reproduction as cli
+    from shared import ai_budget, ai_observability
+    from worker import code_repair, code_repair_supervisor
+
+    captured = {}
+    monkeypatch.setattr(settings, "code_repair_planner_provider", "codex")
+    monkeypatch.setattr(settings, "code_repair_provider", "codex")
+    monkeypatch.setattr(settings, "code_repair_planner_model", "gpt-5.5")
+    monkeypatch.setattr(code_repair.shutil, "which", lambda name: "/usr/bin/codex" if name == "codex" else None)
+    monkeypatch.setattr(cli, "_planner_account_dirs", lambda _profile: (tmp_path / "codex", tmp_path / "claude"))
+    monkeypatch.setattr(code_repair_supervisor, "_configured_account_profile", lambda *_args: "configured")
+    monkeypatch.setattr(ai_budget, "check", lambda *_args: "reservation")
+    monkeypatch.setattr(ai_observability, "record_ai_attempt", lambda **_kwargs: None)
+    monkeypatch.setattr(code_repair, "_ai_process_environment", nullcontext)
+
+    def fake_run(command, *, cwd, **_kwargs):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        return SimpleNamespace(stdout="proposal", returncode=0)
+
+    monkeypatch.setattr(code_repair, "_run", fake_run)
+
+    assert cli.ask_ai("prompt") == "proposal"
+    command = captured["command"]
+    assert "--skip-git-repo-check" in command
+    assert command.index("--skip-git-repo-check") < command.index("-C")
+    assert command[command.index("-C") + 1] == str(captured["cwd"])
 
 
 def test_propose_stores_a_validated_proposal(monkeypatch, tmp_path):
