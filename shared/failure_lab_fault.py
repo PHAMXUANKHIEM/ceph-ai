@@ -24,6 +24,7 @@ import fcntl
 import functools
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -238,12 +239,24 @@ def holding_run(cluster_id: str | None, detected_at: datetime | None, *, state_d
 @contextmanager
 def _exclusive(state_dir: Path) -> Iterator[None]:
     state_dir.mkdir(parents=True, exist_ok=True)
-    with open(state_dir / LOCK_FILE, "a", encoding="utf-8") as handle:
+    # The directory lock is also held by container stop/release operations;
+    # it closes the race between checking for an active run and stopping the
+    # Worker. Keep the legacy file lock for existing manual runner consumers.
+    directory_fd = os.open(state_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(directory_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise FaultRefused("another fault run is in progress") from exc
-        yield
+        with open(state_dir / LOCK_FILE, "a", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise FaultRefused("another fault run is in progress") from exc
+            yield
+    finally:
+        fcntl.flock(directory_fd, fcntl.LOCK_UN)
+        os.close(directory_fd)
 
 
 def _halt(state_dir: Path, reason: str) -> None:
@@ -257,7 +270,8 @@ def in_window(now: datetime, window: str) -> bool:
     return start <= local < end if start <= end else (local >= start or local < end)
 
 
-def notify_lab(text: str) -> None:
+def lab_telegram_target() -> tuple[str, str, bool]:
+    """The selected lab bot/chat, or a muted target; never production fallback."""
     config = failure_lab_config.load()
     if config.telegram_channel_id:
         # Resolve on every send: a disabled/deleted channel must never fall
@@ -271,14 +285,19 @@ def notify_lab(text: str) -> None:
                 if (channel is None or channel.template != "failure-lab" or not channel.enabled
                         or not channel.bot_token or not channel.chat_id):
                     logger.warning("failure lab Telegram channel is unavailable; notice not sent")
-                    return
+                    return "", "", False
                 token, chat_id = channel.bot_token, channel.chat_id
         except Exception:  # noqa: BLE001 - notification failure must not prevent cleanup
             logger.exception("failure lab Telegram channel lookup failed")
-            return
+            return "", "", False
     else:
         chat_id, token = config.telegram_chat_id, settings.telegram_incident_bot_token
-    if not chat_id or not token:
+    return token, chat_id, bool(token and chat_id)
+
+
+def notify_lab(text: str) -> None:
+    token, chat_id, enabled = lab_telegram_target()
+    if not enabled:
         logger.info("failure lab (no lab chat configured): %s", text)
         return
     from shared.telegram_client import send_telegram_message
@@ -517,7 +536,12 @@ def scenario_from_proposal(record: dict) -> tuple[FaultScenario, Scenario]:
     """
     raw = record.get("proposal")
     proposal: dict = raw if isinstance(raw, dict) else {}
-    base = next((item for item in fault_scenarios().values() if item.kind == proposal.get("fault_kind")), None)
+    if record.get("source") == "telegram_failure_lab":
+        base = fault_scenarios().get(str(record.get("family") or ""))
+        if base is not None and base.kind != proposal.get("fault_kind"):
+            base = None
+    else:
+        base = next((item for item in fault_scenarios().values() if item.kind == proposal.get("fault_kind")), None)
     if base is None:
         raise FaultRefused(f"proposal {record.get('id')}: no reviewed fault of kind {proposal.get('fault_kind')!r}")
     seconds = max(60, min(base.max_seconds, int(proposal.get("max_seconds") or base.max_seconds)))
@@ -536,8 +560,18 @@ def run_proposal(session_factory: Callable[[], Any], *, cluster_id: str, proposa
     record = approvals.load(proposal_id, proposals_dir)
     if record.get("status") != approvals.APPROVED:
         raise FaultRefused(f"proposal {proposal_id} is {record.get('status')}, not APPROVED")
+    if record.get("source") == "telegram_failure_lab":
+        config = failure_lab_config.load()
+        if (not config.fault_enabled or not config.cluster_id or not config.fsid
+                or config.cluster_id != cluster_id or record.get("cluster_id") != cluster_id
+                or record.get("fsid") != config.fsid
+                or record.get("channel_id") != config.telegram_channel_id):
+            raise FaultRefused("Telegram lab proposal no longer matches the enabled pinned staging cluster")
     fault, replay = scenario_from_proposal(record)
-    approvals.update(proposal_id, proposals_dir, status=approvals.RUNNING, run_started_at=utc_now().isoformat())
+    try:
+        approvals.claim(proposal_id, proposals_dir)
+    except approvals.ReproductionError as exc:
+        raise FaultRefused(str(exc)) from exc
     raw = record.get("proposal")
     extra = {"proposal_id": proposal_id, "proposed_cause": raw.get("cause") if isinstance(raw, dict) else None,
              "approved_by": record.get("decided_by")}

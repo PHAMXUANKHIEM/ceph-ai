@@ -11,7 +11,7 @@ ExecStart=/root/ceph-ai/container-up
 ExecStop=/root/ceph-ai/container-down
 RemainAfterExit=yes
 TimeoutStartSec=360
-TimeoutStopSec=360
+TimeoutStopSec=960
 
 [Install]
 WantedBy=multi-user.target

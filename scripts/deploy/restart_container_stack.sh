@@ -162,6 +162,18 @@ if [ "$(git rev-parse HEAD)" != "${CEPH_AI_DEPLOY_EXPECTED_HEAD:-}" ]; then
   exit 2
 fi
 
+# Hold the same directory lock as Failure Lab through migrations and container
+# restart. A fault already in progress blocks deploy; a new one cannot start
+# after this point and race with schema changes or Podman shutdown.
+LAB_STATE_DIR=/var/lib/ceph-ai/failure-lab
+if [ -d "$LAB_STATE_DIR" ]; then
+  exec 9<"$LAB_STATE_DIR"
+  if ! flock -n 9; then
+    echo "ERROR: Failure Lab run active; deploy deferred until fault undo/recovery finishes" >&2
+    exit 75
+  fi
+fi
+
 # Keep the narrow per-container restart helper in sync with the deployed
 # checkout. The Dashboard talks to its Unix socket; no host D-Bus is exposed
 # to the web container.

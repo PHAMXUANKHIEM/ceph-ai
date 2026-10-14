@@ -6,17 +6,43 @@ to this socket, never to the host system D-Bus or Podman socket.
 """
 
 import json
+import fcntl
 import os
 import socket
 import subprocess
 import syslog
 import threading
 import time
+from contextlib import contextmanager
 
 
 COMPOSE_PROJECT = os.environ.get("CEPH_AI_COMPOSE_PROJECT", "ceph-ai")
 SERVICES = frozenset(("dashboard-web", "worker", "watcher", "code-repair"))
 MAX_REQUEST_BYTES = 4096
+LAB_DIR = "/var/lib/ceph-ai/failure-lab"
+
+
+@contextmanager
+def _lab_restart_guard(service: str):
+    """A running lab fault blocks a Worker restart for its entire stop/start."""
+    if service != "worker":
+        yield True
+        return
+    try:
+        descriptor = os.open(LAB_DIR, os.O_RDONLY | os.O_DIRECTORY)
+    except FileNotFoundError:
+        yield True
+        return
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def _resolve_container(service: str) -> tuple:
@@ -97,6 +123,16 @@ def _force_finish_stop(container: str) -> dict:
 
 
 def _restart(request: dict) -> dict:
+    service = request.get("service")
+    if service == "worker" and not bool(request.get("wait", True)):
+        return {"restarted": False, "error": "asynchronous Worker restart cannot guard an active Failure Lab run"}
+    with _lab_restart_guard(service) as allowed:
+        if not allowed:
+            return {"restarted": False, "error": "Failure Lab run is active; Worker restart refused"}
+        return _restart_unlocked(request)
+
+
+def _restart_unlocked(request: dict) -> dict:
     service = request.get("service")
     if not isinstance(service, str):
         return {"restarted": False, "error": "service is not allow-listed"}

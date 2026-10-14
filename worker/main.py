@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import signal
 import time
 from typing import Any, Awaitable, Callable, Optional
 
@@ -408,7 +409,7 @@ def _reconcile_interrupted_approved_actions() -> int:
 
 async def _main() -> None:
     from worker.backup import scheduler as backup_scheduler
-    from worker import bucket_logging, rgw_access_audit, delegated_tasks
+    from worker import bucket_logging, rgw_access_audit, delegated_tasks, failure_lab_telegram_runner
     from worker.llm.router_client import diagnose_incident, poll_approved_actions
     from shared import incident_outbox, telegram_outbox
 
@@ -459,6 +460,7 @@ async def _main() -> None:
         _supervise("backup-scheduler", backup_scheduler.run),
         _supervise("bucket-logging", bucket_logging.run),
         _supervise("rgw-access-audit", rgw_access_audit.run),
+        _supervise("failure-lab-telegram", failure_lab_telegram_runner.run),
         _supervise("telegram-outbox", telegram_outbox_loop),
         _supervise("incident-outbox", incident_outbox_loop),
         _supervise("heartbeat", service_heartbeat),
@@ -469,4 +471,11 @@ if __name__ == "__main__":
     # See watcher/main.py's identical change — "%(asctime)s" is what lets
     # the Settings page's log-cleanup feature filter this file by date.
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(name)s:%(message)s")
+    def _shutdown(signum, _frame):
+        from worker.failure_lab_telegram_runner import terminate_active
+
+        terminate_active()
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _shutdown)
     asyncio.run(_main())
