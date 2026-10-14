@@ -486,6 +486,7 @@ def test_codex_read_only_reviewer_can_run_in_an_isolated_non_git_directory(monke
     assert provider == "codex"
     assert "--skip-git-repo-check" in command
     assert "--sandbox" in command and "read-only" in command
+    assert command[command.index("-C") + 1] == str(tmp_path)
     assert command[command.index("--model") + 1] == "gpt-5.5"
     assert command[-2:] == ["gpt-5.5", "-"]
 

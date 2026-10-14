@@ -607,7 +607,7 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int |
         if mode == "review":
             command = [codex, "exec", "--ephemeral", "--sandbox", "read-only", "-C", str(worktree)]
             if skip_git_repo_check:
-                command.insert(-1, "--skip-git-repo-check")
+                command.insert(command.index("-C"), "--skip-git-repo-check")
         elif mode == "full-access":
             # This is deliberately reserved for Telegram's separately
             # allow-listed /single-full operator mode. It runs as the service
