@@ -23,6 +23,7 @@ CONFIG_PATH = Path(os.environ.get("CEPH_AI_FAILURE_LAB_CONFIG", "/var/lib/ceph-a
 _WINDOW_RE = re.compile(r"^\d{2}:\d{2}-\d{2}:\d{2}$")
 _FSID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _CHAT_RE = re.compile(r"^-?\d{1,20}$")
+_CHANNEL_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 class LabConfigError(ValueError):
@@ -36,6 +37,7 @@ class LabConfig:
     fault_enabled: bool = False
     window: str = "02:00-05:00"
     telegram_chat_id: str = ""
+    telegram_channel_id: str = ""
     updated_by: str = ""
     updated_at: str = ""
 
@@ -56,6 +58,7 @@ def load(path: Path | None = None) -> LabConfig:
         fault_enabled=bool(stored["fault_enabled"]) if "fault_enabled" in stored else settings.failure_lab_fault_enabled,
         window=str(stored.get("window") or settings.failure_lab_window),
         telegram_chat_id=str(stored.get("telegram_chat_id") or settings.failure_lab_telegram_chat_id or "").strip(),
+        telegram_channel_id=str(stored.get("telegram_channel_id") or "").strip(),
         updated_by=str(stored.get("updated_by") or ""), updated_at=str(stored.get("updated_at") or ""),
     )
 
@@ -74,6 +77,8 @@ def save(actor: str, *, path: Path | None = None, **changes: object) -> LabConfi
         raise LabConfigError("fsid không đúng định dạng UUID.")
     if current["telegram_chat_id"] and not _CHAT_RE.match(str(current["telegram_chat_id"])):
         raise LabConfigError("Chat id Telegram phải là số (nhóm có dấu - ở đầu).")
+    if current["telegram_channel_id"] and not _CHANNEL_ID_RE.fullmatch(str(current["telegram_channel_id"])):
+        raise LabConfigError("Kênh Telegram Failure Lab không hợp lệ.")
     if current["fault_enabled"] and not (current["cluster_id"] and current["fsid"]):
         raise LabConfigError("Chọn cụm staging và ghim fsid trước khi bật gây lỗi.")
     current.update(updated_by=actor, updated_at=datetime.now(timezone.utc).isoformat())

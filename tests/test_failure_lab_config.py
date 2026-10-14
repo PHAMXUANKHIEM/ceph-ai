@@ -23,6 +23,7 @@ def test_the_file_wins_over_env_and_records_who(monkeypatch):
 
     assert (saved.fault_enabled, saved.window, saved.telegram_chat_id, saved.updated_by) == (
         False, "01:00-04:00", "-1001234", "admin")
+    assert saved.telegram_channel_id == ""
     assert oct(config.CONFIG_PATH.stat().st_mode & 0o777) == "0o640"
 
 
@@ -32,6 +33,7 @@ def test_the_file_wins_over_env_and_records_who(monkeypatch):
     ({"window": "2h-5h"}, "HH:MM"),
     ({"fsid": "not-a-uuid"}, "UUID"),
     ({"telegram_chat_id": "@lab"}, "số"),
+    ({"telegram_channel_id": "not-a-channel"}, "Kênh Telegram"),
     ({"surprise": 1}, "không hợp lệ"),
 ])
 def test_unsafe_or_malformed_changes_are_refused(changes, message):

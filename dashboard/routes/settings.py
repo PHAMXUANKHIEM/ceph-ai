@@ -59,7 +59,7 @@ from shared.ai_limits import normalize_rate_limits
 from shared.models import (
     ActionPolicyOverride, ActionPolicyOverrideAudit,
     AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, PlaybookStat,
-    SecurityAuditEvent,
+    SecurityAuditEvent, TelegramManagedChannel,
 )
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
@@ -1338,6 +1338,7 @@ def _settings_context(
         "failure_lab_error": failure_lab_error,
         "failure_lab_success": failure_lab_success,
         "failure_lab": failure_lab_config.load(),
+        "failure_lab_channels": _failure_lab_channels(),
         "action_policy_error": action_policy_error,
         "action_policy_success": action_policy_success,
         "ai_budget_error": ai_budget_error,
@@ -1934,11 +1935,34 @@ def _live_fsid(cluster: Cluster) -> str:
     return str(payload.get("fsid") or "") if isinstance(payload, dict) else ""
 
 
+def _failure_lab_channels() -> list[dict[str, str | bool]]:
+    """Only expose channel names and availability, never bot credentials."""
+    with db.SessionLocal() as session:
+        channels = session.query(TelegramManagedChannel).order_by(TelegramManagedChannel.name).all()
+        return [{"id": row.id, "name": row.name,
+                 "available": bool(row.enabled and row.bot_token and row.chat_id)}
+                for row in channels if row.template in {"custom", "failure-lab"}]
+
+
+def _reserve_failure_lab_channel(session, channel_id: str) -> None:
+    """Validate and exclude the selected channel from global alert fan-out."""
+    if not channel_id:
+        return
+    channel = session.get(TelegramManagedChannel, channel_id)
+    if (channel is None or not channel.enabled or not channel.bot_token or not channel.chat_id
+            or channel.template not in {"custom", "failure-lab"}):
+        raise failure_lab_config.LabConfigError(
+            "Kênh Telegram đã chọn chưa bật, thiếu Bot Token/Chat ID hoặc không dành cho Failure Lab."
+        )
+    channel.template = "failure-lab"
+
+
 @router.post("/settings/failure-lab", response_class=HTMLResponse)
 async def settings_failure_lab_submit(
     request: Request, user: str = Depends(require_login),
     operation: str = Form("save"), cluster_id: str = Form(""), fault_enabled: str = Form("0"),
     window: str = Form("02:00-05:00"), telegram_chat_id: str = Form(""),
+    telegram_channel_id: str = Form(""),
 ):
     """Choose the Failure Lab staging cluster, pin its fsid, and switch fault injection on or off."""
     if not auth.is_admin_user(user):
@@ -1958,9 +1982,11 @@ async def settings_failure_lab_submit(
             message = f"Đã ghim fsid {fsid} của cụm {cluster.name}."
         else:
             cluster_id = cluster_id.strip()
+            telegram_channel_id = telegram_channel_id.strip()
             changed = cluster_id != current.cluster_id
             reason = f"Failure Lab staging (Settings, {user})"
             with db.SessionLocal() as session:
+                _reserve_failure_lab_channel(session, telegram_channel_id)
                 chosen = session.get(Cluster, cluster_id) if cluster_id else None
                 if cluster_id and (chosen is None or not chosen.is_active):
                     raise failure_lab_config.LabConfigError("Không tìm thấy cụm đang hoạt động.")
@@ -1973,6 +1999,7 @@ async def settings_failure_lab_submit(
                     user, cluster_id=cluster_id, fsid="" if changed else current.fsid,
                     fault_enabled=fault_enabled == "1" and not changed, window=window.strip(),
                     telegram_chat_id=telegram_chat_id.strip(),
+                    telegram_channel_id=telegram_channel_id,
                 )
                 session.commit()
             message = ("Đã đổi cụm staging; ghim lại fsid rồi mới bật gây lỗi." if changed and cluster_id

@@ -1,4 +1,14 @@
 (function () {
+  var labChannel = document.getElementById("failure-lab-telegram-channel");
+  var labChatId = document.querySelector('.staging-cluster-form input[name="telegram_chat_id"]');
+  if (labChannel && labChatId) {
+    function updateLabChatId() {
+      labChatId.disabled = Boolean(labChannel.value);
+    }
+    labChannel.addEventListener("change", updateLabChatId);
+    updateLabChatId();
+  }
+
   var keySearch = document.querySelector("[data-host-key-search-form]");
   var searchInput = document.getElementById("ceph-host-key-search-input");
   var searchTimer = null;

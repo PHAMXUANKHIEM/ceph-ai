@@ -910,9 +910,13 @@ def send_managed_channel_alert(
     A duplicated built-in channel keeps the built-in channel key as its
     template and therefore receives the same category. A newly created
     custom channel receives shared alert categories until the operator
-    chooses a more specific source by duplicating an existing channel.
+    reserves it for Failure Lab. A ``failure-lab`` channel receives no
+    operational alert copies, regardless of their source cluster.
     Approval keyboards intentionally remain on the built-in channels only.
     """
+    from shared import failure_lab_config
+
+    selected_lab_channel_id = failure_lab_config.load().telegram_channel_id
     try:
         with db.SessionLocal() as session:
             rows = (
@@ -923,7 +927,7 @@ def send_managed_channel_alert(
             destinations = [
                 (row.bot_token, row.chat_id, row.template)
                 for row in rows
-                if row.bot_token and row.chat_id
+                if row.bot_token and row.chat_id and row.id != selected_lab_channel_id
                 and (row.template == "custom" or row.template == category)
             ]
     except Exception:

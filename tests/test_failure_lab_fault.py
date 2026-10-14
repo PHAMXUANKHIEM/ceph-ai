@@ -11,8 +11,45 @@ from sqlalchemy.pool import StaticPool
 
 from config.settings import settings
 from shared import failure_lab_fault as fault
+from shared.failure_lab_config import LabConfig
 from shared.db import Base
 from shared.models import Action, AuditEntry, Cluster, Incident
+
+
+def test_lab_notice_uses_selected_bot_and_never_falls_back(monkeypatch):
+    from shared import db, telegram_client
+    from types import SimpleNamespace
+
+    channel_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    channel = SimpleNamespace(template="failure-lab", enabled=True, bot_token="lab-token", chat_id="-10042")
+    sent = []
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, _model, _id):
+            return channel
+
+    monkeypatch.setattr(db, "SessionLocal", lambda: Session())
+    monkeypatch.setattr(fault.failure_lab_config, "load", lambda: LabConfig(
+        telegram_channel_id=channel_id, telegram_chat_id="-100-production"))
+    monkeypatch.setattr(telegram_client, "send_telegram_message",
+                        lambda token, chat_id, message: sent.append((token, chat_id, message)))
+    fault.notify_lab("test")
+    assert sent == [("lab-token", "-10042", "[FAILURE LAB] test")]
+
+    channel.enabled = False
+    fault.notify_lab("test")
+    assert len(sent) == 1
+
+    channel.enabled = True
+    channel.template = "custom"
+    fault.notify_lab("test")
+    assert len(sent) == 1
 
 FSID = "11111111-2222-3333-4444-555555555555"
 

@@ -210,8 +210,17 @@
             <label>Khung giờ chạy theo lịch
               <input type="text" name="window" value="{{ failure_lab.window }}" pattern="\d{2}:\d{2}-\d{2}:\d{2}" placeholder="02:00-05:00">
             </label>
-            <label>Chat Telegram của lab
-              <input type="text" name="telegram_chat_id" value="{{ failure_lab.telegram_chat_id }}" placeholder="-100…  (trống = không gửi)">
+            <label>Bot Telegram của Failure Lab
+              <select name="telegram_channel_id" id="failure-lab-telegram-channel">
+                <option value="" {% if not failure_lab.telegram_channel_id %}selected{% endif %}>Bot cảnh báo cụm + Chat ID nhập tay</option>
+                {% for channel in failure_lab_channels %}
+                <option value="{{ channel.id }}" {% if channel.id == failure_lab.telegram_channel_id %}selected{% endif %} {% if not channel.available %}disabled{% endif %}>{{ channel.name }}{% if not channel.available %} — chưa bật hoặc thiếu cấu hình{% endif %}</option>
+                {% endfor %}
+              </select>
+              <small class="hint">Chọn kênh riêng đã tạo tại Cảnh báo Telegram. Kênh được chọn sẽ chỉ nhận thông báo Failure Lab, không nhận cảnh báo CS-LAB hoặc các cụm khác.</small>
+            </label>
+            <label>Chat ID nhập tay (chỉ dùng với bot cảnh báo cụm)
+              <input type="text" name="telegram_chat_id" value="{{ failure_lab.telegram_chat_id }}" placeholder="-100…  (để trống nếu chọn kênh riêng)" {% if failure_lab.telegram_channel_id %}disabled{% endif %}>
             </label>
             <label class="toggle-line"><input type="checkbox" name="fault_enabled" value="1" {% if failure_lab.fault_enabled %}checked{% endif %} {% if not failure_lab.fsid %}disabled{% endif %}> Cho phép gây lỗi thật trên cụm này</label>
           </div>
