@@ -101,10 +101,66 @@ def test_worker_refuses_changed_binding_without_starting_runner(monkeypatch, tmp
     record.update(status="APPROVED")
     approvals.create(record, tmp_path)
     monkeypatch.setattr(approvals, "PROPOSALS_DIR", tmp_path)
-    monkeypatch.setattr(runner, "_binding_valid", lambda _record: False)
+    notices = []
+    monkeypatch.setattr(runner, "_binding_error", lambda _record: "FSID staging đã thay đổi")
+    monkeypatch.setattr(runner, "notify_lab", notices.append)
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("runner started"))
     assert runner.run_one()
     assert approvals.load(record["id"], tmp_path)["status"] == "FAILED"
+    assert "FSID staging đã thay đổi" in notices[0]
+
+
+def test_runner_failure_reports_sanitized_diagnostic_to_lab_telegram(monkeypatch, tmp_path):
+    record = _record()
+    record.update(status="APPROVED")
+    approvals.create(record, tmp_path)
+    monkeypatch.setattr(approvals, "PROPOSALS_DIR", tmp_path)
+    monkeypatch.setattr(runner, "_binding_error", lambda _record: None)
+    notices = []
+    monkeypatch.setattr(runner, "notify_lab", notices.append)
+
+    class Process:
+        returncode = 2
+
+        def communicate(self, timeout=None):
+            return "", "failure lab refused: MON health check denied; password=hunter2 token=123456:ABCDEFGHIJKLMNOPQRST"
+
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: Process())
+    assert runner.run_one()
+    stored = approvals.load(record["id"], tmp_path)
+    assert stored["status"] == "FAILED"
+    assert "MON health check denied" in notices[0]
+    assert "hunter2" not in notices[0] and "hunter2" not in stored["error"]
+    assert "123456:ABCDEFGHIJKLMNOPQRST" not in notices[0]
+
+
+def test_runner_exception_reports_reason_without_secret(monkeypatch, tmp_path):
+    record = _record()
+    record.update(status="APPROVED")
+    approvals.create(record, tmp_path)
+    monkeypatch.setattr(approvals, "PROPOSALS_DIR", tmp_path)
+    monkeypatch.setattr(runner, "_binding_error", lambda _record: None)
+    notices = []
+    monkeypatch.setattr(runner, "notify_lab", notices.append)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("worker launch failed password=hunter2")))
+    assert runner.run_one()
+    stored = approvals.load(record["id"], tmp_path)
+    assert stored["status"] == "FAILED"
+    assert "worker launch failed" in notices[0]
+    assert "hunter2" not in notices[0]
+
+
+def test_proposal_queue_error_is_reported_once_without_stopping_poller(monkeypatch):
+    notices = []
+    runner._error_notices.clear()
+    monkeypatch.setattr(approvals, "next_approved_telegram", lambda: (_ for _ in ()).throw(
+        RuntimeError("database unavailable")))
+    monkeypatch.setattr(runner, "notify_lab", notices.append)
+    assert runner.run_one()
+    assert runner.run_one()
+    assert len(notices) == 1
+    assert "database unavailable" in notices[0]
 
 
 def test_worker_forwards_shutdown_to_active_fault_runner(monkeypatch):
