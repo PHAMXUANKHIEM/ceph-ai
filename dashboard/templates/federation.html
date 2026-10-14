@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Federation — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  {% include "_nav.html" %}
+
+  <main class="page federation-page">
+    <header class="lifecycle-page-header">
+      <div class="dc-title-block"><div class="lifecycle-eyebrow">SETTINGS / FEDERATION</div>
+        <div class="dc-title-row"><h1>Kết nối Ceph AI trung tâm</h1></div>
+        <p>Nhập mã kích hoạt nhà cung cấp gửi để bản cài này tham gia federation tại <code>{{ status.server }}</code>.
+          Chỉ <strong>số đếm</strong> (bên dưới) được gửi đi, và chỉ khi admin bấm <strong>Gửi</strong>: không có tên cụm, địa chỉ IP, fsid, log hay lệnh.</p></div>
+    </header>
+
+    <section class="card">
+      <div class="card-header"><h2>Trạng thái</h2></div>
+      <div class="card-body">
+        {% if status.enrolled %}
+        <p>Đã đăng ký: khách <code>{{ status.customer_id }}</code>, gói <strong>{{ status.tier }}</strong>, lúc {{ status.enrolled_at }}.</p>
+        <p>Lần gửi gần nhất: {{ status.last_push_at or "chưa gửi" }}{% if status.last_push_error %} — <span class="dc-modal-error">lỗi: {{ status.last_push_error }}</span>{% endif %}</p>
+        <div class="pending-action-buttons">
+          <button type="button" class="btn btn-primary" id="fed-push">Gửi số liệu bên dưới</button>
+          <button type="button" class="btn btn-reject" id="fed-forget">Huỷ đăng ký trên máy này</button>
+        </div>
+        {% else %}
+        {% if not status.enroll_login_ready %}<p class="hint">Thiếu file mật khẩu đăng ký (có trong gói cài đặt); hãy chép file đó vào trước khi nhập mã.</p>{% endif %}
+        <form id="fed-enroll-form">
+          <label>Mã kích hoạt <input type="text" id="fed-code" placeholder="CAI-XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false"></label>
+          <button type="submit" class="btn btn-primary">Kích hoạt</button>
+        </form>
+        {% endif %}
+        <p class="dc-modal-error" id="fed-error" hidden></p>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Dữ liệu sẽ được gửi (24 giờ qua)</h2></div>
+      <div class="card-body"><pre class="upgrade-plan-text" id="fed-payload">{{ payload|tojson(indent=2) }}</pre></div>
+    </section>
+  </main>
+
+  <script>
+  (function () {
+    function el(id) { return document.getElementById(id); }
+    async function post(url, body) {
+      const error = el("fed-error");
+      error.hidden = true;
+      const response = await fetch(url, {method: "POST", credentials: "same-origin",
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+      if (response.ok) { window.location.reload(); return; }
+      let detail = "Thao tác không thành công";
+      try { detail = (await response.json()).detail || detail; } catch (e) { /* default */ }
+      error.textContent = detail;
+      error.hidden = false;
+    }
+    const form = el("fed-enroll-form");
+    if (form) form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      post("/api/federation/enroll", {code: el("fed-code").value});
+    });
+    const push = el("fed-push");
+    if (push) push.addEventListener("click", function () { push.disabled = true; post("/api/federation/push"); });
+    const forget = el("fed-forget");
+    if (forget) forget.addEventListener("click", function () {
+      if (window.confirm("Xoá tài khoản federation đã lưu trên máy này? Muốn kết nối lại sẽ cần mã kích hoạt mới.")) {
+        post("/api/federation/forget");
+      }
+    });
+  })();
+  </script>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

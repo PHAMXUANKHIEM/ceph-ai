@@ -152,6 +152,14 @@ class Settings(BaseSettings):
     deploy_request_dir: str = "/var/lib/ceph-ai/deploy-requests"
     # PR release flow: AI summaries of candidate branches, one JSON per head commit.
     release_notes_dir: str = "/var/lib/ceph-ai/release-notes"
+    # Customer federation (plan readiness-gap-review R8, shared/federation_client.py): our
+    # SQL node on the WAN, the shipped enrollment login's password file, and the 0600 file
+    # that keeps this install's own login once an activation code is accepted.
+    federation_host: str = "45.124.93.83"
+    federation_port: int = Field(default=1207, gt=0, lt=65536)
+    federation_database: str = "ceph_ai_federation"
+    federation_enroll_password_file: str = "/var/lib/ceph-ai/config/federation-enroll.pass"
+    federation_state_file: str = "/var/lib/ceph-ai/config/federation.json"
     # BLUESTORE_SLOW_OP_ALERT gate (autonomy plan WP1.2). Ceph keeps the
     # check for bluestore_slow_ops_warn_lifetime (86400 s by default) after a
     # single slow op, so only an episode outliving that window is recurrent.

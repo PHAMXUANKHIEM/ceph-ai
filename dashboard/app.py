@@ -55,6 +55,7 @@ from dashboard.routes import (
     crush_map,
     delete_cluster,
     remove_nodes,
+    federation as federation_routes,
     file_services,
     grafana_vpn,
     replace_osd,
@@ -637,6 +638,7 @@ def create_app() -> FastAPI:
     application.include_router(object_storage_users.router)
     application.include_router(storage_audit.router)
     application.include_router(telegram_alerts.router)
+    application.include_router(federation_routes.router)
     application.include_router(crush_map.router)
     application.include_router(capability_matrix_routes.router)
     application.include_router(test_progress_routes.router)
