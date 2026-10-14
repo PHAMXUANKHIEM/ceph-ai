@@ -55,7 +55,8 @@ def ask_ai(prompt: str, *, timeout_seconds: int = AI_TIMEOUT_SECONDS) -> str:
         workdir = Path(root)
         codex_home, claude_config_dir = _planner_account_dirs(profile)
         selected, command = _provider_command(provider, workdir, prompt, timeout_seconds, claude_config_dir=claude_config_dir,
-                                              codex_home=codex_home, model=model, mode="review")
+                                              codex_home=codex_home, model=model, mode="review",
+                                              skip_git_repo_check=True)
         last_message = workdir / "last-message.txt"
         command = _with_last_message_file(selected, command, last_message)
         reservation = check_ai_budget(selected, model or "default", len(prompt))
