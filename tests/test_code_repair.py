@@ -477,6 +477,19 @@ def test_codex_reviewer_is_read_only_and_accepts_model(monkeypatch, tmp_path):
     assert command[-1] == "-"
 
 
+def test_codex_read_only_reviewer_can_run_in_an_isolated_non_git_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(code_repair.shutil, "which", lambda name: f"/bin/{name}")
+    provider, command = code_repair._provider_command(
+        "codex", tmp_path, "review it", 30, mode="review", model="gpt-5.5",
+        skip_git_repo_check=True,
+    )
+    assert provider == "codex"
+    assert "--skip-git-repo-check" in command
+    assert "--sandbox" in command and "read-only" in command
+    assert command[command.index("--model") + 1] == "gpt-5.5"
+    assert command[-2:] == ["gpt-5.5", "-"]
+
+
 def test_full_access_provider_commands_bypass_the_cli_sandbox(monkeypatch, tmp_path):
     monkeypatch.setattr(code_repair.app_settings, "ceph_ai_environment", "development")
     monkeypatch.setattr(code_repair.app_settings, "code_repair_auto_enabled", True)

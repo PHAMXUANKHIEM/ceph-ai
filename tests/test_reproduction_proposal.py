@@ -1,6 +1,7 @@
 """FL6.2: AI reproduction proposals are parsed and validated fail-closed."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -67,6 +68,24 @@ def test_the_prompt_forbids_commands_and_lists_only_given_documents():
 
     assert "KHÔNG viết lệnh shell" in prompt and URL in prompt and "restart_osd_daemon" in prompt
     assert "stop_osd" in prompt and rp.NEW_KIND in prompt
+
+
+def test_planner_credentials_are_resolved_from_app_root_not_temp_workdir(monkeypatch, tmp_path):
+    from scripts.lab import propose_reproduction as cli
+    from worker import code_repair
+
+    captured = {}
+
+    def resolve(config, profile):
+        captured["repo"] = config.repo
+        captured["profile"] = profile
+        return tmp_path / "codex", tmp_path / "claude"
+
+    monkeypatch.setattr(code_repair, "_role_account_dirs", resolve)
+
+    assert cli._planner_account_dirs("configured") == (tmp_path / "codex", tmp_path / "claude")
+    assert captured["repo"] == Path(cli.__file__).resolve().parents[2]
+    assert captured["profile"] == "configured"
 
 
 def test_propose_stores_a_validated_proposal(monkeypatch, tmp_path):

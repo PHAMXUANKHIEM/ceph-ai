@@ -571,7 +571,8 @@ def cleanup_preserved_candidates(
 def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int | None,
                       *, claude_config_dir: Path | None = None,
                       codex_home: Path | None = None,
-                      model: str = "", mode: str = "implement") -> tuple[str, list[str]]:
+                      model: str = "", mode: str = "implement",
+                      skip_git_repo_check: bool = False) -> tuple[str, list[str]]:
     if mode not in {"implement", "review", "full-access"}:
         raise RepairError(f"unsupported AI role mode: {mode!r}")
     if mode == "full-access":
@@ -605,6 +606,8 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int |
     if provider == "codex" and codex:
         if mode == "review":
             command = [codex, "exec", "--ephemeral", "--sandbox", "read-only", "-C", str(worktree)]
+            if skip_git_repo_check:
+                command.insert(-1, "--skip-git-repo-check")
         elif mode == "full-access":
             # This is deliberately reserved for Telegram's separately
             # allow-listed /single-full operator mode. It runs as the service
