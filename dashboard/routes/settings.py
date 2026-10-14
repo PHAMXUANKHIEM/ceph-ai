@@ -1944,6 +1944,19 @@ def _failure_lab_channels() -> list[dict[str, str | bool]]:
                 for row in channels if row.template in {"custom", "failure-lab"}]
 
 
+def _reserve_failure_lab_channel(session, channel_id: str) -> None:
+    """Validate and exclude the selected channel from global alert fan-out."""
+    if not channel_id:
+        return
+    channel = session.get(TelegramManagedChannel, channel_id)
+    if (channel is None or not channel.enabled or not channel.bot_token or not channel.chat_id
+            or channel.template not in {"custom", "failure-lab"}):
+        raise failure_lab_config.LabConfigError(
+            "Kênh Telegram đã chọn chưa bật, thiếu Bot Token/Chat ID hoặc không dành cho Failure Lab."
+        )
+    channel.template = "failure-lab"
+
+
 @router.post("/settings/failure-lab", response_class=HTMLResponse)
 async def settings_failure_lab_submit(
     request: Request, user: str = Depends(require_login),
@@ -1973,16 +1986,7 @@ async def settings_failure_lab_submit(
             changed = cluster_id != current.cluster_id
             reason = f"Failure Lab staging (Settings, {user})"
             with db.SessionLocal() as session:
-                if telegram_channel_id:
-                    channel = session.get(TelegramManagedChannel, telegram_channel_id)
-                    if (channel is None or not channel.enabled or not channel.bot_token or not channel.chat_id
-                            or channel.template not in {"custom", "failure-lab"}):
-                        raise failure_lab_config.LabConfigError(
-                            "Kênh Telegram đã chọn chưa bật, thiếu Bot Token/Chat ID hoặc không dành cho Failure Lab."
-                        )
-                    # Reserve this channel exclusively for Failure Lab. It must
-                    # not receive the default cluster's global alert fan-out.
-                    channel.template = "failure-lab"
+                _reserve_failure_lab_channel(session, telegram_channel_id)
                 chosen = session.get(Cluster, cluster_id) if cluster_id else None
                 if cluster_id and (chosen is None or not chosen.is_active):
                     raise failure_lab_config.LabConfigError("Không tìm thấy cụm đang hoạt động.")
