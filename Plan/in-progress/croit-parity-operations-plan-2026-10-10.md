@@ -33,7 +33,7 @@ một giao diện, tự sửa mã qua pipeline, không license.
 ### C1 — Thay ổ / OSD hỏng trọn vẹn
 Hiện có: phát hiện OSD sắp hỏng (device health), `evacuate_predicted_failing_osd` (= `osd out`),
 `mark_osd_*`, `finalize_osd_release`.
-- [ ] Hành động `replace_failed_osd` (RISKY), các pha:
+- [x] Hành động `replace_failed_osd` + `finish_replace_osd` (DESTRUCTIVE, gõ xác nhận), các pha:
   1. preflight: OSD tồn tại, `ceph osd ok-to-stop`/`safe-to-destroy` sau khi data đã chuyển, không có PG
      inactive, đủ dung lượng còn lại (dùng lại kiểm tra của node_removal);
   2. `ceph orch osd rm <id> --replace` (giữ ID, đánh dấu `destroyed`), chờ `orch osd rm status` xong;
@@ -42,7 +42,9 @@ Hiện có: phát hiện OSD sắp hỏng (device health), `evacuate_predicted_f
      spec `osd` tự nhận ổ trống);
   5. chờ OSD up/in và PG về `active+clean`.
 - [ ] Nối với cảnh báo "OSD sắp hỏng": đề xuất `replace_failed_osd` thay vì chỉ `out`.
-- [ ] Thử trên CS-STAGING (ổ `vdb` 20 GB mỗi node).
+- [x] Thử trên CS-STAGING (ổ `vdb` 20 GB mỗi node). Đạt 14/10/2026: `docs/operations/c1-replace-osd-acceptance-2026-10-14.md`.
+- [ ] Sửa: trang Thay OSD kẹt sau một lần hoàn tất thất bại (lấy host/ổ từ lần bắt đầu, không từ hành động mới nhất).
+- [ ] Kiểm tra ổ có trong `ceph orch device ls` ngay lúc tạo đề xuất hoàn tất.
 
 ### C2 — Bảo trì host và reboot lần lượt
 Hiện có: `node_os_gate_prepare/recover/abort` (cờ noout/noscrub/nodeep-scrub/nosnaptrim, gỡ MON khỏi
@@ -77,3 +79,4 @@ Hiện có: `upgrade_ceph_cluster*`, cổng OS node.
 | Ngày | Việc | Kết quả |
 |---|---|---|
 | 10/10/2026 | Rà soát và lập kế hoạch | Bảng so sánh ở mục 1; bắt đầu C1 |
+| 14/10/2026 | Nghiệm thu C1 trên CS-STAGING (6 kịch bản) | Đạt; osd.2 thay xong giữ ID, HEALTH_OK sau 6 phút; tìm thêm 2 lỗi (mục C1) |
