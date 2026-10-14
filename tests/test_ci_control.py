@@ -236,13 +236,44 @@ def test_only_main_head_with_a_green_push_run_is_offered():
     assert route._latest_green_sha({"head_sha": None, "runs": [green_push]}) is None
 
 
-def test_runner_judges_the_push_run_not_a_newer_manual_rerun(monkeypatch):
+def test_runner_judges_the_push_run_not_a_newer_manual_rerun(monkeypatch, tmp_path):
     path = runner.WORKFLOW_PATH
+    token_file = tmp_path / "github-ci-token"
+    token_file.write_text("github_pat_test-token\n")
+    monkeypatch.setattr(runner, "GITHUB_TOKEN_FILE", token_file)
     runs = [{"path": path, "event": "workflow_dispatch", "status": "in_progress", "conclusion": None},
             {"path": path, "event": "push", "status": "completed", "conclusion": "success"}]
-    monkeypatch.setattr(runner, "_https", lambda *a, **k: (200, {"workflow_runs": runs}, None))
+    requests = []
+
+    def api_request(method, host, endpoint, headers):
+        requests.append((method, host, endpoint, headers))
+        return 200, {"workflow_runs": runs}, {}
+
+    monkeypatch.setattr(runner, "_https", api_request)
     runner.ci_green(SHA)  # green push run: accepted although a manual re-run is still going
+    assert requests[0][3]["Authorization"] == "Bearer github_pat_test-token"
+    assert requests[0][3]["X-GitHub-Api-Version"] == "2022-11-28"
 
     runs[1]["conclusion"] = "failure"
     with pytest.raises(runner.Refused, match="push"):
+        runner.ci_green(SHA)
+
+
+def test_ci_green_refuses_missing_token_without_calling_github(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "GITHUB_TOKEN_FILE", tmp_path / "missing-token")
+    monkeypatch.setattr(runner, "_https", lambda *args, **kwargs: pytest.fail("GitHub API must not be called"))
+    with pytest.raises(runner.Refused, match="CI token"):
+        runner.ci_green(SHA)
+
+
+def test_ci_green_explains_authenticated_rate_limit_and_permission_errors(monkeypatch, tmp_path):
+    token_file = tmp_path / "github-ci-token"
+    token_file.write_text("test-token")
+    monkeypatch.setattr(runner, "GITHUB_TOKEN_FILE", token_file)
+    monkeypatch.setattr(runner, "_https", lambda *args, **kwargs: (403, {}, {"x-ratelimit-remaining": "0"}))
+    with pytest.raises(runner.Refused, match="rate limit"):
+        runner.ci_green(SHA)
+
+    monkeypatch.setattr(runner, "_https", lambda *args, **kwargs: (403, {}, {"x-ratelimit-remaining": "17"}))
+    with pytest.raises(runner.Refused, match="Actions: read"):
         runner.ci_green(SHA)
