@@ -27,12 +27,23 @@ PROPOSALS_DIR = Path("/var/lib/ceph-ai/failure-lab/proposals")
 AI_TIMEOUT_SECONDS = 600
 
 
+def _planner_account_dirs(profile: str) -> tuple[Path, Path]:
+    """Resolve provider credentials from the application root, not the empty AI cwd."""
+    from worker.code_repair import RepairConfig, _role_account_dirs
+
+    # Failure Lab deliberately runs Codex in a fresh, empty temporary directory.
+    # Relative configured credential paths (for example ``.codex-account``)
+    # belong to the application root and must not be resolved under that cwd.
+    app_root = Path(__file__).resolve().parents[2]
+    return _role_account_dirs(RepairConfig(repo=app_root, planner_account_profile=profile), profile)
+
+
 def ask_ai(prompt: str, *, timeout_seconds: int = AI_TIMEOUT_SECONDS) -> str:
     """The final answer of the planner AI, run read-only in an empty directory."""
     from config.settings import settings
     from shared.ai_budget import check as check_ai_budget
     from shared.ai_observability import record_ai_attempt
-    from worker.code_repair import RepairConfig, _ai_process_environment, _provider_command, _role_account_dirs, _run
+    from worker.code_repair import _ai_process_environment, _provider_command, _run
     from worker.code_repair_supervisor import _configured_account_profile, _final_answer, _with_last_message_file
 
     provider = settings.code_repair_planner_provider or settings.code_repair_provider
@@ -42,8 +53,7 @@ def ask_ai(prompt: str, *, timeout_seconds: int = AI_TIMEOUT_SECONDS) -> str:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="ceph-ai-fl6-") as root:
         workdir = Path(root)
-        codex_home, claude_config_dir = _role_account_dirs(RepairConfig(repo=workdir, planner_account_profile=profile),
-                                                           profile)
+        codex_home, claude_config_dir = _planner_account_dirs(profile)
         selected, command = _provider_command(provider, workdir, prompt, timeout_seconds, claude_config_dir=claude_config_dir,
                                               codex_home=codex_home, model=model, mode="review")
         last_message = workdir / "last-message.txt"
