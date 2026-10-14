@@ -90,6 +90,7 @@ Thứ tự: deploy FL2 + bật evidence → chạy lại replay → VM cephadm l
 ## 5. Gói việc
 
 ### FL0 — Chuẩn bị staging
+- **Kiểm tra runtime 13/10/2026 trên `10.3.55.213`:** chưa có `/var/lib/ceph-ai/config/failure-lab.json`, chưa chọn cluster/ghim FSID/chat lab, `fault_enabled` vẫn tắt và chưa có fault-run/proposal record. Không chạy fault thật hoặc coi test giả là bằng chứng tự học cho đến khi operator cấu hình staging và phê duyệt cửa sổ thử nghiệm.
 - [x] CS-LAB đổi sang `autonomy_environment=lab` (06/10, operator yêu cầu; có bản ghi `AutopilotClusterConfigAudit`; autopilot giữ nguyên). Đã kiểm tra: trong Worker/Watcher/shared chỉ bộ giả lập đọc giá trị này.
 - [x] Ghim `fsid`: `FAILURE_LAB_CLUSTER_FSID`; bộ chạy đọc `ceph fsid` thật và từ chối nếu khác (07/10). Operator cần đặt giá trị sau khi deploy.
 - [ ] Pool/bucket test riêng (`test-*`) cho các kịch bản đụng dữ liệu.
@@ -141,7 +142,7 @@ Gói việc:
 - [x] FL6.2 tài liệu Ceph (`shared/ceph_docs.py`) + đề xuất AI có cấu trúc + validator (`shared/reproduction_proposal.py`, `scripts/lab/propose_reproduction.py`).
 - [x] FL6.3 thẻ duyệt Telegram (`flrepro:ok/skip`, chỉ operator), quyết định ghi vào file đề xuất (`shared/reproduction_approval.py`).
 - [x] FL6.4 `run_proposal`: đề xuất đã duyệt chạy một lần qua mọi cổng FL2, ghép với lỗi đã review cùng kiểu (cơ chế/gỡ lỗi từ catalog; đề xuất chỉ thêm mã kỳ vọng, đặt hành động đã duyệt, rút ngắn thời gian giữ lỗi); trạng thái RUNNING → DONE/FAILED; nhãn FL3 ghi `proposal_id`. CLI `--proposal <id>|next`. Duyệt sửa dùng đường giữ action + thẻ duyệt ở kênh lab của FL2.
-- [ ] FL6.5 báo cáo học: chỉ số theo họ lỗi, Telegram sau mỗi lượt.
+- [~] FL6.5 báo cáo học: tổng hợp theo họ lỗi từ các proposal `DONE` có đủ 6 khâu, đếm chẩn đoán/khôi phục/đạt, số lượt tới lần đầu chẩn đoán đúng; gửi Telegram lab sau mỗi lượt và có CLI JSON chỉ đọc (`shared/failure_lab_learning_report.py`, `scripts/lab/failure_lab_learning_report.py`). Không tính lượt lỗi/chưa chấm là đạt. **Còn thiếu:** đo trước/sau khi tham khảo lab trên tập production độc lập; chưa được tuyên bố AI đã cải thiện production.
 - [ ] Thêm kiểu lỗi mới theo yêu cầu (vd large omap trên pool test, OSD out, cờ `noout`), mỗi kiểu một PR có review.
 - [x] Cấu hình cụm staging trên Dashboard (09/10): Cài đặt > Hệ thống > **Cụm Staging (Failure Lab)** chọn cụm (tự chuyển `lab`, cụm cũ về `production`, có audit), ghim fsid đọc từ cụm, khung giờ, chat Telegram lab, công tắc gây lỗi (chỉ bật được khi đã ghim fsid; đổi cụm thì tắt và bỏ fsid). Deploy Cluster có ô **Dùng cụm này làm cụm Staging** (khi đăng ký giám sát; chỉ khi chưa có cụm staging): xong deploy thì cụm mới là `lab`, fsid ghim từ MON, gây lỗi vẫn tắt. Lưu ở `/var/lib/ceph-ai/config/failure-lab.json` (`shared/failure_lab_config.py`), bộ chạy và Worker đọc mỗi lần dùng nên không cần restart; thiếu khóa thì dùng `FAILURE_LAB_*` trong .env.
 - **Cần operator:** dựng cụm staging (hoặc deploy với ô Staging), rồi trong Cài đặt > Cụm Staging: ghim fsid, đặt chat Telegram lab, bật gây lỗi.
