@@ -211,8 +211,10 @@ cmd_install() {
   preflight
 
   say "thư mục và quyền"
-  install -d -m 0700 "$CONF" "$CONF/ssh" /root/.config/ceph-ai "$BACKUP_DIR" /var/lib/ceph-ai-postgres
-  install -d -m 0755 /var/lib/ceph-ai-rabbitmq
+  install -d -m 0700 "$CONF" "$CONF/ssh" /root/.config/ceph-ai "$BACKUP_DIR"
+  # The images' entrypoints chown their own data subdirectory to the database user, who
+  # must be able to traverse these: 0755, not 0700 (compose.yaml, postgres service).
+  install -d -m 0755 /var/lib/ceph-ai-postgres /var/lib/ceph-ai-rabbitmq
   install -d -m 0750 -o "$APP_UID" -g "$APP_UID" "$DATA" "$DATA/config" "$DATA/release-artifacts"
   install -o "$APP_UID" -g "$APP_UID" -m 0400 "$SSH_KEY" "$CONF/ssh/id_ed25519"
 

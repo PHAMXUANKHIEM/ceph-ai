@@ -148,3 +148,14 @@ def test_the_installer_prepares_the_network_before_any_container_starts():
     backends = text.index("start_backends() {")
     assert text.index("  ensure_network\n", backends) < text.index("compose up -d postgres rabbitmq", backends)
     assert "cni_compat.py" in text
+
+
+def test_postgres_18_keeps_its_data_layout_and_a_traversable_host_dir():
+    # 10.2.0.94, 15/10/2026: mounting at /var/lib/postgresql/data with a 0700 host dir failed
+    # with "mkdir: cannot create directory '/var/lib/postgresql/data': Permission denied".
+    postgres = _compose()["services"]["postgres"]
+    assert postgres["volumes"] == ["/var/lib/ceph-ai-postgres:/var/lib/postgresql:rw"]
+    assert "PGDATA" not in postgres.get("environment", {})
+    text = SCRIPT.read_text()
+    assert "install -d -m 0755 /var/lib/ceph-ai-postgres /var/lib/ceph-ai-rabbitmq" in text
+    assert "0700" not in next(line for line in text.splitlines() if "/var/lib/ceph-ai-postgres" in line)
