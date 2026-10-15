@@ -170,6 +170,15 @@ smoke() {
   [ "$bad" -eq 0 ] || die "$bad dịch vụ không ổn định; xem: podman logs <container>"
   say "OK: $(local_url)"
 }
+runtime_dir() {
+  # Heartbeats and the watchers' singleton locks live here, written by uid 10001. Create it
+  # before any container: otherwise Podman creates the bind-mounted host dir as root 0700 and the
+  # watchers crash-loop on "Permission denied: '/run/ceph-ai/watcher.lock'" (Podman 3.4 test,
+  # 15/10/2026). The tmpfiles entry recreates it after a reboot.
+  printf 'd /run/ceph-ai 0750 %s %s -\n' "$APP_UID" "$APP_UID" > /etc/tmpfiles.d/ceph-ai-customer.conf
+  install -d -m 0750 -o "$APP_UID" -g "$APP_UID" /run/ceph-ai
+  chown "$APP_UID:$APP_UID" /run/ceph-ai; chmod 0750 /run/ceph-ai
+}
 install_unit() {
   cat > "$UNIT" <<EOF
 [Unit]
@@ -183,13 +192,11 @@ RemainAfterExit=yes
 ExecStart=$REPO_DIR/scripts/customer/ceph-ai-customer.sh start
 ExecStop=$REPO_DIR/scripts/customer/ceph-ai-customer.sh stop
 TimeoutStartSec=900
-TimeoutStopSec=1000
+TimeoutStopSec=300
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  printf 'd /run/ceph-ai 0750 %s %s -\n' "$APP_UID" "$APP_UID" > /etc/tmpfiles.d/ceph-ai-customer.conf
-  systemd-tmpfiles --create /etc/tmpfiles.d/ceph-ai-customer.conf
   systemctl daemon-reload
   systemctl enable ceph-ai-customer.service
 }
@@ -205,6 +212,8 @@ cmd_install() {
     [ -r "$CONF/postgres.env" ] && [ -r "$CONF/rabbitmq.env" ] && [ -r "$ADMIN_PASS_FILE" ] \
       || die "$ENV_FILE có nhưng thiếu file mật khẩu trong $CONF; không tự sinh lại"
     resume=1
+    # Containers of the unfinished run (they may still hold the Dashboard port); data stays on disk.
+    compose down >/dev/null 2>&1 || true
   fi
   [ -r "$SSH_KEY" ] || die "--ssh-key phải là file khoá SSH đọc được"
   [ -z "$OLD_ENV" ] || [ -r "$OLD_ENV" ] || die "--old-env không đọc được"
@@ -217,6 +226,7 @@ cmd_install() {
   install -d -m 0755 /var/lib/ceph-ai-postgres /var/lib/ceph-ai-rabbitmq
   install -d -m 0750 -o "$APP_UID" -g "$APP_UID" "$DATA" "$DATA/config" "$DATA/release-artifacts"
   install -o "$APP_UID" -g "$APP_UID" -m 0400 "$SSH_KEY" "$CONF/ssh/id_ed25519"
+  runtime_dir
 
   say "tải image"
   podman pull "$IMAGE"
@@ -257,9 +267,10 @@ cmd_install_start() {
   migrate
   say "khởi động ứng dụng"
   compose up -d "${APP_SERVICES[@]}"
+  smoke
+  # Only now is the install finished: a failed smoke test leaves `install` re-runnable.
   printf '%s\n' "$IMAGE" > "$DATA/release-artifacts/current-image-ref"
   install_unit
-  smoke
   say "Mật khẩu admin Dashboard ở $ADMIN_PASS_FILE (đọc rồi đổi trong Settings nếu cần). Autopilot đang TẮT."
 }
 
@@ -268,8 +279,15 @@ cmd_backup() {
   install -d -m 0700 "$BACKUP_DIR"
   local file="$BACKUP_DIR/ceph_ai-$(date -u +%Y%m%dT%H%M%SZ).dump"
   say "sao lưu DB → $file"
-  podman exec "$(container postgres)" pg_dump -U ceph_ai -Fc ceph_ai > "$file.tmp"
-  podman exec -i "$(container postgres)" pg_restore --list < "$file.tmp" > /dev/null || die "bản dump không đọc lại được"
+  # Dump and verify inside the container, then copy the file out. Podman 3.4 truncates binary
+  # output streamed through `podman exec` (a 343 kB dump arrived as 106496 bytes, 15/10/2026).
+  local pg inside=/tmp/ceph-ai-backup.dump
+  pg="$(container postgres)"
+  podman exec "$pg" pg_dump -U ceph_ai -Fc ceph_ai -f "$inside"
+  podman exec "$pg" pg_restore --list "$inside" > /dev/null || die "bản dump không đọc lại được"
+  podman cp "$pg:$inside" "$file.tmp"
+  podman exec "$pg" rm -f "$inside"
+  [ "$(stat -c %s "$file.tmp")" -gt 0 ] || die "bản dump rỗng"
   mv "$file.tmp" "$file"; chmod 0600 "$file"
   sha256sum "$file" > "$file.sha256"
   ls -1t "$BACKUP_DIR"/ceph_ai-*.dump | tail -n +$((KEEP_BACKUPS + 1)) | while read -r old; do rm -f "$old" "$old.sha256"; done
@@ -321,7 +339,7 @@ cmd_rollback() {
 
 cmd_start() {
   load_compose_env
-  install -d -m 0750 -o "$APP_UID" -g "$APP_UID" /run/ceph-ai
+  runtime_dir
   start_backends
   compose up -d "${APP_SERVICES[@]}"
 }

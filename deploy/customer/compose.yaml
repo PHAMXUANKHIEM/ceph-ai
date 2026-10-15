@@ -21,7 +21,8 @@ x-app: &app
   user: "10001:10001"
   read_only: true
   security_opt:
-    - no-new-privileges:true
+    # Podman 3.4 accepts only the bare form ("invalid --security-opt 1" for :true); 4.x takes both.
+    - no-new-privileges
   cap_drop:
     - ALL
   tmpfs:
@@ -115,7 +116,10 @@ services:
     <<: *app
     # Actions still need an operator's approval (AUTOPILOT_ENABLED=false by
     # default on a customer host); the Worker runs the approved ones.
-    stop_grace_period: 930s
+    # The main host gives the Worker 930 s so a Failure Lab run can undo its
+    # fault; customer hosts run no Failure Lab. On Podman 3.4 the Worker did not
+    # exit on SIGTERM, so `stop` waited the whole grace period (15/10/2026).
+    stop_grace_period: 120s
     cpus: "2.00"
     mem_limit: 2g
     command: ["python", "-m", "worker.main"]
