@@ -159,3 +159,27 @@ def test_postgres_18_keeps_its_data_layout_and_a_traversable_host_dir():
     text = SCRIPT.read_text()
     assert "install -d -m 0755 /var/lib/ceph-ai-postgres /var/lib/ceph-ai-rabbitmq" in text
     assert "0700" not in next(line for line in text.splitlines() if "/var/lib/ceph-ai-postgres" in line)
+
+
+def test_podman_34_accepts_the_security_options():
+    # Podman 3.4: 'invalid --security-opt 1: "no-new-privileges:true"' (10.2.0.94, 15/10/2026).
+    for name, service in _compose()["services"].items():
+        for option in service.get("security_opt", []):
+            assert ":true" not in option, (name, option)
+
+
+def test_the_runtime_dir_exists_before_any_container_and_the_install_is_marked_done_only_after_smoke():
+    text = SCRIPT.read_text()
+    install = text[text.index("cmd_install() {"):]
+    assert install.index("  runtime_dir\n") < install.index("cmd_install_start\n")
+    start = text[text.index("cmd_install_start() {"):]
+    assert start.index("  smoke\n") < start.index("current-image-ref") < start.index("  install_unit\n")
+    resume = install[:install.index("  preflight\n")]
+    assert "compose down" in resume  # an unfinished run's Dashboard must not hold the port at preflight
+
+
+def test_backups_never_stream_a_dump_through_podman_exec():
+    # Podman 3.4 truncated a dump streamed through `podman exec` to 106496 bytes (15/10/2026).
+    backup = SCRIPT.read_text().split("cmd_backup() {", 1)[1].split("\n}\n", 1)[0]
+    assert "pg_dump -U ceph_ai -Fc ceph_ai -f" in backup and 'podman cp "$pg:$inside"' in backup
+    assert "> \"$file.tmp\"" not in backup and "< \"$file" not in backup
