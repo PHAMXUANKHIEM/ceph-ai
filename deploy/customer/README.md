@@ -22,6 +22,9 @@ git clone https://github.com/PHAMXUANKHIEM/ceph-ai.git /root/ceph-ai
 git -C /root/ceph-ai checkout <sha đã duyệt>
 ```
 
+Podman 3.4 của Ubuntu 22.04 ghi file mạng CNI với `cniVersion` 1.0.0, mà plugin CNI 0.9.1 đi kèm không hiểu.
+Script tự tạo mạng `ceph-ai-customer_default` và hạ bản về mức các plugin hỗ trợ (`scripts/customer/cni_compat.py`).
+
 ## Cài lần đầu
 
 ```sh
@@ -40,7 +43,9 @@ git -C /root/ceph-ai checkout <sha đã duyệt>
    - chỉ chép từ `--old-env` những khoá mà image nhận;
    - in ra tên khoá đã chép, đã thay và đã bỏ;
    - đặt `AUTOPILOT_ENABLED=false`.
-5. Chạy migration, khởi động stack, cài `ceph-ai-customer.service` (tự chạy lại sau reboot), rồi kiểm tra
+5. Nếu lần `install` trước dừng giữa chừng (chưa khởi động xong stack), chạy lại `install` sẽ **dùng lại** mật khẩu
+   và `.env` đã sinh thay vì sinh mới.
+6. Chạy migration, khởi động stack, cài `ceph-ai-customer.service` (tự chạy lại sau reboot), rồi kiểm tra
    Dashboard và số lần restart của từng container.
 
 ## Nâng cấp, sao lưu, quay lại
