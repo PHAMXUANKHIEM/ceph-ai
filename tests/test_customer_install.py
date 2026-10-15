@@ -93,3 +93,58 @@ def test_the_installer_is_valid_bash_and_never_sources_an_env_file():
     text = SCRIPT.read_text()
     assert "source " not in text and "\n. " not in text
     assert "ALLOW_UNVERIFIED" not in text
+
+
+# --- CNI compatibility (Podman 3.4 on Ubuntu 22.04, 10.2.0.94 on 15/10/2026) ------------------
+
+from scripts.customer import cni_compat  # noqa: E402
+
+PODMAN34_CONFLIST = {"cniVersion": "1.0.0", "name": "ceph-ai-customer_default", "plugins": [
+    {"type": "bridge"}, {"type": "portmap"}, {"type": "firewall"}, {"type": "tuning"}, {"type": "dnsname"}]}
+OLD_PLUGINS = ["0.1.0", "0.2.0", "0.3.0", "0.3.1", "0.4.0"]
+
+
+def test_a_version_the_plugins_do_not_speak_is_lowered_to_their_highest_common_one():
+    assert cni_compat.compatible_version(PODMAN34_CONFLIST, lambda plugin: set(OLD_PLUGINS)) == "0.4.0"
+
+
+def test_a_supported_version_is_left_alone():
+    assert cni_compat.compatible_version(PODMAN34_CONFLIST, lambda plugin: {*OLD_PLUGINS, "1.0.0"}) is None
+
+
+def test_no_common_version_is_an_error():
+    versions = {"bridge": {"0.4.0"}, "portmap": {"1.0.0"}}
+    with pytest.raises(ValueError, match="no CNI version"):
+        cni_compat.compatible_version({"cniVersion": "1.0.0", "plugins": [{"type": "bridge"}, {"type": "portmap"}]},
+                                      versions.__getitem__)
+
+
+def test_the_tool_asks_the_real_plugins_and_rewrites_the_file(tmp_path):
+    plugins = tmp_path / "cni"
+    plugins.mkdir()
+    for name in ("bridge", "portmap", "firewall", "tuning", "dnsname"):
+        script = plugins / name
+        script.write_text("#!/bin/sh\n[ \"$CNI_COMMAND\" = VERSION ] || exit 1\n"
+                          f"echo '{json.dumps({'cniVersion': '0.4.0', 'supportedVersions': OLD_PLUGINS})}'\n")
+        script.chmod(0o755)
+    conflist = tmp_path / "ceph-ai-customer_default.conflist"
+    conflist.write_text(json.dumps(PODMAN34_CONFLIST))
+    conflist.chmod(0o644)
+
+    assert cni_compat.main([str(conflist), "--plugin-dir", str(plugins)]) == 0
+    assert json.loads(conflist.read_text())["cniVersion"] == "0.4.0"
+    assert stat.S_IMODE(conflist.stat().st_mode) == 0o644
+    assert cni_compat.main([str(conflist), "--plugin-dir", str(plugins)]) == 0  # second run: nothing to do
+
+
+def test_a_missing_plugin_is_reported(tmp_path):
+    conflist = tmp_path / "net.conflist"
+    conflist.write_text(json.dumps(PODMAN34_CONFLIST))
+    assert cni_compat.main([str(conflist), "--plugin-dir", str(tmp_path / "none")]) == 2
+
+
+def test_the_installer_prepares_the_network_before_any_container_starts():
+    text = SCRIPT.read_text()
+    backends = text.index("start_backends() {")
+    assert text.index("  ensure_network\n", backends) < text.index("compose up -d postgres rabbitmq", backends)
+    assert "cni_compat.py" in text

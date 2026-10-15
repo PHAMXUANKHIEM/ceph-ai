@@ -23,6 +23,7 @@ BACKUP_DIR=/var/backups/ceph-ai
 ADMIN_PASS_FILE=/root/.config/ceph-ai/dashboard-admin.pass
 UNIT=/etc/systemd/system/ceph-ai-customer.service
 APP_UID=10001
+NETWORK=ceph-ai-customer_default
 APP_SERVICES=(dashboard-web watcher remediation-watcher worker)
 MIN_FREE_GIB=5
 KEEP_BACKUPS=7
@@ -125,7 +126,20 @@ wait_for() {  # wait_for <seconds> <description> <command...>
     sleep 3
   done
 }
+ensure_network() {
+  # Podman 3.4 on Ubuntu 22.04 writes CNI configs with cniVersion 1.0.0, which its own
+  # containernetworking-plugins 0.9.1 reject ("plugin firewall does not support config
+  # version"). Create the stack's network here and lower the version when needed;
+  # podman-compose reuses an existing network.
+  [ "$(podman info --format '{{.Host.NetworkBackend}}' 2>/dev/null)" = "netavark" ] && return 0
+  podman network exists "$NETWORK" \
+    || podman network create --label io.podman.compose.project=ceph-ai-customer "$NETWORK" >/dev/null
+  local conflist="/etc/cni/net.d/$NETWORK.conflist"
+  [ ! -f "$conflist" ] || python3 "$REPO_DIR/scripts/customer/cni_compat.py" "$conflist" \
+    || die "cấu hình mạng CNI $conflist không dùng được với plugin CNI của máy"
+}
 start_backends() {
+  ensure_network
   compose up -d postgres rabbitmq
   wait_for 120 PostgreSQL podman exec "$(container postgres)" pg_isready -U ceph_ai -d ceph_ai
   wait_for 180 RabbitMQ podman exec "$(container rabbitmq)" rabbitmq-diagnostics -q ping
@@ -183,7 +197,15 @@ EOF
 # --- commands -------------------------------------------------------------------------
 
 cmd_install() {
-  [ ! -e "$ENV_FILE" ] || die "$ENV_FILE đã có: máy này đã cài; dùng upgrade"
+  [ ! -e "$DATA/release-artifacts/current-image-ref" ] || die "máy này đã cài xong; dùng upgrade"
+  local resume=0
+  if [ -e "$ENV_FILE" ]; then
+    # A previous install stopped before the stack ran (e.g. a network error): keep the
+    # passwords and .env it generated, since PostgreSQL may already hold that password.
+    [ -r "$CONF/postgres.env" ] && [ -r "$CONF/rabbitmq.env" ] && [ -r "$ADMIN_PASS_FILE" ] \
+      || die "$ENV_FILE có nhưng thiếu file mật khẩu trong $CONF; không tự sinh lại"
+    resume=1
+  fi
   [ -r "$SSH_KEY" ] || die "--ssh-key phải là file khoá SSH đọc được"
   [ -z "$OLD_ENV" ] || [ -r "$OLD_ENV" ] || die "--old-env không đọc được"
   preflight
@@ -194,6 +216,20 @@ cmd_install() {
   install -d -m 0750 -o "$APP_UID" -g "$APP_UID" "$DATA" "$DATA/config" "$DATA/release-artifacts"
   install -o "$APP_UID" -g "$APP_UID" -m 0400 "$SSH_KEY" "$CONF/ssh/id_ed25519"
 
+  say "tải image"
+  podman pull "$IMAGE"
+  podman pull docker.io/library/postgres:18
+  podman pull docker.io/library/rabbitmq:3.13-management
+
+  if [ "$resume" = 1 ]; then
+    say "tiếp tục lần cài trước: dùng lại mật khẩu và $ENV_FILE đã sinh"
+  else
+    generate_config
+  fi
+  check_env_against_image
+  cmd_install_start
+}
+generate_config() {
   say "sinh mật khẩu (không in ra)"
   local db_password rabbitmq_password admin_password password_hash
   db_password="$(secret 24)"; rabbitmq_password="$(secret 24)"; admin_password="$(secret 12)"
@@ -201,11 +237,6 @@ cmd_install() {
    printf 'POSTGRES_PASSWORD=%s\n' "$db_password" > "$CONF/postgres.env"
    printf 'RABBITMQ_DEFAULT_USER=ceph_ai\nRABBITMQ_DEFAULT_PASS=%s\n' "$rabbitmq_password" > "$CONF/rabbitmq.env"
    printf '%s\n' "$admin_password" > "$ADMIN_PASS_FILE")
-
-  say "tải image"
-  podman pull "$IMAGE"
-  podman pull docker.io/library/postgres:18
-  podman pull docker.io/library/rabbitmq:3.13-management
   password_hash="$(printf '%s' "$admin_password" | podman run --rm -i --network none "$IMAGE" \
           python -c 'import bcrypt, sys; print(bcrypt.hashpw(sys.stdin.read().encode(), bcrypt.gensalt()).decode())')"
 
@@ -217,8 +248,8 @@ cmd_install() {
     | podman run --rm -i --network none --user 0 -v "$DATA/config:/out:rw" "${old_mount[@]}" "$IMAGE" \
         python -m scripts.customer.build_env --out /out/.env ${OLD_ENV:+--old-env /in/old.env}
   chown "root:$APP_UID" "$ENV_FILE"; chmod 0640 "$ENV_FILE"
-  check_env_against_image
-
+}
+cmd_install_start() {
   save_compose_env
   start_backends
   migrate
