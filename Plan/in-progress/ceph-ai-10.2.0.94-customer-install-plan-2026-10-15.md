@@ -41,70 +41,105 @@ nên mọi bước ở đây làm tại chỗ.
    kèm kế hoạch rollback đã viết sẵn.
 9. Không mở cổng mới ra ngoài trên 10.2.0.94. Federation chỉ cần **đi ra** tới `45.124.93.83:1207/tcp`.
 
+## 2b. Kết quả pha 1 (15/10/2026) và quyết định
+
+Báo cáo của agent trên 10.2.0.94 (`lab-hapu-ctl`, Ubuntu 22.04.5, 40 CPU, 62 GiB RAM, `/` còn 38 GiB):
+- Bản cũ chạy **trực tiếp bằng Python/uvicorn** (`ceph-ai-dashboard.service`, thư mục `/opt/ceph-ai`,
+  commit `fd09f3e` ngày 05/09/2026, chậm 646 commit). Có 3 file code sửa tại chỗ và file chưa theo dõi.
+  **Không có podman/docker.** Chỉ Dashboard và Cinder backup alert chạy; `ai-pricing` và
+  `nightly-ai-improvement` đang failed; không có Watcher/Worker. Bản cũ thực tế chỉ còn chạy một phần.
+- Cấu hình ở `/opt/ceph-ai/.env`. `DATABASE_URL` trỏ tới **PostgreSQL ngoài máy, cổng 31081, hiện không
+  kết nối được**. Rất có thể DB này nằm trên server PostgreSQL managed cũ, đã bị xoá ngày 12/10/2026;
+  operator cần xác nhận.
+- RabbitMQ 3.9.27 cài bằng apt, chạy tại chỗ, cổng 5672.
+- Một cụm Ceph đọc được qua CLI: MON `hapu-ceph-01`, 17 OSD up/in, `HEALTH_WARN` do daemon khác phiên bản.
+- Mạng đi ra: github.com, ghcr.io, pkg-containers.githubusercontent.com, 45.124.93.83:1207 đều OK.
+
+**Quyết định:** không nâng cấp đè lên bản cũ. **Cài mới song song** theo mô hình production (container theo
+digest, PostgreSQL riêng tại chỗ). Bản cũ giữ nguyên làm đường lùi. Dữ liệu DB cũ không mang sang (không truy
+cập được). Ceph AI mới học lại từ đầu trên cụm `hapu`.
+
 ## 3. Các pha
 
 ### Pha 1 — Khảo sát (chỉ đọc) → báo cáo cho operator
-- [ ] Hệ điều hành, CPU/RAM/đĩa trống (`df -h`, chú ý thư mục chứa image podman/docker và `/var/lib/ceph-ai`).
-- [ ] Ceph AI đang chạy thế nào:
+- [x] Hệ điều hành, CPU/RAM/đĩa trống (`df -h`, chú ý thư mục chứa image podman/docker và `/var/lib/ceph-ai`).
+- [x] Ceph AI đang chạy thế nào:
   - `podman ps -a` hoặc `docker ps -a`; tên container, image, tag/digest, thời gian chạy;
   - có checkout git không (`git -C <dir> log -1`, `git status --short`), ở thư mục nào;
   - unit systemd liên quan (`systemctl list-units | grep -i ceph-ai`);
   - file cấu hình: `/var/lib/ceph-ai/config/.env` hoặc `.env` trong checkout. Chỉ liệt kê **tên khoá**,
     không in giá trị.
-- [ ] DB: PostgreSQL ngoài, PostgreSQL trong container hay SQLite (`/var/lib/ceph-ai/ceph-ai.db`)? Ghi phiên
+- [x] DB: PostgreSQL ngoài, PostgreSQL trong container hay SQLite (`/var/lib/ceph-ai/ceph-ai.db`)? Ghi phiên
   bản PostgreSQL, kích thước DB, revision Alembic hiện tại (`alembic_version`).
-- [ ] RabbitMQ: chạy ở đâu, phiên bản.
-- [ ] Ceph AI đang giám sát những cụm nào (số cụm, `ceph -s` chỉ đọc). Có action nào đang
+- [x] RabbitMQ: chạy ở đâu, phiên bản.
+- [x] Ceph AI đang giám sát những cụm nào (số cụm, `ceph -s` chỉ đọc). Có action nào đang
   `PENDING_APPROVAL`/`EXECUTING` không (nếu có thì không cập nhật lúc này).
-- [ ] Kết nối mạng đi ra:
+- [x] Kết nối mạng đi ra:
 
   ```sh
   for t in github.com:443 ghcr.io:443 pkg-containers.githubusercontent.com:443 45.124.93.83:1207; do
     timeout 5 bash -c "</dev/tcp/${t%:*}/${t#*:}" && echo "$t OK" || echo "$t FAIL"; done
   ```
-- [ ] Viết báo cáo khảo sát vào `docs/operations/10.2.0.94-survey-<ngày>.md` hoặc gửi operator. Kết luận
+- [x] Viết báo cáo khảo sát vào `docs/operations/10.2.0.94-survey-<ngày>.md` hoặc gửi operator. Kết luận
   chọn một trong hai đường:
   - **Đường A (online)**: ra được `github.com` + `ghcr.io` → cập nhật theo
     `docs/immutable-production-release.md`.
   - **Đường B (offline)**: không ra được → chờ operator mang **bộ cài offline** (R8.1) sang.
 
-### Pha 2 — Sao lưu (cần operator đồng ý nếu phải dừng dịch vụ)
-- [ ] Dump DB:
-  - PostgreSQL: `pg_dump -Fc`, rồi kiểm tra bằng `pg_restore --list`;
-  - SQLite: `sqlite3 <db> ".backup '<file>'"`, rồi `PRAGMA integrity_check`.
-- [ ] Sao lưu `/var/lib/ceph-ai/config/` (gồm `.env`), `compose.yaml` đang dùng, tên và digest của image
-  đang chạy (`podman image inspect`). Ghi `sha256sum` của từng file.
-- [ ] Lưu bản sao lưu ở chỗ **ngoài thư mục sẽ bị ghi đè**, ví dụ `/root/ceph-ai-backup-<ngày>/`, quyền 0700.
-- [ ] Ghi sẵn **cách quay lại** vào báo cáo:
-  - image cũ (giữ lại, không xoá);
-  - lệnh khởi động lại bản cũ;
-  - lệnh khôi phục DB.
+### Pha 2 — Giữ lại bản cũ và chuẩn bị máy (cần operator đồng ý cho việc cài gói)
+Bộ deploy của máy chính (`compose.yaml` ở gốc repo, `scripts/deploy/*`) **không dùng** trên 10.2.0.94, vì
+nó cần unit, container `rabbitmq`, `.venv` và các mount chỉ máy chính có. Máy khách dùng **profile riêng**:
+`deploy/customer/` và `scripts/customer/ceph-ai-customer.sh` (R8.1). Đọc `deploy/customer/README.md`.
 
-### Pha 3 — Cập nhật lên bản mới
-Phiên bản đích do operator chỉ định (một commit `main` đã qua CI, digest `ghcr.io/phamxuankhiem/ceph-ai@sha256:…`).
+- [x] **Cổng quyết định:** operator đã xác nhận DB cổng 31081 đã bị xoá, không cần giữ dữ liệu cũ
+  (15/10/2026).
+- [x] Đã lưu bản cũ vào `/root/ceph-ai-old-2026-10-15/` và kiểm tra checksum. Không sửa và không xoá gì
+  trong `/opt/ceph-ai`.
+- [ ] Cài gói. Đây là máy controller OpenStack; các gói dưới đây không đụng RabbitMQ, MariaDB hay dịch vụ
+  OpenStack:
+  `apt-get install -y podman golang-github-containernetworking-plugin-dnsname catatonit` (podman 3.4.4).
+  Sau đó cài `podman-compose==1.0.6` vào venv riêng `/opt/ceph-ai-customer/venv`, vì APT không có gói này.
+- [ ] Clone repo vào `/root/ceph-ai` và checkout **đúng sha đích** do operator đưa.
+- [ ] `podman login ghcr.io`: operator tự gõ, vì lệnh cần TTY.
+- [ ] Chạy `scripts/customer/ceph-ai-customer.sh preflight --image <digest> --dashboard-bind 0.0.0.0:8001`.
+  Mọi mục phải PASS. Dùng **cổng 8001**, vì Dashboard cũ đang giữ `10.2.0.94:8000` và bản cũ chạy tiếp
+  trong lúc thử.
 
-**Đường A (online)**
-- [ ] `podman login ghcr.io` bằng token `read:packages` do operator cấp. Lệnh cần TTY thật, nên operator
-  tự gõ.
-- [ ] Nếu có checkout git: `git fetch`, kiểm tra checkout sạch, rồi làm đúng `docs/immutable-production-release.md`
-  (`deploy_preflight.sh` → `restart_container_stack.sh` với `CEPH_AI_IMAGE=<digest>` và `DEPLOY_REF=<sha đủ 40 ký tự>`).
-  Script tự sao lưu DB, chạy migration, khởi động và kiểm tra.
-- [ ] Nếu bản cũ không có checkout git hoặc quá cũ so với script deploy: dừng lại, báo operator, chuyển sang
-  đường B.
+### Pha 3 — Cài bản mới song song bằng profile khách
+- [ ] `ceph-ai-customer.sh install`, với các tham số:
+  - `--image <digest>`;
+  - `--ssh-key <file do SSH_KEY_PATH cũ trỏ tới>`;
+  - `--old-env /opt/ceph-ai/.env`;
+  - `--dashboard-bind 0.0.0.0:8001`.
 
-**Đường B (offline)**: bộ cài `ceph-ai-<version>.tar` do phía mình đóng gói (R8.1), operator mang sang.
-- [ ] Kiểm tra `sha256sum -c SHA256SUMS` trước khi dùng bất cứ thứ gì trong bộ cài.
-- [ ] Đọc `README` của bộ cài, rồi chạy `upgrade.sh` theo hướng dẫn. Script này làm:
-  `podman load` → so revision label → sao lưu DB → migration → khởi động → smoke test.
-- [ ] Nếu bộ cài chưa có `upgrade.sh`, hoặc script lỗi: **không tự viết thay thế trên máy khách**. Ghi lại
-  lỗi, đưa hệ thống về bản cũ nếu đã dừng, rồi báo operator.
+  Script tự làm các việc sau:
+  - sinh mật khẩu, không in ra;
+  - chép khoá SSH thành bản riêng, khoá gốc giữ nguyên;
+  - dựng `.env` mới, chỉ lấy các khoá image nhận;
+  - đặt `AUTOPILOT_ENABLED=false`;
+  - khởi động PostgreSQL và RabbitMQ **trong stack**, không mở cổng ra ngoài;
+  - chạy migration, khởi động 4 dịch vụ ứng dụng;
+  - cài `ceph-ai-customer.service`;
+  - kiểm tra sau khởi động.
+- [ ] Gửi operator phần báo cáo `carried / replaced / dropped_unknown / dropped_on_purpose`. Phần này chỉ
+  có tên khoá. Nếu khoá cần cho cụm Ceph bị bỏ (`dropped_unknown`), báo operator và không tự thêm vào.
+- [ ] Gặp lỗi do podman 3.4 (mạng, healthcheck, `--init`): ghi nguyên văn lỗi rồi báo operator. Không sửa
+  code Ceph AI, không bỏ qua kiểm tra.
+- [ ] **Đường lùi:**
+  1. `ceph-ai-customer.sh stop`;
+  2. `systemctl disable ceph-ai-customer.service`.
 
-**Kiểm tra sau cập nhật (cả hai đường)**
-- [ ] Mọi container `healthy`; không container nào restart liên tục (`podman ps`, số lần restart).
-- [ ] Đăng nhập Dashboard được. Trang tổng quan hiện đúng các cụm như trước khi cập nhật.
-- [ ] Watcher vẫn nhận health của từng cụm (incident mới hoặc trạng thái cập nhật trong 10 phút).
-- [ ] So số dòng các bảng chính trước và sau (`clusters`, `incidents`, `actions`): không mất dữ liệu.
-- [ ] Bật lại Autopilot theo giá trị cũ **sau khi operator đồng ý**.
+  Bản cũ vẫn chạy ở cổng 8000, không bị đụng tới.
+
+**Kiểm tra sau khi cài**
+- [ ] `ceph-ai-customer.sh status`: 6 container `running`, không restart.
+- [ ] Đăng nhập `http://10.2.0.94:8001` bằng mật khẩu trong `/root/.config/ceph-ai/dashboard-admin.pass`.
+  Cụm `hapu` hiện đúng: 17 OSD, cảnh báo phiên bản daemon.
+- [ ] Watcher cập nhật trạng thái cụm trong 10 phút; queue RabbitMQ được tiêu thụ.
+- [ ] Autopilot đang tắt. Không action nào tự chạy.
+- [ ] `ceph-ai-customer.sh backup` chạy được (có `.dump` và `.sha256` trong `/var/backups/ceph-ai`).
+- [ ] Sau 24 giờ ổn định, operator mới quyết định có tắt bản cũ (`ceph-ai-dashboard.service`) và chuyển
+  bản mới sang cổng 8000 hay không.
 
 ### Pha 4 — Gói tri thức (R8.2, khi bộ cài có)
 - [ ] Nếu bộ cài có `knowledge-pack-<version>.json`: nhập theo `README`, rồi ghi số mục đã nhập.
@@ -138,7 +173,7 @@ Phiên bản đích do operator chỉ định (một commit `main` đã qua CI, 
 - [ ] Đánh dấu các mục ở trên và ghi nhật ký bên dưới.
 
 ## 4. Phía máy chính (không phải việc của agent trên 10.2.0.94)
-- R8.1: đóng gói bộ cài offline (image `podman save` theo digest, `compose.yaml`, `install.sh`/`upgrade.sh`,
+- R8.1: profile cài cho máy khách (`deploy/customer/`, `scripts/customer/`) — đã có; còn đóng gói bộ cài offline (image `podman save` theo digest, `compose.yaml`, `install.sh`/`upgrade.sh`,
   mẫu `.env`, file mật khẩu `fed_enroll`, `README`, `SHA256SUMS`).
 - Cấp mã kích hoạt cho 10.2.0.94 (`ceph-ai-federation create-code "10.2.0.94" --days 7` trên node SQL).
 - Kiểm tra số liệu đến `inbox.c_<mã khách>` sau pha 5.
@@ -148,3 +183,5 @@ Phiên bản đích do operator chỉ định (một commit `main` đã qua CI, 
 | Ngày | Việc | Kết quả |
 |---|---|---|
 | 15/10/2026 | Lập kế hoạch | Chờ pha 1 trên 10.2.0.94 |
+| 15/10/2026 | Pha 1 trên 10.2.0.94 | Bản cũ systemd/Python, DB cổng 31081 mất kết nối, không có podman; quyết định cài mới song song (mục 2b) |
+| 15/10/2026 | Pha 2 dừng ở preflight của máy chính | Viết profile cài cho máy khách (R8.1); pha 2–3 dùng `scripts/customer/ceph-ai-customer.sh` |

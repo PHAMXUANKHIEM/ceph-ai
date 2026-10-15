@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+# Install, upgrade and run Ceph AI on a customer host (plan readiness-gap-review R8.1, 15/10/2026).
+#
+#   ceph-ai-customer.sh preflight --image REF [--dashboard-bind ADDR:PORT]
+#   ceph-ai-customer.sh install   --image REF --ssh-key FILE [--old-env FILE] [--dashboard-bind ADDR:PORT]
+#   ceph-ai-customer.sh upgrade   --image REF
+#   ceph-ai-customer.sh rollback          (previous image; the database is NOT rolled back)
+#   ceph-ai-customer.sh backup | status | start | stop
+#
+# REF is an approved digest, ghcr.io/<owner>/ceph-ai@sha256:<64 hex>. The stack is
+# deploy/customer/compose.yaml: PostgreSQL and RabbitMQ live inside it and publish no
+# port, so services the host already runs are never touched. Secrets are generated
+# here, kept in 0600/0640 files and never printed; the Dashboard admin password is
+# written to /root/.config/ceph-ai/dashboard-admin.pass.
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+COMPOSE_FILE="$REPO_DIR/deploy/customer/compose.yaml"
+CONF=/etc/ceph-ai-customer
+DATA=/var/lib/ceph-ai
+ENV_FILE=$DATA/config/.env
+BACKUP_DIR=/var/backups/ceph-ai
+ADMIN_PASS_FILE=/root/.config/ceph-ai/dashboard-admin.pass
+UNIT=/etc/systemd/system/ceph-ai-customer.service
+APP_UID=10001
+APP_SERVICES=(dashboard-web watcher remediation-watcher worker)
+MIN_FREE_GIB=5
+KEEP_BACKUPS=7
+if [ -z "${PODMAN_COMPOSE:-}" ]; then
+  if [ -x /opt/ceph-ai-customer/venv/bin/podman-compose ]; then
+    PODMAN_COMPOSE=/opt/ceph-ai-customer/venv/bin/podman-compose
+  else
+    PODMAN_COMPOSE=podman-compose
+  fi
+fi
+
+IMAGE=""
+SSH_KEY=""
+OLD_ENV=""
+DASHBOARD_BIND="0.0.0.0:8000"
+
+say() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*"; }
+die() { printf 'LỖI: %s\n' "$*" >&2; exit 1; }
+failures=0
+check() {  # check <name> <command...>: PASS/FAIL line, counts failures
+  local name="$1"; shift
+  if "$@" >/dev/null 2>&1; then printf 'PREFLIGHT PASS %s\n' "$name"
+  else printf 'PREFLIGHT FAIL %s\n' "$name" >&2; failures=$((failures + 1)); fi
+}
+
+valid_image() { [[ "$1" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]; }
+load_compose_env() {
+  [ -r "$CONF/compose.env" ] || die "chưa cài ($CONF/compose.env không có); dùng lệnh install"
+  IMAGE="$(sed -n 's/^CEPH_AI_IMAGE=//p' "$CONF/compose.env")"
+  DASHBOARD_BIND="$(sed -n 's/^CEPH_AI_DASHBOARD_BIND=//p' "$CONF/compose.env")"
+}
+save_compose_env() {
+  umask 077
+  printf 'CEPH_AI_IMAGE=%s\nCEPH_AI_DASHBOARD_BIND=%s\n' "$IMAGE" "$DASHBOARD_BIND" > "$CONF/compose.env.tmp"
+  mv "$CONF/compose.env.tmp" "$CONF/compose.env"
+}
+compose() {
+  CEPH_AI_IMAGE="$IMAGE" CEPH_AI_DASHBOARD_BIND="$DASHBOARD_BIND" \
+    "$PODMAN_COMPOSE" -p ceph-ai-customer -f "$COMPOSE_FILE" "$@"
+}
+container() { printf 'ceph-ai-customer_%s_1' "$1"; }
+local_url() {
+  local host="${DASHBOARD_BIND%:*}" port="${DASHBOARD_BIND##*:}"
+  [ "$host" = "0.0.0.0" ] && host=127.0.0.1
+  printf 'http://%s:%s/login' "$host" "$port"
+}
+secret() { openssl rand -hex "$1"; }
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --image) IMAGE="${2:-}"; shift 2 ;;
+      --ssh-key) SSH_KEY="${2:-}"; shift 2 ;;
+      --old-env) OLD_ENV="${2:-}"; shift 2 ;;
+      --dashboard-bind) DASHBOARD_BIND="${2:-}"; shift 2 ;;
+      *) die "tham số lạ: $1" ;;
+    esac
+  done
+}
+
+# --- preflight ------------------------------------------------------------------------
+
+cni_dns_ready() {
+  # Podman 4 with netavark resolves service names itself; Podman 3 (CNI) needs the dnsname plugin.
+  [ "$(podman info --format '{{.Host.NetworkBackend}}' 2>/dev/null)" = "netavark" ] && return 0
+  [ -x /usr/lib/cni/dnsname ] || [ -x /opt/cni/bin/dnsname ]
+}
+free_gib() { df -BG --output=avail /var/lib | tail -1 | tr -dc '0-9'; }
+port_free() {
+  local port="${DASHBOARD_BIND##*:}"
+  ! ss -ltnH "( sport = :$port )" | grep -q .
+}
+
+preflight() {
+  failures=0
+  check root [ "$(id -u)" = 0 ]
+  check image-reference valid_image "$IMAGE"
+  local command
+  for command in podman curl openssl ss df sha256sum systemctl; do
+    check "command.$command" command -v "$command"
+  done
+  check podman-compose "$PODMAN_COMPOSE" --version
+  check catatonit-for-init bash -c 'command -v catatonit || [ -x /usr/libexec/podman/catatonit ] || [ -x /usr/bin/catatonit ]'
+  check service-name-dns cni_dns_ready
+  check "dashboard-port-free(${DASHBOARD_BIND})" port_free
+  check cgroup-v2 bash -c '[ "$(stat -fc %T /sys/fs/cgroup)" = cgroup2fs ]'
+  check "disk-free>=${MIN_FREE_GIB}GiB" bash -c "[ \"\$(df -BG --output=avail /var/lib | tail -1 | tr -dc '0-9')\" -ge $MIN_FREE_GIB ]"
+  check registry-network curl -sS -o /dev/null --max-time 10 https://ghcr.io/v2/
+  printf 'PREFLIGHT INFO podman=%s free=%sGiB dashboard=%s\n' "$(podman --version 2>/dev/null | awk '{print $3}')" "$(free_gib)" "$DASHBOARD_BIND"
+  [ "$failures" -eq 0 ] || die "preflight có $failures mục FAIL"
+}
+
+# --- shared steps ---------------------------------------------------------------------
+
+wait_for() {  # wait_for <seconds> <description> <command...>
+  local seconds="$1" what="$2"; shift 2
+  local deadline=$((SECONDS + seconds))
+  until "$@" >/dev/null 2>&1; do
+    [ "$SECONDS" -lt "$deadline" ] || die "$what không sẵn sàng sau ${seconds}s"
+    sleep 3
+  done
+}
+start_backends() {
+  compose up -d postgres rabbitmq
+  wait_for 120 PostgreSQL podman exec "$(container postgres)" pg_isready -U ceph_ai -d ceph_ai
+  wait_for 180 RabbitMQ podman exec "$(container rabbitmq)" rabbitmq-diagnostics -q ping
+}
+check_env_against_image() {
+  # extra="forbid": a key the image does not know crash-loops every container.
+  # Loaded as the settings file (not as environment variables, which Settings would
+  # silently ignore when unknown).
+  podman run --rm --network none --user 0 -v "$ENV_FILE:/in/.env:ro" -e CEPH_AI_ENV_FILE=/in/.env "$IMAGE" \
+    python -c 'from config.settings import Settings; Settings()' \
+    || die "$ENV_FILE có khoá mà image này không nhận; không khởi động"
+}
+migrate() {
+  say "migration"
+  compose run --rm dashboard-web python -m alembic upgrade head
+}
+smoke() {
+  say "kiểm tra sau khởi động"
+  wait_for 240 "Dashboard ($(local_url))" curl -fsS -o /dev/null "$(local_url)"
+  sleep 45  # let a crash-looping service show itself
+  local service bad=0 state restarts
+  for service in postgres rabbitmq "${APP_SERVICES[@]}"; do
+    state="$(podman inspect "$(container "$service")" --format '{{.State.Status}}' 2>/dev/null || echo missing)"
+    restarts="$(podman inspect "$(container "$service")" --format '{{.RestartCount}}' 2>/dev/null || echo ?)"
+    printf 'SMOKE %-20s %s restarts=%s\n' "$service" "$state" "$restarts"
+    if [ "$state" != running ] || [ "$restarts" != 0 ]; then bad=$((bad + 1)); fi
+  done
+  [ "$bad" -eq 0 ] || die "$bad dịch vụ không ổn định; xem: podman logs <container>"
+  say "OK: $(local_url)"
+}
+install_unit() {
+  cat > "$UNIT" <<EOF
+[Unit]
+Description=Ceph AI (customer stack, deploy/customer/compose.yaml)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$REPO_DIR/scripts/customer/ceph-ai-customer.sh start
+ExecStop=$REPO_DIR/scripts/customer/ceph-ai-customer.sh stop
+TimeoutStartSec=900
+TimeoutStopSec=1000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  printf 'd /run/ceph-ai 0750 %s %s -\n' "$APP_UID" "$APP_UID" > /etc/tmpfiles.d/ceph-ai-customer.conf
+  systemd-tmpfiles --create /etc/tmpfiles.d/ceph-ai-customer.conf
+  systemctl daemon-reload
+  systemctl enable ceph-ai-customer.service
+}
+
+# --- commands -------------------------------------------------------------------------
+
+cmd_install() {
+  [ ! -e "$ENV_FILE" ] || die "$ENV_FILE đã có: máy này đã cài; dùng upgrade"
+  [ -r "$SSH_KEY" ] || die "--ssh-key phải là file khoá SSH đọc được"
+  [ -z "$OLD_ENV" ] || [ -r "$OLD_ENV" ] || die "--old-env không đọc được"
+  preflight
+
+  say "thư mục và quyền"
+  install -d -m 0700 "$CONF" "$CONF/ssh" /root/.config/ceph-ai "$BACKUP_DIR" /var/lib/ceph-ai-postgres
+  install -d -m 0755 /var/lib/ceph-ai-rabbitmq
+  install -d -m 0750 -o "$APP_UID" -g "$APP_UID" "$DATA" "$DATA/config" "$DATA/release-artifacts"
+  install -o "$APP_UID" -g "$APP_UID" -m 0400 "$SSH_KEY" "$CONF/ssh/id_ed25519"
+
+  say "sinh mật khẩu (không in ra)"
+  local db_password rabbitmq_password admin_password password_hash
+  db_password="$(secret 24)"; rabbitmq_password="$(secret 24)"; admin_password="$(secret 12)"
+  (umask 077
+   printf 'POSTGRES_PASSWORD=%s\n' "$db_password" > "$CONF/postgres.env"
+   printf 'RABBITMQ_DEFAULT_USER=ceph_ai\nRABBITMQ_DEFAULT_PASS=%s\n' "$rabbitmq_password" > "$CONF/rabbitmq.env"
+   printf '%s\n' "$admin_password" > "$ADMIN_PASS_FILE")
+
+  say "tải image"
+  podman pull "$IMAGE"
+  podman pull docker.io/library/postgres:18
+  podman pull docker.io/library/rabbitmq:3.13-management
+  password_hash="$(printf '%s' "$admin_password" | podman run --rm -i --network none "$IMAGE" \
+          python -c 'import bcrypt, sys; print(bcrypt.hashpw(sys.stdin.read().encode(), bcrypt.gensalt()).decode())')"
+
+  say "dựng $ENV_FILE"
+  local old_mount=()
+  [ -z "$OLD_ENV" ] || old_mount=(-v "$(readlink -f "$OLD_ENV"):/in/old.env:ro")
+  printf '{"db_password": "%s", "rabbitmq_password": "%s", "session_secret": "%s", "dashboard_password_hash": "%s"}' \
+      "$db_password" "$rabbitmq_password" "$(secret 32)" "$password_hash" \
+    | podman run --rm -i --network none --user 0 -v "$DATA/config:/out:rw" "${old_mount[@]}" "$IMAGE" \
+        python -m scripts.customer.build_env --out /out/.env ${OLD_ENV:+--old-env /in/old.env}
+  chown "root:$APP_UID" "$ENV_FILE"; chmod 0640 "$ENV_FILE"
+  check_env_against_image
+
+  save_compose_env
+  start_backends
+  migrate
+  say "khởi động ứng dụng"
+  compose up -d "${APP_SERVICES[@]}"
+  printf '%s\n' "$IMAGE" > "$DATA/release-artifacts/current-image-ref"
+  install_unit
+  smoke
+  say "Mật khẩu admin Dashboard ở $ADMIN_PASS_FILE (đọc rồi đổi trong Settings nếu cần). Autopilot đang TẮT."
+}
+
+cmd_backup() {
+  load_compose_env
+  install -d -m 0700 "$BACKUP_DIR"
+  local file="$BACKUP_DIR/ceph_ai-$(date -u +%Y%m%dT%H%M%SZ).dump"
+  say "sao lưu DB → $file"
+  podman exec "$(container postgres)" pg_dump -U ceph_ai -Fc ceph_ai > "$file.tmp"
+  podman exec -i "$(container postgres)" pg_restore --list < "$file.tmp" > /dev/null || die "bản dump không đọc lại được"
+  mv "$file.tmp" "$file"; chmod 0600 "$file"
+  sha256sum "$file" > "$file.sha256"
+  ls -1t "$BACKUP_DIR"/ceph_ai-*.dump | tail -n +$((KEEP_BACKUPS + 1)) | while read -r old; do rm -f "$old" "$old.sha256"; done
+  say "OK $(du -h "$file" | cut -f1)"
+}
+
+cmd_upgrade() {
+  local target="$IMAGE"
+  load_compose_env
+  valid_image "$target" || die "--image phải là ghcr.io/...@sha256:<digest>"
+  [ "$target" != "$IMAGE" ] || die "đang chạy đúng image này rồi"
+  local previous="$IMAGE"
+  IMAGE="$target"
+  preflight_upgrade
+  cmd_backup
+  podman pull "$IMAGE"
+  check_env_against_image
+  migrate
+  printf '%s\n' "$previous" > "$DATA/release-artifacts/previous-image-ref"
+  save_compose_env
+  say "tạo lại container ứng dụng"
+  compose up -d --force-recreate "${APP_SERVICES[@]}"
+  printf '%s\n' "$IMAGE" > "$DATA/release-artifacts/current-image-ref"
+  smoke
+}
+preflight_upgrade() {
+  failures=0
+  check root [ "$(id -u)" = 0 ]
+  check image-reference valid_image "$IMAGE"
+  check podman-compose "$PODMAN_COMPOSE" --version
+  check "disk-free>=${MIN_FREE_GIB}GiB" bash -c "[ \"\$(df -BG --output=avail /var/lib | tail -1 | tr -dc '0-9')\" -ge $MIN_FREE_GIB ]"
+  check postgres-running podman exec "$(container postgres)" pg_isready -U ceph_ai -d ceph_ai
+  [ "$failures" -eq 0 ] || die "preflight có $failures mục FAIL"
+}
+
+cmd_rollback() {
+  load_compose_env
+  local previous
+  previous="$(cat "$DATA/release-artifacts/previous-image-ref" 2>/dev/null || true)"
+  valid_image "$previous" || die "không có previous-image-ref hợp lệ"
+  [ "${CEPH_AI_ROLLBACK_ACK_COMPATIBLE_SCHEMA:-}" = yes ] \
+    || die "rollback không đảo migration; đặt CEPH_AI_ROLLBACK_ACK_COMPATIBLE_SCHEMA=yes nếu đã chắc schema tương thích"
+  IMAGE="$previous"
+  save_compose_env
+  compose up -d --force-recreate "${APP_SERVICES[@]}"
+  printf '%s\n' "$IMAGE" > "$DATA/release-artifacts/current-image-ref"
+  smoke
+}
+
+cmd_start() {
+  load_compose_env
+  install -d -m 0750 -o "$APP_UID" -g "$APP_UID" /run/ceph-ai
+  start_backends
+  compose up -d "${APP_SERVICES[@]}"
+}
+cmd_stop() { load_compose_env; compose down; }
+cmd_status() {
+  load_compose_env
+  printf 'image: %s\ndashboard: %s\n' "$IMAGE" "$(local_url)"
+  podman ps -a --filter name=ceph-ai-customer_ --format '{{.Names}}\t{{.Status}}'
+}
+
+command="${1:-}"; shift || true
+parse_args "$@"
+case "$command" in
+  preflight) preflight ;;
+  install) cmd_install ;;
+  upgrade) cmd_upgrade ;;
+  rollback) cmd_rollback ;;
+  backup) cmd_backup ;;
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  status) cmd_status ;;
+  *) sed -n '2,15p' "$0"; exit 2 ;;
+esac
