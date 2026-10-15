@@ -1,0 +1,125 @@
+# Ceph AI on a customer host (plan readiness-gap-review R8.1, 15/10/2026).
+#
+# Unlike the main host's compose.yaml, this stack is self-contained:
+# - PostgreSQL and RabbitMQ run inside the stack's own network and publish no
+#   port, so the application reaches them as `postgres` and `rabbitmq` and a
+#   RabbitMQ or PostgreSQL the host already runs (e.g. OpenStack's) is never
+#   touched;
+# - no Codex/Claude CLI mounts, no Telegram AI gateway, no Single Full
+#   executor, no Vault monitor;
+# - one SSH identity, copied by the installer to /etc/ceph-ai-customer/ssh/
+#   and owned by the application user, is mounted read-only.
+# Run it only through scripts/customer/ceph-ai-customer.sh, which sets
+# CEPH_AI_IMAGE to an approved digest and CEPH_AI_DASHBOARD_BIND.
+name: ceph-ai-customer
+
+x-app: &app
+  image: "${CEPH_AI_IMAGE:?set CEPH_AI_IMAGE to an approved ghcr.io/...@sha256 digest}"
+  working_dir: /app
+  env_file: /var/lib/ceph-ai/config/.env
+  init: true
+  user: "10001:10001"
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=128m
+  stop_grace_period: 45s
+  restart: unless-stopped
+  depends_on: [postgres, rabbitmq]
+  volumes:
+    - /run/ceph-ai:/run/ceph-ai:rw
+    - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+    - /etc/ceph-ai-customer/ssh/id_ed25519:/run/ceph-ai/credentials/ssh/id_ed25519:ro
+  environment: &app-env
+    CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
+    CEPH_AI_RUNTIME_DIR: /run/ceph-ai
+    CEPH_AI_CONTAINERIZED: "true"
+    AI_COST_PRICING_CACHE_PATH: /var/lib/ceph-ai/config/ai-pricing.json
+    SSH_KEY_PATH: /run/ceph-ai/credentials/ssh/id_ed25519
+    CEPH_AI_SSH_IDENTITY_ROLE: read-only
+    TELEGRAM_LISTENER_ENABLED: "false"
+
+services:
+  postgres:
+    image: docker.io/library/postgres:18
+    env_file: /etc/ceph-ai-customer/postgres.env
+    environment:
+      POSTGRES_USER: ceph_ai
+      POSTGRES_DB: ceph_ai
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - /var/lib/ceph-ai-postgres:/var/lib/postgresql/data:rw
+    shm_size: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ceph_ai -d ceph_ai"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  rabbitmq:
+    image: docker.io/library/rabbitmq:3.13-management
+    hostname: ceph-ai-rabbitmq
+    env_file: /etc/ceph-ai-customer/rabbitmq.env
+    volumes:
+      - /var/lib/ceph-ai-rabbitmq:/var/lib/rabbitmq:rw
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+
+  dashboard-web:
+    <<: *app
+    cpus: "1.00"
+    mem_limit: 1g
+    command: ["python", "-m", "uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["${CEPH_AI_DASHBOARD_BIND:-0.0.0.0:8000}:8000"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/login"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+
+  watcher:
+    <<: *app
+    cpus: "1.50"
+    mem_limit: 1g
+    command: ["python", "-m", "watcher.main"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('watcher', stale_after_seconds=45)['healthy'])\""]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  remediation-watcher:
+    <<: *app
+    cpus: "0.50"
+    mem_limit: 512m
+    command: ["python", "-m", "watcher.remediation_main"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('remediation-watcher', stale_after_seconds=60)['healthy'])\""]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    <<: *app
+    # Actions still need an operator's approval (AUTOPILOT_ENABLED=false by
+    # default on a customer host); the Worker runs the approved ones.
+    stop_grace_period: 930s
+    cpus: "2.00"
+    mem_limit: 2g
+    command: ["python", "-m", "worker.main"]
+    environment:
+      <<: *app-env
+      CEPH_AI_SSH_IDENTITY_ROLE: mutation
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('worker', stale_after_seconds=45)['healthy'])\""]
+      interval: 20s
+      timeout: 5s
+      retries: 3
