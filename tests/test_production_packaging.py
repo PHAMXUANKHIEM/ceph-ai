@@ -102,6 +102,18 @@ def test_a_reboot_brings_rabbitmq_back_before_the_stack():
     assert "systemctl enable ceph-ai-rabbitmq.service ceph-ai-containers.service" in deploy
 
 
+def test_unused_image_retention_timer_is_installed_by_the_container_deploy():
+    systemd = ROOT / "scripts" / "deploy" / "systemd"
+    timer = (systemd / "ceph-ai-image-prune.timer").read_text(encoding="utf-8")
+    service = (systemd / "ceph-ai-image-prune.service").read_text(encoding="utf-8")
+    deploy = (ROOT / "scripts" / "deploy" / "restart_container_stack.sh").read_text(encoding="utf-8")
+
+    assert "OnCalendar=*-*-* 03:20:00" in timer
+    assert "prune_podman_images.py --apply" in service
+    assert 'systemd/ceph-ai-image-prune.timer" /etc/systemd/system/' in deploy
+    assert "systemctl enable --now ceph-ai-image-prune.timer" in deploy
+
+
 def test_the_bare_metal_installer_is_retired():
     """It enabled bare-metal Watcher/Worker units beside the container stack."""
     installer = (ROOT / "scripts" / "deploy" / "install_system_services.sh").read_text(encoding="utf-8")

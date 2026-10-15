@@ -1,0 +1,11 @@
+[Unit]
+Description=Remove unused Ceph AI Podman images older than seven days
+After=ceph-ai-containers.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ceph-ai
+ExecStart=/usr/bin/python3.11 /root/ceph-ai/scripts/deploy/prune_podman_images.py --apply
+TimeoutStartSec=3600
+Nice=10
+IOSchedulingClass=idle
