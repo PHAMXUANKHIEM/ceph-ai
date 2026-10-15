@@ -48,6 +48,13 @@ of truth. `previous-image-ref` holds the last approved digest. Production
 startup refuses to fall back to `ceph-ai:local` if no approved reference exists.
 Do not edit either file manually.
 
+The host runs `ceph-ai-image-prune.timer` daily around 03:20 to remove local,
+untagged Podman images that are older than seven days and unused by any
+container. It preserves both approved release references and skips cleanup
+during deploy or stack restarts. Preview the candidate IDs with
+`python3.11 scripts/deploy/prune_podman_images.py`; use `--apply` for a manual
+cleanup. Deleted local images must be pulled or built again if needed.
+
 ## Rollback
 
 Rehearse PostgreSQL compatibility on staging before changing the application

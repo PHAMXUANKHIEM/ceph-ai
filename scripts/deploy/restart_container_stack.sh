@@ -194,6 +194,8 @@ install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-deploy-request.path" /
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-deploy-request.service" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-release-notifier.service" /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-release-notifier.timer" /etc/systemd/system/
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-image-prune.service" /etc/systemd/system/
+install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-image-prune.timer" /etc/systemd/system/
 install -m 0755 "$REPO_DIR/scripts/deploy/container_restart_helper.py" /usr/local/libexec/ceph-ai-container-restart
 install -m 0755 "$REPO_DIR/scripts/deploy/grafana_vpn_helper.py" /usr/local/libexec/ceph-ai-grafana-vpn-control
 install -d -m 0750 /run/ceph-ai
@@ -226,6 +228,7 @@ systemctl enable --now ceph-ai-selfcheck.timer
 systemctl enable --now ceph-ai-deploy-request.path
 # Telegram approval of candidate PRs (08/10/2026); merges and deploys only after an operator taps Duyệt.
 systemctl enable --now ceph-ai-release-notifier.timer
+systemctl enable --now ceph-ai-image-prune.timer
 finish_phase
 
 # Pull the registry manifest that passed CI. The immutable reference is the

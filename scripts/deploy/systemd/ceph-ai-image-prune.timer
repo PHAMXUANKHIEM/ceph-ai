@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily cleanup of unused Ceph AI Podman images
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+RandomizedDelaySec=10m
+Persistent=false
+Unit=ceph-ai-image-prune.service
+
+[Install]
+WantedBy=timers.target
