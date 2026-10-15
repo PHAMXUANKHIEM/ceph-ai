@@ -49,9 +49,13 @@ services:
     environment:
       POSTGRES_USER: ceph_ai
       POSTGRES_DB: ceph_ai
-      PGDATA: /var/lib/postgresql/data/pgdata
+    # PostgreSQL 18 images keep data in /var/lib/postgresql/18/docker (their VOLUME is
+    # /var/lib/postgresql). The old layout (mount at .../data, PGDATA below it, host dir
+    # 0700) failed on 10.2.0.94 with "mkdir: cannot create directory
+    # '/var/lib/postgresql/data': Permission denied". The entrypoint makes PGDATA 0700
+    # for the postgres user; the host dir itself is 0755.
     volumes:
-      - /var/lib/ceph-ai-postgres:/var/lib/postgresql/data:rw
+      - /var/lib/ceph-ai-postgres:/var/lib/postgresql:rw
     shm_size: 256m
     restart: unless-stopped
     healthcheck:
