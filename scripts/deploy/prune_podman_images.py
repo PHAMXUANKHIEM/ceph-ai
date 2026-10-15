@@ -12,7 +12,8 @@ import argparse
 import fcntl
 import json
 import re
-import subprocess
+# Fixed Podman/systemctl argv, no shell; image IDs and release refs are validated.
+import subprocess  # nosec B404
 import sys
 import time
 from pathlib import Path
@@ -25,7 +26,9 @@ IMAGE_REF = re.compile(r"ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}\Z")
 
 
 def _command(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(args, capture_output=True, text=True, check=False, timeout=120)
+    result = subprocess.run(  # nosec B603
+        args, capture_output=True, text=True, check=False, timeout=120,
+    )
     if check and result.returncode:
         raise RuntimeError(f"{args[0]} {args[1]} failed ({result.returncode}): {result.stderr.strip()[:300]}")
     return result
