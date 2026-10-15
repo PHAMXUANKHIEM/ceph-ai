@@ -16,6 +16,7 @@ def test_candidates_exclude_release_refs_containers_tags_and_recent_images():
     cutoff = int(time.time()) - prune.AGE_SECONDS
     images = [
         _image("a", created=cutoff - 1),
+        _image("a", created=cutoff - 1),  # Podman may list one ID more than once.
         _image("b", created=cutoff - 2),  # Previous approved release.
         _image("c", created=cutoff - 3),  # Container inventory still uses it.
         _image("d", created=cutoff - 4, containers=1),

@@ -75,7 +75,7 @@ def _podman_list(*args: str) -> list[dict]:
 def candidates(images: list[dict], containers: list[dict], protected: set[str], cutoff: float) -> list[str]:
     """Select only old, untagged image IDs with no container reference."""
     used = {item.get("ImageID") for item in containers}
-    selected: list[tuple[int, str]] = []
+    selected: dict[str, int] = {}
     for image in images:
         image_id = image.get("Id")
         created = image.get("Created")
@@ -84,9 +84,9 @@ def candidates(images: list[dict], containers: list[dict], protected: set[str], 
         if (created <= cutoff and image.get("Containers") == 0
                 and not image.get("RepoTags") and image_id not in used
                 and image_id not in protected):
-            selected.append((created, image_id))
+            selected[image_id] = created
     # Remove children before their older parents; never force a removal.
-    return [image_id for _, image_id in sorted(selected, reverse=True)]
+    return sorted(selected, key=lambda image_id: selected[image_id], reverse=True)
 
 
 def cleanup(*, apply: bool, artifacts: Path = ARTIFACTS, lock_path: Path = LOCK_PATH) -> int:
