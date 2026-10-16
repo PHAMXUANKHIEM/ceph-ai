@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Node Maintenance — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}&amp;lifecycle_layout=5">
+</head>
+<body>
+  {% include "_nav.html" %}
+
+  <main class="page cluster-lifecycle-page node-maintenance-page">
+    <header class="lifecycle-page-header">
+      <div class="dc-title-block"><div class="lifecycle-eyebrow">CLUSTER LIFECYCLE / DESTRUCTIVE</div>
+        <div class="dc-title-row"><h1>Bảo trì node</h1><span class="lifecycle-page-badge is-danger">DESTRUCTIVE WORKFLOW</span></div>
+        <p>Khởi động lại từng node của cụm <strong>{{ cluster_name }}</strong> (cụm đang chọn) dưới chế độ bảo trì của cephadm, <strong>lần lượt từng host</strong>: chỉ sang host kế khi host trước đã lên lại và cụm về đúng tình trạng trước khi bắt đầu.</p></div>
+    </header>
+
+    {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}
+    <section class="card lifecycle-panel">
+      <div class="card-header"><h2>Đề xuất đang chờ duyệt</h2></div>
+      <div class="card-body">
+        <pre class="upgrade-plan-text">{{ pending_action.rationale }}</pre>
+        {% if pending_action.proposed_command %}<p><strong>Xem trước lệnh:</strong></p><pre class="upgrade-plan-text">{{ pending_action.proposed_command }}</pre>{% endif %}
+        <label>Gõ chính xác <code>{{ confirm_text }}</code> để duyệt
+          <input type="text" id="rn-approve-input" autocomplete="off" spellcheck="false"></label>
+        <div class="pending-action-buttons">
+          <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form">
+            <input type="hidden" name="confirm_text" id="rn-approve-hidden" value="">
+            <button type="submit" class="btn btn-reject" id="rn-approve-btn" disabled>Duyệt — bảo trì node</button>
+          </form>
+          <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form">
+            <button type="submit" class="btn btn-approve">Từ chối</button>
+          </form>
+        </div>
+      </div>
+    </section>
+    {% elif pending_action %}
+    <section class="card lifecycle-panel"><div class="card-body"><p class="hint">Đang thực hiện — xem tiến trình bên dưới.</p></div></section>
+    {% elif exec_mode != "cephadm" %}
+    <section class="card"><div class="card-body"><p class="hint">Bảo trì node chỉ hỗ trợ cụm triển khai bằng cephadm (cụm này: {{ exec_mode }}).</p></div></section>
+    {% else %}
+    <section class="card lifecycle-panel">
+      <div class="card-header"><h2>Chọn node cần bảo trì (theo thứ tự bấm chọn)</h2></div>
+      <div class="card-body">
+        <form id="rn-form" class="rn-form">
+          {% for node in nodes %}
+          <label class="rn-check"><input type="checkbox" name="target" value="{{ node.host }}"> <code>{{ node.host }}</code> <span class="hint">{{ node.roles|join(", ") }}</span></label>
+          {% else %}
+          <p class="hint">Cụm này chưa có node nào trong cấu hình.</p>
+          {% endfor %}
+          <p class="hint">Worker từ chối nếu cụm HEALTH_ERR hoặc tắt một host chạy MON sẽ làm cụm còn dưới 3 MON; host nào chưa ok-to-stop thì dừng trước khi đụng tới nó. Thứ tự bảo trì là thứ tự bạn tích chọn.</p>
+          <label><span>Gõ <code id="rn-expected">BẢO TRÌ …</code> để xác nhận</span> <input type="text" id="rn-confirm" autocomplete="off" spellcheck="false"></label>
+          <p class="dc-modal-error" id="rn-error" hidden></p>
+          <button type="submit" class="btn dc-delete-button" id="rn-submit" disabled>Tạo đề xuất bảo trì</button>
+        </form>
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <div class="card-header"><h2>Tiến trình{% if last_action %} — {{ last_action.status }}{% endif %}</h2></div>
+      <div class="card-body"><div id="rn-progress"><p class="hint">Chưa có lượt bảo trì nào.</p></div></div>
+    </section>
+  </main>
+
+  <script type="application/json" id="rn-initial">{{ {"progress": progress, "status": last_action.status if last_action else None}|tojson }}</script>
+  <script>
+  (function () {
+    function el(id) { return document.getElementById(id); }
+    const MARK = {done: "✓", running: "▶", failed: "✗", pending: "·"};
+    function render(state) {
+      const box = el("rn-progress");
+      if (!state.progress || !state.progress.length) return;
+      box.replaceChildren();
+      state.progress.forEach(function (step) {
+        const p = document.createElement("p");
+        const strong = document.createElement("strong");
+        strong.textContent = (MARK[step.status] || "·") + " " + step.label;
+        p.append(strong);
+        if (step.message) { p.append(document.createElement("br"), step.message); }
+        (step.hosts || []).forEach(function (host) {
+          const line = document.createElement("div"); line.className = "hint";
+          line.textContent = host.host + ": " + (host.message || host.status); p.append(line);
+        });
+        box.append(p);
+      });
+    }
+    render(JSON.parse(el("rn-initial").textContent));
+    setInterval(async function () {
+      try {
+        const response = await fetch("/node-maintenance/progress", {credentials: "same-origin"});
+        if (response.ok) render(await response.json());
+      } catch (e) { /* keep the last view */ }
+    }, 5000);
+
+    const approveInput = el("rn-approve-input");
+    if (approveInput) {
+      const expected = {{ (confirm_text or "")|tojson }};
+      approveInput.addEventListener("input", function () {
+        el("rn-approve-hidden").value = approveInput.value.trim();
+        el("rn-approve-btn").disabled = approveInput.value.trim() !== expected;
+      });
+    }
+
+    async function post(url, body, errorId) {
+      const response = await fetch(url, {method: "POST", credentials: "same-origin",
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+      if (response.ok) { window.location.reload(); return; }
+      let detail = "Không tạo được đề xuất";
+      try { detail = (await response.json()).detail || detail; } catch (e) { /* default */ }
+      el(errorId).textContent = typeof detail === "string" ? detail : JSON.stringify(detail); el(errorId).hidden = false;
+    }
+
+    const form = el("rn-form");
+    if (form) {
+      const order = [];
+      form.addEventListener("change", function (event) {
+        const box = event.target;
+        if (box.name !== "target") return;
+        const at = order.indexOf(box.value);
+        if (box.checked && at < 0) order.push(box.value);
+        if (!box.checked && at >= 0) order.splice(at, 1);
+      });
+      function expectedText() { return "BẢO TRÌ " + order.join(", "); }
+      function update() {
+        el("rn-expected").textContent = order.length ? expectedText() : "BẢO TRÌ …";
+        el("rn-submit").disabled = !order.length || el("rn-confirm").value.trim() !== expectedText();
+      }
+      form.addEventListener("input", update); form.addEventListener("change", update);
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        post("/node-maintenance/propose", {targets: order.slice(), confirmation: el("rn-confirm").value.trim()}, "rn-error");
+      });
+    }
+  })();
+  </script>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

@@ -1739,6 +1739,11 @@ def _finish_replace_osd_preview_command(host: str | None, params: dict) -> str:
     target = f"{params.get('_hostname') or '<host>'} {params.get('device') or params.get('_device') or '<device>'}"
     return (f"# kiểm tra osd.{osd_id} destroyed; ceph orch device zap {target} --force; "
             f"ceph orch daemon add osd {target.replace(' ', ':')} (dùng lại ID {osd_id}); chờ up/in")
+def _rolling_node_maintenance_preview_command(host: str | None, params: dict) -> str:
+    targets = ", ".join(params.get("targets") or [])
+    return (f"# lần lượt từng host ({targets}): ceph orch host ok-to-stop; ceph mgr fail (nếu MGR active ở đó); "
+            "ceph orch host maintenance enter; systemctl reboot; chờ SSH; ceph orch host maintenance exit; "
+            "chờ health về như trước khi bắt đầu rồi mới sang host kế")
 
 
 _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
@@ -1756,6 +1761,7 @@ _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "finish_remove_cluster_nodes": _finish_remove_cluster_nodes_preview_command,
     "replace_failed_osd": _replace_failed_osd_preview_command,
     "finish_replace_osd": _finish_replace_osd_preview_command,
+    "rolling_node_maintenance": _rolling_node_maintenance_preview_command,
 }
 
 
