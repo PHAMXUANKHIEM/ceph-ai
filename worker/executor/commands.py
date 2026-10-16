@@ -1739,6 +1739,10 @@ def _finish_replace_osd_preview_command(host: str | None, params: dict) -> str:
     target = f"{params.get('_hostname') or '<host>'} {params.get('device') or params.get('_device') or '<device>'}"
     return (f"# kiểm tra osd.{osd_id} destroyed; ceph orch device zap {target} --force; "
             f"ceph orch daemon add osd {target.replace(' ', ':')} (dùng lại ID {osd_id}); chờ up/in")
+def _add_cluster_nodes_preview_command(host: str | None, params: dict) -> str:
+    from worker.executor import cluster_expansion
+
+    return cluster_expansion.preview(params)
 
 
 _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
@@ -1756,6 +1760,7 @@ _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "finish_remove_cluster_nodes": _finish_remove_cluster_nodes_preview_command,
     "replace_failed_osd": _replace_failed_osd_preview_command,
     "finish_replace_osd": _finish_replace_osd_preview_command,
+    "add_cluster_nodes": _add_cluster_nodes_preview_command,
 }
 
 

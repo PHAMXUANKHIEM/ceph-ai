@@ -182,6 +182,9 @@ cluster_deploy_action_ids:
   # worker/executor/osd_replacement.py) — croit-parity plan C1.
   - replace_failed_osd
   - finish_replace_osd
+  # 2026-10-10: Thêm node vào cụm đang chạy (dashboard/routes/add_nodes.py,
+  # worker/executor/cluster_expansion.py) — croit-parity plan C3.
+  - add_cluster_nodes
 
 # 2026-07-29: Volumes page "Đo hiệu năng tối đa" (load sweep) button
 # (dashboard/routes/volumes.py) — a SEVENTH family, same reasoning as
@@ -324,6 +327,8 @@ risky:
   # data stays), e.g. one created before exports used the subvolume's path.
   - nfs_delete_export
   - rgw_apply_service
+  # 2026-10-10: adds hosts and OSDs on empty disks to a running cluster; nothing is removed.
+  - add_cluster_nodes
   # 2026-10-07: removes already-drained hosts from the cephadm inventory.
   - finish_remove_cluster_nodes
   # Changes when the cluster raises BlueStore slow-op warnings: always approved.
