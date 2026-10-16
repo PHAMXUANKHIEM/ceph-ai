@@ -71,6 +71,18 @@ ceph-ai-customer.sh status | start | stop
 
 Trước khi nâng cấp hãy `git -C /root/ceph-ai checkout <sha mới>`, để compose và script khớp với image.
 
+## Thông báo bình thường
+
+Khi khởi động ứng dụng, podman-compose 1.0.6 in hai dòng sau rồi dùng luôn container đang chạy. Chúng **không**
+phải lỗi:
+
+```
+Error: error creating container storage: the container name "ceph-ai-customer_postgres_1" is already in use …
+Error: error creating container storage: the container name "ceph-ai-customer_rabbitmq_1" is already in use …
+```
+
+Kết quả thật là các dòng `IMAGE … ok` (container chạy đúng image) và `SMOKE … running restarts=0` ở cuối.
+
 ## Dữ liệu và bí mật
 
 | Đường dẫn | Nội dung |
