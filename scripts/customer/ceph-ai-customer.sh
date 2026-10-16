@@ -241,6 +241,7 @@ runtime_dir() {
   # before any container: otherwise Podman creates the bind-mounted host dir as root 0700 and
   # the watchers crash-loop on "Permission denied: '/run/ceph-ai/watcher.lock'" (Podman 3.4
   # test, 15/10/2026). The tmpfiles entry recreates it after a reboot.
+  install -d -m 0755 /etc/tmpfiles.d   # absent on minimal installs (Rocky 9 rehearsal, 16/10/2026)
   printf 'd %s 0750 %s %s -\n' "$RUN_DIR" "$APP_UID" "$APP_UID" > /etc/tmpfiles.d/ceph-ai-customer.conf
   install -d -m 0750 -o "$APP_UID" -g "$APP_UID" "$RUN_DIR"
   chown -R "$APP_UID:$APP_UID" "$RUN_DIR"; chmod 0750 "$RUN_DIR"
@@ -262,6 +263,7 @@ adopt_legacy_env() {
   say "chuyển $LEGACY_ENV (do bản cài trước sinh) sang $ENV_FILE"
 }
 install_unit() {
+  install -d -m 0755 "$(dirname "$UNIT")"
   cat > "$UNIT" <<EOF
 [Unit]
 Description=Ceph AI (customer stack, deploy/customer/compose.yaml)

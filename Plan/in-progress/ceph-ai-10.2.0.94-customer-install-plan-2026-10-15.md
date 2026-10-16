@@ -95,22 +95,22 @@ nó cần unit, container `rabbitmq`, `.venv` và các mount chỉ máy chính c
   (15/10/2026).
 - [x] Đã lưu bản cũ vào `/root/ceph-ai-old-2026-10-15/` và kiểm tra checksum. Không sửa và không xoá gì
   trong `/opt/ceph-ai`.
-- [ ] Cài gói. Đây là máy controller OpenStack; các gói dưới đây không đụng RabbitMQ, MariaDB hay dịch vụ
+- [x] Cài gói. Đây là máy controller OpenStack; các gói dưới đây không đụng RabbitMQ, MariaDB hay dịch vụ
   OpenStack:
   `apt-get install -y podman golang-github-containernetworking-plugin-dnsname catatonit` (podman 3.4.4).
-  Sau đó cài `podman-compose==1.0.6` vào venv riêng `/opt/ceph-ai-customer/venv`, vì APT không có gói này.
-- [ ] Clone repo vào `/root/ceph-ai` và checkout **đúng sha đích** do operator đưa.
-- [ ] `podman login ghcr.io`: operator tự gõ, vì lệnh cần TTY.
-- [ ] Chạy `scripts/customer/ceph-ai-customer.sh preflight --image <digest> --dashboard-bind 0.0.0.0:8001`.
+  Sau đó cài `podman-compose==1.0.6` vào venv riêng `/opt/ceph-ai-customer/venv`, vì APT không có gói này. Đã cài 16/10/2026.
+- [x] Clone repo vào `/root/ceph-ai` và checkout **đúng sha đích** do operator đưa. Đã checkout các bản phát hành lần lượt tới `fee0bf1`.
+- [x] `podman login ghcr.io`: operator tự gõ, vì lệnh cần TTY. Không cần: image trên GHCR là public.
+- [x] Chạy `scripts/customer/ceph-ai-customer.sh preflight --image <digest> --dashboard-bind 0.0.0.0:8001`.
   Mọi mục phải PASS. Dùng **cổng 8001**, vì Dashboard cũ đang giữ `10.2.0.94:8000` và bản cũ chạy tiếp
-  trong lúc thử.
+  trong lúc thử. Mọi mục PASS.
 
 ### Pha 3 — Cài bản mới song song bằng profile khách
-- [ ] `ceph-ai-customer.sh install`, với các tham số:
+- [x] `ceph-ai-customer.sh install`, với các tham số:
   - `--image <digest>`;
   - `--ssh-key <file do SSH_KEY_PATH cũ trỏ tới>`;
   - `--old-env /opt/ceph-ai/.env`;
-  - `--dashboard-bind 0.0.0.0:8001`.
+  - `--dashboard-bind 0.0.0.0:8001`. Xong 16/10/2026 sau 7 vòng sửa bộ cài (xem nhật ký); hiện chạy `fee0bf1` qua `upgrade`.
 
   Script tự làm các việc sau:
   - sinh mật khẩu, không in ra;
@@ -121,23 +121,23 @@ nó cần unit, container `rabbitmq`, `.venv` và các mount chỉ máy chính c
   - chạy migration, khởi động 4 dịch vụ ứng dụng;
   - cài `ceph-ai-customer.service`;
   - kiểm tra sau khởi động.
-- [ ] Gửi operator phần báo cáo `carried / replaced / dropped_unknown / dropped_on_purpose`. Phần này chỉ
-  có tên khoá. Nếu khoá cần cho cụm Ceph bị bỏ (`dropped_unknown`), báo operator và không tự thêm vào.
-- [ ] Gặp lỗi do podman 3.4 (mạng, healthcheck, `--init`): ghi nguyên văn lỗi rồi báo operator. Không sửa
-  code Ceph AI, không bỏ qua kiểm tra.
-- [ ] **Đường lùi:**
+- [x] Gửi operator phần báo cáo `carried / replaced / dropped_unknown / dropped_on_purpose`. Phần này chỉ
+  có tên khoá. Nếu khoá cần cho cụm Ceph bị bỏ (`dropped_unknown`), báo operator và không tự thêm vào. Đã gửi; các khoá `CEPH_PATCH_*` bị bỏ vì tính năng build bản vá đã xoá khỏi code (#43).
+- [x] Gặp lỗi do podman 3.4 (mạng, healthcheck, `--init`): ghi nguyên văn lỗi rồi báo operator. Không sửa
+  code Ceph AI, không bỏ qua kiểm tra. Đã làm đúng: mọi lỗi được ghi, sửa trong bộ cài và phát hành lại.
+- [x] **Đường lùi:**
   1. `ceph-ai-customer.sh stop`;
-  2. `systemctl disable ceph-ai-customer.service`.
+  2. `systemctl disable ceph-ai-customer.service`. Đã dùng nhiều lần; bản cũ cổng 8000 không bị ảnh hưởng.
 
   Bản cũ vẫn chạy ở cổng 8000, không bị đụng tới.
 
 **Kiểm tra sau khi cài**
-- [ ] `ceph-ai-customer.sh status`: 6 container `running`, không restart.
+- [x] `ceph-ai-customer.sh status`: 6 container `running`, không restart. 6/6, restarts=0 (16/10).
 - [ ] Đăng nhập `http://10.2.0.94:8001` bằng mật khẩu trong `/root/.config/ceph-ai/dashboard-admin.pass`.
-  Cụm `hapu` hiện đúng: 17 OSD, cảnh báo phiên bản daemon.
-- [ ] Watcher cập nhật trạng thái cụm trong 10 phút; queue RabbitMQ được tiêu thụ.
-- [ ] Autopilot đang tắt. Không action nào tự chạy.
-- [ ] `ceph-ai-customer.sh backup` chạy được (có `.dump` và `.sha256` trong `/var/backups/ceph-ai`).
+  Cụm `hapu` hiện đúng: 17 OSD, cảnh báo phiên bản daemon. Dashboard 200 (16/10); 17 OSD chưa xác nhận, chờ SSH.
+- [ ] Watcher cập nhật trạng thái cụm trong 10 phút; queue RabbitMQ được tiêu thụ. **Chưa:** SSH tới `10.2.0.83` báo `Permission denied (publickey)` (operator đang xử lý); cụm thor chưa kiểm tra `ssh_key_path`.
+- [x] Autopilot đang tắt. Không action nào tự chạy.
+- [x] `ceph-ai-customer.sh backup` chạy được (có `.dump` và `.sha256` trong `/var/backups/ceph-ai`). 336–340 KB, checksum OK.
 - [ ] Sau 24 giờ ổn định, operator mới quyết định có tắt bản cũ (`ceph-ai-dashboard.service`) và chuyển
   bản mới sang cổng 8000 hay không.
 
@@ -146,16 +146,16 @@ nó cần unit, container `rabbitmq`, `.venv` và các mount chỉ máy chính c
 - [ ] Xác nhận gói không làm thay đổi độ tin cậy Autopilot của cụm tại chỗ.
 
 ### Pha 5 — Kích hoạt federation (chỉ khi `45.124.93.83:1207` OK ở pha 1 và bản mới có `/federation`)
-- [ ] Operator đưa **file mật khẩu `fed_enroll`** (có trong bộ cài, hoặc gửi riêng). Đặt file vào
+- [x] Operator đưa **file mật khẩu `fed_enroll`** (có trong bộ cài, hoặc gửi riêng). Đặt file vào
   `/var/lib/ceph-ai-customer/config/federation-enroll.pass`, quyền 0600, chủ sở hữu uid 10001 (user của container).
-  Không in nội dung file.
-- [ ] Operator đưa **mã kích hoạt** `CAI-XXXX-XXXX-XXXX-XXXX-XXXX`: dùng một lần, có hạn, cấp riêng cho
-  10.2.0.94. Admin nhập mã ở Dashboard → **Federation** → **Kích hoạt**.
-- [ ] Trang hiện "Đã đăng ký" với mã khách 12 ký tự và gói `basic`. Ghi mã khách vào báo cáo. Mã khách
-  không phải bí mật; mã kích hoạt thì có.
-- [ ] Đọc khung "Dữ liệu sẽ được gửi". Xác nhận chỉ có số đếm: không có tên cụm, IP, hostname, fsid, log
+  Không in nội dung file. Operator chép tay 16/10 (từ bản sau dùng `ceph-ai-customer.sh enroll-password`).
+- [x] Operator đưa **mã kích hoạt** `CAI-XXXX-XXXX-XXXX-XXXX-XXXX`: dùng một lần, có hạn, cấp riêng cho
+  10.2.0.94. Admin nhập mã ở Dashboard → **Federation** → **Kích hoạt**. Mã cấp 16/10, hạn 7 ngày.
+- [x] Trang hiện "Đã đăng ký" với mã khách 12 ký tự và gói `basic`. Ghi mã khách vào báo cáo. Mã khách
+  không phải bí mật; mã kích hoạt thì có. Mã khách `c23461c95820`, gói basic, đăng ký 17:22 16/10 từ IP `123.25.30.77`.
+- [ ] **TRƯỢT 16/10:** khung xem trước có `NODE_UNREACHABLE:10.2.0.83` (IP nội bộ trong mã sự cố) mà vẫn được gửi. Đọc khung "Dữ liệu sẽ được gửi". Xác nhận chỉ có số đếm: không có tên cụm, IP, hostname, fsid, log
   hay lệnh. Thấy bất kỳ thứ gì nhận diện được thì **dừng, không bấm Gửi**, rồi báo operator.
-- [ ] Bấm **Gửi**. Trang ghi "Lần gửi gần nhất" và không có lỗi. Báo operator giờ gửi để bên mình kiểm tra
+- [ ] Bấm **Gửi**. (Lần gửi 16/10 đã xoá khỏi inbox vì có IP; gửi lại sau khi 10.2.0.94 lên bản có `cand/federation-base-codes`.) Trang ghi "Lần gửi gần nhất" và không có lỗi. Báo operator giờ gửi để bên mình kiểm tra
   bảng `inbox.c_<mã khách>`.
 - [ ] Lỗi "Mã kích hoạt không hợp lệ" nghĩa là mã sai, đã dùng hoặc hết hạn: xin mã mới, **không thử lại
   nhiều lần**. Server tự chặn IP sau 5 lần sai trong 10 phút, chặn trong 1 ngày.
@@ -186,3 +186,9 @@ nó cần unit, container `rabbitmq`, `.venv` và các mount chỉ máy chính c
 | 15/10/2026 | Pha 1 trên 10.2.0.94 | Bản cũ systemd/Python, DB cổng 31081 mất kết nối, không có podman; quyết định cài mới song song (mục 2b) |
 | 15/10/2026 | Pha 2 dừng ở preflight của máy chính | Viết profile cài cho máy khách (R8.1); pha 2–3 dùng `scripts/customer/ceph-ai-customer.sh` |
 | 16/10/2026 | Lần cài thứ 4 trên 10.2.0.94 trượt SMOKE | Bản cũ (chạy root) dùng chung `/var/lib/ceph-ai`, `/run/ceph-ai`; stack khách chuyển sang `/var/lib/ceph-ai-customer`, `/run/ceph-ai-customer` |
+| 16/10/2026 | Vòng 5: `dnsmasq` cũ giữ 10.89.0.1:53 khi bật bằng systemd | #107 dọn dnsmasq cũ + `trust-hosts`; vẫn trượt |
+| 16/10/2026 | Vòng 6: trạng thái dnsmasq ở `/run/user/0` (SSH) khác `/run/containers` (systemd) | #108 bỏ `XDG_RUNTIME_DIR`, dọn cả hai chỗ |
+| 16/10/2026 | Vòng 7: `upgrade` báo OK nhưng vẫn image cũ (`cmd_backup` ghi đè `IMAGE`) | #109 kiểm tra image thật, upgrade/rollback dựng lại cả stack; upgrade lên `fee0bf1` OK, 6/6 |
+| 16/10/2026 | SSH: `10.2.0.83` Permission denied; `hapu-ceph-01` chỉ là nhãn MON | Operator xử lý key; `trust-hosts` bỏ `CEPH_MON_HOSTNAMES` (`cand/federation-base-codes`) |
+| 16/10/2026 | Pha 5: kích hoạt federation | Khách `c23461c95820`; payload có IP → xoá bản ghi; sửa ở `cand/federation-base-codes` |
+| 16/10/2026 | Quyết định: kiểm thử bộ cài trong CI theo từng hệ điều hành (R8.7) | Đang làm ở `cand/customer-install-ci` |

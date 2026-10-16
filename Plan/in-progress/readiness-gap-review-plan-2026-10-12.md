@@ -128,21 +128,49 @@ Khách chạy Ceph AI trong mạng của họ, thường không có đường ra
 kết nối vào DB của mình. Quyết định của chủ dự án: mỗi khách có DB riêng tại chỗ; về phía mình, mỗi khách một bảng
 riêng cho dữ liệu gửi về, còn tri thức AI học được thì dùng chung.
 
-- [ ] R8.1 **Bộ cài offline**: một file `ceph-ai-<version>.tar` gồm image (`podman save`, theo digest đã duyệt),
-  `compose.yaml`, script `install.sh` / `upgrade.sh` (kiểm tra checksum, nạp image, migration, khởi động, smoke),
-  mẫu `.env`, hướng dẫn, `SHA256SUMS`. Thử: nâng cấp bản cũ trên 10.2.0.94 chỉ bằng file mang sang.
+- [ ] R8.1 **Bộ cài cho khách**. Đã có (15–16/10/2026, #101, #103–#109): `deploy/customer/` +
+  `scripts/customer/ceph-ai-customer.sh` (install/upgrade/rollback/backup/start/stop/trust-hosts), stack tự chứa
+  (PostgreSQL + RabbitMQ trong stack, thư mục riêng `/var/lib/ceph-ai-customer`), chạy được trên Podman 3.4; đã cài
+  xong trên 10.2.0.94 (bản `fee0bf1`). **Còn:** gói offline `ceph-ai-<version>.tar` (image `podman save` theo digest,
+  `SHA256SUMS`) cho khách không ra được GHCR; timer sao lưu hằng đêm + bản sao ngoài máy.
 - [ ] R8.2 **Gói tri thức** (`knowledge-pack-<version>.json`, có version, kèm trong bộ cài): template log Ceph đã
   chuẩn hoá, tham số khởi đầu cho dự báo theo loại metric, họ lỗi/runbook/contract, thống kê playbook để tham khảo.
   Lệnh `export` (từ DB của mình) và `import` (khi cài/nâng cấp). Test bắt buộc: gói không chứa IP, hostname, fsid,
   tên cụm, mã khách. Độ tin cậy Autopilot không bao giờ đi theo gói.
-- [ ] R8.3 **Gửi số liệu về (chỉ khi khách cho phép đi ra cổng 443)**: mặc định tắt; trang xem trước nội dung;
-  chỉ số liệu tổng hợp đã ẩn danh (tần suất template lỗi, đánh giá playbook, sai số dự báo theo metric); audit.
-- [ ] R8.4 **API thu nhận** (HTTPS 443 sau reverse proxy, chỉ `POST`, mỗi khách một khoá/chứng chỉ thu hồi được) và
-  **DB `ceph_ai_federation`** trên node DB (sau khi tăng dung lượng): mỗi khách một bảng `inbox_<mã khách>`
-  (payload JSON có version), bảng `knowledge_*` dùng chung. Cổng 5432 không bao giờ mở ra internet.
+- [ ] R8.3 **Gửi số liệu về** (quyết định 12/10/2026: SQL trực tiếp qua WAN `45.124.93.83:1207` bằng mã kích hoạt,
+  không qua API HTTPS). Đã có: trang `/federation` (#96): nhập mã, xem trước, bấm Gửi; TLS + channel binding;
+  thử đầu-cuối 15/10 từ máy chính; khách đầu tiên 10.2.0.94 (`c23461c95820`, 16/10). Sự cố 16/10: payload đầu tiên
+  mang IP nội bộ trong mã sự cố (`NODE_UNREACHABLE:10.2.0.83`), bản ghi đã xoá theo yêu cầu chủ dự án; sửa ở
+  `cand/federation-base-codes` (chỉ gửi mã gốc, chặn mọi payload còn IP). **Còn:** gửi tự động hằng ngày (đang chỉ
+  bấm tay); thay `LOG_ANOMALY:<hash>` bằng **template log đã chuẩn hoá** (bỏ IP/hostname) để phía mình học được
+  (hash cục bộ vô nghĩa ở phía mình; ghi nhận 15/10, nối với R8.2/R8.5).
+- [x] R8.4 **Phía thu nhận**: DB `ceph_ai_federation` trên node SQL 10.3.54.241 (#95): mỗi khách một login và một bảng
+  `inbox.c_<mã>` chỉ INSERT, `knowledge.basic/vip` dùng chung theo gói, hàm `enroll_api.enroll(code)`; mã kích hoạt
+  một lần, có hạn, chỉ lưu bản băm (`/usr/local/sbin/ceph-ai-federation`). Node SQL ra WAN chỉ cổng 1207 (NAT về
+  5432), ufw mặc định chặn, fail2ban cho SSH và PostgreSQL (cả mã kích hoạt sai); 5432 và SSH không bao giờ ra WAN.
 - [ ] R8.5 **Job gộp**: từ mọi `inbox_*` sinh `knowledge_*`, rồi sinh gói tri thức cho bản phát hành sau.
 - [ ] R8.6 Thử đầu-cuối: CS-STAGING đóng vai khách gửi số liệu → gộp → gói mới → bản cài sạch nhập gói và nhận
   ra log Ceph ngay lần quét đầu.
+- [ ] R8.7 **Kiểm thử bộ cài khách trong CI** (quyết định 16/10/2026, sau 7 vòng sửa lỗi trên 10.2.0.94): job
+  `customer-install` trong `ci-cd.yml` chạy khi PR đụng `deploy/customer/` hoặc `scripts/customer/`. Mỗi hệ điều
+  hành được hỗ trợ (Ubuntu 22.04 + Podman 3.4, Ubuntu 24.04, Rocky 9) chạy trong container riêng:
+  install bản cũ → upgrade → rollback → upgrade → stop từ phiên SSH / start kiểu systemd → backup có checksum.
+  Mỗi bước: 6 container đúng image, không restart, Dashboard 200, không còn dnsmasq thừa. Đỏ thì PR không lên thẻ duyệt.
+- [ ] R8.8 **Runtime chuẩn hoá + `doctor`**: danh sách hệ điều hành được hỗ trợ (ngoài danh sách thì từ chối rõ ràng);
+  bộ cài tự cài runtime đã kiểm thử (Podman ≥ 4.4 + netavark từ repo chính thức, hoặc Docker Engine + Compose v2)
+  thay cho bản có sẵn của hệ điều hành; `ceph-ai-customer.sh doctor` gom thông tin chẩn đoán (đã lọc bí mật)
+  để khách gửi về.
+- [ ] R8.9 **Appliance VM** (qcow2 cho OpenStack/KVM trước, sau đó ova): hệ điều hành + runtime + stack dựng từ
+  bộ cài R8.8; khách import, cấp IP, khai báo cụm và mã kích hoạt trên Dashboard. Cách giao mặc định cho khách.
+  Bước khách luôn tự làm ở mọi cách: dán public key của Ceph AI lên các node Ceph và xác nhận fingerprint.
+
+### Việc phát sinh (16/10/2026)
+- [ ] **Worker không thoát khi nhận SIGTERM** (`worker/main.py`, `_shutdown` raise `KeyboardInterrupt` trong lúc
+  các luồng `asyncio.to_thread` còn chạy): trên Podman 3.4 `stop` chờ hết 930 s ân hạn. Bộ cài khách đã hạ ân hạn
+  xuống 120 s; trên máy chính có thể mỗi lần deploy cũng chờ lâu hơn cần. Cần đo trên máy chính rồi sửa cách dừng.
+- [ ] **Cụm thứ hai trên máy khách**: 10.2.0.94 cấu hình 2 cụm (thor, hapu). `ssh_key_path` của cụm thêm trên
+  Dashboard phải trỏ tới khoá trong container (`/run/ceph-ai/credentials/ssh/id_ed25519`); `trust-hosts` phủ mọi cụm
+  từ `cand/federation-base-codes`.
 
 ## 4. Thứ tự
 
@@ -152,6 +180,7 @@ riêng cho dữ liệu gửi về, còn tri thức AI học được thì dùng 
 4. R5, rồi R6.
 5. R7 cần quyết định của chủ dự án; không chặn R1–R5.
 6. R8: R8.1 trước (cần cho 10.2.0.94), rồi R8.2, R8.4–R8.5, R8.3, R8.6.
+   Bộ cài khách (16/10/2026): R8.7 (CI) → R8.8 (runtime chuẩn + doctor) → R8.9 (appliance).
 
 ## 5. Theo dõi điểm
 
