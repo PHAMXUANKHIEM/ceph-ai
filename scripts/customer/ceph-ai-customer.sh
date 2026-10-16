@@ -14,6 +14,11 @@
 # here, kept in 0600/0640 files and never printed; the Dashboard admin password is
 # written to /root/.config/ceph-ai/dashboard-admin.pass.
 set -euo pipefail
+# One runtime location for every run: an SSH login sets XDG_RUNTIME_DIR=/run/user/0, a systemd
+# unit does not, and Podman 3.4's dnsname plugin keeps its dnsmasq state under that dir. An
+# install from a shell followed by `systemctl start` then lost the running dnsmasq and failed
+# with "Address already in use" on the network gateway (10.2.0.94, 16/10/2026).
+unset XDG_RUNTIME_DIR
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="$REPO_DIR/deploy/customer/compose.yaml"
@@ -148,15 +153,19 @@ release_stale_dns() {
   # container left on the network, stop that network's dnsmasq and drop its state.
   [ "$(podman info --format '{{.Host.NetworkBackend}}' 2>/dev/null)" = "netavark" ] && return 0
   if podman ps -q --filter "network=$NETWORK" 2>/dev/null | grep -q .; then return 0; fi
-  local state="/run/containers/cni/dnsname/$NETWORK" pids
-  pids="$(ps -eo pid=,args= | awk -v conf="$state/dnsmasq.conf" '$2 ~ /dnsmasq$/ && index($0, conf) {print $1}')"
+  # Match the network's dnsmasq wherever an earlier run kept its state (/run/containers or
+  # /run/user/<uid>/containers, see XDG_RUNTIME_DIR above).
+  local pids state
+  pids="$(ps -eo pid=,args= | awk -v conf="containers/cni/dnsname/$NETWORK/dnsmasq.conf" '$2 ~ /dnsmasq$/ && index($0, conf) {print $1}')"
   if [ -n "$pids" ]; then
     say "dừng dnsmasq cũ của mạng $NETWORK (pid $pids)"
     # shellcheck disable=SC2086
     kill $pids 2>/dev/null || true
     sleep 1
   fi
-  rm -rf "$state"
+  for state in "/run/containers/cni/dnsname/$NETWORK" /run/user/*/containers/cni/dnsname/"$NETWORK"; do
+    [ ! -e "$state" ] || rm -rf "$state"
+  done
 }
 dns_port_free() {
   local gateway

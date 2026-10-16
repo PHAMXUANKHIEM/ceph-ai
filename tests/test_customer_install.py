@@ -251,3 +251,13 @@ def test_trust_hosts_copies_known_keys_and_reports_missing_ones(tmp_path):
     written = (data / "ssh" / "ceph_lab_known_hosts").read_text()
     assert "192.0.2.10 " in written and "192.0.2.12 " in written and "198.51.100.1" not in written
     assert "192.0.2.11" in result.stderr  # reported, not trusted
+
+
+def test_every_run_uses_one_runtime_dir_and_stale_dnsmasq_is_found_in_either():
+    # 10.2.0.94, 16/10/2026: install from an SSH shell (XDG_RUNTIME_DIR=/run/user/0) kept dnsmasq
+    # state under /run/user/0/containers; the systemd unit looked under /run/containers.
+    text = SCRIPT.read_text()
+    assert text.index("unset XDG_RUNTIME_DIR") < text.index("REPO_DIR=")
+    release = _function("release_stale_dns")
+    assert 'conf="containers/cni/dnsname/$NETWORK/dnsmasq.conf"' in release
+    assert "/run/user/*/containers/cni/dnsname/" in release and "/run/containers/cni/dnsname/" in release
