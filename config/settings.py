@@ -160,6 +160,10 @@ class Settings(BaseSettings):
     federation_database: str = "ceph_ai_federation"
     federation_enroll_password_file: str = "/var/lib/ceph-ai/config/federation-enroll.pass"
     federation_state_file: str = "/var/lib/ceph-ai/config/federation.json"
+    # Icinga hand-off (plan icinga-alerting-handoff, I1; shared/icinga_events.py): the bearer token
+    # Icinga's ceph-ai-webhook sends, and the bounded JSONL record of the events it reported.
+    icinga_webhook_token_file: str = "/var/lib/ceph-ai/config/icinga-webhook.token"
+    icinga_events_file: str = "/var/lib/ceph-ai/icinga-events.jsonl"
     # BLUESTORE_SLOW_OP_ALERT gate (autonomy plan WP1.2). Ceph keeps the
     # check for bluestore_slow_ops_warn_lifetime (86400 s by default) after a
     # single slow op, so only an episode outliving that window is recurrent.

@@ -56,6 +56,7 @@ from dashboard.routes import (
     delete_cluster,
     remove_nodes,
     federation as federation_routes,
+    icinga as icinga_routes,
     file_services,
     grafana_vpn,
     replace_osd,
@@ -98,6 +99,9 @@ _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _CSRF_SESSION_KEY = "_ceph_ai_csrf_token"
 _CSRF_COOKIE_NAME = "ceph_ai_csrf"
 _UNSAFE_METHODS = frozenset(("POST", "PUT", "PATCH", "DELETE"))
+# Machine-to-machine endpoints that authenticate every request with their own bearer token and use
+# no cookies: the browser CSRF and same-origin checks below do not apply (dashboard/routes/icinga.py).
+_TOKEN_AUTH_PATHS = frozenset(("/api/icinga/events",))
 _SESSION_COOKIE_MAX_AGE = 14 * 24 * 60 * 60
 _SESSION_COOKIE_SAMESITE = "lax"
 _VALID_ENVIRONMENTS = {"development", "test", "staging", "production", "lab"}
@@ -545,12 +549,14 @@ def create_app() -> FastAPI:
         if (
             settings.ceph_ai_environment == "production"
             and request.method in _UNSAFE_METHODS
+            and path not in _TOKEN_AUTH_PATHS
             and not _mutation_origin_allowed(request)
         ):
             return JSONResponse({"detail": "Cross-site mutation bị từ chối"}, status_code=403)
         if (
             settings.ceph_ai_environment == "production"
             and request.method in _UNSAFE_METHODS
+            and path not in _TOKEN_AUTH_PATHS
             and not await _csrf_token_allowed(request)
         ):
             return JSONResponse({"detail": "CSRF token không hợp lệ hoặc đã thiếu"}, status_code=403)
@@ -639,6 +645,7 @@ def create_app() -> FastAPI:
     application.include_router(storage_audit.router)
     application.include_router(telegram_alerts.router)
     application.include_router(federation_routes.router)
+    application.include_router(icinga_routes.router)
     application.include_router(crush_map.router)
     application.include_router(capability_matrix_routes.router)
     application.include_router(test_progress_routes.router)

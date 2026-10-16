@@ -1,7 +1,7 @@
 # Kế hoạch: giao phần cảnh báo cho Icinga 2, Ceph AI tập trung chẩn đoán và sửa
 
 **Ngày lập:** 15/10/2026
-**Trạng thái:** `IN-PROGRESS`. Chờ thông tin Icinga từ operator (mục 6) rồi mới làm I1.
+**Trạng thái:** `IN-PROGRESS`. I1 đang làm (16/10/2026): node Icinga 10.3.52.190 đã cài, CS-STAGING đã được check.
 **Người quyết định:** chủ dự án (ý tưởng ngày 15/10/2026: "thay thế cảnh báo lỗi bằng Icinga, đỡ các phần cho AI").
 
 ## 1. Vì sao
@@ -81,12 +81,21 @@ Mục tiêu: **Icinga lo phát hiện và cảnh báo; Ceph AI nhận sự cố 
 ## 4. Các bước
 
 ### I1 — Nhận sự cố từ Icinga, chạy song song (không tắt gì)
-- [ ] Route `POST /api/icinga/events` (token, schema, giới hạn tần suất, idempotent), bảng map host
-  Icinga → cụm, mở/đóng incident như mục 3.1. Test với payload mẫu của Icinga 2.
-- [ ] Ghi nguồn của incident (`source = icinga`) để so sánh với incident do Watcher mở.
-- [ ] Mẫu cấu hình `deploy/icinga/ceph-ai.conf` và hướng dẫn áp dụng.
-- [ ] Thử trên CS-STAGING: operator áp dụng cấu hình lên Icinga, rồi gây một lỗi thật bằng Failure Lab hoặc
-  dừng một OSD. Kiểm tra incident được mở từ Icinga, chẩn đoán chạy, RECOVERY đóng incident.
+- [x] Node Icinga **10.3.52.190** (`rnd-khiempx-icinga`, Ubuntu 24.04, 2 CPU / 3.8 GB): Icinga 2.16 + API, IcingaDB +
+  Redis, MariaDB, Icinga Web 2 + IcingaDB Web (`http://10.3.52.190/icingaweb2`, user `admin`, mật khẩu trong
+  `/root/.config/icinga-setup/` trên node). Cài bằng `deploy/icinga/install-icinga.sh` (chạy lại được).
+- [x] Check Ceph: `deploy/icinga/check_ceph_cluster` (health/capacity/osd/pg/mon) với user Ceph chỉ đọc `client.icinga`
+  (`mon 'allow r'`, `mgr 'allow r'`, đã tạo trên CS-STAGING và CS-LAB 16/10). Áp bằng `configure-ceph-ai.sh`.
+  CS-STAGING chạy từ 16/10 (lượt đầu: HEALTH_OK, 3/3 OSD, 241/241 PG, quorum 3/3).
+- [ ] **CS-LAB:** node Icinga không tới được mạng MON `10.20.1.0/24` (không có route). Chờ operator chọn: mở route
+  (khuyên), `check_by_ssh` qua node CS-LAB, hoặc Icinga agent.
+- [x] Route `POST /api/icinga/events` (token Bearer, schema chặt, idempotent theo `event_id`, ghi
+  `/var/lib/ceph-ai/icinga-events.jsonl`, gắn với incident đang mở cùng mã; không mở incident, không chạy action).
+- [ ] Bật webhook: token `/var/lib/ceph-ai/config/icinga-webhook.token` trên máy chính + `webhook.env` trên node
+  Icinga, sau khi bản có route được deploy.
+- [ ] Telegram cho Icinga: chờ operator chọn bot/chat (`/etc/icinga2/ceph-ai/telegram.env`).
+- [ ] Thử: gây lỗi trên CS-STAGING (Failure Lab hoặc dừng một OSD) → Icinga PROBLEM → bản ghi có incident liên kết;
+  RECOVERY ghi lại.
 
 ### I2 — Ghi chẩn đoán ngược về Icinga
 - [ ] Client API Icinga (TLS, có xác minh CA của Icinga), `add-comment` sau khi chẩn đoán. Lỗi API không
@@ -151,3 +160,4 @@ Các phần có thể xoá hoặc thu gọn (số dòng ở `origin/main` ngày 
 | Ngày | Việc | Kết quả |
 |---|---|---|
 | 15/10/2026 | Lập kế hoạch theo ý tưởng của chủ dự án | Chờ thông tin Icinga (mục 6) |
+| 16/10/2026 | I1: cài node Icinga 10.3.52.190, check CS-STAGING, route webhook | CS-LAB chờ route mạng; Telegram chờ chọn chat |
