@@ -147,7 +147,7 @@ nó cần unit, container `rabbitmq`, `.venv` và các mount chỉ máy chính c
 
 ### Pha 5 — Kích hoạt federation (chỉ khi `45.124.93.83:1207` OK ở pha 1 và bản mới có `/federation`)
 - [ ] Operator đưa **file mật khẩu `fed_enroll`** (có trong bộ cài, hoặc gửi riêng). Đặt file vào
-  `/var/lib/ceph-ai/config/federation-enroll.pass`, quyền 0600, chủ sở hữu là user của container Dashboard.
+  `/var/lib/ceph-ai-customer/config/federation-enroll.pass`, quyền 0600, chủ sở hữu uid 10001 (user của container).
   Không in nội dung file.
 - [ ] Operator đưa **mã kích hoạt** `CAI-XXXX-XXXX-XXXX-XXXX-XXXX`: dùng một lần, có hạn, cấp riêng cho
   10.2.0.94. Admin nhập mã ở Dashboard → **Federation** → **Kích hoạt**.
@@ -185,3 +185,4 @@ nó cần unit, container `rabbitmq`, `.venv` và các mount chỉ máy chính c
 | 15/10/2026 | Lập kế hoạch | Chờ pha 1 trên 10.2.0.94 |
 | 15/10/2026 | Pha 1 trên 10.2.0.94 | Bản cũ systemd/Python, DB cổng 31081 mất kết nối, không có podman; quyết định cài mới song song (mục 2b) |
 | 15/10/2026 | Pha 2 dừng ở preflight của máy chính | Viết profile cài cho máy khách (R8.1); pha 2–3 dùng `scripts/customer/ceph-ai-customer.sh` |
+| 16/10/2026 | Lần cài thứ 4 trên 10.2.0.94 trượt SMOKE | Bản cũ (chạy root) dùng chung `/var/lib/ceph-ai`, `/run/ceph-ai`; stack khách chuyển sang `/var/lib/ceph-ai-customer`, `/run/ceph-ai-customer` |

@@ -25,6 +25,9 @@ git -C /root/ceph-ai checkout <sha đã duyệt>
 Podman 3.4 của Ubuntu 22.04 ghi file mạng CNI với `cniVersion` 1.0.0, mà plugin CNI 0.9.1 đi kèm không hiểu.
 Script tự tạo mạng `ceph-ai-customer_default` và hạ bản về mức các plugin hỗ trợ (`scripts/customer/cni_compat.py`).
 
+Stack **không dùng** `/var/lib/ceph-ai` hay `/run/ceph-ai` của host, nên một bản Ceph AI cũ cài trên cùng máy
+(chạy bằng root, ghi vào hai thư mục đó) không ảnh hưởng tới nó và ngược lại.
+
 ## Cài lần đầu
 
 ```sh
@@ -39,7 +42,7 @@ Script tự tạo mạng `ceph-ai-customer_default` và hạ bản về mức c�
 2. Sinh mật khẩu DB, RabbitMQ và admin Dashboard. Mật khẩu không bao giờ được in; mật khẩu admin nằm ở
    `/root/.config/ceph-ai/dashboard-admin.pass`.
 3. Chép khoá SSH thành `/etc/ceph-ai-customer/ssh/id_ed25519`. Khoá gốc giữ nguyên.
-4. Dựng `/var/lib/ceph-ai/config/.env`:
+4. Dựng `/var/lib/ceph-ai-customer/config/.env`:
    - chỉ chép từ `--old-env` những khoá mà image nhận;
    - in ra tên khoá đã chép, đã thay và đã bỏ;
    - đặt `AUTOPILOT_ENABLED=false`.
@@ -63,10 +66,11 @@ Trước khi nâng cấp hãy `git -C /root/ceph-ai checkout <sha mới>`, để
 
 | Đường dẫn | Nội dung |
 |---|---|
-| `/var/lib/ceph-ai/` | dữ liệu ứng dụng; `config/.env` (0640 root:10001) |
+| `/var/lib/ceph-ai-customer/` | dữ liệu ứng dụng (trong container là `/var/lib/ceph-ai`); `config/.env` (0640 root:10001) |
+| `/run/ceph-ai-customer/` | heartbeat, khoá tiến trình (trong container là `/run/ceph-ai`) |
 | `/var/lib/ceph-ai-postgres/`, `/var/lib/ceph-ai-rabbitmq/` | dữ liệu PostgreSQL / RabbitMQ |
 | `/etc/ceph-ai-customer/` (0700) | `postgres.env`, `rabbitmq.env`, `compose.env`, `ssh/id_ed25519` |
 | `/var/backups/ceph-ai/` | bản dump DB |
 
-Federation (`/federation` trên Dashboard) còn cần file `/var/lib/ceph-ai/config/federation-enroll.pass`,
+Federation (`/federation` trên Dashboard) còn cần file `/var/lib/ceph-ai-customer/config/federation-enroll.pass` (chủ 10001, 0600),
 do nhà cung cấp gửi riêng.

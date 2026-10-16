@@ -7,6 +7,8 @@
 #   touched;
 # - no Codex/Claude CLI mounts, no Telegram AI gateway, no Single Full
 #   executor, no Vault monitor;
+# - host data in /var/lib/ceph-ai-customer and /run/ceph-ai-customer, never the
+#   /var/lib/ceph-ai or /run/ceph-ai an older install on the same host may use;
 # - one SSH identity, copied by the installer to /etc/ceph-ai-customer/ssh/
 #   and owned by the application user, is mounted read-only.
 # Run it only through scripts/customer/ceph-ai-customer.sh, which sets
@@ -16,7 +18,7 @@ name: ceph-ai-customer
 x-app: &app
   image: "${CEPH_AI_IMAGE:?set CEPH_AI_IMAGE to an approved ghcr.io/...@sha256 digest}"
   working_dir: /app
-  env_file: /var/lib/ceph-ai/config/.env
+  env_file: /var/lib/ceph-ai-customer/config/.env
   init: true
   user: "10001:10001"
   read_only: true
@@ -31,8 +33,11 @@ x-app: &app
   restart: unless-stopped
   depends_on: [postgres, rabbitmq]
   volumes:
-    - /run/ceph-ai:/run/ceph-ai:rw
-    - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+    # Own host dirs, mounted at the paths the application expects: an older Ceph AI on
+    # the same host (10.2.0.94: a root-run install from 05/09) keeps writing root-owned
+    # files into /var/lib/ceph-ai and /run/ceph-ai, which uid 10001 cannot overwrite.
+    - /run/ceph-ai-customer:/run/ceph-ai:rw
+    - /var/lib/ceph-ai-customer:/var/lib/ceph-ai:rw
     - /etc/ceph-ai-customer/ssh/id_ed25519:/run/ceph-ai/credentials/ssh/id_ed25519:ro
   environment: &app-env
     CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env

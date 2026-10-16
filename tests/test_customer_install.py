@@ -183,3 +183,21 @@ def test_backups_never_stream_a_dump_through_podman_exec():
     backup = SCRIPT.read_text().split("cmd_backup() {", 1)[1].split("\n}\n", 1)[0]
     assert "pg_dump -U ceph_ai -Fc ceph_ai -f" in backup and 'podman cp "$pg:$inside"' in backup
     assert "> \"$file.tmp\"" not in backup and "< \"$file" not in backup
+
+
+def test_the_stack_never_shares_host_dirs_with_an_older_install():
+    # 10.2.0.94, 16/10/2026: a root-run Ceph AI from 05/09 keeps writing root-owned files into
+    # /var/lib/ceph-ai/cache and /run/ceph-ai; the watchers (uid 10001) crash-looped on them.
+    compose = _compose()
+    app = compose["services"]["watcher"]
+    assert "/var/lib/ceph-ai-customer:/var/lib/ceph-ai:rw" in app["volumes"]
+    assert "/run/ceph-ai-customer:/run/ceph-ai:rw" in app["volumes"]
+    for name, service in compose["services"].items():
+        for volume in service.get("volumes", []):
+            assert not volume.startswith(("/var/lib/ceph-ai:", "/run/ceph-ai:")), (name, volume)
+        assert service.get("env_file") in (None, "/var/lib/ceph-ai-customer/config/.env") or name in ("postgres", "rabbitmq")
+    text = SCRIPT.read_text()
+    assert "DATA=/var/lib/ceph-ai-customer" in text and "RUN_DIR=/run/ceph-ai-customer" in text
+    for command in ("cmd_install_start() {", "cmd_upgrade() {", "cmd_start() {"):
+        body = text.split(command, 1)[1].split("\n}\n", 1)[0]
+        assert "data_ownership" in body, command
