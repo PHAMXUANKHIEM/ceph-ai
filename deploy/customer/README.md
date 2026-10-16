@@ -51,6 +51,15 @@ Stack **không dùng** `/var/lib/ceph-ai` hay `/run/ceph-ai` của host, nên m�
 6. Chạy migration, khởi động stack, cài `ceph-ai-customer.service` (tự chạy lại sau reboot), rồi kiểm tra
    Dashboard và số lần restart của từng container.
 
+## SSH tới các node Ceph
+
+- Khoá `--ssh-key` phải đăng nhập được vào **mọi** node trong `CEPH_*_NODES` bằng `SSH_USER`. Thử từ host:
+  `ssh -o BatchMode=yes -i /etc/ceph-ai-customer/ssh/id_ed25519 <SSH_USER>@<node> true`. Nếu báo
+  `Permission denied`, cần thêm public key vào `authorized_keys` của user đó trên node.
+- Ceph AI chỉ kết nối tới host có key trong `/var/lib/ceph-ai-customer/ssh/ceph_lab_known_hosts`.
+  `install` chép vào đó key mà host này đã xác minh (`/root/.ssh/known_hosts`), không tin mù. Node nào
+  chưa có key thì được liệt kê: xác minh nó (SSH một lần từ host), rồi chạy `ceph-ai-customer.sh trust-hosts`.
+
 ## Nâng cấp, sao lưu, quay lại
 
 ```sh

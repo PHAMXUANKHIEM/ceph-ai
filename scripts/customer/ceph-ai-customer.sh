@@ -5,6 +5,7 @@
 #   ceph-ai-customer.sh install   --image REF --ssh-key FILE [--old-env FILE] [--dashboard-bind ADDR:PORT]
 #   ceph-ai-customer.sh upgrade   --image REF
 #   ceph-ai-customer.sh rollback          (previous image; the database is NOT rolled back)
+#   ceph-ai-customer.sh trust-hosts       (copy the host's verified SSH host keys of the Ceph nodes)
 #   ceph-ai-customer.sh backup | status | start | stop
 #
 # REF is an approved digest, ghcr.io/<owner>/ceph-ai@sha256:<64 hex>. The stack is
@@ -104,7 +105,7 @@ preflight() {
   check root [ "$(id -u)" = 0 ]
   check image-reference valid_image "$IMAGE"
   local command
-  for command in podman curl openssl ss df sha256sum systemctl; do
+  for command in podman curl openssl ss df sha256sum systemctl ssh-keygen python3; do
     check "command.$command" command -v "$command"
   done
   check podman-compose "$PODMAN_COMPOSE" --version
@@ -140,8 +141,36 @@ ensure_network() {
   [ ! -f "$conflist" ] || python3 "$REPO_DIR/scripts/customer/cni_compat.py" "$conflist" \
     || die "cấu hình mạng CNI $conflist không dùng được với plugin CNI của máy"
 }
+release_stale_dns() {
+  # Podman 3.4's dnsname plugin runs one dnsmasq per network. On 10.2.0.94 (16/10/2026) one
+  # outlived `stop` while Podman lost track of it, and the next start failed with "dnsmasq:
+  # failed to create listening socket for 10.89.0.1: Address already in use". With no
+  # container left on the network, stop that network's dnsmasq and drop its state.
+  [ "$(podman info --format '{{.Host.NetworkBackend}}' 2>/dev/null)" = "netavark" ] && return 0
+  if podman ps -q --filter "network=$NETWORK" 2>/dev/null | grep -q .; then return 0; fi
+  local state="/run/containers/cni/dnsname/$NETWORK" pids
+  pids="$(ps -eo pid=,args= | awk -v conf="$state/dnsmasq.conf" '$2 ~ /dnsmasq$/ && index($0, conf) {print $1}')"
+  if [ -n "$pids" ]; then
+    say "dừng dnsmasq cũ của mạng $NETWORK (pid $pids)"
+    # shellcheck disable=SC2086
+    kill $pids 2>/dev/null || true
+    sleep 1
+  fi
+  rm -rf "$state"
+}
+dns_port_free() {
+  local gateway
+  gateway="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print(c["plugins"][0]["ipam"]["ranges"][0][0]["gateway"])' \
+             "/etc/cni/net.d/$NETWORK.conflist" 2>/dev/null)" || return 0
+  [ -n "$gateway" ] || return 0
+  if ss -lunpH "( sport = :53 )" | grep -F "$gateway:53" >&2; then
+    die "cổng DNS $gateway:53 của mạng $NETWORK đang bị tiến trình trên giữ; không khởi động"
+  fi
+}
 start_backends() {
   ensure_network
+  release_stale_dns
+  dns_port_free
   compose up -d postgres rabbitmq
   wait_for 120 PostgreSQL podman exec "$(container postgres)" pg_isready -U ceph_ai -d ceph_ai
   wait_for 180 RabbitMQ podman exec "$(container rabbitmq)" rabbitmq-diagnostics -q ping
@@ -284,6 +313,7 @@ generate_config() {
 cmd_install_start() {
   save_compose_env
   data_ownership
+  cmd_trust_hosts
   start_backends
   migrate
   say "khởi động ứng dụng"
@@ -366,7 +396,38 @@ cmd_start() {
   start_backends
   compose up -d "${APP_SERVICES[@]}"
 }
-cmd_stop() { load_compose_env; compose down; }
+cmd_stop() { load_compose_env; compose down; release_stale_dns; }
+
+node_hosts() {
+  # Every node the settings name (CEPH_*_NODES, CEPH_MON_HOSTNAMES): comma or space separated.
+  grep -E '^CEPH_[A-Z_]*(NODES|HOSTNAMES)=' "$ENV_FILE" | cut -d= -f2- | tr ', ' '\n\n' | sed '/^$/d' | sort -u
+}
+cmd_trust_hosts() {
+  # The application only connects to hosts whose key is in this file (paramiko RejectPolicy).
+  # Copy the keys this host already verified, never trust on first use: a node missing from
+  # /root/.ssh/known_hosts is reported, and the operator verifies it first.
+  [ -r "$ENV_FILE" ] || die "chưa có $ENV_FILE"
+  local source="${KNOWN_HOSTS_SOURCE:-/root/.ssh/known_hosts}" target="$DATA/ssh/ceph_lab_known_hosts"
+  local temporary host found=0 missing=()
+  install -d -m 0750 -o "$APP_UID" -g "$APP_UID" "$DATA/ssh"
+  temporary="$(mktemp "$DATA/ssh/.known_hosts.XXXXXX")"
+  [ ! -f "$target" ] || cat "$target" > "$temporary"
+  while read -r host; do
+    if [ -r "$source" ] && ssh-keygen -F "$host" -f "$source" > "$temporary.match" 2>/dev/null; then
+      grep -v '^#' "$temporary.match" >> "$temporary"; found=$((found + 1))
+    else
+      missing+=("$host")
+    fi
+  done < <(node_hosts)
+  rm -f "$temporary.match"
+  sort -u "$temporary" -o "$temporary"
+  chown "$APP_UID:$APP_UID" "$temporary"; chmod 0640 "$temporary"
+  mv "$temporary" "$target"
+  say "host key đã chép cho $found node vào $target"
+  if [ "${#missing[@]}" -gt 0 ]; then
+    printf 'CHƯA CÓ host key (xác minh rồi `ssh-keyscan` hoặc SSH một lần từ host, sau đó chạy lại trust-hosts): %s\n' "${missing[*]}" >&2
+  fi
+}
 cmd_status() {
   load_compose_env
   printf 'image: %s\ndashboard: %s\n' "$IMAGE" "$(local_url)"
@@ -384,5 +445,6 @@ case "$command" in
   start) cmd_start ;;
   stop) cmd_stop ;;
   status) cmd_status ;;
+  trust-hosts) cmd_trust_hosts ;;
   *) sed -n '2,15p' "$0"; exit 2 ;;
 esac

@@ -201,3 +201,53 @@ def test_the_stack_never_shares_host_dirs_with_an_older_install():
     for command in ("cmd_install_start() {", "cmd_upgrade() {", "cmd_start() {"):
         body = text.split(command, 1)[1].split("\n}\n", 1)[0]
         assert "data_ownership" in body, command
+
+
+def _function(name):
+    text = SCRIPT.read_text()
+    return text.split(f"{name}() {{", 1)[1].split("\n}\n", 1)[0]
+
+
+def test_a_stale_dnsmasq_of_the_stack_network_is_released_before_start_and_after_stop():
+    # 10.2.0.94, 16/10/2026: "dnsmasq: failed to create listening socket for 10.89.0.1:
+    # Address already in use" after stop + start.
+    backends = _function("start_backends")
+    assert backends.index("ensure_network") < backends.index("release_stale_dns") < backends.index("dns_port_free")
+    assert backends.index("dns_port_free") < backends.index("compose up")
+    assert "release_stale_dns" in SCRIPT.read_text().split("cmd_stop() {", 1)[1].split("\n", 1)[0]
+    release = _function("release_stale_dns")
+    assert 'network=$NETWORK' in release  # never while a container still uses the network
+    assert "pkill" not in release and "killall" not in release
+
+
+def test_host_keys_come_from_the_hosts_verified_known_hosts_never_from_a_scan():
+    trust = _function("cmd_trust_hosts")
+    assert "ssh-keygen -F" in trust and "/root/.ssh/known_hosts" in trust
+    assert "ssh-keyscan" not in trust.replace("`ssh-keyscan`", "")  # only mentioned to the operator
+    assert "ceph_lab_known_hosts" in trust
+    start = _function("cmd_install_start")
+    assert start.index("cmd_trust_hosts") < start.index("start_backends")
+
+
+def test_trust_hosts_copies_known_keys_and_reports_missing_ones(tmp_path):
+    data = tmp_path / "data"
+    (data / "config").mkdir(parents=True)
+    env = data / "config" / ".env"
+    env.write_text("CEPH_MON_NODES=192.0.2.10,192.0.2.11\nCEPH_OSD_NODES=192.0.2.11 192.0.2.12\nSSH_USER=root\n")
+    key = tmp_path / "id"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+    public = (tmp_path / "id.pub").read_text().split()[:2]
+    known = tmp_path / "known_hosts"
+    known.write_text(f"192.0.2.10 {' '.join(public)}\n192.0.2.12 {' '.join(public)}\n198.51.100.1 {' '.join(public)}\n")
+    script = SCRIPT.read_text()
+    harness = tmp_path / "harness.sh"
+    body = script.split("\ncommand=\"${1:-}\"", 1)[0]
+    harness.write_text(body.replace("DATA=/var/lib/ceph-ai-customer", f"DATA={data}")
+                       .replace('APP_UID=10001', f'APP_UID={__import__("os").getuid()}')
+                       + "\ncmd_trust_hosts\n")
+    result = subprocess.run(["bash", str(harness)], capture_output=True, text=True,
+                            env={"PATH": "/usr/bin:/bin", "KNOWN_HOSTS_SOURCE": str(known)})
+    assert result.returncode == 0, result.stderr
+    written = (data / "ssh" / "ceph_lab_known_hosts").read_text()
+    assert "192.0.2.10 " in written and "192.0.2.12 " in written and "198.51.100.1" not in written
+    assert "192.0.2.11" in result.stderr  # reported, not trusted
