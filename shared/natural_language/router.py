@@ -14,9 +14,12 @@ _MUTATION_TERMS = (
     "xoa", "tao", "tao moi", "resize", "restart", "repair", "delete",
     "create", "remove", "purge", "out osd", "in osd", "sua", "doi",
     "thay doi", "bat", "tat", "khoi phuc", "restore", "fix",
+    "deploy di", "deploy ngay", "merge", "rollback",
 )
 
 _INTENT_RULES: tuple[tuple[str, tuple[str, ...], str | None], ...] = (
+    # Ceph AI's own releases (deploy runner state), not deploying a Ceph cluster.
+    ("deploy_status", ("deploy", "release", "phat hanh", "ban moi", "ban dang chay"), "deploy"),
     ("explain_incident", ("incident", "su co", "postmortem", "root cause", "nguyen nhan"), "cluster"),
     ("recommend_action", ("de xuat", "khuyen nghi", "recommend", "nen lam gi", "cach xu ly", "goi y"), "cluster"),
     ("log_search", ("log", "logs", "nhat ky", "audit"), "log"),

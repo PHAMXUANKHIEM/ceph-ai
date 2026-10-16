@@ -82,6 +82,7 @@ _UNSUPPORTED_INTENT_MESSAGES = {
     "volume_insight": "Volume/RBD cần tool inventory riêng với pagination và cluster scope.",
     "log_search": "Log search cần query tool có giới hạn cursor và kích thước kết quả.",
     "backup_status": "Backup cần snapshot/status tool riêng để phân biệt stale và failed.",
+    "deploy_status": "Trạng thái deploy của Ceph AI đọc từ file của bộ chạy deploy (shared/deploy_status.py), không qua Ceph.",
 }
 
 
