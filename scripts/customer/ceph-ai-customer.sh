@@ -166,6 +166,9 @@ release_stale_dns() {
   for state in "/run/containers/cni/dnsname/$NETWORK" /run/user/*/containers/cni/dnsname/"$NETWORK"; do
     [ ! -e "$state" ] || rm -rf "$state"
   done
+  # Only now must the network's DNS port be free; while containers use the network, its own
+  # dnsmasq rightly holds it (the check used to run then too and refused a partial restart).
+  dns_port_free
 }
 dns_port_free() {
   local gateway
@@ -179,7 +182,6 @@ dns_port_free() {
 start_backends() {
   ensure_network
   release_stale_dns
-  dns_port_free
   compose up -d postgres rabbitmq
   wait_for 120 PostgreSQL podman exec "$(container postgres)" pg_isready -U ceph_ai -d ceph_ai
   wait_for 180 RabbitMQ podman exec "$(container rabbitmq)" rabbitmq-diagnostics -q ping
@@ -194,10 +196,31 @@ check_env_against_image() {
 }
 migrate() {
   say "migration"
-  compose run --rm dashboard-web python -m alembic upgrade head
+  # --no-deps: start_backends already started PostgreSQL and RabbitMQ. (podman-compose 1.0.6
+  # honours it for `run` but ignores it for `up`, which therefore prints two harmless
+  # 'container name "ceph-ai-customer_{postgres,rabbitmq}_1" is already in use' errors and
+  # then reuses the running containers; README, "Thông báo bình thường".)
+  compose run --rm --no-deps dashboard-web python -m alembic upgrade head
+}
+verify_images() {
+  # Every application container must run the image this command deployed. On 10.2.0.94
+  # (16/10/2026) an upgrade re-read the old image from compose.env, recreated everything on it
+  # and still passed the smoke test.
+  local want got service bad=0
+  want="$(podman image inspect "$IMAGE" --format '{{.Id}}')"
+  for service in "${APP_SERVICES[@]}"; do
+    got="$(podman inspect "$(container "$service")" --format '{{.Image}}' 2>/dev/null || echo missing)"
+    if [ "$got" = "$want" ]; then
+      printf 'IMAGE %-20s ok\n' "$service"
+    else
+      printf 'IMAGE %-20s SAI (%s)\n' "$service" "$got"; bad=$((bad + 1))
+    fi
+  done
+  [ "$bad" -eq 0 ] || die "$bad container không chạy image $IMAGE"
 }
 smoke() {
   say "kiểm tra sau khởi động"
+  verify_images
   wait_for 240 "Dashboard ($(local_url))" curl -fsS -o /dev/null "$(local_url)"
   sleep 45  # let a crash-looping service show itself
   local service bad=0 state restarts
@@ -362,17 +385,33 @@ cmd_upgrade() {
   local previous="$IMAGE"
   IMAGE="$target"
   preflight_upgrade
-  cmd_backup
+  # In a subshell: cmd_backup reloads compose.env, which would put the old image back into IMAGE
+  # (10.2.0.94, 16/10/2026: the upgrade then recreated everything on the old image).
+  (cmd_backup)
   podman pull "$IMAGE"
   check_env_against_image
-  data_ownership
-  migrate
   printf '%s\n' "$previous" > "$DATA/release-artifacts/previous-image-ref"
+  restart_on_image
+  say "nếu cần quay lại: CEPH_AI_ROLLBACK_ACK_COMPATIBLE_SCHEMA=yes $0 rollback"
+}
+restart_on_image() {
+  # The whole stack goes down and comes back on $IMAGE, the same path as install. Recreating
+  # only the application containers does not work with podman-compose 1.0.6: a new image
+  # changes the project's config hash, so `compose run` (migration) recreates PostgreSQL and
+  # RabbitMQ, cannot remove them while the application containers depend on them, and leaves
+  # them stopped (Podman 3.4 rehearsal, 16/10/2026).
+  say "dừng stack để chuyển sang $IMAGE"
+  compose down
+  release_stale_dns
   save_compose_env
-  say "tạo lại container ứng dụng"
-  compose up -d --force-recreate "${APP_SERVICES[@]}"
-  printf '%s\n' "$IMAGE" > "$DATA/release-artifacts/current-image-ref"
+  runtime_dir
+  data_ownership
+  start_backends
+  migrate
+  say "khởi động ứng dụng"
+  compose up -d "${APP_SERVICES[@]}"
   smoke
+  printf '%s\n' "$IMAGE" > "$DATA/release-artifacts/current-image-ref"
 }
 preflight_upgrade() {
   failures=0
@@ -392,10 +431,8 @@ cmd_rollback() {
   [ "${CEPH_AI_ROLLBACK_ACK_COMPATIBLE_SCHEMA:-}" = yes ] \
     || die "rollback không đảo migration; đặt CEPH_AI_ROLLBACK_ACK_COMPATIBLE_SCHEMA=yes nếu đã chắc schema tương thích"
   IMAGE="$previous"
-  save_compose_env
-  compose up -d --force-recreate "${APP_SERVICES[@]}"
-  printf '%s\n' "$IMAGE" > "$DATA/release-artifacts/current-image-ref"
-  smoke
+  podman pull "$IMAGE"
+  restart_on_image
 }
 
 cmd_start() {

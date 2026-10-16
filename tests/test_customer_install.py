@@ -198,7 +198,7 @@ def test_the_stack_never_shares_host_dirs_with_an_older_install():
         assert service.get("env_file") in (None, "/var/lib/ceph-ai-customer/config/.env") or name in ("postgres", "rabbitmq")
     text = SCRIPT.read_text()
     assert "DATA=/var/lib/ceph-ai-customer" in text and "RUN_DIR=/run/ceph-ai-customer" in text
-    for command in ("cmd_install_start() {", "cmd_upgrade() {", "cmd_start() {"):
+    for command in ("cmd_install_start() {", "restart_on_image() {", "cmd_start() {"):
         body = text.split(command, 1)[1].split("\n}\n", 1)[0]
         assert "data_ownership" in body, command
 
@@ -212,8 +212,10 @@ def test_a_stale_dnsmasq_of_the_stack_network_is_released_before_start_and_after
     # 10.2.0.94, 16/10/2026: "dnsmasq: failed to create listening socket for 10.89.0.1:
     # Address already in use" after stop + start.
     backends = _function("start_backends")
-    assert backends.index("ensure_network") < backends.index("release_stale_dns") < backends.index("dns_port_free")
-    assert backends.index("dns_port_free") < backends.index("compose up")
+    assert backends.index("ensure_network") < backends.index("release_stale_dns") < backends.index("compose up")
+    release_body = _function("release_stale_dns")
+    # The port is checked only after the "network still in use" early return.
+    assert release_body.index("network=$NETWORK") < release_body.index("dns_port_free")
     assert "release_stale_dns" in SCRIPT.read_text().split("cmd_stop() {", 1)[1].split("\n", 1)[0]
     release = _function("release_stale_dns")
     assert 'network=$NETWORK' in release  # never while a container still uses the network
@@ -261,3 +263,77 @@ def test_every_run_uses_one_runtime_dir_and_stale_dnsmasq_is_found_in_either():
     release = _function("release_stale_dns")
     assert 'conf="containers/cni/dnsname/$NETWORK/dnsmasq.conf"' in release
     assert "/run/user/*/containers/cni/dnsname/" in release and "/run/containers/cni/dnsname/" in release
+
+
+def _harness(tmp_path, extra):
+    body = SCRIPT.read_text().split('\ncommand="${1:-}"', 1)[0]
+    harness = tmp_path / "harness.sh"
+    harness.write_text(body + "\n" + extra)
+    return subprocess.run(["bash", str(harness)], capture_output=True, text=True)
+
+
+def test_upgrade_deploys_the_requested_image_and_checks_the_containers_run_it(tmp_path):
+    # 10.2.0.94, 16/10/2026: cmd_backup reloaded compose.env inside cmd_upgrade, so the upgrade
+    # pulled and recreated everything on the OLD image and the smoke test still passed.
+    old = "ghcr.io/x/ceph-ai@sha256:" + "1" * 64
+    new = "ghcr.io/x/ceph-ai@sha256:" + "2" * 64
+    conf, data, log = tmp_path / "conf", tmp_path / "data", tmp_path / "calls.log"
+    conf.mkdir()
+    (data / "release-artifacts").mkdir(parents=True)
+    (conf / "compose.env").write_text(f"CEPH_AI_IMAGE={old}\nCEPH_AI_DASHBOARD_BIND=0.0.0.0:8001\n")
+    result = _harness(tmp_path, f"""
+CONF={conf}; DATA={data}; ENV_FILE={data}/config/.env
+log() {{ printf '%s\\n' "$*" >> {log}; }}
+podman() {{
+  log "podman $*"
+  case "$1 $2" in
+    "image inspect") echo "id-of-$3" ;;
+    "inspect "*) echo "id-of-$(sed -n 's/^CEPH_AI_IMAGE=//p' {conf}/compose.env)" ;;
+  esac
+}}
+compose() {{ log "compose image=$IMAGE $*"; }}
+preflight_upgrade() {{ :; }}; check_env_against_image() {{ :; }}; data_ownership() {{ :; }}; migrate() {{ :; }}
+runtime_dir() {{ :; }}; release_stale_dns() {{ :; }}; start_backends() {{ log "backends image=$IMAGE"; }}
+cmd_backup() {{ load_compose_env; log "backup image=$IMAGE"; }}
+say() {{ :; }}
+smoke() {{ verify_images; }}
+IMAGE="{new}"
+APP_SERVICES=(worker)
+cmd_upgrade
+""")
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = log.read_text()
+    assert f"podman pull {new}" in calls and f"podman pull {old}" not in calls
+    assert f"compose image={new} up -d worker" in calls and f"backends image={new}" in calls
+    assert calls.index("compose image=") < calls.index(f"backends image={new}")  # the stack went down first
+    assert f"CEPH_AI_IMAGE={new}" in (conf / "compose.env").read_text()
+    assert (data / "release-artifacts" / "current-image-ref").read_text().strip() == new
+    assert (data / "release-artifacts" / "previous-image-ref").read_text().strip() == old
+    assert "IMAGE worker" in result.stdout
+
+
+def test_a_container_on_the_wrong_image_fails_the_check(tmp_path):
+    result = _harness(tmp_path, """
+podman() { case "$1 $2" in "image inspect") echo new-id ;; "inspect "*) echo old-id ;; esac; }
+IMAGE=ghcr.io/x/ceph-ai@sha256:""" + "2" * 64 + """
+APP_SERVICES=(worker dashboard-web)
+verify_images
+""")
+    assert result.returncode != 0 and "SAI (old-id)" in result.stdout and "2 container" in result.stderr
+
+
+def test_the_install_is_marked_done_only_after_the_image_check():
+    text = SCRIPT.read_text()
+    smoke = text.split("smoke() {", 1)[1].split("\n}\n", 1)[0]
+    assert smoke.index("verify_images") < smoke.index("wait_for")
+    restart = text.split("restart_on_image() {", 1)[1].split("\n}\n", 1)[0]
+    assert restart.index("compose down") < restart.index("start_backends") < restart.index("migrate")
+    assert restart.index("smoke") < restart.index("current-image-ref")
+    for command in ("cmd_upgrade() {", "cmd_rollback() {"):
+        assert "restart_on_image" in text.split(command, 1)[1].split("\n}\n", 1)[0], command
+    assert "--force-recreate" not in text
+
+
+def test_the_migration_never_recreates_the_running_backends():
+    # podman-compose 1.0.6 honours --no-deps for `run` (it ignores it for `up`).
+    assert "compose run --rm --no-deps dashboard-web" in SCRIPT.read_text()
