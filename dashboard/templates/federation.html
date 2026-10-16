@@ -28,7 +28,7 @@
           <button type="button" class="btn btn-reject" id="fed-forget">Huỷ đăng ký trên máy này</button>
         </div>
         {% else %}
-        {% if not status.enroll_login_ready %}<p class="hint">Thiếu file mật khẩu đăng ký (có trong gói cài đặt); hãy chép file đó vào trước khi nhập mã.</p>{% endif %}
+        {% if not status.enroll_login_ready %}<p class="hint">Chưa có file mật khẩu đăng ký do nhà cung cấp gửi. Trên máy cài bằng bộ cài khách, chạy trên host: <code>scripts/customer/ceph-ai-customer.sh enroll-password &lt; &lt;file&gt;</code>, rồi tải lại trang và nhập mã.</p>{% endif %}
         <form id="fed-enroll-form">
           <label>Mã kích hoạt <input type="text" id="fed-code" placeholder="CAI-XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false"></label>
           <button type="submit" class="btn btn-primary">Kích hoạt</button>

@@ -337,3 +337,26 @@ def test_the_install_is_marked_done_only_after_the_image_check():
 def test_the_migration_never_recreates_the_running_backends():
     # podman-compose 1.0.6 honours --no-deps for `run` (it ignores it for `up`).
     assert "compose run --rm --no-deps dashboard-web" in SCRIPT.read_text()
+
+
+def test_enroll_password_is_stored_privately_from_stdin(tmp_path):
+    data = tmp_path / "data"
+    (data / "config").mkdir(parents=True)
+    import os
+    result = _harness(tmp_path, f"DATA={data}\nAPP_UID={os.getuid()}\nsay() {{ echo \"$*\"; }}\ncmd_enroll_password\n")
+    assert result.returncode != 0  # empty stdin is refused
+    harness = tmp_path / "harness.sh"
+    good = subprocess.run(["bash", str(harness)], input="a" * 32 + "\n", capture_output=True, text=True)
+    assert good.returncode == 0, good.stderr
+    stored = data / "config" / "federation-enroll.pass"
+    assert stored.read_text() == "a" * 32 + "\n" and stat.S_IMODE(stored.stat().st_mode) == 0o600
+    assert "a" * 32 not in good.stdout + good.stderr  # never echoed
+    bad = subprocess.run(["bash", str(harness)], input="short\n", capture_output=True, text=True)
+    assert bad.returncode != 0
+
+
+def test_trust_hosts_targets_node_addresses_not_mon_hostnames():
+    node_hosts = _function("node_hosts")
+    grep_line = next(line for line in node_hosts.splitlines() if "grep -E" in line)
+    assert "_NODES=" in grep_line and "HOSTNAMES" not in grep_line
+    assert "session.query(Cluster)" in node_hosts  # every cluster added in the Dashboard
