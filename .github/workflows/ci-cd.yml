@@ -383,6 +383,54 @@ jobs:
           path: artifacts/
           if-no-files-found: warn
 
+  customer-install:
+    # Plan readiness-gap-review R8.7 (16/10/2026): the customer installer took seven rounds of
+    # fixes on 10.2.0.94 (Ubuntu 22.04, Podman 3.4). Every PR that touches it now runs the
+    # sequence that broke there on each supported OS, in a privileged container: install the
+    # previous released image, upgrade, rollback, upgrade, stop/start across SSH-like and
+    # systemd-like sessions, backup (scripts/customer/ci_rehearsal.sh). Other PRs skip it.
+    name: customer-install (${{ matrix.os.name }})
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - name: ubuntu-22.04-podman-3.4
+            image: docker.io/library/ubuntu@sha256:08ea48a03a3e78ebc7cd526e6a275053223aadd88bfc09cc49b06d5281525fde
+          - name: ubuntu-24.04
+            image: docker.io/library/ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+          - name: rocky-9
+            image: docker.io/rockylinux/rockylinux@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Run only when the customer installer changed
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base="${BASE_SHA:-origin/main}"
+          if git diff --name-only "$base"...HEAD | grep -qE '^(deploy/customer/|scripts/customer/|\.github/workflows/ci-cd\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No customer installer change; rehearsal skipped."
+          fi
+
+      - name: Pick two released images
+        if: steps.changes.outputs.run == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 scripts/customer/ci_released_images.py "${BASE_SHA:-origin/main}" >> "$GITHUB_ENV"
+
+      - name: Rehearse the installer
+        if: steps.changes.outputs.run == 'true'
+        run: bash scripts/customer/ci_rehearsal.sh "${{ matrix.os.image }}" "$OLD_IMAGE" "$NEW_IMAGE"
+
   release_gate:
     # Release evidence requires the MQ integration suite as well: a release
     # must never be recorded while integration is failing or still running.
