@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Icinga/Nagios plugin for a Ceph cluster, run with a read-only Ceph user (plan icinga I1).
+
+    check_ceph_cluster --conf /etc/icinga2/ceph/CS-STAGING/ceph.conf --id icinga \
+        --keyring /etc/icinga2/ceph/CS-STAGING/keyring health|capacity|osd|pg|mon [--warning 75 --critical 85]
+
+Exit codes follow the plugin API: 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN. The first output line is
+the summary, then `| perfdata`; `health` lists every health check code on the following lines,
+which is what Ceph AI reads back when Icinga notifies it. Standard library only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess  # nosec B404 - runs the local ceph CLI with fixed arguments
+import sys
+
+OK, WARNING, CRITICAL, UNKNOWN = 0, 1, 2, 3
+_LABEL = {OK: "OK", WARNING: "WARNING", CRITICAL: "CRITICAL", UNKNOWN: "UNKNOWN"}
+
+
+class CephError(RuntimeError):
+    pass
+
+
+def ceph(args: argparse.Namespace, *command: str) -> dict:
+    argv = ["ceph", "--conf", args.conf, "--id", args.id, "--keyring", args.keyring,
+            "--connect-timeout", str(args.timeout), *command, "--format", "json"]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=args.timeout + 5)  # nosec B603
+    except subprocess.TimeoutExpired as exc:
+        raise CephError(f"ceph {' '.join(command)}: timeout after {args.timeout}s") from exc
+    except FileNotFoundError as exc:
+        raise CephError("ceph CLI not installed (ceph-common)") from exc
+    if result.returncode != 0:
+        raise CephError(f"ceph {' '.join(command)}: {(result.stderr or result.stdout).strip()[:300]}")
+    try:
+        return json.loads(result.stdout or "{}")
+    except ValueError as exc:
+        raise CephError(f"ceph {' '.join(command)}: not JSON") from exc
+
+
+def check_health(args) -> tuple[int, str, str, list[str]]:
+    data = ceph(args, "health", "detail")
+    status = data.get("status", "HEALTH_UNKNOWN")
+    checks = data.get("checks") or {}
+    code = {"HEALTH_OK": OK, "HEALTH_WARN": WARNING, "HEALTH_ERR": CRITICAL}.get(status, UNKNOWN)
+    lines = [f"{name} ({check.get('severity', '?')}): {(check.get('summary') or {}).get('message', '')}"
+             for name, check in sorted(checks.items())]
+    summary = status if not checks else f"{status}: {', '.join(sorted(checks))}"
+    return code, summary, f"checks={len(checks)}", lines
+
+
+def check_capacity(args) -> tuple[int, str, str, list[str]]:
+    stats = (ceph(args, "df").get("stats") or {})
+    total, used = stats.get("total_bytes") or 0, stats.get("total_used_raw_bytes") or 0
+    if not total:
+        raise CephError("ceph df: no total_bytes")
+    percent = 100.0 * used / total
+    code = CRITICAL if percent >= args.critical else WARNING if percent >= args.warning else OK
+    return (code, f"raw used {percent:.1f}% of {total / 2**40:.2f} TiB",
+            f"used_percent={percent:.2f}%;{args.warning};{args.critical};0;100 used_bytes={used}B", [])
+
+
+def check_osd(args) -> tuple[int, str, str, list[str]]:
+    data = ceph(args, "osd", "stat")
+    data = data.get("osdmap", data)  # older releases nest it
+    total, up, in_ = data.get("num_osds", 0), data.get("num_up_osds", 0), data.get("num_in_osds", 0)
+    down, out = total - up, total - in_
+    code = OK if down == 0 and out == 0 else CRITICAL if down > args.critical_down else WARNING
+    return (code, f"{up}/{total} up, {in_}/{total} in",
+            f"osds={total} up={up} in={in_} down={down};0;{args.critical_down + 1}", [])
+
+
+def check_pg(args) -> tuple[int, str, str, list[str]]:
+    data = ceph(args, "pg", "stat")
+    data = data.get("pg_summary", data)
+    states = {item["name"]: item["num"] for item in data.get("num_pg_by_state") or []}
+    total = data.get("num_pgs") or sum(states.values())
+    clean = states.get("active+clean", 0)
+    inactive = sum(num for name, num in states.items() if "active" not in name.split("+"))
+    code = CRITICAL if inactive else WARNING if clean != total else OK
+    lines = [f"{num} {name}" for name, num in sorted(states.items(), key=lambda item: -item[1])]
+    return (code, f"{clean}/{total} active+clean, {inactive} inactive",
+            f"pgs={total} active_clean={clean} not_clean={total - clean} inactive={inactive}", lines)
+
+
+def check_mon(args) -> tuple[int, str, str, list[str]]:
+    data = ceph(args, "quorum_status")
+    members = (data.get("monmap") or {}).get("mons") or []
+    quorum = data.get("quorum_names") or []
+    total, present = len(members), len(quorum)
+    missing = sorted({mon.get("name") for mon in members} - set(quorum))
+    code = OK if present == total else CRITICAL if present <= total // 2 else WARNING
+    return (code, f"quorum {present}/{total}" + (f", out: {', '.join(missing)}" if missing else ""),
+            f"mons={total} in_quorum={present}", [])
+
+
+CHECKS = {"health": check_health, "capacity": check_capacity, "osd": check_osd, "pg": check_pg, "mon": check_mon}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("check", choices=sorted(CHECKS))
+    parser.add_argument("--conf", required=True)
+    parser.add_argument("--id", default="icinga")
+    parser.add_argument("--keyring", required=True)
+    parser.add_argument("--timeout", type=int, default=20)
+    parser.add_argument("--warning", type=float, default=75.0, help="capacity: raw used %% for WARNING")
+    parser.add_argument("--critical", type=float, default=85.0, help="capacity: raw used %% for CRITICAL")
+    parser.add_argument("--critical-down", type=int, default=1, help="osd: more than this many down is CRITICAL")
+    args = parser.parse_args(argv)
+    try:
+        code, summary, perfdata, lines = CHECKS[args.check](args)
+    except CephError as exc:
+        print(f"UNKNOWN - {exc}")
+        return UNKNOWN
+    print(f"{_LABEL[code]} - {summary}" + (f" | {perfdata}" if perfdata else ""))
+    for line in lines:
+        print(line)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
