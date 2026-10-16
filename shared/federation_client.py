@@ -43,6 +43,9 @@ _CODE_RE = re.compile(r"^CAI(-[A-Z0-9]{4}){5}$")
 _INBOX_RE = re.compile(r"^inbox\.(c_[0-9a-f]{12})$")
 _LOGIN_RE = re.compile(r"^cust_[0-9a-f]{12}$")
 _CONNECT_TIMEOUT_SECONDS = 10
+# What a payload key may look like once reduced (codes, action ids, statuses, severities).
+_BASE_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+_IPV4_RE = re.compile(r"(?<![0-9])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9])")
 
 
 class FederationError(ValueError):
@@ -146,8 +149,10 @@ def enroll(code: str) -> dict[str, Any]:
         raise FederationError("Bản cài này đã đăng ký; bấm \"Huỷ đăng ký trên máy này\" trước khi dùng mã khác.")
     password = _enroll_password()
     if password is None:
-        raise FederationError(f"Thiếu file mật khẩu đăng ký {settings.federation_enroll_password_file} "
-                              "(có trong gói cài đặt).")
+        raise FederationError(
+            f"Thiếu file mật khẩu đăng ký ({settings.federation_enroll_password_file} trong container). "
+            "Trên máy cài bằng bộ cài khách, chạy trên host: "
+            "scripts/customer/ceph-ai-customer.sh enroll-password < <file mật khẩu nhà cung cấp gửi>.")
     try:
         with _connect(ENROLL_USER, password) as connection:
             row = connection.execute("SELECT customer_id, login, password, inbox_table, tier "
@@ -168,6 +173,20 @@ def enroll(code: str) -> dict[str, Any]:
 
 # --- payload --------------------------------------------------------------------------
 
+def base_code(value: str | None) -> str:
+    """The generic part of a code. Incident codes may carry a node, an OSD id or a hash after
+    ':' ("NODE_UNREACHABLE:10.2.0.83" left 10.2.0.94 on 16/10/2026); only the part before it,
+    and only when it looks like a code, may leave the install."""
+    head = str(value or "").split(":", 1)[0].strip()
+    return head if _BASE_CODE_RE.match(head) else "OTHER"
+
+
+def assert_anonymous(payload: dict[str, Any]) -> None:
+    """Last check before sending: no IPv4 address anywhere in the payload."""
+    text = json.dumps(payload, ensure_ascii=False)
+    if _IPV4_RE.search(text):
+        raise FederationError("Dữ liệu gửi đi có địa chỉ IP; đã chặn, không gửi.")
+
 def build_payload(session=None) -> dict[str, Any]:
     """Counts only: the operator sees exactly this before anything is sent."""
     since = utc_now() - timedelta(hours=WINDOW_HOURS)
@@ -183,14 +202,14 @@ def build_payload(session=None) -> dict[str, Any]:
             session.close()
     by_action: dict[str, Counter] = defaultdict(Counter)
     for action_id, classification, status in actions:
-        by_action[f"{action_id} ({classification})"][status] += 1
+        by_action[f"{base_code(action_id)} ({base_code(classification)})"][base_code(status)] += 1
     return {
         "payload_version": PAYLOAD_VERSION,
         "generated_at": utc_now().isoformat(timespec="seconds") + "Z",
         "window_hours": WINDOW_HOURS,
         "clusters": clusters,
-        "incidents_by_code": dict(sorted(Counter(code for code, _ in incidents).items())),
-        "incidents_by_severity": dict(sorted(Counter(severity or "unknown" for _, severity in incidents).items())),
+        "incidents_by_code": dict(sorted(Counter(base_code(code) for code, _ in incidents).items())),
+        "incidents_by_severity": dict(sorted(Counter(base_code(severity or "unknown") for _, severity in incidents).items())),
         "actions": {key: dict(sorted(value.items())) for key, value in sorted(by_action.items())},
     }
 
@@ -200,6 +219,7 @@ def push(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     if not enrolled(state):
         raise FederationError("Bản cài này chưa đăng ký federation.")
     payload = payload if payload is not None else build_payload()
+    assert_anonymous(payload)
     match = _INBOX_RE.match(state["inbox_table"])
     if match is None:  # enrolled() checked it; keeps mypy and a hand-edited file honest
         raise FederationError("Tài khoản federation đã lưu không hợp lệ; hãy huỷ đăng ký và kích hoạt lại.")

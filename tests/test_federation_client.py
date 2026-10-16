@@ -149,3 +149,43 @@ def test_non_admins_cannot_use_federation(dashboard_client, server, monkeypatch)
     monkeypatch.setattr(auth, "is_admin_user", lambda user: False)
     assert dashboard_client.get("/federation").status_code == 403
     assert dashboard_client.post("/api/federation/enroll", json={"code": CODE}).status_code == 403
+
+
+def test_codes_lose_their_node_osd_and_hash_suffixes(admin):
+    # 10.2.0.94, 16/10/2026: "NODE_UNREACHABLE:10.2.0.83" left the install in incidents_by_code.
+    with db_module.SessionLocal() as session:
+        for code in ("NODE_UNREACHABLE:10.2.0.83", "OSD_LATENCY_HIGH:6", "OSD_LATENCY_HIGH:7",
+                     "LOG_ANOMALY:04bf3a07e15d", "DAEMON_OLD_VERSION", "weird code; drop table"):
+            session.add(Incident(ceph_code=code, severity="HEALTH_WARN", detected_at=utc_now()))
+        session.commit()
+
+    payload = admin.get("/api/federation/preview").json()
+
+    assert payload["incidents_by_code"] == {"DAEMON_OLD_VERSION": 1, "LOG_ANOMALY": 1, "NODE_UNREACHABLE": 1,
+                                            "OSD_LATENCY_HIGH": 2, "OTHER": 1}
+    text = json.dumps(payload)
+    assert "10.2.0.83" not in text and "04bf3a07e15d" not in text and ":6" not in text
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("NODE_UNREACHABLE:10.2.0.83", "NODE_UNREACHABLE"), ("OSD_LATENCY_HIGH:6", "OSD_LATENCY_HIGH"),
+    ("restart_osd", "restart_osd"), ("", "OTHER"), (None, "OTHER"), ("10.2.0.83", "OTHER"), ("x" * 80, "OTHER"),
+])
+def test_base_code(value, expected):
+    assert federation_client.base_code(value) == expected
+
+
+def test_a_payload_with_an_ip_is_never_sent(admin, server):
+    admin.post("/api/federation/enroll", json={"code": CODE})
+    calls_before = len(server.calls)
+
+    with pytest.raises(federation_client.FederationError, match="địa chỉ IP"):
+        federation_client.push({"payload_version": 1, "incidents_by_code": {"X": 1}, "note": "10.2.0.83"})
+
+    assert len(server.calls) == calls_before  # nothing reached the server
+
+
+def test_the_missing_password_message_tells_a_customer_host_what_to_run(admin, server, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "federation_enroll_password_file", str(tmp_path / "missing"))
+    detail = admin.post("/api/federation/enroll", json={"code": CODE}).json()["detail"]
+    assert "ceph-ai-customer.sh enroll-password" in detail

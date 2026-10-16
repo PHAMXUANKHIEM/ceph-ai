@@ -6,6 +6,7 @@
 #   ceph-ai-customer.sh upgrade   --image REF
 #   ceph-ai-customer.sh rollback          (previous image; the database is NOT rolled back)
 #   ceph-ai-customer.sh trust-hosts       (copy the host's verified SSH host keys of the Ceph nodes)
+#   ceph-ai-customer.sh enroll-password < FILE   (federation enrollment password the vendor sends)
 #   ceph-ai-customer.sh backup | status | start | stop
 #
 # REF is an approved digest, ghcr.io/<owner>/ceph-ai@sha256:<64 hex>. The stack is
@@ -45,6 +46,7 @@ fi
 
 IMAGE=""
 SSH_KEY=""
+ENROLL_PASSWORD_FILE=""
 OLD_ENV=""
 DASHBOARD_BIND="0.0.0.0:8000"
 
@@ -85,6 +87,7 @@ parse_args() {
     case "$1" in
       --image) IMAGE="${2:-}"; shift 2 ;;
       --ssh-key) SSH_KEY="${2:-}"; shift 2 ;;
+      --enroll-password-file) ENROLL_PASSWORD_FILE="${2:-}"; shift 2 ;;
       --old-env) OLD_ENV="${2:-}"; shift 2 ;;
       --dashboard-bind) DASHBOARD_BIND="${2:-}"; shift 2 ;;
       *) die "tham số lạ: $1" ;;
@@ -297,6 +300,7 @@ cmd_install() {
   fi
   [ -r "$SSH_KEY" ] || die "--ssh-key phải là file khoá SSH đọc được"
   [ -z "$OLD_ENV" ] || [ -r "$OLD_ENV" ] || die "--old-env không đọc được"
+  [ -z "$ENROLL_PASSWORD_FILE" ] || [ -r "$ENROLL_PASSWORD_FILE" ] || die "--enroll-password-file không đọc được"
   preflight
 
   say "thư mục và quyền"
@@ -345,6 +349,7 @@ generate_config() {
 cmd_install_start() {
   save_compose_env
   data_ownership
+  if [ -n "$ENROLL_PASSWORD_FILE" ]; then cmd_enroll_password < "$ENROLL_PASSWORD_FILE"; fi
   cmd_trust_hosts
   start_backends
   migrate
@@ -445,8 +450,36 @@ cmd_start() {
 cmd_stop() { load_compose_env; compose down; release_stale_dns; }
 
 node_hosts() {
-  # Every node the settings name (CEPH_*_NODES, CEPH_MON_HOSTNAMES): comma or space separated.
-  grep -E '^CEPH_[A-Z_]*(NODES|HOSTNAMES)=' "$ENV_FILE" | cut -d= -f2- | tr ', ' '\n\n' | sed '/^$/d' | sort -u
+  # SSH targets of every cluster: the default one in the settings (CEPH_*_NODES; not
+  # CEPH_MON_HOSTNAMES, which only names MONs and maps them to these addresses) and, while the
+  # stack runs, every cluster added in the Dashboard (10.2.0.94 runs two, 16/10/2026).
+  {
+    grep -E '^CEPH_[A-Z_]*_NODES=' "$ENV_FILE" | cut -d= -f2-
+    if podman container exists "$(container dashboard-web)" 2>/dev/null \
+       && [ "$(podman inspect "$(container dashboard-web)" --format '{{.State.Running}}' 2>/dev/null)" = true ]; then
+      podman exec "$(container dashboard-web)" python -c '
+from shared import db
+from shared.models import Cluster
+with db.SessionLocal() as session:
+    for c in session.query(Cluster):
+        print(c.ceph_mon_nodes, c.ceph_mgr_nodes, c.ceph_osd_nodes, c.ceph_rgw_nodes)
+' 2>/dev/null || true
+    fi
+  } | tr ', ' '\n\n' | sed '/^$/d' | sort -u
+}
+cmd_enroll_password() {
+  # The vendor's federation enrollment password, read from stdin (never an argument) and
+  # stored where the Dashboard reads it: /var/lib/ceph-ai/config/federation-enroll.pass in the
+  # containers. Re-running replaces it.
+  local target="$DATA/config/federation-enroll.pass" temporary password
+  [ -d "$DATA/config" ] || die "chưa cài ($DATA/config không có)"
+  IFS= read -r password || true
+  [[ "$password" =~ ^[[:graph:]]{16,128}$ ]] || die "mật khẩu đăng ký phải là một dòng 16–128 ký tự, không khoảng trắng"
+  temporary="$(mktemp "$DATA/config/.federation-enroll.XXXXXX")"
+  printf '%s\n' "$password" > "$temporary"
+  chown "$APP_UID:$APP_UID" "$temporary"; chmod 0600 "$temporary"
+  mv "$temporary" "$target"
+  say "đã lưu mật khẩu đăng ký federation vào $target"
 }
 cmd_trust_hosts() {
   # The application only connects to hosts whose key is in this file (paramiko RejectPolicy).
@@ -492,5 +525,6 @@ case "$command" in
   stop) cmd_stop ;;
   status) cmd_status ;;
   trust-hosts) cmd_trust_hosts ;;
+  enroll-password) cmd_enroll_password ;;
   *) sed -n '2,15p' "$0"; exit 2 ;;
 esac

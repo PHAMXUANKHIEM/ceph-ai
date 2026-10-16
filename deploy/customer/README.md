@@ -93,5 +93,12 @@ Kết quả thật là các dòng `IMAGE … ok` (container chạy đúng image)
 | `/etc/ceph-ai-customer/` (0700) | `postgres.env`, `rabbitmq.env`, `compose.env`, `ssh/id_ed25519` |
 | `/var/backups/ceph-ai/` | bản dump DB |
 
-Federation (`/federation` trên Dashboard) còn cần file `/var/lib/ceph-ai-customer/config/federation-enroll.pass` (chủ 10001, 0600),
-do nhà cung cấp gửi riêng.
+Federation (`/federation` trên Dashboard) cần mật khẩu đăng ký do nhà cung cấp gửi riêng. Đưa vào lúc cài
+(`install … --enroll-password-file <file>`) hoặc sau đó:
+
+```sh
+ceph-ai-customer.sh enroll-password < <file>     # lưu vào /var/lib/ceph-ai-customer/config/federation-enroll.pass (10001, 0600)
+```
+
+Rồi admin nhập mã kích hoạt ở trang `/federation`. Chỉ số đếm được gửi đi: mã sự cố bị rút về phần chung
+(`NODE_UNREACHABLE`, không kèm IP hay số OSD), và lệnh gửi từ chối mọi payload còn địa chỉ IP.
