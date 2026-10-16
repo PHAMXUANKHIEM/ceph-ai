@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,14 +30,26 @@ def record(service: str) -> None:
     directory = runtime_dir()
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / f"{service}.json"
-    temporary = directory / f".{service}.{os.getpid()}.tmp"
-    temporary.write_text(json.dumps({
+    payload = json.dumps({
         "service": service,
         "pid": os.getpid(),
         "pid_namespace": _pid_namespace(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
-    }), encoding="utf-8")
-    os.replace(temporary, target)
+    })
+    # The main loop and LivenessGuard may record the same service at once.
+    # A PID-only temporary name lets one writer remove the other's source.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=directory,
+            prefix=f".{service}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(payload)
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def record_safe(service: str) -> bool:
