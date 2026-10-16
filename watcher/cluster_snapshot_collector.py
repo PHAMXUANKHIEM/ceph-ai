@@ -291,8 +291,32 @@ def collect_and_publish_status(
     return status
 
 
+POOL_CONFIG_TTL_SECONDS = 1800
+
+
 def _collect_pool_rows(cluster) -> list[dict]:
+    if settings.ceph_pool_usage_from_mgr and getattr(cluster, "is_default", False):
+        rows = _pool_rows_from_mgr(cluster)
+        if rows is not None:
+            return rows
     return collect_pool_rows(cluster)
+
+
+def _pool_rows_from_mgr(cluster) -> list[dict] | None:
+    """Cached pool configuration (until the osdmap moves) plus usage/IO from the mgr; None = use the old path."""
+    from watcher import inventory_queries, mgr_pool_metrics
+
+    config = _reused_fact(cluster, "pool config", inventory_queries.collect_pool_config,
+                          POOL_CONFIG_TTL_SECONDS, version=_map_epochs(cluster))
+    if not isinstance(config, tuple):
+        return None
+    pools = mgr_pool_metrics.fetch_pools()
+    if pools is None:
+        return None
+    rows = inventory_queries.pool_rows_from(config, *mgr_pool_metrics.payloads(pools, monotonic()))
+    if any(row["name"] not in pools for row in rows):
+        return None  # a pool the mgr does not report yet (just created): read everything the old way
+    return rows
 
 
 def _collect_pg_rows(cluster) -> list[dict]:
