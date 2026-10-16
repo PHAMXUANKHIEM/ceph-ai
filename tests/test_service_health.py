@@ -1,5 +1,8 @@
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Barrier
 
 from shared import service_health
 
@@ -13,6 +16,24 @@ def test_service_health_records_live_process(tmp_path, monkeypatch):
     assert result["healthy"] is True
     assert result["pid"] is not None
     assert result["pid_alive"] is True
+
+
+def test_concurrent_heartbeat_writers_use_distinct_temporary_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("CEPH_AI_RUNTIME_DIR", str(tmp_path))
+    barrier = Barrier(2)
+    original_replace = os.replace
+
+    def concurrent_replace(source, target):
+        barrier.wait(timeout=5)
+        original_replace(source, target)
+
+    monkeypatch.setattr(service_health.os, "replace", concurrent_replace)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(service_health.record_safe, ["remediation-watcher"] * 2))
+
+    assert results == [True, True]
+    assert service_health.status("remediation-watcher")["healthy"] is True
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_service_health_rejects_stale_file(tmp_path, monkeypatch):
