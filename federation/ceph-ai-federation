@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Manage Ceph AI customer activation codes and customers in ceph_ai_federation (run as root on the SQL node).
+
+    ceph-ai-federation create-code "Công ty ABC" [--tier basic|vip] [--days 30]
+    ceph-ai-federation list
+    ceph-ai-federation revoke-codes "Công ty ABC"
+    ceph-ai-federation disable <customer-id> | enable <customer-id>
+    ceph-ai-federation set-tier <customer-id> basic|vip
+
+A code is printed once and stored only as a SHA-256 hash (federation/schema.sql, enroll()).
+Every value reaches SQL as a psql variable, never by string concatenation.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import re
+import secrets
+import subprocess
+import sys
+
+DATABASE = "ceph_ai_federation"
+ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
+TIERS = ("basic", "vip")
+_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+
+
+def psql(sql: str, **variables: str) -> str:
+    command = ["sudo", "-u", "postgres", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-At", "-F", " | ", "-d", DATABASE]
+    for name, value in variables.items():
+        command += ["-v", f"{name}={value}"]
+    result = subprocess.run(command, input=sql, capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.exit(result.stderr.strip() or "psql failed")
+    return result.stdout.strip()
+
+
+def new_code() -> str:
+    groups = ["".join(secrets.choice(ALPHABET) for _ in range(4)) for _ in range(5)]
+    return "CAI-" + "-".join(groups)
+
+
+def create_code(name: str, tier: str, days: int) -> None:
+    code = new_code()
+    digest = hashlib.sha256(code.upper().encode()).hexdigest()
+    psql("INSERT INTO registry.enrollment_codes (code_sha256, customer_name, tier, expires_at) "
+         "VALUES (:'digest', :'name', :'tier', now() + make_interval(days => :days));",
+         digest=digest, name=name, tier=tier, days=str(days))
+    print(f"Mã kích hoạt cho {name!r} (gói {tier}, hết hạn sau {days} ngày, dùng 1 lần):\n\n    {code}\n")
+    print("Mã chỉ hiện lần này; DB chỉ lưu bản băm.")
+
+
+def customer_id(value: str) -> str:
+    if not _ID_RE.match(value):
+        sys.exit(f"customer id không hợp lệ: {value!r}")
+    return value
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+    create = sub.add_parser("create-code")
+    create.add_argument("name")
+    create.add_argument("--tier", choices=TIERS, default="basic")
+    create.add_argument("--days", type=int, default=30)
+    sub.add_parser("list")
+    revoke = sub.add_parser("revoke-codes")
+    revoke.add_argument("name")
+    for command in ("disable", "enable"):
+        sub.add_parser(command).add_argument("id")
+    tier = sub.add_parser("set-tier")
+    tier.add_argument("id")
+    tier.add_argument("tier", choices=TIERS)
+    args = parser.parse_args()
+
+    if args.command == "create-code":
+        if not 1 <= args.days <= 365:
+            sys.exit("--days phải trong 1–365")
+        create_code(args.name, args.tier, args.days)
+    elif args.command == "list":
+        print("Khách:\nid | tên | gói | đăng ký lúc | từ IP | bị khoá lúc")
+        print(psql("SELECT id, name, tier, to_char(enrolled_at, 'YYYY-MM-DD HH24:MI'), coalesce(host(enrolled_from), '-'), "
+                   "coalesce(to_char(disabled_at, 'YYYY-MM-DD HH24:MI'), '-') FROM registry.customers ORDER BY enrolled_at;")
+              or "(chưa có)")
+        print("\nMã chưa dùng:\ntên | gói | tạo lúc | hết hạn")
+        print(psql("SELECT customer_name, tier, to_char(created_at, 'YYYY-MM-DD HH24:MI'), to_char(expires_at, 'YYYY-MM-DD') "
+                   "FROM registry.enrollment_codes WHERE used_at IS NULL AND revoked_at IS NULL AND expires_at > now() "
+                   "ORDER BY created_at;") or "(không có)")
+    elif args.command == "revoke-codes":
+        print(psql("WITH r AS (UPDATE registry.enrollment_codes SET revoked_at = now() WHERE customer_name = :'name' "
+                   "AND used_at IS NULL AND revoked_at IS NULL RETURNING 1) SELECT count(*) || ' mã đã thu hồi' FROM r;",
+                   name=args.name))
+    elif args.command in ("disable", "enable"):
+        cid = customer_id(args.id)
+        login = "NOLOGIN" if args.command == "disable" else "LOGIN"
+        stamp = "now()" if args.command == "disable" else "NULL"
+        role = psql("SELECT role_name FROM registry.customers WHERE id = :'cid';", cid=cid) or sys.exit("không có khách này")
+        psql(f"ALTER ROLE :\"role\" {login}; UPDATE registry.customers SET disabled_at = {stamp} WHERE id = :'cid';",
+             role=role, cid=cid)
+        if args.command == "disable":  # end the sessions it may still hold
+            psql("SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE usename = :'role';", role=role)
+        print(f"{cid}: {'đã khoá' if args.command == 'disable' else 'đã mở lại'}")
+    elif args.command == "set-tier":
+        cid = customer_id(args.id)
+        role = psql("SELECT role_name FROM registry.customers WHERE id = :'cid';", cid=cid) or sys.exit("không có khách này")
+        other = "vip" if args.tier == "basic" else "basic"
+        psql(f"REVOKE fed_tier_{other} FROM :\"role\"; GRANT fed_tier_{args.tier} TO :\"role\"; "
+             "UPDATE registry.customers SET tier = :'tier' WHERE id = :'cid';", role=role, tier=args.tier, cid=cid)
+        print(f"{cid}: gói {args.tier}")
+
+
+if __name__ == "__main__":
+    main()
